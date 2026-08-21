@@ -200,14 +200,18 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Iteration.IsUninterrupted = input.IterationUninterrupted
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
-	// Trigger context for the {{ .Trigger.* }} template namespace. Populated only
-	// when this dispatch carries structured onTasks or onSlack data. Template
-	// guards must nest — the outer .Trigger pointer
-	// may itself be nil:
+	// Trigger context for the {{ .Trigger.* }} template namespace. Populated
+	// for every loop dispatch AND for any dispatch carrying a structured
+	// onTasks/onChild/onSlack payload (mitto-qzqm, mitto-qvlh); nil for
+	// ordinary non-loop prompts. Template guards must still nest — the outer
+	// .Trigger pointer may itself be nil for non-loop prompts:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
-	// (nil when scheduled, onCompletion, manual "Run Now", or non-loop).
-	if input.TriggerOnTasksChanges != nil || input.TriggerSlackEvent != nil || len(input.TriggerOnSlackEvents) > 0 {
-		ctx.Trigger = &config.TriggerContext{}
+	if input.IsLoop || input.TriggerKind != "" || input.TriggerOnTasksChanges != nil || input.TriggerOnChildDetail != nil || input.TriggerSlackEvent != nil || len(input.TriggerOnSlackEvents) > 0 {
+		ctx.Trigger = &config.TriggerContext{
+			Kind:         string(input.TriggerKind),
+			IsManual:     input.IsLoopForced,
+			IsRunOnStart: input.IsLoopRunOnStart,
+		}
 		if input.TriggerOnTasksChanges != nil {
 			ctx.Trigger.OnTasks = &config.TriggerOnTasksContext{
 				Changes: config.TasksChangesView{
@@ -219,6 +223,13 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 					LabelAdded: input.TriggerOnTasksChanges.LabelAdded,
 					Touched:    input.TriggerOnTasksChanges.Touched,
 				},
+			}
+		}
+		if input.TriggerOnChildDetail != nil {
+			ctx.Trigger.OnChild = &config.TriggerOnChildContext{
+				ChildID:       input.TriggerOnChildDetail.ChildID,
+				Event:         input.TriggerOnChildDetail.Event,
+				StoppedReason: input.TriggerOnChildDetail.StoppedReason,
 			}
 		}
 		if input.TriggerSlackEvent != nil {

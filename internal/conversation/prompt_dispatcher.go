@@ -755,6 +755,17 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	if meta.Trigger != nil && meta.Trigger.OnTasks != nil {
 		triggerOnTasksChanges = meta.Trigger.OnTasks.Changes
 	}
+	// Thread the onChild trigger detail (if any) through so the
+	// {{ .Trigger.OnChild.* }} template namespace can render — nil for all
+	// non-onChild dispatches (mitto-qvlh).
+	var triggerOnChildDetail *processors.TriggerOnChildDetail
+	if meta.Trigger != nil && meta.Trigger.OnChild != nil {
+		triggerOnChildDetail = &processors.TriggerOnChildDetail{
+			ChildID:       meta.Trigger.OnChild.ChildID,
+			Event:         string(meta.Trigger.OnChild.Event),
+			StoppedReason: string(meta.Trigger.OnChild.StoppedReason),
+		}
+	}
 	// Thread the canonical Slack event batch through for
 	// {{ .Trigger.OnSlack.Events }}, retaining the first-event
 	// {{ .Trigger.Slack.* }} compatibility alias.
@@ -807,7 +818,9 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
 		IterationUninterrupted: meta.IterationUninterrupted,
+		TriggerKind:            meta.LoopTrigger,
 		TriggerOnTasksChanges:  triggerOnTasksChanges,
+		TriggerOnChildDetail:   triggerOnChildDetail,
 		TriggerSlackEvent:      triggerSlackEvent,
 		TriggerOnSlackEvents:   triggerOnSlackEvents,
 		Arguments:              meta.Arguments,

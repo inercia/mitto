@@ -284,6 +284,148 @@ func TestRenderPromptTemplate_TriggerOnTasksChanges(t *testing.T) {
 	}
 }
 
+// TestRenderPromptTemplate_TriggerKind verifies that {{ .Trigger.Kind }},
+// {{ .Trigger.IsManual }}, and {{ .Trigger.IsRunOnStart }} (mitto-qzqm) render
+// correctly for each of the 5 canonical trigger kinds, and that the
+// {{ with .Trigger }}...{{ else }}...{{ end }} guard falls through to the
+// else-branch for a non-loop dispatch (nil .Trigger).
+func TestRenderPromptTemplate_TriggerKind(t *testing.T) {
+	body := `{{ with .Trigger }}kind={{ .Kind }} manual={{ .IsManual }} start={{ .IsRunOnStart }}{{ else }}none{{ end }}`
+
+	tests := []struct {
+		name string
+		data any
+		want string
+	}{
+		{
+			name: "schedule",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "schedule"}},
+			want: "kind=schedule manual=false start=false",
+		},
+		{
+			name: "onCompletion",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onCompletion"}},
+			want: "kind=onCompletion manual=false start=false",
+		},
+		{
+			name: "onTasks",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onTasks"}},
+			want: "kind=onTasks manual=false start=false",
+		},
+		{
+			name: "onChild",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onChild"}},
+			want: "kind=onChild manual=false start=false",
+		},
+		{
+			name: "onSlack-manual-and-runOnStart",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onSlack", IsManual: true, IsRunOnStart: true}},
+			want: "kind=onSlack manual=true start=true",
+		},
+		{
+			name: "non-loop-nil-trigger",
+			data: cel.PromptEnabledContext{},
+			want: "none",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderPromptTemplate("trigger-kind-test", body, tc.data, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderPromptTemplate_TriggerKind_InheritsThroughPromptTextWithArgs pins
+// the shallow-copy inheritance in PromptTextWithArgs (internal/cel/templatefuncs.go
+// "inner = *ctx"): a nested sub-render must see the same .Trigger.Kind as the
+// parent context (mitto-qzqm).
+func TestRenderPromptTemplate_TriggerKind_InheritsThroughPromptTextWithArgs(t *testing.T) {
+	bodies := map[string]string{
+		"inner": `inner-kind={{ .Trigger.Kind }}`,
+	}
+	resolver := func(name string) (string, error) {
+		if b, ok := bodies[name]; ok {
+			return b, nil
+		}
+		return "", fmt.Errorf("resolver: unknown %q", name)
+	}
+
+	ctx := &cel.PromptEnabledContext{
+		Trigger:            &cel.TriggerContext{Kind: "onTasks"},
+		PromptTextResolver: resolver,
+	}
+	fm := cel.BuildTemplateFuncMap(ctx)
+	body := `outer-kind={{ .Trigger.Kind }} {{ PromptTextWithArgs "inner" (dict) }}`
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	want := "outer-kind=onTasks inner-kind=onTasks"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestRenderPromptTemplate_TriggerOnChild verifies that
+// {{ .Trigger.OnChild.{ChildID,Event,StoppedReason} }} (mitto-qvlh) render
+// correctly against a populated cel.PromptEnabledContext.
+func TestRenderPromptTemplate_TriggerOnChild(t *testing.T) {
+	body := `{{ with .Trigger }}{{ with .OnChild }}child={{ .ChildID }} event={{ .Event }} reason={{ .StoppedReason }}{{ end }}{{ end }}`
+
+	ctx := cel.PromptEnabledContext{
+		Trigger: &cel.TriggerContext{
+			Kind: "onChild",
+			OnChild: &cel.TriggerOnChildContext{
+				ChildID:       "child-1",
+				Event:         "anyLoopStopped",
+				StoppedReason: "maxDuration",
+			},
+		},
+	}
+	got, err := RenderPromptTemplate("trigger-onchild-test", body, ctx, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "child=child-1 event=anyLoopStopped reason=maxDuration"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestRenderPromptTemplate_TriggerOnChild_NilGuard verifies the nested
+// {{ with .Trigger }}{{ with .OnChild }} guard renders empty when OnChild is
+// nil (e.g. a schedule/onCompletion fire that carries no child detail), and
+// when .Trigger itself is nil (non-loop dispatch).
+func TestRenderPromptTemplate_TriggerOnChild_NilGuard(t *testing.T) {
+	body := `head{{ with .Trigger }}{{ with .OnChild }}[{{ .ChildID }}]{{ end }}{{ end }}tail`
+
+	tests := []struct {
+		name string
+		data any
+	}{
+		{name: "trigger-set-onchild-nil", data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "schedule"}}},
+		{name: "trigger-nil", data: cel.PromptEnabledContext{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderPromptTemplate("trigger-onchild-nilguard-test", body, tc.data, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != "headtail" {
+				t.Errorf("got %q, want %q", got, "headtail")
+			}
+		})
+	}
+}
+
 // TestValidatePromptTemplateSyntax verifies parse-only validation: plain bodies
 // and bodies with valid template syntax (including FuncMap calls) pass, while
 // structurally broken bodies (e.g. unbalanced actions) return an error (mitto-e7u).

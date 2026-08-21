@@ -37,12 +37,12 @@ type PromptEnabledContext struct {
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
 	// All-zero (Number=0, IsLoop=false) for non-loop prompts.
 	Iteration IterationContext
-	// Trigger carries per-fire trigger context. Populated only when the current
-	// run was fired by a trigger that has structured data to expose to the
-	// prompt body (currently: onTasks — see TriggerOnTasksContext). Nil for
-	// scheduled, onCompletion, manual "Run Now", and non-loop dispatches, so
-	// templates must guard both levels — nested `with` short-circuits on the
-	// outer nil pointer:
+	// Trigger carries per-fire trigger context. Non-nil for every loop
+	// dispatch (mitto-qzqm) — including scheduled and onCompletion runs that
+	// carry no structured payload — so prompt bodies can uniformly branch on
+	// {{ .Trigger.Kind }}. Nil for non-loop (ad-hoc/human-typed) prompts, so
+	// templates must still guard the outer pointer — nested `with`
+	// short-circuits on it cleanly:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	// Template-only: not declared on the CEL env (enabled-when evaluation runs
 	// pre-dispatch when no trigger data exists yet).
@@ -99,17 +99,39 @@ type IterationContext struct {
 	IsUninterrupted bool
 }
 
-// TriggerContext holds trigger-source data for the current run. Only populated
-// for triggers that expose structured data to the prompt body (currently only
-// onTasks). Non-nil sub-fields mean the corresponding trigger fired; nil
-// sub-fields mean it did not. Template-only — not exposed to CEL.
+// TriggerContext holds trigger-source data for the current run. The struct
+// itself is allocated for every loop dispatch (see PromptEnabledContext.Trigger);
+// its sub-fields are only populated for triggers that expose structured data
+// to the prompt body (currently: onTasks, onSlack). Non-nil sub-fields mean
+// the corresponding trigger fired; nil sub-fields mean it did not.
+// Template-only — not exposed to CEL.
 type TriggerContext struct {
+	// Kind names the trigger that fired this dispatch. Canonical values:
+	// "schedule", "onCompletion", "onTasks", "onChild", "onSlack". Empty for
+	// non-loop prompts (in that case .Trigger itself is nil, so templates
+	// should still guard). Set for every loop dispatch — including scheduled
+	// and onCompletion runs that carry no structured payload — so prompt
+	// bodies can uniformly branch on Kind. Template-only; not exposed to CEL.
+	Kind string
+	// IsManual is true when the current dispatch was fired by a manual
+	// "Run Now" click (LoopRunner.TriggerNow) rather than the configured
+	// trigger. Mirrors ProcessorInput.IsLoopForced / Session.IsLoopForced.
+	IsManual bool
+	// IsRunOnStart is true when this dispatch was fired by the boot-pulse
+	// shortly after Mitto started (mitto-ystk). Mirrors
+	// ProcessorInput.IsLoopRunOnStart / Session.IsLoopRunOnStart.
+	IsRunOnStart bool
 	// OnTasks is populated only when the current fire was driven by a beads
 	// change (onTasks trigger). Nil for scheduled/onCompletion/manual "Run Now"
 	// dispatches. Templates should guard both levels — the enclosing .Trigger
 	// pointer must be non-nil first:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	OnTasks *TriggerOnTasksContext
+	// OnChild is populated only when the current fire was driven by a
+	// child-conversation lifecycle event (onChild trigger, mitto-qvlh). Nil
+	// for all other dispatches. Templates should guard both levels:
+	//     {{ with .Trigger }}{{ with .OnChild }}...{{ end }}{{ end }}
+	OnChild *TriggerOnChildContext
 	// OnSlack is the canonical bounded batch for an onSlack dispatch.
 	OnSlack *TriggerOnSlackContext
 	// Slack is populated only when the current fire was driven by the
@@ -142,6 +164,26 @@ type TriggerSlackContext struct {
 // TriggerOnSlackContext exposes a bounded, credential-free event batch.
 type TriggerOnSlackContext struct {
 	Events []TriggerSlackContext
+}
+
+// TriggerOnChildContext exposes the child-lifecycle detail that fired an
+// onChild loop dispatch (mitto-qvlh). Populated only when the onChild trigger
+// fired; the outer .Trigger pointer is still nil for non-loop prompts, so
+// templates must guard both levels. StoppedReason is non-empty only for the
+// "anyLoopStopped" event; it is empty for "anyEndResponse" and "anyDeleted".
+// ChildID intentionally does NOT include the child's name/title — by the
+// time an "anyDeleted" fire reaches here, the deleted child's metadata
+// (including its name) may already be gone. Template-only; not exposed to CEL.
+type TriggerOnChildContext struct {
+	// ChildID is the bounded session identifier of the child that caused this
+	// dispatch.
+	ChildID string
+	// Event names the child-lifecycle event that fired: "anyEndResponse",
+	// "anyDeleted", or "anyLoopStopped".
+	Event string
+	// StoppedReason is the child's own loop-stop reason. Non-empty only when
+	// Event == "anyLoopStopped".
+	StoppedReason string
 }
 
 // TriggerOnTasksContext exposes the beads change delta already computed by the

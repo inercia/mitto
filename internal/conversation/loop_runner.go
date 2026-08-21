@@ -848,6 +848,82 @@ func (r *LoopRunner) IsRunning() bool {
 	return r.running
 }
 
+// LoopDispatchOptions bundles per-fire optional dispatch context so
+// triggerNowFull / deliverPrompt do not grow more positional parameters
+// (mitto-qvlh). A nil *LoopDispatchOptions is the common case (schedule,
+// onCompletion, manual "Run Now", boot pulse). Empty sub-fields are treated
+// identically to a nil *LoopDispatchOptions for their respective trigger.
+type LoopDispatchOptions struct {
+	// TasksDelta carries the beads change delta for onTasks fires.
+	TasksDelta *config.TasksDelta
+	// SlackEvents is the already-bounded canonical batch for onSlack fires.
+	SlackEvents []PromptSlackEvent
+	// OnChild carries child-lifecycle detail for onChild fires.
+	OnChild *LoopDispatchOnChild
+}
+
+// LoopDispatchOnChild carries the child-lifecycle detail that fired an
+// onChild loop dispatch (mitto-qvlh).
+type LoopDispatchOnChild struct {
+	ChildID string
+	Event   session.ChildEvent
+	// StoppedReason is non-empty only for anyLoopStopped.
+	StoppedReason session.StoppedReason
+}
+
+// optsTasksDelta returns opts.TasksDelta, nil-safe for a nil opts.
+func optsTasksDelta(opts *LoopDispatchOptions) *config.TasksDelta {
+	if opts == nil {
+		return nil
+	}
+	return opts.TasksDelta
+}
+
+// optsSlackEvents returns opts.SlackEvents, nil-safe for a nil opts.
+func optsSlackEvents(opts *LoopDispatchOptions) []PromptSlackEvent {
+	if opts == nil {
+		return nil
+	}
+	return opts.SlackEvents
+}
+
+// optsOnChild returns opts.OnChild, nil-safe for a nil opts.
+func optsOnChild(opts *LoopDispatchOptions) *LoopDispatchOnChild {
+	if opts == nil {
+		return nil
+	}
+	return opts.OnChild
+}
+
+// buildPromptTriggerContext assembles the PromptTriggerContext for a
+// delivered loop prompt from a computed onTasks delta, a bounded onSlack
+// batch, and/or onChild fire detail (mitto-qvlh). Returns nil when none of
+// the three carry data. Extracted as a pure function (mirroring the
+// mitto-rz9j rationale for logLoopRecordSentFailure above) so the onChild
+// threading can be unit-tested directly, without driving PromptWithMeta
+// end-to-end.
+func buildPromptTriggerContext(tasksDelta *config.TasksDelta, slackEvents []PromptSlackEvent, onChild *LoopDispatchOnChild) *PromptTriggerContext {
+	if tasksDelta == nil && len(slackEvents) == 0 && onChild == nil {
+		return nil
+	}
+	ctx := &PromptTriggerContext{}
+	if tasksDelta != nil {
+		ctx.OnTasks = &PromptOnTasksContext{Changes: tasksDelta}
+	}
+	if len(slackEvents) > 0 {
+		ctx.OnSlack = &PromptOnSlackContext{Events: slackEvents}
+		ctx.Slack = &ctx.OnSlack.Events[0]
+	}
+	if onChild != nil {
+		ctx.OnChild = &PromptOnChildContext{
+			ChildID:       onChild.ChildID,
+			Event:         onChild.Event,
+			StoppedReason: onChild.StoppedReason,
+		}
+	}
+	return ctx
+}
+
 // TriggerNow immediately delivers the loop prompt for a session,
 // bypassing the normal schedule check. This is used for manual "run now" requests.
 // resetTimer controls whether RecordSent() is called after the prompt completes:
@@ -856,14 +932,14 @@ func (r *LoopRunner) IsRunning() bool {
 //
 // Returns an error if the delivery fails or the session is not configured for loop prompts.
 func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
-	return r.triggerNowFull(sessionID, resetTimer, nil, false, "", nil)
+	return r.triggerNowFull(sessionID, resetTimer, false, "", nil)
 }
 
 // TriggerNowFrom is TriggerNow with an explicit winning trigger, recorded on the
 // delivered PromptMeta and used for the coalescing claim (mitto-r6j.2). An empty
 // firedBy defers to the loop's primary EffectiveTrigger.
 func (r *LoopRunner) TriggerNowFrom(sessionID string, resetTimer bool, firedBy session.LoopTrigger) error {
-	return r.triggerNowFull(sessionID, resetTimer, nil, false, firedBy, nil)
+	return r.triggerNowFull(sessionID, resetTimer, false, firedBy, nil)
 }
 
 // TriggerNowWithSlackEvent is the legacy single-event wrapper retained for the
@@ -871,7 +947,7 @@ func (r *LoopRunner) TriggerNowFrom(sessionID string, resetTimer bool, firedBy s
 // {{ .Trigger.OnSlack.Events }}.
 func (r *LoopRunner) TriggerNowWithSlackEvent(sessionID string, resetTimer bool, firedBy session.LoopTrigger, evt *PromptSlackContext) error {
 	if evt == nil {
-		return r.triggerNowFull(sessionID, resetTimer, nil, false, firedBy, nil)
+		return r.triggerNowFull(sessionID, resetTimer, false, firedBy, nil)
 	}
 	return r.TriggerNowWithSlackEvents(sessionID, resetTimer, firedBy, []PromptSlackEvent{*evt})
 }
@@ -882,7 +958,17 @@ func (r *LoopRunner) TriggerNowWithSlackEvents(sessionID string, resetTimer bool
 	if firedBy == "" {
 		firedBy = session.TriggerOnSlack
 	}
-	return r.triggerNowFull(sessionID, resetTimer, nil, false, firedBy, boundSlackEvents(events))
+	return r.triggerNowFull(sessionID, resetTimer, false, firedBy, &LoopDispatchOptions{SlackEvents: boundSlackEvents(events)})
+}
+
+// triggerNowFromChild dispatches an onChild fire, bundling the child-lifecycle
+// detail into a LoopDispatchOptions envelope (mitto-qvlh) so fireOnChild
+// itself stays readable. stoppedReason is empty for anyEndResponse/anyDeleted
+// and carries the child's own stop reason for anyLoopStopped.
+func (r *LoopRunner) triggerNowFromChild(parentID string, resetTimer bool, event session.ChildEvent, childID string, stoppedReason session.StoppedReason) error {
+	return r.triggerNowFull(parentID, resetTimer, false, session.TriggerOnChild, &LoopDispatchOptions{
+		OnChild: &LoopDispatchOnChild{ChildID: childID, Event: event, StoppedReason: stoppedReason},
+	})
 }
 
 func boundSlackEvents(events []PromptSlackEvent) []PromptSlackEvent {
@@ -955,7 +1041,7 @@ func truncateUTF8Bytes(value string, maxBytes int) string {
 // onTasks fires; all other paths (manual "Run Now", onCompletion, delayed
 // retries) pass a nil delta via the public TriggerNow.
 func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta) error {
-	return r.triggerNowFull(sessionID, resetTimer, tasksDelta, false, session.TriggerOnTasks, nil)
+	return r.triggerNowFull(sessionID, resetTimer, false, session.TriggerOnTasks, &LoopDispatchOptions{TasksDelta: tasksDelta})
 }
 
 // triggerNowFull is the unified internal entry point behind TriggerNow and its
@@ -967,9 +1053,10 @@ func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool,
 // this dispatch is a forced/manual-equivalent) is preserved.
 //
 // firedBy names the trigger that won this dispatch (mitto-r6j.2); empty defers
-// to the loop's primary EffectiveTrigger. slackEvents is the already-bounded
-// canonical batch for onSlack and nil for every other caller.
-func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta, isRunOnStart bool, firedBy session.LoopTrigger, slackEvents []PromptSlackEvent) error {
+// to the loop's primary EffectiveTrigger. opts bundles the optional per-fire
+// dispatch context (onTasks delta, onSlack batch, onChild detail — mitto-qvlh);
+// nil for every caller that carries none of those.
+func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, isRunOnStart bool, firedBy session.LoopTrigger, opts *LoopDispatchOptions) error {
 	if r.store == nil {
 		return ErrSessionStoreNotAvailable
 	}
@@ -1032,9 +1119,10 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 	// invoked from the REST handleRunLoopNow and MCP
 	// mitto_conversation_run_loop_now handlers) reaches here with neither
 	// isRunOnStart set nor an explicit firedBy: every automatic path
-	// (onCompletion/onTasks/onChild/onSlack fires via TriggerNowFrom/
-	// triggerNowWithTasksDelta/TriggerNowWithSlackEvents, and the boot pulse)
-	// always supplies a non-empty firedBy or isRunOnStart=true. isManual is
+	// (onCompletion/onTasks/onSlack fires via TriggerNowFrom/
+	// triggerNowWithTasksDelta/TriggerNowWithSlackEvents, onChild fires via
+	// triggerNowFromChild, and the boot pulse) always supplies a non-empty
+	// firedBy or isRunOnStart=true. isManual is
 	// used ONLY to set PromptMeta.IsLoopForced (surfaced to the UI/provenance
 	// as "Manual run") so an onTasks/onCompletion/onSlack/startup dispatch is
 	// no longer mislabeled as a manual run.
@@ -1051,12 +1139,12 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, tasksDelt
 			"session_name", meta.Name,
 			"fired_by", string(firedBy),
 			"is_manual", isManual,
-			"slack_event_count", len(slackEvents),
+			"slack_event_count", len(optsSlackEvents(opts)),
 			"prompt_preview", truncatePrompt(loop.Prompt, 100))
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, forced, tasksDelta, isRunOnStart, firedBy, isManual, slackEvents)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, forced, isRunOnStart, firedBy, isManual, opts)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -1404,7 +1492,7 @@ func (r *LoopRunner) fireOnStartPulses() {
 				"trigger", string(loop.EffectiveTrigger()))
 		}
 
-		if err := r.triggerNowFull(meta.SessionID, true, nil, true, "", nil); err != nil {
+		if err := r.triggerNowFull(meta.SessionID, true, true, "", nil); err != nil {
 			isContention := errors.Is(err, ErrSessionBusy) || errors.Is(err, ErrWorkspaceBusy) || errors.Is(err, ErrLoopDispatchCoalesced)
 			if isContention {
 				// Transient contention, not a real delivery failure: roll back
@@ -2063,7 +2151,7 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	// Deliver the prompt — normal scheduled runs always reset the timer. No
 	// onTasks delta on the scheduled path (that path only fires on time; onTasks
 	// fires go through triggerNowWithTasksDelta — mitto-xkn).
-	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil, false, session.TriggerSchedule, false, nil); err != nil {
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, false, session.TriggerSchedule, false, nil); err != nil {
 		if errors.Is(err, ErrWorkspaceBusy) {
 			// A sibling loop in the same workspace is in flight. Skip this
 			// session for this poll cycle — do not advance NextScheduledAt
@@ -2555,11 +2643,6 @@ func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, 
 // below. Note that forced no longer implies "genuine manual run" — see
 // isManual.
 //
-// tasksDelta is non-nil only for onTasks fires (via triggerNowWithTasksDelta);
-// it is threaded into PromptMeta.Trigger so the loop prompt body can render
-// {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). Nil for scheduled, onCompletion,
-// manual "Run Now", and any other dispatch path.
-//
 // isRunOnStart is true only for the boot pulse (mitto-ystk) fired once by
 // fireOnStartPulses shortly after Mitto boots. It flags the delivered PromptMeta
 // so the prompt body can gate on {{ .Session.IsLoopRunOnStart }} (and the
@@ -2580,16 +2663,22 @@ func (r *LoopRunner) rearmRunOnStartAfterFailure(sessionID, sessionName string, 
 // onSlack fires or the boot pulse, all of which reach deliverPrompt with
 // forced=true for cap-bypass purposes but are not manual.
 //
-// slackEvents is non-empty only for onSlack. It is threaded into
-// PromptMeta.Trigger so the prompt can render {{ .Trigger.OnSlack.Events }};
-// the first event is also exposed at the deprecated {{ .Trigger.Slack }} alias.
-func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta, isRunOnStart bool, firedBy session.LoopTrigger, isManual bool, slackEventBatches ...[]PromptSlackEvent) error {
+// opts bundles the optional per-fire dispatch context (mitto-qvlh): a nil
+// *LoopDispatchOptions is the common case (schedule, onCompletion, manual
+// "Run Now", boot pulse). opts.TasksDelta is non-nil only for onTasks fires
+// (via triggerNowWithTasksDelta); it is threaded into PromptMeta.Trigger so
+// the loop prompt body can render {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn).
+// opts.SlackEvents is non-empty only for onSlack; it is threaded into
+// PromptMeta.Trigger so the prompt can render {{ .Trigger.OnSlack.Events }},
+// with the first event also exposed at the deprecated {{ .Trigger.Slack }}
+// alias. opts.OnChild is non-nil only for onChild fires; it is threaded into
+// PromptMeta.Trigger so the prompt can render {{ .Trigger.OnChild.* }}.
+func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, isRunOnStart bool, firedBy session.LoopTrigger, isManual bool, opts *LoopDispatchOptions) error {
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
-	var slackEvents []PromptSlackEvent
-	if len(slackEventBatches) > 0 {
-		slackEvents = slackEventBatches[0]
-	}
+	tasksDelta := optsTasksDelta(opts)
+	slackEvents := optsSlackEvents(opts)
+	onChildOpt := optsOnChild(opts)
 	if firedBy == "" {
 		firedBy = loop.EffectiveTrigger()
 	}
@@ -2708,19 +2797,10 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 	if forced {
 		loopKind = LoopKindForced
 	}
-	// Trigger context is non-nil only for a computed onTasks delta or a bounded
-	// onSlack batch. All other paths pass both as nil.
-	var triggerCtx *PromptTriggerContext
-	if tasksDelta != nil || len(slackEvents) > 0 {
-		triggerCtx = &PromptTriggerContext{}
-		if tasksDelta != nil {
-			triggerCtx.OnTasks = &PromptOnTasksContext{Changes: tasksDelta}
-		}
-		if len(slackEvents) > 0 {
-			triggerCtx.OnSlack = &PromptOnSlackContext{Events: slackEvents}
-			triggerCtx.Slack = &triggerCtx.OnSlack.Events[0]
-		}
-	}
+	// Trigger context is non-nil only for a computed onTasks delta, a bounded
+	// onSlack batch, or an onChild fire (mitto-qvlh). All other paths pass all
+	// three as nil/empty.
+	triggerCtx := buildPromptTriggerContext(tasksDelta, slackEvents, onChildOpt)
 	meta := PromptMeta{
 		SenderID:         "loop-runner",
 		PromptID:         "",              // No client to confirm delivery to

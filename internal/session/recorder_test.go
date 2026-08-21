@@ -1398,6 +1398,49 @@ func TestRecorder_RecordUserPromptDataWithSeq_Provenance(t *testing.T) {
 	}
 }
 
+// TestPromptProvenance_OnChildJSONRoundTrip verifies mitto-qvlh: a
+// PromptProvenance carrying OnChild detail round-trips through JSON exactly.
+func TestPromptProvenance_OnChildJSONRoundTrip(t *testing.T) {
+	prov := PromptProvenance{
+		LoopTrigger: TriggerOnChild,
+		OnChild: &PromptOnChildProvenance{
+			ChildID:       "c",
+			Event:         "anyLoopStopped",
+			StoppedReason: "maxDuration",
+		},
+	}
+	data, err := json.Marshal(prov)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got PromptProvenance
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.LoopTrigger != prov.LoopTrigger {
+		t.Errorf("LoopTrigger = %q, want %q", got.LoopTrigger, prov.LoopTrigger)
+	}
+	if got.OnChild == nil {
+		t.Fatal("expected OnChild non-nil after round-trip")
+	}
+	if *got.OnChild != *prov.OnChild {
+		t.Errorf("OnChild = %+v, want %+v", *got.OnChild, *prov.OnChild)
+	}
+}
+
+// TestPromptProvenance_NoOnChildOmitted pins the omitempty backward-compat
+// guarantee (mitto-qvlh): a nil OnChild produces no "on_child" key in JSON.
+func TestPromptProvenance_NoOnChildOmitted(t *testing.T) {
+	prov := PromptProvenance{LoopTrigger: TriggerSchedule}
+	data, err := json.Marshal(prov)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "on_child") {
+		t.Errorf("expected no \"on_child\" key when OnChild is nil, got: %s", data)
+	}
+}
+
 // TestRecorder_EndIsIdempotent tests that calling End() multiple times is safe
 // and only records a single session_end event.
 func TestRecorder_EndIsIdempotent(t *testing.T) {

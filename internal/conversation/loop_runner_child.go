@@ -26,7 +26,7 @@ func (r *LoopRunner) OnChildEndResponse(childID string) {
 		// Not a child conversation (or a top-level session) — nothing to fire.
 		return
 	}
-	r.fireOnChild(meta.ParentSessionID, session.ChildEventAnyEndResponse, childID)
+	r.fireOnChild(meta.ParentSessionID, session.ChildEventAnyEndResponse, childID, "")
 }
 
 // OnChildDeleted notifies the onChild loop leg that a child conversation
@@ -40,7 +40,7 @@ func (r *LoopRunner) OnChildDeleted(childID, parentID string) {
 	if parentID == "" {
 		return
 	}
-	r.fireOnChild(parentID, session.ChildEventAnyDeleted, childID)
+	r.fireOnChild(parentID, session.ChildEventAnyDeleted, childID, "")
 }
 
 // OnChildLoopStopped notifies the onChild loop leg that a child conversation
@@ -50,9 +50,11 @@ func (r *LoopRunner) OnChildDeleted(childID, parentID string) {
 // LoopStore.MarkStopped after its write and after the LoopStore's internal
 // lock is released. Like OnChildEndResponse (and unlike OnChildDeleted), the
 // stopped session's own metadata still exists at this point, so ParentID is
-// resolved here rather than supplied by the caller. reason is accepted for
-// logging only; every StoppedReason produces the same anyLoopStopped event —
-// there is no per-reason gating in this increment.
+// resolved here rather than supplied by the caller. reason is logged AND
+// forwarded to the delivered PromptMeta as Trigger.OnChild.StoppedReason
+// (mitto-qvlh) so the parent's loop prompt body can inspect why the child
+// stopped; every StoppedReason produces the same anyLoopStopped event — there
+// is no per-reason gating in this increment.
 //
 // Guards childID != parentID: a parent's own loop stopping must never
 // re-fire that same parent's onChild trigger against itself (only against
@@ -75,24 +77,28 @@ func (r *LoopRunner) OnChildLoopStopped(childID string, reason session.StoppedRe
 		r.logger.Debug("onChild: child loop stopped",
 			"child_id", childID, "parent_id", meta.ParentSessionID, "reason", string(reason))
 	}
-	r.fireOnChild(meta.ParentSessionID, session.ChildEventAnyLoopStopped, childID)
+	r.fireOnChild(meta.ParentSessionID, session.ChildEventAnyLoopStopped, childID, reason)
 }
 
 // fireOnChild applies the onChild trigger's guards, in order, then dispatches
-// a run of the parent conversation's loop via TriggerNowFrom. Every drop
-// path is logged at Debug (never Warn/Error) — dropped fires are the expected
-// steady state (loop not armed for onChild, parent busy elsewhere, cooldown,
-// or a losing coalesce), not failures.
+// a run of the parent conversation's loop via triggerNowFromChild, threading
+// childID/event/stoppedReason into the delivered PromptMeta.Trigger.OnChild
+// (mitto-qvlh) so the prompt body can identify which child caused the run.
+// Every drop path is logged at Debug (never Warn/Error) — dropped fires are
+// the expected steady state (loop not armed for onChild, parent busy
+// elsewhere, cooldown, or a losing coalesce), not failures. stoppedReason is
+// empty for anyEndResponse/anyDeleted and carries the child's own stop reason
+// for anyLoopStopped.
 //
 // Precedence within a single tick (onTasks > onChild > onCompletion >
 // schedule, per mitto-987y) is realised entirely by the existing single-slot
-// claimDispatch inside TriggerNowFrom/triggerNowFull: onChild fires
+// claimDispatch inside triggerNowFromChild/triggerNowFull: onChild fires
 // synchronously off the child-lifecycle event, ahead of the onCompletion
 // timer (floored at DefaultMinLoopCompletionDelaySeconds) and the schedule
 // poll tick, so it naturally wins against those two but loses to an
 // already-in-flight onTasks dispatch for the same parent session. No
 // additional ordering machinery is introduced here.
-func (r *LoopRunner) fireOnChild(parentID string, event session.ChildEvent, childID string) {
+func (r *LoopRunner) fireOnChild(parentID string, event session.ChildEvent, childID string, stoppedReason session.StoppedReason) {
 	if r.store == nil {
 		return
 	}
@@ -140,7 +146,7 @@ func (r *LoopRunner) fireOnChild(parentID string, event session.ChildEvent, chil
 		return
 	}
 
-	err = r.TriggerNowFrom(parentID, true, session.TriggerOnChild)
+	err = r.triggerNowFromChild(parentID, true, event, childID, stoppedReason)
 	if err == nil {
 		return
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/session"
 )
 
 func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
@@ -169,6 +170,184 @@ func TestBuildCELContext_HasMessages(t *testing.T) {
 	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
 	if emptyCtx.Session.HasMessages {
 		t.Error("expected ctx.Session.HasMessages=false by default")
+	}
+}
+
+// TestBuildCELContext_TriggerKind verifies that BuildCELContext copies
+// input.TriggerKind onto ctx.Trigger.Kind for each of the 5 canonical loop
+// trigger values (mitto-qzqm), and that no structured sub-fields
+// (OnTasks/OnSlack/Slack) are populated when only Kind is set.
+func TestBuildCELContext_TriggerKind(t *testing.T) {
+	kinds := []session.LoopTrigger{
+		session.TriggerSchedule,
+		session.TriggerOnCompletion,
+		session.TriggerOnTasks,
+		session.TriggerOnChild,
+		session.TriggerOnSlack,
+	}
+	for _, kind := range kinds {
+		t.Run(string(kind), func(t *testing.T) {
+			input := &ProcessorInput{SessionID: "s", IsLoop: true, TriggerKind: kind}
+			ctx := BuildCELContext(input)
+			if ctx.Trigger == nil {
+				t.Fatal("expected ctx.Trigger non-nil for a loop dispatch")
+			}
+			if ctx.Trigger.Kind != string(kind) {
+				t.Errorf("ctx.Trigger.Kind = %q, want %q", ctx.Trigger.Kind, string(kind))
+			}
+			if ctx.Trigger.OnTasks != nil {
+				t.Errorf("expected ctx.Trigger.OnTasks=nil, got %#v", ctx.Trigger.OnTasks)
+			}
+			if ctx.Trigger.OnSlack != nil {
+				t.Errorf("expected ctx.Trigger.OnSlack=nil, got %#v", ctx.Trigger.OnSlack)
+			}
+			if ctx.Trigger.Slack != nil {
+				t.Errorf("expected ctx.Trigger.Slack=nil, got %#v", ctx.Trigger.Slack)
+			}
+		})
+	}
+}
+
+// TestBuildCELContext_TriggerManualAndRunOnStart verifies that
+// ctx.Trigger.IsManual / IsRunOnStart mirror input.IsLoopForced /
+// IsLoopRunOnStart (mitto-qzqm).
+func TestBuildCELContext_TriggerManualAndRunOnStart(t *testing.T) {
+	cases := []struct {
+		name             string
+		isLoopForced     bool
+		isLoopRunOnStart bool
+	}{
+		{name: "neither", isLoopForced: false, isLoopRunOnStart: false},
+		{name: "manual-only", isLoopForced: true, isLoopRunOnStart: false},
+		{name: "run-on-start-only", isLoopForced: false, isLoopRunOnStart: true},
+		{name: "both", isLoopForced: true, isLoopRunOnStart: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &ProcessorInput{
+				SessionID:        "s",
+				IsLoop:           true,
+				IsLoopForced:     tc.isLoopForced,
+				IsLoopRunOnStart: tc.isLoopRunOnStart,
+			}
+			ctx := BuildCELContext(input)
+			if ctx.Trigger == nil {
+				t.Fatal("expected ctx.Trigger non-nil for a loop dispatch")
+			}
+			if ctx.Trigger.IsManual != tc.isLoopForced {
+				t.Errorf("ctx.Trigger.IsManual = %v, want %v", ctx.Trigger.IsManual, tc.isLoopForced)
+			}
+			if ctx.Trigger.IsRunOnStart != tc.isLoopRunOnStart {
+				t.Errorf("ctx.Trigger.IsRunOnStart = %v, want %v", ctx.Trigger.IsRunOnStart, tc.isLoopRunOnStart)
+			}
+		})
+	}
+}
+
+// TestBuildCELContext_NonLoopKeepsTriggerNil is a regression test: a plain,
+// non-loop ProcessorInput (IsLoop=false, TriggerKind="") must still yield
+// ctx.Trigger == nil, preserving the documented nil-safe behaviour for
+// ordinary human-typed/ad-hoc prompts (mitto-qzqm).
+func TestBuildCELContext_NonLoopKeepsTriggerNil(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if ctx.Trigger != nil {
+		t.Errorf("expected ctx.Trigger=nil for a non-loop dispatch, got %#v", ctx.Trigger)
+	}
+}
+
+// TestProcessorInput_TriggerKindExcludedFromJSON pins the json:"-" tag on
+// ProcessorInput.TriggerKind (mitto-qzqm): the external-processor JSON
+// payload must never carry the trigger kind under any key spelling.
+func TestProcessorInput_TriggerKindExcludedFromJSON(t *testing.T) {
+	input := &ProcessorInput{TriggerKind: session.TriggerOnChild, IsLoop: true, SessionID: "s"}
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	got := string(data)
+	for _, forbidden := range []string{"trigger_kind", "TriggerKind", "triggerKind"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("external-processor JSON must not contain %q, got: %s", forbidden, got)
+		}
+	}
+}
+
+// TestBuildCELContext_TriggerOnChild verifies that BuildCELContext populates
+// ctx.Trigger.OnChild.{ChildID,Event,StoppedReason} from
+// input.TriggerOnChildDetail for onChild fires (mitto-qvlh), and that no
+// other structured Trigger sub-fields (OnTasks/OnSlack/Slack) are populated
+// as a side effect.
+func TestBuildCELContext_TriggerOnChild(t *testing.T) {
+	cases := []struct {
+		name          string
+		event         string
+		stoppedReason string
+	}{
+		{name: "anyEndResponse", event: "anyEndResponse", stoppedReason: ""},
+		{name: "anyDeleted", event: "anyDeleted", stoppedReason: ""},
+		{name: "anyLoopStopped", event: "anyLoopStopped", stoppedReason: "maxDuration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &ProcessorInput{
+				SessionID:   "s",
+				IsLoop:      true,
+				TriggerKind: session.TriggerOnChild,
+				TriggerOnChildDetail: &TriggerOnChildDetail{
+					ChildID:       "abc",
+					Event:         tc.event,
+					StoppedReason: tc.stoppedReason,
+				},
+			}
+			ctx := BuildCELContext(input)
+			if ctx.Trigger == nil {
+				t.Fatal("expected ctx.Trigger non-nil for an onChild dispatch")
+			}
+			if ctx.Trigger.OnChild == nil {
+				t.Fatal("expected ctx.Trigger.OnChild non-nil for an onChild dispatch")
+			}
+			if ctx.Trigger.OnChild.ChildID != "abc" {
+				t.Errorf("ChildID = %q, want %q", ctx.Trigger.OnChild.ChildID, "abc")
+			}
+			if ctx.Trigger.OnChild.Event != tc.event {
+				t.Errorf("Event = %q, want %q", ctx.Trigger.OnChild.Event, tc.event)
+			}
+			if ctx.Trigger.OnChild.StoppedReason != tc.stoppedReason {
+				t.Errorf("StoppedReason = %q, want %q", ctx.Trigger.OnChild.StoppedReason, tc.stoppedReason)
+			}
+			if ctx.Trigger.OnTasks != nil {
+				t.Errorf("expected ctx.Trigger.OnTasks=nil, got %#v", ctx.Trigger.OnTasks)
+			}
+			if ctx.Trigger.OnSlack != nil {
+				t.Errorf("expected ctx.Trigger.OnSlack=nil, got %#v", ctx.Trigger.OnSlack)
+			}
+			if ctx.Trigger.Slack != nil {
+				t.Errorf("expected ctx.Trigger.Slack=nil, got %#v", ctx.Trigger.Slack)
+			}
+		})
+	}
+}
+
+// TestProcessorInput_TriggerOnChildDetailExcludedFromJSON pins the json:"-"
+// tag on ProcessorInput.TriggerOnChildDetail (mitto-qvlh): the external-
+// processor JSON payload must never carry onChild detail under any key
+// spelling.
+func TestProcessorInput_TriggerOnChildDetailExcludedFromJSON(t *testing.T) {
+	input := &ProcessorInput{
+		TriggerKind:          session.TriggerOnChild,
+		TriggerOnChildDetail: &TriggerOnChildDetail{ChildID: "c", Event: "anyDeleted"},
+		IsLoop:               true,
+		SessionID:            "s",
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	got := string(data)
+	for _, forbidden := range []string{"trigger_on_child_detail", "TriggerOnChildDetail", "triggerOnChildDetail", "on_child"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("external-processor JSON must not contain %q, got: %s", forbidden, got)
+		}
 	}
 }
 

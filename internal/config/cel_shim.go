@@ -18,6 +18,7 @@ type PromptEnabledContext = cel.PromptEnabledContext
 type IterationContext = cel.IterationContext
 type TriggerContext = cel.TriggerContext
 type TriggerOnTasksContext = cel.TriggerOnTasksContext
+type TriggerOnChildContext = cel.TriggerOnChildContext
 type TriggerSlackContext = cel.TriggerSlackContext
 type TriggerOnSlackContext = cel.TriggerOnSlackContext
 type TasksChangesView = cel.TasksChangesView

@@ -196,6 +196,36 @@ provenance to an icon/label/tooltip via `promptProvenance.js`
 session Properties panel (`SessionPanel.js`, sourced from the most recent
 message carrying provenance).
 
+Separately from the persisted `PromptProvenance`, the same winning trigger
+(`PromptMeta.LoopTrigger`) is threaded into `processors.ProcessorInput.TriggerKind`
+by `buildProcessorInput` and surfaced to prompt bodies as `{{ .Trigger.Kind }}`,
+alongside `{{ .Trigger.IsManual }}` / `{{ .Trigger.IsRunOnStart }}` (mitto-qzqm).
+Unlike `.Trigger.OnTasks`/`.OnSlack`, these three fields are populated for
+**every** loop dispatch — not just ones carrying a structured payload — so a
+prompt can uniformly branch on `schedule`/`onCompletion`/`onTasks`/`onChild`/
+`onSlack` without inspecting which structured sub-block is non-nil. See
+[docs/devel/prompt-templates.md § Trigger context](prompt-templates.md) for
+the template-facing details.
+
+**`onChild` fire detail (mitto-qvlh):** `fireOnChild` threads the completing
+child's ID, the lifecycle event, and (for `anyLoopStopped`) the child's own
+`StoppedReason` through a `LoopDispatchOptions.OnChild` envelope into
+`PromptMeta.Trigger.OnChild` (`internal/conversation/loop_runner_child.go` →
+`triggerNowFromChild`, `internal/conversation/loop_runner.go`). Two surfaces
+consume it: (1) the **template surface** `{{ .Trigger.OnChild.{ChildID,
+Event, StoppedReason} }}` (see
+[docs/devel/prompt-templates.md § Trigger context](prompt-templates.md)),
+populated only for `onChild` fires; and (2) the **persisted provenance**
+`session.PromptProvenance.OnChild` (`session.PromptOnChildProvenance`),
+set by `deriveUserPromptProvenance` only when `LoopTrigger == TriggerOnChild`
+and `meta.Trigger.OnChild` is non-nil. Both surfaces deliberately omit the
+child's name/title — `ChildID` is a bounded session identifier only, since by
+the time an `anyDeleted` fire reaches here the deleted child's metadata
+(including its name) may already be gone. A dispatch coalesced by another
+in-flight trigger for the same parent (`claimDispatch` failure) never reaches
+the `PromptTriggerContext`/provenance construction at all, so a losing
+`onChild` fire produces neither template context nor persisted detail.
+
 ```mermaid
 flowchart TB
     subgraph Sources["Independent event sources"]

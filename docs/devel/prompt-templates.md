@@ -178,6 +178,29 @@ always the real argument map (possibly empty).
 
 Threaded in by the `LoopRunner` for `onTasks` runs (`internal/conversation/loop_runner.go` → `PromptTriggerContext`) and mapped into `PromptEnabledContext.Trigger` by the dispatcher (`internal/conversation/prompt_dispatcher.go`). See `internal/cel/context.go` `TriggerContext` / `TriggerOnTasksContext` / `TasksChangesView` for the source-of-truth field layout.
 
+**`.Trigger.Kind` / `.Trigger.IsManual` / `.Trigger.IsRunOnStart` (mitto-qzqm):** unlike `.Trigger.OnTasks`/`.OnSlack`/`.Slack`, these three fields are populated on **every loop dispatch**, including scheduled and `onCompletion` runs that carry no structured payload — the invariant is now "`.Trigger` is non-nil for every loop dispatch, nil for non-loop (ad-hoc/human-typed) prompts". `.Trigger.Kind` names the winning trigger for the current run and takes one of 5 canonical values: `"schedule"`, `"onCompletion"`, `"onTasks"`, `"onChild"`, `"onSlack"`. `.Trigger.IsManual` is `true` when the dispatch was fired by a manual "Run Now" click rather than the configured trigger (mirrors `.Session.IsLoopForced`). `.Trigger.IsRunOnStart` is `true` for the once-per-boot startup pulse (mirrors `.Session.IsLoopRunOnStart`). Example:
+
+```
+{{ with .Trigger }}
+{{ if eq .Kind "onChild" }}A child conversation changed state.
+{{ else if eq .Kind "onTasks" }}Beads changed in this workspace.
+{{ else }}Routine {{ .Kind }} run.
+{{ end }}
+{{ end }}
+```
+
+Still guard the outer `.Trigger` pointer with `with`/`if` — it remains nil for non-loop prompts. See `internal/cel/context.go` `TriggerContext` for the source-of-truth field layout.
+
+**`.Trigger.OnChild.{ChildID, Event, StoppedReason}` (mitto-qvlh):** populated only when the current run was fired by the `onChild` trigger (i.e. `.Trigger.Kind == "onChild"`). `.ChildID` is the bounded session identifier of the child conversation that caused the fire — it intentionally does **not** include the child's name/title, since by the time an `anyDeleted` fire reaches here the deleted child's metadata (including its name) may already be gone. `.Event` names the child-lifecycle event that fired, one of 3 canonical values: `"anyEndResponse"`, `"anyDeleted"`, `"anyLoopStopped"`. `.StoppedReason` is non-empty **only** for `"anyLoopStopped"` (the child's own loop-stop reason, e.g. `"maxDuration"`); it is empty for `"anyEndResponse"`/`"anyDeleted"`. As with `.OnTasks`/`.OnSlack`, guard both pointer levels:
+
+```
+{{ with .Trigger }}{{ with .OnChild }}
+Child {{ .ChildID }} fired via {{ .Event }}{{ if .StoppedReason }} (stopped: {{ .StoppedReason }}){{ end }}.
+{{ end }}{{ end }}
+```
+
+Threaded in by the `LoopRunner` for `onChild` fires (`internal/conversation/loop_runner_child.go` → `fireOnChild`/`triggerNowFromChild` → `LoopDispatchOptions.OnChild`, `internal/conversation/loop_runner.go`) and mapped into `PromptEnabledContext.Trigger.OnChild` by the dispatcher (`internal/conversation/prompt_dispatcher.go`). See `internal/cel/context.go` `TriggerOnChildContext` for the source-of-truth field layout. The same detail is persisted credential-free on `session.PromptProvenance.OnChild` (see [message-queue.md § Per-message trigger provenance](message-queue.md)).
+
 ---
 
 ## 5. Expression language: `Cond` / `When` template functions

@@ -373,3 +373,69 @@ func TestDeriveUserPromptProvenance(t *testing.T) {
 		}
 	})
 }
+
+// TestDeriveUserPromptProvenance_OnChildCopiedForOnChildDispatch verifies
+// that an onChild dispatch's PromptTriggerContext.OnChild is copied verbatim
+// onto the returned provenance's OnChild field (mitto-qvlh).
+func TestDeriveUserPromptProvenance_OnChildCopiedForOnChildDispatch(t *testing.T) {
+	meta := PromptMeta{
+		LoopTrigger: session.TriggerOnChild,
+		Trigger: &PromptTriggerContext{
+			OnChild: &PromptOnChildContext{
+				ChildID:       "child-1",
+				Event:         session.ChildEventAnyLoopStopped,
+				StoppedReason: session.StoppedReasonMaxDuration,
+			},
+		},
+	}
+	got := deriveUserPromptProvenance(meta)
+	if got == nil {
+		t.Fatal("expected non-nil provenance")
+	}
+	if got.OnChild == nil {
+		t.Fatal("expected non-nil OnChild detail")
+	}
+	if got.OnChild.ChildID != "child-1" {
+		t.Errorf("ChildID = %q, want %q", got.OnChild.ChildID, "child-1")
+	}
+	if got.OnChild.Event != string(session.ChildEventAnyLoopStopped) {
+		t.Errorf("Event = %q, want %q", got.OnChild.Event, session.ChildEventAnyLoopStopped)
+	}
+	if got.OnChild.StoppedReason != string(session.StoppedReasonMaxDuration) {
+		t.Errorf("StoppedReason = %q, want %q", got.OnChild.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+}
+
+// TestDeriveUserPromptProvenance_OnChildNilForNonOnChildDispatch pins the
+// guard that OnChild is only copied for an actual onChild dispatch: even if
+// meta.Trigger.OnChild happens to be set (should not happen in practice), a
+// different LoopTrigger must not leak it into the provenance.
+func TestDeriveUserPromptProvenance_OnChildNilForNonOnChildDispatch(t *testing.T) {
+	meta := PromptMeta{
+		LoopTrigger: session.TriggerOnTasks,
+		Trigger: &PromptTriggerContext{
+			OnChild: &PromptOnChildContext{ChildID: "child-1", Event: session.ChildEventAnyDeleted},
+		},
+	}
+	got := deriveUserPromptProvenance(meta)
+	if got == nil {
+		t.Fatal("expected non-nil provenance (LoopTrigger set)")
+	}
+	if got.OnChild != nil {
+		t.Errorf("expected nil OnChild detail for a non-onChild dispatch, got %+v", got.OnChild)
+	}
+}
+
+// TestDeriveUserPromptProvenance_OnChildNilWhenTriggerNil is a defensive
+// guard: LoopTrigger=onChild with a nil meta.Trigger must not panic and must
+// leave provenance.OnChild nil.
+func TestDeriveUserPromptProvenance_OnChildNilWhenTriggerNil(t *testing.T) {
+	meta := PromptMeta{LoopTrigger: session.TriggerOnChild}
+	got := deriveUserPromptProvenance(meta)
+	if got == nil {
+		t.Fatal("expected non-nil provenance (LoopTrigger set)")
+	}
+	if got.OnChild != nil {
+		t.Errorf("expected nil OnChild detail when meta.Trigger is nil, got %+v", got.OnChild)
+	}
+}

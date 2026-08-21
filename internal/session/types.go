@@ -176,6 +176,25 @@ type PromptProvenance struct {
 	// batch that caused this dispatch. Nil unless LoopTrigger == TriggerOnSlack.
 	// Never carries event text/bodies or secrets — see PromptSlackProvenance.
 	Slack *PromptSlackProvenance `json:"slack,omitempty"`
+	// OnChild carries optional, credential-free detail about the child-lifecycle
+	// event that caused this dispatch. Nil unless LoopTrigger == TriggerOnChild
+	// (mitto-qvlh). Never carries the child's title/name — ChildID is a bounded
+	// session identifier only, and by the time an anyDeleted fire reaches here
+	// the deleted child's metadata (including its name) may already be gone.
+	OnChild *PromptOnChildProvenance `json:"on_child,omitempty"`
+}
+
+// PromptOnChildProvenance is a typed, credential-free record of the
+// child-lifecycle event that fired an onChild loop dispatch (mitto-qvlh).
+// ChildID is a bounded session identifier (never a title/name — deleted-child
+// metadata may already be gone by the time anyDeleted fires). Event is one of
+// "anyEndResponse", "anyDeleted", or "anyLoopStopped". StoppedReason is
+// non-empty only for anyLoopStopped; every session.StoppedReason value is
+// acceptable here — this type does not gate on which reasons are meaningful.
+type PromptOnChildProvenance struct {
+	ChildID       string `json:"child_id,omitempty"`
+	Event         string `json:"event,omitempty"`
+	StoppedReason string `json:"stopped_reason,omitempty"`
 }
 
 // PromptSlackProvenance is the credential-free, text-free Slack detail

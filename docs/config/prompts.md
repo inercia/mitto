@@ -1829,11 +1829,29 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Trigger.OnTasks.Changes.Reopened }}`   | Beads whose status transitioned from closed back to open. Same shape.                                                                                                                                                                                                                                                                                                |
 | `{{ .Trigger.OnTasks.Changes.LabelAdded }}` | Beads that gained one or more labels. Same shape.                                                                                                                                                                                                                                                                                                                    |
 | `{{ .Trigger.OnTasks.Changes.Touched }}`    | `Added ∪ Updated` convenience union. Same shape.                                                                                                                                                                                                                                                                                                                     |
+| `{{ .Trigger.Kind }}`                       | Name of the trigger that won this dispatch: `schedule`, `onCompletion`, `onTasks`, `onChild`, or `onSlack`. Populated for **every** loop dispatch (mitto-qzqm), including scheduled/`onCompletion` runs that carry no structured payload.                                                                                                                          |
+| `{{ .Trigger.IsManual }}`                   | `true` when this dispatch was fired by a manual "Run Now" click rather than the configured trigger. Mirrors `.Session.IsLoopForced`.                                                                                                                                                                                                                                |
+| `{{ .Trigger.IsRunOnStart }}`               | `true` when this dispatch was fired by the once-per-boot startup pulse. Mirrors `.Session.IsLoopRunOnStart`.                                                                                                                                                                                                                                                         |
 | `{{ .Prompts.Exists "name" }}`              | Case-insensitive check for a prompt in the effective workspace registry (same view as `mitto_prompt_get`). Empty name and cold-start fail-closed. Template-only.                                                                                                                                                                                                     |
 | `{{ .Prompts.Enabled "name" }}`             | Case-insensitive check for a currently-enabled prompt. Because disabled prompts are pruned from the cache, this shares the set with `Exists` — any name resolvable via `mitto_prompt_get` returns `true`. Empty name and cold-start fail-closed. Template-only.                                                                                                      |
 
-`.Trigger` is nil for scheduled, `onCompletion`, manual "run now", and non-loop
-dispatches. Always guard both levels (nested `with`) before ranging.
+`.Trigger` is non-nil for **every** loop dispatch — including scheduled and
+`onCompletion` runs — and nil only for non-loop (ad-hoc/human-typed)
+dispatches. `.Trigger.OnTasks`/`.OnSlack`/`.Slack` remain nil unless their own
+trigger fired; always guard both levels (nested `with`) before ranging over
+them. Use `.Trigger.Kind` for uniform branching across all trigger types:
+
+```
+{{ with .Trigger }}
+{{ if eq .Kind "onChild" }}
+A child conversation changed state.
+{{ else if eq .Kind "onTasks" }}
+{{ with .OnTasks }}Beads changed: {{ range .Changes.Touched }}{{ .id }} {{ end }}{{ end }}
+{{ else }}
+Routine {{ .Kind }} run.
+{{ end }}
+{{ end }}
+```
 
 `.Prompts.Exists` / `.Prompts.Enabled` let orchestrator prompts guard on the
 availability of another workspace prompt (e.g. a nested driver) without paying

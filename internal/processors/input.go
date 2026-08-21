@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // ProcessorInput provides context for processor execution.
@@ -82,6 +83,16 @@ type ProcessorInput struct {
 	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from
 	// JSON (json:"-") — never sent to external command processors.
 	IterationUninterrupted bool `json:"-"`
+	// TriggerKind names the trigger that won this dispatch for a multi-trigger
+	// loop (mitto-qzqm): one of the 5 canonical values "schedule",
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty for non-loop /
+	// ad-hoc human prompts. Feeds {{ .Trigger.Kind }} via BuildCELContext
+	// (internal/processors/hook.go), which allocates ctx.Trigger for every
+	// loop dispatch (not just ones carrying structured onTasks/onSlack
+	// payloads) so scheduled and onCompletion runs can also branch on Kind.
+	// Excluded from JSON (json:"-") — same sensitivity rule as
+	// TriggerOnTasksChanges below: never sent to external command processors.
+	TriggerKind session.LoopTrigger `json:"-"`
 	// TriggerOnTasksChanges carries the beads change delta computed by the
 	// onTasks loop runner (internal/web/loop_runner_tasks.go processTasksChange).
 	// Nil for all non-onTasks dispatches (scheduled, onCompletion, manual "Run
@@ -90,6 +101,13 @@ type ProcessorInput struct {
 	// to external command processors, same sensitivity rule as the iteration
 	// fields above.
 	TriggerOnTasksChanges *config.TasksDelta `json:"-"`
+	// TriggerOnChildDetail carries the child-lifecycle detail that fired this
+	// dispatch (mitto-qvlh), populated only for onChild fires. Nil for all
+	// other dispatches. Feeds the {{ .Trigger.OnChild.* }} template namespace
+	// via BuildCELContext. Excluded from JSON (json:"-") — same sensitivity
+	// rule as TriggerOnTasksChanges above: never sent to external command
+	// processors.
+	TriggerOnChildDetail *TriggerOnChildDetail `json:"-"`
 	// TriggerSlackEvent carries the normalized Slack event that fired this
 	// dispatch (mitto-qewp PoC), populated only by the experimental Slack
 	// event source's bridge to LoopRunner.TriggerNowWithSlackEvent
@@ -226,6 +244,18 @@ type PeerSession struct {
 	// Excluded from the external-processor JSON payload (json:"-") — same
 	// sensitivity rule as ChildSession.BeadsIssue.
 	BeadsIssue string `json:"-"`
+}
+
+// TriggerOnChildDetail is the processors-package view of the child-lifecycle
+// detail that fired an onChild loop dispatch (mitto-qvlh). ChildID
+// intentionally does NOT include the child's name/title — by the time an
+// anyDeleted fire reaches here, the deleted child's metadata (including its
+// name) may already be gone. StoppedReason is non-empty only for
+// "anyLoopStopped".
+type TriggerOnChildDetail struct {
+	ChildID       string
+	Event         string
+	StoppedReason string
 }
 
 // TriggerSlackEvent is the processors-package view of a single normalized

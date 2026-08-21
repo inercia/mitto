@@ -2806,7 +2806,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil, false, session.TriggerSchedule, false, nil)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, false, session.TriggerSchedule, false, nil)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -2890,7 +2890,7 @@ func TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched(t *testing.T) {
 			defer cancel()
 			bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
 
-			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, nil, false, session.TriggerSchedule, false, nil)
+			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, false, session.TriggerSchedule, false, nil)
 			if !errors.Is(err, ErrPromptResolveFailed) {
 				t.Errorf("deliverPrompt() error = %v, want ErrPromptResolveFailed", err)
 			}
@@ -3306,7 +3306,7 @@ func TestTriggerNowFull_IsManualClassification(t *testing.T) {
 			name:    "boot pulse (fireOnStartPulses path, isRunOnStart=true)",
 			trigger: session.TriggerSchedule,
 			dispatch: func(r *LoopRunner, sessionID string) error {
-				return r.triggerNowFull(sessionID, true, nil, true, "", nil)
+				return r.triggerNowFull(sessionID, true, true, "", nil)
 			},
 			wantLoopTrigger:  session.TriggerSchedule,
 			wantIsManual:     false,
@@ -7126,7 +7126,7 @@ func TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped(t *testing.T) {
 	bs := NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel)
 	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
 
-	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerSchedule, false, nil)
+	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, false, session.TriggerSchedule, false, nil)
 	if !errors.Is(err, ErrLoopDispatchCoalesced) {
 		t.Errorf("deliverPrompt() error = %v, want ErrLoopDispatchCoalesced", err)
 	}
@@ -7304,7 +7304,7 @@ func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
 
 	runner := NewLoopRunner(store, nil, nil)
 	runner.SetLoopWorkspaceConcurrency(1)
-	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, false, nil); err != nil {
+	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, false, session.TriggerOnTasks, false, nil); err != nil {
 		t.Fatalf("initial deliverPrompt() error = %v", err)
 	}
 
@@ -7350,7 +7350,7 @@ func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
 
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, nil, false, session.TriggerOnTasks, false, nil)
+		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, false, session.TriggerOnTasks, false, nil)
 		if err == nil {
 			break
 		}
@@ -7594,7 +7594,7 @@ func TestLoopRunner_FireOnChild_NotArmed_TriggerMissing(t *testing.T) {
 
 	logger, buf := captureDebugLogger()
 	runner := NewLoopRunner(store, nil, logger)
-	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
 
 	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
 		t.Errorf("expected a not-armed drop log, got:\n%s", buf.String())
@@ -7616,7 +7616,7 @@ func TestLoopRunner_FireOnChild_EventNotInWhenList(t *testing.T) {
 
 	logger, buf := captureDebugLogger()
 	runner := NewLoopRunner(store, nil, logger)
-	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
 
 	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
 		t.Errorf("expected a not-armed drop log for an event outside the when list, got:\n%s", buf.String())
@@ -7637,7 +7637,7 @@ func TestLoopRunner_FireOnChild_ArchivedParent(t *testing.T) {
 
 	logger, buf := captureDebugLogger()
 	runner := NewLoopRunner(store, nil, logger)
-	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
 
 	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
 		t.Errorf("expected an archived-parent drop log, got:\n%s", buf.String())
@@ -7658,7 +7658,7 @@ func TestLoopRunner_FireOnChild_DisabledLoop(t *testing.T) {
 
 	logger, buf := captureDebugLogger()
 	runner := NewLoopRunner(store, nil, logger)
-	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
 
 	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
 		t.Errorf("expected a not-armed drop log for a disabled loop, got:\n%s", buf.String())
@@ -7676,7 +7676,7 @@ func TestLoopRunner_FireOnChild_MissingParentMetadata(t *testing.T) {
 	runner := NewLoopRunner(store, nil, logger)
 	// No session named "ghost-parent" was ever created (covers both a plain
 	// typo/race and a cascade delete that removed the parent too).
-	runner.fireOnChild("ghost-parent", session.ChildEventAnyDeleted, "child1")
+	runner.fireOnChild("ghost-parent", session.ChildEventAnyDeleted, "child1", "")
 
 	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
 		t.Errorf("expected a missing-parent drop log, got:\n%s", buf.String())
@@ -7701,7 +7701,7 @@ func TestLoopRunner_FireOnChild_MaxDurationReached_AutoStops(t *testing.T) {
 
 	logger, buf := captureDebugLogger()
 	runner := NewLoopRunner(store, nil, logger)
-	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
 
 	got, err := store.Loop("parent").Get()
 	if err != nil {
@@ -7749,7 +7749,7 @@ func TestLoopRunner_FireOnChild_CooldownActive_SuppressesBurst(t *testing.T) {
 	// A burst of 3 child-idle events within the cooldown window: all 3 must
 	// be dropped, none may reach dispatch.
 	for i := 0; i < 3; i++ {
-		runner.fireOnChild("parent", session.ChildEventAnyEndResponse, fmt.Sprintf("child%d", i))
+		runner.fireOnChild("parent", session.ChildEventAnyEndResponse, fmt.Sprintf("child%d", i), "")
 	}
 
 	dropCount := strings.Count(buf.String(), "onChild: cooldown active, dropping")
@@ -7781,7 +7781,7 @@ func TestLoopRunner_FireOnChild_CoalescingLoss_LogsDebugNotWarn(t *testing.T) {
 		t.Fatal("precondition: claimDispatch() failed")
 	}
 
-	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
 
 	if !strings.Contains(buf.String(), "onChild: fire coalesced or session busy") {
 		t.Errorf("expected a coalesced-fire Debug log, got:\n%s", buf.String())
@@ -7932,7 +7932,7 @@ func TestLoopRunner_FireOnChild_AfterStop_NoOp(t *testing.T) {
 	// guard), without the poll-loop side effects Start() would add to buf.
 	runner.Stop()
 
-	runner.fireOnChild("parent", session.ChildEventAnyDeleted, "child1")
+	runner.fireOnChild("parent", session.ChildEventAnyDeleted, "child1", "")
 
 	if buf.Len() != 0 {
 		t.Errorf("fireOnChild() after Stop() should be a silent no-op, got:\n%s", buf.String())

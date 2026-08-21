@@ -236,11 +236,24 @@ type PromptMeta struct {
 type PromptTriggerContext struct {
 	// OnTasks is populated only when a beads change fired an onTasks loop.
 	OnTasks *PromptOnTasksContext
+	// OnChild is populated only when a child-conversation lifecycle event
+	// fired an onChild loop (mitto-qvlh).
+	OnChild *PromptOnChildContext
 	// OnSlack is populated with a bounded batch when onSlack fired.
 	OnSlack *PromptOnSlackContext
 	// Slack is the first event compatibility alias for the environment PoC.
 	// Deprecated: use OnSlack.Events.
 	Slack *PromptSlackContext
+}
+
+// PromptOnChildContext carries the child-lifecycle detail that fired an
+// onChild loop dispatch (mitto-qvlh). ChildID intentionally does NOT include
+// the child's name/title — by the time an anyDeleted fire reaches here, the
+// deleted child's metadata (including its name) may already be gone.
+type PromptOnChildContext struct {
+	ChildID       string
+	Event         session.ChildEvent
+	StoppedReason session.StoppedReason
 }
 
 // PromptOnTasksContext carries the beads change delta already computed by
@@ -310,6 +323,14 @@ func deriveUserPromptProvenance(meta PromptMeta) *session.PromptProvenance {
 				ChannelID:      first.ChannelID,
 				EventCount:     len(events),
 			}
+		}
+	}
+	if meta.LoopTrigger == session.TriggerOnChild && meta.Trigger != nil && meta.Trigger.OnChild != nil {
+		oc := meta.Trigger.OnChild
+		p.OnChild = &session.PromptOnChildProvenance{
+			ChildID:       oc.ChildID,
+			Event:         string(oc.Event),
+			StoppedReason: string(oc.StoppedReason),
 		}
 	}
 	return p
