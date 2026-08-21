@@ -406,8 +406,8 @@ func TestStreamingFixtures_ListUnmatchedBold_NoPrematureFlush(t *testing.T) {
 		"1. **First item** - Description\n",
 		"2. **Second item** - Description\n",
 		"3. **Third item** - Description\n",
-		"4. **Real-time\n",                                 // Unmatched bold!
-		"\n",                                               // Blank line - would normally end the list
+		"4. **Real-time\n", // Unmatched bold!
+		"\n",               // Blank line - would normally end the list
 		"messaging works after refresh** - New messages\n", // Closing **
 	}
 
