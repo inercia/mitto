@@ -1,8 +1,11 @@
 package slackbridge
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -626,5 +629,53 @@ func TestManagerStatusCallbacksPreserveTransitionOrder(t *testing.T) {
 	defer mu.Unlock()
 	if states[0] != "connecting" || states[1] != "connected" {
 		t.Fatalf("status callback order = %v", states)
+	}
+}
+
+// TestReconcileSessionLogsSkipReasonsAndZeroResolvedWarning reproduces mitto-n11:
+// ReconcileSession silently drops a subscription when the catalog installation
+// lookup fails (installation_not_found) or the installation's token isn't
+// configured (token_not_configured), and never emits a summary when an
+// enabled, onSlack-armed loop resolves zero subscriptions — leaving an
+// operator with no signal that the loop is "armed but not watching". All
+// three assertions below are expected to fail against today's
+// (non-logging) ReconcileSession.
+func TestReconcileSessionLogsSkipReasonsAndZeroResolvedWarning(t *testing.T) {
+	store := newManagerStore(t)
+	catalog := managerCatalog{
+		"install-configured": {
+			Installation:    slackcatalog.Installation{ID: "install-configured", AppID: "app-1"},
+			TokenConfigured: false,
+		},
+	}
+	// sess-not-found references an installation ID absent from the catalog view.
+	addSlackLoop(t, store, "sess-not-found", true, false,
+		session.SlackSubscription{InstallationID: "install-missing", ChannelID: "channel-1"})
+	// sess-no-token references a real installation whose bot token isn't configured.
+	addSlackLoop(t, store, "sess-no-token", true, false,
+		session.SlackSubscription{InstallationID: "install-configured", ChannelID: "channel-2"})
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	manager := NewManager(store, catalog, &managerCredentials{token: "token"}, &managerRunner{}, logger)
+	t.Cleanup(manager.Close)
+
+	if err := manager.ReconcileSession("sess-not-found"); err != nil {
+		t.Fatalf("ReconcileSession(sess-not-found): %v", err)
+	}
+	if err := manager.ReconcileSession("sess-no-token"); err != nil {
+		t.Fatalf("ReconcileSession(sess-no-token): %v", err)
+	}
+
+	out := buf.String()
+
+	if !strings.Contains(out, "installation_not_found") || !strings.Contains(out, "sess-not-found") || !strings.Contains(out, "install-missing") {
+		t.Errorf("expected a credential-free skip log naming reason=installation_not_found, session_id=sess-not-found, installation_id=install-missing; got log output:\n%s", out)
+	}
+	if !strings.Contains(out, "token_not_configured") || !strings.Contains(out, "sess-no-token") || !strings.Contains(out, "install-configured") {
+		t.Errorf("expected a credential-free skip log naming reason=token_not_configured, session_id=sess-no-token, installation_id=install-configured; got log output:\n%s", out)
+	}
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected a WARN summary for an enabled, onSlack-armed session that resolved zero subscriptions (\"armed but not watching\"); got log output:\n%s", out)
 	}
 }

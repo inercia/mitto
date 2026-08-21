@@ -229,11 +229,24 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 		return err
 	}
 	var resolved []resolvedSubscription
+	armed := false
 	loop, loopErr := m.store.Loop(sessionID).Get()
 	if loopErr == nil && !meta.Archived && loop.Enabled && loop.IsOnSlack() {
+		armed = true
 		for _, sub := range loop.SlackSubscriptions {
 			installation, err := m.catalog.GetInstallation(sub.InstallationID)
-			if err != nil || !installation.TokenConfigured {
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Debug("slackbridge: skipped subscription", "session_id", sessionID,
+						"installation_id", sub.InstallationID, "reason", "installation_not_found")
+				}
+				continue
+			}
+			if !installation.TokenConfigured {
+				if m.logger != nil {
+					m.logger.Debug("slackbridge: skipped subscription", "session_id", sessionID,
+						"installation_id", installation.ID, "reason", "token_not_configured")
+				}
 				continue
 			}
 			authorizedUser := installation.BotUserID
@@ -246,6 +259,9 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 				botID: installation.BotID, botUserID: installation.BotUserID,
 				credentialKind: installation.CredentialKind, authorizedUser: authorizedUser})
 		}
+	}
+	if armed && len(resolved) == 0 && m.logger != nil {
+		m.logger.Warn("slackbridge: session armed for onSlack but resolved zero subscriptions", "session_id", sessionID)
 	}
 	m.mu.Lock()
 	if len(resolved) == 0 {
