@@ -30,6 +30,97 @@ func startTestOAuth(t *testing.T, service *Service, request OAuthStartRequest) (
 	return start, state
 }
 
+func TestScopesDrifted(t *testing.T) {
+	tests := []struct {
+		name     string
+		granted  string
+		required string
+		want     bool
+	}{
+		{name: "empty baseline fails open", granted: "", required: delegatedUserScopes, want: false},
+		{name: "identical sets", granted: delegatedUserScopes, required: delegatedUserScopes, want: false},
+		{name: "granted superset of required", granted: delegatedUserScopes + ",extra:scope", required: delegatedUserScopes, want: false},
+		{
+			name:     "missing one required scope",
+			granted:  "channels:read,groups:read,groups:history",
+			required: delegatedUserScopes,
+			want:     true,
+		},
+		{name: "whitespace and ordering tolerant", granted: " groups:history , channels:history ,channels:read,groups:read", required: delegatedUserScopes, want: false},
+		{name: "required empty never drifts", granted: "channels:read", required: "", want: false},
+		{name: "granted whitespace-only treated as empty", granted: "   ", required: delegatedUserScopes, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scopesDrifted(tt.granted, tt.required); got != tt.want {
+				t.Fatalf("scopesDrifted(%q, %q) = %v, want %v", tt.granted, tt.required, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOAuthCompleteCapturesScopeBaselineAndReauthorizationClearsDrift(t *testing.T) {
+	service, store, _, provider, references := newTestService()
+	provider.oauthIdentity = OAuthIdentity{InstallationIdentity: InstallationIdentity{
+		CredentialKind: CredentialKindUser, SlackAppID: "A111", TeamID: "T111", TeamName: "One", UserID: "U444",
+	}, AccessToken: "oauth-user-token"}
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ConfigureOAuthClient(app.ID, "123.456", "oauth-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, state := startTestOAuth(t, service, OAuthStartRequest{AppID: app.ID, Name: "Workspace"})
+	status, err := service.CompleteOAuth(ctx, state, "oauth-code", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.doc.Installations[0].GrantedUserScopes; got != delegatedUserScopes {
+		t.Fatalf("GrantedUserScopes after initial OAuth = %q, want %q", got, delegatedUserScopes)
+	}
+	view, err := service.GetInstallation(status.InstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.NeedsReauthorization {
+		t.Fatalf("fresh OAuth install NeedsReauthorization = true, want false (baseline matches required scopes)")
+	}
+
+	// Simulate scope drift: the app's manifest gained a scope after this
+	// installation's last authorization, so its stored baseline now lacks
+	// one of the currently-required scopes. Reference the installation so
+	// the gating condition is met.
+	store.doc.Installations[0].GrantedUserScopes = "channels:read,groups:read"
+	references.refs = []Reference{{SessionID: "session-1", Name: "Watcher"}}
+	drifted, err := service.GetInstallation(status.InstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drifted.NeedsReauthorization {
+		t.Fatalf("drifted+referenced install NeedsReauthorization = false, want true")
+	}
+
+	// Re-running the OAuth flow (re-authorization) refreshes the baseline
+	// and must self-clear the drift flag.
+	_, state = startTestOAuth(t, service, OAuthStartRequest{AppID: app.ID, InstallationID: status.InstallationID})
+	if _, err = service.CompleteOAuth(ctx, state, "oauth-code", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.doc.Installations[0].GrantedUserScopes; got != delegatedUserScopes {
+		t.Fatalf("GrantedUserScopes after re-authorization = %q, want %q", got, delegatedUserScopes)
+	}
+	cleared, err := service.GetInstallation(status.InstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.NeedsReauthorization {
+		t.Fatalf("re-authorized install NeedsReauthorization = true, want false (baseline refreshed)")
+	}
+}
+
 func TestOAuthStateExpiresAndCancellationConsumesState(t *testing.T) {
 	service, _, _, provider, _ := newTestService()
 	now := time.Date(2026, 8, 19, 20, 0, 0, 0, time.UTC)

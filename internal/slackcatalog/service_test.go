@@ -132,6 +132,11 @@ func (f *fakeSlackProvider) RevalidateOAuthInstallation(_ context.Context, token
 type fakeReferences struct {
 	refs []Reference
 
+	// findErr simulates a reference-check failure (e.g. a transient lookup
+	// error). Zero-valued (findErr == nil), FindSlackReferences behaves
+	// exactly as before: it succeeds and returns refs.
+	findErr error
+
 	// removeErr and partialRemoved simulate a remover that fails partway
 	// through a batch (e.g. a mid-loop disk error): some sessions were
 	// already mutated (partialRemoved) before the failure occurred.
@@ -142,6 +147,9 @@ type fakeReferences struct {
 }
 
 func (f *fakeReferences) FindSlackReferences(context.Context, string, []string) ([]Reference, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
 	return append([]Reference(nil), f.refs...), nil
 }
 
@@ -809,6 +817,85 @@ func TestChannelRequestCannotRepopulateCacheAfterTokenReplacement(t *testing.T) 
 	}
 	if provider.channelCalls != 2 {
 		t.Fatalf("channel calls = %d, want refetch after token replacement", provider.channelCalls)
+	}
+}
+
+func TestDecorateReauthGating(t *testing.T) {
+	driftedView := InstallationView{
+		Installation: Installation{ID: "inst-1", AppID: "app-1", CredentialKind: CredentialKindUser, GrantedUserScopes: "channels:read"},
+	}
+	freshView := InstallationView{
+		Installation: Installation{ID: "inst-1", AppID: "app-1", CredentialKind: CredentialKindUser, GrantedUserScopes: delegatedUserScopes},
+	}
+	botView := InstallationView{
+		Installation: Installation{ID: "inst-1", AppID: "app-1", CredentialKind: CredentialKindBot, GrantedUserScopes: "channels:read"},
+	}
+	unbaselinedView := InstallationView{
+		Installation: Installation{ID: "inst-1", AppID: "app-1", CredentialKind: CredentialKindUser, GrantedUserScopes: ""},
+	}
+
+	tests := []struct {
+		name       string
+		references ReferenceChecker
+		view       InstallationView
+		want       bool
+	}{
+		{name: "bot credential never flagged even if scopes look drifted", references: &fakeReferences{refs: []Reference{{SessionID: "s1"}}}, view: botView, want: false},
+		{name: "user credential with no drift never flagged", references: &fakeReferences{refs: []Reference{{SessionID: "s1"}}}, view: freshView, want: false},
+		{name: "empty baseline fails open even when referenced", references: &fakeReferences{refs: []Reference{{SessionID: "s1"}}}, view: unbaselinedView, want: false},
+		{name: "drifted but unreferenced is not flagged", references: &fakeReferences{refs: nil}, view: driftedView, want: false},
+		{name: "drifted and referenced is flagged", references: &fakeReferences{refs: []Reference{{SessionID: "s1"}}}, view: driftedView, want: true},
+		{name: "nil reference checker fails open", references: nil, view: driftedView, want: false},
+		{name: "reference-check error fails open", references: &fakeReferences{refs: []Reference{{SessionID: "s1"}}, findErr: errors.New("lookup failed")}, view: driftedView, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := decorateReauth(tt.references, tt.view); got != tt.want {
+				t.Fatalf("decorateReauth() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListInstallationsDecoratesReauthorizationPerInstallation(t *testing.T) {
+	service, store, _, _, references := newTestService()
+	ctx := context.Background()
+	app, err := service.CreateApp(ctx, "App", "app-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted, err := service.CreateInstallation(ctx, app.ID, "Drifted", "T111", "bot-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.ReplaceInstallationToken(ctx, drifted.ID, "user-one"); err != nil {
+		t.Fatal(err)
+	}
+	fine, err := service.CreateInstallation(ctx, app.ID, "Fine", "T222", "bot-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range store.doc.Installations {
+		if store.doc.Installations[i].ID == drifted.ID {
+			store.doc.Installations[i].GrantedUserScopes = "channels:read"
+		}
+	}
+	references.refs = []Reference{{SessionID: "session-1", Name: "Watcher"}}
+
+	views, err := service.ListInstallations(app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]InstallationView, len(views))
+	for _, v := range views {
+		byID[v.ID] = v
+	}
+	if !byID[drifted.ID].NeedsReauthorization {
+		t.Fatalf("drifted+referenced installation NeedsReauthorization = false, want true: %#v", byID[drifted.ID])
+	}
+	if byID[fine.ID].NeedsReauthorization {
+		t.Fatalf("bot-credential installation NeedsReauthorization = true, want false: %#v", byID[fine.ID])
 	}
 }
 
