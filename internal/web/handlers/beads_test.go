@@ -35,7 +35,16 @@ func (c *listErrorClient) List(_ context.Context, _ string) ([]byte, error) {
 // showNotFoundClient is a beads.Client whose Show mimics bd's "issue not found"
 // failure: a non-zero exit with the not-found phrase captured on stderr. Used to
 // verify that a missing issue id maps to HTTP 404 rather than 500.
+//
+// List is overridden to report the id as present (mitto-2ev): HandleBeadsShow's
+// fast-negative membership pre-check only short-circuits on a *proven* absence,
+// so this keeps the test exercising the bd-level not-found path inside Show
+// rather than short-circuiting before Show is ever called.
 type showNotFoundClient struct{ stubBeadsClient }
+
+func (c *showNotFoundClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-cam"}]`), nil
+}
 
 func (c *showNotFoundClient) Show(_ context.Context, _, id string) ([]byte, error) {
 	return nil, &beads.CmdError{
@@ -46,7 +55,15 @@ func (c *showNotFoundClient) Show(_ context.Context, _, id string) ([]byte, erro
 
 // showInternalErrorClient is a beads.Client whose Show fails with a generic
 // error (no not-found marker), verifying such failures still map to HTTP 500.
+//
+// List is overridden to report the id as present (mitto-2ev) so the
+// fast-negative pre-check in HandleBeadsShow does not short-circuit to 404
+// before Show is reached.
 type showInternalErrorClient struct{ stubBeadsClient }
+
+func (c *showInternalErrorClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-cam"}]`), nil
+}
 
 func (c *showInternalErrorClient) Show(_ context.Context, _, _ string) ([]byte, error) {
 	return nil, &beads.CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: "database is locked"}
@@ -933,10 +950,130 @@ func TestHandleBeadsShow_InternalError(t *testing.T) {
 	}
 }
 
+// showFastNotFoundClient is a beads.Client whose List reports a populated,
+// known-good list that does NOT contain the requested id, and whose Show
+// tracks whether it was ever invoked. Used to verify the mitto-2ev
+// fast-negative membership pre-check short-circuits to 404 without shelling
+// out to Show at all.
+type showFastNotFoundClient struct {
+	stubBeadsClient
+	showCalled bool
+}
+
+func (c *showFastNotFoundClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-aaa"},{"id":"mitto-bbb"}]`), nil
+}
+
+func (c *showFastNotFoundClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	c.showCalled = true
+	return []byte(`{}`), nil
+}
+
+// TestHandleBeadsShow_FastNotFound verifies the mitto-2ev fast-negative path:
+// when the (cached) issue list is available and proves the id absent, the
+// handler returns 404 immediately without ever calling Show.
+func TestHandleBeadsShow_FastNotFound(t *testing.T) {
+	client := &showFastNotFoundClient{}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues/mitto-ghost?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-ghost")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
+	}
+	if client.showCalled {
+		t.Errorf("Show was called; want the fast-negative pre-check to short-circuit before Show")
+	}
+}
+
+// showListErrorButFoundClient is a beads.Client whose List always errors
+// (mimicking a cold/unavailable cache) and whose Show succeeds normally. Used
+// to verify the fast-negative pre-check falls through to Show — rather than
+// failing the request — when List cannot be trusted.
+type showListErrorButFoundClient struct{ stubBeadsClient }
+
+func (c *showListErrorButFoundClient) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, errors.New("bd: command failed: exit status 1")
+}
+
+func (c *showListErrorButFoundClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return []byte(`{"id":"mitto-cam"}`), nil
+}
+
+// TestHandleBeadsShow_ListErrorFallsThroughToShow verifies that when the
+// fast-negative pre-check's List call errors, the handler falls through to
+// the normal Show path unchanged rather than surfacing an error itself.
+func TestHandleBeadsShow_ListErrorFallsThroughToShow(t *testing.T) {
+	s := newBeadsTestServerWithClient(&showListErrorButFoundClient{})
+	req := localhostRequest("/api/issues/mitto-cam?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-cam")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+// showListTimeoutButFoundClient is a beads.Client whose List blocks past the
+// fast-negative pre-check's own sub-budget (mimicking a cold, contended
+// cache), and whose Show succeeds normally. Used to verify a slow List does
+// not delay or fail the request beyond falling through to the normal Show
+// path once the pre-check's short sub-budget expires.
+type showListTimeoutButFoundClient struct{ stubBeadsClient }
+
+func (c *showListTimeoutButFoundClient) List(ctx context.Context, _ string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (c *showListTimeoutButFoundClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return []byte(`{"id":"mitto-cam"}`), nil
+}
+
+// TestHandleBeadsShow_ListTimeoutFallsThroughToShow verifies that when the
+// fast-negative pre-check's List call exceeds beadsExistsProbeTimeout, the
+// handler falls through to the normal Show path rather than blocking or
+// failing the request.
+func TestHandleBeadsShow_ListTimeoutFallsThroughToShow(t *testing.T) {
+	oldProbeTimeout := beadsExistsProbeTimeout
+	beadsExistsProbeTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { beadsExistsProbeTimeout = oldProbeTimeout })
+
+	s := newBeadsTestServerWithClient(&showListTimeoutButFoundClient{})
+	req := localhostRequest("/api/issues/mitto-cam?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-cam")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
 // showEmptyStderrClient mimics the mitto-edk failure mode: bd exits non-zero
 // with an empty stdout AND empty stderr for a missing issue (no diagnostic
 // text at all). The handler must treat this as a 404 rather than an opaque 500.
+//
+// List is overridden to report the id as present (mitto-2ev) so the
+// fast-negative pre-check does not short-circuit before Show's empty-stderr
+// classification logic runs (the test asserts on a WARN log line only emitted
+// inside that Show-path branch).
 type showEmptyStderrClient struct{ stubBeadsClient }
+
+func (c *showEmptyStderrClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-bbi"}]`), nil
+}
 
 func (c *showEmptyStderrClient) Show(_ context.Context, _, _ string) ([]byte, error) {
 	return nil, &beads.CmdError{
@@ -988,7 +1125,15 @@ func TestHandleBeadsShow_EmptyStderrTreatedAsNotFound(t *testing.T) {
 
 // showPluralJSONNotFoundClient mimics bd emitting a plural JSON error object
 // on stdout (captured into Stderr by diagnosticOutput) for a missing issue.
+//
+// List is overridden to report the id as present (mitto-2ev) so the
+// fast-negative pre-check does not short-circuit before Show's IsNotFound
+// classification runs.
 type showPluralJSONNotFoundClient struct{ stubBeadsClient }
+
+func (c *showPluralJSONNotFoundClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-bbi"}]`), nil
+}
 
 func (c *showPluralJSONNotFoundClient) Show(_ context.Context, _, _ string) ([]byte, error) {
 	return nil, &beads.CmdError{

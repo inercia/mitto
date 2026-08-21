@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -20,6 +21,14 @@ var beadsReadRetries = 2
 // beadsRetryBackoff is the base backoff between read retries. It is a var
 // only so tests can shorten it.
 var beadsRetryBackoff = 150 * time.Millisecond
+
+// beadsExistsProbeTimeout bounds the fast-negative membership pre-check List
+// call in HandleBeadsShow (mitto-2ev). It is deliberately much shorter than
+// auxBackedRequestTimeout: when the list cache is warm this resolves via a
+// cache hit in microseconds; when cold, a fetch is bounded by this budget so a
+// contended/slow bd never delays the fallback to the normal Show path beyond
+// this ceiling. A var so tests can shorten it.
+var beadsExistsProbeTimeout = 2 * time.Second
 
 // beadsClient returns the injectable beads Client. When the handlers were
 // constructed without an explicit client (e.g. in tests), it falls back to a
@@ -262,6 +271,29 @@ func (h *Handlers) HandleBeadsStats(w http.ResponseWriter, r *http.Request) {
 	w.Write(out) //nolint:errcheck
 }
 
+// beadsListItemID is the minimal shape needed to check id membership in a
+// `bd list --json` payload (mirrors beads.listItem, which is unexported).
+type beadsListItemID struct {
+	ID string `json:"id"`
+}
+
+// beadsIDInList reports whether id is present in a `bd list --json` payload.
+// The second return value is false if listJSON could not be parsed as a JSON
+// array of objects carrying an "id" field, in which case the caller must NOT
+// treat a false "present" as a proven absence.
+func beadsIDInList(listJSON []byte, id string) (present bool, parsed bool) {
+	var items []beadsListItemID
+	if err := json.Unmarshal(listJSON, &items); err != nil {
+		return false, false
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 // HandleBeadsShow handles GET /api/issues/{id}?working_dir=...
 // Runs "bd show <id> --json --include-comments" in the workspace directory,
 // returning the full issue including its comments and dependencies. The id is
@@ -296,6 +328,25 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
 	defer cancel()
+
+	// mitto-2ev: fast-negative pre-check. A `bd show` for a genuinely missing id
+	// is slow (retries + bd subprocess budget, ~16s observed under contention).
+	// Consult the already-cached issue list as a membership filter first: in
+	// production the injected client is a *beads.CachingClient, so List() for a
+	// warm list resolves from an in-memory cache with no subprocess. Only trust
+	// a "not present" verdict when List succeeds and parses cleanly — any error,
+	// timeout, or parse failure falls through to the normal Show path below
+	// unchanged, preserving today's 500/503/timeout semantics.
+	probeCtx, probeCancel := context.WithTimeout(ctx, beadsExistsProbeTimeout)
+	listOut, listErr := h.beadsClient().List(probeCtx, workingDir)
+	probeCancel()
+	if listErr == nil {
+		if present, parsed := beadsIDInList(listOut, id); parsed && !present {
+			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
+			return
+		}
+	}
+
 	out, err := h.runBeadsRead(ctx, func(ctx context.Context) ([]byte, error) {
 		return h.beadsClient().Show(ctx, workingDir, id)
 	})
