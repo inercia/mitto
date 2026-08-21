@@ -1061,6 +1061,57 @@ func TestHandleBeadsShow_ListTimeoutFallsThroughToShow(t *testing.T) {
 	}
 }
 
+// showShowTimeoutClient is a beads.Client whose List succeeds quickly (so the
+// mitto-2ev fast-negative pre-check falls through to the normal Show path
+// exactly as before) but whose Show blocks until its context is done,
+// mimicking a genuinely slow/contended bd query.
+type showShowTimeoutClient struct{ stubBeadsClient }
+
+func (c *showShowTimeoutClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-cam"}]`), nil
+}
+
+func (c *showShowTimeoutClient) Show(ctx context.Context, _, _ string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestHandleBeadsShow_Timeout_ReturnsRetryable503 is the mitto-2ev acceptance
+// criterion regression test: a genuine bd query timeout on the Show path
+// (distinct from the fast-negative pre-check's own List timeout, which is
+// covered by TestHandleBeadsShow_ListTimeoutFallsThroughToShow) must surface
+// as a retryable 503 with a Retry-After header, never as a slow/opaque 404 or
+// 500. Mirrors TestHandleBeadsList_Timeout_ReturnsRetryable503.
+func TestHandleBeadsShow_Timeout_ReturnsRetryable503(t *testing.T) {
+	old := auxBackedRequestTimeout
+	auxBackedRequestTimeout = 20 * time.Millisecond
+	defer func() { auxBackedRequestTimeout = old }()
+
+	s := newBeadsTestServerWithClient(&showShowTimeoutClient{})
+	req := localhostRequest("/api/issues/mitto-cam?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-cam")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header not set")
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "unavailable" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "unavailable")
+	}
+}
+
 // showEmptyStderrClient mimics the mitto-edk failure mode: bd exits non-zero
 // with an empty stdout AND empty stderr for a missing issue (no diagnostic
 // text at all). The handler must treat this as a 404 rather than an opaque 500.
