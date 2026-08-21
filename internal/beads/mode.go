@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/inercia/mitto/internal/workspaces"
 )
@@ -56,13 +57,13 @@ func (c *cliClient) reconcileInitializedDatabaseMode(ctx context.Context, dir st
 	case workspaces.BeadsDatabaseModeLocal:
 		for _, guard := range databaseModeGuards {
 			if _, err := c.runRaw(ctx, defaultTimeout, dir, "config", "set", guard.key, guard.value); err != nil {
-				return fmt.Errorf("apply local beads safeguard %s=%s: %w", guard.key, guard.value, err)
+				return fmt.Errorf("apply local beads safeguard %s=%s: %w", guard.key, guard.value, wrapWithStderr(err))
 			}
 		}
 	case workspaces.BeadsDatabaseModeShared:
 		hasRemote, err := c.HasDoltRemote(ctx, dir)
 		if err != nil {
-			return fmt.Errorf("verify Dolt remote before enabling shared beads mode: %w", err)
+			return fmt.Errorf("verify Dolt remote before enabling shared beads mode: %w", wrapWithStderr(err))
 		}
 		if !hasRemote {
 			return ErrSharedModeRequiresRemote
@@ -71,14 +72,41 @@ func (c *cliClient) reconcileInitializedDatabaseMode(ctx context.Context, dir st
 		// strongest network guard stays active until every other guard is gone.
 		for i := len(databaseModeGuards) - 1; i >= 0; i-- {
 			guard := databaseModeGuards[i]
-			if _, err := c.runRaw(ctx, defaultTimeout, dir, "config", "unset", guard.key); err != nil {
-				return fmt.Errorf("remove local-only beads safeguard %s: %w", guard.key, err)
+			if _, err := c.runRaw(ctx, defaultTimeout, dir, "config", "unset", guard.key); err != nil && !isConfigKeyAlreadyAbsent(err) {
+				return fmt.Errorf("remove local-only beads safeguard %s: %w", guard.key, wrapWithStderr(err))
 			}
 		}
 	default:
 		return fmt.Errorf("invalid beads database mode %q", mode)
 	}
 	return nil
+}
+
+// wrapWithStderr returns an error whose message includes any bd stderr
+// captured in err (via *CmdError.Stderr), so callers wrapping it with
+// fmt.Errorf("...: %w", wrapWithStderr(err)) surface the actual bd-reported
+// reason instead of the opaque "bd exited with non-zero status: exit status
+// N" text that (*CmdError).Error() alone returns (mitto-ov4). errors.As/Is
+// still reach the original *CmdError through this wrapper's Unwrap.
+func wrapWithStderr(err error) error {
+	if stderr := StderrOf(err); stderr != "" {
+		return fmt.Errorf("%w (%s)", err, stderr)
+	}
+	return err
+}
+
+// isConfigKeyAlreadyAbsent reports whether err is a "bd config unset"
+// failure because the key was never set / already removed, rather than a
+// genuine failure (e.g. a transient Dolt lock). Older or differently
+// configured bd versions may exit non-zero for an absent key; tolerating
+// that here makes shared-mode reconciliation idempotent across bd versions
+// and safe to retry after a partial failure (mitto-ov4 fix scope).
+func isConfigKeyAlreadyAbsent(err error) bool {
+	diag := strings.ToLower(StderrOf(err))
+	if diag == "" {
+		return false
+	}
+	return strings.Contains(diag, "not set") || strings.Contains(diag, "no such key") || strings.Contains(diag, "does not exist") || strings.Contains(diag, "key not found")
 }
 
 // ReconcileDatabaseMode delegates to the wrapped client and invalidates reads

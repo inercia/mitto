@@ -88,6 +88,7 @@ export function WorkspaceFolderBeadsTab({
     beadsDatabaseModeLoading,
     beadsDatabaseModeSaving,
     beadsDatabaseModeError,
+    beadsDatabaseModeErrorStderr,
   } = beads;
   const { setNewBeadsKey, setNewBeadsValue } = beadsSetters;
   const {
@@ -169,7 +170,14 @@ export function WorkspaceFolderBeadsTab({
           class="alert alert-error alert-soft text-xs"
           data-testid="beads-database-mode-error"
         >
-          ${beadsDatabaseModeError}
+          <div>${beadsDatabaseModeError}</div>
+          ${beadsDatabaseModeErrorStderr &&
+          html`<pre
+            class="max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs mt-1"
+            data-testid="beads-database-mode-error-stderr"
+          >
+${beadsDatabaseModeErrorStderr}</pre
+          >`}
         </div>`}
         ${!beadsDatabaseModeLoading &&
         beadsDatabaseMode === "local" &&

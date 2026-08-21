@@ -63,6 +63,7 @@ const IDX = {
   setBeadsDatabaseModeLoading: 18,
   setBeadsDatabaseModeSaving: 19,
   setBeadsDatabaseModeError: 20,
+  setBeadsDatabaseModeErrorStderr: 21,
 };
 
 // The hook destructures `useState`/`useEffect` from `window.preact` at

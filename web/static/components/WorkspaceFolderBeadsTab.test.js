@@ -39,6 +39,7 @@ if (childRun) {
         beadsDatabaseModeLoading: false,
         beadsDatabaseModeSaving: false,
         beadsDatabaseModeError: "",
+        beadsDatabaseModeErrorStderr: "",
         ...overrides,
       },
       beadsSetters: {

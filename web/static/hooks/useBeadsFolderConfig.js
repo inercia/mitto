@@ -15,7 +15,7 @@
 const { useState, useEffect, useRef } = window.preact;
 
 import { getSdkClient } from "../utils/sdkClient.js";
-import { errorMessage } from "../utils/sdkErrors.js";
+import { beadsErrorFrom, errorMessage } from "../utils/sdkErrors.js";
 
 /**
  * useBeadsFolderConfig — cohesive state/handler bundle for the folder Beads tab.
@@ -73,6 +73,13 @@ export function useBeadsFolderConfig({
     useState(false);
   const [beadsDatabaseModeSaving, setBeadsDatabaseModeSaving] = useState(false);
   const [beadsDatabaseModeError, setBeadsDatabaseModeError] = useState("");
+  // Raw bd stderr captured alongside beadsDatabaseModeError (mitto-ov4):
+  // reconciliation failures (e.g. a transient Dolt lock) are otherwise
+  // reported only as the opaque "bd exited with non-zero status: exit
+  // status N" wrapper text, hiding the actual reason. Mirrors BeadsView.js's
+  // errorStderr / beadsErrorFrom() pattern.
+  const [beadsDatabaseModeErrorStderr, setBeadsDatabaseModeErrorStderr] =
+    useState("");
 
   // Nonce/token tracking for in-flight fetches. Each async loader captures the
   // current token; when it resolves, it only touches state if the token still
@@ -201,6 +208,7 @@ export function useBeadsFolderConfig({
     const token = ++databaseModeRequestTokenRef.current;
     setBeadsDatabaseModeLoading(true);
     setBeadsDatabaseModeError("");
+    setBeadsDatabaseModeErrorStderr("");
     try {
       const data = await getSdkClient().issues.databaseMode({
         working_dir: workingDir,
@@ -210,9 +218,9 @@ export function useBeadsFolderConfig({
       setBeadsDatabaseModeHasRemote(!!(data && data.has_remote));
     } catch (err) {
       if (token !== databaseModeRequestTokenRef.current) return;
-      setBeadsDatabaseModeError(
-        errorMessage(err, "Failed to load database sharing mode"),
-      );
+      const data = beadsErrorFrom(err, "Failed to load database sharing mode");
+      setBeadsDatabaseModeError(data.error);
+      setBeadsDatabaseModeErrorStderr(data.stderr || "");
     } finally {
       if (token === databaseModeRequestTokenRef.current) {
         setBeadsDatabaseModeLoading(false);
@@ -232,6 +240,7 @@ export function useBeadsFolderConfig({
     setBeadsDatabaseModeSaving(true);
     setBeadsDatabaseModeLoading(false);
     setBeadsDatabaseModeError("");
+    setBeadsDatabaseModeErrorStderr("");
     try {
       const data = await getSdkClient().issues.setDatabaseMode(
         { working_dir: workingDir },
@@ -244,9 +253,16 @@ export function useBeadsFolderConfig({
       if (token !== databaseModeRequestTokenRef.current) return;
       setBeadsDatabaseMode(previousMode);
       setBeadsDatabaseModeHasRemote(previousHasRemote);
-      setBeadsDatabaseModeError(
-        errorMessage(err, "Failed to set database sharing mode"),
+      // beadsErrorFrom() surfaces both the primary message and the raw bd
+      // stderr (error.details.stderr) — dropping stderr here previously left
+      // the user with only the opaque "bd exited with non-zero status: exit
+      // status N" wrapper text (mitto-ov4).
+      const errData = beadsErrorFrom(
+        err,
+        "Failed to set database sharing mode",
       );
+      setBeadsDatabaseModeError(errData.error);
+      setBeadsDatabaseModeErrorStderr(errData.stderr || "");
     } finally {
       if (token === databaseModeRequestTokenRef.current) {
         setBeadsDatabaseModeSaving(false);
@@ -476,6 +492,7 @@ export function useBeadsFolderConfig({
     setBeadsDatabaseMode("local");
     setBeadsDatabaseModeHasRemote(false);
     setBeadsDatabaseModeError("");
+    setBeadsDatabaseModeErrorStderr("");
     setBeadsConfigLoading(false);
     setBeadsConfigSaving(false);
     setBeadsUpstreamPromptsLoading(false);
@@ -524,6 +541,7 @@ export function useBeadsFolderConfig({
     beadsDatabaseModeLoading,
     beadsDatabaseModeSaving,
     beadsDatabaseModeError,
+    beadsDatabaseModeErrorStderr,
   };
   const beadsSetters = { setNewBeadsKey, setNewBeadsValue };
   const beadsHandlers = {

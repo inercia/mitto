@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -180,6 +181,31 @@ func TestReconcileDatabaseMode_SharedRequiresRemoteThenRemovesOnlyPolicyGuards(t
 		{"config", "unset", "no-push"},
 	}
 	assertRunnerArgs(t, runner.calls, want)
+}
+
+// TestReconcileDatabaseMode_SharedUnsetFailure_ErrorIncludesStderr reproduces
+// mitto-ov4: switching local->shared fails opaquely with just "bd exited with
+// non-zero status: exit status 1" even though bd's stderr (captured into
+// *CmdError.Stderr by runRaw) explains the real reason. The wrapping
+// fmt.Errorf("remove local-only beads safeguard %s: %w", ...) in
+// reconcileInitializedDatabaseMode's shared branch never surfaces Stderr
+// because (*CmdError).Error() returns only Err.Error(). This test currently
+// fails (red) until mode.go's shared-unset error path is fixed to include the
+// captured bd stderr in the returned error's message.
+func TestReconcileDatabaseMode_SharedUnsetFailure_ErrorIncludesStderr(t *testing.T) {
+	dir := initializedDir(t)
+	const wantStderr = "another dolt process is running"
+	runner := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte(`[{"name":"origin"}]`)},
+		{stderr: wantStderr, err: errors.New("exit status 1")},
+	}}
+	err := newClient(runner).ReconcileDatabaseMode(context.Background(), dir, workspaces.BeadsDatabaseModeShared)
+	if err == nil {
+		t.Fatal("ReconcileDatabaseMode(shared) error = nil, want failure from config unset")
+	}
+	if !strings.Contains(err.Error(), wantStderr) {
+		t.Fatalf("ReconcileDatabaseMode(shared) error = %q, want it to include captured bd stderr %q (mitto-ov4)", err.Error(), wantStderr)
+	}
 }
 
 func TestReconcileDatabaseMode_SharedWithoutRemoteIsActionableAndDoesNotMutate(t *testing.T) {
