@@ -1,0 +1,48 @@
+{{- /*
+  blog/locate-post-file — Step-1 boilerplate for blog prompts that operate on
+  the post file recorded on a bead. Emits a bash block that loads the bead's
+  description via `bd show ... --json`, extracts the `File: [path](path)`
+  Markdown link, resolves the path, and bails with a clear error when the
+  `File:` line is missing.
+
+  Callers resolve the target bead themselves (`.Session.BeadsIssue` when the
+  conversation is linked to a blog bead, else `.Args.IssueID` when launched
+  from the beads list) and pass it via a `dict`:
+
+      Target: the resolved bead ID. Required.
+
+  Usage:
+
+      {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+
+  Architectural intent (mitto-98l.1): centralise the "find the post file"
+  boilerplate so consumer prompts (content-review, fact-check, polish,
+  publish, linkedin-post) don't each ship their own byte-drifted copy. Any
+  future change to the File-line convention lands here once.
+*/ -}}
+{{- $id := .Target -}}
+Load the bead and resolve the post file recorded in its description. The
+convention is a single `File: [path](path)` Markdown link that gives the
+repo-relative path to the draft:
+
+```bash
+bd show {{ $id }} --json > /tmp/bead-{{ $id }}.json
+file_line=$(jq -r '.[0].description' /tmp/bead-{{ $id }}.json \
+  | grep -m1 -E '^File:[[:space:]]+\[.+\]\(.+\)' || true)
+if [[ -z "$file_line" ]]; then
+  echo "ERROR: bead {{ $id }} has no 'File: [path](path)' line in its description." >&2
+  echo "Add one (e.g. via the ideation prompt) before running this stage." >&2
+  exit 1
+fi
+# Extract the URL portion of the Markdown link and resolve it.
+post_path=$(printf '%s\n' "$file_line" | sed -E 's/^File:[[:space:]]+\[[^]]+\]\(([^)]+)\).*/\1/')
+post_abs=$(realpath -m -- "$post_path")
+echo "post_path=$post_path"
+echo "post_abs=$post_abs"
+if [[ ! -f "$post_abs" ]]; then
+  echo "ERROR: post file $post_abs (from File: line) does not exist on disk." >&2
+  exit 1
+fi
+```
+
+Downstream steps in the caller can then read `"$post_abs"` to load the draft.

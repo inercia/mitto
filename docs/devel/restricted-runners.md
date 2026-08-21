@@ -32,7 +32,7 @@ internal/runner/
 | `Runner`           | `runner.go`    | Wraps `grrunner.Runner`, holds resolved config and fallback info    |
 | `ResolvedConfig`   | `runner.go`    | Fully resolved runner type + restrictions after hierarchy merge     |
 | `FallbackInfo`     | `runner.go`    | Records when fallback occurred: requested type, actual type, reason |
-| `VariableResolver` | `variables.go` | Resolves `$MITTO_WORKING_DIR`, `$HOME`, etc. in restriction paths           |
+| `VariableResolver` | `variables.go` | Resolves `$MITTO_WORKING_DIR`, `$HOME`, etc. in restriction paths   |
 
 ### Data Flow
 
@@ -132,13 +132,13 @@ Given global `sandbox-exec` config with `allow_networking: true` and `allow_read
 
 Paths in restrictions support runtime variables resolved when the runner is created (per-session).
 
-| Variable                      | Source                                      | Example                               |
-| ----------------------------- | ------------------------------------------- | ------------------------------------- |
+| Variable                                      | Source                                      | Example                               |
+| --------------------------------------------- | ------------------------------------------- | ------------------------------------- |
 | `$MITTO_WORKING_DIR` / `${MITTO_WORKING_DIR}` | Workspace directory passed to `NewRunner`   | `/Users/user/project`                 |
-| `$HOME` / `${HOME}`           | `os.UserHomeDir()`                          | `/Users/user`                         |
-| `$MITTO_DIR` / `${MITTO_DIR}` | `appdir.Dir()`                              | `~/Library/Application Support/Mitto` |
-| `$USER` / `${USER}`           | `$USER` env var (falls back to `$USERNAME`) | `user`                                |
-| `$TMPDIR` / `${TMPDIR}`       | `os.TempDir()`                              | `/tmp`                                |
+| `$HOME` / `${HOME}`                           | `os.UserHomeDir()`                          | `/Users/user`                         |
+| `$MITTO_DIR` / `${MITTO_DIR}`                 | `appdir.Dir()`                              | `~/Library/Application Support/Mitto` |
+| `$USER` / `${USER}`                           | `$USER` env var (falls back to `$USERNAME`) | `user`                                |
+| `$TMPDIR` / `${TMPDIR}`                       | `os.TempDir()`                              | `/tmp`                                |
 
 Also supports `~/` prefix expansion to home directory.
 
@@ -284,7 +284,7 @@ go test -tags integration ./internal/runner/...
 | Limitation                              | Details                                                                                                                                                                                |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MCP server compatibility**            | Restricted runners can break MCP access. Agents may not reach MCP executables, configs, or network endpoints. Use `exec` if MCP servers are needed, or carefully allow required paths. |
-| **cwd not supported**                   | Restricted runners ignore the `cwd` parameter. Use `$MITTO_WORKING_DIR` in folder allowlists instead.                                                                                          |
+| **cwd not supported**                   | Restricted runners ignore the `cwd` parameter. Use `$MITTO_WORKING_DIR` in folder allowlists instead.                                                                                  |
 | **Platform-specific runners**           | `sandbox-exec` is macOS-only, `firejail` is Linux-only. Automatic fallback to `exec` if unavailable.                                                                                   |
 | **Docker requires pre-installed agent** | The agent binary must exist in the Docker image. Workspace is auto-mounted at the same path.                                                                                           |
 

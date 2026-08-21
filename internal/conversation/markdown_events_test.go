@@ -92,7 +92,7 @@ func replayEventFixture(t *testing.T, fixture EventFixture, cfg ReplayConfig) Ev
 	var mu sync.Mutex
 	var seqCounter int64
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		seqCounter++
 		flushes = append(flushes, FlushResult{
@@ -305,7 +305,7 @@ func TestEventReplay_NaturalFlush(t *testing.T) {
 	var mu sync.Mutex
 	var seqCounter int64
 
-	buffer := NewMarkdownBuffer(func(html string) {
+	buffer := NewMarkdownBuffer(func(html, markdown string) {
 		mu.Lock()
 		seqCounter++
 		flushes = append(flushes, FlushResult{

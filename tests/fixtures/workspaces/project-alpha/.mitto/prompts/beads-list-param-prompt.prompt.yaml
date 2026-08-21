@@ -1,0 +1,18 @@
+name: Beads List Param Test
+description: A beadsList prompt with an interactive-picker (boolean) param for E2E shortcut dialog testing.
+menus: beadsList
+group: ListParam
+# NOTE: The beadsList menu can auto-supply NO parameter types
+# (MENU_PARAM_TYPES.beadsList === []). Non-picker params with `required: true`
+# would fail menuSatisfies() and cause the prompt to be filtered out of the
+# shortcut resolver map (button renders as disabled "not found"). Picker
+# params (boolean, prompts) bypass that filter, so they are the only kind that
+# reliably trigger the parameter dialog from a tasksList shortcut. See
+# web/static/utils/prompts.js: menuSatisfies / isInteractivePickerParam.
+parameters:
+  - name: DRY_RUN
+    type: boolean
+    description: Perform a dry run instead of executing the review.
+    required: false
+prompt: |
+  Review the beads list (dry_run=${DRY_RUN}).

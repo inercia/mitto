@@ -1,5 +1,7 @@
 package cel
 
+import "strings"
+
 // PromptEnabledContext holds all data available to CEL expressions
 // for evaluating prompt enabled conditions.
 // All fields have zero values that are safe to use in expressions.
@@ -35,12 +37,12 @@ type PromptEnabledContext struct {
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
 	// All-zero (Number=0, IsLoop=false) for non-loop prompts.
 	Iteration IterationContext
-	// Trigger carries per-fire trigger context. Populated only when the current
-	// run was fired by a trigger that has structured data to expose to the
-	// prompt body (currently: onTasks — see TriggerOnTasksContext). Nil for
-	// scheduled, onCompletion, manual "Run Now", and non-loop dispatches, so
-	// templates must guard both levels — nested `with` short-circuits on the
-	// outer nil pointer:
+	// Trigger carries per-fire trigger context. Non-nil for every loop
+	// dispatch (mitto-qzqm) — including scheduled and onCompletion runs that
+	// carry no structured payload — so prompt bodies can uniformly branch on
+	// {{ .Trigger.Kind }}. Nil for non-loop (ad-hoc/human-typed) prompts, so
+	// templates must still guard the outer pointer — nested `with`
+	// short-circuits on it cleanly:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	// Template-only: not declared on the CEL env (enabled-when evaluation runs
 	// pre-dispatch when no trigger data exists yet).
@@ -51,6 +53,26 @@ type PromptEnabledContext struct {
 	// the dispatch/render path (see prompt_dispatcher.go). Template-only; NOT
 	// exposed to CEL.
 	PromptTextResolver func(name string) (string, error)
+	// TemplateFragments is the workspace-scoped fragment snapshot used by top-level
+	// and nested prompt renders. Nil means no scoped snapshot was supplied, so
+	// nested renders fall back to the process-global provider for compatibility.
+	// Template-only; NOT exposed to CEL.
+	TemplateFragments map[string]string
+	// PromptTextDepth tracks the current nesting depth of PromptTextWithArgs
+	// sub-renders (mitto-47y.1). Zero at the top-level render; incremented by
+	// one on each nested sub-render. Capped at promptTextMaxDepth to prevent
+	// runaway recursion (e.g. {{ PromptTextWithArgs "self" .Args }}). Never
+	// mutated on the parent context — each nested sub-render operates on a
+	// shallow copy.
+	PromptTextDepth int
+	// Prompts exposes the set of workspace prompts registered in the current
+	// PromptsCache view (global + workspace, post-merge, same source of truth
+	// as mitto_prompt_get / mitto_prompt_list). Templates use it to gate on
+	// whether a peer prompt exists / is enabled without an MCP round-trip
+	// (see loop-processing.prompt.yaml Step 1). Zero-value context means
+	// "unknown" — Exists / Enabled return false (fail-closed), matching the
+	// mitto_prompt_get failure branch. Template-only; NOT exposed to CEL.
+	Prompts PromptsContext
 }
 
 // IterationContext holds loop-iteration info for CEL/template evaluation.
@@ -77,17 +99,91 @@ type IterationContext struct {
 	IsUninterrupted bool
 }
 
-// TriggerContext holds trigger-source data for the current run. Only populated
-// for triggers that expose structured data to the prompt body (currently only
-// onTasks). Non-nil sub-fields mean the corresponding trigger fired; nil
-// sub-fields mean it did not. Template-only — not exposed to CEL.
+// TriggerContext holds trigger-source data for the current run. The struct
+// itself is allocated for every loop dispatch (see PromptEnabledContext.Trigger);
+// its sub-fields are only populated for triggers that expose structured data
+// to the prompt body (currently: onTasks, onSlack). Non-nil sub-fields mean
+// the corresponding trigger fired; nil sub-fields mean it did not.
+// Template-only — not exposed to CEL.
 type TriggerContext struct {
+	// Kind names the trigger that fired this dispatch. Canonical values:
+	// "schedule", "onCompletion", "onTasks", "onChild", "onSlack". Empty for
+	// non-loop prompts (in that case .Trigger itself is nil, so templates
+	// should still guard). Set for every loop dispatch — including scheduled
+	// and onCompletion runs that carry no structured payload — so prompt
+	// bodies can uniformly branch on Kind. Template-only; not exposed to CEL.
+	Kind string
+	// IsManual is true when the current dispatch was fired by a manual
+	// "Run Now" click (LoopRunner.TriggerNow) rather than the configured
+	// trigger. Mirrors ProcessorInput.IsLoopForced / Session.IsLoopForced.
+	IsManual bool
+	// IsRunOnStart is true when this dispatch was fired by the boot-pulse
+	// shortly after Mitto started (mitto-ystk). Mirrors
+	// ProcessorInput.IsLoopRunOnStart / Session.IsLoopRunOnStart.
+	IsRunOnStart bool
 	// OnTasks is populated only when the current fire was driven by a beads
 	// change (onTasks trigger). Nil for scheduled/onCompletion/manual "Run Now"
 	// dispatches. Templates should guard both levels — the enclosing .Trigger
 	// pointer must be non-nil first:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
 	OnTasks *TriggerOnTasksContext
+	// OnChild is populated only when the current fire was driven by a
+	// child-conversation lifecycle event (onChild trigger, mitto-qvlh). Nil
+	// for all other dispatches. Templates should guard both levels:
+	//     {{ with .Trigger }}{{ with .OnChild }}...{{ end }}{{ end }}
+	OnChild *TriggerOnChildContext
+	// OnSlack is the canonical bounded batch for an onSlack dispatch.
+	OnSlack *TriggerOnSlackContext
+	// Slack is populated only when the current fire was driven by the
+	// experimental Slack event source (internal/slackbridge, mitto-qewp
+	// PoC). Nil for all other dispatches. Same nesting guard as OnTasks:
+	//     {{ with .Trigger }}{{ with .Slack }}...{{ end }}{{ end }}
+	Slack *TriggerSlackContext
+}
+
+// TriggerSlackContext exposes a single normalized Slack event that fired
+// this loop dispatch (mitto-qewp PoC — the experimental Slack event source
+// bridged to LoopRunner.TriggerNowWithSlackEvent). Template-only; not
+// exposed to CEL.
+//
+// SENSITIVITY: Text is Slack-controlled UNTRUSTED external content, wrapped
+// by Mitto in a JSON-escaped data-only delimiter before this context is built.
+type TriggerSlackContext struct {
+	InstallationID  string
+	EventID         string
+	ChannelID       string
+	Kind            string
+	AuthorID        string
+	Timestamp       string
+	ThreadTimestamp string
+	Untrusted       bool
+	// Text is a JSON-escaped, explicitly untrusted data-only prompt block.
+	Text string
+}
+
+// TriggerOnSlackContext exposes a bounded, credential-free event batch.
+type TriggerOnSlackContext struct {
+	Events []TriggerSlackContext
+}
+
+// TriggerOnChildContext exposes the child-lifecycle detail that fired an
+// onChild loop dispatch (mitto-qvlh). Populated only when the onChild trigger
+// fired; the outer .Trigger pointer is still nil for non-loop prompts, so
+// templates must guard both levels. StoppedReason is non-empty only for the
+// "anyLoopStopped" event; it is empty for "anyEndResponse" and "anyDeleted".
+// ChildID intentionally does NOT include the child's name/title — by the
+// time an "anyDeleted" fire reaches here, the deleted child's metadata
+// (including its name) may already be gone. Template-only; not exposed to CEL.
+type TriggerOnChildContext struct {
+	// ChildID is the bounded session identifier of the child that caused this
+	// dispatch.
+	ChildID string
+	// Event names the child-lifecycle event that fired: "anyEndResponse",
+	// "anyDeleted", or "anyLoopStopped".
+	Event string
+	// StoppedReason is the child's own loop-stop reason. Non-empty only when
+	// Event == "anyLoopStopped".
+	StoppedReason string
 }
 
 // TriggerOnTasksContext exposes the beads change delta already computed by the
@@ -167,7 +263,70 @@ type WorkspaceContext struct {
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema fields.
 	// Empty when no schema is defined. Used by the {{ .Workspace.UserDataSchemaJSON }} template accessor.
 	UserDataSchemaJSON string
+	// TasksUpstream is the folder's configured beads upstream task system (e.g.
+	// "jira", "github", "gitlab", "linear"), sourced from the folder-native
+	// `beads.upstream` setting in folders.json (see
+	// internal/workspaces.FolderBeadsUpstream). Always normalized via
+	// NormalizeTasksUpstream before being stored here: lowercased, trimmed, and
+	// "none" mapped to "". Empty when no upstream is configured or the folder is
+	// unknown. Use `Workspace.TasksUpstream == "jira"` for a specific-upstream
+	// match, or `Workspace.TasksUpstream != ""` for "any upstream configured".
+	TasksUpstream string
+	// BeadsDatabaseMode is the effective per-folder Beads database mode:
+	// "local" or "shared". It is independent of TasksUpstream.
+	BeadsDatabaseMode string
+	// Peers holds non-archived conversations sharing this workspace (excluding self).
+	// Used by the {{ .Workspace.Peers.* }} template namespace and Workspace.Peers.*
+	// CEL variables for orchestrator prompts that need to reason about sibling
+	// conversations. Empty when no peers exist or the workspace is unknown.
+	Peers PeersContext
 }
+
+// PeerInfo describes a single peer conversation (a non-archived session in the
+// same workspace as the current one, excluding self). Mirrors ChildInfo shape
+// for orchestrator prompts that inspect sibling conversations.
+type PeerInfo struct {
+	// ID is the peer session identifier.
+	ID string
+	// Name is the peer session title/name (may be empty if not yet set).
+	Name string
+	// ACPServer is the ACP server name used by the peer session.
+	ACPServer string
+	// ParentID is the peer's parent session ID (empty if the peer is a top-level session).
+	ParentID string
+	// Origin is the peer's child origin string: "auto", "mcp", "human", or ""
+	// when the peer is a top-level session.
+	Origin string
+	// IsPrompting indicates the peer agent is currently responding.
+	IsPrompting bool
+	// BeadsIssue is the linked beads issue ID for the peer session
+	// (e.g. "mitto-123"), or empty when the peer has no linked bead.
+	// Rendered as a trailing " {<id>}" suffix by FormatPeers when non-empty
+	// so orchestrator prompts can inline-dedupe by bead ID without an extra
+	// mitto_conversation_list round-trip.
+	BeadsIssue string
+}
+
+// PeersContext holds workspace-peers context for CEL evaluation. Mirrors
+// ChildrenContext for the peers namespace (sibling conversations in the same
+// workspace, excluding self).
+type PeersContext struct {
+	// Count is the number of peer conversations.
+	Count int
+	// Exists indicates whether there are any peer conversations (Count > 0).
+	Exists bool
+	// PromptingCount is the number of peer conversations where the agent is currently responding.
+	PromptingCount int
+	// IdleCount is the number of peer conversations NOT currently prompting (Count - PromptingCount).
+	IdleCount int
+	// All contains structured info for all peer conversations.
+	// Used by the {{ .Workspace.Peers.AllText }} template accessor (FormatPeers).
+	All []PeerInfo
+}
+
+// AllText renders all peer conversations as a human-readable comma-separated
+// string (see FormatPeers). Empty when none.
+func (p PeersContext) AllText() string { return FormatPeers(p.All) }
 
 // SessionContext holds current session context for CEL evaluation.
 type SessionContext struct {
@@ -191,6 +350,11 @@ type SessionContext struct {
 	// "run now" (as opposed to the normal scheduled delivery). Mirrors
 	// ProcessorInput.IsLoopForced and the @mitto:loop_forced placeholder.
 	IsLoopForced bool
+	// IsLoopRunOnStart indicates whether a loop prompt was fired by the boot
+	// pulse (mitto-ystk): the once-per-startup dispatch triggered by
+	// LoopRunner.fireOnStartPulses shortly after Mitto boots. Mirrors
+	// ProcessorInput.IsLoopRunOnStart and the @mitto:loop_run_on_start placeholder.
+	IsLoopRunOnStart bool
 	// IsLoopConversation indicates whether the conversation is configured as a
 	// loop conversation (it has a loop prompt configuration). Unlike
 	// IsLoop, this reflects the conversation TYPE, not whether the current run
@@ -254,6 +418,16 @@ type ChildInfo struct {
 	Origin string
 	// IsPrompting indicates the child agent is currently responding.
 	IsPrompting bool
+	// BeadsIssue is the linked beads issue ID for the child session
+	// (e.g. "mitto-123"), or empty when the child has no linked bead.
+	// Rendered as a trailing " {<id>}" suffix by FormatChildren when non-empty
+	// so orchestrator prompts can inline-dedupe by bead ID without an extra
+	// mitto_conversation_list round-trip.
+	BeadsIssue string
+	// QueuedCount is the number of pending queued prompts on the child
+	// session. Lets orchestrator/cleanup prompts identify children with
+	// pending work without a per-child mitto_conversation_get fan-out.
+	QueuedCount int
 }
 
 // ChildrenContext holds children sessions context for CEL evaluation.
@@ -286,6 +460,24 @@ func (c ChildrenContext) AllText() string { return FormatChildren(c.All) }
 
 // MCPText renders MCP-origin child sessions only, comma-separated. Empty when none.
 func (c ChildrenContext) MCPText() string { return FormatChildren(c.MCP) }
+
+// Get returns the ChildInfo whose ID matches, or nil when not found. Enables
+// template lookups like {{ with .Children.Get .Args.TargetConversation }}...{{ end }}
+// so prompts can inline a specific child's metadata without a
+// mitto_conversation_get round-trip. Searches .All (not .MCP) so any origin
+// (auto/mcp/human) matches; returns nil for an empty id so an unset
+// .Args placeholder short-circuits to the {{ else }} branch.
+func (c ChildrenContext) Get(id string) *ChildInfo {
+	if id == "" {
+		return nil
+	}
+	for i := range c.All {
+		if c.All[i].ID == id {
+			return &c.All[i]
+		}
+	}
+	return nil
+}
 
 // ServerToolState represents a single MCP server's tool-list availability
 // state, used to decide fail-open vs fail-closed matching in
@@ -446,6 +638,62 @@ type ItemContext struct {
 	Labels []string
 	// Kind distinguishes the source of the item (e.g. "beadsIssue")
 	Kind string
+}
+
+// PromptsContext exposes the workspace prompt registry to prompt templates
+// (Go-template only; NOT declared on the CEL env, mirroring the .Trigger and
+// PromptTextResolver posture). Backed by a snapshot of the same PromptsCache
+// view mitto_prompt_get / mitto_prompt_list read, so .Prompts.Exists /
+// .Prompts.Enabled return the same answer without the MCP round-trip.
+//
+// Name matching is case-insensitive (matches mitto_prompt_get resolution).
+// Names / EnabledNames preserve canonical case for display; membership is
+// checked via lowercased-key sets for O(1) lookup.
+//
+// A zero-value context (both name slices nil) means "the snapshot is unknown"
+// — Exists / Enabled fail-closed (return false), matching the pass-start
+// mitto_prompt_get failure branch that disables the class for the pass.
+type PromptsContext struct {
+	// Names lists all registered prompt names in the current workspace view
+	// (enabled and disabled), in canonical case. Includes disabled entries so
+	// {{ .Prompts.Exists "X" }} can distinguish "prompt file exists but is
+	// disabled" from "prompt not registered".
+	Names []string
+	// EnabledNames lists prompts that are registered AND enabled (Enabled ==
+	// nil OR *Enabled == true), in canonical case. Subset of Names.
+	EnabledNames []string
+}
+
+// Exists reports whether a prompt is registered in the workspace view under
+// the given name (case-insensitive). Returns true regardless of enabled state
+// — disabled prompts still exist in the registry.
+func (p PromptsContext) Exists(name string) bool {
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, n := range p.Names {
+		if strings.ToLower(n) == lower {
+			return true
+		}
+	}
+	return false
+}
+
+// Enabled reports whether a prompt is registered AND enabled in the
+// workspace view under the given name (case-insensitive). Returns false for
+// unknown names and for known-but-disabled prompts.
+func (p PromptsContext) Enabled(name string) bool {
+	if name == "" {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, n := range p.EnabledNames {
+		if strings.ToLower(n) == lower {
+			return true
+		}
+	}
+	return false
 }
 
 // PermissionsContext holds session permission flags for CEL evaluation.

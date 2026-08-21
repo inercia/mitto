@@ -1,0 +1,90 @@
+icon: refresh
+name: Loop implementing
+menus: prompts, promptsLoop, conversation
+parameters:
+  - name: Commit
+    type: boolean
+    description: Commit the changes made at the end of each iteration
+description: Continue iterating to implement the feature we have been working on
+group: Development
+backgroundColor: '#BBDEFB'
+enabledWhen: 'Session.HasMessages && CommandExists("bd") && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  mode: always
+  maxIterations: 20
+prompt: |
+  {{ template "beads-issues/shared/bootstrap" . }}
+  {{- if .Iteration.IsUninterrupted }}
+  Continue implementing the feature you have been working on in this loop. Read the
+  tracking bead and the relevant source first — do not speculate about code you
+  haven't opened.
+
+  Do exactly one increment this run (a single increment may itself fan out into
+  parallel children — see "Parallelize independent subtasks" below):
+
+  1. Review the tracking bead: what's done and what's still missing.
+  2. Pick the next work item from the spec — no extra features or abstractions. Before
+     implementing, check whether it decomposes into independent parts you can run in
+     parallel (see "Parallelize independent subtasks" below).
+  3. Implement it.
+  4. Verify the implementation.
+  5. Record the increment on the tracking bead (see "Tracking progress" below).
+  {{- if eq .Args.Commit "true" }}
+  6. Commit only the files you changed with a concise, conventional message;
+     skip the commit if nothing changed.
+
+     {{ template "git/shared/safe-stage" . }}
+  {{- end }}
+
+  **Decide autonomously; do not ask the user.** Only when part of the spec is
+  genuinely ill-defined, record it on the tracking bead, report it, and stop
+  — never guess.
+  {{- else }}
+  Read the tracking bead and relevant source files first. Do not speculate about
+  code you haven't opened.
+
+  Continue implementing the feature we have been working on in this conversation,
+  tracking progress across iterations on a beads issue (see "Tracking progress"
+  below).
+
+  Only implement what's in the spec. No extra features or abstractions.
+
+  **Decide autonomously; do not ask the user.** Take every decision needed to make
+  progress yourself. The sole exception is when part of the spec is **not properly
+  defined or understood** (a genuinely ambiguous requirement or unknown you cannot
+  resolve from the available context): then do **not** guess — record it as a comment
+  on the tracking bead, report it, and stop rather than asking.
+
+  # The Task
+
+  1. Read the tracking bead (find or create it as described below)
+  2. Review current state and what's still missing
+  3. Analyze remaining issues
+  4. Prioritize and implement next work item
+  5. Verify implementation
+  6. Record the increment on the tracking bead
+  {{- if eq .Args.Commit "true" }}
+  7. Commit your work — but only if you actually changed files this iteration.
+     Write a concise, conventional commit message describing this increment.
+
+     {{ template "git/shared/safe-stage" . }}
+  {{- end }}
+
+  Once complete, verify against the original spec on the bead and close it.
+  {{- end }}
+
+  {{ template "_shared/loop/bead-progress-tracking" (dict
+      "Verb"       "implement"
+      "Noun"       "feature"
+      "BeadsIssue" .Session.BeadsIssue
+      "SessionID"  .Session.ID
+  ) }}
+
+  {{ template "_shared/loop/parallelize-subtasks" (dict
+      "Verb"      "implement"
+      "StateFile" "tracking bead"
+      "SessionID" .Session.ID
+  ) }}

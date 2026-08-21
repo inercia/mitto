@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -83,9 +84,49 @@ type persistedSessionsFile struct {
 	Sessions []persistedSession `json:"sessions"`
 }
 
+// authSessionAuthority contains security-relevant authentication configuration.
+type authSessionAuthority struct {
+	SimpleConfigured     bool
+	Simple               config.SimpleAuth
+	CloudflareConfigured bool
+	Cloudflare           config.CloudflareAuth
+	SharedToken          string
+	AllowIPs             []string
+}
+
+func sessionAuthorityFor(authConfig *config.WebAuth) authSessionAuthority {
+	var authority authSessionAuthority
+	if authConfig == nil {
+		return authority
+	}
+	if authConfig.Simple != nil {
+		authority.SimpleConfigured = true
+		authority.Simple = *authConfig.Simple
+	}
+	if authConfig.Cloudflare != nil {
+		authority.CloudflareConfigured = true
+		authority.Cloudflare = *authConfig.Cloudflare
+	}
+	authority.SharedToken = authConfig.SharedToken
+	if authConfig.Allow != nil {
+		authority.AllowIPs = slices.Clone(authConfig.Allow.IPs)
+	}
+	return authority
+}
+
+func (a authSessionAuthority) equal(other authSessionAuthority) bool {
+	return a.SimpleConfigured == other.SimpleConfigured &&
+		a.Simple == other.Simple &&
+		a.CloudflareConfigured == other.CloudflareConfigured &&
+		a.Cloudflare == other.Cloudflare &&
+		a.SharedToken == other.SharedToken &&
+		slices.Equal(a.AllowIPs, other.AllowIPs)
+}
+
 // AuthManager manages user authentication.
 type AuthManager struct {
 	config      *config.WebAuth
+	authority   authSessionAuthority
 	sessions    map[string]*AuthSession
 	mu          sync.RWMutex
 	allowedNets []*net.IPNet     // Parsed CIDR networks from Allow list
@@ -108,6 +149,7 @@ type AuthManager struct {
 func NewAuthManager(authConfig *config.WebAuth) *AuthManager {
 	am := &AuthManager{
 		config:          authConfig,
+		authority:       sessionAuthorityFor(authConfig),
 		sessions:        make(map[string]*AuthSession),
 		rateLimiter:     NewAuthRateLimiter(),
 		splitIPWarnSeen: make(map[string]time.Time),
@@ -143,54 +185,59 @@ func NewAuthManager(authConfig *config.WebAuth) *AuthManager {
 	// Load persisted sessions from disk
 	am.loadSessions()
 
-	// Initialize Cloudflare Access verifier if configured
-	if authConfig != nil && authConfig.Cloudflare != nil && authConfig.Cloudflare.Validate() == nil {
-		teamDomain := authConfig.Cloudflare.TeamDomain
-		issuerURL := "https://" + teamDomain
-		certsURL := issuerURL + "/cdn-cgi/access/certs"
-
-		// Build context for JWKS fetcher — optionally with custom CA cert
-		ctx := context.Background()
-		if authConfig.Cloudflare.CACertFile != "" {
-			caCert, err := os.ReadFile(authConfig.Cloudflare.CACertFile)
-			if err != nil {
-				slog.Warn("Failed to read Cloudflare CA cert file",
-					"path", authConfig.Cloudflare.CACertFile,
-					"error", err,
-				)
-			} else {
-				pool, _ := x509.SystemCertPool()
-				if pool == nil {
-					pool = x509.NewCertPool()
-				}
-				pool.AppendCertsFromPEM(caCert)
-				httpClient := &http.Client{
-					Transport: &http.Transport{
-						TLSClientConfig: &tls.Config{RootCAs: pool},
-					},
-				}
-				ctx = oidc.ClientContext(ctx, httpClient)
-				slog.Info("Cloudflare Access using custom CA cert",
-					"path", authConfig.Cloudflare.CACertFile,
-				)
-			}
-		}
-
-		keySet := oidc.NewRemoteKeySet(ctx, certsURL)
-		am.cfVerifier = oidc.NewVerifier(issuerURL, keySet, &oidc.Config{
-			ClientID: authConfig.Cloudflare.Audience,
-		})
-
-		slog.Info("Cloudflare Access authentication enabled",
-			"team_domain", teamDomain,
-			"audience", authConfig.Cloudflare.Audience[:min(8, len(authConfig.Cloudflare.Audience))]+"...",
-		)
-	}
+	am.configureCloudflareAccess(authConfig)
 
 	// Start session cleanup goroutine
 	go am.cleanupLoop()
 
 	return am
+}
+
+// configureCloudflareAccess updates the verifier to match authConfig. Callers
+// must hold a.mu when the manager is already visible to other goroutines.
+func (a *AuthManager) configureCloudflareAccess(authConfig *config.WebAuth) {
+	a.cfVerifier = nil
+	if authConfig == nil || authConfig.Cloudflare == nil || authConfig.Cloudflare.Validate() != nil {
+		return
+	}
+
+	teamDomain := authConfig.Cloudflare.TeamDomain
+	issuerURL := "https://" + teamDomain
+	certsURL := issuerURL + "/cdn-cgi/access/certs"
+	ctx := context.Background()
+	if authConfig.Cloudflare.CACertFile != "" {
+		caCert, err := os.ReadFile(authConfig.Cloudflare.CACertFile)
+		if err != nil {
+			slog.Warn("Failed to read Cloudflare CA cert file",
+				"path", authConfig.Cloudflare.CACertFile,
+				"error", err,
+			)
+		} else {
+			pool, _ := x509.SystemCertPool()
+			if pool == nil {
+				pool = x509.NewCertPool()
+			}
+			pool.AppendCertsFromPEM(caCert)
+			httpClient := &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{RootCAs: pool},
+				},
+			}
+			ctx = oidc.ClientContext(ctx, httpClient)
+			slog.Info("Cloudflare Access using custom CA cert",
+				"path", authConfig.Cloudflare.CACertFile,
+			)
+		}
+	}
+
+	keySet := oidc.NewRemoteKeySet(ctx, certsURL)
+	a.cfVerifier = oidc.NewVerifier(issuerURL, keySet, &oidc.Config{
+		ClientID: authConfig.Cloudflare.Audience,
+	})
+	slog.Info("Cloudflare Access authentication enabled",
+		"team_domain", teamDomain,
+		"audience", authConfig.Cloudflare.Audience[:min(8, len(authConfig.Cloudflare.Audience))]+"...",
+	)
 }
 
 // Close releases resources held by the auth manager.
@@ -296,6 +343,17 @@ func (a *AuthManager) saveSessionsLocked() {
 	logger.Debug("AUTH: Saved sessions to disk", "count", len(file.Sessions), "path", path)
 }
 
+// revokeSessionsLocked invalidates every cookie session and atomically replaces
+// the persisted session file. The caller must hold a.mu for writing.
+func (a *AuthManager) revokeSessionsLocked(reason string) {
+	count := len(a.sessions)
+	clear(a.sessions)
+	a.saveSessionsLocked()
+	if count > 0 {
+		logging.Auth().Info("AUTH: Revoked sessions", "count", count, "reason", reason)
+	}
+}
+
 // SetAPIPrefix sets the API prefix for public path matching.
 // This must be called before the middleware is used.
 func (a *AuthManager) SetAPIPrefix(prefix string) {
@@ -308,7 +366,13 @@ func (a *AuthManager) UpdateConfig(authConfig *config.WebAuth) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	newAuthority := sessionAuthorityFor(authConfig)
+	if !newAuthority.equal(a.authority) {
+		a.revokeSessionsLocked("authentication authority changed")
+		a.authority = newAuthority
+	}
 	a.config = authConfig
+	a.configureCloudflareAccess(authConfig)
 
 	// Re-parse the allow list
 	a.allowedNets = nil
@@ -422,21 +486,37 @@ func (a *AuthManager) pruneSplitIPWarnSeenLocked(now time.Time) {
 // Returns false if username or password is empty, as external access must NEVER
 // proceed with empty credentials.
 func (a *AuthManager) IsEnabled() bool {
-	if a == nil || a.config == nil {
+	if a == nil {
 		return false
 	}
-	return a.HasValidCredentials() || a.HasCloudflareAccess()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasValidCredentialsLocked() || a.cfVerifier != nil
 }
 
 // HasCloudflareAccess returns true if Cloudflare Access JWT validation is configured.
 func (am *AuthManager) HasCloudflareAccess() bool {
-	return am != nil && am.cfVerifier != nil
+	if am == nil {
+		return false
+	}
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	return am.cfVerifier != nil
 }
 
 // HasValidCredentials returns true if both username and password are non-empty.
 // This is used to validate that credentials are properly configured before
 // enabling external access.
 func (a *AuthManager) HasValidCredentials() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.hasValidCredentialsLocked()
+}
+
+func (a *AuthManager) hasValidCredentialsLocked() bool {
 	if a.config == nil || a.config.Simple == nil {
 		return false
 	}
@@ -447,7 +527,10 @@ func (a *AuthManager) HasValidCredentials() bool {
 // It checks the Cf-Access-Jwt-Assertion header first, then falls back to the
 // CF_Authorization cookie. Returns the authenticated email on success.
 func (am *AuthManager) ValidateCFAccessToken(r *http.Request) (string, error) {
-	if am.cfVerifier == nil {
+	am.mu.RLock()
+	verifier := am.cfVerifier
+	am.mu.RUnlock()
+	if verifier == nil {
 		return "", fmt.Errorf("cloudflare access not configured")
 	}
 
@@ -466,7 +549,7 @@ func (am *AuthManager) ValidateCFAccessToken(r *http.Request) (string, error) {
 	}
 
 	// Verify signature, issuer, audience, and expiry
-	idToken, err := am.cfVerifier.Verify(r.Context(), token)
+	idToken, err := verifier.Verify(r.Context(), token)
 	if err != nil {
 		return "", fmt.Errorf("cloudflare access token validation failed: %w", err)
 	}
@@ -567,6 +650,81 @@ func (a *AuthManager) ValidateCredentials(username, password string) bool {
 	return usernameMatch && passwordMatch
 }
 
+// HasSharedToken returns true if a shared bearer token is configured
+// (mitto-7gta.26). This is an additional accepted credential for programmatic
+// clients (SDK, CLI); it does NOT by itself enable authentication — see IsEnabled.
+//
+// Reads a.config under a.mu.RLock (mitto-pscc.9) since SetSharedToken can now
+// mutate a.config.SharedToken concurrently (token rotation while requests are
+// in flight).
+func (a *AuthManager) HasSharedToken() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.config != nil && a.config.SharedToken != ""
+}
+
+// ValidateSharedToken checks tok against the configured shared bearer token
+// using a constant-time comparison to prevent timing attacks. Always returns
+// false when no token is configured or tok is empty, so an absent header can
+// never match an unset/empty configured token.
+//
+// Reads the configured token under a.mu.RLock (mitto-pscc.9); see
+// HasSharedToken and SetSharedToken.
+func (a *AuthManager) ValidateSharedToken(tok string) bool {
+	if !a.HasSharedToken() || tok == "" {
+		return false
+	}
+	a.mu.RLock()
+	configured := a.config.SharedToken
+	a.mu.RUnlock()
+	return subtle.ConstantTimeCompare([]byte(tok), []byte(configured)) == 1
+}
+
+// SetSharedToken updates the shared bearer token dynamically (mitto-pscc.9
+// token rotation, via POST /api/auth/rotate-token). Safe for concurrent use
+// with HasSharedToken/ValidateSharedToken, which take the read lock this
+// method's write lock excludes.
+func (a *AuthManager) SetSharedToken(tok string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.authority.SharedToken != tok {
+		a.revokeSessionsLocked("shared token changed")
+		a.authority.SharedToken = tok
+	}
+	if a.config == nil {
+		a.config = &config.WebAuth{}
+	}
+	a.config.SharedToken = tok
+}
+
+// extractBearerToken extracts the token from an "Authorization: Bearer <token>"
+// header. The "Bearer" scheme is matched case-insensitively; returns "" if the
+// header is absent or does not use the Bearer scheme. No other header or query
+// parameter is checked (mitto-7gta.26 plan decision): both intended clients can
+// set the Authorization header on REST calls and the WebSocket handshake, and a
+// query parameter would leak the secret into URLs and logs.
+func extractBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	const prefix = "bearer "
+	if len(auth) <= len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(auth[len(prefix):])
+}
+
+// ValidateBearerRequest reports whether r carries a valid shared-token bearer
+// credential. It performs a pure validation (no rate-limiter bookkeeping), so
+// it is safe to call from contexts that only need a read-only check — notably
+// the CSRF middleware, which runs BEFORE AuthMiddleware and cannot read an auth
+// decision from the request context. It must validate the token, not merely
+// detect the header, since "header present" would be a CSRF bypass.
+func (a *AuthManager) ValidateBearerRequest(r *http.Request) bool {
+	if !a.HasSharedToken() {
+		return false
+	}
+	return a.ValidateSharedToken(extractBearerToken(r))
+}
+
 // CreateSession creates a new authenticated session for the user.
 // If the user has too many sessions, the oldest ones are evicted.
 func (a *AuthManager) CreateSession(username string) (*AuthSession, error) {
@@ -660,11 +818,7 @@ func (a *AuthManager) InvalidateSession(token string) {
 func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, r *http.Request, session *AuthSession) {
 	logger := logging.Auth()
 
-	// Determine if we should set Secure flag.
-	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
-	// so we need to set Secure=false for localhost connections.
-	// For external/HTTPS connections, we always want Secure=true.
-	secure := !isLocalhostRequest(r)
+	secure := shouldUseSecureCookie(r)
 
 	cookie := &http.Cookie{
 		Name:     sessionCookieName,
@@ -692,7 +846,7 @@ func (a *AuthManager) SetSessionCookie(w http.ResponseWriter, r *http.Request, s
 // The request is used to determine if we're on localhost (to set Secure flag appropriately).
 func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	// Match the Secure flag from SetSessionCookie for consistency
-	secure := !isLocalhostRequest(r)
+	secure := shouldUseSecureCookie(r)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -706,33 +860,17 @@ func (a *AuthManager) ClearSessionCookie(w http.ResponseWriter, r *http.Request)
 }
 
 // GetSessionFromRequest retrieves the session from the request cookie.
+//
+// This does not log — the caller (AuthMiddleware) emits a single aggregated
+// DEBUG record per request that already reports the auth decision, so a
+// per-call log here would be redundant (mitto-1md).
 func (a *AuthManager) GetSessionFromRequest(r *http.Request) (*AuthSession, bool) {
-	logger := logging.Auth()
-
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		// Log at DEBUG level - routine check on every request
-		logger.Debug("AUTH: No session cookie found",
-			"error", err,
-			"cookie_name", sessionCookieName,
-			"path", r.URL.Path,
-		)
 		return nil, false
 	}
 
 	session, valid := a.ValidateSession(cookie.Value)
-	if !valid {
-		logger.Debug("AUTH: Session cookie invalid or expired",
-			"token_prefix", cookie.Value[:min(8, len(cookie.Value))]+"...",
-			"path", r.URL.Path,
-		)
-	} else {
-		logger.Debug("AUTH: Session cookie valid",
-			"username", session.Username,
-			"expires_at", session.ExpiresAt,
-			"path", r.URL.Path,
-		)
-	}
 	return session, valid
 }
 
@@ -755,21 +893,23 @@ var publicStaticPaths = map[string]bool{
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
 var publicAPIPaths = map[string]bool{
-	"/api/login":             true,
-	"/api/csrf-token":        true, // CSRF token endpoint must be accessible before login
-	"/api/supported-runners": true, // Platform information endpoint (no sensitive data)
-	"/api/auth-info":         true, // Auth info endpoint must be accessible before login (used by login page)
-	"/api/health":            true, // Health check must be accessible without auth for tunnel monitoring
+	"/api/login":                true,
+	"/api/csrf-token":           true, // CSRF token endpoint must be accessible before login
+	"/api/supported-runners":    true, // Platform information endpoint (no sensitive data)
+	"/api/auth-info":            true, // Auth info endpoint must be accessible before login (used by login page)
+	"/api/health":               true, // Health check must be accessible without auth for tunnel monitoring
+	"/api/slack/oauth/callback": true, // Slack validates one-time OAuth state instead of a Mitto session
 }
 
 // isPublicPath checks if a path is public (no auth required).
 // It checks both static paths and API paths (with the configured prefix).
+//
+// This is a pure predicate — it does not log. The caller (AuthMiddleware) emits
+// a single aggregated DEBUG record per request that already reports the outcome
+// of this check, so logging here would be redundant (mitto-1md).
 func (a *AuthManager) isPublicPath(path string) bool {
-	logger := logging.Auth()
-
 	// Check static paths (exact match) - at root level
 	if publicStaticPaths[path] {
-		logger.Debug("AUTH: isPublicPath: MATCHED static path", "path", path)
 		return true
 	}
 
@@ -777,7 +917,6 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	if a.apiPrefix != "" {
 		for staticPath := range publicStaticPaths {
 			if path == a.apiPrefix+staticPath {
-				logger.Debug("AUTH: isPublicPath: MATCHED prefixed static path", "path", path)
 				return true
 			}
 		}
@@ -787,7 +926,6 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	for apiPath := range publicAPIPaths {
 		fullAPIPath := a.apiPrefix + apiPath
 		if path == fullAPIPath {
-			logger.Debug("AUTH: isPublicPath: MATCHED API path", "path", path, "api_path", fullAPIPath)
 			return true
 		}
 	}
@@ -795,20 +933,20 @@ func (a *AuthManager) isPublicPath(path string) bool {
 	// Check API path prefixes for dynamic paths (callback tokens)
 	callbackPrefix := a.apiPrefix + "/api/callback/"
 	if strings.HasPrefix(path, callbackPrefix) {
-		logger.Debug("AUTH: isPublicPath: MATCHED callback prefix", "path", path)
 		return true
 	}
 
-	// Log all known public paths for debugging
-	staticPathsList := make([]string, 0, len(publicStaticPaths))
-	for p := range publicStaticPaths {
-		staticPathsList = append(staticPathsList, p)
+	// The JS client SDK tree (web/static/sdk/) is a static, client-shipped
+	// asset bundle imported by auth.js (mitto-laa3) — same exposure class as
+	// the already-public auth.js/tailwind.css above, not sensitive. auth.js
+	// is a `type="module"` script whose whole import graph must be public,
+	// or the module graph fails to load and the login form never binds.
+	if strings.HasPrefix(path, "/sdk/") {
+		return true
 	}
-	logger.Debug("AUTH: isPublicPath: NO MATCH",
-		"path", path,
-		"api_prefix", a.apiPrefix,
-		"known_static_paths", staticPathsList,
-	)
+	if a.apiPrefix != "" && strings.HasPrefix(path, a.apiPrefix+"/sdk/") {
+		return true
+	}
 	return false
 }
 
@@ -840,6 +978,12 @@ func isLocalhostRequest(r *http.Request) bool {
 
 	// Check if host is localhost or 127.0.0.1
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// shouldUseSecureCookie keeps the localhost exception exclusive to the internal
+// listener. Host is caller-controlled, so external-listener provenance wins.
+func shouldUseSecureCookie(r *http.Request) bool {
+	return IsExternalConnection(r) || !isLocalhostRequest(r)
 }
 
 // contextKey is a type for context keys used by the auth package.
@@ -875,6 +1019,27 @@ func SetAuthIdentity(r *http.Request, user string) {
 	}
 }
 
+// AuthAnomaly is a mutable holder for security-anomaly flags raised during a login
+// request. Like AuthIdentity, it is placed in the context by the OUTER access-log
+// middleware so inner auth handlers can write back to it — context values only flow
+// downward, so a shared pointer is required to hoist the signal up.
+type AuthAnomaly struct {
+	// SplitIP is set when the CSRF token IP fingerprint did not match the login IP.
+	SplitIP bool
+}
+
+// ContextKeyAuthAnomaly is the context key for the *AuthAnomaly holder.
+const ContextKeyAuthAnomaly contextKey = "authAnomaly"
+
+// SetSplitIPFlag records a Split-IP CSRF fingerprint mismatch in the mutable
+// anomaly holder placed in the request context by the access-log middleware.
+// Safe no-op if no holder is present (e.g. access logging disabled).
+func SetSplitIPFlag(r *http.Request) {
+	if a, ok := r.Context().Value(ContextKeyAuthAnomaly).(*AuthAnomaly); ok && a != nil {
+		a.SplitIP = true
+	}
+}
+
 // IsExternalConnection returns true if the request came through the external listener.
 // External connections always require authentication, regardless of client IP.
 func IsExternalConnection(r *http.Request) bool {
@@ -900,6 +1065,13 @@ func IsLocalhostRequest(r *http.Request) bool {
 }
 
 // AuthMiddleware returns a middleware that enforces authentication.
+//
+// Logging: emits AT MOST ONE "AUTH: request" DEBUG record per request,
+// carrying the outcome as a "decision" field (loopback|allowlist|public|
+// cf-access|authenticated|rejected) instead of the five separate per-stage
+// records this used to produce. The whole block is gated by `dbg` so nothing
+// is allocated or formatted when DEBUG logging is off (mitto-1md, following
+// the mitto-t3i pattern).
 func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger := logging.Auth()
@@ -909,6 +1081,8 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		dbg := logger.Enabled(r.Context(), slog.LevelDebug)
 
 		// Check if this connection came through the external listener.
 		// External connections ALWAYS require authentication, even from localhost.
@@ -922,25 +1096,29 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// via spoofed X-Forwarded-For headers. This function only trusts proxy headers
 		// from configured trusted proxies.
 		if !isExternal && isLoopbackIP(clientIP) {
-			logger.Debug("Auth bypass - loopback IP on internal listener",
-				"client_ip", clientIP, "path", r.URL.Path)
+			if dbg {
+				logger.Debug("AUTH: request",
+					"decision", "loopback",
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
+			}
 			SetAuthIdentity(r, "local")
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Log external connection attempts
-		if isExternal {
-			logger.Debug("AUTH: External connection",
-				"client_ip", clientIP,
-				"path", r.URL.Path,
-				"is_loopback", isLoopbackIP(clientIP),
-			)
-		}
-
 		// Check if client IP is in the allow list (bypass auth)
 		if a.IsIPAllowed(clientIP) {
-			logger.Debug("Auth bypass - allowed IP", "client_ip", clientIP, "path", r.URL.Path)
+			if dbg {
+				logger.Debug("AUTH: request",
+					"decision", "allowlist",
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
+			}
 			r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, "allowlist:"+clientIP))
 			SetAuthIdentity(r, "allowlist:"+clientIP)
 			next.ServeHTTP(w, r)
@@ -948,24 +1126,81 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Allow public paths without authentication
-		isPublic := a.isPublicPath(r.URL.Path)
-		// Log public path checks at DEBUG level - routine checks
-		if isPublic {
-			logger.Debug("AUTH: Bypass - public path",
-				"path", r.URL.Path,
-				"raw_uri", r.RequestURI,
-				"client_ip", clientIP,
-			)
+		if a.isPublicPath(r.URL.Path) {
+			if dbg {
+				logger.Debug("AUTH: request",
+					"decision", "public",
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Log when we're NOT treating something as public (DEBUG - routine check)
-		logger.Debug("AUTH: Required for path",
-			"path", r.URL.Path,
-			"raw_uri", r.RequestURI,
-			"client_ip", clientIP,
-			"api_prefix", a.apiPrefix,
-		)
+
+		// Check for a shared bearer token (mitto-7gta.26). This is an ADDITIONAL
+		// accepted credential for programmatic clients (SDK, CLI) — it does not
+		// itself enable auth (see IsEnabled); it is only consulted here because
+		// auth is already known to be enabled via Simple or Cloudflare. An absent
+		// header, or no token configured, falls through unchanged to the existing
+		// Cloudflare/session-cookie checks below (zero behaviour change).
+		if a.HasSharedToken() {
+			if tok := extractBearerToken(r); tok != "" {
+				parsedIP := parseClientIP(clientIP)
+				ipKey := clientIP
+				if parsedIP != nil {
+					ipKey = parsedIP.String()
+				}
+
+				// Share the rate limiter with password login so token brute force
+				// and password brute force cannot be used to sidestep each other's
+				// lockout.
+				if blocked, remaining := a.rateLimiter.IsBlocked(ipKey); blocked {
+					retryAfter := int(remaining.Seconds()) + 1
+					if dbg {
+						logger.Debug("AUTH: request",
+							"decision", "rate_limited",
+							"path", r.URL.Path,
+							"client_ip", clientIP,
+							"external", isExternal,
+						)
+					}
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+					writeErrorJSON(w, http.StatusTooManyRequests, "", "Too many failed attempts. Please try again later.")
+					return
+				}
+
+				if a.ValidateSharedToken(tok) {
+					if dbg {
+						logger.Debug("AUTH: request",
+							"decision", "shared-token",
+							"path", r.URL.Path,
+							"client_ip", clientIP,
+							"external", isExternal,
+						)
+					}
+					a.rateLimiter.RecordSuccess(ipKey)
+					r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, "token:shared"))
+					SetAuthIdentity(r, "token:shared")
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				// Invalid token: record the failure but degrade to the existing
+				// checks below rather than rejecting outright — never log the
+				// token itself, not even a prefix or length.
+				a.rateLimiter.RecordFailure(ipKey)
+				if dbg {
+					logger.Debug("AUTH: request",
+						"decision", "shared-token-invalid",
+						"path", r.URL.Path,
+						"client_ip", clientIP,
+						"external", isExternal,
+					)
+				}
+			}
+		}
 
 		// Check Cloudflare Access JWT
 		if a.HasCloudflareAccess() {
@@ -994,18 +1229,19 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 		// Check for valid session
 		session, valid := a.GetSessionFromRequest(r)
 		if !valid {
-			// Log the auth failure with cookie info for debugging
-			cookies := r.Cookies()
-			cookieNames := make([]string, len(cookies))
-			for i, c := range cookies {
-				cookieNames[i] = c.Name
+			if dbg {
+				reason := "invalid-cookie"
+				if _, err := r.Cookie(sessionCookieName); err != nil {
+					reason = "no-cookie"
+				}
+				logger.Debug("AUTH: request",
+					"decision", "rejected",
+					"reason", reason,
+					"path", r.URL.Path,
+					"client_ip", clientIP,
+					"external", isExternal,
+				)
 			}
-			logger.Debug("AUTH: No valid session",
-				"path", r.URL.Path,
-				"client_ip", clientIP,
-				"cookies_present", cookieNames,
-				"has_session_cookie", r.Header.Get("Cookie") != "",
-			)
 
 			// Check if this is an API request (with or without prefix)
 			// e.g., /api/events or /mitto/api/events
@@ -1023,16 +1259,19 @@ func (a *AuthManager) AuthMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// For page requests, redirect to login
-			logger.Debug("AUTH: Redirecting to auth.html", "path", r.URL.Path, "raw_uri", r.RequestURI)
 			http.Redirect(w, r, "/auth.html", http.StatusFound)
 			return
 		}
 
-		logger.Debug("AUTH: Session validated",
-			"path", r.URL.Path,
-			"client_ip", clientIP,
-			"username", session.Username,
-		)
+		if dbg {
+			logger.Debug("AUTH: request",
+				"decision", "authenticated",
+				"path", r.URL.Path,
+				"client_ip", clientIP,
+				"external", isExternal,
+				"user", session.Username,
+			)
+		}
 		r = r.WithContext(context.WithValue(r.Context(), ContextKeyAuthUser, session.Username))
 		SetAuthIdentity(r, session.Username)
 		next.ServeHTTP(w, r)
@@ -1100,12 +1339,30 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	userAgent := r.Header.Get("User-Agent")
 	if cookie, err := r.Cookie(csrfCookieName); err == nil {
 		if !VerifyIPFromToken(cookie.Value, ipKey, userAgent) {
+			// Always record the anomaly on the audit trail (access.log) so a
+			// real incident can be correlated later, independent of the
+			// mitto.log dedup window.
+			SetSplitIPFlag(r)
+
 			dedupKey := normalizeIPForFingerprint(ipKey) + "|" + userAgent
 			if a.shouldWarnSplitIP(dedupKey) {
-				logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
-					"login_ip", ipKey,
-					"user_agent", userAgent,
-				)
+				// Dampen mobile UAs to Info: carrier NAT/CGNAT rotation makes
+				// IP drift between the CSRF-token fetch and the login POST an
+				// expected false-positive class on mobile networks, and WARN
+				// spam here erodes alert signal for genuine desktop cases.
+				mobile := isMobileUserAgent(userAgent)
+				if mobile {
+					logger.Info("Split-IP login detected: CSRF token IP fingerprint mismatch",
+						"login_ip", ipKey,
+						"user_agent", userAgent,
+						"mobile_ua", true,
+					)
+				} else {
+					logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
+						"login_ip", ipKey,
+						"user_agent", userAgent,
+					)
+				}
 			}
 		}
 	}

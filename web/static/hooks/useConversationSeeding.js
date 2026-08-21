@@ -2,9 +2,62 @@
 // Shared helper to seed a conversation with a named prompt via prompt_name,
 // or to create a new loop conversation driven by a named prompt.
 
-import { secureFetch } from "../utils/csrf.js";
-import { apiUrl } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorStatus } from "../utils/sdkErrors.js";
+
+/**
+ * Normalize a prompt.loop.trigger field into an array of trigger names
+ * (mitto-r6j). The prompt frontmatter schema stores `trigger:` as a list
+ * (e.g. ["schedule", "onCompletion"]), but legacy prompts on disk / MCP
+ * responses may still surface the pre-r6j scalar string. Anything not
+ * recognisable falls back to ["schedule"] to preserve pre-r6j behaviour.
+ *
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function normalizePromptTriggers(raw) {
+  if (Array.isArray(raw)) {
+    const cleaned = raw.filter((t) => typeof t === "string" && t.length > 0);
+    return cleaned.length > 0 ? cleaned : ["schedule"];
+  }
+  if (typeof raw === "string" && raw.length > 0) return [raw];
+  return ["schedule"];
+}
+
+/**
+ * Extract the loop attributes from a prompt.loop block that MAY use the new
+ * nested-per-trigger schema (mitto-r6j: `schedule: { value, unit, at }`,
+ * `onCompletion: { delay }`, `onTasks: { condition, conditionPreset,
+ * coalesceDuringBusy, settleWindow, cooldown }`). Returns a flat view with
+ * safe defaults so callers do not have to reach into optional nested blocks.
+ *
+ * @param {Object|null|undefined} loopBlock
+ * @returns {{ triggers: string[], value: number, unit: string, at: string,
+ *   delay: number, condition: string, conditionPreset: string,
+ *   coalesceDuringBusy: boolean|undefined, maxIterations: number,
+ *   maxDuration: string, freshContext: boolean|undefined,
+ *   runOnStart: boolean|undefined }}
+ */
+export function readPromptLoopDefaults(loopBlock) {
+  const p = loopBlock || {};
+  const sched = p.schedule || {};
+  const oc = p.onCompletion || {};
+  const ot = p.onTasks || {};
+  return {
+    triggers: normalizePromptTriggers(p.trigger),
+    value: sched.value ?? 1,
+    unit: sched.unit ?? "hours",
+    at: sched.at ?? "",
+    delay: oc.delay ?? 0,
+    condition: ot.condition ?? "",
+    conditionPreset: ot.conditionPreset ?? "",
+    coalesceDuringBusy: ot.coalesceDuringBusy,
+    maxIterations: p.maxIterations ?? 0,
+    maxDuration: p.maxDuration ?? "",
+    freshContext: p.freshContext,
+    runOnStart: p.runOnStart,
+  };
+}
 
 /**
  * Parse a duration string or number into seconds.
@@ -48,8 +101,7 @@ export function parseDurationToSeconds(input) {
  */
 export function decideLoopAction(session) {
   if (!session || !session.session_id) return "new-loop";
-  if (session.loop_enabled || session.loop_configured)
-    return "one-shot";
+  if (session.loop_enabled || session.loop_configured) return "one-shot";
   if (session.parent_session_id) return "one-shot";
   return "make-loop";
 }
@@ -59,11 +111,21 @@ export function decideLoopAction(session) {
  * declared defaults, then fire the first run.
  *
  * Steps:
- *   1. PUT /api/sessions/{id}/loop  — configure prompt_name + frequency + max_iterations
+ *   1. PUT /api/sessions/{id}/loop  — configure prompt_name + frequency +
+ *      triggers[] + max_iterations
  *   2. POST /api/sessions/{id}/loop/run-now  — fire first run (reset_timer: true)
  *
+ * prompt.loop follows the mitto-r6j nested-per-trigger schema:
+ *   {
+ *     trigger: string[],  // armed triggers (schedule|onCompletion|onTasks)
+ *     schedule?: { value, unit, at? },
+ *     onCompletion?: { delay },
+ *     onTasks?: { condition, conditionPreset, coalesceDuringBusy },
+ *     maxIterations?, maxDuration?, freshContext?, runOnStart?,
+ *   }
+ *
  * @param {string} sessionId
- * @param {{ name: string, loop?: { value?: number, unit?: string, at?: string, maxIterations?: number } }} prompt
+ * @param {{ name: string, loop?: Object }} prompt
  * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
@@ -76,11 +138,14 @@ export async function makeLoopNow(
     return { success: false, error: "invalid_request" };
   }
 
-  const p = prompt?.loop || {};
-  const value = p.value || 1;
-  const unit = p.unit || "hours";
-  const frequency = { value, unit };
-  if (unit === "days" && p.at) {
+  // mitto-r6j: prompt.loop defaults now live under nested per-trigger blocks
+  // (loop.schedule.*, loop.onCompletion.*, loop.onTasks.*) and loop.trigger is
+  // a list of armed trigger names. readPromptLoopDefaults returns a flat view
+  // with safe fallbacks so we can construct the REST body without reaching
+  // into optional nested objects at every use.
+  const p = readPromptLoopDefaults(prompt?.loop);
+  const frequency = { value: p.value, unit: p.unit };
+  if (p.unit === "days" && p.at) {
     frequency.at = p.at;
   }
 
@@ -89,48 +154,76 @@ export async function makeLoopNow(
       ? p.maxIterations
       : 0;
 
-  // New trigger/delay/maxDuration fields from prompt loop defaults.
-  const trigger = p.trigger || "schedule";
-  const delaySeconds = p.delay ?? 0;
+  const triggers = p.triggers;
+  const delaySeconds = p.delay;
   const maxDurationSeconds = parseDurationToSeconds(p.maxDuration);
   // onTasks CEL condition, from the prompt's loop frontmatter default.
   // conditionPreset is intentionally NOT threaded here (mitto-pei).
-  const condition = p.condition ?? "";
+  const condition = p.condition;
 
-  const fetch_ = fetchImpl || secureFetch;
+  // Frontmatter-driven booleans forwarded verbatim (mitto-le4.3). Only sent
+  // when the source is a real boolean — undefined/null are omitted so we do
+  // not serialize accidental `null`s. Precedence has a single source here
+  // (prompt.loop), unlike configureLoopSchedule which also honours a dialog
+  // override.
+  const { freshContext, runOnStart, coalesceDuringBusy } = p;
 
-  // Step 1: configure loop
-  try {
-    const putResp = await fetch_(endpoints.sessions.loop(sessionId), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt_name: prompt.name,
-        frequency,
-        enabled: true,
-        max_iterations: maxIterations,
-        trigger,
-        delay_seconds: delaySeconds,
-        max_duration_seconds: maxDurationSeconds,
-        ...(trigger === "onTasks" ? { condition } : {}),
-        ...(args && typeof args === "object" && Object.keys(args).length > 0
-          ? { arguments: args }
-          : {}),
-      }),
-    });
-    if (!putResp.ok) {
-      let errData = {};
-      try {
-        errData = await putResp.json();
-      } catch (_) {}
-      return {
-        success: false,
-        error: errData.error || "loop_setup_failed",
-      };
+  // Step 1: configure loop. Send `triggers` (canonical list, mitto-r6j) as
+  // the primary field. condition is sent when onTasks is one of the armed
+  // triggers.
+  const armsOnTasks = triggers.includes("onTasks");
+  const loopBody = {
+    prompt_name: prompt.name,
+    frequency,
+    enabled: true,
+    max_iterations: maxIterations,
+    triggers,
+    delay_seconds: delaySeconds,
+    max_duration_seconds: maxDurationSeconds,
+    ...(armsOnTasks ? { condition } : {}),
+    ...(typeof freshContext === "boolean"
+      ? { fresh_context: freshContext }
+      : {}),
+    ...(typeof runOnStart === "boolean" ? { run_on_start: runOnStart } : {}),
+    ...(typeof coalesceDuringBusy === "boolean"
+      ? { coalesce_during_busy: coalesceDuringBusy }
+      : {}),
+    ...(args && typeof args === "object" && Object.keys(args).length > 0
+      ? { arguments: args }
+      : {}),
+  };
+
+  if (fetchImpl) {
+    try {
+      const putResp = await fetchImpl(getSdkClient().endpoints.sessions.loop(sessionId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loopBody),
+      });
+      if (!putResp.ok) {
+        let errData = {};
+        try {
+          errData = await putResp.json();
+        } catch (_) {}
+        return {
+          success: false,
+          error: errData.error || "loop_setup_failed",
+        };
+      }
+    } catch (err) {
+      console.error("makeLoopNow PUT error:", err);
+      return { success: false, error: "loop_setup_failed" };
     }
-  } catch (err) {
-    console.error("makeLoopNow PUT error:", err);
-    return { success: false, error: "loop_setup_failed" };
+  } else {
+    try {
+      await getSdkClient().sessions.loop.set(sessionId, loopBody);
+    } catch (err) {
+      console.error("makeLoopNow PUT error:", err);
+      if (errorStatus(err) === undefined) {
+        return { success: false, error: "loop_setup_failed" };
+      }
+      return { success: false, error: err.body?.error || "loop_setup_failed" };
+    }
   }
 
   // Step 2: fire first run.
@@ -140,26 +233,45 @@ export async function makeLoopNow(
   // schedule-based config immediately fired its first run — so the loop is set
   // and running. Treat 409 as success rather than surfacing a misleading
   // "failed to configure loop" error to the user.
-  try {
-    const runResp = await fetch_(endpoints.sessions.loopRunNow(sessionId), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reset_timer: true }),
-    });
-    if (!runResp.ok) {
-      if (runResp.status === 409) {
+  if (fetchImpl) {
+    try {
+      const runResp = await fetchImpl(
+        getSdkClient().endpoints.sessions.loopRunNow(sessionId),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reset_timer: true }),
+        },
+      );
+      if (!runResp.ok) {
+        if (runResp.status === 409) {
+          // Already running — config is set, a run is in flight. Not a failure.
+          return { success: true };
+        }
+        let errData = {};
+        try {
+          errData = await runResp.json();
+        } catch (_) {}
+        return { success: false, error: errData.error || "run_now_failed" };
+      }
+    } catch (err) {
+      console.error("makeLoopNow run-now error:", err);
+      return { success: false, error: "run_now_failed" };
+    }
+  } else {
+    try {
+      await getSdkClient().sessions.loop.runNow(sessionId, true);
+    } catch (err) {
+      if (errorStatus(err) === 409) {
         // Already running — config is set, a run is in flight. Not a failure.
         return { success: true };
       }
-      let errData = {};
-      try {
-        errData = await runResp.json();
-      } catch (_) {}
-      return { success: false, error: errData.error || "run_now_failed" };
+      console.error("makeLoopNow run-now error:", err);
+      if (errorStatus(err) === undefined) {
+        return { success: false, error: "run_now_failed" };
+      }
+      return { success: false, error: err.body?.error || "run_now_failed" };
     }
-  } catch (err) {
-    console.error("makeLoopNow run-now error:", err);
-    return { success: false, error: "run_now_failed" };
   }
 
   return { success: true };
@@ -196,41 +308,65 @@ export async function seedConversationWithPrompt(
     return { success: false, error: "invalid_request" };
   }
 
-  const fetch_ = fetchImpl || secureFetch;
   const body = buildSeedQueueBody(prompt, { arguments: args });
 
-  try {
-    const resp = await fetch_(endpoints.sessions.queue(sessionId), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    let data = {};
+  if (fetchImpl) {
     try {
-      data = await resp.json();
-    } catch (_) {}
+      const resp = await fetchImpl(getSdkClient().endpoints.sessions.queue(sessionId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-    if (resp.ok || resp.status === 201) {
-      return { success: true, messageId: data.id };
+      let data = {};
+      try {
+        data = await resp.json();
+      } catch (_) {}
+
+      if (resp.ok || resp.status === 201) {
+        return { success: true, messageId: data.id };
+      }
+      return {
+        success: false,
+        error: data.error?.code || data.error || "request_failed",
+      };
+    } catch (err) {
+      console.error("seedConversationWithPrompt error:", err);
+      return { success: false, error: "request_failed" };
     }
-    return {
-      success: false,
-      error: data.error?.code || data.error || "request_failed",
-    };
+  }
+
+  try {
+    const data = await getSdkClient().sessions.queue.add(sessionId, body);
+    return { success: true, messageId: data?.id };
   } catch (err) {
     console.error("seedConversationWithPrompt error:", err);
-    return { success: false, error: "request_failed" };
+    if (errorStatus(err) === undefined) {
+      return { success: false, error: "request_failed" };
+    }
+    return { success: false, error: err.code || "request_failed" };
   }
 }
 
 /**
  * Configure a loop schedule on a newly-created session via PUT.
- * Includes max_iterations when loop.maxIterations is a positive number,
- * or falls back to prompt?.loop?.maxIterations. Sends 0 (unlimited) otherwise.
+ *
+ * The `loop` param carries the dialog's confirm result (mitto-r6j):
+ *   - triggers: string[] — armed triggers (required, non-empty)
+ *   - value, unit, at?: schedule frequency (used when "schedule" is armed)
+ *   - maxIterations?: run cap (falls back to prompt default)
+ *   - delaySeconds?: onCompletion delay (falls back to prompt default)
+ *   - maxDurationSeconds?: wall-clock cap (falls back to prompt default)
+ *   - condition?: onTasks CEL (falls back to prompt default)
+ *   - freshContext?, runOnStart?, coalesceDuringBusy?: boolean overrides
+ *
+ * Prompt-level defaults are read from the new nested-per-trigger schema via
+ * readPromptLoopDefaults, so callers that pass an incomplete `loop` (e.g.
+ * only picked the triggers) still get a fully-formed REST payload.
+ *
  * @param {string} sessionId
- * @param {{ name: string, loop?: { maxIterations?: number } }} prompt
- * @param {{ value: number, unit: string, at?: string, maxIterations?: number }} loop
+ * @param {{ name?: string, loop?: Object }} prompt
+ * @param {Object} loop
  * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
@@ -240,7 +376,10 @@ export async function configureLoopSchedule(
   loop,
   { arguments: args, fetchImpl } = {},
 ) {
-  const { value, unit, at } = loop;
+  const promptDefaults = readPromptLoopDefaults(prompt?.loop);
+  const value = loop.value ?? promptDefaults.value;
+  const unit = loop.unit ?? promptDefaults.unit;
+  const at = loop.at ?? promptDefaults.at;
   const frequency = { value, unit };
   // Only include 'at' for daily schedules (matches backend Frequency.Validate() rules)
   if (unit === "days" && at) {
@@ -252,55 +391,93 @@ export async function configureLoopSchedule(
   let maxIterations = 0;
   if (typeof loop.maxIterations === "number" && loop.maxIterations > 0) {
     maxIterations = loop.maxIterations;
-  } else if (
-    typeof prompt?.loop?.maxIterations === "number" &&
-    prompt.loop.maxIterations > 0
-  ) {
-    maxIterations = prompt.loop.maxIterations;
+  } else if (promptDefaults.maxIterations > 0) {
+    maxIterations = promptDefaults.maxIterations;
   }
 
-  // New trigger/delay/maxDuration fields: from dialog result, then prompt defaults.
-  const trigger = loop.trigger || prompt?.loop?.trigger || "schedule";
-  const delaySeconds = loop.delaySeconds ?? prompt?.loop?.delay ?? 0;
+  // triggers list: from dialog result, then prompt defaults. Also accept a
+  // scalar `trigger` for backward-compat with the pre-r6j dialog shape.
+  let triggers;
+  if (Array.isArray(loop.triggers) && loop.triggers.length > 0) {
+    triggers = loop.triggers;
+  } else if (typeof loop.trigger === "string" && loop.trigger.length > 0) {
+    triggers = [loop.trigger];
+  } else {
+    triggers = promptDefaults.triggers;
+  }
+
+  const delaySeconds = loop.delaySeconds ?? promptDefaults.delay;
   const maxDurationSeconds =
     loop.maxDurationSeconds ??
     parseDurationToSeconds(prompt?.loop?.maxDuration);
   // onTasks CEL condition: from the dialog result, then the prompt's loop
   // frontmatter default. conditionPreset is intentionally NOT threaded
   // here (mitto-pei).
-  const condition = loop.condition ?? prompt?.loop?.condition ?? "";
+  const condition = loop.condition ?? promptDefaults.condition;
 
-  const fetch_ = fetchImpl || secureFetch;
-  try {
-    const resp = await fetch_(endpoints.sessions.loop(sessionId), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt_name: prompt?.name,
-        frequency,
-        enabled: true,
-        max_iterations: maxIterations,
-        trigger,
-        delay_seconds: delaySeconds,
-        max_duration_seconds: maxDurationSeconds,
-        ...(trigger === "onTasks" ? { condition } : {}),
-        ...(args && typeof args === "object" && Object.keys(args).length > 0
-          ? { arguments: args }
-          : {}),
-      }),
-    });
+  // Frontmatter-driven booleans forwarded verbatim (mitto-le4.3). Precedence:
+  // dialog result → prompt.loop default → omit from body. `??` correctly keeps
+  // an explicit `false` from the dialog rather than falling through to the
+  // prompt default. Only real booleans reach the wire — undefined/null are
+  // omitted so we do not serialize accidental `null`s.
+  const freshContext = loop.freshContext ?? promptDefaults.freshContext;
+  const runOnStart = loop.runOnStart ?? promptDefaults.runOnStart;
+  const coalesceDuringBusy =
+    loop.coalesceDuringBusy ?? promptDefaults.coalesceDuringBusy;
 
-    if (resp.ok) {
-      return { success: true };
-    }
-    let errData = {};
+  const armsOnTasks = triggers.includes("onTasks");
+  const loopBody = {
+    prompt_name: prompt?.name,
+    frequency,
+    enabled: true,
+    max_iterations: maxIterations,
+    triggers,
+    delay_seconds: delaySeconds,
+    max_duration_seconds: maxDurationSeconds,
+    ...(armsOnTasks ? { condition } : {}),
+    ...(typeof freshContext === "boolean"
+      ? { fresh_context: freshContext }
+      : {}),
+    ...(typeof runOnStart === "boolean" ? { run_on_start: runOnStart } : {}),
+    ...(typeof coalesceDuringBusy === "boolean"
+      ? { coalesce_during_busy: coalesceDuringBusy }
+      : {}),
+    ...(args && typeof args === "object" && Object.keys(args).length > 0
+      ? { arguments: args }
+      : {}),
+  };
+
+  if (fetchImpl) {
     try {
-      errData = await resp.json();
-    } catch (_) {}
-    return { success: false, error: errData.error || "loop_setup_failed" };
+      const resp = await fetchImpl(getSdkClient().endpoints.sessions.loop(sessionId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loopBody),
+      });
+
+      if (resp.ok) {
+        return { success: true };
+      }
+      let errData = {};
+      try {
+        errData = await resp.json();
+      } catch (_) {}
+      return { success: false, error: errData.error || "loop_setup_failed" };
+    } catch (err) {
+      console.error("configureLoopSchedule error:", err);
+      return { success: false, error: "loop_setup_failed" };
+    }
+  }
+
+  try {
+    await getSdkClient().sessions.loop.set(sessionId, loopBody);
+    return { success: true };
   } catch (err) {
     console.error("configureLoopSchedule error:", err);
-    return { success: false, error: "loop_setup_failed" };
+    if (errorStatus(err) === undefined) {
+      return { success: false, error: "loop_setup_failed" };
+    }
+    return { success: false, error: err.body?.error || "loop_setup_failed" };
   }
 }
 

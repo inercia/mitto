@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestPruneReconnect_SeqsPreservedAfterPruning verifies that session pruning
@@ -27,7 +27,7 @@ import (
 func TestPruneReconnect_SeqsPreservedAfterPruning(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -48,13 +48,13 @@ func TestPruneReconnect_SeqsPreservedAfterPruning(t *testing.T) {
 		loadedCountA  int
 		connectedA    bool
 	)
-	sessA, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	sessA, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(_, _, _ string) {
 			muA.Lock()
 			connectedA = true
 			muA.Unlock()
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, _ bool, _ bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, _ bool, _ bool) {
 			muA.Lock()
 			eventsLoadedA = true
 			loadedCountA = len(events)
@@ -118,13 +118,13 @@ func TestPruneReconnect_SeqsPreservedAfterPruning(t *testing.T) {
 		loadedCountB    int
 		promptCompleteB int32
 	)
-	sessB, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	sessB, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(_, _, _ string) {
 			muB.Lock()
 			connectedB = true
 			muB.Unlock()
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, _ bool, _ bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, _ bool, _ bool) {
 			muB.Lock()
 			eventsLoadedB = true
 			loadedCountB = len(events)

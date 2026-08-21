@@ -62,6 +62,23 @@ Mitto configuration file with runner settings for all runner types.
 - Reasonable defaults for each runner
 - Test ACP server configuration
 
+### restricted-runner-smoke.sh
+End-to-end smoke test: runs `mitto prompt` against the mock ACP server with
+a platform-appropriate `restricted_runners` entry and asserts the runner
+init log line. On Linux, if `firejail` was requested but the runner fell
+back to `exec`, the script hard-fails (isolation not enforced).
+
+**Usage**: `make test-runner-smoke`
+
+### test-restricted-runner-smoke-assert.sh
+Cross-platform bash unit test for the smoke script's
+`assert_runner_log_line` function. Exercises the positive-match,
+Linux+firejail hard-fail, macOS+sandbox-exec soft-pass, and missing-log
+cases against synthetic log inputs (no mitto/mock-acp/sandbox tooling
+required).
+
+**Usage**: `make test-runner-smoke-assert`
+
 ### runner-test-plan.md
 Comprehensive test plan with detailed scenarios.
 

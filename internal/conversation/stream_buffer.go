@@ -23,6 +23,7 @@ const (
 type StreamEvent struct {
 	Type        StreamEventType
 	HTML        string      // For AgentMessage
+	Markdown    string      // For AgentMessage (raw pre-conversion markdown, mitto-pscc.3)
 	Text        string      // For AgentThought
 	ToolID      string      // For ToolCall/ToolUpdate
 	Title       string      // For ToolCall
@@ -32,7 +33,7 @@ type StreamEvent struct {
 
 // StreamBufferCallbacks holds callbacks for emitting events.
 type StreamBufferCallbacks struct {
-	OnAgentMessage func(seq int64, html string)
+	OnAgentMessage func(seq int64, html, markdown string)
 	OnAgentThought func(seq int64, text string)
 	OnToolCall     func(seq int64, id, title, status string)
 	OnToolUpdate   func(seq int64, id string, status *string)
@@ -78,8 +79,8 @@ func NewStreamBuffer(cfg StreamBufferConfig) *StreamBuffer {
 
 	// Create markdown buffer that notifies us on flush
 	sb.mdBuffer = NewMarkdownBufferWithConfig(MarkdownBufferConfig{
-		OnFlush: func(html string) {
-			sb.onMarkdownFlush(html)
+		OnFlush: func(html, markdown string) {
+			sb.onMarkdownFlush(html, markdown)
 		},
 		FileLinksConfig: cfg.FileLinksConfig,
 	})
@@ -328,11 +329,11 @@ func (sb *StreamBuffer) Close() {
 // Pending events are NOT emitted here - they're emitted when:
 // 1. Flush() is called explicitly (end of response)
 // 2. A non-markdown event arrives and we're not in a block
-func (sb *StreamBuffer) onMarkdownFlush(html string) {
+func (sb *StreamBuffer) onMarkdownFlush(html, markdown string) {
 	// Emit the markdown content with seq assigned now
 	if sb.callbacks.OnAgentMessage != nil && html != "" {
 		seq := sb.getNextSeq()
-		sb.callbacks.OnAgentMessage(seq, html)
+		sb.callbacks.OnAgentMessage(seq, html, markdown)
 	}
 	// Note: We don't emit pending events here because we can't safely check
 	// if we're still in a block (would cause deadlock). Pending events will
@@ -367,7 +368,7 @@ func (sb *StreamBuffer) emitEvents(events []StreamEvent) {
 		case StreamEventAgentMessage:
 			if sb.callbacks.OnAgentMessage != nil {
 				seq := sb.getNextSeq()
-				sb.callbacks.OnAgentMessage(seq, event.HTML)
+				sb.callbacks.OnAgentMessage(seq, event.HTML, event.Markdown)
 			}
 		case StreamEventAgentThought:
 			// Skip empty thoughts (defensive check - AddThought filters these too)

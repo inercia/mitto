@@ -895,6 +895,19 @@ func TestBuildNewSettings_ModelsOmitted(t *testing.T) {
 	}
 }
 
+func TestBuildNewSettings_PreservesTaskLabelColors(t *testing.T) {
+	existing := []config.TaskLabelColor{{Label: "needs-human", Color: "#ef4444"}}
+	server := &Server{config: Config{MittoConfig: &config.Config{TaskLabelColors: existing}}}
+
+	settings, err := server.buildNewSettings(&ConfigSaveRequest{})
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+	if len(settings.TaskLabelColors) != 1 || settings.TaskLabelColors[0] != existing[0] {
+		t.Fatalf("TaskLabelColors = %+v, want %+v preserved", settings.TaskLabelColors, existing)
+	}
+}
+
 // TestBuildNewSettings_ModelsFiltersBlankNames verifies that profiles with a
 // blank (or whitespace-only) name are dropped before being persisted, as
 // defense-in-depth alongside the UI validation and Config.Parse's own skip.

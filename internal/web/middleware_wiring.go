@@ -43,9 +43,7 @@ func (s *Server) getSecureUpgraderForRequest(r *http.Request) websocket.Upgrader
 			"client_ip", middleware.GetClientIPWithProxyCheck(r))
 	}
 
-	// Allow authenticated external connections (e.g., Tailscale funnel)
-	// These have already been authenticated by the auth middleware
-	return middleware.CreateSecureUpgrader(s.wsSecurityConfig, logger, middleware.IsExternalConnection, enableCompression)
+	return middleware.CreateSecureUpgrader(s.wsSecurityConfig, logger, enableCompression)
 }
 
 // defenseRecordingMiddleware records requests for analysis by the scanner defense system.

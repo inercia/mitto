@@ -1,0 +1,193 @@
+icon: alert-circle
+name: 'On-Call: I have been paged'
+menus: prompts, !promptsLoop
+description: 'Kick off incident triage — collect the incident links via a form, create a beads epic, ingest context from Slack / web pages / GitHub in parallel, decompose into sub-tasks, and dispatch a curious child investigator per sub-task. Every finding is written back to the corresponding bead.'
+group: On-Call
+backgroundColor: '#FFCDD2'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && Permissions.CanStartConversation'
+preferredModels:
+  - modelTag: Coding
+parameters:
+  - name: InvestigationInstructions
+    type: filename
+    glob:
+      - "**/*.md"
+    remember: folder
+    required: true
+    description: Markdown file with project-specific investigation instructions (runbook, tool inventory, escalation paths). Its contents are inlined into every child investigator's prompt so each child follows the same playbook.
+prompt: |-
+  {{ template "_shared/session-context" . }}
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  Existing children: `{{ Default "(none)" .Children.MCPText }}`
+
+  # On-Call: I Have Been Paged
+
+  You are helping an on-call engineer triage a live incident. This prompt orchestrates the opening minutes: gather links, open a tracker epic, ingest context in parallel, decompose the epic into sub-tasks, and dispatch one curious child investigator per sub-task. You act as the **coordinator** — real digging happens in the children.
+
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  ## Step 1 — Collect the incident links via a form
+
+  Do NOT ask questions in text. Use `mitto_ui_form(self_id: "{{ .Session.ID }}")` to collect the entry-point links in one shot. Every field is optional individually, but the operator must supply **at least one** so the ingestion step in Step 3 has something to read.
+
+  ```html
+  <label>Short incident title (one line, will become the epic title)</label>
+  <input type="text" name="title" placeholder="e.g. 503 ext_authz_error on api.example.com" required />
+
+  <label>Slack channel / war-room URL(s) (one per line)</label>
+  <textarea name="slack_urls" rows="3" placeholder="https://example.slack.com/archives/C0XXXXXXX/pXXXXXXXXXXXXXX"></textarea>
+
+  <label>Ticket link(s) — JIRA, GitHub issue, PagerDuty, Statuspage, etc. (one per line)</label>
+  <textarea name="ticket_urls" rows="3" placeholder="https://example.atlassian.net/browse/EON-12345"></textarea>
+
+  <label>Dashboard / observability link(s) — Grafana, Splunk, Datadog, Kibana… (one per line)</label>
+  <textarea name="dashboard_urls" rows="3" placeholder="https://grafana.example.com/d/..."></textarea>
+
+  <label>Other reference URLs (runbooks, past reports, code, …)</label>
+  <textarea name="other_urls" rows="3"></textarea>
+
+  <label>Free-form notes from the pager / initial hand-off</label>
+  <textarea name="notes" rows="4" placeholder="Paste anything the on-caller told you or the pager alert said"></textarea>
+  ```
+
+  Validate the submission: if all URL fields **and** `notes` are empty, warn via `mitto_ui_notify(style: "warning")` and re-open the form. If the user cancels, stop.
+
+  ## Step 2 — Create the tracking epic in beads
+
+  Compose an epic body from the form output — the title (Step 1), a "Reported at" timestamp, the raw links grouped by category, and the free-form notes verbatim. Create the epic with `bd`:
+
+  ```bash
+  bd create "<title from Step 1>" \
+    --type epic \
+    --priority 1 \
+    --label on-call,incident \
+    --body-file /tmp/on-call-epic-body.md
+  ```
+
+  Capture the returned bead ID (call it `<EPIC_ID>`) and immediately attach this conversation to the epic so the UI links the two:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<EPIC_ID>")
+  ```
+
+  Then surface progress: `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Incident epic created", message: "<EPIC_ID> — ingesting context…", style: "info", beads_issue: "<EPIC_ID>")`.
+
+  ## Step 3 — Ingest context from the incident links (sequential, in this conversation)
+
+  Do **not** spawn children for this step. The goal here is only to read what the operator already handed you and consolidate it into the epic — that is a straight information-gathering pass, not reasoning, and it belongs in the coordinator's own turn so the results are immediately available for Step 4 without any cross-conversation coordination.
+
+  Walk the URL buckets from Step 1 **in this order**, and within each bucket process the URLs **one at a time** (never in parallel batches):
+
+  1. **Slack URLs** — for each link, use the Slack MCP tools if available (`conversations_history_*`, `conversations_replies_*`, `conversations_get_permalink_*`) to fetch the parent message and full thread. Fall back to `web-fetch` only if no Slack MCP tool is configured.
+  2. **Ticket URLs** — JIRA, GitHub issues/PRs, PagerDuty, Statuspage. Prefer the specialised MCP tool (JIRA MCP, GitHub MCP) when available; fall back to `web-fetch` or `Playwright`.
+  3. **Dashboard URLs** — Grafana, Splunk, Datadog, Kibana, etc. Use `web-fetch` for a snapshot of what the operator was looking at; if a dashboard requires interaction (login, time-range picker), use Playwright to open it and capture the visible panels. Do NOT try to run new queries — only capture what the URL itself points at.
+  4. **Other URLs** — runbooks, past reports, code links. Use `web-fetch` (or the repo's file-reading tools if the link points into this workspace).
+
+  For every URL, extract into your working notes: **who / what / where / when / affected components / timeline / what has already been tried / open questions / references cited inside the fetched content**. Keep observations separate from hypotheses.
+
+  If a URL fails to fetch (auth wall, 404, network error), record the failure with the URL and the error message — do NOT retry more than twice, and do NOT abort the whole step because one link is unreachable.
+
+  Once every URL has been walked, consolidate all findings into a single Markdown document with these sections:
+
+  - **Ingested sources** — bullet list of every URL, tagged `[ok]` / `[failed: <reason>]`.
+  - **Situation summary** — 5–10 bullets covering who / what / where / when / affected components.
+  - **Timeline so far** — chronological bullets (`HH:MM UTC — <event>`) extracted from the fetched material.
+  - **Actions already taken** — anything the pager thread or ticket comments say has been tried.
+  - **Open questions & gaps** — what the fetched material does NOT answer.
+  - **Cross-references** — bead IDs, related tickets, related PRs / commits, dashboards mentioned inside the fetched content.
+
+  Write this document to `/tmp/on-call-ingest-<EPIC_ID>.md` and append it to the epic:
+
+  ```bash
+  bd comment <EPIC_ID> --file /tmp/on-call-ingest-<EPIC_ID>.md
+  ```
+
+  (Use `--file`, never a backtick heredoc — see the `.mitto` conventions rule about `bd comment`.)
+
+  Surface progress once: `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Context ingested", message: "<EPIC_ID>: <N> links processed (<K> failed).", style: "info", beads_issue: "<EPIC_ID>")`.
+
+  ## Step 4 — Investigation playbook
+
+  {{ if FileExists .Args.InvestigationInstructions -}}
+  These are the investigation guidelines. Consider these instructions carefully inorder to
+  determine how we will drive the investigation, how to find the leads that could provide valuable
+  information.
+
+  {{ ReadFile .Args.InvestigationInstructions }}
+  {{- else -}}
+  **⚠️ Investigation instructions file `{{ .Args.InvestigationInstructions }}` could not be read** 
+  (missing, outside the workspace, oversize, or unreadable). Notify the operator via 
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Investigation instructions unreadable", 
+  message: "Cannot read `{{ .Args.InvestigationInstructions }}` — Step 5 decomposition and 
+  Step 7 investigators both need this playbook. Stopping.", style: "error", beads_issue: "<EPIC_ID>")`
+  and **stop** — do not proceed to Step 5. 
+  The epic remains open for the operator to pick up manually.
+  {{- end }}
+
+  ## Step 5 — Synthesize context and decompose the epic
+
+  Read the epic's fresh comments (`bd comments <EPIC_ID>`) — the ingest document you wrote in Step 3 is now on the epic. Cross-reference the incident's symptoms (from Step 3) against the playbook you loaded in Step 4: the playbook's failure-mode sections tell you which components/data-sources to interrogate for the symptoms you saw. Produce, inline in this conversation:
+
+  1. A **consolidated situation summary** (5–10 bullets: symptoms, blast radius, timeline, current hypotheses, gaps).
+  2. A **sub-task list** — 2–5 independent investigation angles you would pursue in parallel, each grounded in a specific playbook section when possible (e.g. "Symptom = intermittent 5xx from service-X + Playbook §DNS → sub-task: verify CoreDNS health and resolution latency for service-X's dependencies"). Each sub-task must be **disjoint** (different services / dashboards / hypotheses) so multiple children can work at once without stepping on each other. Do NOT include remediation or mitigation actions here — this prompt only opens investigation angles.
+
+  Present the sub-task list as a Markdown table (columns: `#`, `Title`, `Investigation angle`, `Playbook section` (cite the runbook heading, or `—` if none), `Data sources to consult`). Show it to the operator and ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 180)`:
+
+  - **Question**: "Dispatch these N investigation sub-tasks now?"
+  - **Options**: `[{label: "Yes — dispatch all"}, {label: "Edit list first"}, {label: "Cancel"}]`.
+
+  On "Edit list first", use `mitto_ui_textbox` to let the operator edit the raw table, then re-parse and re-confirm. On "Cancel" or timeout, stop (but leave the epic open).
+
+  ## Step 6 — Create one child bead per sub-task
+
+  For every approved sub-task, create a child bead depending on the epic (so `Loop processing tasks` can pick them up later if the operator ever enables it):
+
+  ```bash
+  bd create "<sub-task title>" \
+    --type task \
+    --priority 1 \
+    --label on-call,incident,investigation \
+    --parent <EPIC_ID> \
+    --body-file /tmp/subtask-<n>.md
+  ```
+
+  Record every returned bead ID; call them `<SUB_IDS>`.
+
+  ## Step 7 — Dispatch one curious investigator per sub-task
+
+  For each `<SUB_ID>`, spawn a child conversation `mitto_conversation_new(self_id: "{{ .Session.ID }}", beads_issue: "<SUB_ID>", title: "Investigate <sub-task title>", initial_prompt: <see below>)`. Reuse **idle** existing children (`{{ .Children.MCPText }}`) if any match; otherwise create fresh. Cap at **4 parallel** investigators — if the approved list has more sub-tasks than that, queue the overflow by asking `mitto_ui_options` whether to dispatch the top-4 now and queue the rest, or reduce the list.
+
+  The initial prompt for each investigator MUST:
+
+  - State the incident title, the parent `<EPIC_ID>`, and the child's own `<SUB_ID>`, and remind the child to keep its bead updated (`bd update`, `bd comment`) as it works. Bead comments should follow markdown conventions.
+  - Instruct the child to attach itself to its bead first: `mitto_conversation_update(self_id: <own id>, conversation_id: "self", beads_issue: "<SUB_ID>")`.
+  - Give the child the consolidated situation summary from Step 5 so it does not re-ingest.
+  - **Inline the investigation playbook** you loaded in Step 4 verbatim (between `---` fences) so the child follows the same runbook — do NOT paraphrase or summarise it; the whole file goes into the initial prompt as reference material. If the playbook cites a specific section relevant to this sub-task (from the `Playbook section` column of the Step-5 table), call it out explicitly: *"This sub-task maps to §<section> of the playbook — start there."*
+  - Set the child's mindset explicitly: **"You are a curious, inquisitive investigator. Ask 'why?' at every layer, follow evidence rather than assumptions, distinguish observation from hypothesis, and report both dead-ends and leads."**
+  - Tell the child, at the end of the initial prompt, to report via `mitto_children_tasks_report(self_id: <own id>, task_id: "investigate", status: "completed" | "partial" | "failed", summary: "<findings>", details: "<evidence, commands run, links, open questions>")` **and** to write its full findings back to its `<SUB_ID>` bead as comments before reporting.
+
+  ## Step 8 — Wait, synthesize, and hand back to the operator
+
+  Block on the investigators:
+
+  ```
+  mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [<SUB conversation ids>], task_id: "investigate", timeout_seconds: 3600)
+  ```
+
+  Then:
+
+  1. Read every sub-bead's fresh comments (`bd comments <SUB_ID>`) alongside the child reports.
+  2. Merge findings by hypothesis, flag conflicts / gaps / open questions, and rank the surviving hypotheses.
+  3. Append a **"Round-1 synthesis"** comment to `<EPIC_ID>` with the ranked hypotheses, the strongest supporting evidence, and the next investigation moves.
+  4. Notify the operator: `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Round-1 triage complete", message: "<EPIC_ID>: <N> sub-tasks investigated — see the epic for the synthesis.", style: "success", beads_issue: "<EPIC_ID>")`.
+  5. Ask via `mitto_ui_options` whether to (a) dispatch a follow-up round based on the surviving hypotheses, (b) hand back to the operator, or (c) stop.
+
+  If the operator picks (a), loop back to Step 5 (a new decomposition based on the surviving hypotheses — the playbook loaded in Step 4 is still in your context, no need to reload it); otherwise stop here — do NOT propose or execute mitigation. Mitigation is a human decision.
+
+  ## Guardrails
+
+  - **No mitigation without explicit human approval.** This prompt investigates and documents; it does not restart pods, roll back deploys, or change config.
+  - **Do not post to Slack or update tickets** unless the operator explicitly asks — draft messages inline and wait.
+  - **Curiosity over confidence.** Prefer "we observed X, which is consistent with Y and inconsistent with Z" over "the root cause is Y".
+  - **One bead per sub-task, one child per bead** — never fan out multiple children onto the same `<SUB_ID>` (avoids conflicting comment streams).
+  - If any step's `mitto_ui_*` dialog times out and the operator is clearly away, hold the current draft/state silently and continue background ingestion; do NOT re-open blocking dialogs on a timer.

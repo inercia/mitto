@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // =============================================================================
@@ -22,10 +22,10 @@ import (
 // TestMultiClient_BothReceiveEvents verifies that two clients connected to the
 // same session both receive all events when one sends a prompt.
 func TestMultiClient_BothReceiveEvents(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
 	// Create a session
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "multiclient-both-receive",
 		WorkingDir: testWorkspace,
 	})
@@ -47,7 +47,7 @@ func TestMultiClient_BothReceiveEvents(t *testing.T) {
 	client2Connected := make(chan struct{})
 
 	// Connect client 1
-	sess1, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
@@ -74,7 +74,7 @@ func TestMultiClient_BothReceiveEvents(t *testing.T) {
 	defer sess1.Close()
 
 	// Connect client 2
-	sess2, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},
@@ -166,9 +166,9 @@ func TestMultiClient_BothReceiveEvents(t *testing.T) {
 // TestMultiClient_PromptFromOneReceiveOnAnother verifies that when client A
 // sends a prompt, client B receives the user_prompt event.
 func TestMultiClient_PromptFromOneReceiveOnAnother(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "multiclient-prompt-broadcast",
 		WorkingDir: testWorkspace,
 	})
@@ -190,7 +190,7 @@ func TestMultiClient_PromptFromOneReceiveOnAnother(t *testing.T) {
 	client2Done := make(chan struct{})
 
 	// Connect client 1
-	sess1, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			mu.Lock()
 			client1ClientID = clientID
@@ -207,7 +207,7 @@ func TestMultiClient_PromptFromOneReceiveOnAnother(t *testing.T) {
 	defer sess1.Close()
 
 	// Connect client 2
-	sess2, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},
@@ -267,9 +267,9 @@ func TestMultiClient_PromptFromOneReceiveOnAnother(t *testing.T) {
 // TestMultiClient_DisconnectOneOtherContinues verifies that when one client
 // disconnects, the other client continues to receive events normally.
 func TestMultiClient_DisconnectOneOtherContinues(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "multiclient-disconnect",
 		WorkingDir: testWorkspace,
 	})
@@ -288,7 +288,7 @@ func TestMultiClient_DisconnectOneOtherContinues(t *testing.T) {
 	client2Done := make(chan struct{})
 
 	// Connect client 1
-	sess1, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
@@ -298,7 +298,7 @@ func TestMultiClient_DisconnectOneOtherContinues(t *testing.T) {
 	}
 
 	// Connect client 2
-	sess2, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},

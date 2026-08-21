@@ -6,12 +6,14 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -51,9 +53,28 @@ type ConversationStartInput struct {
 	LoopFreshContext   *bool             `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	LoopMaxIterations  *int              `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
 	// On-completion / on-tasks trigger configuration (optional)
-	LoopTrigger                string `json:"loop_trigger,omitempty"`                  // "schedule" (default), "onCompletion", or "onTasks"
+	// LoopTrigger accepts a single trigger ("schedule", "onCompletion", or
+	// "onTasks") or a comma-separated list of several ("schedule,onCompletion")
+	// to arm multiple triggers at once (mitto-r6j.5). "schedule" is the default
+	// when unset.
+	LoopTrigger                string `json:"loop_trigger,omitempty"`
 	LoopCompletionDelaySeconds *int   `json:"loop_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
 	LoopMaxDurationSeconds     *int   `json:"loop_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
+	// LoopChildEvents lists the child-conversation lifecycle events that arm
+	// the onChild trigger: "anyEndResponse" (a child finishes a response),
+	// "anyDeleted" (a child is deleted), and/or "anyLoopStopped" (a child's
+	// own loop transitions into the stopped state — a real "child driver
+	// declared itself done" signal). Empty/absent defaults to
+	// anyEndResponse + anyDeleted (anyLoopStopped is opt-in only) when
+	// onChild is among the armed triggers. Only meaningful when loop_trigger
+	// includes "onChild".
+	LoopChildEvents []string `json:"loop_child_events,omitempty"`
+	// LoopSlackSubscriptions contains opaque installation/channel references and
+	// per-subscription filters. Credentials are resolved outside loop storage.
+	LoopSlackSubscriptions []session.SlackSubscription `json:"loop_slack_subscriptions,omitempty"`
+	// LoopSettleWindowSeconds is an optional pre-fire debounce window (seconds)
+	// for the onTasks trigger; nil/0 = fire immediately on the first delta.
+	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
 	// LoopCondition is a CEL expression gating onTasks firing (only meaningful when
 	// loop_trigger is "onTasks"). Empty means fire on ANY beads/task change.
 	LoopCondition string `json:"loop_condition,omitempty"`
@@ -63,6 +84,10 @@ type ConversationStartInput struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopRunOnStart, when *true, causes the loop to fire exactly once shortly
+	// after Mitto boots (with an anti-flap window guarding against a recent
+	// run). Nil or false = do not fire on start (default).
+	LoopRunOnStart *bool `json:"loop_run_on_start,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When prompt_name resolves to a prompt
 	// carrying a loop: block, its fields fill any loop_* fields the caller did
@@ -81,6 +106,7 @@ type ConversationStartOutput struct {
 	LoopConfigured      bool   `json:"loop_configured,omitempty"` // Whether loop was configured
 	LoopNextRun         string `json:"loop_next_run,omitempty"`   // Next scheduled run (RFC3339)
 	Reused              bool   `json:"reused,omitempty"`          // True when routed to an existing singleton conversation instead of creating a new one
+	Coalesced           bool   `json:"coalesced,omitempty"`       // True when target.reuseCoalesce suppressed a duplicate in-flight/queued dispatch (mitto-djs1)
 	Error               string `json:"error,omitempty"`
 }
 
@@ -172,11 +198,28 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// mitto_prompt_get) and used as the initial prompt. Optional 'arguments' are
 	// applied to Go-template .Args placeholders when the prompt is sent.
 	initialPromptText := input.InitialPrompt
-	// originPromptName / promptIsSingleton drive singleton find-or-route below
-	// (mitto-4mb.8). They are only set when the conversation originates from a
-	// named prompt, matching the web path's OriginPromptName tracking.
+	// originPromptName / promptIsSingleton / promptReuseIssue drive the
+	// find-or-route blocks below (mitto-4mb.8, mitto-bx40). They are only set
+	// when the conversation originates from a named prompt, matching the web
+	// path's OriginPromptName tracking.
 	originPromptName := ""
 	promptIsSingleton := false
+	promptReuseIssue := false
+	promptReuseTitle := false
+	promptTargetTitle := ""
+	// promptTargetBackgroundColor: a creation-time default color for the
+	// new conversation, from target.backgroundColor (mitto-8sk). Only
+	// applied on the create branch below; reuse hits never re-apply it.
+	promptTargetBackgroundColor := ""
+	// promptTargetNoArchive: marks the new conversation as non-archivable,
+	// from target.noArchive (mitto-yvel.2). Only applied on the create
+	// branch below; reuse hits never re-apply it, and it is immutable
+	// afterwards (no mutation path in mitto_conversation_update).
+	promptTargetNoArchive := false
+	// promptReuseCoalesce: when true, a duplicate (same PromptName + Arguments)
+	// dispatch onto an already-in-flight or queued conversation is a no-op
+	// (mitto-djs1). Only consulted after a reuse hit resolves to existingID.
+	promptReuseCoalesce := false
 	if input.PromptName != "" {
 		// mitto-kt6: prompt_name wins when both are supplied. Agents forced by
 		// strict JSON schemas often fill 'initial_prompt' with a placeholder to
@@ -201,6 +244,63 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		initialPromptText = p.Prompt
 		originPromptName = input.PromptName
 		promptIsSingleton = p.Singleton
+		// v2 wire-shape normalization (mitto-47y.6.3): rewrite any JSON-encoded
+		// picker values in input.Arguments to the v1 sibling-key shape before
+		// the value reaches template rendering / target-title / queue. Bare v1
+		// name strings pass through untouched.
+		input.Arguments = normalizeMCPArguments(input.PromptName, input.Arguments, s.loadMergedPrompts(promptWorkingDir))
+		if p.Target != nil {
+			promptTargetTitle = p.Target.Title
+			promptTargetBackgroundColor = p.Target.BackgroundColor
+			promptTargetNoArchive = p.Target.NoArchive
+			if p.Target.Reuse != nil {
+				promptReuseIssue = p.Target.Reuse.Issue
+				promptReuseTitle = p.Target.Reuse.Title
+				if p.Target.Reuse.Coalesce != nil {
+					promptReuseCoalesce = *p.Target.Reuse.Coalesce
+				}
+			}
+			// Render target.title as a Go text/template (mitto-5qbo). Fast-path
+			// passthrough for literal titles (no "{{"). Fail-closed on render or
+			// empty-output error — boundary rejection before the session is
+			// created, same shape as the prompt-not-found rejection above.
+			if promptTargetTitle != "" {
+				ctx := prompts.PromptTargetContext{Args: input.Arguments}
+				ctx.Session.BeadsIssue = input.BeadsIssue
+				ctx.Workspace.Folder = promptWorkingDir
+				rendered, rerr := prompts.RenderPromptTargetTitle(p.Name, promptTargetTitle, ctx)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				promptTargetTitle = rendered
+			}
+		}
+		// mitto-8s89: fall back to the top-level prompt backgroundColor (the
+		// "prompt button" color) when target.backgroundColor is unset —
+		// every builtin prompt sets the former and none set the latter, so
+		// without this fallback the color is silently dropped. This also
+		// covers prompts with no target: block at all. The top-level field
+		// is not validated at load time (see prompts.IsValidHexColor's doc
+		// comment), so gate it here to avoid leaking a non-hex value into
+		// the sidebar accent stripe.
+		if strings.TrimSpace(promptTargetBackgroundColor) == "" && prompts.IsValidHexColor(p.BackgroundColor) {
+			promptTargetBackgroundColor = p.BackgroundColor
+		}
+		// reuseTitle adopts target.title as the conversation's Name so a
+		// subsequent scan matches it. When the caller supplied a different
+		// Title, log the override (target.title is the canonical lookup key).
+		if promptReuseTitle && promptTargetTitle != "" {
+			if input.Title != "" && input.Title != promptTargetTitle {
+				s.logger.Debug("overriding mitto_conversation_new title with target.title from prompt frontmatter",
+					"prompt", input.PromptName, "request_title", input.Title, "target_title", promptTargetTitle)
+			}
+			input.Title = promptTargetTitle
+		} else if !promptReuseTitle && promptTargetTitle != "" && input.Title == "" {
+			// Plain target.title (no reuseTitle): adopt as default Title
+			// only when the caller did not supply one. Caller override
+			// wins; find-or-route is NOT invoked (reuseTitle is opt-in).
+			input.Title = promptTargetTitle
+		}
 
 		// Auto-apply the seeded prompt's loop: frontmatter block (mitto-r7y):
 		// when the resolved prompt carries a loop: block, its fields fill any
@@ -240,6 +340,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		// Store the canonical name from the merged prompt so downstream consumers see
 		// a stable identifier regardless of the caller's case.
 		loopPromptName = p.Name
+		// v2 wire-shape normalization for loop arguments (mitto-47y.6.3).
+		input.LoopArguments = normalizeMCPArguments(input.LoopPromptName, input.LoopArguments, s.loadMergedPrompts(loopWorkingDir))
 	}
 
 	// Reject a suspiciously short, placeholder-shaped free-text initial_prompt
@@ -287,8 +389,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// Check for duplicate title if title is provided
-	if input.Title != "" {
+	// Check for duplicate title if title is provided.
+	// Skipped when reuseTitle is active: that ladder step below handles
+	// reuse (funnel into the existing conversation) instead of rejecting.
+	if input.Title != "" && !promptReuseTitle {
 		allSessions, err := store.List()
 		if err != nil {
 			return nil, ConversationStartOutput{}, fmt.Errorf("failed to check for duplicate titles: %v", err)
@@ -363,13 +467,113 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// reuseIssue find-or-route (mitto-bx40): mirror the web path
+	// (internal/web/handlers/session_create.go). When the call carries
+	// beads_issue AND the originating prompt declares target.reuseIssue, the
+	// per-issue reuse decision is authoritative: funnel into an existing
+	// non-archived conversation with the same beads_issue in the same
+	// working_dir instead of creating a duplicate. If it misses, the singleton
+	// fallback is SKIPPED for this call — otherwise two distinct beads issues
+	// driven by the same singleton prompt would collapse into one conversation.
+	// The per-(workingDir, beadsIssue) lock is held until this handler returns
+	// so the scan + create/persist is atomic relative to concurrent creates for
+	// the same issue.
+	reuseIssueEvaluated := false
+	if promptReuseIssue && originPromptName != "" && input.BeadsIssue != "" {
+		reuseIssueEvaluated = true
+		key := targetWorkingDir + "\x00" + input.BeadsIssue
+		unlock := s.lockReuseIssue(key)
+		defer unlock()
+
+		if metas, listErr := store.List(); listErr == nil {
+			if existingID, ok := session.FindConversationByBeadsIssue(metas, targetWorkingDir, input.BeadsIssue); ok {
+				if out, coalesced := s.maybeCoalesceMCP(store, existingID, originPromptName, promptReuseCoalesce, input.Arguments); coalesced {
+					s.logger.Info("Coalesced mitto_conversation_new duplicate dispatch by beads_issue",
+						"existing_session_id", existingID,
+						"origin_prompt_name", originPromptName,
+						"beads_issue", input.BeadsIssue,
+						"working_dir", targetWorkingDir)
+					return nil, out, nil
+				}
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				s.logger.Info("Routed mitto_conversation_new to existing conversation by beads_issue",
+					"existing_session_id", existingID,
+					"origin_prompt_name", originPromptName,
+					"beads_issue", input.BeadsIssue,
+					"working_dir", targetWorkingDir)
+				return nil, out, nil
+			}
+		}
+		// No candidate — fall through to normal creation. Lock stays held via
+		// defer so the BeadsIssue+OriginPromptName persistence below completes
+		// before another concurrent waiter's scan runs and misses this new one.
+	}
+
+	// reuseTitle find-or-route: mirror the web path
+	// (internal/web/handlers/session_create.go). When the originating prompt
+	// declares target.reuseTitle (with a non-empty target.title, enforced at
+	// load time by ValidatePromptTarget), funnel dispatches into an existing
+	// non-archived conversation in the same working_dir whose Name matches
+	// the declared title. If no candidate exists, fall through to normal
+	// creation; input.Title has already been set to target.title above so
+	// the created conversation will match a subsequent scan. Skip singleton
+	// fallback on both hit and miss — title reuse is authoritative for
+	// this prompt.
+	reuseTitleEvaluated := false
+	if !reuseIssueEvaluated && promptReuseTitle && promptTargetTitle != "" {
+		reuseTitleEvaluated = true
+		key := targetWorkingDir + "\x00" + promptTargetTitle
+		unlock := s.lockReuseTitle(key)
+		defer unlock()
+
+		if metas, listErr := store.List(); listErr == nil {
+			if existingID, ok := session.FindConversationByTitle(metas, targetWorkingDir, promptTargetTitle); ok {
+				if out, coalesced := s.maybeCoalesceMCP(store, existingID, originPromptName, promptReuseCoalesce, input.Arguments); coalesced {
+					s.logger.Info("Coalesced mitto_conversation_new duplicate dispatch by title",
+						"existing_session_id", existingID,
+						"origin_prompt_name", originPromptName,
+						"target_title", promptTargetTitle,
+						"working_dir", targetWorkingDir)
+					return nil, out, nil
+				}
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				s.logger.Info("Routed mitto_conversation_new to existing conversation by title",
+					"existing_session_id", existingID,
+					"origin_prompt_name", originPromptName,
+					"target_title", promptTargetTitle,
+					"working_dir", targetWorkingDir)
+				return nil, out, nil
+			}
+		}
+		// No candidate — fall through to normal creation. Lock stays held via
+		// defer so the create/persist below completes before another concurrent
+		// waiter's scan runs and misses this new one.
+	}
+
 	// Singleton find-or-route (mitto-4mb.8): mirror the web path
 	// (internal/web/handlers/session_create.go) — when the originating prompt is
 	// declared singleton, route to an existing non-archived conversation in the
 	// same working dir instead of creating a duplicate.
-	if promptIsSingleton && originPromptName != "" {
+	//
+	// Skipped when reuseIssue or reuseTitle already evaluated (and missed) for
+	// this call: singleton would incorrectly collapse distinct instances into
+	// one conversation.
+	if !reuseIssueEvaluated && !reuseTitleEvaluated && promptIsSingleton && originPromptName != "" {
 		if metas, listErr := store.List(); listErr == nil {
 			if existingID, ok := session.FindSingletonCandidate(metas, targetWorkingDir, originPromptName); ok {
+				if out, coalesced := s.maybeCoalesceMCP(store, existingID, originPromptName, promptReuseCoalesce, input.Arguments); coalesced {
+					s.logger.Info("Coalesced mitto_conversation_new duplicate singleton dispatch",
+						"existing_session_id", existingID,
+						"origin_prompt_name", originPromptName,
+						"working_dir", targetWorkingDir)
+					return nil, out, nil
+				}
 				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
@@ -399,6 +603,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		childSettings[k] = v
 	}
 
+	// Note: target.suppressAutoChildren (mitto-nlx) is intentionally NOT
+	// consulted on this MCP path. mitto_conversation_new always sets
+	// ParentSessionID (see below) and delegates process start to
+	// ResumeSession, not CreateSessionWithWorkspace — so the workspace-level
+	// auto_children spawn never runs here today. If MCP ever grows a
+	// top-level create path, mirror the resolveSuppressAutoChildrenByPromptName
+	// wiring used by the REST handler (internal/web/handlers/session_create.go).
 	newMeta := session.Metadata{
 		SessionID:        newSessionID,
 		Name:             input.Title,
@@ -408,7 +619,9 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
 		BeadsIssue:       input.BeadsIssue,
-		OriginPromptName: originPromptName, // Track originating prompt for singleton find-or-route
+		OriginPromptName: originPromptName,            // Track originating prompt for singleton find-or-route
+		BackgroundColor:  promptTargetBackgroundColor, // Creation-time default from target.backgroundColor (mitto-8sk)
+		NoArchive:        promptTargetNoArchive,       // Creation-time, immutable, from target.noArchive (mitto-yvel.2)
 	}
 
 	// Create the session
@@ -464,16 +677,18 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var loopConfigured bool
 	var loopNextRun string
 	if loopPromptText != "" {
-		// Resolve the trigger (default schedule). onCompletion and onTasks are
-		// event-driven and do not require a frequency.
-		trigger := session.LoopTrigger(input.LoopTrigger)
-		switch trigger {
-		case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
-			// valid
-		default:
-			return nil, ConversationStartOutput{}, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', or 'onTasks'")
+		// Resolve the trigger list (default [schedule]). onCompletion and
+		// onTasks are event-driven; frequency is only required when schedule
+		// is among the armed triggers (mitto-r6j.5: multi-trigger configs may
+		// list schedule alongside onCompletion/onTasks).
+		triggers, err := parseLoopTriggerList(input.LoopTrigger)
+		if err != nil {
+			return nil, ConversationStartOutput{}, err
 		}
-		skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
+		if len(triggers) == 0 {
+			triggers = []session.LoopTrigger{session.TriggerSchedule}
+		}
+		skipFrequency := !slices.Contains(triggers, session.TriggerSchedule)
 
 		var freq session.Frequency
 		if !skipFrequency {
@@ -540,15 +755,31 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			Enabled:            enabled,
 			FreshContext:       freshContext,
 			MaxIterations:      maxIterations,
-			Trigger:            trigger,
+			Triggers:           triggers,
 			DelaySeconds:       delaySeconds,
 			MaxDurationSeconds: maxDurationSeconds,
 			Condition:          input.LoopCondition,
 			ConditionPreset:    input.LoopConditionPreset,
+			SlackSubscriptions: input.LoopSlackSubscriptions,
+		}
+		if len(input.LoopChildEvents) > 0 {
+			ce := make([]session.ChildEvent, len(input.LoopChildEvents))
+			for i, e := range input.LoopChildEvents {
+				ce[i] = session.ChildEvent(e)
+			}
+			loop.ChildEvents = ce
 		}
 		if input.LoopCoalesceDuringBusy != nil {
 			v := *input.LoopCoalesceDuringBusy
 			loop.CoalesceDuringBusy = &v
+		}
+		if input.LoopRunOnStart != nil {
+			v := *input.LoopRunOnStart
+			loop.RunOnStart = &v
+		}
+		if input.LoopSettleWindowSeconds != nil {
+			v := *input.LoopSettleWindowSeconds
+			loop.SettleWindowSeconds = &v
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
 		loop.ClampDelay(s.loopDelayFloor())
@@ -673,6 +904,89 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 // existing conversation is idle (not prompting and an empty queue) the prompt is
 // re-seeded so re-invoking a menu prompt re-runs it; when busy it is left
 // untouched (focus-only). The returned output carries reused=true.
+// maybeCoalesceMCP returns a coalesced output when reuseCoalesce is enabled
+// and an identical dispatch (same PromptName + Arguments) is already in flight
+// or queued on the target. Callers MUST invoke this INSIDE the per-key reuse
+// lock (lockReuseIssue / lockReuseTitle) so the check-then-skip is atomic
+// against concurrent dupes. Returns (out, false) with a zero-value out when
+// no coalesce fires — callers then fall through to reuseSingletonConversation
+// as before (mitto-djs1). Mirrors handlers.maybeCoalesce in the REST path.
+func (s *Server) maybeCoalesceMCP(store *session.Store, existingID, promptName string, reuseCoalesce bool, arguments map[string]string) (ConversationStartOutput, bool) {
+	if !reuseCoalesce || promptName == "" {
+		return ConversationStartOutput{}, false
+	}
+	var bs BackgroundSession
+	if s.sessionManager != nil {
+		bs = s.sessionManager.GetSession(existingID)
+	}
+	queue := store.Queue(existingID)
+	if !promptMatchesActiveOrQueuedMCP(bs, queue, promptName, arguments) {
+		return ConversationStartOutput{}, false
+	}
+	meta, err := store.GetMetadata(existingID)
+	if err != nil {
+		// Metadata read failed; abort the coalesce and fall through to the
+		// normal reuse path so the caller sees a real error there instead of
+		// a silent no-op with an empty ConversationDetails.
+		s.logger.Warn("Coalesce metadata read failed; falling through", "session_id", existingID, "error", err)
+		return ConversationStartOutput{}, false
+	}
+	return ConversationStartOutput{
+		ConversationDetails: s.buildConversationDetails(meta, store.SessionDir(existingID)),
+		Reused:              true,
+		Coalesced:           true,
+	}, true
+}
+
+// promptMatchesActiveOrQueuedMCP is the mcpserver-local mirror of
+// conversation.PromptMatchesActiveOrQueued. Duplicated to keep mcpserver
+// free of any internal/conversation import (see the local BackgroundSession
+// interface). Same match semantics: name + Arguments deep-equal, nil map ==
+// empty map, free-text (empty promptName) never coalesces.
+func promptMatchesActiveOrQueuedMCP(bs BackgroundSession, q *session.Queue, promptName string, arguments map[string]string) bool {
+	if promptName == "" {
+		return false
+	}
+	if bs != nil {
+		if activeName, activeArgs, ok := bs.ActivePromptDispatch(); ok {
+			if activeName == promptName && argsDeepEqualMCP(activeArgs, arguments) {
+				return true
+			}
+		}
+	}
+	if q != nil {
+		msgs, err := q.List()
+		if err != nil {
+			return false
+		}
+		for i := range msgs {
+			if msgs[i].PromptName == "" {
+				continue
+			}
+			if msgs[i].PromptName == promptName && argsDeepEqualMCP(msgs[i].Arguments, arguments) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// argsDeepEqualMCP compares two argument maps for equality treating nil and
+// empty maps as equivalent. Kept package-private (mirrors the conversation
+// package's argsDeepEqual).
+func argsDeepEqualMCP(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok || vb != va {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) reuseSingletonConversation(store *session.Store, existingID, initialPromptText, clientID string, arguments map[string]string) (ConversationStartOutput, error) {
 	meta, err := store.GetMetadata(existingID)
 	if err != nil {

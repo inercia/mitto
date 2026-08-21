@@ -3,6 +3,8 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,7 +71,7 @@ func TestRecorder_RecordEvents(t *testing.T) {
 		t.Errorf("RecordUserPrompt failed: %v", err)
 	}
 
-	if err := recorder.RecordAgentMessage("Hello! How can I help?"); err != nil {
+	if err := recorder.RecordAgentMessage("Hello! How can I help?", ""); err != nil {
 		t.Errorf("RecordAgentMessage failed: %v", err)
 	}
 
@@ -107,6 +109,123 @@ func TestRecorder_RecordEvents(t *testing.T) {
 	}
 }
 
+// TestRecorder_RecordAgentMessage_PersistsMarkdown verifies that both the HTML
+// and the raw pre-conversion markdown survive a round trip through
+// events.jsonl (mitto-pscc.3): the "html" and "text" JSON keys are both
+// present on disk, and DecodeEventData reconstructs both fields.
+func TestRecorder_RecordAgentMessage_PersistsMarkdown(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	const html = "<p>Hello <strong>world</strong></p>"
+	const markdown = "Hello **world**"
+	if err := recorder.RecordAgentMessage(html, markdown); err != nil {
+		t.Fatalf("RecordAgentMessage failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	var found bool
+	for _, e := range events {
+		if e.Type != EventTypeAgentMessage {
+			continue
+		}
+		data, err := DecodeEventData(e)
+		if err != nil {
+			t.Fatalf("DecodeEventData failed: %v", err)
+		}
+		msgData, ok := data.(AgentMessageData)
+		if !ok {
+			t.Fatalf("data is %T, want AgentMessageData", data)
+		}
+		if msgData.Text != html {
+			t.Errorf("Text = %q, want %q", msgData.Text, html)
+		}
+		if msgData.Markdown != markdown {
+			t.Errorf("Markdown = %q, want %q", msgData.Markdown, markdown)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("no agent_message event found")
+	}
+
+	// Verify the raw on-disk JSONL carries both the "html" and "text" keys,
+	// per the AgentMessageData JSON mapping.
+	eventsPath := filepath.Join(store.SessionDir(recorder.SessionID()), eventsFileName)
+	raw, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	// encoding/json HTML-escapes '<'/'>' by default, so match the escaped form.
+	if !bytes.Contains(raw, []byte(`"html":"\u003cp\u003eHello`)) {
+		t.Errorf("raw events.jsonl missing html field: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"text":"Hello **world**"`)) {
+		t.Errorf("raw events.jsonl missing text (markdown) field: %s", raw)
+	}
+}
+
+// TestRecorder_AgentMessage_OldEventWithoutMarkdownDecodesFine verifies backward
+// compatibility: an agent_message event persisted before mitto-pscc.3 (only the
+// "html" key, no "text" key) still decodes without error, with Markdown left
+// as the zero value.
+func TestRecorder_AgentMessage_OldEventWithoutMarkdownDecodesFine(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-session-old-agent-message-format"
+	if err := store.Create(Metadata{SessionID: sessionID, ACPServer: "test-server", WorkingDir: "/test/dir"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Simulate a pre-mitto-pscc.3 event: agent_message with only "html", no "text".
+	eventsPath := filepath.Join(store.SessionDir(sessionID), eventsFileName)
+	oldLine := `{"seq":1,"type":"agent_message","timestamp":"2026-01-01T00:00:00Z","data":{"html":"<p>legacy</p>"}}` + "\n"
+	if err := os.WriteFile(eventsPath, []byte(oldLine), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+
+	data, err := DecodeEventData(events[0])
+	if err != nil {
+		t.Fatalf("DecodeEventData failed: %v", err)
+	}
+	msgData, ok := data.(AgentMessageData)
+	if !ok {
+		t.Fatalf("data is %T, want AgentMessageData", data)
+	}
+	if msgData.Text != "<p>legacy</p>" {
+		t.Errorf("Text = %q, want %q", msgData.Text, "<p>legacy</p>")
+	}
+	if msgData.Markdown != "" {
+		t.Errorf("Markdown = %q, want empty (absent in old event)", msgData.Markdown)
+	}
+}
+
 func TestRecorder_EventCount(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
@@ -139,7 +258,7 @@ func TestRecorder_EventCount(t *testing.T) {
 		t.Errorf("EventCount after user prompt = %d, want 2", count)
 	}
 
-	if err := recorder.RecordAgentMessage("Hi there!"); err != nil {
+	if err := recorder.RecordAgentMessage("Hi there!", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 	if count := recorder.EventCount(); count != 3 {
@@ -232,7 +351,7 @@ func TestRecorder_Resume(t *testing.T) {
 	if err := recorder1.RecordUserPrompt("Hello"); err != nil {
 		t.Fatalf("RecordUserPrompt failed: %v", err)
 	}
-	if err := recorder1.RecordAgentMessage("Hi there!"); err != nil {
+	if err := recorder1.RecordAgentMessage("Hi there!", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 
@@ -255,7 +374,7 @@ func TestRecorder_Resume(t *testing.T) {
 	if err := recorder2.RecordUserPrompt("How are you?"); err != nil {
 		t.Fatalf("RecordUserPrompt after resume failed: %v", err)
 	}
-	if err := recorder2.RecordAgentMessage("I'm doing well!"); err != nil {
+	if err := recorder2.RecordAgentMessage("I'm doing well!", ""); err != nil {
 		t.Fatalf("RecordAgentMessage after resume failed: %v", err)
 	}
 
@@ -398,7 +517,7 @@ func TestRecorder_EventOrdering(t *testing.T) {
 	if err := recorder.RecordToolCallUpdate("tc-1", &status, nil); err != nil {
 		t.Fatalf("RecordToolCallUpdate failed: %v", err)
 	}
-	if err := recorder.RecordAgentMessage("I found the issue. Let me fix it."); err != nil {
+	if err := recorder.RecordAgentMessage("I found the issue. Let me fix it.", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 	if err := recorder.RecordToolCall("tc-2", "Edit main.go", "running", "file_write", nil, nil); err != nil {
@@ -407,7 +526,7 @@ func TestRecorder_EventOrdering(t *testing.T) {
 	if err := recorder.RecordToolCallUpdate("tc-2", &status, nil); err != nil {
 		t.Fatalf("RecordToolCallUpdate failed: %v", err)
 	}
-	if err := recorder.RecordAgentMessage("Done! I fixed the bug."); err != nil {
+	if err := recorder.RecordAgentMessage("Done! I fixed the bug.", ""); err != nil {
 		t.Fatalf("RecordAgentMessage failed: %v", err)
 	}
 
@@ -475,11 +594,11 @@ func TestRecorder_InterleavedToolCallsAndMessages(t *testing.T) {
 	// Record interleaved tool calls and messages
 	recorder.RecordUserPrompt("Do something")
 	recorder.RecordToolCall("tool-1", "First tool", "running", "test", nil, nil)
-	recorder.RecordAgentMessage("First message")
+	recorder.RecordAgentMessage("First message", "")
 	recorder.RecordToolCall("tool-2", "Second tool", "running", "test", nil, nil)
-	recorder.RecordAgentMessage("Second message")
+	recorder.RecordAgentMessage("Second message", "")
 	recorder.RecordToolCall("tool-3", "Third tool", "running", "test", nil, nil)
-	recorder.RecordAgentMessage("Third message")
+	recorder.RecordAgentMessage("Third message", "")
 
 	events, err := store.ReadEvents(recorder.SessionID())
 	if err != nil {
@@ -545,7 +664,7 @@ func TestRecorder_RapidEventRecording(t *testing.T) {
 		case 0:
 			recorder.RecordUserPrompt("Message " + string(rune('A'+i%26)))
 		case 1:
-			recorder.RecordAgentMessage("Response " + string(rune('A'+i%26)))
+			recorder.RecordAgentMessage("Response "+string(rune('A'+i%26)), "")
 		case 2:
 			recorder.RecordToolCall("tool-"+string(rune('0'+i%10)), "Tool", "running", "test", nil, nil)
 		case 3:
@@ -610,7 +729,7 @@ func TestRecorder_ConcurrentRecording(t *testing.T) {
 	for g := 0; g < numGoroutines; g++ {
 		go func(goroutineID int) {
 			for i := 0; i < eventsPerGoroutine; i++ {
-				recorder.RecordAgentMessage("Message from goroutine")
+				recorder.RecordAgentMessage("Message from goroutine", "")
 			}
 			done <- true
 		}(g)
@@ -667,7 +786,7 @@ func TestRecorder_ResumePreservesOrdering(t *testing.T) {
 	sessionID := recorder1.SessionID()
 
 	recorder1.RecordUserPrompt("First prompt")
-	recorder1.RecordAgentMessage("First response")
+	recorder1.RecordAgentMessage("First response", "")
 	recorder1.RecordToolCall("tool-1", "First tool", "completed", "test", nil, nil)
 
 	// Read events before resume
@@ -685,7 +804,7 @@ func TestRecorder_ResumePreservesOrdering(t *testing.T) {
 
 	// Record more events after resume
 	recorder2.RecordUserPrompt("Second prompt")
-	recorder2.RecordAgentMessage("Second response")
+	recorder2.RecordAgentMessage("Second response", "")
 	recorder2.RecordToolCall("tool-2", "Second tool", "completed", "test", nil, nil)
 
 	// Read all events
@@ -740,7 +859,7 @@ func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
 
 	recorder1.RecordUserPrompt("Do something")
 	recorder1.RecordToolCall("tool-1", "First tool", "running", "test", nil, nil)
-	recorder1.RecordAgentMessage("First message")
+	recorder1.RecordAgentMessage("First message", "")
 	recorder1.RecordToolCall("tool-2", "Second tool", "running", "test", nil, nil)
 
 	// Resume and add more interleaved events
@@ -749,9 +868,9 @@ func TestRecorder_ResumeWithInterleavedEvents(t *testing.T) {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
-	recorder2.RecordAgentMessage("Second message")
+	recorder2.RecordAgentMessage("Second message", "")
 	recorder2.RecordToolCall("tool-3", "Third tool", "running", "test", nil, nil)
-	recorder2.RecordAgentMessage("Third message")
+	recorder2.RecordAgentMessage("Third message", "")
 
 	// Read all events
 	events, err := store.ReadEvents(sessionID)
@@ -1097,7 +1216,7 @@ func TestRecorder_RecordUserPromptComplete_ArgumentCount(t *testing.T) {
 	}
 
 	// Record a named prompt with arguments.
-	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 3); err != nil {
+	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 3, nil); err != nil {
 		t.Fatalf("RecordUserPromptComplete failed: %v", err)
 	}
 
@@ -1140,6 +1259,185 @@ func TestRecorder_RecordUserPromptComplete_ArgumentCount(t *testing.T) {
 		if f, ok := v.(float64); ok && f != 0 {
 			t.Errorf("plain prompt argument_count = %v, want absent/0", v)
 		}
+	}
+}
+
+// TestRecorder_RecordUserPromptComplete_Arguments verifies that the raw
+// Arguments map is persisted exactly (for retry replay) when non-nil, and
+// omitted entirely (via omitempty) when nil/empty — including via the
+// convenience wrappers which always pass nil.
+func TestRecorder_RecordUserPromptComplete_Arguments(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	args := map[string]string{"IssueID": "mitto-123", "Notes": "fix the bug"}
+	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 2, args); err != nil {
+		t.Fatalf("RecordUserPromptComplete failed: %v", err)
+	}
+	// Ad-hoc prompt via wrapper — must persist no arguments.
+	if err := recorder.RecordUserPrompt("plain message"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	namedDataMap, ok := events[1].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data is %T, want map[string]interface{}", events[1].Data)
+	}
+	rawArgs, ok := namedDataMap["arguments"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data[\"arguments\"] is %T, want map[string]interface{}", namedDataMap["arguments"])
+	}
+	if rawArgs["IssueID"] != "mitto-123" || rawArgs["Notes"] != "fix the bug" {
+		t.Errorf("arguments = %v, want exact round-trip of %v", rawArgs, args)
+	}
+
+	plainDataMap, ok := events[2].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[2].Data is %T, want map[string]interface{}", events[2].Data)
+	}
+	if v, exists := plainDataMap["arguments"]; exists && v != nil {
+		t.Errorf("plain prompt arguments = %v, want absent (omitempty)", v)
+	}
+}
+
+// TestRecorder_RecordUserPromptDataWithSeq_Provenance verifies mitto-rg79:
+// RecordUserPromptDataWithSeq persists a complete UserPromptData (including
+// Provenance) exactly, and that a nil Provenance round-trips as an absent
+// "provenance" key (backward-compat: old readers/events see nothing new).
+func TestRecorder_RecordUserPromptDataWithSeq_Provenance(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// (1) Loop-delivered prompt with full provenance including Slack detail.
+	prov := &PromptProvenance{
+		LoopTrigger: TriggerOnSlack,
+		Slack: &PromptSlackProvenance{
+			InstallationID: "I1",
+			ChannelID:      "C1",
+			EventCount:     2,
+		},
+	}
+	// Seq 1 is already consumed by the session_start event recorded by Start().
+	if err := recorder.RecordUserPromptDataWithSeq(2, UserPromptData{
+		Message:    "slack turn",
+		Provenance: prov,
+	}); err != nil {
+		t.Fatalf("RecordUserPromptDataWithSeq (with provenance) failed: %v", err)
+	}
+
+	// (2) Ordinary ad-hoc prompt with nil Provenance.
+	if err := recorder.RecordUserPromptDataWithSeq(3, UserPromptData{
+		Message: "plain message",
+	}); err != nil {
+		t.Fatalf("RecordUserPromptDataWithSeq (nil provenance) failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	// events[0] = session_start, events[1] = slack prompt, events[2] = plain prompt.
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	slackDataMap, ok := events[1].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data is %T, want map[string]interface{}", events[1].Data)
+	}
+	provOut, ok := slackDataMap["provenance"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data[\"provenance\"] is %T, want map[string]interface{}", slackDataMap["provenance"])
+	}
+	if provOut["loop_trigger"] != "onSlack" {
+		t.Errorf("loop_trigger = %v, want onSlack", provOut["loop_trigger"])
+	}
+	slackOut, ok := provOut["slack"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("provenance[\"slack\"] is %T, want map[string]interface{}", provOut["slack"])
+	}
+	if slackOut["channel_id"] != "C1" || slackOut["installation_id"] != "I1" {
+		t.Errorf("unexpected slack identifiers: %v", slackOut)
+	}
+	if f, _ := slackOut["event_count"].(float64); int(f) != 2 {
+		t.Errorf("event_count = %v, want 2", slackOut["event_count"])
+	}
+
+	plainDataMap, ok := events[2].Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[2].Data is %T, want map[string]interface{}", events[2].Data)
+	}
+	if v, exists := plainDataMap["provenance"]; exists && v != nil {
+		t.Errorf("plain prompt provenance = %v, want absent (omitempty)", v)
+	}
+}
+
+// TestPromptProvenance_OnChildJSONRoundTrip verifies mitto-qvlh: a
+// PromptProvenance carrying OnChild detail round-trips through JSON exactly.
+func TestPromptProvenance_OnChildJSONRoundTrip(t *testing.T) {
+	prov := PromptProvenance{
+		LoopTrigger: TriggerOnChild,
+		OnChild: &PromptOnChildProvenance{
+			ChildID:       "c",
+			Event:         "anyLoopStopped",
+			StoppedReason: "maxDuration",
+		},
+	}
+	data, err := json.Marshal(prov)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got PromptProvenance
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.LoopTrigger != prov.LoopTrigger {
+		t.Errorf("LoopTrigger = %q, want %q", got.LoopTrigger, prov.LoopTrigger)
+	}
+	if got.OnChild == nil {
+		t.Fatal("expected OnChild non-nil after round-trip")
+	}
+	if *got.OnChild != *prov.OnChild {
+		t.Errorf("OnChild = %+v, want %+v", *got.OnChild, *prov.OnChild)
+	}
+}
+
+// TestPromptProvenance_NoOnChildOmitted pins the omitempty backward-compat
+// guarantee (mitto-qvlh): a nil OnChild produces no "on_child" key in JSON.
+func TestPromptProvenance_NoOnChildOmitted(t *testing.T) {
+	prov := PromptProvenance{LoopTrigger: TriggerSchedule}
+	data, err := json.Marshal(prov)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "on_child") {
+		t.Errorf("expected no \"on_child\" key when OnChild is nil, got: %s", data)
 	}
 }
 
@@ -1363,6 +1661,137 @@ func TestRecorder_EndUsesMaxSeqNotEventCount(t *testing.T) {
 	if sessionEndEvent.Seq != expectedSeq {
 		t.Errorf("session_end seq = %d, want %d (MaxSeq + 1, not EventCount + 1)",
 			sessionEndEvent.Seq, expectedSeq)
+	}
+}
+
+// TestRecorder_UIPromptAnswer_DuplicatesReservedSeq reproduces mitto-t7xv:
+// RecordUIPromptAnswer (and RecordPermission) go through the recordEvent ->
+// Store.AppendEvent path, which assigns its own seq from
+// max(EventCount, MaxSeq)+1. Live BackgroundSession sessions instead
+// pre-reserve seq numbers via getNextSeq() for streamed events *before*
+// they are persisted (e.g. while a chunk is still coalescing). If a UI
+// prompt answer is recorded via AppendEvent in that window, it can grab
+// the very seq number already reserved-but-not-yet-persisted for the next
+// streamed event, producing a duplicate seq once that streamed event is
+// finally written.
+//
+// This test simulates that race deterministically:
+//  1. A streamed event is persisted with seq 2 (as if obtained from
+//     getNextSeq()).
+//  2. The "next" streamed seq (3) is reserved by the in-memory counter but
+//     NOT yet persisted (simulating a chunk still being coalesced).
+//  3. A UI prompt answer arrives and is recorded via RecordUIPromptAnswer
+//     (the AppendEvent path) — today this collides with the reserved seq.
+//  4. The reserved streamed event is finally persisted with seq 3.
+//
+// With the bug present, seq 3 is written twice, and the reproduction test
+// below fails. The fix must give RecordUIPromptAnswer (and RecordPermission)
+// a *WithSeq variant so the caller can supply a seq obtained from the same
+// counter as streamed events, eliminating the collision.
+func TestRecorder_UIPromptAnswer_DuplicatesReservedSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Simulated getNextSeq() counter, independent of the store, mirroring
+	// BackgroundSession.nextSeq. session_start already consumed seq 1.
+	simulatedNextSeq := int64(2)
+
+	// Streamed event A: seq obtained from the simulated counter and
+	// persisted immediately (typical case).
+	seqA := simulatedNextSeq
+	simulatedNextSeq++
+	if err := recorder.RecordEventWithSeq(Event{
+		Seq:  seqA,
+		Type: EventTypeAgentMessage,
+		Data: AgentMessageData{Text: "streamed chunk A"},
+	}); err != nil {
+		t.Fatalf("RecordEventWithSeq(A) failed: %v", err)
+	}
+
+	// Streamed event B's seq is reserved by the in-memory counter (as
+	// getNextSeq() would do while a chunk is still coalescing) but NOT
+	// persisted yet.
+	seqB := simulatedNextSeq
+	simulatedNextSeq++
+
+	// A UI prompt answer arrives in this window. Fixed callers (e.g.
+	// BackgroundSession.upRecordUIPromptAnswer) obtain a seq from the same
+	// getNextSeq() counter as streamed events and record it via
+	// RecordUIPromptAnswerWithSeq instead of the non-seq AppendEvent path,
+	// so the answer takes the next slot from the shared counter (mitto-t7xv).
+	seqUIAnswer := simulatedNextSeq
+	if err := recorder.RecordUIPromptAnswerWithSeq(seqUIAnswer, "req-1", "yes", "Yes"); err != nil {
+		t.Fatalf("RecordUIPromptAnswerWithSeq failed: %v", err)
+	}
+
+	// Streamed event B is now persisted with its pre-reserved seq.
+	if err := recorder.RecordEventWithSeq(Event{
+		Seq:  seqB,
+		Type: EventTypeAgentMessage,
+		Data: AgentMessageData{Text: "streamed chunk B"},
+	}); err != nil {
+		t.Fatalf("RecordEventWithSeq(B) failed: %v", err)
+	}
+
+	// Read the raw JSONL directly (NOT store.ReadEvents, which silently
+	// dedups on seq and would mask the collision by dropping one of the
+	// two colliding events entirely — itself a symptom of this same bug).
+	eventsPath := filepath.Join(store.SessionDir(recorder.SessionID()), eventsFileName)
+	raw, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+
+	var events []Event
+	for _, line := range lines {
+		var e Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("failed to unmarshal event line %q: %v", line, err)
+		}
+		events = append(events, e)
+	}
+
+	// Assert no duplicate seqs (the direct regression) and no permanent
+	// drift (failure mode B): the set of seqs must be contiguous with no
+	// gaps or repeats. We do NOT assert the on-disk write order matches
+	// seq order — a fixed UI-prompt-answer legitimately draws the next
+	// value from the shared counter even while an earlier-reserved,
+	// not-yet-persisted streamed event is still in flight, so it can be
+	// written to disk before that lower-numbered event finishes. That
+	// write-order/seq-order mismatch is an accepted, pre-existing
+	// characteristic of the reservation-gap design (see mitto-c36) and is
+	// orthogonal to this bug, which is specifically about seq collisions.
+	seen := make(map[int64]string)
+	var minSeq, maxSeq int64
+	for i, e := range events {
+		if prevType, dup := seen[e.Seq]; dup {
+			t.Errorf("duplicate seq %d: %q and %q both use it (mitto-t7xv)", e.Seq, prevType, e.Type)
+		}
+		seen[e.Seq] = string(e.Type)
+		if i == 0 || e.Seq < minSeq {
+			minSeq = e.Seq
+		}
+		if i == 0 || e.Seq > maxSeq {
+			maxSeq = e.Seq
+		}
+	}
+
+	if got, want := len(seen), len(events); got != want {
+		t.Errorf("expected %d unique seqs, got %d (mitto-t7xv)", want, got)
+	}
+	if got, want := maxSeq-minSeq+1, int64(len(events)); got != want {
+		t.Errorf("seqs are not contiguous (permanent drift): min=%d max=%d count=%d, want range width %d (mitto-t7xv)",
+			minSeq, maxSeq, len(events), want)
 	}
 }
 
@@ -1598,7 +2027,7 @@ func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
 		go func() {
 			for i := 0; i < eventsPerGoroutine; i++ {
 				// Ignore errors - some will fail after End() is called
-				recorder.RecordAgentMessage("Message")
+				recorder.RecordAgentMessage("Message", "")
 			}
 			recordDone <- true
 		}()
@@ -1725,7 +2154,7 @@ func TestRecordOption_WithMetaMap_Merged(t *testing.T) {
 	r, store := setupRecorder(t)
 	defer store.Close()
 
-	if err := r.RecordAgentMessage("hi", WithMetaMap(map[string]any{"a": 42, "b": "two"})); err != nil {
+	if err := r.RecordAgentMessage("hi", "", WithMetaMap(map[string]any{"a": 42, "b": "two"})); err != nil {
 		t.Fatalf("RecordAgentMessage: %v", err)
 	}
 

@@ -1,0 +1,46 @@
+package processors
+
+import (
+	"context"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"unicode"
+
+	"github.com/inercia/mitto/internal/bdexec"
+)
+
+// runProcessorCommand routes command processors that invoke bd through the
+// same per-database and process-wide gates as typed clients and CEL helpers.
+func runProcessorCommand(ctx context.Context, proc *Processor, cmd *exec.Cmd) error {
+	bdCommand := processorBDExecutable(proc)
+	if bdCommand == "" {
+		return cmd.Run()
+	}
+	release, err := bdexec.Acquire(ctx, cmd.Dir, bdCommand)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return cmd.Run()
+}
+
+func processorInvokesBD(proc *Processor) bool {
+	return processorBDExecutable(proc) != ""
+}
+
+func processorBDExecutable(proc *Processor) string {
+	if filepath.Base(proc.ResolveCommand()) == "bd" {
+		return proc.ResolveCommand()
+	}
+	for _, arg := range proc.Args {
+		for _, token := range strings.FieldsFunc(arg, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("_./-", r)
+		}) {
+			if filepath.Base(token) == "bd" {
+				return "bd"
+			}
+		}
+	}
+	return ""
+}

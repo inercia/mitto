@@ -2,12 +2,18 @@ package conversation
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
@@ -197,8 +203,8 @@ func TestNewSessionManagerWithOptions(t *testing.T) {
 
 func TestSessionManager_GetWorkspaces(t *testing.T) {
 	workspaces := []config.WorkspaceSettings{
-		{ACPServer: "server1", WorkingDir: "/path1"},
-		{ACPServer: "server2", WorkingDir: "/path2"},
+		{UUID: "ws-z", ACPServer: "server1", WorkingDir: "/path1"},
+		{UUID: "ws-a", ACPServer: "server2", WorkingDir: "/path1"},
 	}
 
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{
@@ -208,7 +214,12 @@ func TestSessionManager_GetWorkspaces(t *testing.T) {
 
 	got := sm.GetWorkspaces()
 	if len(got) != 2 {
-		t.Errorf("GetWorkspaces count = %d, want 2", len(got))
+		t.Fatalf("GetWorkspaces count = %d, want 2", len(got))
+	}
+	for i, want := range workspaces {
+		if got[i].UUID != want.UUID {
+			t.Errorf("GetWorkspaces()[%d].UUID = %q, want %q", i, got[i].UUID, want.UUID)
+		}
 	}
 }
 
@@ -796,15 +807,20 @@ func TestSessionManager_SetWorkspaces(t *testing.T) {
 	sm := NewSessionManager("", "", false, nil)
 
 	workspaces := []config.WorkspaceSettings{
-		{WorkingDir: "/workspace1", ACPServer: "server1"},
-		{WorkingDir: "/workspace2", ACPServer: "server2"},
+		{UUID: "ws-z", WorkingDir: "/workspace1", ACPServer: "server1"},
+		{UUID: "ws-a", WorkingDir: "/workspace1", ACPServer: "server2"},
 	}
 
 	sm.SetWorkspaces(workspaces)
 
 	result := sm.GetWorkspaces()
 	if len(result) != 2 {
-		t.Errorf("GetWorkspaces() = %d, want 2", len(result))
+		t.Fatalf("GetWorkspaces() = %d, want 2", len(result))
+	}
+	for i, want := range workspaces {
+		if result[i].UUID != want.UUID {
+			t.Errorf("GetWorkspaces()[%d].UUID = %q, want %q", i, result[i].UUID, want.UUID)
+		}
 	}
 }
 
@@ -864,6 +880,9 @@ func TestSessionManager_AddWorkspace_SameDirectoryDifferentACP(t *testing.T) {
 	workspaces := sm.GetWorkspaces()
 	if len(workspaces) != 2 {
 		t.Errorf("GetWorkspaces() = %d, want 2 (same dir, different ACP servers allowed)", len(workspaces))
+	}
+	if ws := sm.GetWorkspace("/workspace1"); ws == nil || ws.UUID != "uuid-1" {
+		t.Errorf("GetWorkspace() = %+v, want first configured workspace uuid-1", ws)
 	}
 
 	// GetWorkspaceByDirAndACP should find the correct one
@@ -978,6 +997,44 @@ func TestSessionManager_ActiveAndPromptingCounts(t *testing.T) {
 	// Now only 1 prompting (s3)
 	if count := sm.PromptingSessionCount(); count != 1 {
 		t.Errorf("PromptingSessionCount() after close = %d, want 1", count)
+	}
+}
+
+// TestSessionManager_ConnectedWSClientCount tests the ConnectedWSClientCount
+// method (mitto-x3x), which feeds the periodic goroutine gauge's
+// "connected_ws_clients" contention counter.
+func TestSessionManager_ConnectedWSClientCount(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+
+	// No sessions: 0.
+	if count := sm.ConnectedWSClientCount(); count != 0 {
+		t.Errorf("ConnectedWSClientCount() = %d, want 0", count)
+	}
+
+	session1 := NewMinimalBackgroundSession("s1", "", "")
+	session2 := NewMinimalBackgroundSession("s2", "", "")
+	sm.mu.Lock()
+	sm.sessions["s1"] = session1
+	sm.sessions["s2"] = session2
+	sm.mu.Unlock()
+
+	// Sessions present but no connected clients yet: still 0.
+	if count := sm.ConnectedWSClientCount(); count != 0 {
+		t.Errorf("ConnectedWSClientCount() with no clients = %d, want 0", count)
+	}
+
+	// Attach 2 clients to s1 and 1 to s2: summed across sessions.
+	session1.AddConnectedClient()
+	session1.AddConnectedClient()
+	session2.AddConnectedClient()
+	if count := sm.ConnectedWSClientCount(); count != 3 {
+		t.Errorf("ConnectedWSClientCount() = %d, want 3", count)
+	}
+
+	// Detach one client from s1: count follows.
+	session1.RemoveConnectedClient()
+	if count := sm.ConnectedWSClientCount(); count != 2 {
+		t.Errorf("ConnectedWSClientCount() after detach = %d, want 2", count)
 	}
 }
 
@@ -1586,6 +1643,98 @@ func TestSessionManager_ResumeSession_WaitsForPending(t *testing.T) {
 	}
 }
 
+func TestSessionManager_CloseSession_CancelsPendingResume(t *testing.T) {
+	sm := NewSessionManager("", "test-server", true, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	pr := &pendingResumeResult{done: make(chan struct{}), cancel: cancel}
+
+	sm.mu.Lock()
+	sm.pendingResumes["pending-resume-session"] = pr
+	sm.mu.Unlock()
+
+	sm.CloseSession("pending-resume-session", "deleted")
+
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("pending resume context error = %v, want context.Canceled", ctx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CloseSession did not cancel pending resume")
+	}
+}
+
+func TestSessionManager_CloseSession_CancelsResumeWaitingForSemaphore(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const sessionID = "queued-resume-session"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("store.Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+	for i := 0; i < cap(sm.resumeSemaphore); i++ {
+		sm.resumeSemaphore <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(sm.resumeSemaphore); i++ {
+			<-sm.resumeSemaphore
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sm.ResumeSession(sessionID, "Queued Resume", "/tmp")
+		done <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		sm.mu.RLock()
+		_, pending := sm.pendingResumes[sessionID]
+		sm.mu.RUnlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for pending resume registration")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	sm.CloseSession(sessionID, "deleted")
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ResumeSession error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume remained blocked on semaphore after CloseSession")
+	}
+
+	sm.mu.RLock()
+	_, pending := sm.pendingResumes[sessionID]
+	sm.mu.RUnlock()
+	if pending {
+		t.Fatal("pending resume entry leaked after cancellation")
+	}
+	if got := sm.resumeQueued.Load(); got != 0 {
+		t.Fatalf("resumeQueued = %d, want 0", got)
+	}
+	if got := sm.resumeInFlight.Load(); got != 0 {
+		t.Fatalf("resumeInFlight = %d, want 0", got)
+	}
+}
+
 // TestSessionManager_ResumeSession_ConcurrentNoDeadlock verifies that concurrent
 // ResumeSession calls for the same session ID complete without deadlocking.
 // Because "echo test" is not a valid ACP server, all calls are expected to fail,
@@ -1803,6 +1952,49 @@ func TestSessionManager_DeleteChildSessions(t *testing.T) {
 	}
 }
 
+// TestSessionManager_DeleteChildSessions_NoArchiveChildStillDeleted pins
+// mitto-yvel.3 epic decision 3: deleting protected (NoArchive) children along
+// with an archived parent is unaffected by the archive guard — the parent
+// cascade is pure deletion, never archiving, so NoArchive children are
+// deleted exactly like any other child.
+func TestSessionManager_DeleteChildSessions_NoArchiveChildStillDeleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "cascade-parent",
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+		Name:       "Parent",
+	}); err != nil {
+		t.Fatalf("Create parent failed: %v", err)
+	}
+
+	if err := store.Create(session.Metadata{
+		SessionID:       "cascade-protected-child",
+		ACPServer:       "test-server",
+		WorkingDir:      tmpDir,
+		Name:            "Protected Child",
+		ParentSessionID: "cascade-parent",
+		NoArchive:       true,
+	}); err != nil {
+		t.Fatalf("Create protected child failed: %v", err)
+	}
+
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetStore(store)
+
+	sm.DeleteChildSessions("cascade-parent")
+
+	if store.Exists("cascade-protected-child") {
+		t.Error("NoArchive child should still be deleted by the parent cascade (deletion is always allowed, epic decision 3)")
+	}
+}
+
 // TestSessionManager_DeleteSessionAndChildren tests that deleteSessionAndChildren
 // (used by the self-destruct path) permanently removes the target session and all
 // of its descendants while leaving unrelated sessions intact.
@@ -1873,6 +2065,64 @@ func TestSessionManager_DeleteSessionAndChildren(t *testing.T) {
 	// Unrelated session should still exist
 	if !store.Exists("unrelated-1") {
 		t.Error("unrelated-1 should still exist")
+	}
+}
+
+// TestSessionManager_DeleteSessionAndChildren_FiresApplyOnCloseProcessors
+// reproduces mitto-sj6v: deleteSessionAndChildren (the self-destruct path,
+// reached via BackgroundSession.RequestSelfDestruct -> OnSelfDestruct at
+// session_manager.go:2048/:2663) never invokes ApplyOnCloseProcessors, so a
+// self-destructing conversation silently skips the entire conversationClosed
+// processor pipeline (memory extraction, preference memorization, rules
+// updates, ...). Contrast with the REST DELETE path
+// (internal/web/handlers/session_delete.go), covered by
+// TestHandleDeleteSession_FiresApplyOnCloseProcessors, which DOES fire the
+// pipeline via the "close-phase processor pipeline starting" log line
+// (internal/processors/apply.go ApplyOnClose). This test currently FAILS:
+// the close-phase pipeline never starts for the self-destruct path.
+func TestSessionManager_DeleteSessionAndChildren_FiresApplyOnCloseProcessors(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const sid = "selfdestruct-close-repro"
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	logger := slog.New(handler)
+
+	sm := NewSessionManager("echo test", "test-server", true, logger)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", logger))
+
+	sm.deleteSessionAndChildren(sid, "self_destructed")
+
+	// ApplyOnClose logs this line unconditionally (even with zero configured
+	// processors) as the very first action of the close-phase pipeline, from
+	// a fire-and-forget goroutine spawned by ApplyOnCloseProcessors — poll
+	// briefly to avoid a race against that goroutine.
+	const startMsg = "close-phase processor pipeline starting"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if handler.hasRecord(slog.LevelInfo, startMsg) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !handler.hasRecord(slog.LevelInfo, startMsg) {
+		t.Fatalf("close-phase processor pipeline never started for self-destructed session %q "+
+			"(mitto-sj6v: deleteSessionAndChildren does not call ApplyOnCloseProcessors)", sid)
 	}
 }
 
@@ -2269,13 +2519,56 @@ func TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID(t *testing.T) {
 	}
 }
 
-// TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped verifies that when
-// the workspace's shared ACP process has already been reaped by GC (e.g.
-// Tier 2 idle-reap hours after the last session closed), the close pipeline
-// is a clean no-op: no PinWorkspace call, no goroutine spawn, no downstream
-// "no shared process for workspace ..." ERROR from getOrCreateAuxiliarySession
-// (mitto-6bn.1).
-func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
+type reapedCloseProvider struct {
+	mu         sync.Mutex
+	healthy    bool
+	deliveries []string
+}
+
+func (p *reapedCloseProvider) PromptAuxiliary(_ context.Context, workspaceUUID, _, prompt string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.healthy {
+		return "", fmt.Errorf("no shared process for workspace %s", workspaceUUID)
+	}
+	p.deliveries = append(p.deliveries, prompt)
+	const marker = "MITTO_PROCESSOR_COMPLETION "
+	start := strings.LastIndex(prompt, marker)
+	if start < 0 {
+		return "", errors.New("tracked completion marker missing")
+	}
+	line := strings.SplitN(prompt[start:], "\n", 2)[0]
+	return strings.Replace(line, `"save_count":N`, `"save_count":0`, 1), nil
+}
+
+func (p *reapedCloseProvider) PromptAuxiliaryAsync(_ context.Context, workspaceUUID, _, prompt string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.healthy {
+		return fmt.Errorf("no shared process for workspace %s", workspaceUUID)
+	}
+	p.deliveries = append(p.deliveries, prompt)
+	return nil
+}
+
+func (p *reapedCloseProvider) CloseWorkspaceAuxiliary(string) error { return nil }
+
+func (p *reapedCloseProvider) setHealthy() {
+	p.mu.Lock()
+	p.healthy = true
+	p.mu.Unlock()
+}
+
+func (p *reapedCloseProvider) deliverySnapshot() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.deliveries...)
+}
+
+// TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts
+// reproduces mitto-0934: a missing shared ACP process must not bypass either
+// command-mode close work or durable prompt-mode delivery for deleted sessions.
+func TestApplyOnCloseProcessors_ReapedProcessExecutesCommandsAndSpoolsPrompts(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
@@ -2283,8 +2576,228 @@ func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
 	t.Cleanup(func() { store.Close() })
 
 	const (
-		sid       = "sess-reaped"
 		wsUUID    = "ws-reaped-close"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+
+	sessionIDs := []string{"sess-reaped-1", "sess-reaped-2"}
+	for _, sid := range sessionIDs {
+		if err := store.Create(session.Metadata{
+			SessionID: sid, ACPServer: acpServer, WorkingDir: workingDir,
+		}); err != nil {
+			t.Fatalf("Create(%s) failed: %v", sid, err)
+		}
+	}
+
+	processorDir := appdir.WorkspaceProcessorsDir(workingDir)
+	if err := os.MkdirAll(processorDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll processor dir: %v", err)
+	}
+	markerPath := filepath.Join(t.TempDir(), "command-runs")
+	scriptPath := filepath.Join(t.TempDir(), "record-close.sh")
+	script := fmt.Sprintf("#!/bin/sh\nprintf 'run\\n' >> %q\n", markerPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile command script: %v", err)
+	}
+	commandYAML := fmt.Sprintf("name: close-command\nwhen:\n  on: conversationClosed\n  match: all\ncommand: %q\noutput: discard\n", scriptPath)
+	if err := os.WriteFile(filepath.Join(processorDir, "command.yaml"), []byte(commandYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile command processor: %v", err)
+	}
+	promptYAML := "name: close-prompt\nwhen:\n  on: conversationClosed\n  match: all\nprompt: 'preserve @mitto:session_id'\noutput: discard\n"
+	if err := os.WriteFile(filepath.Join(processorDir, "prompt.yaml"), []byte(promptYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile prompt processor: %v", err)
+	}
+
+	provider := &reapedCloseProvider{}
+	spool := &processors.FilePendingDispatchStore{BaseDir: t.TempDir()}
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.SetPendingDispatchStore(spool)
+	sm.SetAuxiliaryManager(auxiliary.NewWorkspaceAuxiliaryManager(provider, nil))
+	t.Cleanup(sm.WaitForCloseProcessors)
+	sm.AddWorkspace(config.WorkspaceSettings{
+		UUID:       wsUUID,
+		WorkingDir: workingDir,
+		ACPServer:  acpServer,
+	})
+	pm := newFakeProcessManager()
+	// Simulate the reaped-process scenario: HasLiveProcess returns false.
+	pm.setLiveProcess(wsUUID, false)
+	sm.SetACPProcessManager(pm)
+
+	for _, sid := range sessionIDs {
+		sm.ApplyOnCloseProcessors(sid, "deleted")
+	}
+	sm.WaitForCloseProcessors()
+
+	commandRuns := 0
+	var entries []processors.PendingDispatchEntry
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, readErr := os.ReadFile(markerPath); readErr == nil {
+			commandRuns = strings.Count(string(data), "run\n")
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("ReadFile command marker: %v", readErr)
+		}
+		entries, err = spool.Load(wsUUID)
+		if err != nil {
+			t.Fatalf("Load pending spool: %v", err)
+		}
+		allReleased := len(entries) == len(sessionIDs)
+		for _, entry := range entries {
+			allReleased = allReleased && entry.ClaimedBy == ""
+		}
+		if commandRuns == len(sessionIDs) && allReleased {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if commandRuns != len(sessionIDs) || len(entries) != len(sessionIDs) {
+		t.Fatalf("reaped-process closes: command executions=%d, spooled prompt batches=%d; want %d each; close pipeline was bypassed",
+			commandRuns, len(entries), len(sessionIDs))
+	}
+
+	provider.setHealthy()
+	replay := processors.NewManager("", nil)
+	replay.SetPendingDispatchStore(spool)
+	replay.SetPromptFunc(provider.PromptAuxiliaryAsync)
+	replay.FlushPendingDispatches(context.Background(), wsUUID)
+
+	delivered := strings.Join(provider.deliverySnapshot(), "\n")
+	for _, sid := range sessionIDs {
+		if !strings.Contains(delivered, sid) {
+			t.Errorf("replayed prompts missing session %q: %q", sid, delivered)
+		}
+	}
+	entries, err = spool.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load pending spool after replay: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pending spool after healthy replay has %d entries, want 0", len(entries))
+	}
+}
+
+// TestApplyOnCloseProcessors_PendingStorePathSurvivesMittoDirChange reproduces
+// mitto-k7ym: an in-flight close worker must keep the spool directory selected
+// when it was launched, even if test cleanup later changes MITTO_DIR.
+func TestApplyOnCloseProcessors_PendingStorePathSurvivesMittoDirChange(t *testing.T) {
+	originalMittoDir := t.TempDir()
+	redirectedMittoDir := t.TempDir()
+	t.Cleanup(appdir.ResetCache) // Run after all t.Setenv restorations.
+	t.Setenv(appdir.MittoDirEnv, originalMittoDir)
+	appdir.ResetCache()
+
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-mitto-dir-change"
+		wsUUID    = "ws-mitto-dir-change"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: acpServer, WorkingDir: workingDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	provider := &reapedCloseProvider{}
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.SetAuxiliaryManager(auxiliary.NewWorkspaceAuxiliaryManager(provider, nil))
+	sm.AddWorkspace(config.WorkspaceSettings{UUID: wsUUID, WorkingDir: workingDir, ACPServer: acpServer})
+	t.Cleanup(sm.WaitForCloseProcessors)
+
+	processorDir := appdir.WorkspaceProcessorsDir(workingDir)
+	if err := os.MkdirAll(processorDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll processor dir: %v", err)
+	}
+	barrierDir := t.TempDir()
+	startedPath := filepath.Join(barrierDir, "started")
+	releasePath := filepath.Join(barrierDir, "release")
+	t.Cleanup(func() { _ = os.WriteFile(releasePath, nil, 0o644) })
+	scriptPath := filepath.Join(barrierDir, "block-close.sh")
+	script := fmt.Sprintf("#!/bin/sh\n: > %q\nwhile [ ! -f %q ]; do sleep 0.01; done\n", startedPath, releasePath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile command script: %v", err)
+	}
+	commandYAML := fmt.Sprintf("name: block-close\nwhen:\n  on: conversationClosed\n  match: all\npriority: 1\ncommand: %q\noutput: discard\n", scriptPath)
+	if err := os.WriteFile(filepath.Join(processorDir, "command.yaml"), []byte(commandYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile command processor: %v", err)
+	}
+	promptYAML := "name: close-prompt\nwhen:\n  on: conversationClosed\n  match: all\npriority: 2\nprompt: 'preserve @mitto:session_id'\noutput: discard\n"
+	if err := os.WriteFile(filepath.Join(processorDir, "prompt.yaml"), []byte(promptYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile prompt processor: %v", err)
+	}
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(startedPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Stat command barrier: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("close command did not reach barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Simulate another test restoring the process-global appdir state while the
+	// close worker is still running, then let prompt-mode persistence continue.
+	t.Setenv(appdir.MittoDirEnv, redirectedMittoDir)
+	appdir.ResetCache()
+	if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
+		t.Fatalf("release close command: %v", err)
+	}
+	sm.WaitForCloseProcessors()
+
+	originalSpool := &processors.FilePendingDispatchStore{BaseDir: filepath.Join(originalMittoDir, appdir.PendingProcessorDispatchDirName)}
+	redirectedSpool := &processors.FilePendingDispatchStore{BaseDir: filepath.Join(redirectedMittoDir, appdir.PendingProcessorDispatchDirName)}
+	var originalEntries, redirectedEntries []processors.PendingDispatchEntry
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		originalEntries, err = originalSpool.Load(wsUUID)
+		if err != nil {
+			t.Fatalf("Load original spool: %v", err)
+		}
+		redirectedEntries, err = redirectedSpool.Load(wsUUID)
+		if err != nil {
+			t.Fatalf("Load redirected spool: %v", err)
+		}
+		if len(originalEntries)+len(redirectedEntries) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(originalEntries) != 1 || len(redirectedEntries) != 0 {
+		t.Fatalf("in-flight close dispatch followed changed MITTO_DIR: original spool entries=%d, redirected spool entries=%d; want 1 and 0",
+			len(originalEntries), len(redirectedEntries))
+	}
+}
+
+// TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted reproduces
+// mitto-hk6k: deletion makes every close-phase processor_run append impossible,
+// because store.Delete races ahead of the fire-and-forget pipeline. The lifecycle
+// omission must be summarized once at DEBUG instead of attempted once per
+// processor and emitted as a generic persistence WARN.
+func TestApplyOnCloseProcessors_RunRecorder_LostAfterSessionDeleted(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-deleted-close"
 		acpServer = "test-server"
 	)
 	workingDir := t.TempDir()
@@ -2297,24 +2810,120 @@ func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("echo test", acpServer, true, nil)
+	// A slow close-phase command-mode processor: the delay gives the test time
+	// to delete the session out from under the in-flight pipeline, mirroring
+	// how session_delete.go's store.Delete races ahead of the fire-and-forget
+	// goroutine spawned by ApplyOnCloseProcessors. Written under the
+	// workspace's default .mitto/processors/ dir (appdir.WorkspaceProcessorsDir)
+	// so loadWorkspaceProcessors picks it up, since Manager.processors is
+	// unexported and cannot be set directly from this package.
+	scriptDir := t.TempDir()
+	slowScript := filepath.Join(scriptDir, "slow.sh")
+	if err := os.WriteFile(slowScript, []byte("#!/bin/sh\nsleep 0.3\necho done\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	processorsDir := appdir.WorkspaceProcessorsDir(workingDir)
+	if err := os.MkdirAll(processorsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	processorYAML := "name: slow-close-processor\n" +
+		"when:\n  on: conversationClosed\n  match: all\n" +
+		"command: " + slowScript + "\n" +
+		"output: discard\n"
+	if err := os.WriteFile(filepath.Join(processorsDir, "slow.yaml"), []byte(processorYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	logger := slog.New(handler)
+
+	sm := NewSessionManager("echo test", acpServer, true, logger)
 	sm.SetStore(store)
-	sm.SetProcessorManager(processors.NewManager("", nil))
-	sm.AddWorkspace(config.WorkspaceSettings{
-		UUID:       wsUUID,
-		WorkingDir: workingDir,
-		ACPServer:  acpServer,
-	})
+	sm.SetProcessorManager(processors.NewManager("", logger))
 	pm := newFakeProcessManager()
-	// Simulate the reaped-process scenario: HasLiveProcess returns false.
-	pm.setLiveProcess(wsUUID, false)
 	sm.SetACPProcessManager(pm)
 
-	sm.ApplyOnCloseProcessors(sid, "inactivity")
+	sm.ApplyOnCloseProcessors(sid, "deleted")
 
-	// The pre-check must short-circuit BEFORE PinWorkspace is called.
-	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
-		t.Fatalf("PinWorkspace should not fire when shared process is reaped, got %+v", calls)
+	// Delete the session immediately, exactly as session_delete.go does right
+	// after firing ApplyOnCloseProcessors (it does not wait for the pipeline).
+	if err := store.Delete(sid); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Give the close-phase pipeline goroutine time to run its slow processor and
+	// emit the single lifecycle summary after ApplyOnClose returns.
+	const skippedMessage = "processor_run persistence skipped"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if handler.hasRecord(slog.LevelDebug, skippedMessage) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !handler.hasRecord(slog.LevelDebug, skippedMessage) {
+		t.Fatal("expected one DEBUG summary for processor_run events omitted after session deletion")
+	}
+
+	// Confirm the event was truly never persisted anywhere recoverable —
+	// ReadEvents on the deleted session must fail with ErrSessionNotFound (the
+	// directory is gone), so the processor_run marker for
+	// "slow-close-processor" is unrecoverable regardless of how it is logged.
+	if _, err := store.ReadEvents(sid); !errors.Is(err, session.ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound reading events for deleted session, got: %v", err)
+	}
+
+	if handler.hasRecord(slog.LevelWarn, "Failed to persist processor run") {
+		t.Fatal("deleted-session lifecycle omission still emitted a generic per-processor WARN")
+	}
+	if handler.hasRecord(slog.LevelDebug, "close-phase: failed to persist processor_run event") {
+		t.Fatal("deleted-session lifecycle omission still emitted the obsolete per-processor DEBUG message")
+	}
+
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	summaries := 0
+	var attrs map[string]any
+	for _, record := range handler.records {
+		if record.Level != slog.LevelDebug || record.Message != skippedMessage {
+			continue
+		}
+		summaries++
+		attrs = make(map[string]any)
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.Any()
+			return true
+		})
+	}
+	if summaries != 1 {
+		t.Fatalf("processor_run omission summaries = %d, want exactly 1", summaries)
+	}
+	if attrs["phase"] != "close" || attrs["reason"] != "session_deleted" || attrs["archive_reason"] != "deleted" {
+		t.Fatalf("omission summary lifecycle attrs = %#v, want phase=close reason=session_deleted archive_reason=deleted", attrs)
+	}
+	if attrs["omitted_processor_runs"] != int64(1) {
+		t.Fatalf("omitted_processor_runs = %#v, want 1", attrs["omitted_processor_runs"])
+	}
+}
+
+func TestCloseProcessorRunPersistenceImpossible(t *testing.T) {
+	tests := []struct {
+		reason string
+		want   bool
+	}{
+		{reason: "deleted", want: true},
+		{reason: "parent_deleted", want: true},
+		{reason: "self_destructed", want: true},
+		{reason: "manual", want: false},
+		{reason: "inactivity", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			if got := closeProcessorRunPersistenceImpossible(tt.reason); got != tt.want {
+				t.Fatalf("closeProcessorRunPersistenceImpossible(%q) = %v, want %v", tt.reason, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2581,5 +3190,60 @@ func TestSessionManager_ResumeSession_FinalRetry_SkipsACPSessionResume(t *testin
 	}
 	if updated.ACPSessionID != "acp-abc" {
 		t.Errorf("expected persisted ACPSessionID to remain %q after final-retry local clear, got %q", "acp-abc", updated.ACPSessionID)
+	}
+}
+
+// TestSessionManager_ResumeSession_ACPStartFailureThreshold_SkipsArchiveForNoArchive
+// pins mitto-yvel.3: a NoArchive conversation that reaches
+// ACPStartFailureThreshold consecutive genuine ACP start failures still has
+// its ACPStartFailureCount incremented (so the counter itself keeps working)
+// but must NOT be archived — a supervisor loop that keeps failing to start
+// must not be reaped.
+func TestSessionManager_ResumeSession_ACPStartFailureThreshold_SkipsArchiveForNoArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:            "no-archive-threshold-session",
+		ACPServer:            "agent-a",
+		WorkingDir:           "/tmp",
+		Name:                 "No Archive Threshold",
+		ACPStartFailureCount: ACPStartFailureThreshold - 1,
+		NoArchive:            true,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// This resume attempt pushes the failure count to ACPStartFailureThreshold,
+	// which would normally trigger auto-archive.
+	_, _ = sm.ResumeSession("no-archive-threshold-session", "No Archive Threshold", "/tmp")
+
+	updated, err := store.GetMetadata("no-archive-threshold-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPStartFailureCount < ACPStartFailureThreshold {
+		t.Errorf("ACPStartFailureCount = %d, want >= %d (counter must still be tracked)", updated.ACPStartFailureCount, ACPStartFailureThreshold)
+	}
+	if updated.Archived {
+		t.Error("NoArchive session should NOT be auto-archived after reaching ACPStartFailureThreshold")
 	}
 }

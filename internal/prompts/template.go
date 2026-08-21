@@ -9,9 +9,64 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"text/template/parse"
 
 	"github.com/inercia/mitto/internal/cel"
 )
+
+// checkTemplateRefs walks the parse tree of every template attached to t and
+// returns the first `{{ template "name" ... }}` invocation whose name has no
+// matching sub-template attached. text/template's own Parse never rejects
+// unknown template refs — only Execute does — so callers that only want to
+// parse-validate (ValidatePromptTemplateSyntax) must walk the tree explicitly.
+func checkTemplateRefs(t *template.Template) error {
+	var walk func(node parse.Node) error
+	walk = func(node parse.Node) error {
+		if node == nil {
+			return nil
+		}
+		switch n := node.(type) {
+		case *parse.ListNode:
+			if n == nil {
+				return nil
+			}
+			for _, sub := range n.Nodes {
+				if err := walk(sub); err != nil {
+					return err
+				}
+			}
+		case *parse.IfNode:
+			if err := walk(n.List); err != nil {
+				return err
+			}
+			return walk(n.ElseList)
+		case *parse.RangeNode:
+			if err := walk(n.List); err != nil {
+				return err
+			}
+			return walk(n.ElseList)
+		case *parse.WithNode:
+			if err := walk(n.List); err != nil {
+				return err
+			}
+			return walk(n.ElseList)
+		case *parse.TemplateNode:
+			if t.Lookup(n.Name) == nil {
+				return fmt.Errorf("template %q not defined", n.Name)
+			}
+		}
+		return nil
+	}
+	for _, tmpl := range t.Templates() {
+		if tmpl.Tree == nil || tmpl.Root == nil {
+			continue
+		}
+		if err := walk(tmpl.Root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // migratableMittoVars maps deprecated @mitto:<token> names (without the prefix)
 // to their Go-template replacement. This is the single authoritative source of truth
@@ -28,6 +83,7 @@ var migratableMittoVars = map[string]string{
 	"mcp_children_count":    "{{ .Children.MCPCount }}",
 	"loop":                  "{{ .Session.IsLoop }}",
 	"loop_forced":           "{{ .Session.IsLoopForced }}",
+	"loop_run_on_start":     "{{ .Session.IsLoopRunOnStart }}",
 	"available_acp_servers": "{{ .ACP.AvailableText }}",
 	"children":              "{{ .Children.AllText }}",
 	"mcp_children":          "{{ .Children.MCPText }}",
@@ -129,6 +185,13 @@ func HasTemplateSyntax(body string) bool {
 // Wired at load time (ParsePromptFile) and save time (MCP mitto_prompt_update,
 // REST POST /api/workspace-prompts) as of mitto-m7sb.6.
 func PrecompileTemplateConds(name, body string) error {
+	return PrecompileTemplateCondsWithFragments(name, body, CurrentFragments())
+}
+
+// PrecompileTemplateCondsWithFragments validates a prompt against an explicit
+// fragment registry. It is used for workspace-scoped loading without mutating
+// the process-global registry.
+func PrecompileTemplateCondsWithFragments(name, body string, fragments *FragmentRegistry) error {
 	if !HasTemplateSyntax(body) {
 		return nil
 	}
@@ -149,8 +212,20 @@ func PrecompileTemplateConds(name, body string) error {
 	fm["Cond"] = condStub
 	fm["When"] = condStub
 
-	t, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body)
-	if err != nil {
+	t := template.New(name).Option("missingkey=zero").Funcs(fm)
+	// Attach every installed fragment as an associated sub-template BEFORE parsing
+	// the caller body so text/template's own parser rejects `{{ template "unknown" }}`
+	// references at load time (same class of failure as an unbalanced `{{ ... }}`).
+	// Nil registry (default until bootstrap installs one) skips attachment and preserves
+	// pre-fragment behavior bytewise. Mirrors RenderPromptTemplate's attach loop.
+	if fragments != nil {
+		for fragName, fragBody := range fragments.All() {
+			if _, err := t.New(fragName).Parse(fragBody); err != nil {
+				return fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
+			}
+		}
+	}
+	if _, err := t.Parse(body); err != nil {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}
 	var buf bytes.Buffer
@@ -178,8 +253,24 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 		name = "prompt"
 	}
 	fm := cel.BuildTemplateFuncMap(&cel.PromptEnabledContext{})
-	if _, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body); err != nil {
+	t := template.New(name).Option("missingkey=zero").Funcs(fm)
+	// Attach every installed fragment so `{{ template "unknown" }}` fails at parse
+	// (see PrecompileTemplateConds for the same rationale and pattern).
+	if frags := CurrentFragments(); frags != nil {
+		for fragName, fragBody := range frags.All() {
+			if _, err := t.New(fragName).Parse(fragBody); err != nil {
+				return fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
+			}
+		}
+	}
+	if _, err := t.Parse(body); err != nil {
 		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
+	}
+	// text/template.Parse does not reject `{{ template "unknown" }}` — only
+	// Execute does. Walk the parse tree so an unknown fragment ref fails at
+	// load time on this parse-only path too (mitto-g61.4).
+	if err := checkTemplateRefs(t); err != nil {
+		return fmt.Errorf("prompt template %q: %w", name, err)
 	}
 	return nil
 }
@@ -191,16 +282,66 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 // missingkey=zero: a missing MAP key renders as "" (like an absent .Args key); struct
 // field typos still produce an error. No HTML escaping (text/template).
 //
+// If a fragment registry is installed via SetCurrentFragments, each fragment is
+// attached to the template set as an associated sub-template before the caller
+// body is parsed, so `{{ template "name" . }}` in the body resolves. A nil
+// registry (default until bootstrap installs one) skips attachment entirely and
+// preserves pre-fragment behavior bytewise. Fragment bodies are validated at
+// load time (LoadFragmentsFromDir) but re-parsed here per render since Go's
+// text/template does not expose a "clone parsed set" primitive that composes
+// cleanly with a per-call FuncMap.
+//
 // name is used only in error messages (use the prompt name when available).
 // data is the render context (later: *PromptEnabledContext). funcs may be nil.
 // Returns the rendered string, or a non-nil error on parse/exec failure
 // (fail-closed: the caller must abort the send on error).
 func RenderPromptTemplate(name, body string, data any, funcs template.FuncMap) (string, error) {
+	return RenderPromptTemplateWithFragments(name, body, data, funcs, CurrentFragments())
+}
+
+// RenderPromptTemplateWithFragments renders against an explicit fragment
+// registry. It is the workspace-scoped counterpart to RenderPromptTemplate.
+func RenderPromptTemplateWithFragments(name, body string, data any, funcs template.FuncMap, fragments *FragmentRegistry) (string, error) {
 	if !HasTemplateSyntax(body) {
 		return body, nil
 	}
-	t, err := template.New(name).Option("missingkey=zero").Funcs(funcs).Parse(body)
-	if err != nil {
+	t := template.New(name).Option("missingkey=zero").Funcs(funcs)
+	if fragments != nil {
+		for fragName, fragBody := range fragments.All() {
+			if _, err := t.New(fragName).Parse(fragBody); err != nil {
+				return "", fmt.Errorf("prompt template %q: fragment %q parse: %w", name, fragName, err)
+			}
+		}
+	}
+	if _, err := t.Parse(body); err != nil {
+		return "", fmt.Errorf("prompt template %q: parse error: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("prompt template %q: render error: %w", name, err)
+	}
+	return buf.String(), nil
+}
+
+// RenderPromptTemplateWithoutFragments renders body with data + funcs but
+// SKIPS the CurrentFragments attach loop that RenderPromptTemplate performs.
+//
+// This is intentional isolation for narrow-scope renders (currently target.title,
+// mitto-eyf) whose FuncMap is deliberately narrower than the full BuildTemplateFuncMap
+// and would fail to parse a fragment that references a func absent from the
+// stripped FuncMap — even when the render body itself does not use that fragment.
+// target.title strings never use `{{ template "..." }}` (they are short,
+// dispatch-time identifiers), so skipping fragment attach here is safe and
+// avoids leaking fragment-func requirements into the target-title contract.
+//
+// Same fail-closed semantics as RenderPromptTemplate: parse and execution
+// errors are wrapped and returned; missing keys render as "" (missingkey=zero).
+func RenderPromptTemplateWithoutFragments(name, body string, data any, funcs template.FuncMap) (string, error) {
+	if !HasTemplateSyntax(body) {
+		return body, nil
+	}
+	t := template.New(name).Option("missingkey=zero").Funcs(funcs)
+	if _, err := t.Parse(body); err != nil {
 		return "", fmt.Errorf("prompt template %q: parse error: %w", name, err)
 	}
 	var buf bytes.Buffer

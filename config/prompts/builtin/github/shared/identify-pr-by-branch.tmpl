@@ -1,0 +1,19 @@
+{{- /*
+  github/shared/identify-pr-by-branch — identify the PR (or GitLab MR)
+  associated with the current git branch. Loop-aware: in scheduled mode
+  end the run quietly on ambiguity; otherwise ask the user.
+
+  Callers: check-pr-comments §1, address-pr-comments §1.
+*/ -}}
+```bash
+git branch --show-current
+gh pr status          # GitHub
+glab mr view          # GitLab
+```
+
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+In scheduled mode: auto-select the PR for the current branch. If multiple or
+none match, end the run quietly with a `mitto_ui_notify` note — do not ask.
+{{- else }}
+If multiple or none found, ask the user to specify.
+{{- end }}

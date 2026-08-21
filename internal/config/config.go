@@ -4,14 +4,44 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// decodeConfigInlineLoop decodes an inline prompts: entry's loop: node (from
+// settings.yaml's top-level "prompts:" or an ACP server's "prompts:") into a
+// *PromptLoop, migrating a legacy flat-schema block in memory via
+// DecodeInlineLoop instead of letting PromptLoop.UnmarshalYAML's strict
+// rejection hard-fail the whole settings load (mitto-opoh). node is a value
+// (not *yaml.Node) because yaml.v3 does not populate a *yaml.Node struct
+// field on Decode; absence is detected via IsZero(). Returns nil (and logs a
+// WARN) if node is absent or fails to decode/validate even after migration,
+// so a bad loop: block only drops that prompt's loop config rather than the
+// prompt or the file.
+func decodeConfigInlineLoop(promptName string, node yaml.Node) *PromptLoop {
+	if node.IsZero() {
+		return nil
+	}
+	loop, migrated, err := DecodeInlineLoop(&node)
+	if err != nil {
+		slog.Warn("prompt has an invalid loop: block; dropping loop config",
+			"prompt", promptName, "error", err)
+		return nil
+	}
+	if migrated.Changed {
+		slog.Warn("prompt loop: block uses the pre-r6j flat schema; applied in memory only — "+
+			"edit the config file by hand onto the grouped schema",
+			"prompt", promptName, "migrations", migrated.Fired)
+	}
+	return loop
+}
 
 // ModelProfile is a named model profile pairing a selection criteria with tags.
 // Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
@@ -49,13 +79,17 @@ func DefaultModelProfiles() []ModelProfile {
 	}
 	return []ModelProfile{
 		{Name: "Claude", Criteria: contains("Claude"), Tags: []string{"Anthropic"}},
+		{Name: "Claude Mythos", Criteria: contains("Mythos"), Tags: []string{"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}},
 		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}},
 		{Name: "Claude Sonnet 5", Criteria: contains("Sonnet 5"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Sonnet 4", Criteria: contains("Sonnet 4"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Haiku", Criteria: contains("Haiku"), Tags: []string{"Fast", "Cheap"}},
 		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Thinking", "Deep", "Coding"}},
 		{Name: "GPT-4", Criteria: contains("GPT-4"), Tags: []string{"Smart", "Coding"}},
+		{Name: "OpenAI GPT", Criteria: contains("GPT"), Tags: []string{"OpenAI"}},
 		{Name: "Gemini", Criteria: contains("Gemini"), Tags: []string{"Smart", "LongContext"}},
+		{Name: "GLM", Criteria: contains("GLM"), Tags: []string{"Smart", "Coding", "OpenWeight", "SelfHostable"}},
+		{Name: "DeepSeek", Criteria: contains("DeepSeek"), Tags: []string{"Smart", "Coding", "OpenWeight", "SelfHostable"}},
 	}
 }
 
@@ -291,6 +325,12 @@ type WebAuth struct {
 	Cloudflare *CloudflareAuth `json:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
 	// Allow contains IP addresses/CIDR ranges that bypass authentication
 	Allow *AuthAllow `json:"allow,omitempty" yaml:"allow,omitempty"`
+	// SharedToken, when set, is an additional accepted credential for programmatic
+	// clients (SDK, CLI): a request carrying "Authorization: Bearer <token>" that
+	// matches this value is authenticated without a session cookie or CSRF token.
+	// It does NOT by itself enable authentication (see AuthManager.IsEnabled) — it
+	// is only consulted once auth is already enabled via Simple or Cloudflare.
+	SharedToken string `json:"shared_token,omitempty" yaml:"shared_token,omitempty"`
 }
 
 // HasCloudflareAuth returns true if Cloudflare Access authentication is configured and valid.
@@ -301,14 +341,22 @@ func (w *WebAuth) HasCloudflareAuth() bool {
 // WebSecurity represents security configuration for the web interface.
 type WebSecurity struct {
 	// TrustedProxies is a list of IP addresses or CIDR ranges of trusted reverse proxies.
-	// Only requests from these IPs will have X-Forwarded-For and X-Real-IP headers trusted.
+	// Only requests from these IPs will have configured forwarding headers trusted.
 	// If empty, these headers are never trusted (direct connections only).
 	// Examples: "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+	// TrustedProxyHeaders selects forwarding header modes. When omitted,
+	// X-Forwarded-For is used. X-Real-IP and Cf-Connecting-IP require explicit entries.
+	TrustedProxyHeaders []string `json:"trusted_proxy_headers,omitempty"`
 
-	// AllowedOrigins is a list of allowed origins for WebSocket connections.
-	// If empty, only same-origin requests are allowed.
-	// Use "*" to allow all origins (not recommended for production).
+	// AllowedOrigins is a list of allowed origins for cross-origin browser
+	// access — both WebSocket connections and REST CORS headers (mitto-7gta.27)
+	// share this single allowlist. If empty, only same-origin requests are
+	// allowed (and no CORS headers are emitted at all). Use "*" to allow all
+	// origins; this is safe for REST because Access-Control-Allow-Credentials
+	// is never emitted, so cross-origin browser access always requires the
+	// shared bearer token (see WebAuth.SharedToken), never the ambient
+	// session cookie.
 	AllowedOrigins []string `json:"allowed_origins,omitempty"`
 
 	// RateLimitRPS is the rate limit for API requests per second per IP.
@@ -545,6 +593,18 @@ type WebUIConfig struct {
 	// Options: "default" (14px), "small" (12px), "medium" (16px), "large" (18px), "xl" (20px)
 	InputFontSize string `json:"input_font_size,omitempty"`
 
+	// ConversationFontFamily is the font family for conversation message rendering
+	// (the .markdown-content area), independent of the compose/input box.
+	// Options: "system" (default), "sans-serif", "serif", "inter", "sf-pro",
+	// "helvetica-neue", "roboto", "georgia", "charter", "ibm-plex-sans"
+	ConversationFontFamily string `json:"conversation_font_family,omitempty"`
+
+	// ConversationFontSize is the base font size for conversation message rendering.
+	// The sidebar small-A / large-A toggle re-anchors on this base: small-A = base,
+	// large-A = base + 2px.
+	// Options: "xs" (13px), "sm" (14px, default), "md" (15px), "lg" (16px), "xl" (18px)
+	ConversationFontSize string `json:"conversation_font_size,omitempty"`
+
 	// ConversationCyclingMode controls which conversations are included when cycling
 	// with keyboard shortcuts (Cmd+Ctrl+Up/Down) or mobile swipe gestures.
 	// Options: "all" (default) - all non-archived conversations
@@ -606,20 +666,75 @@ type WebConfig struct {
 	AccessLog *AccessLogConfig `json:"access_log,omitempty"`
 	// Beads contains configuration specific to the /api/issues (beads) endpoints
 	Beads *WebBeadsConfig `json:"beads,omitempty" yaml:"beads,omitempty"`
+	// PProf, when true, registers the net/http/pprof debug endpoints
+	// (/debug/pprof/*). Off by default; profiles leak goroutine stacks and
+	// heap contents, so the routes are also loopback-bound and auth-gated
+	// regardless of this setting. See PProfEnabled and mitto-aek.
+	PProf bool `json:"pprof,omitempty" yaml:"pprof,omitempty"`
+}
+
+// PProfEnabled resolves whether the net/http/pprof debug endpoints should be
+// registered. Precedence: MITTO_PPROF environment variable (if set) takes
+// priority over the config value; a nil cfg resolves to false. Accepts the
+// usual truthy strings ("1", "true", "yes", case-insensitive); any other
+// non-empty value is treated as false.
+func PProfEnabled(cfg *Config) bool {
+	if v := os.Getenv("MITTO_PPROF"); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes":
+			return true
+		default:
+			return false
+		}
+	}
+	if cfg == nil {
+		return false
+	}
+	return cfg.Web.PProf
 }
 
 // WebBeadsConfig gates optional behaviour on the beads (issues) endpoints.
 // Kept as a nested pointer so unset config leaves every flag at its safe
-// default (false) without ambiguity between "not configured" and "explicitly
-// disabled".
+// default without ambiguity between "not configured" and "explicitly set".
 type WebBeadsConfig struct {
-	// AllowMigrateFromUI opts in to the POST /api/beads/migrate endpoint
-	// that can trigger `bd migrate schema` + `bd dolt push` (or `bd bootstrap`)
-	// from the Beads panel when a schema-skew error is detected. Defaults to
-	// false because running migrate on the wrong clone of a remote-backed
-	// database forks the schema — the safe default is to require the user
-	// to opt in explicitly in settings.
-	AllowMigrateFromUI bool `json:"allow_migrate_from_ui,omitempty" yaml:"allow_migrate_from_ui,omitempty"`
+	// AllowMigrateFromUI controls the POST /api/beads/migrate endpoint that
+	// can trigger `bd migrate schema` + `bd dolt push` (or `bd bootstrap`)
+	// from the Beads panel when a schema-skew error is detected. Tri-state:
+	// nil == default (allowed); *true == allowed (explicit); *false ==
+	// admin kill-switch (disabled). The dialog itself already requires an
+	// ack checkbox before running, so the default is on; admins deploying
+	// Mitto against a shared remote-backed clone can set this to false to
+	// forbid UI-initiated migrations entirely. See mitto-erry.
+	AllowMigrateFromUI *bool `json:"allow_migrate_from_ui,omitempty" yaml:"allow_migrate_from_ui,omitempty"`
+
+	// ReadCacheTTL is the backstop expiry for the in-memory beads read
+	// cache (enabled by --beads-cache). Any positive Go duration string
+	// (e.g. "10m", "2h"). Empty, missing, or non-positive falls back to
+	// beads.DefaultCacheTTL (10 min). Freshness is primarily driven by
+	// writer-side invalidation and the .beads/ fsnotify watcher; this
+	// TTL only bounds staleness in the corner cases fsnotify can miss
+	// (NFS/SMB mounts, inotify limits, watch-registration race, the 2 s
+	// self-suppress window). See mitto-9ni.
+	ReadCacheTTL string `json:"read_cache_ttl,omitempty" yaml:"read_cache_ttl,omitempty"`
+}
+
+// defaultBeadsReadCacheTTL mirrors beads.DefaultCacheTTL to avoid an import
+// cycle between internal/config and internal/beads. Source of truth is
+// beads.DefaultCacheTTL — keep the two in sync. See mitto-9ni.
+const defaultBeadsReadCacheTTL = 10 * time.Minute
+
+// EffectiveReadCacheTTL returns the parsed ReadCacheTTL, falling back to the
+// default (mirrors beads.DefaultCacheTTL) when the string is empty, unparseable,
+// or non-positive. Nil-safe so callers do not need to pre-validate the pointer.
+func (w *WebBeadsConfig) EffectiveReadCacheTTL() time.Duration {
+	if w == nil || w.ReadCacheTTL == "" {
+		return defaultBeadsReadCacheTTL
+	}
+	d, err := time.ParseDuration(w.ReadCacheTTL)
+	if err != nil || d <= 0 {
+		return defaultBeadsReadCacheTTL
+	}
+	return d
 }
 
 // AccessLogConfig represents access log configuration.
@@ -1031,6 +1146,12 @@ const DefaultMaxLoopIterations = 100
 // on-completion loop delay to prevent hot loops.
 const DefaultMinLoopCompletionDelaySeconds = 5
 
+// DefaultRunOnStartAntiFlapSeconds is the anti-flap window (seconds) applied to
+// the loop boot pulse (mitto-ystk). When a loop with RunOnStart=true was last
+// delivered within this window, the boot pulse is suppressed to prevent a
+// Mitto restart from re-firing a loop that just ran.
+const DefaultRunOnStartAntiFlapSeconds = 60
+
 // GlobalMaxLoopIterations is the hardcoded absolute backstop on scheduled runs
 // for any loop conversation. It can never be exceeded by config.
 const GlobalMaxLoopIterations = 1000
@@ -1064,20 +1185,32 @@ func (c *ConversationsConfig) GetMinLoopCompletionDelaySeconds() int {
 }
 
 // EffectiveMaxLoopIterations returns the binding iteration cap for a loop
-// conversation: the smallest positive of { promptMax, configMax, GlobalMaxLoopIterations }.
+// conversation.
 //
-// All three inputs are literal caps, not sentinels for anything other than
-// "unlimited":
-//   - promptMax and configMax: 0 means "unlimited" (that cap is ignored).
-//   - Any positive value is treated literally (e.g. configMax=1 means stop after 1).
-//   - GlobalMaxLoopIterations is the hardcoded absolute backstop and always applies.
+// The inputs are asymmetric: promptMax is authoritative when the prompt author
+// has an opinion; configMax is a default only used when the prompt has no
+// opinion.
 //
-// Per-conversation caps are honored below the global safeguard: if promptMax > 0
-// and smaller than configMax, the per-conversation cap wins. The result is always
-// positive.
+//   - promptMax == 0 ("unlimited" at the prompt level, i.e. the author explicitly
+//     opted out of any per-prompt cap — the standing-supervisor contract):
+//     configMax is IGNORED, only the hardcoded GlobalMaxLoopIterations backstop
+//     applies. This preserves the author-visible contract in prompt frontmatter
+//     that `maxIterations: 0` means "unlimited scheduled runs, bounded only by
+//     the absolute backstop" (mitto-48x).
+//   - promptMax > 0: the smallest positive of { promptMax, configMax,
+//     GlobalMaxLoopIterations } wins. A positive promptMax is treated literally
+//     (e.g. promptMax=1 stops after 1 run); configMax further constrains it.
+//
+// GlobalMaxLoopIterations is the hardcoded absolute backstop and always applies.
+// The result is always positive.
 func EffectiveMaxLoopIterations(promptMax, configMax int) int {
+	// mitto-48x: prompt-declared 0 is an explicit author opt-out from any
+	// per-prompt cap; the config default must not silently downgrade it.
+	if promptMax == 0 {
+		return GlobalMaxLoopIterations
+	}
 	effective := GlobalMaxLoopIterations
-	if promptMax > 0 && promptMax < effective {
+	if promptMax < effective {
 		effective = promptMax
 	}
 	if configMax > 0 && configMax < effective {
@@ -1151,12 +1284,22 @@ type MCPConfig struct {
 	Port *int `json:"port,omitempty" yaml:"port,omitempty"`
 }
 
+// ValidateMCPHost rejects network-exposed MCP listeners. Mitto's MCP transport
+// has no network authentication and is intentionally localhost-only.
+func ValidateMCPHost(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" || host == "127.0.0.1" {
+		return nil
+	}
+	return fmt.Errorf("MCP server host must be 127.0.0.1 (localhost only)")
+}
+
 // GetHost returns the host to bind the MCP server to.
 func (c *MCPConfig) GetHost() string {
-	if c == nil || c.Host == "" {
+	if c == nil || strings.TrimSpace(c.Host) == "" {
 		return "127.0.0.1" // Default: localhost only
 	}
-	return c.Host
+	return strings.TrimSpace(c.Host)
 }
 
 // GetPort returns the port for the MCP server.
@@ -1184,6 +1327,8 @@ type Config struct {
 	UI UIConfig
 	// Session contains session storage limits configuration (not exposed in Settings dialog)
 	Session *SessionConfig
+	// Stats contains dashboard time-series stats configuration (mitto-a86b).
+	Stats *StatsConfig
 	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
 	Prewarm *PrewarmConfig
 	// Conversations contains global conversation processing configuration
@@ -1202,6 +1347,15 @@ type Config struct {
 	// section ID (e.g. "conversations", "tasksList", "beadsIssue"). These are
 	// merged with folder-level shortcuts at render time (global entries first).
 	Shortcuts map[string][]ShortcutButton
+	// TaskLabelColors is an ordered global mapping from task labels to task-title
+	// background colors. The first matching label wins at render time.
+	TaskLabelColors []TaskLabelColor
+}
+
+// TaskLabelColor maps a task label to a task-title background color.
+type TaskLabelColor struct {
+	Label string `json:"label" yaml:"label"`
+	Color string `json:"color" yaml:"color"`
 }
 
 // rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
@@ -1227,19 +1381,26 @@ type rawACPServerConfig struct {
 	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Tags    []string          `yaml:"tags"` // Optional categorization tags
 	Prompts []struct {
-		Name            string            `yaml:"name"`
-		Prompt          string            `yaml:"prompt"`
-		BackgroundColor string            `yaml:"backgroundColor"`
-		Icon            string            `yaml:"icon"`
-		Description     string            `yaml:"description"`
-		Group           string            `yaml:"group"`
-		Menus           string            `yaml:"menus"`
-		Enabled         *bool             `yaml:"enabled"`
-		EnabledWhen     string            `yaml:"enabledWhen"`
-		Loop            *PromptLoop       `yaml:"loop,omitempty"`
-		Parameters      []PromptParameter `yaml:"parameters"`
-		Tags            []string          `yaml:"tags"`
-		Singleton       bool              `yaml:"singleton"`
+		Name            string `yaml:"name"`
+		Prompt          string `yaml:"prompt"`
+		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
+		Description     string `yaml:"description"`
+		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
+		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
+		// Loop is decoded as a raw node (not *PromptLoop) so a pre-r6j flat
+		// loop: block runs through the mitto-r6j.3 migration registry in
+		// memory (via DecodeInlineLoop) instead of hard-failing the whole
+		// settings load via PromptLoop.UnmarshalYAML's strict rejection
+		// (mitto-opoh). Deliberately a non-pointer yaml.Node; see the
+		// matching field doc on rawWorkspaceRC.Prompts.
+		Loop       yaml.Node         `yaml:"loop,omitempty"`
+		Parameters []PromptParameter `yaml:"parameters"`
+		Tags       []string          `yaml:"tags"`
+		Singleton  bool              `yaml:"singleton"`
+		Target     *PromptTarget     `yaml:"target,omitempty"`
 	} `yaml:"prompts"`
 	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
@@ -1252,25 +1413,30 @@ type rawConfig struct {
 	Models []rawModelProfile `yaml:"models"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
-		Name            string            `yaml:"name"`
-		Prompt          string            `yaml:"prompt"`
-		BackgroundColor string            `yaml:"backgroundColor"`
-		Icon            string            `yaml:"icon"`
-		Description     string            `yaml:"description"`
-		Group           string            `yaml:"group"`
-		Menus           string            `yaml:"menus"`
-		Enabled         *bool             `yaml:"enabled"`
-		EnabledWhen     string            `yaml:"enabledWhen"`
-		Loop            *PromptLoop       `yaml:"loop,omitempty"`
-		Parameters      []PromptParameter `yaml:"parameters"`
-		Tags            []string          `yaml:"tags"`
-		Singleton       bool              `yaml:"singleton"`
+		Name            string `yaml:"name"`
+		Prompt          string `yaml:"prompt"`
+		BackgroundColor string `yaml:"backgroundColor"`
+		Icon            string `yaml:"icon"`
+		Description     string `yaml:"description"`
+		Group           string `yaml:"group"`
+		Menus           string `yaml:"menus"`
+		Enabled         *bool  `yaml:"enabled"`
+		EnabledWhen     string `yaml:"enabledWhen"`
+		// Loop is decoded as a raw node (not *PromptLoop); see the identical
+		// field doc on rawACPServerConfig.Prompts above (mitto-opoh).
+		Loop       yaml.Node         `yaml:"loop,omitempty"`
+		Parameters []PromptParameter `yaml:"parameters"`
+		Tags       []string          `yaml:"tags"`
+		Singleton  bool              `yaml:"singleton"`
+		Target     *PromptTarget     `yaml:"target,omitempty"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
 	// Shortcuts is the top-level global shortcut buttons section, keyed by section ID.
 	Shortcuts map[string][]ShortcutButton `yaml:"shortcuts"`
-	Web       struct {
+	// TaskLabelColors is the ordered global task-label color mapping.
+	TaskLabelColors []TaskLabelColor `yaml:"task_label_colors"`
+	Web             struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
@@ -1300,16 +1466,19 @@ type rawConfig struct {
 			Allow *struct {
 				IPs []string `yaml:"ips"`
 			} `yaml:"allow"`
+			SharedToken string `yaml:"shared_token"`
 		} `yaml:"auth"`
 		Security *struct {
-			TrustedProxies   []string `yaml:"trusted_proxies"`
-			AllowedOrigins   []string `yaml:"allowed_origins"`
-			RateLimitRPS     float64  `yaml:"rate_limit_rps"`
-			RateLimitBurst   int      `yaml:"rate_limit_burst"`
-			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
+			TrustedProxies      []string `yaml:"trusted_proxies"`
+			TrustedProxyHeaders []string `yaml:"trusted_proxy_headers"`
+			AllowedOrigins      []string `yaml:"allowed_origins"`
+			RateLimitRPS        float64  `yaml:"rate_limit_rps"`
+			RateLimitBurst      int      `yaml:"rate_limit_burst"`
+			MaxWSMessageSize    int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
 		Beads *struct {
-			AllowMigrateFromUI bool `yaml:"allow_migrate_from_ui"`
+			AllowMigrateFromUI *bool  `yaml:"allow_migrate_from_ui"`
+			ReadCacheTTL       string `yaml:"read_cache_ttl"`
 		} `yaml:"beads"`
 	} `yaml:"web"`
 	UI *struct {
@@ -1319,6 +1488,8 @@ type rawConfig struct {
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
 			InputFontSize           string `yaml:"input_font_size"`
+			ConversationFontFamily  string `yaml:"conversation_font_family"`
+			ConversationFontSize    string `yaml:"conversation_font_size"`
 			ConversationCyclingMode string `yaml:"conversation_cycling_mode"`
 			SingleExpandedGroup     bool   `yaml:"single_expanded_group"`
 		} `yaml:"web"`
@@ -1396,6 +1567,10 @@ type rawConfig struct {
 		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
 		McpInitTimeout           string `yaml:"mcp_init_timeout"`
 	} `yaml:"session"`
+	// Stats is the dashboard time-series stats configuration (mitto-a86b.9)
+	Stats *struct {
+		RetentionHours *int `yaml:"retention_hours"`
+	} `yaml:"stats"`
 	// Prewarm is the adaptive pre-warming thresholds (mitto-mw0)
 	Prewarm *struct {
 		SessionNewFast       string `yaml:"session_new_fast"`
@@ -1484,6 +1659,11 @@ func Parse(data []byte) (*Config, error) {
 				if p.Enabled != nil && !*p.Enabled {
 					continue
 				}
+				// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+				// The source label names the owning ACP server: no real on-disk path is
+				// threaded through this call site (per-ACP-server inline prompts).
+				WarnUnknownMenus(p.Name, "settings acp:"+name, p.Menus)
+				loop := decodeConfigInlineLoop(p.Name, p.Loop)
 				wp := WebPrompt{
 					Name:            p.Name,
 					Prompt:          p.Prompt,
@@ -1493,9 +1673,10 @@ func Parse(data []byte) (*Config, error) {
 					Group:           p.Group,
 					Menus:           p.Menus,
 					Singleton:       p.Singleton,
+					Target:          p.Target,
 					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
-					Loop:            p.Loop,
+					Loop:            loop,
 					Parameters:      p.Parameters,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1537,6 +1718,11 @@ func Parse(data []byte) (*Config, error) {
 		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
 			continue
 		}
+		// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+		// "settings" is a fixed source label: no real on-disk path is threaded
+		// through this call site (settings.json/settings.yaml inline prompts).
+		WarnUnknownMenus(p.Name, "settings", p.Menus)
+		loop := decodeConfigInlineLoop(p.Name, p.Loop)
 		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
@@ -1546,10 +1732,11 @@ func Parse(data []byte) (*Config, error) {
 			Group:           p.Group,
 			Menus:           p.Menus,
 			Singleton:       p.Singleton,
+			Target:          p.Target,
 			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-			Loop:            p.Loop,
+			Loop:            loop,
 			Parameters:      p.Parameters,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
@@ -1560,6 +1747,7 @@ func Parse(data []byte) (*Config, error) {
 
 	// Populate global shortcut buttons
 	cfg.Shortcuts = raw.Shortcuts
+	cfg.TaskLabelColors = raw.TaskLabelColors
 
 	// Populate web config
 	cfg.Web.Host = raw.Web.Host
@@ -1594,21 +1782,24 @@ func Parse(data []byte) (*Config, error) {
 				IPs: raw.Web.Auth.Allow.IPs,
 			}
 		}
+		cfg.Web.Auth.SharedToken = raw.Web.Auth.SharedToken
 	}
 
 	// Populate security config
 	if raw.Web.Security != nil {
 		cfg.Web.Security = &WebSecurity{
-			TrustedProxies:   raw.Web.Security.TrustedProxies,
-			AllowedOrigins:   raw.Web.Security.AllowedOrigins,
-			RateLimitRPS:     raw.Web.Security.RateLimitRPS,
-			RateLimitBurst:   raw.Web.Security.RateLimitBurst,
-			MaxWSMessageSize: raw.Web.Security.MaxWSMessageSize,
+			TrustedProxies:      raw.Web.Security.TrustedProxies,
+			TrustedProxyHeaders: raw.Web.Security.TrustedProxyHeaders,
+			AllowedOrigins:      raw.Web.Security.AllowedOrigins,
+			RateLimitRPS:        raw.Web.Security.RateLimitRPS,
+			RateLimitBurst:      raw.Web.Security.RateLimitBurst,
+			MaxWSMessageSize:    raw.Web.Security.MaxWSMessageSize,
 		}
 	}
 	if raw.Web.Beads != nil {
 		cfg.Web.Beads = &WebBeadsConfig{
 			AllowMigrateFromUI: raw.Web.Beads.AllowMigrateFromUI,
+			ReadCacheTTL:       raw.Web.Beads.ReadCacheTTL,
 		}
 	}
 
@@ -1626,6 +1817,8 @@ func Parse(data []byte) (*Config, error) {
 			cfg.UI.Web = &WebUIConfig{
 				InputFontFamily:         raw.UI.Web.InputFontFamily,
 				InputFontSize:           raw.UI.Web.InputFontSize,
+				ConversationFontFamily:  raw.UI.Web.ConversationFontFamily,
+				ConversationFontSize:    raw.UI.Web.ConversationFontSize,
 				ConversationCyclingMode: raw.UI.Web.ConversationCyclingMode,
 				SingleExpandedGroup:     raw.UI.Web.SingleExpandedGroup,
 			}
@@ -1781,6 +1974,13 @@ func Parse(data []byte) (*Config, error) {
 			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,
 			McpInitTimeout:           raw.Session.McpInitTimeout,
+		}
+	}
+
+	// Parse stats config (mitto-a86b.9)
+	if raw.Stats != nil {
+		cfg.Stats = &StatsConfig{
+			RetentionHours: raw.Stats.RetentionHours,
 		}
 	}
 

@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/inercia/mitto/internal/session"
@@ -31,7 +33,9 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		Enabled:            req.Enabled,
 		FreshContext:       req.FreshContext,
 		MaxIterations:      req.MaxIterations,
-		Trigger:            req.Trigger,
+		Triggers:           req.Triggers,
+		ChildEvents:        req.ChildEvents,
+		SlackSubscriptions: req.SlackSubscriptions,
 		DelaySeconds:       req.DelaySeconds,
 		MaxDurationSeconds: req.MaxDurationSeconds,
 	}
@@ -48,12 +52,42 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		v := *req.CoalesceDuringBusy
 		p.CoalesceDuringBusy = &v
 	}
+	if req.RunOnStart != nil {
+		v := *req.RunOnStart
+		p.RunOnStart = &v
+	}
+	if req.SettleWindowSeconds != nil {
+		v := *req.SettleWindowSeconds
+		p.SettleWindowSeconds = &v
+	}
+
+	// Auto-apply the seeded prompt's loop: frontmatter block (mitto-le4.1). When
+	// req.PromptName resolves to a workspace prompt that carries a loop: block,
+	// its fields fill any empty fields on p. Explicit request values win. The
+	// merge is disabled when req.LoopApplyPromptDefaults is *false, mirroring the
+	// MCP tool argument of the same name.
+	if req.PromptName != "" && h.deps.GetWorkspacePromptsAll != nil && h.deps.Store != nil {
+		if meta, err := h.deps.Store.GetMetadata(sessionID); err == nil && meta.WorkingDir != "" {
+			for _, wp := range h.deps.GetWorkspacePromptsAll(meta.WorkingDir) {
+				if strings.EqualFold(wp.Name, req.PromptName) && wp.Loop != nil {
+					applyPromptLoopDefaultsToLoopPrompt(p, wp.Loop, req.LoopApplyPromptDefaults)
+					break
+				}
+			}
+		}
+	}
+
 	// Clamp the on-completion delay to the global floor on write (no-op for schedule trigger).
 	p.ClampDelay(h.loopDelayFloor())
 
 	if err := ps.Set(p); err != nil {
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+		// errors.Is, not ==: Validate() wraps ErrInvalidTrigger (duplicate trigger)
+		// and ErrInvalidChildEvent (unknown event) with %w + context, so a direct
+		// equality check would miss them and fall through to the generic 500 below.
+		if errors.Is(err, session.ErrInvalidFrequency) || errors.Is(err, session.ErrPromptEmpty) || errors.Is(err, session.ErrInvalidMaxIterations) ||
+			errors.Is(err, session.ErrInvalidTrigger) || errors.Is(err, session.ErrInvalidChildEvent) || errors.Is(err, session.ErrOnChildAlone) ||
+			errors.Is(err, session.ErrInvalidSlackSubscription) || errors.Is(err, session.ErrSlackSubscriptionsRequired) ||
+			errors.Is(err, session.ErrInvalidDelay) || errors.Is(err, session.ErrInvalidMaxDuration) ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
@@ -100,31 +134,56 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 
-	// Clamp the on-completion delay to the global floor on write. The effective trigger
-	// is the patched value when provided, otherwise the currently-stored trigger.
+	// Clamp the on-completion delay to the global floor on write. Membership —
+	// not primacy — decides whether the clamp applies: the effective trigger
+	// set is the patched value when provided, otherwise the currently-stored
+	// set (mitto-r6j.5: a multi-trigger config may list onCompletion alongside
+	// other triggers).
 	if req.DelaySeconds != nil {
 		floor := h.loopDelayFloor()
 		if *req.DelaySeconds < floor {
-			effTrigger := session.LoopTrigger("")
-			if req.Trigger != nil {
-				effTrigger = *req.Trigger
+			isOnCompletion := false
+			if req.Triggers != nil {
+				isOnCompletion = slices.Contains(*req.Triggers, session.TriggerOnCompletion)
 			} else if cur, err := ps.Get(); err == nil && cur != nil {
-				effTrigger = cur.Trigger
+				isOnCompletion = cur.HasTrigger(session.TriggerOnCompletion)
 			}
-			if effTrigger == session.TriggerOnCompletion {
+			if isOnCompletion {
 				clamped := floor
 				req.DelaySeconds = &clamped
 			}
 		}
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments, req.Condition, req.ConditionPreset, req.CooldownSeconds, req.CoalesceDuringBusy); err != nil {
-		if err == session.ErrLoopNotFound {
+	if err := ps.Update(session.LoopUpdate{
+		Prompt:              req.Prompt,
+		PromptName:          req.PromptName,
+		Frequency:           req.Frequency,
+		Enabled:             req.Enabled,
+		FreshContext:        req.FreshContext,
+		MaxIterations:       req.MaxIterations,
+		Triggers:            req.Triggers,
+		ChildEvents:         req.ChildEvents,
+		SlackSubscriptions:  req.SlackSubscriptions,
+		DelaySeconds:        req.DelaySeconds,
+		MaxDurationSeconds:  req.MaxDurationSeconds,
+		Arguments:           req.Arguments,
+		Condition:           req.Condition,
+		ConditionPreset:     req.ConditionPreset,
+		CooldownSeconds:     req.CooldownSeconds,
+		CoalesceDuringBusy:  req.CoalesceDuringBusy,
+		RunOnStart:          req.RunOnStart,
+		SettleWindowSeconds: req.SettleWindowSeconds,
+	}); err != nil {
+		if errors.Is(err, session.ErrLoopNotFound) {
 			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return
 		}
-		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+		// errors.Is, not ==: see the matching comment in handleSetLoop above.
+		if errors.Is(err, session.ErrInvalidFrequency) || errors.Is(err, session.ErrPromptEmpty) || errors.Is(err, session.ErrInvalidMaxIterations) ||
+			errors.Is(err, session.ErrInvalidTrigger) || errors.Is(err, session.ErrInvalidChildEvent) || errors.Is(err, session.ErrOnChildAlone) ||
+			errors.Is(err, session.ErrInvalidSlackSubscription) || errors.Is(err, session.ErrSlackSubscriptionsRequired) ||
+			errors.Is(err, session.ErrInvalidDelay) || errors.Is(err, session.ErrInvalidMaxDuration) ||
 			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return

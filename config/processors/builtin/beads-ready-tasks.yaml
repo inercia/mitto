@@ -30,13 +30,14 @@ when:
     afterTokens: 80000
 mutate: append
 priority: 94
-
 text: |
   ---
   [Beads Ready Tasks Reminder]
   This workspace has a beads database (`.beads/`) with tracked issues. Before
-  starting new work, run `bd ready` to see tasks that have no active blockers and
-  are ready to be picked up.
+  starting new work, run `bd ready --exclude-label in-flight` to see tasks that
+  have no active blockers and are ready to be picked up. The `in-flight` label
+  is written by automated drivers on beads they are actively working on;
+  omitting `--exclude-label in-flight` risks colliding with an active driver.
 
   - If a ready task matches what the user is asking for, claim it with
     `bd update <id> --claim` and close it with `bd close <id>` when finished.

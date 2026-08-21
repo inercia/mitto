@@ -119,6 +119,10 @@ Use `matchMode: contains` for robust cross-version matching. Shipped defaults in
 
 Prompt `preferredModels` field (see `07-prompts.md`) references these profiles by **name** (`modelName:`) or **tag** (`modelTag:`) — it does NOT use match-mode globs directly. The profile's own `criteria.matchMode` is applied indirectly, via `selectPreferredModel()`, when the resolved profile's criteria are matched against the ACP server's available models.
 
+**Tag-based resolution is a "tier gate" (intentional)**: `SelectPreferredModel` (`internal/conversation/constraints.go` ~L83) checks the CURRENT model FIRST via `currentSatisfiesProfile`. If the current model already matches any profile carrying the requested tag, it is kept and NO `SetSessionModel` RPC is issued (avoids needless set_model at wakeup — mitto-ykb). Same semantics apply to the initial-model tier chain `WorkspaceSettings > ACPServer settings > Agent default` in `cbMaybeApplyInitialModelAsync` (`bgsession_callbacks.go`). Consequence: if the default (e.g. Claude Opus 4.7) already carries the tag (`Smartest`, `Reasoning`, `Expensive` via the built-in `Claude Opus` profile), a Workspace/Settings `modelTag: Smartest` will NOT switch to a newer variant like Opus 4.8. **To force a specific model on new-session start, reference it by `modelName:` (exact profile), not `modelTag:`**. Diagnostic checklist when a user reports "Mitto did not open on model X": (a) which tier holds the setting, (b) is it `modelName:` or `modelTag:`, (c) does the current default already satisfy the tag (tier-gate no-op), (d) does the matcher's pattern accidentally substring-match a broader set of models.
+
+**`lookAlike` matcher uses BARE SUBSTRING, not word boundaries (bug)**: `ConstraintMatchesName` (`internal/workspaces/constraint.go` case `"lookAlike"`) splits `Pattern` on whitespace via `strings.Fields`, then per-token calls `strings.Contains(nameLower, word)` with no word-boundary guard. A profile with `{matchMode: lookAlike, pattern: "Opus 5"}` tokenizes to `["opus","5"]` and MATCHES a model named `"Opus 4.7 (500K)"` because `"5"` is contained in `"500k"`. Same trap for any short/digit token colliding with model-id suffixes or context-window labels. **Prefer `matchMode: contains` for cross-version matching**, and avoid bare-digit tokens in `lookAlike` patterns until a word-boundary fix ships. If tightening the matcher, add case-insensitive word-boundary regex semantics and pin regressions in `internal/workspaces/constraint_test.go` (e.g. `"Opus 5"` vs `"Opus 4.7 (500K)"`, `"GPT 4"` vs `"GPT 4.5"`).
+
 Agent metadata can pre-seed these at discovery: `metadata.yaml` `defaults.constraints` (plus `defaults.env`/`tags`/`autoApprove`) map onto `ACPServer.Constraints`/`Env`/`Tags`/`AutoApprove` via `seedACPServerDefaults` (see [03-cli-acp.md](03-cli-acp.md#agent-defaults-seeded-at-discovery)). Seeding is request-wins (user-supplied values are not overwritten).
 
 ## Global Shortcuts
@@ -132,6 +136,10 @@ Global shortcut buttons (`shortcuts:` in `settings.json`) mirror per-folder shor
 - Defaults for new installs are seeded in embedded `config/config.default.yaml` (`shortcuts:` key) — written to `settings.json` on first run only; existing installs are untouched.
 
 Frontend merge/dedupe logic (duplicated in `BeadsView.js` ×2 and `app.js`): global list first, then folder entries whose `prompt` isn't already in the global list. See `25-web-frontend-components.md` for the shared `ShortcutsEditor` UI component.
+
+## Global Task Label Colors
+
+Global task-title colors are an ordered `[]TaskLabelColor` stored as `task_label_colors` in `settings.json`. `GET/PUT /api/global/task-label-colors` owns the field; writes trim labels, normalize six-digit hex colors to lowercase, preserve unrelated settings through the raw read-modify-write path, and broadcast `task_label_colors_updated` only after a successful save. `buildNewSettings` must carry the field forward so a full Settings save cannot erase a dedicated-resource update. `BeadsView` derives the first exact label match at render time and never persists color state per task.
 
 ## WorkspaceSettings Override Pattern
 

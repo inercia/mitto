@@ -1,0 +1,73 @@
+{{/*
+  identify-remote-branch — determine the correct target remote and branch for
+  the current feature branch. Consumed by prompts that push, rebase, or
+  otherwise need to name a `<target-remote>` and `<target-branch>`.
+
+  Callers should place this fragment under a numbered step heading of their
+  choice (e.g. "### 3. Identify Target Remote and Branch") — the fragment
+  itself is heading-less so it slots into any outline.
+
+  After this block, the caller can refer to `<target-remote>`,
+  `<target-branch>`, and `<push-remote>` as resolved placeholders.
+*/}}
+#### List remotes and tracking
+
+```bash
+git remote -v
+git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null
+git config --get branch.$(git branch --show-current).remote
+git config --get branch.$(git branch --show-current).merge
+```
+
+#### Check for an existing PR
+
+Use the GitHub API: `GET /repos/{owner}/{repo}/pulls?head={username}:{branch}&state=open`
+(or `gh pr view --json baseRefName,baseRepository,headRepository`).
+
+If a PR exists: extract `base.ref` (target branch) and `base.repo.full_name`
+(target repo) and match to a configured remote. The push remote is usually
+`origin` (in fork workflows, `head.repo.full_name` names the fork you push to).
+
+#### If no PR, infer the target
+
+```bash
+git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
+git symbolic-ref refs/remotes/upstream/HEAD 2>/dev/null | sed 's@^refs/remotes/@@'
+```
+
+Priority: an explicit tracking branch (`@{u}`) → `upstream` remote → `origin` remote.
+
+#### Proceed or confirm
+
+Detection is **unambiguous** — proceed **without asking** — when any of:
+
+- An existing PR pins the target (`gh pr view` returned a `baseRefName`).
+- The current branch has an upstream tracking ref (`@{u}` resolved).
+- Only a single remote is configured.
+- Standard fork workflow is detected: exactly two remotes named `origin`
+  and `upstream`, push-to-`origin`, PR-to-`upstream/<default>` (or
+  `origin/<default>` when `upstream` is unreachable). This is the norm,
+  not an ambiguity.
+
+State the resolved `<target-remote>/<target-branch>` and `<push-remote>`
+in one line and continue.
+
+Only ask the user when detection is **genuinely ambiguous**:
+
+- No PR, no tracking branch, and 3+ remotes are configured.
+- The detected target branch differs from the repo's default branch and
+  no PR pins it.
+- Remote names/URLs are non-standard (not `origin`/`upstream`) and no PR
+  or tracking branch resolves the choice.
+
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+**Scheduled mode**: never prompt — proceed on unambiguous detection.
+On genuine ambiguity, `mitto_ui_notify` and stop; a human will re-trigger
+the run.
+{{- else }}
+
+**Interactive mode** (only on genuine ambiguity):
+`mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` →
+"Detected target: `<target-remote>/<target-branch>`, push to `<push-remote>`. Correct?"
+{{- end }}

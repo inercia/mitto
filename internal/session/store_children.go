@@ -13,8 +13,8 @@ import (
 //
 // Deprecated: Use FindAllChildrenRecursive instead, which finds children of all origins.
 func (s *Store) FindAutoChildrenRecursive(sessionID string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -58,8 +58,8 @@ func (s *Store) findAutoChildrenRecursive(sessionID string, visited map[string]b
 // This includes auto-children, MCP-children, and human-created children.
 // Used by the web layer to close ACP processes before cascade deletion.
 func (s *Store) FindAllChildrenRecursive(sessionID string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -103,8 +103,8 @@ func (s *Store) findAllChildrenRecursive(sessionID string, visited map[string]bo
 // Returns direct children only (not grandchildren).
 // Returns empty slice if no children exist.
 func (s *Store) ListChildSessions(parentID string) ([]Metadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -135,8 +135,8 @@ func (s *Store) ListChildSessions(parentID string) ([]Metadata, error) {
 // CountChildSessions returns the count of direct child sessions.
 // More efficient than ListChildSessions when only the count is needed.
 func (s *Store) CountChildSessions(parentID string) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return 0, ErrStoreClosed
@@ -169,8 +169,8 @@ func (s *Store) CountChildSessions(parentID string) (int, error) {
 // Auto-children (ChildOriginAuto) and archived children are excluded from the count.
 // This is used for enforcing the max_child_conversations limit.
 func (s *Store) CountMCPChildSessions(parentID string) (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return 0, ErrStoreClosed
@@ -205,8 +205,8 @@ func (s *Store) CountMCPChildSessions(parentID string) (int, error) {
 // HasChildSessions returns true if the session has at least one child.
 // More efficient than CountChildSessions when only existence check is needed.
 func (s *Store) HasChildSessions(parentID string) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return false, ErrStoreClosed
@@ -233,11 +233,21 @@ func (s *Store) HasChildSessions(parentID string) (bool, error) {
 	return false, nil
 }
 
+// deletedSession records a single session removed as part of a Delete/cascade
+// operation, paired with its immediate parent at the time of removal. It is
+// used to notify the Store's delete observer (see SetDeleteObserver in
+// store.go) after the store lock has been released. Plain strings only, so
+// this package stays free of any internal/conversation dependency.
+type deletedSession struct {
+	ID       string
+	ParentID string
+}
+
 // handleChildSessionsOnParentDelete cascade-deletes ALL child sessions when parent is deleted.
 // All children (auto, MCP, and human-created) are recursively deleted along with their parent.
-// Returns the list of child IDs that were deleted.
+// Returns the list of sessions that were deleted, each paired with its immediate parent ID.
 // Note: This method assumes the caller holds s.mu.Lock().
-func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visited map[string]bool) ([]string, error) {
+func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visited map[string]bool) ([]deletedSession, error) {
 	log := logging.Session()
 
 	if visited == nil {
@@ -255,7 +265,7 @@ func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visite
 		return nil, fmt.Errorf("failed to read sessions directory: %w", err)
 	}
 
-	var deletedIDs []string
+	var deleted []deletedSession
 	var deleteErrors []error
 
 	for _, entry := range entries {
@@ -278,7 +288,7 @@ func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visite
 			// CASCADE DELETE: Recursively delete this child and all its descendants
 			// First, handle this child's own children
 			grandchildDeleted, _ := s.handleChildSessionsOnParentDelete(sessionID, visited)
-			deletedIDs = append(deletedIDs, grandchildDeleted...)
+			deleted = append(deleted, grandchildDeleted...)
 
 			// Now delete this child
 			sessionDir := s.sessionDir(sessionID)
@@ -286,7 +296,7 @@ func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visite
 				deleteErrors = append(deleteErrors, fmt.Errorf("failed to delete child %s: %w", sessionID, err))
 				continue
 			}
-			deletedIDs = append(deletedIDs, sessionID)
+			deleted = append(deleted, deletedSession{ID: sessionID, ParentID: parentSessionID})
 
 			// Migrate for logging purposes
 			meta.MigrateChildOrigin()
@@ -307,7 +317,7 @@ func (s *Store) handleChildSessionsOnParentDelete(parentSessionID string, visite
 
 	log.Debug("Cascade deleted child sessions on parent delete",
 		"parent_session_id", parentSessionID,
-		"children_deleted", len(deletedIDs))
+		"children_deleted", len(deleted))
 
-	return deletedIDs, nil
+	return deleted, nil
 }

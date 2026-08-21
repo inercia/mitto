@@ -88,6 +88,14 @@ type MockACPServer struct {
 	// (default 0 = no delay); name preserved for test back-compat.
 	setModelDelayMs int
 
+	// forceLegacySetModel: when true, session/set_model returns JSON-RPC
+	// -32601 Method not found unconditionally, simulating a pre-0.13-schema
+	// agent that only implements the legacy session/set_config_option RPC.
+	// Used to exercise Mitto's legacy-fallback path in SharedACPProcess.
+	// SetSessionModel (mitto-vd5). Controlled by env var
+	// MOCK_SET_MODEL_FORCE_LEGACY (default false).
+	forceLegacySetModel bool
+
 	// newSessionFailFirst: the first N session/new requests return a JSON-RPC error whose
 	// message contains "timeout" to exercise the deferred-handshake retry path (mitto-8uz).
 	// Controlled by env var MOCK_NEW_SESSION_FAIL_FIRST (default 0 = no failures injected).
@@ -185,6 +193,16 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			server.setModelDelayMs = n
 		}
+	}
+
+	// MOCK_SET_MODEL_FORCE_LEGACY: when set to a truthy value (1/true/yes),
+	// session/set_model returns JSON-RPC -32601 unconditionally so the mock
+	// behaves like a pre-0.13-schema agent. Used by
+	// TestSetSessionModel_LegacyFallback_PreSchema013 to prove Mitto's
+	// legacy-fallback path in SetSessionModel still lands the model change
+	// via session/set_config_option (mitto-vd5).
+	if v := strings.ToLower(os.Getenv("MOCK_SET_MODEL_FORCE_LEGACY")); v == "1" || v == "true" || v == "yes" {
+		server.forceLegacySetModel = true
 	}
 
 	// MOCK_NEW_SESSION_FAIL_FIRST: inject failures for the first N session/new requests.

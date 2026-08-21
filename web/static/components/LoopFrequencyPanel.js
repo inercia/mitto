@@ -11,12 +11,15 @@ import {
   ChatBubbleIcon,
   SlidersIcon,
 } from "./Icons.js";
-import { promptParameters } from "../utils/prompts.js";
+import { promptDialogParameters } from "../utils/prompts.js";
 import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { apiUrl } from "../utils/api.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import {
+  errorStatus,
+  errorMessage as sdkErrorMessage,
+} from "../utils/sdkErrors.js";
 import { PortalTooltip } from "./ContextMenu.js";
 import {
   CONDITION_PRESETS,
@@ -27,6 +30,13 @@ import {
 
 /** Minimum delay for on-completion trigger (seconds). Used for client-side clamp helper text. */
 const MIN_COMPLETION_DELAY_SECONDS = 5;
+
+/**
+ * Trigger names this panel has dedicated UI/state for, in canonical wire
+ * order. Used only to order the stable trigger list on save — NOT as an
+ * allow-list. Any other armed trigger must still be preserved (mitto-987y.7).
+ */
+const KNOWN_TRIGGERS = ["schedule", "onCompletion", "onTasks"];
 
 /**
  * Schedules that repeat more frequently than this (in seconds) are considered
@@ -106,6 +116,27 @@ function utcToLocalTime(utcTime) {
 }
 
 /**
+ * Normalise the LoopFrequencyPanel `triggers` / legacy `trigger` props into a
+ * non-empty ordered array. Priority: array `triggers` prop first, then legacy
+ * scalar `trigger`, then a "schedule" fallback (mitto-r6j).
+ * @param {string[]|null|undefined} triggersProp
+ * @param {string|null|undefined} triggerProp
+ * @returns {string[]}
+ */
+function normaliseTriggersProp(triggersProp, triggerProp) {
+  if (Array.isArray(triggersProp)) {
+    const cleaned = triggersProp.filter(
+      (t) => typeof t === "string" && t.length > 0,
+    );
+    if (cleaned.length > 0) return cleaned;
+  }
+  if (typeof triggerProp === "string" && triggerProp.length > 0) {
+    return [triggerProp];
+  }
+  return ["schedule"];
+}
+
+/**
  * Convert local time (HH:MM) to UTC time (HH:MM).
  * @param {string} localTime - Time in HH:MM format (local)
  * @returns {string} Time in HH:MM format (UTC)
@@ -181,8 +212,12 @@ export function LoopFrequencyPanel({
   // mutually exclusive with the prompt composition area).
   expanded = false,
   onToggleExpanded,
-  // On-completion trigger fields
+  // Trigger set (mitto-r6j). `triggers` is the canonical armed-triggers list
+  // from the server; `trigger` remains for backward-compat with parents that
+  // still pass only the legacy scalar (primary trigger). At least one entry
+  // is guaranteed by normaliseTriggersProp below.
   trigger = "schedule",
+  triggers,
   delaySeconds = 5,
   maxDurationSeconds = 0,
   // onTasks trigger fields: CEL condition gating firing (empty = fire on any
@@ -197,6 +232,7 @@ export function LoopFrequencyPanel({
   stoppedReason = "",
   minDelaySeconds = MIN_COMPLETION_DELAY_SECONDS,
   onTriggerChange,
+  onTriggersChange,
   onDelayChange,
   onMaxDurationChange,
   onConditionChange,
@@ -232,8 +268,12 @@ export function LoopFrequencyPanel({
   const [localMaxIterations, setLocalMaxIterations] = useState(maxIterations);
   // Local fresh-context (staged; synced from props)
   const [localFreshContext, setLocalFreshContext] = useState(freshContext);
-  // On-completion trigger local state
-  const [localTrigger, setLocalTrigger] = useState(trigger || "schedule");
+  // Armed triggers (mitto-r6j). Set of {"schedule", "onCompletion", "onTasks"}.
+  // Kept as a Set for O(1) has()/add()/delete() from checkbox handlers; the
+  // wire payload is a stable-ordered array (see toStableTriggersList below).
+  const [localTriggers, setLocalTriggers] = useState(
+    () => new Set(normaliseTriggersProp(triggers, trigger)),
+  );
   const [localDelay, setLocalDelay] = useState(delaySeconds || minDelaySeconds);
   const [localMaxDurValue, setLocalMaxDurValue] = useState(
     () => secondsToValueUnit(maxDurationSeconds).value,
@@ -346,10 +386,16 @@ export function LoopFrequencyPanel({
     setLocalFreshContext(freshContext);
   }, [freshContext]);
 
-  // Sync trigger/delay/maxDuration from props (server-authoritative updates)
+  // Sync triggers/delay/maxDuration from props (server-authoritative updates).
+  // triggers/trigger are joined into a stable string key so the effect re-runs
+  // only when the effective set actually changes (arrays would compare by
+  // reference otherwise).
+  const triggersPropKey = normaliseTriggersProp(triggers, trigger).join(",");
   useEffect(() => {
-    setLocalTrigger(trigger || "schedule");
-  }, [trigger]);
+    setLocalTriggers(new Set(normaliseTriggersProp(triggers, trigger)));
+    // triggersPropKey is a stable string join of the effective triggers list —
+    // safely captures both `triggers` and legacy scalar `trigger` in one dep.
+  }, [triggersPropKey]);
   useEffect(() => {
     setLocalDelay(delaySeconds || minDelaySeconds);
   }, [delaySeconds, minDelaySeconds]);
@@ -379,7 +425,7 @@ export function LoopFrequencyPanel({
       setLocalAt(utcToLocalTime(frequency.at) || "");
       setLocalFreshContext(freshContext);
       setLocalMaxIterations(maxIterations);
-      setLocalTrigger(trigger || "schedule");
+      setLocalTriggers(new Set(normaliseTriggersProp(triggers, trigger)));
       setLocalDelay(delaySeconds || minDelaySeconds);
       const { value, unit } = secondsToValueUnit(maxDurationSeconds);
       setLocalMaxDurValue(value);
@@ -397,7 +443,7 @@ export function LoopFrequencyPanel({
     frequency.at,
     freshContext,
     maxIterations,
-    trigger,
+    triggersPropKey,
     delaySeconds,
     minDelaySeconds,
     maxDurationSeconds,
@@ -405,9 +451,12 @@ export function LoopFrequencyPanel({
     conditionPreset,
   ]);
 
-  // Derived: whether this loop is in on-completion / on-tasks mode
-  const isOnCompletion = localTrigger === "onCompletion";
-  const isOnTasks = localTrigger === "onTasks";
+  // Derived: which triggers are currently armed. Panels for unarmed triggers
+  // are hidden; a loop with only "schedule" armed looks exactly like it did
+  // pre-r6j (single-trigger UX preserved).
+  const armsSchedule = localTriggers.has("schedule");
+  const armsOnCompletion = localTriggers.has("onCompletion");
+  const armsOnTasks = localTriggers.has("onTasks");
 
   // A "new" loop conversation is one that has never delivered a run yet
   // (iteration_count is incremented only on actual delivery). Safety pre-fills
@@ -425,14 +474,15 @@ export function LoopFrequencyPanel({
 
   // Staged cadence is "dangerous": fires after every agent completion, fires
   // on every qualifying task change (event-driven, unbounded), or repeats
-  // more frequently than DANGEROUS_FREQUENCY_SECONDS on a schedule.
+  // more frequently than DANGEROUS_FREQUENCY_SECONDS on a schedule. Any armed
+  // event-driven trigger is enough to flag the config as dangerous.
   const stagedHasDangerousCadence = useMemo(() => {
-    if (localTrigger === "onCompletion" || localTrigger === "onTasks")
-      return true;
+    if (armsOnCompletion || armsOnTasks) return true;
+    if (!armsSchedule) return false;
     return (
       valueUnitToSeconds(localValue, localUnit) < DANGEROUS_FREQUENCY_SECONDS
     );
-  }, [localTrigger, localValue, localUnit]);
+  }, [armsSchedule, armsOnCompletion, armsOnTasks, localValue, localUnit]);
 
   // Warn before saving a brand-new loop conversation that could loop
   // indefinitely (dangerous cadence with no run/time limit).
@@ -440,24 +490,49 @@ export function LoopFrequencyPanel({
     isNewLoop && stagedHasDangerousCadence && stagedHasNoLimits;
 
   // Human-readable reason shown in the dangerous-config confirmation dialog.
-  const dangerReason = isOnCompletion
-    ? "it starts again every time the agent finishes"
-    : isOnTasks
-      ? "it fires every time a matching task change occurs"
-      : `it repeats every ${localValue} ${localUnit}`;
+  // A single-trigger loop keeps its pre-r6j wording; multi-trigger loops
+  // synthesise a compact "and" phrase so the warning stays specific.
+  const dangerReasons = [];
+  if (armsSchedule) {
+    dangerReasons.push(`it repeats every ${localValue} ${localUnit}`);
+  }
+  if (armsOnCompletion) {
+    dangerReasons.push("it starts again every time the agent finishes");
+  }
+  if (armsOnTasks) {
+    dangerReasons.push("it fires every time a matching task change occurs");
+  }
+  const dangerReason =
+    dangerReasons.length === 0
+      ? "no trigger is armed"
+      : dangerReasons.join(" and ");
   const dangerMessage =
     `This loop conversation has no limit on the number of runs or total ` +
     `time, and ${dangerReason}. It could keep running indefinitely. ` +
     `Set a "Max runs" or "Max time" limit, or save anyway?`;
 
+  // Canonical, stable-ordered list of armed triggers for the wire payload
+  // (schedule → onCompletion → onTasks). Independent of user click order.
+  // Any other armed trigger (e.g. a future onChild) is appended afterward
+  // instead of dropped — a non-nil `triggers` PATCH field REPLACES the
+  // stored list wholesale server-side (internal/session/loop.go), so
+  // silently filtering an unrecognized-but-armed trigger here would
+  // permanently disarm it (mitto-987y.7).
+  const toStableTriggersList = useCallback((set) => {
+    const known = KNOWN_TRIGGERS.filter((t) => set.has(t));
+    const unknown = [...set].filter((t) => !KNOWN_TRIGGERS.includes(t));
+    return [...known, ...unknown];
+  }, []);
+
   // Persist all staged settings in a single PATCH. Invoked by handleSaveAll
   // (directly, or after the dangerous-config warning is confirmed).
   const performSave = useCallback(async () => {
     if (!sessionId || isSaving) return;
+    if (localTriggers.size === 0) return; // Save disabled anyway
 
     // Optimistic next-run estimate for schedule mode (server value overrides
-    // below). onCompletion and onTasks are event-driven — no fixed cadence.
-    if (localTrigger !== "onCompletion" && localTrigger !== "onTasks") {
+    // below). Only applies when schedule is one of the armed triggers.
+    if (armsSchedule) {
       setLocalNextScheduledAt(calculateNextRun(localValue, localUnit));
     }
 
@@ -466,8 +541,9 @@ export function LoopFrequencyPanel({
     try {
       const clampedDelay = Math.max(minDelaySeconds, localDelay);
       const maxDurSecs = valueUnitToSeconds(localMaxDurValue, localMaxDurUnit);
+      const triggersList = toStableTriggersList(localTriggers);
       const payload = {
-        trigger: localTrigger,
+        triggers: triggersList,
         frequency: { value: localValue, unit: localUnit },
         fresh_context: localFreshContext,
         max_iterations: localMaxIterations,
@@ -479,65 +555,61 @@ export function LoopFrequencyPanel({
         payload.frequency.at = localToUtcTime(localAt);
       }
       // onTasks: send the staged CEL condition + the preset id it was
-      // compiled from ("" for a hand-edited/custom condition).
-      if (localTrigger === "onTasks") {
+      // compiled from ("" for a hand-edited/custom condition). Only sent when
+      // onTasks is one of the armed triggers.
+      if (armsOnTasks) {
         payload.condition = localCondition || "";
         payload.condition_preset =
           localPresetId === "custom" ? "" : localPresetId;
       }
 
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        },
-      );
-
-      if (response.ok) {
-        const data = await response.json();
-        const t = data.trigger || "schedule";
-        const serverDelay = data.delay_seconds ?? clampedDelay;
-        // Update with server-authoritative values
-        setLocalNextScheduledAt(data.next_scheduled_at);
-        setLocalTrigger(t);
-        setLocalDelay(serverDelay);
-        setLocalCondition(data.condition ?? localCondition);
-        // Propagate to parent so props stay in sync
-        onFrequencyChange?.(data.frequency, data.next_scheduled_at);
-        onFreshContextChange?.(data.fresh_context ?? localFreshContext);
-        onMaxIterationsChange?.(data.max_iterations ?? localMaxIterations);
-        onTriggerChange?.(t);
-        onDelayChange?.(serverDelay);
-        onMaxDurationChange?.(data.max_duration_seconds ?? maxDurSecs);
-        onConditionChange?.(data.condition ?? localCondition);
-        onConditionPresetChange?.(
-          data.condition_preset ??
-            (localPresetId === "custom" ? "" : localPresetId),
-        );
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        const msg = errorMessageFromData(
-          errorData,
-          "Failed to save loop settings",
-        );
+      let data;
+      try {
+        data = await getSdkClient().sessions.loop.update(sessionId, payload);
+      } catch (err) {
+        const msg = sdkErrorMessage(err, "Failed to save loop settings");
         console.error("Failed to save loop settings:", msg);
         // Surface invalid-CEL (and other onTasks) rejections inline near the
         // condition editor instead of failing silently.
-        if (localTrigger === "onTasks") {
+        if (armsOnTasks) {
           setConditionError(msg);
         }
+        return;
       }
-    } catch (err) {
-      console.error("Failed to save loop settings:", err);
+      // Server response: canonical `triggers` list + legacy `trigger`
+      // scalar (primary). Prefer the list; fall back to the scalar for
+      // servers that pre-date the mitto-r6j response shape.
+      const respTriggers = normaliseTriggersProp(data.triggers, data.trigger);
+      const serverDelay = data.delay_seconds ?? clampedDelay;
+      // Update with server-authoritative values
+      setLocalNextScheduledAt(data.next_scheduled_at);
+      setLocalTriggers(new Set(respTriggers));
+      setLocalDelay(serverDelay);
+      setLocalCondition(data.condition ?? localCondition);
+      // Propagate to parent so props stay in sync. Both callbacks are
+      // called so parents that hold either the scalar or the array stay
+      // consistent (mitto-r6j).
+      onFrequencyChange?.(data.frequency, data.next_scheduled_at);
+      onFreshContextChange?.(data.fresh_context ?? localFreshContext);
+      onMaxIterationsChange?.(data.max_iterations ?? localMaxIterations);
+      onTriggerChange?.(respTriggers[0]);
+      onTriggersChange?.(respTriggers);
+      onDelayChange?.(serverDelay);
+      onMaxDurationChange?.(data.max_duration_seconds ?? maxDurSecs);
+      onConditionChange?.(data.condition ?? localCondition);
+      onConditionPresetChange?.(
+        data.condition_preset ??
+          (localPresetId === "custom" ? "" : localPresetId),
+      );
     } finally {
       setIsSaving(false);
     }
   }, [
     sessionId,
     isSaving,
-    localTrigger,
+    localTriggers,
+    armsSchedule,
+    armsOnTasks,
     localValue,
     localUnit,
     localAt,
@@ -550,10 +622,12 @@ export function LoopFrequencyPanel({
     localPresetId,
     minDelaySeconds,
     calculateNextRun,
+    toStableTriggersList,
     onFrequencyChange,
     onFreshContextChange,
     onMaxIterationsChange,
     onTriggerChange,
+    onTriggersChange,
     onDelayChange,
     onMaxDurationChange,
     onConditionChange,
@@ -615,34 +689,21 @@ export function LoopFrequencyPanel({
 
     setIsTriggering(true);
     try {
-      const response = await secureFetch(
-        endpoints.sessions.loopRunNow(sessionId),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reset_timer: resetTimer }),
-        },
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Failed to trigger immediate delivery:", errorText);
-        // Show error to user
-        if (response.status === 409) {
-          setErrorMessage(
-            "Session is currently processing a prompt. Please wait and try again.",
-          );
-        } else {
-          setErrorMessage(
-            "Failed to trigger immediate delivery. Please try again.",
-          );
-        }
-        return; // Don't close dialog on error
-      }
+      await getSdkClient().sessions.loop.runNow(sessionId, resetTimer);
       // Success - the WebSocket will notify us of the loop_started event
       setShowConfirmDialog(false);
     } catch (err) {
       console.error("Failed to trigger immediate delivery:", err);
+      // Show error to user
+      if (errorStatus(err) === 409) {
+        setErrorMessage(
+          "Session is currently processing a prompt. Please wait and try again.",
+        );
+      } else {
+        setErrorMessage(
+          "Failed to trigger immediate delivery. Please try again.",
+        );
+      }
     } finally {
       setIsTriggering(false);
     }
@@ -670,23 +731,37 @@ export function LoopFrequencyPanel({
     setLocalMaxIterations(Math.max(0, parseInt(e.target.value, 10) || 0));
   }, []);
 
-  // Handle trigger tab selection (staged). Switching to on-completion pre-fills
-  // reasonable defaults (5 runs, 1h max time) when those limits are currently unset.
-  const handleTriggerSelect = useCallback(
-    (newTrigger) => {
-      setLocalTrigger(newTrigger);
+  // Toggle a trigger in the armed-set (mitto-r6j). Refuses to remove the last
+  // remaining trigger (the panel's invariant: at least one armed trigger).
+  // Arming an event-driven trigger pre-fills the safety-limits (5 runs / 1h
+  // max time) for a brand-new loop conversation and enforces the minimum
+  // on-completion delay; never overrides an established config.
+  const handleTriggerToggle = useCallback(
+    (name) => {
+      setLocalTriggers((prev) => {
+        const next = new Set(prev);
+        if (next.has(name)) {
+          if (next.size <= 1) return prev; // preserve invariant
+          next.delete(name);
+        } else {
+          next.add(name);
+        }
+        return next;
+      });
       setConditionError(null);
-      if (newTrigger === "onCompletion") {
-        // Always enforce the minimum on-completion delay.
+      // Detect an ARM transition (was not armed, is now armed) so we can
+      // pre-fill safety limits and minimum delay only when transitioning
+      // OFF→ON. localTriggers here is the pre-update value; !has(name) means
+      // we just added it. Toggles the other way (ARM→OFF) skip the pre-fill.
+      const nowArmed = !localTriggers.has(name);
+      if (name === "onCompletion" && nowArmed) {
         setLocalDelay((prev) =>
           Math.max(minDelaySeconds, prev || minDelaySeconds),
         );
       }
-      // Pre-fill safety limits (5 runs, 1h max time) only for brand-new
-      // loop conversations switching to an event-driven trigger; never
-      // override an established config.
       if (
-        (newTrigger === "onCompletion" || newTrigger === "onTasks") &&
+        (name === "onCompletion" || name === "onTasks") &&
+        nowArmed &&
         isNewLoop
       ) {
         setLocalMaxIterations((prev) => (prev > 0 ? prev : 5));
@@ -696,7 +771,13 @@ export function LoopFrequencyPanel({
         }
       }
     },
-    [isNewLoop, localMaxDurValue, localMaxDurUnit, minDelaySeconds],
+    [
+      isNewLoop,
+      localMaxDurValue,
+      localMaxDurUnit,
+      localTriggers,
+      minDelaySeconds,
+    ],
   );
 
   // Clamp the on-completion delay to the minimum on blur (staged)
@@ -755,19 +836,10 @@ export function LoopFrequencyPanel({
     const newEnabled = !disabled;
     setIsSavingEnabled(true);
     try {
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: newEnabled }),
-        },
-      );
-      if (response.ok) {
-        if (onLoopEnabledChange) onLoopEnabledChange(newEnabled);
-      } else {
-        console.error("Failed to update loop enabled");
-      }
+      await getSdkClient().sessions.loop.update(sessionId, {
+        enabled: newEnabled,
+      });
+      if (onLoopEnabledChange) onLoopEnabledChange(newEnabled);
     } catch (err) {
       console.error("Failed to update loop enabled:", err);
     } finally {
@@ -796,28 +868,27 @@ export function LoopFrequencyPanel({
       if (limitWasStopped && resetCounters) {
         body.reset_counters = true;
       }
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      if (response.ok) {
-        if (onLoopEnabledChange) onLoopEnabledChange(true);
-        setShowRestoreDialog(false);
-      } else {
-        console.error("Failed to restore loop schedule");
-        setErrorMessage(
-          "Failed to restore the loop schedule. Please try again.",
-        );
+      await getSdkClient().sessions.loop.update(sessionId, body);
+      if (onLoopEnabledChange) onLoopEnabledChange(true);
+      // mitto-5cj: after re-enabling the loop, also POST run-now so the
+      // user's play click actually fires the prompt on the FIRST click
+      // (previously they had to click play twice — once to re-arm, once
+      // to fire). Guards: skip when the loop was cap-stopped and the
+      // user did NOT tick reset_counters (the fire would immediately
+      // re-stop), and swallow the 409 "agent streaming" case silently
+      // since the loop is now enabled either way.
+      const wouldImmediatelyReStop = limitWasStopped && !resetCounters;
+      if (!wouldImmediatelyReStop) {
+        try {
+          await getSdkClient().sessions.loop.runNow(sessionId, true);
+        } catch (_runNowErr) {
+          // Non-fatal: the loop is enabled; the next tick will fire.
+        }
       }
+      setShowRestoreDialog(false);
     } catch (err) {
       console.error("Failed to restore loop schedule:", err);
-      setErrorMessage(
-        "Failed to restore the loop schedule. Please try again.",
-      );
+      setErrorMessage("Failed to restore the loop schedule. Please try again.");
     } finally {
       setIsSavingEnabled(false);
     }
@@ -877,7 +948,7 @@ export function LoopFrequencyPanel({
       (prompts || []).find((p) => p.name === selectedPromptName)
     : null;
   const selectedPromptParams = selectedPrompt
-    ? promptParameters(selectedPrompt)
+    ? promptDialogParameters(selectedPrompt)
     : [];
   const canEditArgs = !!selectedPromptName && selectedPromptParams.length > 0;
 
@@ -1145,210 +1216,249 @@ export function LoopFrequencyPanel({
               : "max-h-0 opacity-0 overflow-hidden pointer-events-none"
           }"
         >
-          <!-- Trigger tabs: Schedule | On completion | On tasks (beads workspaces only) -->
-          <div class="tabs tabs-border px-4 pt-2">
-            <input
-              type="radio"
-              name="loop-trigger-${sessionId}"
-              role="tab"
-              aria-label="Schedule"
-              class="tab text-sm"
-              checked=${localTrigger === "schedule"}
-              onChange=${() => handleTriggerSelect("schedule")}
-              data-testid="loop-trigger-tab-schedule"
-            />
-            <input
-              type="radio"
-              name="loop-trigger-${sessionId}"
-              role="tab"
-              aria-label="On completion"
-              class="tab text-sm"
-              checked=${localTrigger === "onCompletion"}
-              onChange=${() => handleTriggerSelect("onCompletion")}
-              data-testid="loop-trigger-tab-oncompletion"
-            />
-            ${hasBeadsWorkspace &&
-            html`
+          <!-- Trigger checkboxes (mitto-r6j): armable set of Schedule | On
+               completion | On tasks (last one only on beads workspaces). At
+               least one entry stays armed — the toggle handler refuses to
+               remove the last remaining trigger. -->
+          <fieldset
+            class="px-4 pt-2 flex flex-wrap items-center gap-4 text-sm"
+            data-testid="loop-triggers"
+          >
+            <legend class="sr-only">Loop triggers</legend>
+            <label
+              class="label cursor-pointer gap-2 py-0"
+              data-testid="loop-trigger-label-schedule"
+            >
               <input
-                type="radio"
-                name="loop-trigger-${sessionId}"
-                role="tab"
-                aria-label="On tasks"
-                class="tab text-sm"
-                checked=${localTrigger === "onTasks"}
-                onChange=${() => handleTriggerSelect("onTasks")}
-                data-testid="loop-trigger-tab-ontasks"
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                checked=${armsSchedule}
+                onChange=${() => handleTriggerToggle("schedule")}
+                data-testid="loop-trigger-check-schedule"
               />
-            `}
-          </div>
+              <span class="label-text">Schedule</span>
+            </label>
+            <label
+              class="label cursor-pointer gap-2 py-0"
+              data-testid="loop-trigger-label-oncompletion"
+            >
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                checked=${armsOnCompletion}
+                onChange=${() => handleTriggerToggle("onCompletion")}
+                data-testid="loop-trigger-check-oncompletion"
+              />
+              <span class="label-text">On completion</span>
+            </label>
+            ${
+              hasBeadsWorkspace &&
+              html`
+                <label
+                  class="label cursor-pointer gap-2 py-0"
+                  data-testid="loop-trigger-label-ontasks"
+                >
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked=${armsOnTasks}
+                    onChange=${() => handleTriggerToggle("onTasks")}
+                    data-testid="loop-trigger-check-ontasks"
+                  />
+                  <span class="label-text">On tasks</span>
+                </label>
+              `
+            }
+          </fieldset>
 
-          <!-- State-driven schedule row: "Run every" (schedule), "Wait" (onCompletion),
-               or the task-condition editor (onTasks) -->
+          <!-- Per-trigger sub-panels: shown only for armed triggers, in the
+               canonical schedule → onCompletion → onTasks order. -->
           ${
-            isOnCompletion
-              ? html` <!-- On-completion: delay after agent finishes -->
-                  <div class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm">
-                    <span
-                      class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                      >Wait</span
-                    >
-                    <input
-                      type="number"
-                      min="${minDelaySeconds}"
-                      value=${localDelay}
-                      onInput=${(e) =>
-                        setLocalDelay(
-                          Math.max(0, parseInt(e.target.value, 10) || 0),
-                        )}
-                      onBlur=${handleDelayBlur}
-                      class="input input-sm w-20 shrink-0 text-center"
-                      data-testid="loop-delay-input"
-                    />
-                    <span
-                      class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                    >
-                      seconds after the agent finishes (min ${minDelaySeconds}s)
-                    </span>
-                  </div>`
-              : isOnTasks
-                ? html` <!-- On-tasks: condition editor (preset + advanced CEL) -->
+            armsSchedule &&
+            html`
+              <!-- Schedule: Run every N units -->
+              <div
+                class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm"
+                data-testid="loop-panel-schedule"
+              >
+                <span
+                  class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                  >Run every</span
+                >
+
+                <input
+                  type="number"
+                  min="1"
+                  max="999"
+                  value=${localValue}
+                  onInput=${handleValueChange}
+                  disabled=${isSaving}
+                  class="input input-sm w-16 shrink-0 text-center"
+                />
+
+                <!-- shrink-0 + fixed width: daisyUI .select has flex-shrink:1 and overflow:hidden,
+                     which lets it collapse to just the chevron (hiding the unit text) in tight rows -->
+                <select
+                  value=${localUnit}
+                  onChange=${handleUnitChange}
+                  disabled=${isSaving}
+                  class="select select-sm shrink-0 w-24"
+                >
+                  <option value="minutes">minutes</option>
+                  <option value="hours">hours</option>
+                  <option value="days">days</option>
+                </select>
+
+                <!-- Time picker (only shown for daily schedules) -->
+                ${localUnit === "days" &&
+                html`
+                  <span
+                    class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                    >at</span
+                  >
+                  <input
+                    type="time"
+                    value=${localAt}
+                    onInput=${handleAtChange}
+                    disabled=${isSaving}
+                    class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
+                      ? "opacity-50 cursor-not-allowed"
+                      : ""}"
+                    placeholder="HH:MM"
+                  />
+                `}
+              </div>
+            `
+          }
+          ${
+            armsOnCompletion &&
+            html`
+              <!-- On-completion: delay after agent finishes -->
+              <div
+                class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm"
+                data-testid="loop-panel-oncompletion"
+              >
+                <span
+                  class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                  >Wait</span
+                >
+                <input
+                  type="number"
+                  min="${minDelaySeconds}"
+                  value=${localDelay}
+                  onInput=${(e) =>
+                    setLocalDelay(
+                      Math.max(0, parseInt(e.target.value, 10) || 0),
+                    )}
+                  onBlur=${handleDelayBlur}
+                  class="input input-sm w-20 shrink-0 text-center"
+                  data-testid="loop-delay-input"
+                />
+                <span
+                  class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                >
+                  seconds after the agent finishes (min ${minDelaySeconds}s)
+                </span>
+              </div>
+            `
+          }
+          ${
+            armsOnTasks &&
+            html`
+              <!-- On-tasks: condition editor (preset + advanced CEL) -->
+              <div
+                class="px-4 pt-2 pb-2 text-sm"
+                data-testid="loop-panel-ontasks"
+              >
+                <div class="flex items-center gap-3">
+                  <span
+                    class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                    >Fire when</span
+                  >
+                  <select
+                    value=${localPresetId}
+                    onChange=${handlePresetSelect}
+                    class="select select-sm shrink-0 flex-1"
+                    data-testid="loop-condition-preset-select"
+                  >
+                    ${CONDITION_PRESETS.map(
+                      (p) => html`<option value=${p.id}>${p.label}</option>`,
+                    )}
+                    <option value="custom">Custom (advanced)</option>
+                  </select>
+                </div>
+                ${(() => {
+                  const preset = CONDITION_PRESETS.find(
+                    (p) => p.id === localPresetId,
+                  );
+                  return (
+                    preset?.needsParam &&
+                    html`
+                      <div class="flex items-center gap-3 mt-2">
+                        <span
+                          class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0 w-24"
+                          >${preset.paramLabel}</span
+                        >
+                        <input
+                          type="text"
+                          value=${localPresetParam}
+                          onInput=${handlePresetParamChange}
+                          placeholder=${preset.paramPlaceholder}
+                          class="input input-sm flex-1"
+                          data-testid="loop-condition-preset-param"
+                        />
+                      </div>
+                    `
+                  );
+                })()}
+
+                <div
+                  class="collapse collapse-arrow mt-2 bg-mitto-surface-2 dark:bg-mitto-surface-3 border border-mitto-border dark:border-mitto-border-2"
+                >
+                  <input
+                    type="checkbox"
+                    checked=${advancedCelExpanded}
+                    onChange=${toggleAdvancedCel}
+                  />
+                  <div class="collapse-title text-xs font-medium py-2 min-h-0">
+                    Advanced (CEL)
+                  </div>
+                  <div class="collapse-content text-xs">
+                    <textarea
+                      value=${localCondition}
+                      onInput=${handleConditionTextareaInput}
+                      placeholder="Empty = fire on any task change"
+                      rows="2"
+                      class="textarea textarea-sm w-full font-mono"
+                      data-testid="loop-condition-textarea"
+                    ></textarea>
                     <div
-                      class="px-4 pt-2 pb-2 text-sm"
-                      data-testid="loop-condition-editor"
+                      class="mt-2 text-mitto-text-muted dark:text-mitto-text-300"
                     >
-                      <div class="flex items-center gap-3">
-                        <span
-                          class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                          >Fire when</span
-                        >
-                        <select
-                          value=${localPresetId}
-                          onChange=${handlePresetSelect}
-                          class="select select-sm shrink-0 flex-1"
-                          data-testid="loop-condition-preset-select"
-                        >
-                          ${CONDITION_PRESETS.map(
-                            (p) => html`<option value=${p.id}>${p.label}</option>`,
-                          )}
-                          <option value="custom">Custom (advanced)</option>
-                        </select>
-                      </div>
-                      ${(() => {
-                        const preset = CONDITION_PRESETS.find(
-                          (p) => p.id === localPresetId,
-                        );
-                        return (
-                          preset?.needsParam &&
-                          html`
-                            <div class="flex items-center gap-3 mt-2">
-                              <span
-                                class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0 w-24"
-                                >${preset.paramLabel}</span
-                              >
-                              <input
-                                type="text"
-                                value=${localPresetParam}
-                                onInput=${handlePresetParamChange}
-                                placeholder=${preset.paramPlaceholder}
-                                class="input input-sm flex-1"
-                                data-testid="loop-condition-preset-param"
-                              />
-                            </div>
-                          `
-                        );
-                      })()}
-
-                      <div class="collapse collapse-arrow mt-2 bg-mitto-surface-2 dark:bg-mitto-surface-3 border border-mitto-border dark:border-mitto-border-2">
-                        <input
-                          type="checkbox"
-                          checked=${advancedCelExpanded}
-                          onChange=${toggleAdvancedCel}
-                        />
-                        <div class="collapse-title text-xs font-medium py-2 min-h-0">
-                          Advanced (CEL)
-                        </div>
-                        <div class="collapse-content text-xs">
-                          <textarea
-                            value=${localCondition}
-                            onInput=${handleConditionTextareaInput}
-                            placeholder="Empty = fire on any task change"
-                            rows="2"
-                            class="textarea textarea-sm w-full font-mono"
-                            data-testid="loop-condition-textarea"
-                          ></textarea>
-                          <div class="mt-2 text-mitto-text-muted dark:text-mitto-text-300">
-                            Variables:
-                            <code>Tasks</code> (current snapshot),
-                            <code>Prev</code> (previous snapshot),
-                            <code>Changes</code> (added/updated/removed/touched
-                            since last run). Example:
-                            <code
-                              >Tasks.OpenByType["bug"] &gt;
-                              Prev.OpenByType["bug"]</code
-                            >
-                          </div>
-                        </div>
-                      </div>
-
-                      ${conditionError &&
-                      html`
-                        <div
-                          class="mt-2 text-xs text-mitto-danger"
-                          data-testid="loop-condition-error"
-                        >
-                          ${conditionError}
-                        </div>
-                      `}
-                    </div>`
-                : html` <!-- Schedule: Run every N units -->
-                    <div class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm">
-                      <span
-                        class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                        >Run every</span
+                      Variables:
+                      <code>Tasks</code> (current snapshot),
+                      <code>Prev</code> (previous snapshot),
+                      <code>Changes</code> (added/updated/removed/touched since
+                      last run). Example:
+                      <code
+                        >Tasks.OpenByType["bug"] &gt;
+                        Prev.OpenByType["bug"]</code
                       >
+                    </div>
+                  </div>
+                </div>
 
-                      <input
-                        type="number"
-                        min="1"
-                        max="999"
-                        value=${localValue}
-                        onInput=${handleValueChange}
-                        disabled=${isSaving}
-                        class="input input-sm w-16 shrink-0 text-center"
-                      />
-
-                      <!-- shrink-0 + fixed width: daisyUI .select has flex-shrink:1 and overflow:hidden,
-                       which lets it collapse to just the chevron (hiding the unit text) in tight rows -->
-                      <select
-                        value=${localUnit}
-                        onChange=${handleUnitChange}
-                        disabled=${isSaving}
-                        class="select select-sm shrink-0 w-24"
-                      >
-                        <option value="minutes">minutes</option>
-                        <option value="hours">hours</option>
-                        <option value="days">days</option>
-                      </select>
-
-                      <!-- Time picker (only shown for daily schedules) -->
-                      ${localUnit === "days" &&
-                      html`
-                        <span
-                          class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                          >at</span
-                        >
-                        <input
-                          type="time"
-                          value=${localAt}
-                          onInput=${handleAtChange}
-                          disabled=${isSaving}
-                          class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
-                            ? "opacity-50 cursor-not-allowed"
-                            : ""}"
-                          placeholder="HH:MM"
-                        />
-                      `}
-                    </div>`
+                ${conditionError &&
+                html`
+                  <div
+                    class="mt-2 text-xs text-mitto-danger"
+                    data-testid="loop-condition-error"
+                  >
+                    ${conditionError}
+                  </div>
+                `}
+              </div>
+            `
           }
 
           <!-- Fresh-context row (applies to schedule, onCompletion, and onTasks) -->

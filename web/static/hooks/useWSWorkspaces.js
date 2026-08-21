@@ -7,8 +7,8 @@
 
 const { useState, useEffect, useRef, useCallback } = window.preact;
 
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 export function useWSWorkspaces() {
   // Workspaces state: list of configured workspaces from server
@@ -21,12 +21,9 @@ export function useWSWorkspaces() {
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
     try {
-      const response = await authFetch(endpoints.workspaces.list());
-      if (response.ok) {
-        const data = await response.json();
-        setWorkspaces(data.workspaces || []);
-        setAcpServers(data.acp_servers || []);
-      }
+      const data = await getSdkClient().workspaces.list();
+      setWorkspaces(data.workspaces || []);
+      setAcpServers(data.acp_servers || []);
     } catch (err) {
       console.error("Failed to fetch workspaces:", err);
     }
@@ -41,70 +38,45 @@ export function useWSWorkspaces() {
   const addWorkspace = useCallback(
     async (workingDir, acpServer) => {
       try {
-        const response = await secureFetch(endpoints.workspaces.create(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            working_dir: workingDir,
-            acp_server: acpServer,
-          }),
+        const data = await getSdkClient().workspaces.create({
+          working_dir: workingDir,
+          acp_server: acpServer,
         });
-
-        if (!response.ok) {
-          let msg = "Failed to add workspace";
-          try {
-            const data = await response.json();
-            msg = data.error?.message || msg;
-          } catch (_e) {
-            /* keep default */
-          }
-          return { error: msg };
-        }
-
-        const data = await response.json();
         // Refresh workspaces list
         await fetchWorkspaces();
         return { workspace: data };
       } catch (err) {
         console.error("Failed to add workspace:", err);
-        return { error: err.message || "Failed to add workspace" };
+        return { error: errorMessage(err, "Failed to add workspace") };
       }
     },
     [fetchWorkspaces],
   );
 
-  // Remove a workspace
+  // Remove a workspace. This callback is exposed on the return value but has
+  // no live caller in the current UI (WorkspacesLeftPanel's "Delete" button
+  // uses useWorkspaceMutations' client-side-staged removeWorkspace instead,
+  // keyed by uuid+working_dir). The SDK's workspaces.remove() only accepts a
+  // uuid (matching handleRemoveWorkspace's preferred lookup key), not the
+  // legacy working_dir query param this callback's signature takes, so the
+  // uuid is resolved from the already-fetched workspaces list first.
   const removeWorkspace = useCallback(
     async (workingDir) => {
       try {
-        const response = await secureFetch(
-          endpoints.workspaces.list({ working_dir: workingDir }),
-          {
-            method: "DELETE",
-          },
+        const ws = (workspacesRef.current || []).find(
+          (w) => w.working_dir === workingDir,
         );
-
-        if (!response.ok) {
-          // Try to parse as JSON for structured errors
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            const errorData = await response.json();
-            const error = new Error(
-              errorData.error?.message || "Failed to remove workspace",
-            );
-            error.code = errorData.error?.code;
-            error.conversationCount =
-              errorData.error?.details?.conversation_count;
-            throw error;
-          }
-          const errorText = await response.text();
-          throw new Error(errorText);
+        if (!ws?.uuid) {
+          throw new Error("Workspace not found");
         }
-
+        await getSdkClient().workspaces.remove(ws.uuid);
         // Refresh workspaces list
         await fetchWorkspaces();
       } catch (err) {
         console.error("Failed to remove workspace:", err);
+        if (err?.details?.conversation_count !== undefined) {
+          err.conversationCount = err.details.conversation_count;
+        }
         throw err;
       }
     },

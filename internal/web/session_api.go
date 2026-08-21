@@ -1,10 +1,13 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web/handlers"
@@ -129,12 +132,20 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 				isPrompting = true
 			}
 			// Populate structured child info for template accessors ({{ .Children.AllText }}, {{ .Children.MCPText }})
+			queuedCount := 0
+			if q := store.Queue(child.SessionID); q != nil {
+				if n, qErr := q.Len(); qErr == nil {
+					queuedCount = n
+				}
+			}
 			childInfo := config.ChildInfo{
 				ID:          child.SessionID,
 				Name:        child.Name,
 				ACPServer:   child.ACPServer,
 				Origin:      string(child.ChildOrigin),
 				IsPrompting: isPrompting,
+				BeadsIssue:  child.BeadsIssue,
+				QueuedCount: queuedCount,
 			}
 			ctx.Children.All = append(ctx.Children.All, childInfo)
 			if child.ChildOrigin == session.ChildOriginMCP {
@@ -185,6 +196,50 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		ctx.Workspace.HasUserDataSchema = true
 		if schemaBytes, merr := json.Marshal(schema.Fields); merr == nil {
 			ctx.Workspace.UserDataSchemaJSON = string(schemaBytes)
+		}
+	}
+	ctx.Workspace.TasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(meta.WorkingDir))
+	ctx.Workspace.BeadsDatabaseMode = string(s.promptBeadsDatabaseMode(meta.WorkingDir))
+
+	// Workspace peers (mitto-4d6): non-archived sessions sharing the same
+	// (WorkingDir, ACPServer) composite key — the identity of a workspace in
+	// the registry — excluding self. Populates the {{ .Workspace.Peers.* }}
+	// template namespace and Workspace.Peers.* CEL variables. Fail-open: any
+	// store error leaves Peers zero-valued and never fails the menu render.
+	if meta.WorkingDir != "" || meta.ACPServer != "" {
+		if all, lerr := store.List(); lerr == nil {
+			var peers []config.PeerInfo
+			var promptingCount int
+			for _, pm := range all {
+				if pm.SessionID == sessionID {
+					continue
+				}
+				if pm.Archived {
+					continue
+				}
+				if pm.WorkingDir != meta.WorkingDir || pm.ACPServer != meta.ACPServer {
+					continue
+				}
+				isPrompting := false
+				if peerBS := s.sessionManager.GetSession(pm.SessionID); peerBS != nil && peerBS.IsPrompting() {
+					isPrompting = true
+					promptingCount++
+				}
+				peers = append(peers, config.PeerInfo{
+					ID:          pm.SessionID,
+					Name:        pm.Name,
+					ACPServer:   pm.ACPServer,
+					ParentID:    pm.ParentSessionID,
+					Origin:      string(pm.ChildOrigin),
+					IsPrompting: isPrompting,
+					BeadsIssue:  pm.BeadsIssue,
+				})
+			}
+			ctx.Workspace.Peers.Count = len(peers)
+			ctx.Workspace.Peers.Exists = len(peers) > 0
+			ctx.Workspace.Peers.PromptingCount = promptingCount
+			ctx.Workspace.Peers.IdleCount = len(peers) - promptingCount
+			ctx.Workspace.Peers.All = peers
 		}
 	}
 
@@ -239,6 +294,18 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Permissions.CanInteractOtherWorkspaces = session.GetFlagValue(meta.AdvancedSettings, session.FlagCanInteractOtherWorkspaces)
 	ctx.Permissions.AutoApprovePermissions = session.GetFlagValue(meta.AdvancedSettings, session.FlagAutoApprovePermissions)
 
+	// Prompts context (mitto-s1w): snapshot of the workspace prompt registry
+	// for the {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} template
+	// predicates. Same source of truth as mitto_prompt_get. Nil cache leaves
+	// ctx.Prompts zero-valued (predicates fail-closed).
+	if s.config.PromptsCache != nil {
+		snap := s.config.PromptsCache.NamesSnapshot()
+		ctx.Prompts = config.PromptsContext{
+			Names:        snap.Names,
+			EnabledNames: snap.EnabledNames,
+		}
+	}
+
 	return ctx
 }
 
@@ -257,6 +324,14 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 		}
 		return prompts
 	}
+
+	// debugEnabled gates accumulation of hidden prompt names below so nothing is
+	// allocated when DEBUG logging is off (mitto-t3i). When the file log level is
+	// DEBUG (the packaged app's default), this still accumulates — but the loop
+	// now emits at most ONE aggregated Debug record per call instead of one per
+	// hidden prompt, which is the actual volume fix.
+	debugEnabled := s.logger != nil && s.logger.Enabled(context.Background(), slog.LevelDebug)
+	var hiddenNames []string
 
 	var filtered []config.WebPrompt
 	for _, p := range prompts {
@@ -297,11 +372,20 @@ func (s *Server) filterPromptsByEnabled(prompts []config.WebPrompt, ctx *config.
 
 		if visible {
 			filtered = append(filtered, p)
-		} else if s.logger != nil {
-			s.logger.Debug("Prompt hidden by enabledWhen expression",
-				"prompt", p.Name,
-				"expression", p.EnabledWhen)
+		} else if debugEnabled {
+			hiddenNames = append(hiddenNames, p.Name)
 		}
+	}
+
+	// Emit at most one aggregated Debug record for all prompts hidden by
+	// enabledWhen this call, instead of one record per hidden prompt. The
+	// static CEL expression text is intentionally omitted here — it carries no
+	// per-call information and is already retrievable via the prompt
+	// definitions (mitto_prompt_get, GET /api/workspace-prompts).
+	if len(hiddenNames) > 0 {
+		s.logger.Debug("Prompts hidden by enabledWhen",
+			"hidden_count", len(hiddenNames),
+			"hidden", hiddenNames)
 	}
 
 	return filtered
@@ -320,6 +404,8 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 	ctx.Workspace.UUID = ""
 	ctx.Workspace.Name = ""
 	ctx.Workspace.HasUserDataSchema = false
+	ctx.Workspace.TasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
+	ctx.Workspace.BeadsDatabaseMode = string(s.promptBeadsDatabaseMode(workingDir))
 	var acpServerName string
 	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
 		ctx.Workspace.UUID = ws.UUID
@@ -361,6 +447,35 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 			ctx.Tools = config.NewReachableToolsContext(names)
 		}
 	}
+
+	// Prompts context (mitto-s1w): reset then repopulate from PromptsCache
+	// so no session-derived Names leak through in the session-less menu path.
+	ctx.Prompts = config.PromptsContext{}
+	if s.config.PromptsCache != nil {
+		snap := s.config.PromptsCache.NamesSnapshot()
+		ctx.Prompts = config.PromptsContext{
+			Names:        snap.Names,
+			EnabledNames: snap.EnabledNames,
+		}
+	}
+}
+
+func (s *Server) promptBeadsDatabaseMode(workingDir string) config.BeadsDatabaseMode {
+	if s.beads == nil {
+		mode, configured, err := config.ConfiguredFolderBeadsDatabaseMode(workingDir)
+		if err == nil && configured {
+			return mode
+		}
+		return config.BeadsDatabaseModeLocal
+	}
+	mode, err := beads.ResolveDatabaseMode(context.Background(), s.beads, workingDir)
+	if err != nil {
+		s.logger.Warn("failed to resolve Beads database mode for prompt context; using local",
+			"error", err,
+			"working_dir", workingDir)
+		return config.BeadsDatabaseModeLocal
+	}
+	return mode
 }
 
 // buildWorkspacePromptEnabledContext creates a session-less PromptEnabledContext
@@ -393,16 +508,27 @@ func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.P
 // CEL filtering is handled later by filterPromptsByEnabled.
 func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []config.WebPrompt {
 	var allPrompts []config.WebPrompt
-
+	absDirs := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
-		// Resolve relative paths
-		absDir := dir
 		if !filepath.IsAbs(dir) {
-			absDir = filepath.Join(workspaceRoot, dir)
+			dir = filepath.Join(workspaceRoot, dir)
 		}
+		absDirs = append(absDirs, dir)
+	}
 
+	fragments, fragmentErrors, fragmentErr := config.LoadScopedFragmentsFromDirs(absDirs)
+	if s.logger != nil {
+		if fragmentErr != nil {
+			s.logger.Warn("Failed to load workspace prompt fragments", "workspace", workspaceRoot, "error", fragmentErr)
+		}
+		for _, err := range fragmentErrors {
+			s.logger.Warn("Failed to load workspace prompt fragment", "workspace", workspaceRoot, "error", err)
+		}
+	}
+
+	for _, absDir := range absDirs {
 		// Load prompts from this directory (silently ignore errors)
-		prompts, err := config.LoadPromptsFromDir(absDir)
+		prompts, err := config.LoadPromptsFromDirWithFragments(absDir, fragments)
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Debug("Failed to load prompts from directory",

@@ -1,0 +1,50 @@
+{{- /*
+  git/ensure-feature-branch — check whether the current branch is a
+  protected branch (main/master/…) and, if so, guide the caller through
+  creating a feature branch that follows the repo's recent naming
+  convention.
+
+  Emits no section heading — callers place this fragment under their own
+  numbered step. After the fragment, callers can refer to `<branch-name>`
+  as the resolved feature branch.
+
+  Interaction mode: the fragment is loop-aware. In scheduled loop runs it
+  refuses to create a branch autonomously (`mitto_ui_notify` + stop). In
+  interactive runs it uses `mitto_ui_form` when Mitto's UI tools are
+  available, falling back to a conversation question.
+*/ -}}
+```bash
+git branch --show-current
+```
+
+If on `main`/`master`/a protected branch:
+
+- Check recent branch naming: `git branch -r --sort=-committerdate | head -20`
+- Suggest a branch name following the detected convention (based on the
+  work in this session).
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+- **Scheduled mode**: do **not** create a branch autonomously. Send a
+  `mitto_ui_notify` (`warning`) explaining that the current branch is
+  protected and stop — a human will re-run after switching branches.
+{{- else }}
+- **With Mitto UI**: use `mitto_ui_form` to let the user choose:
+
+  ```
+  mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Create Feature Branch?", html: "
+    <label for='action'>Action:</label>
+    <select name='action' id='action'>
+      <option value='create_branch'>Create feature branch</option>
+      <option value='continue'>Continue on current branch</option>
+    </select>
+    <div>
+      <label for='branch_name'>Branch name:</label>
+      <input type='text' name='branch_name' id='branch_name' placeholder='feat/my-feature' value='<suggested-name>'>
+    </div>
+  ")
+  ```
+  If `action == "create_branch"`: `git checkout -b <branch_name>`.
+- **Without Mitto UI**: ask in conversation; on approval run
+  `git checkout -b <branch-name>`.
+{{- end }}
+
+If already on a feature branch, continue.

@@ -1,0 +1,12 @@
+{{- /*
+  _shared/session-context — canonical "## Session Context" preamble reused
+  across dozens of builtin prompts. Emits the session-id sentence used to
+  instruct the model to pass `self_id` on every `mitto_*` MCP tool call.
+  Extracted per mitto-g61.9 from 64 byte-identical (57) or minor-variance
+  (7 support/ prompts using "use it as" instead of "use this as") copies.
+  Pre-conditions: {{ .Session.ID }} must be populated by the render context
+  (guaranteed by PromptEnabledContext.Session).
+*/ -}}
+## Session Context
+
+Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.

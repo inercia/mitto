@@ -9,11 +9,12 @@ import (
 
 // SessionUpdateRequest represents a request to update session metadata.
 type SessionUpdateRequest struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Pinned      *bool   `json:"pinned,omitempty"`      // Deprecated: use Archived instead
-	Archived    *bool   `json:"archived,omitempty"`    // If true, session is archived
-	BeadsIssue  *string `json:"beads_issue,omitempty"` // Linked beads issue ID (empty string clears it)
+	Name            *string `json:"name,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	Pinned          *bool   `json:"pinned,omitempty"`           // Deprecated: use Archived instead
+	Archived        *bool   `json:"archived,omitempty"`         // If true, session is archived
+	BeadsIssue      *string `json:"beads_issue,omitempty"`      // Linked beads issue ID (empty string clears it)
+	BackgroundColor *string `json:"background_color,omitempty"` // Conversation accent color, hex (empty string clears it); mitto-8sk
 }
 
 // archiveWaitTimeout is the maximum time to wait for a response to complete when archiving.
@@ -33,17 +34,27 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	// When archiving a child session, delete it instead (children should never be archived)
+	// When archiving a child session, delete it instead (children should never be archived).
+	// Reject archiving a NoArchive conversation (mitto-yvel.3) — checked after the child
+	// redirect so a protected child remains deletable via that path (deletion is always
+	// allowed per epic decision 3; only archiving is gated).
 	if req.Archived != nil && *req.Archived {
 		meta, err := store.GetMetadata(sessionID)
-		if err == nil && meta.ParentSessionID != "" {
-			if h.deps.Logger != nil {
-				h.deps.Logger.Info("Converting child archive to delete",
-					"session_id", sessionID,
-					"parent_session_id", meta.ParentSessionID)
+		if err == nil {
+			if meta.ParentSessionID != "" {
+				if h.deps.Logger != nil {
+					h.deps.Logger.Info("Converting child archive to delete",
+						"session_id", sessionID,
+						"parent_session_id", meta.ParentSessionID)
+				}
+				h.HandleDeleteSession(w, sessionID)
+				return
 			}
-			h.HandleDeleteSession(w, sessionID)
-			return
+			if !meta.IsArchivable() {
+				writeErrorJSON(w, http.StatusConflict, "conflict",
+					session.ErrSessionNoArchive.Error())
+				return
+			}
 		}
 	}
 
@@ -80,6 +91,9 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		if req.BeadsIssue != nil {
 			meta.BeadsIssue = *req.BeadsIssue
 		}
+		if req.BackgroundColor != nil {
+			meta.BackgroundColor = *req.BackgroundColor
+		}
 		if req.Pinned != nil {
 			meta.Pinned = *req.Pinned
 		}
@@ -94,6 +108,14 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 				meta.ArchivedAt = time.Time{}
 				meta.ArchiveReason = ""
 				meta.AutoUnarchiveLastAttemptAt = time.Time{}
+				// mitto-wub (Defect 3): ACPStartFailureCount is only reset on a
+				// SUCCESSFUL ACP start (session_manager.go). Without also resetting it
+				// here, a session unarchived while the counter is at/near
+				// ACPStartFailureThreshold gets re-archived by the very next transient
+				// failure, before it ever gets a chance at the successful start that
+				// would normally clear it — turning a one-shot saturation hiccup into a
+				// permanent archive/unarchive flap.
+				meta.ACPStartFailureCount = 0
 			}
 		}
 	})
@@ -242,7 +264,7 @@ func (h *Handlers) RestoreLoopOnUnarchive(sessionID string) {
 
 	if archiveRelated && !loop.Enabled {
 		enabled := true
-		if err := loopStore.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		if err := loopStore.Update(session.LoopUpdate{Enabled: &enabled}); err != nil {
 			if h.deps.Logger != nil {
 				h.deps.Logger.Warn("Failed to re-enable loop on unarchive",
 					"session_id", sessionID, "error", err)

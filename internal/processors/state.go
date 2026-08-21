@@ -1,6 +1,7 @@
 package processors
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -74,7 +75,15 @@ func (s *FileStateStore) Save(sessionDir string, state *ProcessorStateData) erro
 		return nil // no-op if session dir is not configured (e.g., tests without persistence)
 	}
 	path := filepath.Join(sessionDir, processorStateFileName)
-	return fileutil.WriteJSONAtomic(path, state, 0644)
+	err := fileutil.WriteJSONAtomicIfDirExists(path, state, 0644)
+	if errors.Is(err, fileutil.ErrParentDirMissing) {
+		// The session was deleted concurrently (e.g. between the after-phase
+		// pipeline finishing and this save). There is nothing left to persist
+		// into, and re-creating the directory here would leak an orphan
+		// containing only processor_state.json (mitto-32ef). Benign no-op.
+		return nil
+	}
+	return err
 }
 
 // MemoryStateStore is a non-persistent in-memory state store for testing.

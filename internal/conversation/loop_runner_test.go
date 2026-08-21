@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -622,6 +624,45 @@ func TestLoopRunner_AutoArchiveSkipsPausedLoopSessions(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_AutoArchiveSkipsNoArchiveSessions pins mitto-yvel.3: an
+// inactive session with no loop config is normally auto-archived (see
+// TestLoopRunner_AutoArchiveNoLoopConfig below), but a NoArchive conversation
+// must be skipped — a supervisor loop that goes quiet must not be reaped.
+func TestLoopRunner_AutoArchiveSkipsNoArchiveSessions(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create an inactive, NoArchive session with no loop config.
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	meta := session.Metadata{
+		SessionID:  "no-archive-session",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+		NoArchive:  true,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	setSessionUpdatedAt(t, store, "no-archive-session", oldTime)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetAutoArchiveAfter(24 * time.Hour)
+
+	runner.RunOnce()
+
+	updatedMeta, err := store.GetMetadata("no-archive-session")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Error("NoArchive session should NOT be auto-archived even when inactive")
+	}
+}
+
 func TestLoopRunner_AutoArchiveNoLoopConfig(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -663,9 +704,14 @@ func TestLoopRunner_AutoArchiveNoLoopConfig(t *testing.T) {
 	}
 }
 
-// TestLoopRunner_ConfigCapAutoStop verifies that a loop conversation with no
-// per-prompt cap (MaxIterations=0) auto-stops when the runner's configured default cap
-// is reached. This tests the global safeguard layer independently of the per-prompt cap.
+// TestLoopRunner_ConfigCapAutoStop verifies that a loop conversation whose
+// per-prompt cap is set (MaxIterations > 0) but larger than the runner's
+// configured default cap auto-stops when the config default is reached — i.e.
+// the config-level default binds via the smallest-positive rule.
+//
+// Note (mitto-48x): promptMax=0 is now an explicit author opt-out from configMax
+// (see TestLoopRunner_ConfigCapDoesNotBindWhenPromptZero); to still exercise the
+// config-cap-binds path, this test uses a positive promptMax above configCap.
 func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -673,7 +719,8 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create a session with MaxIterations=0 (no per-prompt cap)
+	// Create a session with a positive per-prompt cap larger than the config cap,
+	// so the config default is the binding limit.
 	meta := session.Metadata{
 		SessionID:  "config-cap-session",
 		ACPServer:  "test",
@@ -688,7 +735,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 		Prompt:        "Test prompt",
 		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:       true,
-		MaxIterations: 0, // No per-prompt cap
+		MaxIterations: 10, // Positive per-prompt cap, larger than configCap below.
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -725,9 +772,9 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 		t.Errorf("IterationCount = %d, want %d", updated.IterationCount, configCap)
 	}
 
-	// Verify ReachedMaxIterations is false (per-prompt cap is 0 = unlimited)
+	// Verify ReachedMaxIterations is false (per-prompt cap is 10, count is 3)
 	if updated.ReachedMaxIterations() {
-		t.Error("ReachedMaxIterations() = true, want false (per-prompt cap is 0)")
+		t.Error("ReachedMaxIterations() = true, want false (per-prompt cap not yet reached)")
 	}
 
 	// Compute effective cap as the OnComplete callback would
@@ -736,7 +783,8 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	runner.mu.Unlock()
 	effective := config.EffectiveMaxLoopIterations(updated.MaxIterations, cfgCap)
 
-	// Verify effective cap matches the configured cap (since per-prompt cap is 0)
+	// Verify effective cap matches the configured cap (smallest-positive rule,
+	// with promptMax=10 > configCap=3).
 	if effective != configCap {
 		t.Errorf("effective cap = %d, want %d", effective, configCap)
 	}
@@ -760,7 +808,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := loopStore.Update(session.LoopUpdate{Enabled: &disabled}); err != nil {
 		t.Fatalf("loopStore.Update(disable) error = %v", err)
 	}
 
@@ -784,6 +832,81 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_ConfigCapDoesNotBindWhenPromptZero pins the mitto-48x contract:
+// when the loop's per-prompt cap is 0 (author-declared "standing supervisor,
+// unlimited"), the runner's configured default cap MUST NOT bind — only the
+// hardcoded GlobalMaxLoopIterations backstop applies. Under the pre-fix code,
+// EffectiveMaxLoopIterations(0, small) returned small and the loop auto-stopped
+// at small; under the fix it returns GlobalMaxLoopIterations and the loop
+// continues.
+func TestLoopRunner_ConfigCapDoesNotBindWhenPromptZero(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "prompt-zero-session",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(meta.SessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:        "Standing supervisor",
+		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 0, // Explicit author opt-out from any per-prompt cap.
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// A small config default that WOULD have bound under the pre-fix semantics.
+	const configCap = 3
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetMaxLoopIterations(configCap)
+
+	// Drive configCap successful deliveries so IterationCount reaches configCap.
+	for i := 0; i < configCap; i++ {
+		if err := loopStore.RecordSent(); err != nil {
+			t.Fatalf("RecordSent() [%d] error = %v", i+1, err)
+		}
+	}
+
+	updated, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if updated.IterationCount != configCap {
+		t.Fatalf("IterationCount = %d, want %d", updated.IterationCount, configCap)
+	}
+	if updated.ReachedMaxIterations() {
+		t.Fatal("ReachedMaxIterations() = true, want false (per-prompt cap is 0)")
+	}
+
+	runner.mu.Lock()
+	cfgCap := runner.maxLoopIterations
+	runner.mu.Unlock()
+	effective := config.EffectiveMaxLoopIterations(updated.MaxIterations, cfgCap)
+
+	// mitto-48x: configCap MUST NOT bind. Effective falls through to the
+	// hardcoded backstop.
+	if effective != config.GlobalMaxLoopIterations {
+		t.Errorf("effective cap = %d, want %d (backstop; configCap must not bind when promptMax=0)",
+			effective, config.GlobalMaxLoopIterations)
+	}
+
+	// The auto-stop condition must be FALSE: the loop keeps firing past configCap.
+	if updated.IterationCount >= effective {
+		t.Errorf("auto-stop would trigger at IterationCount=%d effective=%d; want no auto-stop",
+			updated.IterationCount, effective)
+	}
+}
+
 // TestLoopRunner_IterationSafeguardBranchSelection verifies the discriminant
 // used by the auto-stop log branches in deliverPrompt: when the per-prompt cap
 // is unlimited (MaxIterations=0), the runner distinguishes the hardcoded
@@ -798,9 +921,14 @@ func TestLoopRunner_IterationSafeguardBranchSelection(t *testing.T) {
 			effective, config.GlobalMaxLoopIterations)
 	}
 
-	// Case B: config-level cap is the binding limit, per-prompt cap is unlimited.
+	// Case B: config-level cap is the binding limit and per-prompt cap is set
+	// larger than it (so perPromptReached=false and effective < backstop). Under
+	// mitto-48x, promptMax=0 is an explicit opt-out from configMax, so the INFO
+	// (configured-cap) branch is only reachable when promptMax > 0 AND
+	// configMax < promptMax; a positive promptMax above configMax reproduces
+	// that.
 	const cfgCap = 100
-	effective = config.EffectiveMaxLoopIterations(0, cfgCap)
+	effective = config.EffectiveMaxLoopIterations(500, cfgCap)
 	if effective != cfgCap {
 		t.Errorf("case B: effective = %d, want %d (config-level cap)", effective, cfgCap)
 	}
@@ -815,6 +943,15 @@ func TestLoopRunner_IterationSafeguardBranchSelection(t *testing.T) {
 	effective = config.EffectiveMaxLoopIterations(5, cfgCap)
 	if effective != 5 {
 		t.Errorf("case C: effective = %d, want 5 (per-prompt cap honored)", effective)
+	}
+
+	// Case D (mitto-48x): promptMax=0 is an author opt-out; configMax MUST NOT
+	// bind. Effective falls through to the hardcoded backstop, so the runner
+	// takes the WARN branch (not the INFO configured-cap branch).
+	effective = config.EffectiveMaxLoopIterations(0, cfgCap)
+	if effective != config.GlobalMaxLoopIterations {
+		t.Errorf("case D: effective = %d, want %d (backstop; config cap must not bind when promptMax=0)",
+			effective, config.GlobalMaxLoopIterations)
 	}
 }
 
@@ -902,7 +1039,7 @@ func newOnCompletionSession(t *testing.T, store *session.Store, sessionID string
 	if err := store.Loop(sessionID).Set(&session.LoopPrompt{
 		Prompt:       "iterate",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: delaySeconds,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -942,7 +1079,7 @@ func TestLoopRunner_OnConversationIdle_IgnoresScheduleTrigger(t *testing.T) {
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
 		Prompt:    "x",
 		Enabled:   true,
-		Trigger:   session.TriggerSchedule,
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule},
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -1079,6 +1216,144 @@ func TestLoopRunner_OnConversationIdle_NilStore(t *testing.T) {
 	runner.fireOnCompletion("x")
 }
 
+// TestLoopRunner_OnConversationIdle_FiresOnChildLeg is the mitto-987y.5 happy
+// path: a child conversation with no loop of its own goes idle, and its
+// parent (armed for onChild/anyEndResponse) is fired via the child leg of
+// OnConversationIdle. Mirrors TestLoopRunner_FireOnChild_HappyPath_AnyEndResponse
+// but drives the higher-level OnConversationIdle entry point end-to-end.
+func TestLoopRunner_OnConversationIdle_FiresOnChildLeg(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil) // nil events = both armed (default)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnConversationIdle("child1")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected OnConversationIdle on a child to fire the parent's onChild leg, got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_OnConversationIdle_ParentlessNoOnChildFire verifies that a
+// top-level session (no ParentSessionID) going idle does not attempt any
+// onChild dispatch — only its own onCompletion leg runs.
+func TestLoopRunner_OnConversationIdle_ParentlessNoOnChildFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Long delay so the onCompletion timer does not fire during the test.
+	newOnCompletionSession(t, store, "s1", 3600)
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	defer runner.cancelCompletionTimer("s1")
+
+	runner.OnConversationIdle("s1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Fatalf("completionTimers = %d, want 1 (onCompletion leg must still run)", got)
+	}
+	if strings.Contains(buf.String(), "onChild") {
+		t.Errorf("parentless session must not attempt any onChild dispatch, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnConversationIdle_ArchivedChildStillNotifiesParent verifies
+// the mitto-987y.5 design decision: archiving a child stops ONLY that child's
+// own onCompletion timer; it must not suppress the onChild notification to
+// the parent (fireOnChild separately guards on the PARENT's archived state).
+func TestLoopRunner_OnConversationIdle_ArchivedChildStillNotifiesParent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+		Archived: true,
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnConversationIdle("child1")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("an archived child must still notify its parent's onChild leg, got:\n%s", out)
+	}
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (archived child's own onCompletion leg must not arm)", got)
+	}
+}
+
+// TestLoopRunner_OnConversationIdle_DualLeg verifies both legs run in a
+// single call when a session is itself an onCompletion loop AND a child of a
+// parent armed for onChild: its own timer is armed, and the parent still
+// receives the onChild fire.
+func TestLoopRunner_OnConversationIdle_DualLeg(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	// "child1" is itself an onCompletion loop AND has ParentSessionID=parent.
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+	if err := store.Loop("child1").Set(&session.LoopPrompt{
+		Prompt: "iterate", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnCompletion}, DelaySeconds: 3600,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+	defer runner.cancelCompletionTimer("child1")
+
+	runner.OnConversationIdle("child1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (child's own onCompletion leg must arm)", got)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the parent's onChild leg to also fire, got:\n%s", out)
+	}
+}
+
 // newDurationCappedSession creates a session with an enabled onCompletion loop
 // prompt anchored at firstRunAt, with the given maxDuration (seconds) and maxIterations.
 // firstRunAt may be nil to model a prompt that has not yet run (not yet anchored).
@@ -1092,7 +1367,7 @@ func newDurationCappedSession(t *testing.T, store *session.Store, sessionID stri
 	if err := ps.Set(&session.LoopPrompt{
 		Prompt:             "iterate",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		MaxDurationSeconds: maxDurationSeconds,
 		MaxIterations:      maxIterations,
 		FirstRunAt:         firstRunAt,
@@ -1396,7 +1671,7 @@ func TestLoopRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
 		Prompt:             "Test prompt",
 		Frequency:          session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
 		Enabled:            true,
-		Trigger:            session.TriggerSchedule,
+		Triggers:           []session.LoopTrigger{session.TriggerSchedule},
 		MaxDurationSeconds: 60,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -1529,9 +1804,9 @@ func TestLoopRunner_BootstrapOnCompletion_Disabled_Noop(t *testing.T) {
 		t.Fatalf("store.Create() error = %v", err)
 	}
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
-		Prompt:  "Test",
-		Enabled: false, // disabled
-		Trigger: session.TriggerOnCompletion,
+		Prompt:   "Test",
+		Enabled:  false, // disabled
+		Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -1561,7 +1836,7 @@ func TestLoopRunner_BootstrapOnCompletion_ScheduleTrigger_Noop(t *testing.T) {
 	if err := store.Loop("s1").Set(&session.LoopPrompt{
 		Prompt:    "Test",
 		Enabled:   true,
-		Trigger:   session.TriggerSchedule, // schedule, not onCompletion
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule}, // schedule, not onCompletion
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -1682,6 +1957,54 @@ func TestLoopRunner_RecoverStalledOnCompletion_ReArmsStalledLoop(t *testing.T) {
 	// A timer must now be armed — the stall was detected and the loop re-armed.
 	if got := countCompletionTimers(runner); got != 1 {
 		t.Errorf("completionTimers = %d, want 1 (stalled loop must be re-armed)", got)
+	}
+}
+
+// TestLoopRunner_RecoverStalledOnCompletion_ChildDoesNotFireOnChild pins the
+// mitto-987y.5 invariant that poll-driven recovery is NOT an end-of-turn: a
+// stalled onCompletion loop that is also a child must re-arm its own timer
+// WITHOUT notifying its parent's onChild leg. Otherwise the first poll after a
+// restart (when no in-memory timer exists for any session) would fire a
+// spurious anyEndResponse at the parent of every onCompletion child.
+func TestLoopRunner_RecoverStalledOnCompletion_ChildDoesNotFireOnChild(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	ps := newOnCompletionSessionWithRan(t, store, "child1", 3600)
+	// The persisted metadata must also record the parent link, so the test
+	// fails if recovery ever routes through the metadata-re-reading
+	// OnConversationIdle instead of the onCompletion leg directly.
+	if err := store.UpdateMetadata("child1", func(m *session.Metadata) {
+		m.ParentSessionID = "parent"
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+
+	meta := session.Metadata{SessionID: "child1", ParentSessionID: "parent"}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("ps.Get() error = %v", err)
+	}
+
+	runner.recoverStalledOnCompletion(meta, loop)
+	defer runner.cancelCompletionTimer("child1")
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (stalled loop must still be re-armed)", got)
+	}
+	if strings.Contains(buf.String(), "onChild") {
+		t.Errorf("poll-driven recovery must not run the onChild leg, got:\n%s", buf.String())
 	}
 }
 
@@ -1980,6 +2303,262 @@ func TestLoopRunner_AutoStopPromptUnresolved_SetsStoppedReason(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_PromptUnresolved_DoesNotSelfHealWhenNameResolvesAgain is the
+// reproduction test for mitto-a4yg (defect 2: "promptUnresolved is not
+// self-healing"). Once handlePromptResolveFailure has tripped the
+// MaxPromptResolveFailures tripwire and called MarkStopped(promptUnresolved),
+// the loop is Enabled=false. checkSession's "Skip if disabled" guard
+// (loop_runner.go) then means the prompt name is NEVER re-resolved again by
+// the scheduled poll loop, even after the underlying prompt file comes back
+// (e.g. once the PromptsCache reload gap that caused the original resolve
+// failures has cleared, mirroring the bead's incident timeline). There is no
+// code path anywhere that observes "the name resolves again" and clears the
+// stop — recovery today is manual-only (an explicit Update(enabled=true)).
+//
+// This test currently demonstrates the bug: it trips the auto-pause, then
+// makes the prompt resolver succeed (simulating the registry recovering) and
+// drives further RunOnce polls with the loop's NextScheduledAt forced due.
+// The loop stays disabled/stopped forever — RunOnce never even calls the
+// (now-succeeding) resolver again — proving there is no self-healing path.
+func TestLoopRunner_PromptUnresolved_DoesNotSelfHealWhenNameResolvesAgain(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "self-heal-check"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "temporarily-missing-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting(sessionID, false))
+
+	runner := NewLoopRunner(store, sm, nil)
+
+	// Simulate the incident: the resolver fails (e.g. the prompt file was
+	// evicted from PromptsCache by an unrelated schema-validation error)
+	// until the tripwire fires and auto-pauses the loop.
+	resolving := int32(0) // 0 = fails, 1 = succeeds
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		if atomic.LoadInt32(&resolving) == 0 {
+			return "", errors.New("prompt not found")
+		}
+		return "resolved body", nil
+	})
+
+	loop, _ := loopStore.Get()
+	for i := 0; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, errors.New("prompt not found"))
+	}
+
+	tripped, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() after tripping: %v", err)
+	}
+	if tripped.Enabled || tripped.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Fatalf("precondition failed: loop not auto-paused (enabled=%v reason=%q)",
+			tripped.Enabled, tripped.StoppedReason)
+	}
+
+	// The prompt is now resolvable again (registry recovered) and the poll
+	// loop keeps running with the schedule forced due, exactly as it would in
+	// production after the transient cache gap clears.
+	atomic.StoreInt32(&resolving, 1)
+	for i := 0; i < 3; i++ {
+		past := time.Now().UTC().Add(-time.Hour)
+		if err := writeTestLoopFile(store.SessionDir(sessionID)+"/loop.json", &session.LoopPrompt{
+			PromptName:      tripped.PromptName,
+			Frequency:       tripped.Frequency,
+			Enabled:         false,
+			StoppedReason:   session.StoppedReasonPromptUnresolved,
+			StoppedAt:       tripped.StoppedAt,
+			NextScheduledAt: &past,
+		}); err != nil {
+			t.Fatalf("writeTestLoopFile() error = %v", err)
+		}
+		runner.RunOnce()
+	}
+
+	// BUG (mitto-a4yg, defect 2): the loop never recovers on its own even
+	// though the prompt name is resolvable again — there is no self-healing
+	// path. This assertion documents the expected (currently unmet) recovery
+	// behavior; it FAILS today because the loop is still Enabled=false with
+	// StoppedReason=promptUnresolved.
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() final: %v", err)
+	}
+	if !final.Enabled || final.StoppedReason != "" {
+		t.Errorf("promptUnresolved loop did not self-heal after the prompt name became "+
+			"resolvable again (mitto-a4yg, defect 2): enabled=%v stoppedReason=%q, want enabled=true stoppedReason=\"\"",
+			final.Enabled, final.StoppedReason)
+	}
+}
+
+// TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace reproduces
+// mitto-8bg: the loop auto-pause tripwire fires on transient fragment
+// compile-race errors that should not count as strikes.
+//
+// When a workspace prompt references a shared fragment via
+// `{{ template "_shared/foo" . }}` and the fragment registry has not yet been
+// refreshed (fs-watcher race), the prompts cache reload records a load error
+// whose chain contains `template "_shared/foo" not defined`, and the resolver
+// returns a generic "not found" for the consumer prompt. This is a transient
+// condition — the fragment will be registered on the next reload — and must
+// NOT increment promptResolveFailures[sessionID] toward the auto-pause
+// tripwire.
+//
+// This test asserts the desired post-fix behavior: three consecutive
+// resolve failures whose underlying error carries the compile-race signature
+// leave the loop enabled and the failure counter at zero. It fails before
+// the fix (all three errors count as strikes, so the loop is auto-paused
+// with StoppedReasonPromptUnresolved), and passes once the classifier at
+// handlePromptResolveFailure recognises the sentinel.
+func TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "compile-race", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop("compile-race")
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "consumer-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	// Simulate the shape produced by deliverPrompt when the resolver reports
+	// a transient fragment-compile race: the resolver wraps its "not found"
+	// with ErrPromptTransientCompileRace, and deliverPrompt further wraps that
+	// with ErrPromptResolveFailed. The strike-counter classifier must see the
+	// inner sentinel via errors.Is.
+	resolveErr := fmt.Errorf("%w: %q: %w",
+		ErrPromptResolveFailed,
+		"consumer-prompt",
+		fmt.Errorf("%w: prompt %q not found (load errors present)",
+			ErrPromptTransientCompileRace, "consumer-prompt"))
+
+	loop, _ := loopStore.Get()
+
+	// Call the failure handler MaxPromptResolveFailures times. With the fix
+	// in place, transient compile-race errors are classified and do NOT
+	// increment the strike counter, so the loop stays enabled.
+	for i := 0; i < MaxPromptResolveFailures; i++ {
+		runner.handlePromptResolveFailure("compile-race", meta.Name, loop, loopStore, resolveErr)
+	}
+
+	final, _ := loopStore.Get()
+	if !final.Enabled {
+		t.Errorf("loop was auto-paused by transient compile-race errors; want Enabled=true (bug: strikes counted for transient errors)")
+	}
+	if final.StoppedReason == session.StoppedReasonPromptUnresolved {
+		t.Errorf("StoppedReason = %q; want empty (transient compile-race should not trip the tripwire)", final.StoppedReason)
+	}
+	if final.StoppedAt != nil {
+		t.Errorf("StoppedAt = %v; want nil (transient compile-race should not stop the loop)", final.StoppedAt)
+	}
+}
+
+// TestLoopRunner_TransientCompileRace_EscalatesAfterThreshold reproduces
+// mitto-uvsn: "Loop 'transient compile race' never escalates: 4 loops
+// silently stalled 4h41m on a persistent prompt-cache hole".
+//
+// handlePromptResolveFailure's ErrPromptTransientCompileRace branch
+// (loop_runner.go ~1945-1953) returns unconditionally on every call, with no
+// counter, no time bound, and no escalation path. In production this
+// classification is itself over-broad (internal/web/server.go wraps ANY
+// prompt-not-found as transient whenever the PromptsCache holds ANY
+// unrelated "template ... not defined" load error), so a persistent
+// prompt-cache hole causes this branch to fire forever: the loop keeps
+// retrying 2-3x/minute, never counts a strike, never auto-pauses, and never
+// surfaces the amber StoppedReasonPromptUnresolved warning to the user.
+//
+// This test drives handlePromptResolveFailure with a wrapped
+// ErrPromptTransientCompileRace far beyond MaxPromptResolveFailures
+// consecutive calls (simulating the observed 4h41m outage) and asserts the
+// loop eventually escalates to the standard auto-pause tripwire. It FAILS
+// against today's code (the loop stays Enabled=true / StoppedReason=""
+// forever, matching the reported bug) and will pass once the fix adds a
+// bounded per-session transient-failure tracker that falls through to the
+// existing strike path once a count/time threshold is crossed.
+func TestLoopRunner_TransientCompileRace_EscalatesAfterThreshold(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "compile-race-stall", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop("compile-race-stall")
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "consumer-prompt",
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyMinutes},
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	resolveErr := fmt.Errorf("%w: %q: %w",
+		ErrPromptResolveFailed,
+		"consumer-prompt",
+		fmt.Errorf("%w: prompt %q not found (load errors present)",
+			ErrPromptTransientCompileRace, "consumer-prompt"))
+
+	loop, _ := loopStore.Get()
+
+	// Simulate a persistent prompt-cache hole firing this classification on
+	// every tick for far longer than the reported 4h41m outage (2-3/min ==>
+	// hundreds of calls). With today's unconditional early-return, none of
+	// these ever count as a strike, so the loop must still be running.
+	const stallSimulatedCalls = 500
+	for i := 0; i < stallSimulatedCalls; i++ {
+		runner.handlePromptResolveFailure("compile-race-stall", meta.Name, loop, loopStore, resolveErr)
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("bug reproduced (mitto-uvsn): loop is still Enabled=true after %d consecutive "+
+			"transient-compile-race resolve failures; want the loop to eventually escalate to the "+
+			"standard auto-pause tripwire (Enabled=false)", stallSimulatedCalls)
+	}
+	if final.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Errorf("bug reproduced (mitto-uvsn): StoppedReason = %q after %d consecutive transient-compile-race "+
+			"resolve failures; want %q (never escalates, so the amber warning never surfaces)",
+			final.StoppedReason, stallSimulatedCalls, session.StoppedReasonPromptUnresolved)
+	}
+}
+
 // TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason verifies that the
 // resume-failures path persists StoppedReason=resumeFailures before archiving.
 func TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason(t *testing.T) {
@@ -2014,6 +2593,81 @@ func TestLoopRunner_AutoStopResumeFailures_SetsStoppedReason(t *testing.T) {
 	}
 	if final.StoppedAt == nil {
 		t.Error("StoppedAt should be non-nil after resumeFailures stop")
+	}
+}
+
+// TestLoopRunner_AutoStopResumeFailures_NoArchiveSkipsArchive pins
+// mitto-yvel.3: a loop conversation marked NoArchive that hits
+// MaxLoopResumeFailures consecutive ACP resume failures must still have its
+// loop stopped (MarkStopped(resumeFailures), Enabled=false — so the retry
+// storm ends) but must NOT be archived.
+func TestLoopRunner_AutoStopResumeFailures_NoArchiveSkipsArchive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "no-archive-resume-fail",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+		NoArchive:  true,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop("no-archive-resume-fail")
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	// Force the loop due now (Set computes a future NextScheduledAt).
+	got, _ := loopStore.Get()
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	got.NextScheduledAt = &past
+	loopPath := store.SessionDir("no-archive-resume-fail") + "/loop.json"
+	if err := writeTestLoopFile(loopPath, got); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	// No ACP command configured, so every resume attempt fails — and a
+	// failed resume never advances NextScheduledAt, so the loop stays due
+	// across repeated RunOnce() calls.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	runner := NewLoopRunner(store, sm, nil)
+
+	var stopped bool
+	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) { stopped = true })
+
+	for i := 0; i < MaxLoopResumeFailures; i++ {
+		runner.RunOnce()
+	}
+
+	updatedMeta, err := store.GetMetadata("no-archive-resume-fail")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Error("NoArchive session should NOT be auto-archived after repeated ACP resume failures")
+	}
+
+	finalLoop, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if finalLoop.Enabled {
+		t.Error("Loop should be stopped (Enabled=false) after repeated resume failures, even though archiving is skipped")
+	}
+	if finalLoop.StoppedReason != session.StoppedReasonResumeFailures {
+		t.Errorf("StoppedReason = %q, want %q", finalLoop.StoppedReason, session.StoppedReasonResumeFailures)
+	}
+	if !stopped {
+		t.Error("onLoopAutoStopped callback should still fire so the UI badge reflects the loop being stopped")
 	}
 }
 
@@ -2152,7 +2806,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, false, session.TriggerSchedule, false, nil)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -2173,6 +2827,74 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	substituted := substituteTestArgs(templateText, loop.Arguments)
 	if want := "Check mitto-42 in prod"; substituted != want {
 		t.Errorf("substituted text = %q, want %q", substituted, want)
+	}
+}
+
+// TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched verifies that a loop
+// with nothing deliverable (draft state, or a named prompt resolving to an
+// empty body) is never dispatched: deliverPrompt returns ErrPromptResolveFailed
+// so the caller routes it into the promptUnresolved auto-pause path instead of
+// sending an empty message to the agent.
+func TestLoopRunner_DeliverPrompt_EmptyPromptNotDispatched(t *testing.T) {
+	tests := []struct {
+		name     string
+		loop     *session.LoopPrompt
+		resolver func(name, dir string) (string, error)
+	}{
+		{
+			name: "no body and no prompt name",
+			loop: &session.LoopPrompt{
+				Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:   true,
+			},
+		},
+		{
+			name: "legacy pending placeholder body",
+			loop: &session.LoopPrompt{
+				Prompt:    "(pending)",
+				Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:   true,
+			},
+		},
+		{
+			name: "named prompt resolving to whitespace",
+			loop: &session.LoopPrompt{
+				PromptName: "blank-prompt",
+				Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+				Enabled:    true,
+			},
+			resolver: func(name, dir string) (string, error) { return "   \n", nil },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			defer store.Close()
+
+			const sid = "empty-prompt"
+			meta := session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}
+			if err := store.Create(meta); err != nil {
+				t.Fatalf("store.Create() error = %v", err)
+			}
+
+			runner := NewLoopRunner(store, nil, nil)
+			if tt.resolver != nil {
+				runner.SetPromptResolver(tt.resolver)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
+
+			err = runner.deliverPrompt(bs, meta, tt.loop, store.Loop(sid), false, true, false, session.TriggerSchedule, false, nil)
+			if !errors.Is(err, ErrPromptResolveFailed) {
+				t.Errorf("deliverPrompt() error = %v, want ErrPromptResolveFailed", err)
+			}
+		})
 	}
 }
 
@@ -2243,7 +2965,7 @@ func TestStopLoopForArchive_ScheduleBased(t *testing.T) {
 	if err := ps.Set(&session.LoopPrompt{
 		Prompt:          "check",
 		Enabled:         true,
-		Trigger:         session.TriggerSchedule,
+		Triggers:        []session.LoopTrigger{session.TriggerSchedule},
 		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		NextScheduledAt: &nextAt,
 	}); err != nil {
@@ -2396,7 +3118,7 @@ func TestStopLoopForArchive_NoFurtherDelivery(t *testing.T) {
 	if err := ps.Set(&session.LoopPrompt{
 		Prompt:          "check",
 		Enabled:         true,
-		Trigger:         session.TriggerSchedule,
+		Triggers:        []session.LoopTrigger{session.TriggerSchedule},
 		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		NextScheduledAt: &pastDue,
 	}); err != nil {
@@ -2517,6 +3239,206 @@ func TestDeliverPrompt_LoopKind(t *testing.T) {
 	}
 }
 
+// TestTriggerNowFull_IsManualClassification is the regression test for
+// mitto-brdo ("a loop iteration triggered by creation of a beads issue is
+// labeled 'Manual run'"). Before the fix, triggerNowFull unconditionally set
+// PromptMeta.IsLoopForced=true for every dispatch it drives (manual "Run Now"
+// AND onCompletion/onTasks/onSlack fires AND the boot pulse), which the
+// frontend (web/static/utils/promptProvenance.js describeProvenance) treats
+// as a higher-priority signal than loop_trigger, always rendering "Manual
+// run" regardless of the real trigger.
+//
+// This test dispatches through each real public/internal entry point exactly
+// as production callers do (TriggerNow for the REST/MCP "Run Now" handlers,
+// TriggerNowFrom for fireOnCompletion, the unexported triggerNowWithTasksDelta
+// for the onTasks beads-change path, TriggerNowWithSlackEvents for onSlack,
+// and triggerNowFull directly with isRunOnStart=true for the fireOnStartPulses
+// boot pulse) and asserts the resulting session.PromptProvenance persisted on
+// the delivered user_prompt event: only the genuine manual case may carry
+// IsLoopForced=true.
+func TestTriggerNowFull_IsManualClassification(t *testing.T) {
+	tests := []struct {
+		name             string
+		trigger          session.LoopTrigger
+		dispatch         func(r *LoopRunner, sessionID string) error
+		wantLoopTrigger  session.LoopTrigger
+		wantIsManual     bool
+		wantIsRunOnStart bool
+	}{
+		{
+			name:    "manual Run Now (REST/MCP run-now handlers)",
+			trigger: session.TriggerSchedule,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.TriggerNow(sessionID, true)
+			},
+			wantLoopTrigger: session.TriggerSchedule, // empty firedBy defers to EffectiveTrigger()
+			wantIsManual:    true,
+		},
+		{
+			name:    "onCompletion fire (fireOnCompletion path)",
+			trigger: session.TriggerOnCompletion,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.TriggerNowFrom(sessionID, true, session.TriggerOnCompletion)
+			},
+			wantLoopTrigger: session.TriggerOnCompletion,
+			wantIsManual:    false,
+		},
+		{
+			name:    "onTasks fire (triggerNowWithTasksDelta — beads issue creation)",
+			trigger: session.TriggerOnTasks,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.triggerNowWithTasksDelta(sessionID, true, nil)
+			},
+			wantLoopTrigger: session.TriggerOnTasks,
+			wantIsManual:    false,
+		},
+		{
+			name:    "onSlack fire (TriggerNowWithSlackEvents)",
+			trigger: session.TriggerOnSlack,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.TriggerNowWithSlackEvents(sessionID, true, session.TriggerOnSlack,
+					[]PromptSlackEvent{{InstallationID: "I1", ChannelID: "C1"}})
+			},
+			wantLoopTrigger: session.TriggerOnSlack,
+			wantIsManual:    false,
+		},
+		{
+			name:    "boot pulse (fireOnStartPulses path, isRunOnStart=true)",
+			trigger: session.TriggerSchedule,
+			dispatch: func(r *LoopRunner, sessionID string) error {
+				return r.triggerNowFull(sessionID, true, true, "", nil)
+			},
+			wantLoopTrigger:  session.TriggerSchedule,
+			wantIsManual:     false,
+			wantIsRunOnStart: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := session.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			defer store.Close()
+
+			recorder := session.NewRecorder(store)
+			if err := recorder.Start("test", "/tmp", ""); err != nil {
+				t.Fatalf("recorder.Start() error = %v", err)
+			}
+			sessionID := recorder.SessionID()
+
+			loopPrompt := &session.LoopPrompt{
+				Prompt:   "iterate",
+				Enabled:  true,
+				Triggers: []session.LoopTrigger{tt.trigger},
+			}
+			if tt.trigger == session.TriggerSchedule {
+				loopPrompt.Frequency = session.Frequency{Value: 4, Unit: session.FrequencyHours}
+			}
+			if tt.trigger == session.TriggerOnSlack {
+				loopPrompt.SlackSubscriptions = []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}}
+			}
+			if err := store.Loop(sessionID).Set(loopPrompt); err != nil {
+				t.Fatalf("loopStore.Set() error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bs := &BackgroundSession{
+				ctx:           ctx,
+				cancel:        cancel,
+				observers:     make(map[SessionObserver]struct{}),
+				recorder:      recorder,
+				store:         store,
+				persistedID:   sessionID,
+				workingDir:    "/tmp",
+				sharedProcess: newFakeSharedProcess(),
+				acpID:         "acp-sess-1",
+				pendingConfig: make(map[string]string),
+				nextSeq:       2, // seq 1 already consumed by session_start
+			}
+			bs.promptCond = sync.NewCond(&bs.promptMu)
+
+			sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+			sm.AddSessionForTest(bs)
+
+			runner := NewLoopRunner(store, sm, nil)
+
+			if err := tt.dispatch(runner, sessionID); err != nil {
+				t.Fatalf("dispatch() error = %v", err)
+			}
+
+			// The provenance-recording section of PromptWithMeta runs
+			// synchronously before the async ACP dispatch, but poll briefly
+			// for robustness against scheduling jitter.
+			var provMap map[string]interface{}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				events, err := store.ReadEvents(sessionID)
+				if err != nil {
+					t.Fatalf("ReadEvents() error = %v", err)
+				}
+				for _, e := range events {
+					if e.Type != session.EventTypeUserPrompt {
+						continue
+					}
+					dataMap, ok := e.Data.(map[string]interface{})
+					if !ok {
+						t.Fatalf("user_prompt event Data is %T, want map[string]interface{}", e.Data)
+					}
+					if pm, ok := dataMap["provenance"].(map[string]interface{}); ok {
+						provMap = pm
+					}
+				}
+				if provMap != nil || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+
+			if provMap == nil {
+				t.Fatal("expected a persisted user_prompt event with non-nil provenance")
+			}
+			gotIsManual, _ := provMap["is_loop_forced"].(bool)
+			if gotIsManual != tt.wantIsManual {
+				t.Errorf("provenance.is_loop_forced = %v, want %v", gotIsManual, tt.wantIsManual)
+			}
+			gotLoopTrigger, _ := provMap["loop_trigger"].(string)
+			if session.LoopTrigger(gotLoopTrigger) != tt.wantLoopTrigger {
+				t.Errorf("provenance.loop_trigger = %q, want %q", gotLoopTrigger, tt.wantLoopTrigger)
+			}
+			gotIsRunOnStart, _ := provMap["is_loop_run_on_start"].(bool)
+			if gotIsRunOnStart != tt.wantIsRunOnStart {
+				t.Errorf("provenance.is_loop_run_on_start = %v, want %v", gotIsRunOnStart, tt.wantIsRunOnStart)
+			}
+
+			// Drain the async dispatch goroutine (fakeSharedProcess.Prompt returns
+			// immediately, but OnComplete — including the loop.json RecordSent
+			// write — still runs on its own goroutine) before the deferred
+			// store.Close()/TempDir cleanup runs, to avoid a concurrent-write
+			// race against the temp dir removal. Poll both the prompting flag
+			// and IterationCount (bumped by RecordSent on successful delivery
+			// with resetTimer=true) so the wait covers OnComplete's own disk
+			// write, not just PromptWithMeta's synchronous prefix.
+			waitDeadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(waitDeadline) {
+				if bs.IsPrompting() {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
+				if updated, gErr := store.Loop(sessionID).Get(); gErr == nil && updated.IterationCount > 0 {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			// Small settle buffer for any trailing atomic-rename write still in
+			// flight when the poll above observed the updated state.
+			time.Sleep(20 * time.Millisecond)
+		})
+	}
+}
+
 func TestLoopScheduleBackoff(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -2565,8 +3487,10 @@ func TestLoopScheduleBackoff_MonotonicAndCapped(t *testing.T) {
 type fakeTasksBeadsClient struct {
 	listFn func(dir string) ([]byte, error)
 
-	mu        sync.Mutex
-	listCalls []string
+	mu          sync.Mutex
+	listCalls   []string
+	labelCalls  []beads.LabelParams
+	updateCalls []beads.UpdateParams
 }
 
 func (c *fakeTasksBeadsClient) List(_ context.Context, dir string) ([]byte, error) {
@@ -2601,15 +3525,39 @@ func (c *fakeTasksBeadsClient) Delete(context.Context, string, string) error { r
 func (c *fakeTasksBeadsClient) ListClosedIDs(context.Context, string) ([]string, error) {
 	return nil, nil
 }
+func (c *fakeTasksBeadsClient) Statuses(context.Context, string, []string) (map[string]string, error) {
+	return nil, nil
+}
 func (c *fakeTasksBeadsClient) DeleteIDs(context.Context, string, []string) error       { return nil }
 func (c *fakeTasksBeadsClient) SetStatus(context.Context, string, string, string) error { return nil }
-func (c *fakeTasksBeadsClient) Update(context.Context, string, beads.UpdateParams) error {
+func (c *fakeTasksBeadsClient) Update(_ context.Context, _ string, p beads.UpdateParams) error {
+	c.mu.Lock()
+	c.updateCalls = append(c.updateCalls, p)
+	c.mu.Unlock()
 	return nil
 }
 func (c *fakeTasksBeadsClient) Comment(context.Context, string, string, string) error { return nil }
 func (c *fakeTasksBeadsClient) Dep(context.Context, string, beads.DepParams) error    { return nil }
-func (c *fakeTasksBeadsClient) Label(context.Context, string, beads.LabelParams) error {
+func (c *fakeTasksBeadsClient) Label(_ context.Context, _ string, p beads.LabelParams) error {
+	c.mu.Lock()
+	c.labelCalls = append(c.labelCalls, p)
+	c.mu.Unlock()
 	return nil
+}
+
+// labelCallCount and updateCallCount return the number of Label/Update calls
+// recorded so far, for tests asserting bead-claim release behavior
+// (mitto-2efc).
+func (c *fakeTasksBeadsClient) labelCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.labelCalls)
+}
+
+func (c *fakeTasksBeadsClient) updateCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.updateCalls)
 }
 func (c *fakeTasksBeadsClient) ListAllLabels(context.Context, string) ([]byte, error) {
 	return []byte(`[]`), nil
@@ -2641,7 +3589,7 @@ func newOnTasksSession(t *testing.T, store *session.Store, sessionID, workingDir
 	if err := store.Loop(sessionID).Set(&session.LoopPrompt{
 		Prompt:    "iterate",
 		Enabled:   true,
-		Trigger:   session.TriggerOnTasks,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks},
 		Condition: condition,
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
@@ -2667,32 +3615,6 @@ func TestTasksDeltaIsMaterial(t *testing.T) {
 	}
 }
 
-func TestTasksTouchedIDsAndSubset(t *testing.T) {
-	delta := &config.TasksDelta{Touched: []map[string]any{{"id": "a"}, {"id": "b"}, {"not-id": "x"}}}
-	ids := tasksTouchedIDs(delta)
-	if len(ids) != 2 {
-		t.Fatalf("tasksTouchedIDs() = %v, want 2 entries", ids)
-	}
-	if _, ok := ids["a"]; !ok {
-		t.Error("expected id 'a' in touched set")
-	}
-
-	// curr is a subset of prev => no progress.
-	prev := map[string]struct{}{"a": {}, "b": {}, "c": {}}
-	if !tasksIsSubsetOf(ids, prev) {
-		t.Error("curr should be a subset of prev")
-	}
-	// curr has something new => progress.
-	curr2 := map[string]struct{}{"a": {}, "new-id": {}}
-	if tasksIsSubsetOf(curr2, prev) {
-		t.Error("curr2 contains a new id, should not be a subset of prev")
-	}
-	// empty curr is trivially a subset.
-	if !tasksIsSubsetOf(map[string]struct{}{}, prev) {
-		t.Error("empty curr should be a trivial subset")
-	}
-}
-
 func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -2704,22 +3626,22 @@ func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 	runner.SetMinLoopTasksCooldownSeconds(60)
 
 	// Never sent — never on cooldown.
-	p := &session.LoopPrompt{Trigger: session.TriggerOnTasks}
-	if runner.tasksCooldownActive(p) {
+	p := &session.LoopPrompt{Triggers: []session.LoopTrigger{session.TriggerOnTasks}}
+	if runner.eventCooldownActive(p) {
 		t.Error("never-sent prompt should not be on cooldown")
 	}
 
 	// Sent 1s ago, floor 60s => active.
 	recently := time.Now().Add(-1 * time.Second)
 	p.LastSentAt = &recently
-	if !runner.tasksCooldownActive(p) {
+	if !runner.eventCooldownActive(p) {
 		t.Error("prompt sent 1s ago with a 60s floor should be on cooldown")
 	}
 
 	// Sent 2 minutes ago, floor 60s => not active.
 	longAgo := time.Now().Add(-2 * time.Minute)
 	p.LastSentAt = &longAgo
-	if runner.tasksCooldownActive(p) {
+	if runner.eventCooldownActive(p) {
 		t.Error("prompt sent 2 minutes ago with a 60s floor should not be on cooldown")
 	}
 
@@ -2727,7 +3649,7 @@ func TestLoopRunner_TasksCooldownActive(t *testing.T) {
 	p.CooldownSeconds = 300
 	recent := time.Now().Add(-90 * time.Second)
 	p.LastSentAt = &recent
-	if !runner.tasksCooldownActive(p) {
+	if !runner.eventCooldownActive(p) {
 		t.Error("per-conversation cooldown of 300s should still be active after 90s")
 	}
 }
@@ -2969,7 +3891,7 @@ func TestLoopRunner_EvaluateTasksChange_InvalidCondition_FailClosed(t *testing.T
 	if err := writeTestLoopFile(filepath.Join(store.SessionDir("s1"), "loop.json"), &session.LoopPrompt{
 		Prompt:    "iterate",
 		Enabled:   true,
-		Trigger:   session.TriggerOnTasks,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks},
 		Condition: "Changes.Touched.size()", // not a bool
 	}); err != nil {
 		t.Fatalf("writeTestLoopFile() error = %v", err)
@@ -3047,7 +3969,7 @@ func TestLoopRunner_EvaluateTasksChange_MaxDurationReached_Skip(t *testing.T) {
 	if err := writeTestLoopFile(filepath.Join(store.SessionDir("s1"), "loop.json"), &session.LoopPrompt{
 		Prompt:             "iterate",
 		Enabled:            true,
-		Trigger:            session.TriggerOnTasks,
+		Triggers:           []session.LoopTrigger{session.TriggerOnTasks},
 		MaxDurationSeconds: 3600,
 		FirstRunAt:         &firstRun,
 	}); err != nil {
@@ -3177,7 +4099,7 @@ func TestLoopRunner_EvaluateAccumulatedDelta_MaterialChange_Fires(t *testing.T) 
 	ps := newOnTasksSession(t, store, "s1", "/proj", "")
 	// Opt out of during-busy coalesce.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+	if err := ps.Update(session.LoopUpdate{CoalesceDuringBusy: &fa}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	loop, _ := ps.Get()
@@ -3305,6 +4227,105 @@ func TestLoopRunner_EvaluateAccumulatedDelta_CooldownActive_NoFire(t *testing.T)
 	}
 }
 
+// TestLoopRunner_FireTasksRebase_CooldownBlocked_PreservesDeltaAndRetries
+// reproduces mitto-wsnv: a material busy-window delta blocked only by the
+// onTasks cooldown must remain pending instead of being permanently rebased.
+func TestLoopRunner_FireTasksRebase_CooldownBlocked_PreservesDeltaAndRetries(t *testing.T) {
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         runner.store,
+		persistedID:   sessionID,
+		workingDir:    "/proj",
+		sharedProcess: newFakeSharedProcess(),
+		acpID:         "acp-sess-1",
+		pendingConfig: make(map[string]string),
+		promptResolver: func(name, dir string) (string, error) {
+			return "iterate", nil
+		},
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	runner.sessionManager.AddSessionForTest(bs)
+
+	baselineStore := NewTasksBaselineStore(runner.store.SessionDir(sessionID))
+	if err := baselineStore.Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	runner.SetMinLoopTasksCooldownSeconds(0)
+	runner.SetTasksQuiescenceWindow(time.Hour)
+	t.Cleanup(func() { runner.cancelTasksRebaseTimerForTest(sessionID) })
+
+	cooldown := 1
+	if err := ps.Update(session.LoopUpdate{CooldownSeconds: &cooldown}); err != nil {
+		t.Fatalf("Update() cooldown error = %v", err)
+	}
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "iterate", nil
+	})
+
+	runner.fireTasksRebase(sessionID, ps)
+
+	baseline, err := baselineStore.Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Fatalf("bug reproduced (mitto-wsnv): cooldown-blocked baseline = %s, want original %s so the delta survives",
+			baseline.RawSnapshot, rawBefore)
+	}
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Fatalf("tasksRebaseTimers = %d, want 1 retry armed for cooldown expiry", got)
+	}
+	if !runner.tasksRefirePendingForTest(sessionID) {
+		t.Fatal("tasksRefirePending = false, want true while cooldown-blocked delta awaits retry")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		baseline, err = baselineStore.Get()
+		if err != nil {
+			t.Fatalf("Get() baseline after retry error = %v", err)
+		}
+		if jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
+		t.Errorf("baseline after cooldown retry = %s, want %s", baseline.RawSnapshot, rawNow)
+	}
+	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
+		t.Fatalf("promptResolver call count after cooldown expiry = %d, want exactly 1", got)
+	}
+	for time.Now().Before(deadline) {
+		runner.dispatchInFlightMu.Lock()
+		_, held := runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+		if !held {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for cooldown retry dispatch to complete")
+}
+
 // TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently verifies the
 // default (CoalesceDuringBusy unset → true) behaviour: an external change
 // landing during the busy window is silently absorbed by the plain rebase,
@@ -3341,13 +4362,379 @@ func TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently(t *testing.T) {
 	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
 		t.Errorf("baseline.RawSnapshot = %s, want %s (silent absorption)", baseline.RawSnapshot, rawNow)
 	}
-	// The default silent-absorb path must never record a fire outcome.
-	runner.tasksNoProgressMu.Lock()
-	_, seenTouched := runner.tasksLastTouchedIDs["s1"]
-	runner.tasksNoProgressMu.Unlock()
-	if seenTouched {
-		t.Error("tasksLastTouchedIDs['s1'] should be empty — no re-fire should have been dispatched under coalesce=true")
+}
+
+// TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireOnce
+// is the reproduction of mitto-cwg.1: with the default coalesceDuringBusy=true,
+// fs-watcher deltas arriving during a busy window are silently absorbed at
+// quiescence instead of triggering exactly one re-fire.
+//
+// Per the bead spec: user prompt-sends stay coalesced, but fs-watcher deltas
+// must set a sticky "re-fire pending" flag; fireTasksRebase must honour that
+// flag and dispatch one follow-up run (subject to Layer 0 guards) regardless
+// of ShouldCoalesceDuringBusy(). Sibling test above documents the current
+// (buggy) silent-absorption behaviour; this test asserts the desired behaviour
+// and therefore FAILS on unfixed code.
+//
+// Observable: a loop configured with PromptName + a spy promptResolver — the
+// resolver is called synchronously inside deliverPrompt before PromptWithMeta,
+// so its invocation is a direct proxy for "the re-fire path was taken."
+func TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireOnce(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
 	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// Switch to a PromptName-backed loop so the spy resolver can observe the
+	// fire attempt. Default (nil) coalesceDuringBusy stays as-is (= true).
+	promptName := "supervisor"
+	if err := ps.Update(session.LoopUpdate{PromptName: &promptName}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	// Pre-run baseline: only mitto-1 exists.
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	// Session is currently busy — fs-watcher deltas arriving in this window
+	// must be marked "re-fire pending" (per the bead's design), not silently
+	// dropped at quiescence.
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", true))
+
+	runner := NewLoopRunner(store, sm, nil)
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "iterate", nil
+	})
+
+	// Current snapshot has a NEW issue (mitto-2) added — a material fs-watcher
+	// delta relative to the baseline.
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
+	runner.SetBeadsClient(fake)
+
+	// Simulate the fs-watcher path: processTasksChange evaluates the busy
+	// session and takes the deferBusy branch (arms rebase timer). Per the bead
+	// design, this path must ALSO set the sticky tasksRefirePending flag.
+	meta, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	runner.processTasksChange(meta, loop, ps, rawNow)
+
+	// Session becomes idle (busy window closed). Swap the entry.
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false))
+
+	// Quiescence fires. With the fix, the sticky flag must cause the accumulated
+	// delta to be re-fired exactly once via the promptResolver + deliverPrompt
+	// path; without the fix, the plain rebase silently absorbs the delta.
+	runner.fireTasksRebase("s1", ps)
+
+	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
+		t.Errorf("promptResolver call count = %d, want 1 (fs-watcher delta during busy must trigger exactly one re-fire on quiescence)", got)
+	}
+}
+
+// --- mitto-rrq: onTasks re-fire lost on transient template compile-race ---
+//
+// The tests below drive fireTasksRebase's re-fire path (maybeFireAccumulatedDelta)
+// for a loop opted out of during-busy coalescing (CoalesceDuringBusy=false), which
+// unconditionally takes that path regardless of the sticky refirePending flag.
+
+// withStubbedTasksRetrySleep swaps tasksTransientRetrySleep for a no-op
+// recorder for the duration of a test so onTasks fire retries (mitto-rrq work
+// item 2) do not actually wait. Mirrors withStubbedRetrySleep in
+// queue_dispatcher_test.go.
+func withStubbedTasksRetrySleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	prev := tasksTransientRetrySleep
+	recorded := []time.Duration{}
+	tasksTransientRetrySleep = func(d time.Duration) {
+		recorded = append(recorded, d)
+	}
+	t.Cleanup(func() { tasksTransientRetrySleep = prev })
+	return &recorded
+}
+
+// newTasksRefireTestRunner sets up a PromptName-backed onTasks loop opted out
+// of during-busy coalescing, a registered idle BackgroundSession (so
+// triggerNowWithTasksDelta reaches deliverPrompt instead of auto-resuming),
+// and a fakeTasksBeadsClient returning a fixed post-change snapshot. Shared
+// scaffolding for the mitto-rrq regression tests below.
+func newTasksRefireTestRunner(t *testing.T, sessionID string, rawNow []byte) (*LoopRunner, *session.LoopStore) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ps := newOnTasksSession(t, store, sessionID, "/proj", "")
+	fa := false
+	promptName := "supervisor"
+	if err := ps.Update(session.LoopUpdate{PromptName: &promptName, CoalesceDuringBusy: &fa}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	sm.AddSessionForTest(NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel))
+
+	runner := NewLoopRunner(store, sm, nil)
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
+	runner.SetBeadsClient(fake)
+	return runner, ps
+}
+
+// TestLoopRunner_TriggerTasksFireWithRetry_TransientFailure_RetriesWithBackoff
+// pins mitto-rrq work item 2 at the retry-helper level: a transient
+// template-compile-race resolve failure on the first attempt must be retried
+// in-process (bounded backoff, mirroring mitto-omu's queueTransientRetryDelays
+// policy) rather than being surfaced on the very first failure. The resolver
+// succeeding on the second attempt is a direct proxy for "the fire was
+// re-delivered" (same convention as
+// TestLoopRunner_FireTasksRebase_CoalesceTrue_FsDeltaDuringBusy_ShouldReFireOnce)
+// — a full ACP round-trip is out of scope for this unit-level test.
+func TestLoopRunner_TriggerTasksFireWithRetry_TransientFailure_RetriesWithBackoff(t *testing.T) {
+	sleeps := withStubbedTasksRetrySleep(t)
+
+	const sessionID = "s1"
+	rawNow := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	runner, _ := newTasksRefireTestRunner(t, sessionID, rawNow)
+
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		if atomic.AddInt32(&resolverCalls, 1) == 1 {
+			return "", fmt.Errorf("%w: prompt %q not found (load errors present)",
+				ErrPromptTransientCompileRace, name)
+		}
+		return "iterate", nil
+	})
+
+	delta := &config.TasksDelta{Added: []map[string]any{{"id": "mitto-1"}}}
+	_, exhausted := runner.triggerTasksFireWithRetry(sessionID, delta)
+
+	if got := atomic.LoadInt32(&resolverCalls); got != 2 {
+		t.Errorf("promptResolver call count = %d, want 2 (1 transient failure + 1 retry that clears the resolve step)", got)
+	}
+	if len(*sleeps) != 1 {
+		t.Errorf("retry sleeps = %d, want 1 (one backoff between the two attempts)", len(*sleeps))
+	}
+	if exhausted {
+		t.Error("exhausted = true, want false (the second attempt got past the transient resolve failure)")
+	}
+}
+
+// TestLoopRunner_FireTasksRebase_PersistentTransientFailure_BaselineUnchanged
+// is the core mitto-rrq acceptance criterion: when every retry attempt hits
+// the transient compile-race, the onTasks baseline must be left
+// byte-identical to its pre-fire value — NOT rebased to the current snapshot
+// — so the triggering delta survives to be retried instead of being silently
+// destroyed.
+func TestLoopRunner_FireTasksRebase_PersistentTransientFailure_BaselineUnchanged(t *testing.T) {
+	withStubbedTasksRetrySleep(t)
+
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	if err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	// Long window so the re-armed quiescence timer does not fire in the
+	// background during the test; we drive fireTasksRebase directly.
+	runner.SetTasksQuiescenceWindow(time.Hour)
+
+	resolveErr := fmt.Errorf("%w: prompt \"supervisor\" not found (load errors present)",
+		ErrPromptTransientCompileRace)
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "", resolveErr
+	})
+
+	runner.fireTasksRebase(sessionID, ps)
+
+	baseline, err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (mitto-rrq: baseline must NOT be rebased on delivery failure)",
+			baseline.RawSnapshot, rawBefore)
+	}
+	// Self-heal (work item 3): the delivery failure must re-arm the
+	// quiescence timer and re-set the sticky pending flag, rather than
+	// silently rebasing, so the next quiescence tick retries automatically.
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Errorf("tasksRebaseTimers = %d, want 1 (delivery failure must re-arm for self-heal)", got)
+	}
+	if !runner.tasksRefirePendingForTest(sessionID) {
+		t.Error("tasksRefirePending must be re-set after a delivery failure so the next quiescence tick retries")
+	}
+	runner.cancelTasksRebaseTimerForTest(sessionID)
+}
+
+// TestLoopRunner_FireTasksRebase_DeliveryFailureExhausted_GivesUpWithoutRebasing
+// pins the bound on the work-item-3 self-heal loop: after
+// maxTasksRefireDeliveryFailures consecutive tasksRefireDeliveryFailed
+// outcomes for the same session, fireTasksRebase must stop re-arming — but it
+// still must NOT rebase the baseline on give-up (a durably-broken prompt must
+// not silently swallow the pending delta either).
+func TestLoopRunner_FireTasksRebase_DeliveryFailureExhausted_GivesUpWithoutRebasing(t *testing.T) {
+	withStubbedTasksRetrySleep(t)
+
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	if err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	runner.SetTasksQuiescenceWindow(time.Hour)
+
+	resolveErr := fmt.Errorf("%w: prompt \"supervisor\" not found (load errors present)",
+		ErrPromptTransientCompileRace)
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		return "", resolveErr
+	})
+
+	// Drive exactly the bound: each call simulates a quiescence tick re-firing
+	// (the sticky flag was re-set by the previous call), with the real timer
+	// cancelled in between so the test controls timing. The Nth call is the
+	// one that trips maxTasksRefireDeliveryFailures and gives up.
+	for i := 1; i <= maxTasksRefireDeliveryFailures; i++ {
+		runner.fireTasksRebase(sessionID, ps)
+		runner.cancelTasksRebaseTimerForTest(sessionID)
+	}
+
+	baseline, err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (must never rebase on a durable delivery failure, even after giving up)",
+			baseline.RawSnapshot, rawBefore)
+	}
+	if runner.tasksRefirePendingForTest(sessionID) {
+		t.Error("tasksRefirePending must be cleared once the self-heal bound is exhausted")
+	}
+	if got := countTasksRebaseTimers(runner); got != 0 {
+		t.Errorf("tasksRebaseTimers = %d, want 0 after giving up (no further re-arm)", got)
+	}
+}
+
+// tasksRefirePendingForTest reports whether the sticky re-fire flag is set
+// for sessionID, for test assertions.
+func (r *LoopRunner) tasksRefirePendingForTest(sessionID string) bool {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	return r.tasksRefirePending[sessionID]
+}
+
+// TestLoopRunner_ProcessTasksChange_NonTransientDeliveryFailure_DroppedWithoutRearm
+// reproduces mitto-c9kp: a first-shot onTasks fire (processTasksChange's
+// tasksActionFire branch, NOT the busy/quiescence re-fire path) whose dispatch
+// error is durable/non-transient — e.g. an ACP handshake failure such as the
+// reported "failed to create session on shared process: ... context deadline
+// exceeded" (-32603) — must NOT be silently dropped. Today it is: the
+// tasksActionFire branch in processTasksChange only special-cases
+// ErrPromptResolveFailed (auto-pause) and ErrSessionBusy (benign, owned by the
+// busy path); every other error takes the bare `return` at
+// loop_runner_tasks.go:397 with no re-arm and no baseline rebase, so the
+// pending delta survives on disk but nothing is scheduled to consume it — the
+// loop goes deaf until an unrelated future fs-watcher event fires it again.
+//
+// This differs from the already-covered
+// TestLoopRunner_FireTasksRebase_PersistentTransientFailure_BaselineUnchanged:
+// that test drives fireTasksRebase (the busy-window re-fire path, which DOES
+// apply the tri-state self-heal via maybeFireAccumulatedDelta) with a
+// TRANSIENT compile-race error. This test drives the plain idle-path
+// processTasksChange (which has no self-heal at all) with a NON-transient
+// error, matching the bead's exact failure mode.
+//
+// The reproduction reuses newTasksRefireTestRunner's registered
+// BackgroundSession, which has no promptResolver wired — so PromptWithMeta
+// synchronously fails with a plain *promptResolverError (non-transient,
+// distinct from both ErrPromptTransientCompileRace and ErrPromptResolveFailed
+// since PromptWithMeta's resolveAndSubstitute path never wraps
+// ErrPromptResolveFailed — see resolveAndSubstitute in prompt_dispatcher.go),
+// giving exactly the bug's error class without needing a real ACP process.
+//
+// Expected behavior (fails today): the delivery failure should re-arm the
+// onTasks quiescence timer (armTasksRebase) and set the sticky re-fire flag —
+// mirroring the self-heal fireTasksRebase already applies on
+// tasksRefireDeliveryFailed — so the pending delta is retried instead of
+// vanishing. The baseline must also be left un-rebased so the delta survives.
+func TestLoopRunner_ProcessTasksChange_NonTransientDeliveryFailure_DroppedWithoutRearm(t *testing.T) {
+	const sessionID = "s1"
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+
+	runner, ps := newTasksRefireTestRunner(t, sessionID, rawNow)
+	if err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	// No promptResolver configured on the registered BackgroundSession (see
+	// newTasksRefireTestRunner) — PromptWithMeta's resolveAndSubstitute will
+	// synchronously fail with a non-transient *promptResolverError, standing
+	// in for the reported ACP handshake failure (-32603 context deadline
+	// exceeded). Neither isTransientPromptCompileRace nor errors.Is(...,
+	// ErrPromptResolveFailed) match it, nor is it ErrSessionBusy.
+
+	meta, err := runner.store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	// Drive the idle-path tasksActionFire branch directly with a material
+	// delta, exactly as processTasksChange's caller (OnBeadsChanged) would.
+	runner.processTasksChange(meta, loop, ps, rawNow)
+
+	baseline, err := NewTasksBaselineStore(runner.store.SessionDir(sessionID)).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (must not rebase on delivery failure)",
+			baseline.RawSnapshot, rawBefore)
+	}
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Errorf("tasksRebaseTimers = %d, want 1 (a non-transient delivery failure on the idle fire path must self-heal by re-arming, mirroring fireTasksRebase)", got)
+	}
+	if !runner.tasksRefirePendingForTest(sessionID) {
+		t.Error("tasksRefirePending must be set after a non-transient delivery failure so the next quiescence tick retries")
+	}
+	runner.cancelTasksRebaseTimerForTest(sessionID)
 }
 
 func TestLoopRunner_BootstrapTasksBaseline_CreatesWhenMissing(t *testing.T) {
@@ -3416,7 +4803,7 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	newOnTasksSession(t, store, "s2", "/proj-a", "")
 	newOnTasksSession(t, store, "s3", "/proj-b", "")
 	newOnTasksSession(t, store, "s4", "/proj-a", "")
-	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := store.Loop("s4").Update(session.LoopUpdate{Enabled: boolPtr(false)}); err != nil {
 		t.Fatalf("Update(disable s4) error = %v", err)
 	}
 
@@ -3498,80 +4885,6 @@ func TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore(t *testing.T
 
 	if got := buf.String(); strings.Contains(got, "onTasks: failed to list sessions") {
 		t.Fatalf("OnBeadsChanged after Stop() touched the closed store and logged the failing symptom (mitto-cbx). Log output:\n%s", got)
-	}
-}
-
-func TestLoopRunner_RecordTasksFireOutcome_CircuitBreakerPausesNoProgress(t *testing.T) {
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	defer store.Close()
-
-	ps := newOnTasksSession(t, store, "s1", "/proj", "")
-	runner := NewLoopRunner(store, nil, nil)
-
-	// Same issue id touched repeatedly — no genuine new progress across fires.
-	// The very first fire seeds tasksLastTouchedIDs (nothing to compare against
-	// yet, so it never counts as "no progress" on its own); the breaker needs
-	// tasksNoProgressLimit CONSECUTIVE no-progress fires after that seed.
-	delta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-1"}}}
-	runner.recordTasksFireOutcome("s1", ps, delta) // seed
-	for i := 0; i < tasksNoProgressLimit-1; i++ {
-		runner.recordTasksFireOutcome("s1", ps, delta)
-		got, err := ps.Get()
-		if err != nil {
-			t.Fatalf("Get() error = %v", err)
-		}
-		if !got.Enabled {
-			t.Fatalf("loop should remain enabled before reaching the no-progress limit (iteration %d)", i)
-		}
-	}
-
-	// The Nth consecutive no-progress fire trips the breaker.
-	runner.recordTasksFireOutcome("s1", ps, delta)
-	got, err := ps.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if got.Enabled {
-		t.Error("loop should be auto-paused after tasksNoProgressLimit consecutive no-progress fires")
-	}
-	if got.StoppedReason != session.StoppedReasonNoProgress {
-		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonNoProgress)
-	}
-}
-
-func TestLoopRunner_RecordTasksFireOutcome_ResetsOnGenuineProgress(t *testing.T) {
-	store, err := session.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	defer store.Close()
-
-	ps := newOnTasksSession(t, store, "s1", "/proj", "")
-	runner := NewLoopRunner(store, nil, nil)
-
-	sameDelta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-1"}}}
-	for i := 0; i < tasksNoProgressLimit-1; i++ {
-		runner.recordTasksFireOutcome("s1", ps, sameDelta)
-	}
-
-	// A fire that touches a genuinely new issue resets the counter.
-	newDelta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-2"}}}
-	runner.recordTasksFireOutcome("s1", ps, newDelta)
-
-	// Even after tasksNoProgressLimit-1 more repeats of the *new* id alone, the
-	// breaker should not have tripped yet because the counter was reset.
-	for i := 0; i < tasksNoProgressLimit-1; i++ {
-		runner.recordTasksFireOutcome("s1", ps, newDelta)
-	}
-	got, err := ps.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if !got.Enabled {
-		t.Error("loop should still be enabled — the counter was reset by genuine progress")
 	}
 }
 
@@ -4474,7 +5787,7 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	loopStore := store.Loop(sessionID)
 	loop := &session.LoopPrompt{
 		Prompt:       "Test",
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 30,
 		Enabled:      true,
 	}
@@ -4493,7 +5806,7 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	// onCompletion delivery uses (resetTimer=true, forced=false).
 	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
 	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false)
+		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false, session.TriggerOnCompletion)
 	}
 
 	// After MaxLoopContextWindowFailures consecutive 413 hits an onCompletion
@@ -4516,6 +5829,436 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 		t.Errorf("onLoopAutoStopped invocation count = %d, want 1 "+
 			"(onCompletion loops must broadcast the auto-pause — mitto-4he)",
 			autoStopCalls)
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling is the
+// regression test for mitto-aeb: handleDeliveryFailure's generic branch
+// (loop_runner.go, everything that is not a context-window/413 error)
+// used to increment scheduleBackoffFailures and defer the next run via
+// loopScheduleBackoff forever, with no comparison against any maximum.
+// Unlike the sibling counters (MaxLoopResumeFailures, MaxPromptResolveFailures,
+// MaxLoopContextWindowFailures — all capped at 3), there was no ceiling, so a
+// deterministically permanent delivery failure (e.g. the mitto-fvt "selected
+// model is not available" 404) re-fired forever with the loop still reporting
+// Enabled and no StoppedReason — exactly the observed 58-consecutive-failures
+// state.
+//
+// This test drives the real handleDeliveryFailure path past MaxLoopDeliveryFailures
+// with a generic, non-context-window error and asserts the loop is now
+// auto-paused with StoppedReasonDeliveryFailures, exactly like the
+// context-window/resume/prompt-resolve counters.
+func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "delivery-failure-ceiling"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule},
+		Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// A generic, permanent, non-context-window transport error — mirrors the
+	// mitto-fvt "selected model is not available" 404 from the bead evidence.
+	genericErr := errors.New("Internal error: HTTP error: 404 Not Found: The selected model is not available for this session.")
+
+	// Hits 1..MaxLoopDeliveryFailures-1 must NOT auto-pause yet (backoff only).
+	for i := 1; i < MaxLoopDeliveryFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+	}
+	mid, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !mid.Enabled {
+		t.Fatalf("loop.Enabled = false after %d hits; want true (under threshold, backoff only)",
+			MaxLoopDeliveryFailures-1)
+	}
+	if autoStopCalls != 0 {
+		t.Fatalf("onLoopAutoStopped invocation count = %d after %d hits; want 0 (under threshold)",
+			autoStopCalls, MaxLoopDeliveryFailures-1)
+	}
+
+	// The Nth consecutive hit must trip the ceiling.
+	runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d consecutive generic delivery failures; "+
+			"want false (mitto-aeb: MaxLoopDeliveryFailures ceiling must auto-pause the loop)",
+			MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q after %d consecutive generic delivery failures; "+
+			"want %q", final.StoppedReason, MaxLoopDeliveryFailures, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d after %d consecutive generic "+
+			"delivery failures; want 1", autoStopCalls, MaxLoopDeliveryFailures)
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause is the
+// reproduction test for mitto-bmct defect B: handleDeliveryFailure's entire
+// remediation block (schedule backoff bump, DeferNextSchedule, and —
+// critically — the MaxLoopDeliveryFailures auto-pause added by mitto-aeb) is
+// gated on
+//
+//	resetTimer && !forced && firedBy == session.TriggerSchedule
+//
+// A forced dispatch (manual "Run Now", or the runOnStart boot pulse, which
+// calls deliverPrompt/triggerNowFull with forced=true) fails that gate
+// unconditionally regardless of how many times it fails, so a permanently
+// broken forced/event-driven delivery is a silent, unbounded, never-ending
+// drop: no backoff, no auto-pause, no StoppedReason, no onLoopAutoStopped
+// broadcast — nothing distinguishes it from a healthy loop except the log.
+//
+// This mirrors the bead's own log evidence for an onTasks boot-pulse fire
+// that failed asynchronously with a durable ACP "Authentication required"
+// error: PromptWithMeta dispatched synchronously (so triggerNowFull returned
+// nil — fireOnStartPulses's own error branch never even ran), and the async
+// OnComplete failure landed in handleDeliveryFailure with forced=true,
+// firedBy=onTasks — never TriggerSchedule. The loop then sat silent for 5
+// days with Enabled=true and no StoppedReason.
+//
+// EXPECTED (post-fix) behavior, asserted here: a forced/event-driven loop
+// dispatch that fails MaxLoopDeliveryFailures times in a row with a generic,
+// durable, non-context-window error must auto-pause exactly like the
+// scheduled path does (TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling
+// above) — Enabled=false, StoppedReason=StoppedReasonDeliveryFailures, and
+// exactly one onLoopAutoStopped broadcast. This currently FAILS: no such
+// ceiling exists for forced/non-schedule dispatches today, so the loop stays
+// Enabled with no StoppedReason no matter how many times it fails.
+func TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "forced-delivery-no-ceiling"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	tr := true
+	loop := &session.LoopPrompt{
+		Prompt:     "Test",
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
+		RunOnStart: &tr,
+		Enabled:    true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// The same durable, non-context-window error class as the bead's evidence
+	// (ACP handshake / auth failure), delivered as a FORCED dispatch fired by
+	// onTasks — exactly the shape of a boot-pulse triggerNowFull(..., true, ...)
+	// call whose deliverPrompt OnComplete fires asynchronously.
+	authErr := errors.New(`{"code":-32000,"message":"Authentication required"}`)
+
+	// Drive exactly MaxLoopDeliveryFailures consecutive forced failures — the
+	// same shape as the sibling scheduled-path test
+	// (TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling): the
+	// Nth hit must trip the ceiling exactly once. (In production the loop
+	// would also stop being redispatched once Enabled flips to false; calling
+	// past the ceiling here would just retrigger it every further
+	// MaxLoopDeliveryFailures hits, which is not what this test is checking.)
+	const attempts = MaxLoopDeliveryFailures
+	for i := 1; i <= attempts; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-managed-tools", loop, loopStore, authErr, true, true, session.TriggerOnTasks)
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d forced onTasks delivery failures; want false "+
+			"(mitto-bmct: forced/event-driven dispatches must have the same bounded "+
+			"auto-pause safety net as scheduled dispatches — currently there is none, "+
+			"which is how the bead's onTasks loop went deaf for 5 days)", attempts)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q after %d forced onTasks delivery failures; want %q",
+			final.StoppedReason, attempts, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d after %d forced onTasks delivery "+
+			"failures; want 1", autoStopCalls, attempts)
+	}
+}
+
+// TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling
+// reproduces the remaining mitto-bmct failure after the first fix: an ACP turn
+// can fail asynchronously after triggerNowFull has returned nil, leaving the
+// once-per-process runOnStartFired guard consumed. Each sub-ceiling failure must
+// clear that guard so a later poll tick retries; the ceiling must still stop a
+// durably failing loop instead of retrying forever.
+func TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "run-on-start-async-failure"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "claude", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	tr := true
+	loop := &session.LoopPrompt{
+		Prompt:     "Test",
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
+		RunOnStart: &tr,
+		Enabled:    true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(string, *session.LoopPrompt) { autoStopCalls++ })
+	authErr := errors.New(`{"code":-32000,"message":"Authentication required"}`)
+
+	for attempt := 1; attempt <= MaxLoopDeliveryFailures; attempt++ {
+		// fireOnStartPulses consumes the guard before dispatch. The ACP error then
+		// arrives later through PromptMeta.OnComplete.
+		runner.runOnStartFiredMu.Lock()
+		runner.runOnStartFired[sessionID] = true
+		runner.runOnStartFiredMu.Unlock()
+
+		runner.handleRunOnStartDeliveryFailure(sessionID, "cgw-managed-tools", loop,
+			loopStore, authErr, true, true, session.TriggerOnTasks)
+
+		if attempt < MaxLoopDeliveryFailures && runner.HasFiredRunOnStart(sessionID) {
+			t.Fatalf("attempt %d: runOnStartFired remained set after asynchronous failure; want re-armed", attempt)
+		}
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d asynchronous boot failures; want false", MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+	if !runner.HasFiredRunOnStart(sessionID) {
+		t.Error("runOnStartFired cleared after the loop auto-paused; want terminal guard retained")
+	}
+}
+
+// TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop reproduces the fix for
+// mitto-2efc defect 2: a loop that auto-pauses for a non-benign reason
+// (context-window exceeded / repeated delivery failures) must release any
+// bead claim it holds — remove the "in-flight" label and unset the
+// claimed_by/claimed_at/claim_heartbeat_at metadata — so the bead is not
+// hidden from "bd ready --exclude-label in-flight" forever.
+func TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop(t *testing.T) {
+	t.Run("context window failure", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		const sessionID = "cw-claim-1"
+		meta := session.Metadata{
+			SessionID:  sessionID,
+			ACPServer:  "auggie",
+			WorkingDir: "/tmp",
+			BeadsIssue: "mitto-txse",
+		}
+		if err := store.Create(meta); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		loopStore := store.Loop(sessionID)
+		if err := loopStore.Set(&session.LoopPrompt{
+			Prompt:    "Test",
+			Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+			Enabled:   true,
+		}); err != nil {
+			t.Fatalf("loopStore.Set() error = %v", err)
+		}
+
+		runner := NewLoopRunner(store, nil, nil)
+		fake := &fakeTasksBeadsClient{}
+		runner.SetBeadsClient(fake)
+
+		// Under threshold — no beads calls yet.
+		for i := 1; i < MaxLoopContextWindowFailures; i++ {
+			runner.handleContextWindowFailure(sessionID, "test", loopStore)
+		}
+		if fake.labelCallCount() != 0 || fake.updateCallCount() != 0 {
+			t.Fatalf("beads client called before threshold reached: label=%d update=%d",
+				fake.labelCallCount(), fake.updateCallCount())
+		}
+
+		if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); !stopped {
+			t.Fatal("handleContextWindowFailure final hit returned false; want true")
+		}
+
+		if got := fake.labelCallCount(); got != 1 {
+			t.Fatalf("labelCallCount() = %d, want 1", got)
+		}
+		lbl := fake.labelCalls[0]
+		if lbl.ID != "mitto-txse" || lbl.Label != "in-flight" || lbl.Action != "remove" {
+			t.Errorf("Label call = %+v, want {ID:mitto-txse Label:in-flight Action:remove}", lbl)
+		}
+		if got := fake.updateCallCount(); got != 1 {
+			t.Fatalf("updateCallCount() = %d, want 1", got)
+		}
+		upd := fake.updateCalls[0]
+		if upd.ID != "mitto-txse" {
+			t.Errorf("Update call ID = %q, want mitto-txse", upd.ID)
+		}
+		wantKeys := []string{"claimed_by", "claimed_at", "claim_heartbeat_at"}
+		if !reflect.DeepEqual(upd.UnsetMetadata, wantKeys) {
+			t.Errorf("Update.UnsetMetadata = %v, want %v", upd.UnsetMetadata, wantKeys)
+		}
+	})
+
+	t.Run("delivery failure ceiling", func(t *testing.T) {
+		store, err := session.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore() error = %v", err)
+		}
+		defer store.Close()
+
+		const sessionID = "delivery-claim-1"
+		meta := session.Metadata{
+			SessionID:  sessionID,
+			ACPServer:  "auggie",
+			WorkingDir: "/tmp",
+			BeadsIssue: "mitto-txse",
+		}
+		if err := store.Create(meta); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		loopStore := store.Loop(sessionID)
+		loop := &session.LoopPrompt{
+			Prompt:    "Test",
+			Triggers:  []session.LoopTrigger{session.TriggerSchedule},
+			Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
+			Enabled:   true,
+		}
+		if err := loopStore.Set(loop); err != nil {
+			t.Fatalf("loopStore.Set() error = %v", err)
+		}
+
+		runner := NewLoopRunner(store, nil, nil)
+		fake := &fakeTasksBeadsClient{}
+		runner.SetBeadsClient(fake)
+
+		genericErr := errors.New("Internal error: HTTP error: 404 Not Found: The selected model is not available for this session.")
+		for i := 1; i < MaxLoopDeliveryFailures; i++ {
+			runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+		}
+		if fake.labelCallCount() != 0 || fake.updateCallCount() != 0 {
+			t.Fatalf("beads client called before threshold reached: label=%d update=%d",
+				fake.labelCallCount(), fake.updateCallCount())
+		}
+
+		runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+
+		if got := fake.labelCallCount(); got != 1 {
+			t.Fatalf("labelCallCount() = %d, want 1", got)
+		}
+		if got := fake.updateCallCount(); got != 1 {
+			t.Fatalf("updateCallCount() = %d, want 1", got)
+		}
+	})
+}
+
+// TestLoopRunner_ReleaseBeadClaim_NotCalledOnBenignStop asserts that a benign
+// loop stop (paused by the user, or the normal max-iterations completion)
+// does NOT touch beads — only the non-benign auto-stop paths
+// (handleContextWindowFailure / handleDeliveryFailure) release a bead claim
+// (mitto-2efc).
+func TestLoopRunner_ReleaseBeadClaim_NotCalledOnBenignStop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "benign-claim-1"
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "auggie",
+		WorkingDir: "/tmp",
+		BeadsIssue: "mitto-txse",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	fake := &fakeTasksBeadsClient{}
+	runner.SetBeadsClient(fake)
+
+	// Benign stop paths call loopStore.MarkStopped directly, never going
+	// through handleContextWindowFailure/handleDeliveryFailure — so they must
+	// never invoke releaseBeadClaim.
+	if err := loopStore.MarkStopped(session.StoppedReasonPausedByUser); err != nil {
+		t.Fatalf("MarkStopped(pausedByUser) error = %v", err)
+	}
+	if err := loopStore.MarkStopped(session.StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped(maxIterations) error = %v", err)
+	}
+
+	if got := fake.labelCallCount(); got != 0 {
+		t.Errorf("labelCallCount() = %d after benign stops, want 0", got)
+	}
+	if got := fake.updateCallCount(); got != 0 {
+		t.Errorf("updateCallCount() = %d after benign stops, want 0", got)
 	}
 }
 
@@ -4552,7 +6295,7 @@ func TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses(t *testing.T) {
 	if err := loopStore.Set(&session.LoopPrompt{
 		PromptName: "renamed-prompt",
 		Enabled:    true,
-		Trigger:    session.TriggerOnTasks,
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
 	}); err != nil {
 		t.Fatalf("loopStore.Set() error = %v", err)
 	}
@@ -4632,5 +6375,1959 @@ func TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses(t *testing.T) {
 	if autoStopCalls != 1 {
 		t.Errorf("onLoopAutoStopped invocation count = %d, want 1 "+
 			"(onTasks auto-pause must broadcast — mitto-uhnc)", autoStopCalls)
+	}
+}
+
+// recordingSlogHandler is a minimal slog.Handler that records every log record
+// emitted at or above minLevel. Used to assert log-level classification
+// (see TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn — mitto-rz9j).
+type recordingSlogHandler struct {
+	mu       sync.Mutex
+	minLevel slog.Level
+	records  []slog.Record
+}
+
+func (h *recordingSlogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.minLevel
+}
+
+func (h *recordingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+func (h *recordingSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingSlogHandler) warnOrHigher() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]slog.Record, 0, len(h.records))
+	for _, r := range h.records {
+		if r.Level >= slog.LevelWarn {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn reproduces the
+// teardown-order race described in mitto-rz9j: the loop-runner's OnComplete
+// callback calls loopStore.RecordSent() to persist last_sent_at after a
+// successful prompt delivery, but the loop.json file can have been removed
+// between the loop fire and the callback — because either (a) the parent
+// invoked mitto_conversation_delete, which cascades through
+// SessionManager.deleteSessionAndChildren -> store.Delete(sessionID), wiping
+// the session dir including loop.json; (b) LoopStore.Detach() moved loop.json
+// into the saved slot; or (c) LoopStore.Delete() removed it. In every case
+// RecordSent returns session.ErrLoopNotFound ("loop prompt not found") and
+// the caller currently emits a WARN — noisy and misleading because the loop
+// is being torn down on purpose.
+//
+// This test drives the race deterministically at the exact level the WARN is
+// emitted (logLoopRecordSentFailure, extracted from deliverPrompt's OnComplete
+// specifically to make this classification testable) and asserts that no
+// WARN-or-higher record is produced when the returned error is
+// session.ErrLoopNotFound. It also confirms that unrelated RecordSent errors
+// still surface as WARN so the fix does not swallow real failures.
+func TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn(t *testing.T) {
+	// Set up a session + enabled loop config so RecordSent has something real
+	// to try to update — mirrors the state right after a successful loop
+	// delivery, before the teardown race triggers.
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "rz9j-teardown-race",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(meta.SessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// Simulate the teardown that happens between the loop fire and the
+	// OnComplete callback — e.g. parent's mitto_conversation_delete cascade
+	// wiping the session dir. LoopStore.Delete() removes loop.json outright.
+	if err := loopStore.Delete(); err != nil {
+		t.Fatalf("loopStore.Delete() (simulating teardown race) error = %v", err)
+	}
+
+	// Now the exact call the OnComplete callback makes: RecordSent on the
+	// (now-missing) loop file. Must surface as ErrLoopNotFound — this is the
+	// error whose logging classification is under test.
+	err = loopStore.RecordSent()
+	if !errors.Is(err, session.ErrLoopNotFound) {
+		t.Fatalf("loopStore.RecordSent() error = %v, want session.ErrLoopNotFound", err)
+	}
+
+	// Feed that error through the exact log-classification helper the
+	// OnComplete callback uses. Capture WARN-or-higher records.
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger := slog.New(handler)
+
+	logLoopRecordSentFailure(logger, meta.SessionID, err)
+
+	if warns := handler.warnOrHigher(); len(warns) > 0 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Errorf("logLoopRecordSentFailure emitted WARN-or-higher for session.ErrLoopNotFound "+
+			"(mitto-rz9j: teardown-race noise); expected DEBUG downgrade. records: %s",
+			strings.Join(msgs, "; "))
+	}
+
+	// Sanity: an UNRELATED error (not ErrLoopNotFound) must still WARN, so
+	// the fix does not swallow real failures.
+	handler2 := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger2 := slog.New(handler2)
+	logLoopRecordSentFailure(logger2, meta.SessionID, errors.New("some other io failure"))
+	if warns := handler2.warnOrHigher(); len(warns) != 1 {
+		t.Errorf("logLoopRecordSentFailure warn count for unrelated error = %d, want 1 "+
+			"(non-teardown errors must still surface as WARN)", len(warns))
+	}
+}
+
+// TestLoopRunner_RecordSentFailure_ResurrectionSentinel_WarnsLoudly is the
+// D3 classifier test for mitto-uun: when RecordSent surfaces the resurrection
+// sentinel (session.ErrRecordSentOnStoppedLoop — a delivery fired against a
+// config that was already MarkStopped'd), logLoopRecordSentFailure must emit
+// exactly one WARN-or-higher record so the regression is auditable in
+// production, without being suppressed as a teardown-race like ErrLoopNotFound
+// is (mitto-rz9j).
+func TestLoopRunner_RecordSentFailure_ResurrectionSentinel_WarnsLoudly(t *testing.T) {
+	// Set up a real stopped loop and drive RecordSent through the LoopStore
+	// so the test asserts against the exact sentinel wire path used in
+	// production.
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:  "uun-resurrection",
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loopStore := store.Loop(meta.SessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	if err := loopStore.MarkStopped(session.StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("loopStore.MarkStopped() error = %v", err)
+	}
+
+	// RecordSent on an already-stopped loop returns the resurrection sentinel.
+	err = loopStore.RecordSent()
+	if !errors.Is(err, session.ErrRecordSentOnStoppedLoop) {
+		t.Fatalf("loopStore.RecordSent() error = %v, want ErrRecordSentOnStoppedLoop", err)
+	}
+
+	// Feed that error through the exact log-classification helper the
+	// OnComplete callback uses.
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger := slog.New(handler)
+
+	logLoopRecordSentFailure(logger, meta.SessionID, err)
+
+	warns := handler.warnOrHigher()
+	if len(warns) != 1 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Fatalf("logLoopRecordSentFailure warn count for resurrection sentinel = %d, want 1 "+
+			"(mitto-uun: must NOT be suppressed like ErrLoopNotFound is). records: %s",
+			len(warns), strings.Join(msgs, "; "))
+	}
+	if !strings.Contains(warns[0].Message, "resurrection") {
+		t.Errorf("resurrection WARN message = %q, want it to mention 'resurrection' for auditability",
+			warns[0].Message)
+	}
+}
+
+// newRunOnStartSession creates a session with a loop configured for RunOnStart=true
+// and returns its LoopStore. trigger selects the underlying trigger (schedule/
+// onCompletion/onTasks); the runOnStart flag is orthogonal.
+func newRunOnStartSession(t *testing.T, store *session.Store, sessionID string, trigger session.LoopTrigger) *session.LoopStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	tr := true
+	p := &session.LoopPrompt{
+		Prompt:     "iterate",
+		Enabled:    true,
+		Triggers:   []session.LoopTrigger{trigger},
+		RunOnStart: &tr,
+	}
+	if trigger == session.TriggerSchedule || trigger == "" {
+		p.Frequency = session.Frequency{Value: 1, Unit: session.FrequencyHours}
+	}
+	if err := store.Loop(sessionID).Set(p); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	return store.Loop(sessionID)
+}
+
+// TestLoopRunner_FireOnStartPulses_NilStore verifies fireOnStartPulses is a
+// no-op when the runner has no session store (must not panic).
+func TestLoopRunner_FireOnStartPulses_NilStore(t *testing.T) {
+	runner := NewLoopRunner(nil, nil, nil)
+	runner.fireOnStartPulses()
+}
+
+// TestLoopRunner_FireOnStartPulses_SynchronousFailure_RearmsUntilCeiling
+// verifies that a non-contention failure returned directly by triggerNowFull
+// does not consume the boot pulse forever. The per-tick pass retries while the
+// loop remains enabled, then the shared delivery-failure ceiling auto-pauses it.
+func TestLoopRunner_FireOnStartPulses_SynchronousFailure_RearmsUntilCeiling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	loopStore := newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+
+	runner := NewLoopRunner(store, nil, nil) // nil SM → triggerNowFull returns ErrSessionManagerNotAvailable
+	for attempt := 1; attempt <= MaxLoopDeliveryFailures; attempt++ {
+		runner.fireOnStartPulses()
+		if attempt < MaxLoopDeliveryFailures && runner.HasFiredRunOnStart("s1") {
+			t.Fatalf("attempt %d: runOnStartFired[s1] remained set after synchronous failure; want re-armed", attempt)
+		}
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d synchronous delivery failures; want false", MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonDeliveryFailures)
+	}
+	if !runner.HasFiredRunOnStart("s1") {
+		t.Error("runOnStartFired[s1] cleared after auto-pause; want terminal guard retained")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_OncePerProcess verifies that a second
+// invocation of fireOnStartPulses is a no-op for a session already flagged in
+// runOnStartFired — protecting against duplicate deliveries.
+func TestLoopRunner_FireOnStartPulses_OncePerProcess(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newRunOnStartSession(t, store, "s1", session.TriggerSchedule)
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	// Pre-flag the session as already fired.
+	runner.runOnStartFiredMu.Lock()
+	runner.runOnStartFired["s1"] = true
+	runner.runOnStartFiredMu.Unlock()
+
+	// Must be a no-op (no panic, no state mutation).
+	runner.fireOnStartPulses()
+
+	// The pre-set flag must remain set.
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if !fired {
+		t.Error("runOnStartFired[s1] cleared unexpectedly")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_AntiFlap verifies that a loop whose
+// LastSentAt falls inside the anti-flap window is skipped (no pulse
+// delivered) but IS flagged in runOnStartFired (mitto-wyob correction).
+//
+// fireOnStartPulses now runs on every RunOnce tick, not just once at boot
+// (mitto-wyob), so the anti-flap suppression must mark the session as fired
+// too: otherwise a session freshly suppressed here would simply get its
+// pulse delivered on a later tick once the anti-flap window elapses, turning
+// a one-time-suppression guard into a delayed re-fire rather than a
+// permanent skip.
+func TestLoopRunner_FireOnStartPulses_AntiFlap(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+
+	// Simulate a recent successful run to arm the anti-flap guard.
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	// Explicit large window so the recorded fire is guaranteed inside it.
+	runner.SetRunOnStartAntiFlapSeconds(3600)
+
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if !fired {
+		t.Error("runOnStartFired[s1] = false, want true (anti-flap suppresses delivery but must still mark the session as fired so a later tick does not resurrect the pulse)")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_RunOnStartNotSet verifies that a loop
+// without RunOnStart=true is skipped even when it is enabled.
+func TestLoopRunner_FireOnStartPulses_RunOnStartNotSet(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	// Loop with RunOnStart unset (default: nil / false).
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks},
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true for a loop with RunOnStart unset, want false")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_DisabledLoopSkipped verifies that a
+// disabled loop with RunOnStart=true is skipped.
+func TestLoopRunner_FireOnStartPulses_DisabledLoopSkipped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	tr := true
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:     "iterate",
+		Enabled:    false, // disabled
+		Triggers:   []session.LoopTrigger{session.TriggerOnTasks},
+		RunOnStart: &tr,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true for a disabled loop, want false")
+	}
+}
+
+// TestLoopRunner_FireOnStartPulses_ArchivedSkipped verifies that an archived
+// session with a RunOnStart=true loop is skipped.
+func TestLoopRunner_FireOnStartPulses_ArchivedSkipped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newRunOnStartSession(t, store, "s1", session.TriggerOnTasks)
+	if err := store.UpdateMetadata("s1", func(m *session.Metadata) {
+		m.Archived = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.fireOnStartPulses()
+
+	runner.runOnStartFiredMu.Lock()
+	fired := runner.runOnStartFired["s1"]
+	runner.runOnStartFiredMu.Unlock()
+	if fired {
+		t.Error("runOnStartFired[s1] = true for an archived session, want false")
+	}
+}
+
+// TestLoopRunner_PostBootLoop_RunOnceAttemptsBootPulse verifies the mitto-wyob
+// behavior: a RunOnStart loop created after the initial boot pass is discovered
+// by a later RunOnce tick. The nil session manager makes delivery fail
+// synchronously; deliveryFailures is therefore the observable attempt marker,
+// while the once-per-process guard must be re-armed for the next bounded retry.
+func TestLoopRunner_PostBootLoop_RunOnceAttemptsBootPulse(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	// Simulate pollLoop's single boot-time call to fireOnStartPulses, with no
+	// RunOnStart loops present yet (matches production: the pulse fires
+	// shortly after boot, well before a post-boot conversation could exist).
+	runner.FireOnStartPulses()
+
+	// Now simulate a loop created after Mitto's startup window, configured
+	// with RunOnStart=true.
+	newRunOnStartSession(t, store, "post-boot-session", session.TriggerOnTasks)
+
+	// Simulate a subsequent poll tick.
+	runner.RunOnce()
+
+	runner.deliveryFailuresMu.Lock()
+	failures := runner.deliveryFailures["post-boot-session"]
+	runner.deliveryFailuresMu.Unlock()
+	if failures != 1 {
+		t.Errorf("deliveryFailures[post-boot-session] = %d after RunOnce(); want 1 delivery attempt", failures)
+	}
+	if runner.HasFiredRunOnStart("post-boot-session") {
+		t.Error("HasFiredRunOnStart(post-boot-session) = true after failed attempt; want re-armed for retry")
+	}
+}
+
+// TestLoopRunner_ProcessTasksChange_RapidDeltasOnIdle_ShouldCollapseToSingleFire
+// is the reproduction of mitto-1uv: when an agent produces two (or more) fs
+// deltas in quick succession on an *idle* onTasks subtree — for example a
+// `bd create` followed immediately by a `bd update` that sets a label or
+// dependency — processTasksChange fires the loop on the very first delta with
+// an incomplete view of the bead. The follow-up deltas that land while the
+// resulting run is now busy are handled by the existing during-busy path
+// (mitto-cwg.1), but the first run has already been kicked off against
+// stale/partial state.
+//
+// Per the bead spec: on the idle→first-fire path, the runner should arm a
+// short pre-fire settle timer whenever tasksActionFire is reached, resetting
+// the timer on each subsequent material delta, and fire exactly once (with a
+// coalesced view) when the timer expires. The current implementation has no
+// idle-side debounce — processTasksChange takes tasksActionFire and calls
+// triggerNowWithTasksDelta synchronously, so N rapid deltas produce N fires.
+//
+// This test drives two rapid processTasksChange calls on an idle onTasks
+// session against a fake beads client that advances the snapshot between
+// calls, and asserts exactly ONE promptResolver invocation. Sibling coverage
+// (TestLoopRunner_EvaluateTasksChange_ConditionTrue_Fires and friends)
+// documents the current fire-on-first-delta behaviour; this test asserts the
+// desired behaviour and therefore FAILS on unfixed code.
+//
+// Observable: a loop configured with PromptName + a spy promptResolver — the
+// resolver is called synchronously inside deliverPrompt before PromptWithMeta,
+// so its invocation is a direct proxy for "a fire was dispatched."
+func TestLoopRunner_ProcessTasksChange_RapidDeltasOnIdle_ShouldCollapseToSingleFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// Switch to a PromptName-backed loop so the spy resolver can observe the
+	// fire attempt. Defaults for CoalesceDuringBusy stay as-is (nil → true) —
+	// this test targets the idle→first-fire path, not the during-busy path.
+	promptName := "supervisor"
+	if err := ps.Update(session.LoopUpdate{PromptName: &promptName}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	// Pre-run baseline: only mitto-1 exists.
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	// Session is IDLE — we want processTasksChange to reach tasksActionFire,
+	// not tasksActionDeferBusy. This is the pre-fire settle-window path.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	// Opt into the pre-fire settle window with a short test-scale duration
+	// (mitto-1uv). Production loops opt in per-prompt via
+	// LoopPrompt.SettleWindowSeconds; the runner-level default (0) preserves
+	// the current fire-on-first-delta behaviour for loops that don't opt in.
+	runner.SetTasksSettleWindow(50 * time.Millisecond)
+	var resolverCalls int32
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		atomic.AddInt32(&resolverCalls, 1)
+		return "iterate", nil
+	})
+
+	// The fake beads client advances the snapshot between the two rapid
+	// processTasksChange calls, mimicking an agent that ran
+	//   bd create ...           (delta 1: mitto-2 appears)
+	//   bd update mitto-2 ...   (delta 2: mitto-2 is edited)
+	// within a few milliseconds. Both deltas are material relative to the
+	// pre-run baseline (mitto-1 only), so evaluateTasksChange returns
+	// tasksActionFire twice — and today processTasksChange fires twice.
+	rawStep1 := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	rawStep2 := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "in_progress", "2026-01-02T00:00:01Z"),
+	)
+	var listCalls int32
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) {
+		n := atomic.AddInt32(&listCalls, 1)
+		if n == 1 {
+			return rawStep1, nil
+		}
+		return rawStep2, nil
+	}}
+	runner.SetBeadsClient(fake)
+
+	meta, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	// Two rapid fs-watcher deltas — under the desired settle-window semantics,
+	// the second delta should reset the pending settle timer, and only ONE
+	// fire should occur after the window expires with the merged view.
+	runner.processTasksChange(meta, loop, ps, rawStep1)
+	runner.processTasksChange(meta, loop, ps, rawStep2)
+
+	// Give any pending settle timer time to elapse. Once the fix lands, a
+	// short settle window (a few tens of ms in test config) will have expired
+	// by now and exactly one fire will have been dispatched. Today this sleep
+	// is unused by the (missing) settle path — both fires have already
+	// happened synchronously inside the calls above.
+	time.Sleep(150 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&resolverCalls); got != 1 {
+		t.Errorf("promptResolver call count = %d, want 1 (two rapid fs-watcher deltas on an idle onTasks subtree must collapse to a single fire via the pre-fire settle window)", got)
+	}
+}
+
+// =============================================================================
+// Multi-trigger dispatch (mitto-r6j.2)
+// =============================================================================
+
+// newMultiTriggerSession creates a session with an enabled loop that lists
+// several triggers at once.
+func newMultiTriggerSession(t *testing.T, store *session.Store, sessionID string, triggers []session.LoopTrigger) *session.LoopStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Loop(sessionID)
+	if err := ps.Set(&session.LoopPrompt{
+		Prompt:       "iterate",
+		Enabled:      true,
+		Triggers:     triggers,
+		DelaySeconds: 3600,
+		Frequency:    session.Frequency{Value: 4, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	return ps
+}
+
+// TestLoopRunner_CheckSession_MultiTrigger_ArmsEveryTrigger verifies that a
+// [schedule, onCompletion] loop arms its onCompletion source AND keeps a
+// schedule anchor. Before mitto-r6j.2 checkSession returned early on the
+// onCompletion branch, so the schedule leg of such a loop was dead.
+func TestLoopRunner_CheckSession_MultiTrigger_ArmsEveryTrigger(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newMultiTriggerSession(t, store, "s1",
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion})
+	// Mark the loop as already having run so the onCompletion leg goes through
+	// the stall-recovery path (which arms a timer) instead of the bootstrap
+	// path (which delivers immediately and needs an ACP session).
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+
+	// The schedule leg must have an anchor: a multi-trigger config is no longer
+	// treated as purely event-driven.
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if loop.NextScheduledAt == nil {
+		t.Fatal("NextScheduledAt = nil for [schedule, onCompletion]; want a scheduled anchor")
+	}
+
+	// checkSession must arm the onCompletion timer even though a schedule leg exists.
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	runner.checkSession(meta, time.Now().UTC())
+
+	if got := countCompletionTimers(runner); got != 1 {
+		t.Errorf("completionTimers = %d, want 1 (onCompletion must be armed on a multi-trigger loop)", got)
+	}
+}
+
+// TestLoopRunner_CheckSession_MultiTrigger_BootstrapsTasksBaseline verifies the
+// onTasks leg of a [schedule, onTasks] loop still gets its baseline captured,
+// and that the schedule leg keeps its anchor.
+func TestLoopRunner_CheckSession_MultiTrigger_BootstrapsTasksBaseline(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newMultiTriggerSession(t, store, "s1",
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnTasks})
+
+	runner := NewLoopRunner(store, nil, nil)
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	runner.SetBeadsClient(&fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return raw, nil }})
+
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if loop.NextScheduledAt == nil {
+		t.Fatal("NextScheduledAt = nil for [schedule, onTasks]; want a scheduled anchor")
+	}
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	runner.checkSession(meta, time.Now().UTC())
+
+	baseline := NewTasksBaselineStore(store.SessionDir("s1"))
+	if _, err := baseline.Get(); err != nil {
+		t.Errorf("tasks baseline not bootstrapped on a multi-trigger loop: %v", err)
+	}
+}
+
+// TestLoopRunner_ClaimDispatch_CoalescesConcurrentTriggers pins the coalescing
+// rule: the first trigger to claim a session's dispatch wins, and any other
+// trigger firing while that run is in flight is dropped (never queued).
+func TestLoopRunner_ClaimDispatch_CoalescesConcurrentTriggers(t *testing.T) {
+	runner := NewLoopRunner(nil, nil, nil)
+
+	winner, ok := runner.claimDispatch("s1", session.TriggerOnTasks)
+	if !ok || winner != session.TriggerOnTasks {
+		t.Fatalf("first claimDispatch() = (%q, %v), want (onTasks, true)", winner, ok)
+	}
+
+	// Every other trigger must lose while the first is in flight.
+	for _, losing := range []session.LoopTrigger{
+		session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks,
+	} {
+		got, ok := runner.claimDispatch("s1", losing)
+		if ok {
+			t.Errorf("claimDispatch(%q) succeeded while onTasks in flight; want dropped", losing)
+		}
+		if got != session.TriggerOnTasks {
+			t.Errorf("claimDispatch(%q) winner = %q, want onTasks", losing, got)
+		}
+	}
+
+	// A different session is unaffected.
+	if _, ok := runner.claimDispatch("s2", session.TriggerSchedule); !ok {
+		t.Error("claimDispatch() on a different session was dropped; the claim must be per-session")
+	}
+
+	// Releasing lets the next trigger through.
+	runner.releaseDispatch("s1")
+	if got, ok := runner.claimDispatch("s1", session.TriggerSchedule); !ok || got != session.TriggerSchedule {
+		t.Errorf("claimDispatch() after release = (%q, %v), want (schedule, true)", got, ok)
+	}
+
+	// releaseDispatch is idempotent.
+	runner.releaseDispatch("s1")
+	runner.releaseDispatch("s1")
+}
+
+// TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped drives deliverPrompt for a
+// second trigger while a claim is held and asserts it returns
+// ErrLoopDispatchCoalesced without dispatching.
+func TestLoopRunner_DeliverPrompt_CoalescedFireIsDropped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "coalesce-drop"
+	ps := newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion})
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	// onTasks already owns the dispatch.
+	if _, ok := runner.claimDispatch(sessionID, session.TriggerOnTasks); !ok {
+		t.Fatal("precondition: claimDispatch() failed")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel)
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+
+	err = runner.deliverPrompt(bs, meta, loop, ps, true, false, false, session.TriggerSchedule, false, nil)
+	if !errors.Is(err, ErrLoopDispatchCoalesced) {
+		t.Errorf("deliverPrompt() error = %v, want ErrLoopDispatchCoalesced", err)
+	}
+
+	// The losing fire must not have advanced the shared iteration counter.
+	after, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if after.IterationCount != 0 {
+		t.Errorf("IterationCount = %d after a coalesced fire, want 0", after.IterationCount)
+	}
+}
+
+// TestLoopRunner_SharedCaps_AcrossMixedTriggers verifies that maxIterations is a
+// loop-wide cap: runs delivered by different triggers all advance the same
+// counter and the cap trips regardless of which trigger won.
+func TestLoopRunner_SharedCaps_AcrossMixedTriggers(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "shared-caps"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	ps := store.Loop(sessionID)
+	if err := ps.Set(&session.LoopPrompt{
+		Prompt: "iterate",
+		Triggers: []session.LoopTrigger{
+			session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks,
+		},
+		Frequency:     session.Frequency{Value: 4, Unit: session.FrequencyHours},
+		MaxIterations: 3,
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Three deliveries, one per trigger — RecordSent is the shared commit point
+	// every trigger's OnComplete funnels through.
+	for i := 1; i <= 3; i++ {
+		if err := ps.RecordSent(); err != nil {
+			t.Fatalf("RecordSent() #%d error = %v", i, err)
+		}
+		got, err := ps.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if got.IterationCount != i {
+			t.Fatalf("IterationCount after %d mixed-trigger runs = %d, want %d",
+				i, got.IterationCount, i)
+		}
+		if got.FirstRunAt == nil {
+			t.Fatal("FirstRunAt = nil; the first delivered run must anchor it regardless of trigger")
+		}
+	}
+
+	final, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !final.ReachedMaxIterations() {
+		t.Errorf("ReachedMaxIterations() = false after 3 mixed-trigger runs with MaxIterations=3; "+
+			"want true (caps are loop-wide, not per-trigger). IterationCount=%d", final.IterationCount)
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_ScheduleBackoffIsTriggerScoped verifies that a
+// failed onCompletion-initiated run on a multi-trigger loop does NOT consume the
+// schedule leg's backoff counter, and a schedule-initiated failure does.
+func TestLoopRunner_DeliveryFailure_ScheduleBackoffIsTriggerScoped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "breaker-scope"
+	ps := newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion})
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	genericErr := errors.New("transient transport failure")
+
+	// An onCompletion-initiated failure must not touch the schedule breaker.
+	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerOnCompletion)
+	runner.scheduleBackoffFailuresMu.Lock()
+	afterOnCompletion := runner.scheduleBackoffFailures[sessionID]
+	runner.scheduleBackoffFailuresMu.Unlock()
+	if afterOnCompletion != 0 {
+		t.Errorf("scheduleBackoffFailures = %d after an onCompletion-initiated failure, want 0 "+
+			"(a cross-trigger failure must not consume the schedule breaker)", afterOnCompletion)
+	}
+
+	// A schedule-initiated failure must.
+	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerSchedule)
+	runner.scheduleBackoffFailuresMu.Lock()
+	afterSchedule := runner.scheduleBackoffFailures[sessionID]
+	runner.scheduleBackoffFailuresMu.Unlock()
+	if afterSchedule != 1 {
+		t.Errorf("scheduleBackoffFailures = %d after a schedule-initiated failure, want 1", afterSchedule)
+	}
+}
+
+// TestLoopRunner_StopLoopForArchive_ReleasesDispatchClaim verifies stopping a
+// loop disarms every trigger, including dropping a held dispatch claim so a
+// later re-enable is not permanently coalesced.
+func TestLoopRunner_StopLoopForArchive_ReleasesDispatchClaim(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "stop-releases"
+	newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerSchedule, session.TriggerOnTasks})
+
+	runner := NewLoopRunner(store, nil, nil)
+	if _, ok := runner.claimDispatch(sessionID, session.TriggerOnTasks); !ok {
+		t.Fatal("precondition: claimDispatch() failed")
+	}
+
+	runner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
+
+	if _, ok := runner.claimDispatch(sessionID, session.TriggerSchedule); !ok {
+		t.Error("dispatch claim still held after StopLoopForArchive; stopping must disarm all triggers")
+	}
+}
+
+// TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources reproduces
+// mitto-7ul8.1: closing a BackgroundSession during an accepted loop turn must
+// release both its dispatch claim and workspace slot so the resumed session can
+// deliver again under the same persisted ID.
+func TestLoopRunner_CloseInFlightTurn_ReleasesDispatchResources(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "close-in-flight"
+	ps := newMultiTriggerSession(t, store, sessionID,
+		[]session.LoopTrigger{session.TriggerOnTasks, session.TriggerSchedule})
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+
+	shared := newFakeSharedProcess()
+	shared.promptBlock = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: shared,
+		acpID:         "acp-old",
+		pendingConfig: make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+	if err := runner.deliverPrompt(bs, meta, loop, ps, true, false, false, session.TriggerOnTasks, false, nil); err != nil {
+		t.Fatalf("initial deliverPrompt() error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		shared.mu.Lock()
+		started := len(shared.promptCalls) == 1
+		shared.mu.Unlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for initial prompt to start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	bs.Close("acp_server_reconfigured")
+	close(shared.promptBlock)
+	deadline = time.Now().Add(2 * time.Second)
+	for bs.IsPrompting() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for closed prompt goroutine to exit")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	replacementShared := newFakeSharedProcess()
+	replacementCtx, replacementCancel := context.WithCancel(context.Background())
+	defer replacementCancel()
+	replacement := &BackgroundSession{
+		ctx:           replacementCtx,
+		cancel:        replacementCancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: replacementShared,
+		acpID:         "acp-new",
+		pendingConfig: make(map[string]string),
+	}
+	replacement.promptCond = sync.NewCond(&replacement.promptMu)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		err = runner.deliverPrompt(replacement, meta, loop, ps, true, false, false, session.TriggerOnTasks, false, nil)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrLoopDispatchCoalesced) && !errors.Is(err, ErrWorkspaceBusy) {
+			t.Fatalf("replacement deliverPrompt() unexpected error = %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement delivery remained blocked after the old turn closed: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		runner.dispatchInFlightMu.Lock()
+		_, claimHeld := runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+		workspaceHeld := runner.workspaceInFlightCount(workspaceKey(meta.WorkingDir, meta.ACPServer))
+		if !claimHeld && workspaceHeld == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement turn did not release resources: claim_held=%v workspace_in_flight=%d", claimHeld, workspaceHeld)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule pins the
+// onTasks > onCompletion > schedule precedence documented on checkSession
+// (loop_runner.go): for a loop listing BOTH onCompletion and schedule, and
+// both simultaneously eligible (onCompletion never bootstrapped yet AND the
+// schedule leg already due), the event-driven onCompletion leg must win the
+// dispatch claim because checkSession arms it before running the schedule
+// due-check — the losing schedule fire must be coalesced, not delivered.
+func TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "prec-oncompletion-schedule"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	ps := store.Loop(sessionID)
+	if err := ps.Set(&session.LoopPrompt{
+		Prompt:  "iterate",
+		Enabled: true,
+		Triggers: []session.LoopTrigger{
+			session.TriggerOnCompletion, session.TriggerSchedule,
+		},
+		DelaySeconds: 3600,
+		Frequency:    session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	// Force the schedule leg due NOW, so both the onCompletion bootstrap (first
+	// run, delivered synchronously by checkSession) and the schedule due-check
+	// are simultaneously eligible on this single tick.
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	loop.NextScheduledAt = &past
+	if err := writeTestLoopFile(store.SessionDir(sessionID)+"/loop.json", loop); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	// A real (blocking-until-released) shared-process transport so the
+	// onCompletion bootstrap's dispatch claim is still held by the time
+	// checkSession reaches the schedule due-check later in the same call.
+	shared := newFakeSharedProcess()
+	shared.promptBlock = make(chan struct{})
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: shared,
+		acpID:         "acp-sess-1",
+		pendingConfig: make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	sm.AddSessionForTest(bs)
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+	runner.SetPromptResolver(func(name, dir string) (string, error) { return "iterate", nil })
+
+	runner.checkSession(meta, time.Now().UTC())
+
+	// The onCompletion bootstrap must have won the claim and still hold it
+	// (its async Prompt() call is blocked on shared.promptBlock).
+	if got := countCompletionTimers(runner); got != 0 {
+		t.Errorf("completionTimers = %d, want 0 (bootstrap delivers immediately, does not arm a timer)", got)
+	}
+	// Give the async dispatch goroutine a moment to reach claimDispatch/Prompt.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		shared.mu.Lock()
+		n := len(shared.promptCalls)
+		shared.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the onCompletion bootstrap to dispatch")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	runner.dispatchInFlightMu.Lock()
+	winner, held := runner.dispatchInFlight[sessionID]
+	runner.dispatchInFlightMu.Unlock()
+	if !held || winner != session.TriggerOnCompletion {
+		t.Fatalf("dispatchInFlight[%q] = (%q, %v), want (onCompletion, true) — onCompletion must claim the dispatch before the schedule due-check runs", sessionID, winner, held)
+	}
+
+	// Now the schedule leg's due-check runs (still inside the same checkSession
+	// call above) — deliverPrompt must have been attempted and coalesced
+	// against the still-held onCompletion claim, so NextScheduledAt is left
+	// untouched (never advanced) and no failure backoff was recorded.
+	afterLoop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() after checkSession error = %v", err)
+	}
+	if afterLoop.NextScheduledAt == nil || !afterLoop.NextScheduledAt.Equal(past) {
+		t.Errorf("NextScheduledAt = %v, want unchanged %v (coalesced schedule fire must not advance the schedule)", afterLoop.NextScheduledAt, past)
+	}
+
+	// Release the blocked onCompletion prompt and wait for its OnComplete to
+	// run (releases the dispatch claim) before the test's store.Close() runs,
+	// so the async turn's background writes don't race the temp-dir cleanup.
+	close(shared.promptBlock)
+	releaseDeadline := time.Now().Add(2 * time.Second)
+	for {
+		runner.dispatchInFlightMu.Lock()
+		_, stillHeld := runner.dispatchInFlight[sessionID]
+		runner.dispatchInFlightMu.Unlock()
+		if !stillHeld {
+			break
+		}
+		if time.Now().After(releaseDeadline) {
+			t.Fatal("timed out waiting for the onCompletion dispatch claim to release")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestBuildLoopUpdatedData_ExposesTriggerSet verifies the loop status payload
+// reports the full armed trigger set while keeping the singular back-compat key.
+func TestBuildLoopUpdatedData_ExposesTriggerSet(t *testing.T) {
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Triggers:  []session.LoopTrigger{session.TriggerOnTasks, session.TriggerSchedule},
+		Frequency: session.Frequency{Value: 4, Unit: session.FrequencyHours},
+	}
+
+	data := BuildLoopUpdatedData("s1", loop)
+
+	if got := data["trigger"]; got != "onTasks" {
+		t.Errorf("data[trigger] = %v, want onTasks (primary, back-compat)", got)
+	}
+	got, ok := data["triggers"].([]string)
+	if !ok {
+		t.Fatalf("data[triggers] type = %T, want []string", data["triggers"])
+	}
+	want := []string{"onTasks", "schedule"}
+	if len(got) != len(want) {
+		t.Fatalf("data[triggers] = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("data[triggers][%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// =============================================================================
+// onChild dispatch leg (mitto-987y.4)
+// =============================================================================
+
+// newOnChildSession creates a session with an enabled onChild loop prompt.
+// A nil/empty events list leaves ChildEvents unset (DefaultChildEvents applies:
+// both anyEndResponse and anyDeleted). onChild must never be the sole armed
+// trigger (session.ErrOnChildAlone), so it is always paired with onCompletion
+// here — a combination that has no bearing on the onChild guard chain under
+// test, since fireOnChild only checks IsOnChild()/HasChildEvent().
+func newOnChildSession(t *testing.T, store *session.Store, sessionID string, events []session.ChildEvent) *session.LoopStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop(sessionID).Set(&session.LoopPrompt{
+		Prompt:      "iterate",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnChild, session.TriggerOnCompletion},
+		ChildEvents: events,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	return store.Loop(sessionID)
+}
+
+// captureDebugLogger returns a logger writing to buf at Debug level, so drop
+// reasons and successful-dispatch markers are both observable.
+func captureDebugLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+func TestLoopRunner_FireOnChild_NotArmed_TriggerMissing(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// A loop configured for onCompletion, not onChild.
+	meta := session.Metadata{SessionID: "parent", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.Loop("parent").Set(&session.LoopPrompt{
+		Prompt: "iterate", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("a loop not configured for onChild must not dispatch")
+	}
+}
+
+func TestLoopRunner_FireOnChild_EventNotInWhenList(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Armed for onChild but only for anyDeleted.
+	newOnChildSession(t, store, "parent", []session.ChildEvent{session.ChildEventAnyDeleted})
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log for an event outside the when list, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_ArchivedParent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.UpdateMetadata("parent", func(m *session.Metadata) { m.Archived = true }); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
+
+	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
+		t.Errorf("expected an archived-parent drop log, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_DisabledLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnChildSession(t, store, "parent", nil)
+	if err := ps.Update(session.LoopUpdate{Enabled: boolPtr(false)}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log for a disabled loop, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_MissingParentMetadata(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	// No session named "ghost-parent" was ever created (covers both a plain
+	// typo/race and a cascade delete that removed the parent too).
+	runner.fireOnChild("ghost-parent", session.ChildEventAnyDeleted, "child1", "")
+
+	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
+		t.Errorf("expected a missing-parent drop log, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_FireOnChild_MaxDurationReached_AutoStops(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	firstRun := time.Now().Add(-2 * time.Hour)
+	if err := writeTestLoopFile(filepath.Join(store.SessionDir("parent"), "loop.json"), &session.LoopPrompt{
+		Prompt: "iterate", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnChild},
+		MaxDurationSeconds: 3600, FirstRunAt: &firstRun,
+	}); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
+
+	got, err := store.Loop("parent").Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("loop should be disabled after reaching max duration")
+	}
+	if got.StoppedReason != session.StoppedReasonMaxDuration {
+		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("a max-duration-exhausted loop must not dispatch")
+	}
+}
+
+// intPtrOnChild is a local int pointer helper (loop_runner_test.go already
+// defines boolPtr; there is no shared intPtr in this package).
+func intPtrOnChild(v int) *int { return &v }
+
+func TestLoopRunner_FireOnChild_CooldownActive_SuppressesBurst(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnChildSession(t, store, "parent", nil)
+	recently := time.Now().Add(-1 * time.Second)
+	if err := ps.Update(session.LoopUpdate{CooldownSeconds: intPtrOnChild(300)}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	loop, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	loop.LastSentAt = &recently
+	if err := writeTestLoopFile(filepath.Join(store.SessionDir("parent"), "loop.json"), loop); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+
+	// A burst of 3 child-idle events within the cooldown window: all 3 must
+	// be dropped, none may reach dispatch.
+	for i := 0; i < 3; i++ {
+		runner.fireOnChild("parent", session.ChildEventAnyEndResponse, fmt.Sprintf("child%d", i), "")
+	}
+
+	dropCount := strings.Count(buf.String(), "onChild: cooldown active, dropping")
+	if dropCount != 3 {
+		t.Errorf("cooldown drop count = %d, want 3 (one per burst event)", dropCount)
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("no event in the burst should have reached dispatch while on cooldown")
+	}
+}
+
+func TestLoopRunner_FireOnChild_CoalescingLoss_LogsDebugNotWarn(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	// Another trigger already owns the in-flight dispatch for this session.
+	if _, ok := runner.claimDispatch("parent", session.TriggerOnTasks); !ok {
+		t.Fatal("precondition: claimDispatch() failed")
+	}
+
+	runner.fireOnChild("parent", session.ChildEventAnyEndResponse, "child1", "")
+
+	if !strings.Contains(buf.String(), "onChild: fire coalesced or session busy") {
+		t.Errorf("expected a coalesced-fire Debug log, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("a coalescing loss must not log at Warn/Error, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_FireOnChild_HappyPath_AnyEndResponse drives the public
+// OnChildEndResponse entry point end-to-end: it resolves the child's parent
+// from the child's own metadata and dispatches via TriggerNowFrom with
+// firedBy=onChild. There is no real ACP wiring in this test, so the assertion
+// is that the guard chain was passed (the Info log from triggerNowFull fires)
+// rather than that a turn actually completed.
+func TestLoopRunner_FireOnChild_HappyPath_AnyEndResponse(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnChildEndResponse("child1")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the onChild-fired dispatch to reach triggerNowFull, got:\n%s", out)
+	}
+	for _, dropped := range []string{
+		"onChild: not armed for this event, dropping",
+		"onChild: parent missing or archived, dropping",
+		"onChild: cooldown active, dropping",
+	} {
+		if strings.Contains(out, dropped) {
+			t.Errorf("unexpected drop log %q for a fully-armed happy path:\n%s", dropped, out)
+		}
+	}
+}
+
+// TestLoopRunner_FireOnChild_HappyPath_AnyDeleted mirrors the AnyEndResponse
+// happy path but through OnChildDeleted, whose parentID is supplied directly
+// by the caller (the child's own metadata is already gone by delete time).
+func TestLoopRunner_FireOnChild_HappyPath_AnyDeleted(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnChildDeleted("child1", "parent")
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the onChild-fired dispatch to reach triggerNowFull, got:\n%s", out)
+	}
+}
+
+func TestLoopRunner_OnChildEndResponse_NotAChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// A top-level session with no ParentSessionID.
+	if err := store.Create(session.Metadata{SessionID: "top-level", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildEndResponse("top-level")
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildEndResponse() for a non-child session should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_OnChildEndResponse_UnknownChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	// GetMetadata will fail for a session that was never created; must not panic.
+	runner.OnChildEndResponse("does-not-exist")
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildEndResponse() for an unresolvable child should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+func TestLoopRunner_OnChildDeleted_EmptyParentID_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildDeleted("child1", "")
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildDeleted() with an empty parentID should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_FireOnChild_AfterStop_NoOp is the onChild counterpart to
+// TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore (mitto-cbx):
+// a delete notification racing Stop() must not dispatch.
+func TestLoopRunner_FireOnChild_AfterStop_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", nil)
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	// Stop() on a never-started runner still flags `stopped` (mitto-cbx
+	// guard), without the poll-loop side effects Start() would add to buf.
+	runner.Stop()
+
+	runner.fireOnChild("parent", session.ChildEventAnyDeleted, "child1", "")
+
+	if buf.Len() != 0 {
+		t.Errorf("fireOnChild() after Stop() should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// --- OnChildLoopStopped tests (mitto-q6my) ---
+
+// TestLoopRunner_OnChildLoopStopped_HappyPath drives the public
+// OnChildLoopStopped entry point end-to-end: the parent is explicitly armed
+// for anyLoopStopped, the stopped child's own metadata still carries
+// ParentSessionID (unlike the delete path), and the fire reaches
+// TriggerNowFrom with firedBy=onChild.
+func TestLoopRunner_OnChildLoopStopped_HappyPath(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// anyLoopStopped is opt-in only (not in DefaultChildEvents), so it must
+	// be listed explicitly.
+	newOnChildSession(t, store, "parent", []session.ChildEvent{session.ChildEventAnyLoopStopped})
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	runner.OnChildLoopStopped("child1", session.StoppedReasonDisabledByAgent)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onChild") {
+		t.Errorf("expected the onChild-fired dispatch to reach triggerNowFull, got:\n%s", out)
+	}
+	if !strings.Contains(out, "onChild: child loop stopped") {
+		t.Errorf("expected the child-loop-stopped debug log, got:\n%s", out)
+	}
+	for _, dropped := range []string{
+		"onChild: not armed for this event, dropping",
+		"onChild: parent missing or archived, dropping",
+		"onChild: cooldown active, dropping",
+	} {
+		if strings.Contains(out, dropped) {
+			t.Errorf("unexpected drop log %q for a fully-armed happy path:\n%s", dropped, out)
+		}
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_NotArmedByDefault verifies that
+// anyLoopStopped, being opt-in only, does NOT fire against a parent armed
+// for onChild with only the implicit default event set (anyEndResponse +
+// anyDeleted) — the back-compat guarantee behind not adding it to
+// DefaultChildEvents().
+func TestLoopRunner_OnChildLoopStopped_NotArmedByDefault(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// nil ChildEvents -> EffectiveChildEvents() falls back to the defaults,
+	// which exclude anyLoopStopped.
+	newOnChildSession(t, store, "parent", nil)
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+
+	runner.OnChildLoopStopped("child1", session.StoppedReasonMaxIterations)
+
+	if !strings.Contains(buf.String(), "onChild: not armed for this event, dropping") {
+		t.Errorf("expected a not-armed drop log for the default event set, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "Triggering immediate loop delivery") {
+		t.Error("anyLoopStopped must not fire against a parent armed only with the default child events")
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_NotAChild_NoOp mirrors
+// TestLoopRunner_OnChildEndResponse_NotAChild_NoOp: a top-level session (no
+// ParentSessionID) must be a silent no-op.
+func TestLoopRunner_OnChildLoopStopped_NotAChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{SessionID: "top-level", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("top-level", session.StoppedReasonArchived)
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildLoopStopped() for a non-child session should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_UnknownChild_NoOp mirrors
+// TestLoopRunner_OnChildEndResponse_UnknownChild_NoOp: GetMetadata failing
+// for a session that was never created must not panic.
+func TestLoopRunner_OnChildLoopStopped_UnknownChild_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("does-not-exist", session.StoppedReasonMaxDuration)
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildLoopStopped() for an unresolvable child should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_SelfParent_NoOp pins the self-referential
+// guard: a session whose own ParentSessionID equals its own sessionID (a
+// pathological/self-referential record) must never re-fire its own onChild
+// trigger against itself.
+func TestLoopRunner_OnChildLoopStopped_SelfParent_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID: "self-loop", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "self-loop",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.Loop("self-loop").Set(&session.LoopPrompt{
+		Prompt:      "iterate",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnChild, session.TriggerOnCompletion},
+		ChildEvents: []session.ChildEvent{session.ChildEventAnyLoopStopped},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("self-loop", session.StoppedReasonDisabledByAgent)
+
+	if buf.Len() != 0 {
+		t.Errorf("OnChildLoopStopped() with childID == parentID should be a silent no-op, got:\n%s", buf.String())
+	}
+}
+
+// TestLoopRunner_OnChildLoopStopped_ArchivedParent mirrors
+// TestLoopRunner_FireOnChild_ArchivedParent through the OnChildLoopStopped
+// entry point.
+func TestLoopRunner_OnChildLoopStopped_ArchivedParent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnChildSession(t, store, "parent", []session.ChildEvent{session.ChildEventAnyLoopStopped})
+	if err := store.Create(session.Metadata{
+		SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent",
+	}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+	if err := store.UpdateMetadata("parent", func(m *session.Metadata) { m.Archived = true }); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, nil, logger)
+	runner.OnChildLoopStopped("child1", session.StoppedReasonArchived)
+
+	if !strings.Contains(buf.String(), "onChild: parent missing or archived, dropping") {
+		t.Errorf("expected an archived-parent drop log, got:\n%s", buf.String())
+	}
+}
+
+// slackTestTrigger mirrors internal/slackbridge.TriggerSlack's literal value.
+// It cannot be imported directly: internal/slackbridge imports this package,
+// so importing it back from this test file would create an import cycle.
+const slackTestTrigger session.LoopTrigger = "slack"
+
+// TestLoopRunner_TriggerNowWithSlackEvent_HappyPath verifies that
+// TriggerNowWithSlackEvent (mitto-qewp PoC, used by internal/slackbridge)
+// reaches deliverPrompt with firedBy=slack for an enabled, idle target loop
+// — i.e. it reuses LoopRunner's existing dispatch path exactly like any
+// other TriggerNowFrom caller.
+func TestLoopRunner_TriggerNowWithSlackEvent_HappyPath(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 60)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false)) // idle
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	evt := &PromptSlackContext{
+		EventID:   "Ev1",
+		ChannelID: "C1",
+		AuthorID:  "U1",
+		Timestamp: "1700000000.000100",
+		Text:      "hello from slack",
+	}
+	_ = runner.TriggerNowWithSlackEvent("s1", true, slackTestTrigger, evt)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=slack") {
+		t.Errorf("expected the Slack-fired dispatch to reach triggerNowFull with fired_by=slack, got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_TriggerNow_ManualOnSlackLoop_LogsIsManualAndEventCount
+// reproduces mitto-ereu: a manual "Run Now" (the public TriggerNow entry
+// point used by the REST handleRunLoopNow and MCP
+// mitto_conversation_run_loop_now handlers, which always passes an empty
+// firedBy) on a loop whose only configured trigger is onSlack logs
+// "Triggering immediate loop delivery" with fired_by=onSlack — because
+// triggerNowFull defaults the empty firedBy to loop.EffectiveTrigger()
+// before logging. This is indistinguishable from a genuine onSlack event
+// delivery in the logs, even though triggerNowFull already computes
+// isManual (true here) and deliverPrompt already has the bounded
+// slackEvents batch (empty here) in scope — neither is included in the
+// "Triggering immediate loop delivery" or "Delivering loop prompt" log
+// lines. A real onSlack fire must log is_manual=false with the genuine
+// batch length so log-only health audits can tell manual and event-driven
+// dispatches apart (bead acceptance criteria).
+func TestLoopRunner_TriggerNow_ManualOnSlackLoop_LogsIsManualAndEventCount(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:             "iterate",
+		Enabled:            true,
+		Triggers:           []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false)) // idle
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	// The minimal test BackgroundSession has no real ACP wiring, so the
+	// eventual PromptWithMeta dispatch inside deliverPrompt may itself return
+	// a "still starting up" error — irrelevant here; both log lines under
+	// test are emitted before that dispatch is attempted.
+	_ = runner.TriggerNow("s1", true)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onSlack") {
+		t.Fatalf("expected the manual dispatch to reach triggerNowFull with fired_by=onSlack, got:\n%s", out)
+	}
+
+	// mitto-ereu: today neither log line records is_manual or
+	// slack_event_count, so this manual Run Now is indistinguishable from a
+	// real onSlack delivery in the logs.
+	if !strings.Contains(out, "is_manual=true") {
+		t.Errorf("mitto-ereu: expected is_manual=true in the loop delivery logs for a manual Run Now on an onSlack loop, got:\n%s", out)
+	}
+	if !strings.Contains(out, "slack_event_count=0") {
+		t.Errorf("mitto-ereu: expected slack_event_count=0 in the loop delivery logs for a manual Run Now (no Slack events), got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_TriggerNowWithSlackEvents_LogsIsManualFalseAndEventCount is
+// the mitto-ereu counterpart to the manual case above: a genuine onSlack
+// event delivery (TriggerNowWithSlackEvents, the entry point used by
+// internal/slackbridge) must log is_manual=false and the real bounded batch
+// length, so log-only health audits can distinguish it from a manual Run Now
+// (bead acceptance criteria: "Real onSlack delivery logs is_manual=false and
+// the bounded batch event count").
+func TestLoopRunner_TriggerNowWithSlackEvents_LogsIsManualFalseAndEventCount(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{SessionID: "s1", ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop("s1").Set(&session.LoopPrompt{
+		Prompt:             "iterate",
+		Enabled:            true,
+		Triggers:           []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false)) // idle
+
+	logger, buf := captureDebugLogger()
+	runner := NewLoopRunner(store, sm, logger)
+
+	events := []PromptSlackEvent{
+		{InstallationID: "I1", ChannelID: "C1", EventID: "Ev1"},
+		{InstallationID: "I1", ChannelID: "C1", EventID: "Ev2"},
+	}
+	// See TestLoopRunner_TriggerNow_ManualOnSlackLoop_LogsIsManualAndEventCount
+	// for why the return error is ignored: the minimal test BackgroundSession
+	// has no real ACP wiring, but both log lines under test are emitted
+	// before that dispatch is attempted.
+	_ = runner.TriggerNowWithSlackEvents("s1", true, session.TriggerOnSlack, events)
+
+	out := buf.String()
+	if !strings.Contains(out, "Triggering immediate loop delivery") || !strings.Contains(out, "fired_by=onSlack") {
+		t.Fatalf("expected the onSlack-fired dispatch to reach triggerNowFull with fired_by=onSlack, got:\n%s", out)
+	}
+	if !strings.Contains(out, "is_manual=false") {
+		t.Errorf("mitto-ereu: expected is_manual=false in the loop delivery logs for a genuine onSlack event delivery, got:\n%s", out)
+	}
+	if !strings.Contains(out, "slack_event_count=2") {
+		t.Errorf("mitto-ereu: expected slack_event_count=2 in the loop delivery logs for a 2-event onSlack batch, got:\n%s", out)
+	}
+}
+
+// TestLoopRunner_TriggerNowWithSlackEvent_DisabledLoop verifies the
+// enabled-loop guard (acceptance criterion: "target loop must be enabled")
+// is enforced identically for the Slack bridge's entry point.
+func TestLoopRunner_TriggerNowWithSlackEvent_DisabledLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 60)
+	if err := store.Loop("s1").Update(session.LoopUpdate{Enabled: boolPtr(false)}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	err = runner.TriggerNowWithSlackEvent("s1", true, slackTestTrigger, &PromptSlackContext{EventID: "Ev1"})
+	if !errors.Is(err, ErrLoopNotEnabled) {
+		t.Errorf("TriggerNowWithSlackEvent() error = %v, want ErrLoopNotEnabled", err)
+	}
+}
+
+// TestLoopRunner_TriggerNowWithSlackEvent_BusySession verifies the
+// idle-session guard (acceptance criterion: "target loop must be idle") is
+// enforced identically for the Slack bridge's entry point.
+func TestLoopRunner_TriggerNowWithSlackEvent_BusySession(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 60)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", true)) // busy
+
+	runner := NewLoopRunner(store, sm, nil)
+	err = runner.TriggerNowWithSlackEvent("s1", true, slackTestTrigger, &PromptSlackContext{EventID: "Ev1"})
+	if !errors.Is(err, ErrSessionBusy) {
+		t.Errorf("TriggerNowWithSlackEvent() error = %v, want ErrSessionBusy", err)
 	}
 }

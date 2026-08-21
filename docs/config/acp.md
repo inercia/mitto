@@ -308,13 +308,13 @@ servers:
 
 ### Match Modes
 
-| Mode | Description |
-|------|-------------|
-| `contains` | Model name contains the pattern (case-insensitive) |
-| `exact` | Model name exactly equals the pattern (case-insensitive) |
-| `startsWith` | Model name starts with the pattern (case-insensitive) |
-| `regex` | Model name matches the regular expression pattern |
-| `lookAlike` | Pattern is split into words; all words must appear in the model name (case-insensitive, any order) |
+| Mode         | Description                                                                                        |
+| ------------ | -------------------------------------------------------------------------------------------------- |
+| `contains`   | Model name contains the pattern (case-insensitive)                                                 |
+| `exact`      | Model name exactly equals the pattern (case-insensitive)                                           |
+| `startsWith` | Model name starts with the pattern (case-insensitive)                                              |
+| `regex`      | Model name matches the regular expression pattern                                                  |
+| `lookAlike`  | Pattern is split into words; all words must appear in the model name (case-insensitive, any order) |
 
 The `lookAlike` mode is useful for fuzzy matching when the model name format varies across agents. For example, pattern `"Opus 4.8"` matches `"opus-4.8"`, `"OPUS-Pro-4.8"`, and `"Opus 4.8"`.
 

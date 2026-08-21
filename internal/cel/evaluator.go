@@ -62,6 +62,17 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Workspace.HasUserDataSchema", cel.BoolType),
 		cel.Variable("Workspace.HasMittoRC", cel.BoolType),
 		cel.Variable("Workspace.HasMetadataDescription", cel.BoolType),
+		cel.Variable("Workspace.TasksUpstream", cel.StringType),
+		cel.Variable("Workspace.BeadsDatabaseMode", cel.StringType),
+
+		// Workspace.Peers variables (mitto-4d6): scalar aggregates of the
+		// non-archived sibling conversations in the same workspace (excluding
+		// self). The structured .All slice is template-only — CEL exposes only
+		// the aggregate counters for menu-time gating.
+		cel.Variable("Workspace.Peers.Count", cel.IntType),
+		cel.Variable("Workspace.Peers.Exists", cel.BoolType),
+		cel.Variable("Workspace.Peers.PromptingCount", cel.IntType),
+		cel.Variable("Workspace.Peers.IdleCount", cel.IntType),
 
 		// Session variables
 		cel.Variable("Session.ID", cel.StringType),
@@ -71,6 +82,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Session.ParentID", cel.StringType),
 		cel.Variable("Session.IsLoop", cel.BoolType),
 		cel.Variable("Session.IsLoopForced", cel.BoolType),
+		cel.Variable("Session.IsLoopRunOnStart", cel.BoolType),
 		cel.Variable("Session.IsLoopConversation", cel.BoolType),
 		cel.Variable("Session.HasMessages", cel.BoolType),
 		cel.Variable("Session.HasBeadsIssue", cel.BoolType),
@@ -456,6 +468,13 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Workspace.HasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
 		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
 		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
+		"Workspace.TasksUpstream":          ctx.Workspace.TasksUpstream,
+		"Workspace.BeadsDatabaseMode":      ctx.Workspace.BeadsDatabaseMode,
+
+		"Workspace.Peers.Count":          int64(ctx.Workspace.Peers.Count),
+		"Workspace.Peers.Exists":         ctx.Workspace.Peers.Exists,
+		"Workspace.Peers.PromptingCount": int64(ctx.Workspace.Peers.PromptingCount),
+		"Workspace.Peers.IdleCount":      int64(ctx.Workspace.Peers.IdleCount),
 
 		"Session.ID":                 ctx.Session.ID,
 		"Session.Name":               ctx.Session.Name,
@@ -464,6 +483,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Session.ParentID":           ctx.Session.ParentID,
 		"Session.IsLoop":             ctx.Session.IsLoop,
 		"Session.IsLoopForced":       ctx.Session.IsLoopForced,
+		"Session.IsLoopRunOnStart":   ctx.Session.IsLoopRunOnStart,
 		"Session.IsLoopConversation": ctx.Session.IsLoopConversation,
 		"Session.HasMessages":        ctx.Session.HasMessages,
 		"Session.HasBeadsIssue":      ctx.Session.HasBeadsIssue,

@@ -63,6 +63,8 @@ type Settings struct {
 	UI UIConfig `json:"ui,omitempty"`
 	// Session contains session storage limits configuration
 	Session *SessionConfig `json:"session,omitempty"`
+	// Stats contains dashboard time-series stats configuration (mitto-a86b).
+	Stats *StatsConfig `json:"stats,omitempty"`
 	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
 	Prewarm *PrewarmConfig `json:"prewarm,omitempty"`
 	// Conversations contains global conversation processing configuration
@@ -79,6 +81,9 @@ type Settings struct {
 	// section ID (e.g. "conversations"). Merged with folder-level shortcuts at
 	// render time (global entries first).
 	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty"`
+	// TaskLabelColors is an ordered global mapping from task labels to task-title
+	// background colors. The first matching entry wins.
+	TaskLabelColors []TaskLabelColor `json:"task_label_colors,omitempty"`
 }
 
 // DefaultStartupStaggerMs is the default stagger delay in milliseconds between
@@ -96,6 +101,40 @@ const DefaultStartupLoopDelay = 15 * time.Second
 // starve the agent's inbound MCP handshake on :5757/mcp) when many sessions
 // reconnect at once (mitto-54k.1).
 const DefaultStartupResumeConcurrency = 3
+
+// DefaultStatsRetentionHours is the default retention window for hourly stats
+// rows (mitto-a86b.9). 2160 hours = 90 days. Old rows are pruned nightly by
+// the stats.9 retention worker; the underlying store is VACUUMed weekly.
+const DefaultStatsRetentionHours = 2160
+
+// StatsConfig configures the dashboard time-series stats subsystem
+// (mitto-a86b). All fields are optional; zero values fall back to defaults.
+type StatsConfig struct {
+	// RetentionHours is the retention window (in hours) for hourly stats
+	// rows. When nil (unset), DefaultStatsRetentionHours (90 days) applies.
+	// An explicit 0 disables pruning entirely (rows accumulate forever).
+	// Negative values are treated as 0 (disabled).
+	RetentionHours *int `json:"retention_hours,omitempty"`
+}
+
+// GetRetentionHours returns the retention window in hours: the explicit value
+// when set, else DefaultStatsRetentionHours. A negative value is clamped to 0
+// (disabled).
+func (c *StatsConfig) GetRetentionHours() int {
+	if c == nil || c.RetentionHours == nil {
+		return DefaultStatsRetentionHours
+	}
+	if *c.RetentionHours < 0 {
+		return 0
+	}
+	return *c.RetentionHours
+}
+
+// GetRetention returns the retention window as a Duration. Returns 0 when
+// pruning is disabled (explicit RetentionHours=0 or negative).
+func (c *StatsConfig) GetRetention() time.Duration {
+	return time.Duration(c.GetRetentionHours()) * time.Hour
+}
 
 // DefaultLoopWorkspaceConcurrency caps how many scheduled loop prompts may be
 // in flight simultaneously per WorkingDir + ACPServer pair. Because shared
@@ -774,6 +813,7 @@ func (s *Settings) ToConfig() *Config {
 		Web:               s.Web,
 		UI:                s.UI,
 		Session:           s.Session,
+		Stats:             s.Stats,
 		Prewarm:           s.Prewarm,
 		Conversations:     s.Conversations,
 		Permissions:       s.Permissions,
@@ -781,6 +821,7 @@ func (s *Settings) ToConfig() *Config {
 		MCP:               s.MCP,
 		Models:            s.Models,
 		Shortcuts:         s.Shortcuts,
+		TaskLabelColors:   s.TaskLabelColors,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -797,6 +838,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Web:               cfg.Web,
 		UI:                cfg.UI,
 		Session:           cfg.Session,
+		Stats:             cfg.Stats,
 		Prewarm:           cfg.Prewarm,
 		Conversations:     cfg.Conversations,
 		Permissions:       cfg.Permissions,
@@ -804,6 +846,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		MCP:               cfg.MCP,
 		Models:            cfg.Models,
 		Shortcuts:         cfg.Shortcuts,
+		TaskLabelColors:   cfg.TaskLabelColors,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)
@@ -870,14 +913,39 @@ func SetGlobalShortcuts(sections map[string][]ShortcutButton) error {
 	return SaveSettings(settings)
 }
 
+// GlobalTaskLabelColors returns the ordered task-label color mapping stored in
+// settings.json, or nil if none is configured or settings cannot be read.
+func GlobalTaskLabelColors() []TaskLabelColor {
+	settings, err := loadRawSettings()
+	if err != nil || settings == nil {
+		return nil
+	}
+	return settings.TaskLabelColors
+}
+
+// SetGlobalTaskLabelColors persists the ordered task-label color mapping while
+// preserving every unrelated raw settings.json field.
+func SetGlobalTaskLabelColors(entries []TaskLabelColor) error {
+	settings, err := loadRawSettings()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		settings.TaskLabelColors = nil
+	} else {
+		settings.TaskLabelColors = entries
+	}
+	return SaveSettings(settings)
+}
+
 // LoadSettings loads settings from the Mitto data directory.
 // If settings.json doesn't exist, it creates it from the embedded default config.
 // This function also ensures the Mitto directory exists.
 //
-// On platforms with secure credential storage (macOS Keychain):
-//   - If a password exists in settings.json, it is migrated to the keychain
+// On platforms with secure credential storage (macOS Keychain or Linux vault):
+//   - If a password exists in settings.json, it is migrated to secure storage
 //     and removed from settings.json for security
-//   - If no password is in settings.json, it is loaded from the keychain
+//   - If no password is in settings.json, it is loaded from secure storage
 func LoadSettings() (*Config, error) {
 	// Ensure Mitto directory exists
 	if err := appdir.EnsureDir(); err != nil {
@@ -924,25 +992,69 @@ func LoadSettings() (*Config, error) {
 	if cfg.Web.Auth != nil && cfg.Web.Auth.Simple != nil {
 		if secrets.IsSupported() {
 			if cfg.Web.Auth.Simple.Password != "" {
-				// Password found in settings.json - migrate it to keychain
+				// Password found in settings.json - migrate it to secure storage
 				if err := migratePasswordToKeychain(&settings, cfg); err != nil {
 					// Log warning but don't fail - password still works from settings
 					// The migration will be attempted again on next load
 					_ = err // Ignore migration error, password is still usable
 				}
 			} else {
-				// No password in settings.json - try to load from keychain
+				// No password in settings.json - try secure storage
 				password, err := secrets.GetExternalAccessPassword()
 				if err == nil && password != "" {
 					cfg.Web.Auth.Simple.Password = password
 				}
-				// If password not found in Keychain, leave it empty
+				// If password is not stored, leave it empty
 				// Validation should catch this case when external access is attempted
 			}
 		}
 	}
 
+	// Handle the shared bearer token (mitto-7gta.26). See resolveSharedToken.
+	resolveSharedToken(cfg, &settings)
+
 	return cfg, nil
+}
+
+// resolveSharedToken resolves the shared bearer token (mitto-7gta.26), used by
+// programmatic clients (SDK, CLI) as an additional credential accepted
+// alongside Simple/Cloudflare auth. It mutates cfg.Web.Auth.SharedToken.
+//
+// Resolution order: env var MITTO_SHARED_TOKEN (headless/CI, wins outright,
+// never persisted) -> settings.json value (migrated to secure storage, then
+// blanked on disk) -> secure storage. settings is the on-disk-backed struct
+// used to persist the blank-out after migration; it must be the
+// same Settings value cfg was derived from (via ToConfig()) so the migration
+// helper can save it.
+func resolveSharedToken(cfg *Config, settings *Settings) {
+	if envToken := os.Getenv("MITTO_SHARED_TOKEN"); envToken != "" {
+		if cfg.Web.Auth == nil {
+			cfg.Web.Auth = &WebAuth{}
+		}
+		cfg.Web.Auth.SharedToken = envToken
+		return
+	}
+
+	if cfg.Web.Auth == nil || !secrets.IsSupported() {
+		return
+	}
+
+	if cfg.Web.Auth.SharedToken != "" {
+		// Token found in settings.json - migrate it to secure storage
+		if err := migrateSharedTokenToKeychain(settings, cfg); err != nil {
+			// Log warning but don't fail - token still works from settings
+			// The migration will be attempted again on next load
+			_ = err // Ignore migration error, token is still usable
+		}
+		return
+	}
+
+	// No token in settings.json - try secure storage
+	token, err := secrets.GetSharedToken()
+	if err == nil && token != "" {
+		cfg.Web.Auth.SharedToken = token
+	}
+	// If token not found in Keychain either, leave it empty (feature off)
 }
 
 // migrateSettingsFileIfNeeded performs a one-time, idempotent rewrite of legacy
@@ -1059,20 +1171,66 @@ func deduplicateACPServerPrompts(settings *Settings) bool {
 	return modified
 }
 
-// migratePasswordToKeychain moves the password from settings.json to the system keychain.
+// migratePasswordToKeychain moves the password from settings.json to secure storage.
 // This improves security by not storing passwords in plain text files.
 func migratePasswordToKeychain(settings *Settings, cfg *Config) error {
 	password := cfg.Web.Auth.Simple.Password
 
-	// Save password to keychain
+	// The compatibility helper verifies the persisted vault before returning.
 	if err := secrets.SetExternalAccessPassword(password); err != nil {
-		return fmt.Errorf("failed to save password to keychain: %w", err)
+		return fmt.Errorf("failed to save password to secure storage: %w", err)
+	}
+
+	// ToConfig copies WebConfig by value, but Auth and Simple are pointers.
+	// Detach both levels before redacting the settings-backed object so the
+	// Config returned to the running process keeps the verified password.
+	if cfg.Web.Auth == settings.Web.Auth {
+		authCopy := *cfg.Web.Auth
+		cfg.Web.Auth = &authCopy
+	}
+	if settings.Web.Auth != nil && cfg.Web.Auth.Simple == settings.Web.Auth.Simple {
+		simpleCopy := *cfg.Web.Auth.Simple
+		cfg.Web.Auth.Simple = &simpleCopy
 	}
 
 	// Clear password from settings and save
 	settings.Web.Auth.Simple.Password = ""
 	if err := SaveSettings(settings); err != nil {
-		// Password is in keychain but settings.json still has the old password
+		// Secure storage has the value but settings.json still has the old password
+		// This is not ideal but not critical - next load will try again
+		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
+	}
+
+	return nil
+}
+
+// migrateSharedTokenToKeychain moves the shared bearer token from settings.json
+// to secure storage, mirroring migratePasswordToKeychain above.
+func migrateSharedTokenToKeychain(settings *Settings, cfg *Config) error {
+	token := cfg.Web.Auth.SharedToken
+
+	// The compatibility helper verifies the persisted vault before returning.
+	if err := secrets.SetSharedToken(token); err != nil {
+		return fmt.Errorf("failed to save shared token to secure storage: %w", err)
+	}
+
+	// cfg.Web.Auth and settings.Web.Auth alias the SAME *WebAuth when cfg was
+	// derived via settings.ToConfig() (ToConfig copies the WebConfig struct by
+	// value, but Auth is a pointer field). Detach cfg's copy BEFORE blanking
+	// settings' copy below, so the in-memory cfg returned to the caller keeps
+	// the token for this process's lifetime -- only the on-disk settings.json
+	// copy must lose the secret.
+	if cfg.Web.Auth == settings.Web.Auth {
+		authCopy := *cfg.Web.Auth
+		cfg.Web.Auth = &authCopy
+	}
+
+	// Clear token from settings and save
+	if settings.Web.Auth != nil {
+		settings.Web.Auth.SharedToken = ""
+	}
+	if err := SaveSettings(settings); err != nil {
+		// Secure storage has the token but settings.json still has the old token
 		// This is not ideal but not critical - next load will try again
 		return fmt.Errorf("failed to update settings after keychain migration: %w", err)
 	}
@@ -1197,10 +1355,24 @@ func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 
 	// Handle keychain password loading
 	if withKeychain {
-		if err := loadKeychainPassword(settingsCfg); err != nil {
-			// Non-fatal, just log and continue
+		if settingsCfg.Web.Auth != nil && settingsCfg.Web.Auth.Simple != nil &&
+			secrets.IsSupported() && settingsCfg.Web.Auth.Simple.Password != "" {
+			// Match LoadSettings: migrate plaintext only after verified secure
+			// persistence. Failure is non-fatal and leaves the in-memory and on-disk
+			// password available for a later retry.
+			_ = migratePasswordToKeychain(&settings, settingsCfg)
+		} else if err := loadKeychainPassword(settingsCfg); err != nil {
+			// Non-fatal, just log and continue.
 			_ = err
 		}
+		// Resolve the shared bearer token (mitto-7gta.26) the same way as
+		// LoadSettings. This MUST happen here too -- LoadSettingsWithFallback
+		// (not LoadSettings) is the function actually used by the CLI/app at
+		// startup (internal/cmd/root.go, cmd/mitto-app/main.go), so without
+		// this call MITTO_SHARED_TOKEN and the settings.json/keychain fallback
+		// would never be resolved in production. Skipped when !withKeychain,
+		// mirroring the password skip for headless non-web commands.
+		resolveSharedToken(settingsCfg, &settings)
 	}
 
 	// If no RC file, return settings-only config

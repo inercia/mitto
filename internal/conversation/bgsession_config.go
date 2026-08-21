@@ -19,8 +19,19 @@ import (
 // Thin delegators
 // =============================================================================
 
-func (bs *BackgroundSession) applyConfigConstraints(category string) {
-	bs.configMgr.applyConfigConstraints(bs, category)
+func (bs *BackgroundSession) applyConfigConstraints(category string) error {
+	return bs.configMgr.applyConfigConstraints(bs, category)
+}
+
+// waitForStartupConfigConstraints blocks until the constraint work launched by
+// the synchronous ACP handshake callback has completed. Later model callbacks
+// are not part of the resume-time queue barrier.
+func (bs *BackgroundSession) waitForStartupConfigConstraints() {
+	bs.startupConstraintWG.Wait()
+}
+
+func (bs *BackgroundSession) startupConfigConstraintsReady() bool {
+	return bs.startupConstraintPending.Load() == 0 && !bs.startupConstraintFailed.Load()
 }
 
 // ConfigOptions returns a copy of all session config options.
@@ -218,6 +229,15 @@ func (bs *BackgroundSession) cmSetBaselineAndClearOverride(baseline string) {
 	bs.modelMu.Unlock()
 }
 
+// GetBaselineModel returns the user's intended model for this session
+// (untouched by per-prompt overrides). Empty when no baseline has been set.
+// Safe to call concurrently; snapshots the field under modelMu.
+func (bs *BackgroundSession) GetBaselineModel() string {
+	bs.modelMu.Lock()
+	defer bs.modelMu.Unlock()
+	return bs.baselineModel
+}
+
 func (bs *BackgroundSession) cmTakeBaselineIfOverride() (string, bool) {
 	bs.modelMu.Lock()
 	defer bs.modelMu.Unlock()
@@ -276,20 +296,40 @@ func (bs *BackgroundSession) cmNotifyConfigChanged(configID, value string) {
 	}
 }
 
-func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue string) {
+// cmRecordSessionChange returns the recorder's persistence error (if any) so
+// callers that would otherwise log a contradictory success message (e.g.
+// applyConfigOptionWithOpts) can detect the failure (mitto-9zy1 defect 2a).
+func (bs *BackgroundSession) cmRecordSessionChange(kind, value, previousValue string) error {
 	if bs.recorder == nil {
-		return
+		return nil
 	}
-	seq := bs.getNextSeq()
+	return bs.cmRecordSessionChangeWithSeq(bs.getNextSeq(), kind, value, previousValue)
+}
+
+// cmRecordSessionChangeWithSeq is the seq-aware variant of cmRecordSessionChange
+// (mitto-c36). It persists a session-change timeline event using the caller-supplied
+// seq (obtained from getNextSeq() upstream) and notifies observers with the same seq.
+// Used to pre-reserve a "context_cleared" pill seq BEFORE the user-prompt seq so the
+// flush pill orders before the user prompt in the persisted transcript.
+//
+// Returns the recorder's persistence error (if any). Observers are still
+// notified unconditionally even on a persist failure (mitto-9zy1 Refinement 1):
+// mitto-c36 pre-reserves this seq before the user-prompt seq, so suppressing
+// the notify would leave a hole in the seq stream that the frontend's sync
+// layer treats as a gap.
+func (bs *BackgroundSession) cmRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) error {
+	if bs.recorder == nil {
+		return nil
+	}
 	data := session.SessionChangeData{Kind: kind, Value: value, PreviousValue: previousValue}
-	if err := bs.recorder.RecordSessionChangeWithSeq(seq, data); err != nil {
-		if bs.logger != nil {
-			bs.logger.Error("Failed to record session change", "kind", kind, "value", value, "error", err)
-		}
+	err := bs.recorder.RecordSessionChangeWithSeq(seq, data)
+	if err != nil && bs.logger != nil {
+		bs.logger.Error("Failed to record session change", "kind", kind, "value", value, "error", err)
 	}
 	bs.notifyObservers(func(o SessionObserver) {
 		if sc, ok := o.(SessionChangeObserver); ok {
 			sc.OnSessionChange(seq, data)
 		}
 	})
+	return err
 }

@@ -1,0 +1,202 @@
+icon: tag
+name: 'JIRA: pull issue'
+menus: beadsIssues, conversation
+description: Pull the latest JIRA changes for the current bead — refresh the managed body block, mirror new JIRA comments, and close the bead if the JIRA ticket has reached a terminal status
+backgroundColor: '#D1C4E9'
+group: JIRA
+tags:
+- jira
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to fix
+enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && (("jira-sync" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync")))'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'JIRA: sync tasks'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if not $target -}}
+  There is **no linked bead** for this conversation and no `IssueID` argument was provided. This prompt only pulls JIRA updates for a specific bead — send one `mitto_ui_notify` explaining that a bead is required, then **stop**.
+  {{- else }}
+
+  The **target bead** is `{{ $target }}`. Pull the latest changes from its linked JIRA ticket into this bead — refresh the managed body block, mirror any new JIRA comments, and reflect a terminal JIRA status by closing the bead. This prompt only writes to JIRA when the user explicitly confirms a reconciliation option (see Step 7.5); otherwise it is read-only — full push flows live in `JIRA: push issue`.
+  {{- end }}
+
+  {{ template "_shared/interaction-mode" . }}
+
+  ## Access Method
+
+  {{ template "jira/shared/access-method" (dict "Note" "jira_get_issue_jira in Step 2") }}
+
+  ## Step 1 — Load the bead and extract the JIRA key
+
+  ```bash
+  bd show {{ $target }} --json
+  bd comments {{ $target }} --json    # or the equivalent JSON subcommand for this bd version
+  ```
+
+  From the bead capture: `title`, `description` (the full body), `status`, `priority`, `type`, `external_ref`, and `metadata.jira_updated` / `metadata.jira_synced_comments`. Also capture every existing beads comment (id, author, created, body) — needed to know which ids are new and to leave `[jira]`-prefixed comments untouched.
+
+  The JIRA key comes from `external_ref`, which must have the form `jira-<key-lower>` (this is what `JIRA: sync tasks` writes on create). Strip the `jira-` prefix and uppercase the remainder to get the JIRA key used against the API (e.g. `external_ref = "jira-abc-123"` → key `ABC-123`). If `external_ref` is empty or does not start with `jira-`, this bead is not linked to a JIRA ticket even though it carries the `jira-sync` label — send one `mitto_ui_notify` explaining that the label was likely applied manually and there is nothing to pull, then **stop**.
+
+  ## Step 2 — Fetch the JIRA ticket
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  Call **`jira_get_issue_jira`** for the key with `fields="*all"` and `expand="renderedFields,changelog"`. The `changelog` expansion is needed by Step 6.5 to detect a JIRA reopen after a local close.
+
+  **Do not** substitute a batch search tool (`jira_search_jira` / `search_jira_issues` / any `*search*` name) for this call, even as a fallback when `jira_get_issue_jira` errors. On JIRA Server / Data Center the batch search response **omits the `comment` field** by default and returns a truncated `changelog`, so a search-based fallback silently drops comments and status transitions — exactly the failure mode this step exists to prevent. If the per-issue tool errors, try a dedicated per-issue comments tool (any `mcp__*__jira_get_comments` / `get_jira_comments` / `jira_get_issue_comments` name that is exposed) for the `comment` array, then retry `jira_get_issue_jira` for the rest. If none of the per-issue tools work, fall through to the CLI branch below — never to a batch search.
+
+  **Verify the response contains a `comment` field** (an array, possibly empty) before continuing. If the field is **absent** — not just empty — you fetched from an endpoint that elides comments; retry with a per-issue tool. An absent `comment` field is never evidence of "0 comments."
+  {{- else }}
+
+  Run:
+
+  ```bash
+  jira issue list -q "key = <KEY>" --raw
+  PAGER=cat jira issue view <KEY> --comments 200
+  PAGER=cat jira issue view <KEY> --history
+  ```
+
+  Comment bodies **are** omitted from list `--raw` on JIRA Server / Data Center — treat that response as authoritative for the ticket fields (status, priority, `updated`, etc.) only, never as evidence about comments. The `jira issue view <KEY> --comments 200` output is the authoritative source for comment bodies and must succeed before Step 4 can decide "already up to date"; do not fall back to `list --raw` as a comment source. The `jira issue view --history` output supplies the status-transition changelog consumed by Step 6.5.
+  {{- end }}
+
+  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body) from the per-issue endpoint. For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 3 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle. Also capture the ticket's **status transition history** (from `changelog.histories` on the MCP path, or the `--history` output on the CLI path) — Step 6.5 walks it to find the most recent transition into a non-terminal status.
+
+  ## Step 3 — JIRA wiki markup → Markdown helper
+
+  {{ template "jira/shared/jira2md" . }}
+
+  ## Step 4 — Detect whether anything actually changed
+
+  Compare the fetched ticket against the bead's stored sync state:
+
+  - If `metadata.jira_updated` **equals** the ticket's `updated` timestamp **and** every comment id on the ticket is already listed in `metadata.jira_synced_comments`, there is nothing to do. In interactive mode print a one-line "already up to date" message; in silent mode stay silent. Then **stop** (do not run Steps 5–7).
+  - Otherwise continue to Step 5.
+
+  **Precondition — trust the comment list only when it came from a per-issue endpoint.** This "already up to date" short-circuit is only safe when the `comment` field in Step 2's response is an actual (possibly empty) array returned by `jira_get_issue_jira` / a dedicated comments tool / `jira issue view --comments`. If the response's `comment` field was *absent* (e.g. Step 2 ended up on a batch search fallback), do **not** short-circuit here — re-run Step 2 through a per-issue endpoint first. Trusting an absent `comment` field poisons `jira_updated` and permanently drops any comment created before the next JIRA `updated` bump.
+
+  ## Step 5 — Update the bead body (preserve local edits)
+
+  {{ template "jira/shared/managed-body" . }}
+
+  Apply the update:
+
+  ```bash
+  bd update {{ $target }} --title "[<KEY>] <summary>" \
+    --priority <mapped-priority> --type <mapped-type> \
+    --body-file /tmp/jira-<key>.md
+  ```
+
+  Do **not** write `jira_updated` on this `bd update` — it is a high-water mark that must be advanced only after Step 6 (mirror comments) succeeds. Step 6.9 handles that final commit.
+
+  ## Step 6 — Mirror new JIRA comments
+
+  {{ template "jira/shared/mirror-comments-in" . }}
+
+  In this prompt, `<bead-id>` is `{{ $target }}`.
+
+  ## Step 6.9 — High-water mark: commit `jira_updated` last
+
+  {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" $target) }}
+
+  ## Step 6.5 — Detect a JIRA reopen after a local close
+
+  Compute two timestamps used by Step 7.5's auto-reopen branch. This step only prepares data — it never writes to the bead.
+
+  - **`T_close`** — the bead's `closed_at` field from Step 1's `bd show --json`. If the bead is still open (`closed_at` is null / empty), skip the rest of this step and leave `T_reopen` unset; Step 7.5's auto-reopen branch will not fire.
+  - **`T_reopen`** — walk the JIRA ticket's `changelog.histories` (from Step 2) newest first and find the **most recent** entry whose `items[]` contains a `field == "status"` transition whose `toString` is **not** on the terminal-status allow-list from Step 7 (case-insensitive, exact match). `T_reopen` is that entry's `created` timestamp. If no such transition exists, leave `T_reopen` unset.
+
+  On the CLI fallback, `changelog.histories` is not machine-readable JSON — parse the `jira issue view <KEY> --history` output for the most recent `Status` change whose target name is not on the terminal allow-list and use that row's timestamp as `T_reopen`.
+
+  Both `T_close` and `T_reopen` are just captured here; Step 7.5 compares them.
+
+  ## Step 7 — Reflect terminal JIRA status (conservative)
+
+  If the JIRA ticket is in a **terminal** status and the bead's local `status` is `open`, `in_progress`, `blocked`, or `deferred` (any non-terminal local status), close the bead:
+
+  ```bash
+  bd close {{ $target }} --reason "Closed in JIRA (<status>)"
+  ```
+
+  (In interactive mode you may confirm first with `mitto_ui_options`.)
+
+  {{ template "jira/shared/terminal-status" . }}
+
+  When the status name is not on the allow-list, note that the current status is already mirrored into the managed block by Step 5 so a human sees the JIRA state without an automated close.
+
+  ## Step 7.5 — Reconcile inconsistencies
+
+  After Step 7, check for one inconsistency shape:
+
+  1. **Closed-vs-non-terminal** — bead is `closed` locally but the JIRA status `name` is **not** on the terminal allow-list from Step 7. Follows the ordinary branch below (with an auto-reopen pre-check).
+
+  ### Ordinary branch — bead closed locally, JIRA non-terminal
+
+  If the bead's `status` is `closed` and the JIRA status `name` is **not** on that allow-list (case-insensitive, exact match), the two sides disagree about whether the work is done.
+
+  **Auto-reopen (unambiguous branch, evaluated first)** — before prompting, compare `T_reopen` and `T_close` from Step 6.5 with a **60s skew tolerance** (JIRA server time vs local `bd` time can drift). If `T_reopen` is set and `T_reopen > T_close + 60s`, the JIRA reopen strictly followed our local close — the remote team has explicitly picked the work back up and the bead should follow JIRA. Auto-reopen locally, skip the interactive prompt entirely, and record the outcome in the Step 8 summary. This is safe to do without user confirmation because reopening is strictly additive — it never drops local work — mirroring the "act automatically only when the signal is unambiguous" rule already used for closes in Step 7.
+
+  In interactive mode:
+
+  ```bash
+  bd reopen {{ $target }} --reason "Auto-reopened: JIRA <KEY> reopened at <T_reopen> after local close at <T_close>"
+  ```
+
+  Then add a Step 8 row with `↔️ reopened (JIRA reopened after local close)` in the "Change / notes" column and do **not** run the three-option prompt below for this bead.
+
+  In silent mode, preserve the "never write in silent mode" invariant: do **not** run `bd reopen`; instead record `⚠️ JIRA reopened at <T_reopen> after local close — reopen pending next interactive run` in the Step 8 table and let Step 8's `mitto_ui_notify` surface it so a human can force-run this prompt.
+
+  Fall through to the manual reconciliation prompt below only when the auto-reopen branch does **not** fire — i.e. `T_reopen` is unset (JIRA never left a terminal status, or the changelog contained no status transitions), or `T_reopen ≤ T_close + 60s` (the reopen predates or is contemporaneous with our close, so the local close was deliberate against an already-open JIRA — a human decision).
+
+  **Interactive mode** — present a `mitto_ui_options` prompt with question `"Bead <beadId> is closed locally but JIRA <KEY> is still \"<status>\". How should we reconcile?"` and these options (labels exactly as shown):
+
+  - `"Close JIRA ticket too"` — description: `"Transition <KEY> to a terminal status (prefer Done) via jira_transition_issue / 'jira issue move'. Falls back to a [mitto] comment if no terminal transition is available."`
+  - `"Reopen the local bead"` — description: `"Run 'bd reopen <beadId>' so the bead matches JIRA's open state."`
+  - `"Leave as-is"` — description: `"Do nothing; record the inconsistency in the summary table so a human can decide later."`
+
+  Set `allow_free_text: true` with placeholder `"Type a note for the summary row"`. Apply the chosen action, then add a row to the Step 8 summary table with `↔️ reconciled: <action>` in the "Change / notes" column (or `⚠️ inconsistency (left as-is): <status>` when the user chose "Leave as-is" or entered free text).
+
+  **Silent mode** — never prompt, never write. Record the inconsistency for Step 8's table with `⚠️ Inconsistency: bead closed locally but JIRA is "<status>" — deferred to next interactive run.`, and let Step 8 emit the `mitto_ui_notify` (only when the table has at least one non-trivial row).
+
+  ## Step 8 — Summary
+
+  Render a **markdown summary table** describing what was done for this bead. Use exactly these columns and formatting:
+
+  ```
+  | JIRA ticket | Beads ticket | Change / notes |
+  |---|---|---|
+  | <KEY> | {{ $target }} | <short human sentence, actions joined with `; `> |
+  ```
+
+  Column rules:
+
+  - **JIRA ticket** — the JIRA key (e.g. `ABC-123`) or `—` when unknown.
+  - **Beads ticket** — the beads id (e.g. `mitto-abc`).
+  - **Change / notes** — a short human sentence describing the row's contents (body refreshed, N JIRA comments mirrored, bead closed due to terminal status, etc.). Combine multiple actions with `; `. Prefix with `⚠️` when the row reports an inconsistency or an error; prefix with `↔️` when a reconciliation choice from Step 7.5 was applied.
+
+  Frame the run's outcome (body refreshed, comments mirrored, bead closed, no change, inconsistency detected) as the **contents of the row** — do not restate them as free-form prose above or below the table.
+
+  **Interactive mode** — always render the full table, even when nothing changed (a single row saying `no change` is still emitted).
+
+  **Silent mode** (scheduled loop) — send a single `mitto_ui_notify` only when the table would have at least one non-trivial row (any change, any inconsistency, any error). The `message` field of that `mitto_ui_notify` call must contain the markdown table verbatim. Stay silent otherwise. Never truncate the table.
+
+  ## Guidelines
+
+  - **Idempotent**: `metadata.jira_updated` skips unchanged tickets; `metadata.jira_synced_comments` prevents duplicate comments. Running this prompt twice in a row must produce no spurious changes.
+  - **`jira_updated` is a high-water mark**: it must **never** advance past data that has not yet been mirrored into the bead. Bump it only as the **last** `bd update` for this ticket (Step 6.9), gated on Step 5 (body) and Step 6 (comment mirror loop) both having succeeded. Bumping it early poisons Step 4's idempotency guard so a missed comment becomes permanently unreachable until some other JIRA event ticks `updated` again. Comments must also be sourced from the per-issue endpoint before mirroring — the batch search payload cannot be trusted for comment content on JIRA Server / Data Center.
+  - **Loop-safe**: `[jira]`-prefixed beads comments are the sync marker — never edit or remove them. `[mitto]`-prefixed JIRA comments (written by `JIRA: push issue`) come back through this pull as `[jira] <author> @ <time>: [mitto] <body>` and are dedup-tracked by `jira_synced_comments`, so the round-trip never duplicates.
+  - Always `--body-file` for descriptions and `--file`/inline text for comments to avoid shell-quoting issues.
+  - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 3) — headers and code blocks are the priority; perfect fidelity is not a goal.
+  - **Preserve local information**: local body edits (below the `jira-sync:end` marker) and local comments/notes (those without a `[jira]` prefix) must survive every pull. When unsure, keep the content rather than overwrite it.
+  - **Terminal status (conservative)**: only close the bead when the JIRA status `name` is on the small allow-list above; never rely on `statusCategory`. A mistakenly-open bead is harmless; a mistakenly-closed one can silently drop local work.
+  - **Auto-reopen (unambiguous only)**: when the JIRA changelog shows a status transition into a non-terminal status **after** `bead.closed_at` (with a 60s skew tolerance), Step 7.5 auto-reopens the bead without prompting. Reopens are strictly additive — they never drop local work — which is what justifies the automatic write. When the reopen event predates the local close, or no reopen event exists, Step 7.5 falls through to the interactive three-option prompt (or the silent-mode deferred-inconsistency row) so a human decides.
+  - **Scope**: this prompt is pull-first — it only writes to JIRA when the user explicitly confirms a reconciliation option in Step 7.5 (close the ticket or add a `[mitto]` comment). It also writes locally to `bd` in Step 7.5's auto-reopen branch when the changelog shows an unambiguous post-close reopen. Otherwise it is read-only. It never wires dependencies (that is a bulk-sync concern) and never touches other beads. Use `JIRA: push issue` to mirror local changes back to JIRA, or `JIRA: sync tasks` for a full two-way batch sync.

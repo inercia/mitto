@@ -73,10 +73,17 @@ func NewConnection(
 	}
 	args = expandedArgs
 
-	// Build environment: MITTO vars first, then user-configured env on top (user env takes precedence)
-	allEnv := make(map[string]string, len(mittoEnv)+len(env))
-	for k, v := range mittoEnv {
+	// Build environment: agent-hint vars first (AGENT_MODE=1, user-overridable),
+	// then MITTO vars, then user-configured env on top (user env has highest
+	// precedence on this CLI path — mirrors the semantics BuildACPProcessEnv
+	// uses for the ACP subprocess path).
+	agentHintEnv := BuildAgentHintEnv("")
+	allEnv := make(map[string]string, len(agentHintEnv)+len(mittoEnv)+len(env))
+	for k, v := range agentHintEnv {
 		allEnv[k] = v
+	}
+	for k, v := range mittoEnv {
+		allEnv[k] = v // MITTO vars override agent hints
 	}
 	for k, v := range env {
 		allEnv[k] = v // user env overrides MITTO env

@@ -7,8 +7,7 @@
 // - On app load, we sync from server to localStorage
 // - On changes, we update both localStorage and server
 
-import { secureFetch, authFetch } from "./csrf.js";
-import { endpoints } from "./endpoints.js";
+import { getSdkClient } from "./sdkClient.js";
 
 // =============================================================================
 // UI Preferences Server Sync
@@ -63,42 +62,79 @@ export async function initUIPreferences() {
   uiPreferencesSyncPromise = (async () => {
     migrateLegacyTabStorage();
     try {
-      // Use authFetch to include credentials for cross-origin requests
-      const response = await authFetch(endpoints.misc.uiPreferences());
-      if (response.ok) {
-        const prefs = await response.json();
-        uiPreferencesCache = prefs;
+      // Use the SDK client (mitto-7gta.17 S1) — the seam's onUnauthorized
+      // preserves the authFetch 401 -> redirect-to-login policy this call
+      // relied on before migration.
+      const prefs = await getSdkClient().misc.uiPreferences.get();
+      uiPreferencesCache = prefs;
 
-        // Sync to localStorage for fast reads
-        if (prefs.grouping_mode) {
-          localStorage.setItem(GROUPING_MODE_KEY, prefs.grouping_mode);
-        }
-        if (prefs.expanded_groups) {
-          localStorage.setItem(
-            EXPANDED_GROUPS_KEY,
-            JSON.stringify(prefs.expanded_groups),
-          );
-        }
-        if (prefs.prompt_sort_mode) {
-          localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
-        }
-
-        console.debug(
-          "[Mitto] UI preferences loaded from server:",
-          prefs.grouping_mode,
-          "groups:",
-          Object.keys(prefs.expanded_groups || {}).length,
-        );
-
-        // Notify listeners that preferences have been loaded
-        uiPreferencesLoadedCallbacks.forEach((cb) => {
-          try {
-            cb(prefs);
-          } catch (e) {
-            console.warn("[Mitto] Error in UI preferences callback:", e);
-          }
-        });
+      // Sync to localStorage for fast reads
+      if (prefs.grouping_mode) {
+        localStorage.setItem(GROUPING_MODE_KEY, prefs.grouping_mode);
       }
+      if (prefs.expanded_groups) {
+        localStorage.setItem(
+          EXPANDED_GROUPS_KEY,
+          JSON.stringify(prefs.expanded_groups),
+        );
+      }
+      if (prefs.prompt_sort_mode) {
+        localStorage.setItem(PROMPT_SORT_MODE_KEY, prefs.prompt_sort_mode);
+      }
+      if (prefs.font_size) {
+        localStorage.setItem(FONT_SIZE_KEY, prefs.font_size);
+      }
+      // Theme cluster — persisted server-side for the same macOS-app,
+      // per-launch random-port reason FontSize is (see FONT_SIZE_KEY).
+      if (prefs.theme) {
+        localStorage.setItem(THEME_KEY, prefs.theme);
+      }
+      if (prefs.theme_light) {
+        localStorage.setItem(THEME_LIGHT_KEY, prefs.theme_light);
+      }
+      if (prefs.theme_dark) {
+        localStorage.setItem(THEME_DARK_KEY, prefs.theme_dark);
+      }
+      if (typeof prefs.follow_system_theme === "boolean") {
+        localStorage.setItem(
+          FOLLOW_SYSTEM_THEME_KEY,
+          String(prefs.follow_system_theme),
+        );
+      }
+      if (typeof prefs.follow_system_reduced_motion === "boolean") {
+        localStorage.setItem(
+          FOLLOW_SYSTEM_REDUCED_MOTION_KEY,
+          String(prefs.follow_system_reduced_motion),
+        );
+      }
+      if (typeof prefs.reduce_animations === "boolean") {
+        localStorage.setItem(
+          REDUCE_ANIMATIONS_KEY,
+          String(prefs.reduce_animations),
+        );
+      }
+      if (Array.isArray(prefs.dashboard_hidden_charts)) {
+        localStorage.setItem(
+          DASHBOARD_HIDDEN_CHARTS_KEY,
+          JSON.stringify(prefs.dashboard_hidden_charts),
+        );
+      }
+
+      console.debug(
+        "[Mitto] UI preferences loaded from server:",
+        prefs.grouping_mode,
+        "groups:",
+        Object.keys(prefs.expanded_groups || {}).length,
+      );
+
+      // Notify listeners that preferences have been loaded
+      uiPreferencesLoadedCallbacks.forEach((cb) => {
+        try {
+          cb(prefs);
+        } catch (e) {
+          console.warn("[Mitto] Error in UI preferences callback:", e);
+        }
+      });
     } catch (e) {
       console.warn("[Mitto] Failed to load UI preferences from server:", e);
     }
@@ -120,22 +156,33 @@ function saveUIPreferencesToServer(prefs) {
 
   saveTimeout = setTimeout(async () => {
     try {
-      // Use secureFetch to include CSRF token and credentials for cross-origin requests
-      const response = await secureFetch(endpoints.misc.uiPreferences(), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(prefs),
-      });
-      if (!response.ok) {
-        console.warn(
-          "[Mitto] Failed to save UI preferences to server:",
-          response.status,
-        );
-      }
+      // SDK client (mitto-7gta.17 S1) throws on a non-2xx response instead
+      // of returning it, so a failed save now logs via the catch below
+      // rather than an explicit response.ok check.
+      await getSdkClient().misc.uiPreferences.save(prefs);
     } catch (e) {
       console.warn("[Mitto] Failed to save UI preferences to server:", e);
     }
   }, 500); // 500ms debounce
+}
+
+/**
+ * Test-only: resets the module-level UI-preferences sync state
+ * (`initUIPreferences()`'s cached promise/result, registered
+ * `onUIPreferencesLoaded` listeners, and any pending debounced save timer)
+ * so each test can exercise `initUIPreferences()`/`saveUIPreferencesToServer`
+ * from a clean slate. Mirrors the `_resetBeadsGoneCache`/
+ * `_resetBeadsPreloadCache`/`_resetSdkClientForTests` test-only reset
+ * convention used elsewhere in `web/static/utils/`.
+ */
+export function _resetUIPreferencesStateForTests() {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+  uiPreferencesCache = null;
+  uiPreferencesSyncPromise = null;
+  uiPreferencesLoadedCallbacks = [];
 }
 
 /**
@@ -147,6 +194,14 @@ function getCurrentUIPreferences() {
     grouping_mode: getGroupingMode(),
     expanded_groups: getExpandedGroups(),
     prompt_sort_mode: getPromptSortMode(),
+    font_size: getFontSize(),
+    theme: getTheme(),
+    theme_light: getThemeLight(),
+    theme_dark: getThemeDark(),
+    follow_system_theme: getFollowSystemTheme(),
+    follow_system_reduced_motion: getFollowSystemReducedMotion(),
+    reduce_animations: getReduceAnimations(),
+    dashboard_hidden_charts: getDashboardHiddenCharts(),
   };
 }
 
@@ -637,6 +692,38 @@ const GROUPING_MODE_KEY = "mitto_conversation_grouping_mode";
 const EXPANDED_GROUPS_KEY = "mitto_conversation_expanded_groups";
 // Prompt sorting mode: "alphabetical" (default) or "color"
 const PROMPT_SORT_MODE_KEY = "mitto_prompt_sort_mode";
+// UI font size: "small" (default) or "large" — matches the key useTheme.js
+// already writes to on user toggle. Persisted to the server via
+// /api/ui-preferences so it survives the macOS app's per-launch port
+// changes (localStorage is per-origin and resets when the port changes).
+const FONT_SIZE_KEY = "mitto-font-size";
+// Theme cluster keys — mirror the keys useTheme.js has always written to,
+// so an in-place upgrade of the macOS app keeps the previously-chosen
+// values from the pre-server-sync era. Each of these is also persisted
+// server-side for the same random-port reason as FONT_SIZE_KEY above.
+const THEME_KEY = "mitto-theme";
+const THEME_LIGHT_KEY = "mitto-theme-light";
+const THEME_DARK_KEY = "mitto-theme-dark";
+const FOLLOW_SYSTEM_THEME_KEY = "mitto-follow-system-theme";
+const FOLLOW_SYSTEM_REDUCED_MOTION_KEY = "mitto-follow-system-reduced-motion";
+const REDUCE_ANIMATIONS_KEY = "mitto-reduce-animations";
+// Dashboard hidden-charts key (mitto-e2u). Stores a JSON-encoded array of
+// canonical chart IDs the user has hidden on the Dashboard's Activity strip.
+// Empty/missing means all charts visible (opt-out model so new charts default
+// to visible after upgrade).
+//
+// MIRRORED: keep in sync with `KnownDashboardChartIDs` in
+// `internal/web/handlers/dashboard_charts.go`. The bead (mitto-e2u) explicitly
+// chose static Go const + static JS const over a runtime API endpoint.
+const DASHBOARD_HIDDEN_CHARTS_KEY = "mitto-dashboard-hidden-charts";
+const KNOWN_DASHBOARD_CHART_IDS = [
+  "tokens",
+  "tool_calls",
+  "prompts_vs_turns",
+  "model_usage",
+  "beads_activity",
+  "beads_cycle_time",
+];
 
 // Accordion mode: when enabled, only one group can be expanded at a time
 // This is configured via settings (ui.web.single_expanded_group)
@@ -929,6 +1016,258 @@ export function setPromptSortMode(mode) {
     console.warn("[Mitto] Failed to set prompt sort mode:", e);
   }
 }
+
+/**
+ * Get the UI font size from localStorage.
+ * @returns {'small' | 'large'} - The font size (default: 'small')
+ */
+export function getFontSize() {
+  try {
+    const value = localStorage.getItem(FONT_SIZE_KEY);
+    if (value === "small" || value === "large") return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get font size:", e);
+  }
+  return "small";
+}
+
+/**
+ * Save the UI font size to localStorage and server. The server-side copy
+ * lets the macOS app restore the previously-chosen size after a restart
+ * (its random localhost port resets localStorage on every launch).
+ * @param {'small' | 'large'} size - The font size to save
+ */
+export function setFontSize(size) {
+  try {
+    if (size === "small" || size === "large") {
+      localStorage.setItem(FONT_SIZE_KEY, size);
+    } else {
+      localStorage.removeItem(FONT_SIZE_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set font size:", e);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Theme cluster (theme mode, per-slot theme name, follow-system toggles,
+// reduce-animations). Each pair uses the same shape as getFontSize/setFontSize:
+// the getter returns null (or a validated default) when the key is missing,
+// and the setter mirrors to localStorage AND the server via the debounced
+// saveUIPreferencesToServer path. See FONT_SIZE_KEY comment for why the
+// server-side copy is required (macOS app random-port + per-origin
+// localStorage isolation).
+// -----------------------------------------------------------------------------
+
+/**
+ * Get the explicit light/dark theme choice.
+ * @returns {'light' | 'dark' | null} - null when never set (caller falls back
+ *   to OS preference or follow-system default).
+ */
+export function getTheme() {
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    if (value === "light" || value === "dark") return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get theme:", e);
+  }
+  return null;
+}
+
+/** Save the explicit light/dark theme choice. */
+export function setTheme(theme) {
+  try {
+    if (theme === "light" || theme === "dark") {
+      localStorage.setItem(THEME_KEY, theme);
+    } else {
+      localStorage.removeItem(THEME_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set theme:", e);
+  }
+}
+
+/**
+ * Get the daisyUI theme name for the light slot.
+ * @returns {string | null} - null when never set (caller uses "mitto" default).
+ */
+export function getThemeLight() {
+  try {
+    const value = localStorage.getItem(THEME_LIGHT_KEY);
+    if (value) return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get theme_light:", e);
+  }
+  return null;
+}
+
+/** Save the daisyUI theme name for the light slot. */
+export function setThemeLight(name) {
+  try {
+    if (name) {
+      localStorage.setItem(THEME_LIGHT_KEY, name);
+    } else {
+      localStorage.removeItem(THEME_LIGHT_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set theme_light:", e);
+  }
+}
+
+/**
+ * Get the daisyUI theme name for the dark slot.
+ * @returns {string | null}
+ */
+export function getThemeDark() {
+  try {
+    const value = localStorage.getItem(THEME_DARK_KEY);
+    if (value) return value;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get theme_dark:", e);
+  }
+  return null;
+}
+
+/** Save the daisyUI theme name for the dark slot. */
+export function setThemeDark(name) {
+  try {
+    if (name) {
+      localStorage.setItem(THEME_DARK_KEY, name);
+    } else {
+      localStorage.removeItem(THEME_DARK_KEY);
+    }
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set theme_dark:", e);
+  }
+}
+
+/**
+ * Get the "follow system theme" toggle.
+ * @returns {boolean | null} - null when never set (caller defaults to true).
+ */
+export function getFollowSystemTheme() {
+  try {
+    const value = localStorage.getItem(FOLLOW_SYSTEM_THEME_KEY);
+    if (value === "true") return true;
+    if (value === "false") return false;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get follow_system_theme:", e);
+  }
+  return null;
+}
+
+/** Save the "follow system theme" toggle. */
+export function setFollowSystemTheme(value) {
+  try {
+    localStorage.setItem(FOLLOW_SYSTEM_THEME_KEY, String(Boolean(value)));
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set follow_system_theme:", e);
+  }
+}
+
+/**
+ * Get the "follow system reduced motion" toggle.
+ * @returns {boolean | null}
+ */
+export function getFollowSystemReducedMotion() {
+  try {
+    const value = localStorage.getItem(FOLLOW_SYSTEM_REDUCED_MOTION_KEY);
+    if (value === "true") return true;
+    if (value === "false") return false;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get follow_system_reduced_motion:", e);
+  }
+  return null;
+}
+
+/** Save the "follow system reduced motion" toggle. */
+export function setFollowSystemReducedMotion(value) {
+  try {
+    localStorage.setItem(
+      FOLLOW_SYSTEM_REDUCED_MOTION_KEY,
+      String(Boolean(value)),
+    );
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set follow_system_reduced_motion:", e);
+  }
+}
+
+/**
+ * Get the explicit "reduce animations" choice.
+ * @returns {boolean | null}
+ */
+export function getReduceAnimations() {
+  try {
+    const value = localStorage.getItem(REDUCE_ANIMATIONS_KEY);
+    if (value === "true") return true;
+    if (value === "false") return false;
+  } catch (e) {
+    console.warn("[Mitto] Failed to get reduce_animations:", e);
+  }
+  return null;
+}
+
+/** Save the explicit "reduce animations" choice. */
+export function setReduceAnimations(value) {
+  try {
+    localStorage.setItem(REDUCE_ANIMATIONS_KEY, String(Boolean(value)));
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set reduce_animations:", e);
+  }
+}
+
+/**
+ * Get the list of dashboard chart IDs the user has hidden. Reads from
+ * localStorage and filters to the canonical known-ID set so a stale value
+ * (e.g. after a chart is retired) never leaks into UI code. Returns [] when
+ * unset, empty, or malformed.
+ * @returns {string[]}
+ */
+export function getDashboardHiddenCharts() {
+  try {
+    const value = localStorage.getItem(DASHBOARD_HIDDEN_CHARTS_KEY);
+    if (!value) return [];
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    const known = new Set(KNOWN_DASHBOARD_CHART_IDS);
+    return parsed.filter((x) => typeof x === "string" && known.has(x));
+  } catch (e) {
+    console.warn("[Mitto] Failed to get dashboard_hidden_charts:", e);
+    return [];
+  }
+}
+
+/**
+ * Save the list of dashboard chart IDs to hide. Mirrors to localStorage and
+ * syncs to the server via the debounced saveUIPreferencesToServer path.
+ * @param {string[]} ids - Canonical chart IDs to hide.
+ */
+export function setDashboardHiddenCharts(ids) {
+  try {
+    const arr = Array.isArray(ids)
+      ? ids.filter((x) => typeof x === "string")
+      : [];
+    localStorage.setItem(DASHBOARD_HIDDEN_CHARTS_KEY, JSON.stringify(arr));
+    // Broadcast BEFORE the debounced server sync so any open Dashboard reacts
+    // instantly (matches setGroupingMode's mitto-grouping-mode-changed shape).
+    window.dispatchEvent(
+      new CustomEvent("mitto-dashboard-hidden-charts-changed", {
+        detail: { ids: arr },
+      }),
+    );
+    saveUIPreferencesToServer(getCurrentUIPreferences());
+  } catch (e) {
+    console.warn("[Mitto] Failed to set dashboard_hidden_charts:", e);
+  }
+}
+
 
 // =============================================================================
 // Beads View Filters

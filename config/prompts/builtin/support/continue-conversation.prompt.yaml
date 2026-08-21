@@ -1,0 +1,216 @@
+name: 'Support: continue conversation'
+description: 'Find a Slack channel conversation you have been participating in, summarize it, and help craft a reply. Proposes the reply for review, posts to Slack only on your approval, and records it on a tracked bead.'
+group: Support
+backgroundColor: '#C8E6C9'
+icon: chat-bubble
+menus: prompts
+enabledWhen: 'Tools.HasAnyPattern(["slack_*", "*_slack"])'
+tags:
+- support
+target:
+  title: "Support: continue {{ .Args.SlackChannelID }}"
+  reuse:
+    title: true
+    coalesce: true
+parameters:
+  - name: SlackChannelID
+    type: text
+    required: true
+    description: 'The Slack channel ID to scan for conversations you are participating in (e.g. C0XXXXXXX).'
+  - name: SlackWorkspaceURL
+    type: text
+    required: true
+    description: 'Base Slack workspace URL used to build message permalinks (e.g. https://yourteam.slack.com). No trailing slash.'
+  - name: LookbackDays
+    type: text
+    group: Advanced
+    required: false
+    description: 'How many days of channel history to scan (default 7).'
+prompt: |-
+  {{- $channel := .Args.SlackChannelID -}}
+  {{- $ws := .Args.SlackWorkspaceURL -}}
+  {{- $days := Arg "LookbackDays" "7" -}}
+  # Support — Continue Conversation
+
+  {{ template "_shared/session-context" . }}
+
+  {{ template "support/shared/playbook-files-policy" . }}
+
+  ## Description
+
+  Find recent conversations in the Slack channel **`{{ $channel }}`** where the current user has been
+  participating, let the user pick one, summarize it, and help craft a reply — either by gathering an
+  answer via the channel playbook or by rephrasing user-provided text.
+
+  ## CRITICAL: User Interaction Rules
+
+  > ⚠️ **NEVER use text-based interaction prompts.**
+  >
+  > - ❌ NEVER write things like `Type "do #N"`, `Type "post #N"`, or any variation
+  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  > - ✅ ALWAYS use `mitto_ui_options` (choices), `mitto_ui_textbox` (review/edit),
+  >   `mitto_ui_form` (structured input), `mitto_ui_notify` (non-blocking notifications)
+  >
+  > ⚠️ **NEVER post to Slack without explicit user review and approval.**
+
+  ## Bead writing conventions (descriptions & comments)
+
+  {{ template "beads-issues/shared/markdown-convention" . }}
+  {{ template "_shared/reply-fence-convention" "reply" }}
+
+  {{ template "support/shared/message-comment-key" . }}
+
+  ## Slack tools (names vary by MCP server)
+
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You need: (a) identify the current user, (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`, `slack_reply_to_thread*`, or their `*_slack` equivalents)." "NoPosting" false "ReadMetadata" false) }}
+
+  ## Step 0: Read the channel playbook fragments
+
+  This channel's playbook lives as topical fragments under **`.mitto/support/{{ $channel }}/`**, one
+  topic per file. This prompt is a **reader**. Read the fragments needed to craft a reply and honor
+  them throughout; missing guidance falls back to the generic rules without modifying the playbook.
+
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the conversation is in scope for this channel before continuing" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when crafting any reply below" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "guide any gathering of answers in Option A of Step 5" "Owner" "Support: investigate" "OwnerAsk" false) }}
+
+  ## Step 1: Identify the current user
+
+  - Determine the current user's Slack user ID and display name (user-lookup / who-am-I tool).
+  - Store the user ID for filtering in the next step.
+
+  ## Step 2: Fetch recent channel messages
+
+  - Read the latest messages from `{{ $channel }}` (a reasonable limit, e.g. 50–100 messages).
+  - **Only consider messages from the last {{ $days }} days.** Discard anything older.
+  - For each message that has a thread (reply_count > 0), fetch the thread replies.
+  - **Filter**: keep ONLY threads where the current user has posted at least one message (the
+    original message or a reply in the thread).
+  - **Exclude resolved conversations.** Discard threads where the user appears satisfied or no longer
+    needs help. Signals include:
+    - A positive reaction on an answer
+    - The user's last message is a "thanks", "got it", "that worked", or similar acknowledgement
+    - The conversation naturally concluded with no outstanding questions
+    - Someone else already provided a comprehensive answer and the user accepted it
+    Only keep conversations where there is still an open question, an unresolved problem, or someone
+    is clearly waiting for a response.
+
+  ## Step 3: Present conversations to the user
+
+  - Build a permalink per thread from its ts: `{{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>`
+    (e.g. `1234567890.123456` → `p1234567890123456`).
+  - Present a selection menu with `mitto_ui_options`:
+    - First option: `{label: "None - Cancel"}`
+    - Then one option per conversation: `{label: "<brief summary> — <last activity>"}`
+    - Timeout: 300 seconds
+  - If the user selects "None - Cancel", acknowledge and end.
+
+  ## Step 4: Show conversation summary
+
+  - Fetch the full thread (read-thread-replies tool) if not already fetched.
+  - Present a **chronological summary** to the user in this conversation:
+
+    ```markdown
+    ## Conversation Summary
+
+    **Topic:** <brief topic>
+    **Started:** <date/time>
+    **Participants:** <list>
+
+    ### Thread history
+    1. [@user1] (2d ago): <original question>
+    2. [@you] (1d ago): <what you said>
+    3. [@user1] (3h ago): <latest follow-up>
+
+    ### Current status
+    <what is still open / unanswered / needs attention>
+    ```
+
+  ## Step 5: Propose next action
+
+  - Use `mitto_ui_options`:
+    - **Question**: "How would you like to reply?"
+    - **Options**: `[{label: "Gather an answer for me"}, {label: "I'll provide the answer"}, {label: "Cancel"}]`
+    - **Timeout**: 300 seconds
+
+  ### Option A — "Gather an answer for me"
+
+  - Follow the channel playbook fragments you read in **Step 0** (under
+    `.mitto/support/{{ $channel }}/` — `investigation.md` for tool order and safe commands,
+    `scope.md` to confirm the ask is in scope, and `tone.md` for reply style). If any of those
+    fragments were missing in Step 0, note that in a `[CONTEXT]` bead comment and use the generic
+    defaults for the missing pieces. Do **not** create or append to those fragments.
+  - Feed the full conversation context (original question, thread history, the specific unanswered
+    question) and ask for a response that addresses the open point, avoids repeating what was said,
+    and links docs/tickets if relevant. Proceed to Step 6.
+
+  ### Option B — "I'll provide the answer"
+
+  - Use `mitto_ui_textbox` (Title "Type your reply", Text "", Result "text", Abort true, Timeout 300).
+  - If the user submits, rephrase their answer to be clearer/professional: fix grammar and typos, add
+    structure if complex, keep the technical accuracy and the user's voice/intent. Proceed to Step 6.
+  - If the user aborts, acknowledge and end.
+
+  ## Step 6: Review and post reply
+
+  - Show the thread link so the user can review context:
+    `📤 Replying to [this thread]({{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>)`.
+  - **Response formatting guidelines:**
+    1. **No direct addressing** — do not address the user by name.
+    2. **No follow-up offers** — do not end with "let me know if you need anything else".
+    3. **Express uncertainty when appropriate** — "I think that…", "Based on my understanding…".
+  - **ALWAYS** propose the reply for review first — never post without it. Use `mitto_ui_textbox` to
+    present the proposed reply for review/editing (Title "📤 Review reply before posting to Slack",
+    Result "text", Abort true, Timeout 300). The tool returns `{ result, changed, aborted, timed_out }`.
+  - **If the user submits** (`aborted` and `timed_out` both false): the returned `result` (possibly
+    edited) is the final message. Post it with the post-reply-to-thread tool using channel
+    `{{ $channel }}` and the thread's parent `thread_ts`. Confirm success and show the permalink. Then
+    record it on a bead in Step 7.
+  - **If the user aborts or the dialog times out:** acknowledge and end. Do **NOT** post anything to
+    Slack. (On timeout, `mitto_ui_notify` that you assumed they were away and nothing was posted.)
+
+  ## Step 7: Save the reply on a bead (always, after posting)
+
+  Every posted reply must be recorded on a tracked bead so the conversation is never lost and future
+  support prompts can pick it up. Run `bd` from the workspace root (if `bd list` reports no database,
+  run `bd init` first).
+
+  1. **Deduplicate by thread.** Look up an existing bead for this thread:
+     `bd list --metadata-field slack_thread_ts=<thread_ts> --all`. If one exists, **reuse** it —
+     never create a second bead for the same thread.
+  2. **If none exists, create one now** (`$'...'` so `\n` become real newlines):
+     ```
+     bd create "<short thread summary>" -t task -p P2 -l support,support-question \
+       -d $'# Question\n\n<original question>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>)\n' \
+       --metadata '{"slack_thread_ts":"<thread_ts>","slack_channel":"{{ $channel }}","slack_url":"{{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>"}'
+     ```
+     **Never pass a file path to `-d`.** `bd`'s `-d`/`--description` takes the text **literally** — it
+     has **no `@file` expansion** (unlike `gh`), so `-d @/tmp/....txt` stores the raw path as the
+     description. For a long body, write it to a file and read it with **`--body-file <path>`** (or
+     `--stdin`) instead.
+     Also add an `[INBOUND]` comment with the original customer question for history, keyed with that
+     message's Slack `ts` (see the `ts:` dedup rule).
+  3. **Log the posted reply** — add a markdown `[OUTBOUND]` comment with the final text and the
+     permalink (preserve markdown with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`):
+     Header `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`, then the posted text **enclosed in the
+     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead writing conventions**), with the
+     permalink outside the fences.
+  4. **Set state** (single `state:*` label — never `bd set-state`): swap in place to
+     `state:awaiting-customer` (`bd update <id> --remove-label state:<previous> --add-label state:awaiting-customer`;
+     for a brand-new bead just `--add-label state:awaiting-customer`).
+
+  ## Set priority by intervention urgency (final step)
+
+  After Step 7 the tracked bead sits in `state:awaiting-customer` (we just posted), so set it to
+  **P3** — we have replied, the ball is in the customer's court, and nothing needs your attention until
+  they respond. In general the priority reflects how urgently *you* (the human) must act:
+
+  {{ template "support/shared/priority-rubric" . }}
+
+  ## Notes
+
+  - **Slack message approval**: NEVER post to Slack without explicit user review and approval via the
+    editable `mitto_ui_textbox`.
+  - **Every posted reply is saved on a bead** (create-or-reuse by `slack_thread_ts`), so the thread is
+    tracked exactly like threads found by **"Support: watch channel"**.
+  - Thread timestamps: convert `1234567890.123456` → `p1234567890123456` for URLs.

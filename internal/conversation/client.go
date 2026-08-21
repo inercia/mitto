@@ -25,8 +25,9 @@ type WebClient struct {
 	// isLoadingSession is set to true during LoadSession to suppress event processing.
 	// During Load, the agent replays the entire conversation history as ACP notifications.
 	// With large sessions (hundreds of exchanges), this produces thousands of events that
-	// overwhelm the SDK's bounded notification queue (1024 entries) because the consumer
-	// (markdown conversion, persistence, pruning) is slower than the producer.
+	// overwhelm the SDK's bounded notification queue because the consumer (markdown
+	// conversion, persistence, pruning) is slower than the producer. Shared processes
+	// additionally discard load replay at the transport reader before it enters that queue.
 	// When true, SessionUpdate returns immediately — the events are historical and already
 	// persisted by Mitto, so discarding them is safe.
 	isLoadingSession atomic.Bool
@@ -63,7 +64,7 @@ type WebClientConfig struct {
 	// When set to DEBUG level, logs timing of events from ACP SDK.
 	Logger *slog.Logger
 	// Callbacks for different event types (all include seq for ordering)
-	OnAgentMessage       func(seq int64, html string)
+	OnAgentMessage       func(seq int64, html, markdown string)
 	OnAgentThought       func(seq int64, text string)
 	OnToolCall           func(seq int64, id, title, status string)
 	OnToolUpdate         func(seq int64, id string, status *string)
@@ -130,8 +131,8 @@ func NewWebClient(config WebClientConfig) *WebClient {
 // SetLoadingSession controls whether the WebClient suppresses event processing.
 // Set to true before calling LoadSession, and false after it returns.
 // During Load, the agent replays the entire conversation history as notifications.
-// Discarding them prevents the SDK's notification queue (1024 entries) from overflowing
-// when the consumer (markdown conversion + persistence) can't keep up.
+// Discarding them keeps direct-session callback processing cheap. Shared processes
+// additionally filter replay before the notifications enter the SDK queue.
 func (c *WebClient) SetLoadingSession(loading bool) {
 	c.isLoadingSession.Store(loading)
 }
@@ -226,15 +227,15 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 			selfID := extractMittoSelfID(u.ToolCall.RawInput)
 			if selfID != "" {
 				c.onMittoToolCall(selfID)
-			} else if strings.Contains(u.ToolCall.Title, "get_current") {
-				// Fallback for agents that don't include RawInput in ACP tool_call events
-				// (e.g., Claude Code). Register with "init" — the documented default self_id
-				// value — so the MCP server can correlate the request with this session.
+			} else {
+				// Agents may omit RawInput from ACP tool_call events. Let the callback
+				// substitute its own stable conversation ID instead of the ambiguous
+				// legacy "init" key.
 				if c.logger != nil {
-					c.logger.Debug("mitto get_current tool call detected without RawInput, using fallback",
+					c.logger.Debug("mitto tool call detected without RawInput, using session correlation fallback",
 						"tool_title", u.ToolCall.Title)
 				}
-				c.onMittoToolCall("init")
+				c.onMittoToolCall("")
 			}
 		}
 

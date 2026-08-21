@@ -39,7 +39,7 @@ npm run test:ui -- viewer-path-resolution.spec.ts
 ```
 Or from the `tests/ui` directory:
 ```bash
-npx playwright test viewer-path-resolution.spec.ts
+bunx playwright test viewer-path-resolution.spec.ts
 ```
 
 ## Implementation Details
@@ -134,7 +134,7 @@ When modifying `resolveWorkspacePath` in `viewer.html`:
 
 3. Run Playwright tests for integration verification:
    ```bash
-   npx playwright test viewer-path-resolution.spec.ts
+   bunx playwright test viewer-path-resolution.spec.ts
    ```
 
 4. Add new test cases for any new edge cases discovered

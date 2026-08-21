@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // beadsReadRetries is the number of extra attempts for read-only bd queries
@@ -67,21 +68,43 @@ func isValidBeadsIssueRef(s string) bool {
 // envelope, carrying any captured stderr under error.details.stderr. It also
 // logs the failure (nil-guarded) so failures are never silent in mitto.log.
 //
-// A schema-version skew (bd refusing to auto-migrate a remote-backed database)
-// is distinguished from a genuine internal error: it surfaces as an
-// actionable HTTP 409 "needs migration" response with the DB path and a
-// remediation hint, rather than a bare 500. Every other failure keeps the
-// existing HTTP 500 behavior.
+// A schema-version skew is distinguished from a genuine internal error: it
+// surfaces as an actionable HTTP 409 with direction-appropriate remediation,
+// rather than a bare 500. Every other failure keeps the existing HTTP 500
+// behavior.
 func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
 	if beads.IsSchemaSkew(err) {
 		info := beads.SchemaSkewInfo(err)
+		databaseAhead := info.DBVersion > 0 && info.BinaryVersion > 0 && info.DBVersion > info.BinaryVersion
+		databaseMode := workspaces.BeadsDatabaseModeShared
+		if workingDir := r.URL.Query().Get("working_dir"); workingDir != "" {
+			if resolved, resolveErr := beads.ResolveDatabaseMode(r.Context(), h.beadsClient(), workingDir); resolveErr == nil {
+				databaseMode = resolved
+			} else if h.deps.Logger != nil {
+				h.deps.Logger.Warn("could not resolve beads database mode for schema-skew guidance", "working_dir", workingDir, "error", resolveErr)
+			}
+		}
+		logMessage := "beads schema needs migration"
+		if databaseAhead {
+			logMessage = "beads database newer than bd binary"
+		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Warn("beads schema needs migration", "db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+			h.deps.Logger.Warn(logMessage, "db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
 		}
 		hint := "This beads database is behind the bd binary's schema and is remote-backed, so bd will not auto-migrate it. Reconcile it once (e.g. `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push` on the designated migrator clone, or `bd bootstrap` if another clone already migrated), then reload."
+		allowMigrate := h.beadsMigrationAllowed()
+		if databaseMode == workspaces.BeadsDatabaseModeLocal {
+			hint = "This local-only beads database is behind the bd binary's schema. Run the local migration once; Mitto will not push, pull, bootstrap, or publish it to a Dolt remote."
+			info.Options = []beads.SchemaSkewOption{{Mode: "migrate", Description: "Apply pending migrations to this local-only database", Command: "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema --json"}}
+		}
+		if databaseAhead {
+			hint = "This beads database is newer than the installed bd binary. Follow the bd recovery guide at https://github.com/gastownhall/beads/blob/v1.2.2/docs/RECOVERY-1.2.1.md: upgrade every clone to bd 1.2.2, stop database users, take a backup, then perform the documented schema-cursor recovery. The ignore-schema-skew flag is only a temporary stopgap."
+			allowMigrate = false
+		}
 		details := map[string]any{
 			"hint":                  hint,
-			"allow_migrate_from_ui": h.beadsMigrationAllowed(),
+			"allow_migrate_from_ui": allowMigrate,
+			"database_mode":         databaseMode,
 		}
 		if info.DBPath != "" {
 			details["db_path"] = info.DBPath
@@ -99,7 +122,9 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 			details["stderr"] = s
 		}
 		msg := "The beads database schema needs migration"
-		if info.DBPath != "" {
+		if databaseAhead {
+			msg = "The beads database is newer than the installed bd binary"
+		} else if info.DBPath != "" {
 			msg = "The beads database at " + info.DBPath + " needs migration"
 		}
 		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsSchemaSkew, Message: msg, Details: details}})
@@ -117,9 +142,13 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 }
 
 // runBeadsRead executes a read-only bd query with bounded retries on transient
-// failures. It stops retrying on context cancellation and on not-found errors,
-// since retrying either would be pointless (the former can never succeed, the
-// latter is a genuine result rather than a transient failure).
+// failures. It stops retrying on context cancellation, on not-found errors,
+// and on schema-skew failures, since retrying any of those would be pointless
+// (context cancellation can never succeed, not-found is a genuine result
+// rather than a transient failure, and a schema skew is deterministic — bd
+// will refuse identically on every attempt until the schema is reconciled
+// out-of-band, so retrying only adds latency and needlessly multiplies bd
+// spawns per request; mitto-292).
 func (h *Handlers) runBeadsRead(ctx context.Context, fn func(context.Context) ([]byte, error)) ([]byte, error) {
 	var out []byte
 	var err error
@@ -128,7 +157,7 @@ func (h *Handlers) runBeadsRead(ctx context.Context, fn func(context.Context) ([
 		if err == nil {
 			return out, nil
 		}
-		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || beads.IsNotFound(err) {
+		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || beads.IsNotFound(err) || beads.IsSchemaSkew(err) {
 			return out, err
 		}
 		if attempt < beadsReadRetries {

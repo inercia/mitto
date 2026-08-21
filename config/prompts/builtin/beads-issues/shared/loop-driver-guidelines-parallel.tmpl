@@ -1,0 +1,48 @@
+{{/*
+  beads-issues/shared/loop-driver-guidelines-parallel — the 3 "## Guidelines"
+  bullets used only by the parallel-fanout loop drivers (loop-fixing-bug,
+  loop-implementing-feature): One phase per run / Parallelize only when
+  genuinely independent / Never do the phase work inline. Publish-post is
+  a label-only driver (no per-phase send_prompt fan-out) and does NOT use
+  this fragment.
+
+  Callers pass the phase-chain, split-antipattern noun, and per-phase
+  label list to splice into the bullet text:
+
+      {{ template "beads-issues/shared/loop-driver-guidelines-parallel" (dict
+          "Chain"            "`researched` → `reproduced` → `fixed`"
+          "SplitAntipattern" "a single-root-cause fix or work that shares files"
+          "LabelList"        "`researched`/`reproduced`/`fixed`"
+      ) }}
+
+  Parameters:
+    Chain            — the ordered phase chain as it appears in the
+                       "One phase per run" bullet (backtick-quoted labels
+                       joined by ` → `).
+    SplitAntipattern — noun phrase spliced after "never split " in the
+                       "Parallelize only when genuinely independent" bullet.
+    LabelList        — slash-joined per-phase labels spliced into the
+                       "Never do the phase work inline" bullet after
+                       "`bd update ... --add-label` for ".
+
+  The output is column-0 text (matches the existing beads-issues/shared/*
+  fragments' convention). The caller's YAML `content: |` scalar's own
+  indentation is applied by the YAML loader before the template engine
+  runs, so this fragment renders at the same visible indent as the
+  caller's surrounding bullets — no double-indentation.
+*/ -}}
+- **One phase per run.** Dispatch a single phase prompt ({{ .Chain }}) via
+  `mitto_conversation_send_prompt`, then end the turn. Never skip a stage or dispatch
+  two at once. The sole exception is **Step 3f (Parallel fan-out)**, which resolves
+  one genuinely decomposable stage across parallel children within a single run.
+- **Parallelize only when genuinely independent.** Prefer the single self-send phase by
+  default. Only fan out (Step 3f) when the stage's work splits into disjoint,
+  non-conflicting parts with no interdependencies and children can be spawned; never
+  split {{ .SplitAntipattern }}.
+- **Never do the phase work inline.** The whole point of this driver is per-phase
+  model tiering. If you catch yourself running `bd update ... --add-label` for
+  {{ .LabelList }} inside *this* prompt, stop — that is the phase prompt's job. This
+  driver only labels `needs-human` (Step 4) and closes on Done. The one documented
+  exception is **Step 3f**: when a stage is distributed across parallel children,
+  this driver adds that stage's label itself after synthesizing and verifying the
+  children's reports.

@@ -1,0 +1,140 @@
+icon: magnifying-glass
+name: 'Blog: content review'
+menus: beadsIssues, prompts
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The bead whose blog draft to review
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post files live (repo-relative)
+description: Blog — adversarial content review of a `blog`/`draft` post; flags weak claims, structural issues, and voice drift, and marks the bead for downstream review passes when problems are found
+backgroundColor: '#C8E6C9'
+group: Blog
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
+target:
+  reuse:
+    issue: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "_shared/session-context" . }}
+
+  # Blog: Content Review — adversarial pass on a draft post
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this review"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
+
+  This prompt takes a `blog`/`draft`-labelled bead, loads the post file it
+  points at, and reviews the draft **adversarially**: as a skeptical peer
+  reader who challenges weak claims, missing context, structural issues, and
+  drifts from the blog's voice/audience. It does **not** rewrite the post —
+  it produces a findings comment on the bead and adjusts labels so the
+  downstream specialised prompts (fact-check, polish) pick it up.
+
+  ## Step 1 — Locate the post file
+
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+
+  ## Step 2 — Load the drafting voice
+
+  Bring the standard drafting voice into the working context so the review
+  measures the draft against the same yardstick the ideation prompt used:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "audience"
+             "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
+
+  ## Step 3 — Read the draft
+
+  ```bash
+  cat "$post_abs"
+  ```
+
+  ## Step 4 — Adversarial review
+
+  Read the draft as a skeptical peer reviewer. Do **not** rewrite prose — this
+  pass is diagnostic. For each of the axes below, list concrete findings with
+  quoted snippets (or heading/section refs) so a downstream prompt can act on
+  them without re-reading the whole post:
+
+  - **Claims that need evidence.** Statements presented as facts that lack a
+    citation, a benchmark, a code reference, or a link — flag for `fact-check`.
+  - **Missing references.** Ideas that clearly build on prior art (papers,
+    posts, RFCs, code) but do not link to it — flag for `add-references`.
+  - **Structural issues.** Buried lede, missing TL;DR, out-of-order sections,
+    imbalance (one section carries the whole argument, others are stubs).
+  - **Voice drift.** Passages that break with the audience/tone loaded in
+    Step 2 — marketing filler, hand-holding on basics, needless qualifiers,
+    or shifts to a different register mid-post.
+  - **Weak or clichéd openings/endings.** Introductions that don't earn the
+    reader's attention; conclusions that trail off without a real takeaway.
+  - **Terminology consistency.** The same concept named two different ways in
+    different sections; abbreviations used before being defined.
+
+  ## Step 5 — Record findings and adjust labels
+
+  Compose a Markdown findings block. Structure:
+
+  ```
+  ## Content review — $(date -u +%Y-%m-%dT%H:%MZ)
+
+  ### Claims needing evidence
+  - "<quoted snippet>" (section: ...) — <why it needs a citation>
+
+  ### Missing references
+  - "<quoted snippet>" (section: ...) — <what it should link to>
+
+  ### Structural issues
+  - <finding>
+
+  ### Voice drift
+  - <finding>
+
+  ### Other
+  - <finding>
+  ```
+
+  Write it to a temp file and post as a bead comment:
+
+  ```bash
+  review_file=$(mktemp)
+  cat > "$review_file" <<'MITTO_REVIEW'
+  <composed findings block>
+  MITTO_REVIEW
+  bd comment {{ $target }} --file "$review_file"
+  rm -f "$review_file"
+  ```
+
+  Then adjust labels per the finish semantics:
+
+  - **Findings present** (any of the axes produced items):
+    ```bash
+    # Route to specialised passes. Include needs-polish when structural / voice
+    # issues appeared; include needs-fact-check when claim / reference issues
+    # appeared. Add whichever apply — you may add both.
+    bd update {{ $target }} --add-label needs-polish        # if structural / voice / other
+    bd update {{ $target }} --add-label needs-fact-check    # if claims / missing references
+    bd update {{ $target }} --remove-label ready
+    ```
+  - **Clean pass** (nothing to flag): **do not touch labels.** The specialised
+    downstream prompts (fact-check, add-references) own their own
+    `needs-*`-removal logic; a clean content review is not authorised to add
+    `ready` on its own.
+
+  ## Step 6 — Notify
+
+  Report completion via `mitto_ui_notify_mitto` — title
+  `"Content review complete"`, message
+  `"{{ $target }} · <N findings>"` (or `"<clean pass>"`).

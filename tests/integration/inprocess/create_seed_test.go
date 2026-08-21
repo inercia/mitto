@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestAtomicCreateSeed verifies that a single POST /api/sessions with
@@ -55,7 +55,7 @@ prompt: |
 	t.Logf("Wrote prompt file: %s", promptPath)
 
 	// Single call: create session AND seed with named prompt + arguments.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "atomic-seed-test-prompt",
 		Arguments:         map[string]string{"TEST_KEY": "test-value"},
 	})
@@ -74,7 +74,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -160,7 +160,7 @@ prompt: |
 	}
 
 	// First call: creates a brand-new conversation and seeds it.
-	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	first, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-test-prompt",
 	})
 	if err != nil {
@@ -178,7 +178,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, first.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -205,7 +205,7 @@ prompt: |
 
 	// Second call: same prompt, same (default) working dir — must route to the
 	// SAME conversation instead of creating a duplicate, and re-seed it (idle).
-	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	second, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-test-prompt",
 	})
 	if err != nil {
@@ -278,7 +278,7 @@ prompt: |
 	}
 
 	// First call: creates a brand-new conversation and seeds it with the slow prompt.
-	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	first, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-busy-prompt",
 	})
 	if err != nil {
@@ -296,7 +296,7 @@ prompt: |
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, first.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -323,7 +323,7 @@ prompt: |
 
 	// Second call, issued WHILE busy: same prompt, same working dir — must route
 	// to the SAME conversation, and must NOT enqueue a duplicate (busy = focus-only).
-	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	second, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		InitialPromptName: "singleton-busy-prompt",
 	})
 	if err != nil {
@@ -379,5 +379,189 @@ prompt: |
 	if promptCount != 1 {
 		t.Errorf("user_prompt events with prompt_name=%q = %d, want 1 (busy reuse must NOT duplicate)",
 			"singleton-busy-prompt", promptCount)
+	}
+}
+
+// TestSingletonPromptFindOrRoute_UnloadedSessionDispatchesQueue is a regression
+// test for mitto-stw: when a singleton (or reuseTitle/reuseIssue) prompt routes
+// to an existing conversation that is NOT currently loaded in the SessionManager
+// (bs == nil inside reuseSingletonSession), the enqueued named prompt must
+// eventually dispatch once the session is resumed. Prior to the fix, the
+// bs == nil branch called queue.Add + NotifyQueueUpdate but never triggered
+// TryProcessQueuedMessage, and the resume path (ResumeSessionBackground /
+// ResumeSession) did not sweep the pre-existing queue either — so the queued
+// item sat forever.
+//
+// Reproduction: create a singleton session, wait for its first prompt to
+// complete, then evict the session from the SessionManager via CloseSession
+// (leaves it in the store, non-archived — the same shape the buggy production
+// path sees when the BS was idle-closed or the server restarted). A second
+// CreateSession with the same singleton prompt then routes through the
+// bs == nil branch. Reconnecting via WebSocket triggers the async resume; the
+// second seeded prompt must complete within the timeout.
+func TestSingletonPromptFindOrRoute_UnloadedSessionDispatchesQueue(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	workspaceDir := filepath.Join(ts.TempDir, "workspace")
+	promptsDir := filepath.Join(workspaceDir, ".mitto", "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create workspace prompts dir: %v", err)
+	}
+	promptContent := `name: "singleton-unloaded-prompt"
+description: "Regression test prompt for mitto-stw (unloaded-session dispatch)"
+singleton: true
+prompt: |
+  Say hello from the unloaded-session dispatch test.
+`
+	promptPath := filepath.Join(promptsDir, "singleton-unloaded-prompt.prompt.yaml")
+	if err := os.WriteFile(promptPath, []byte(promptContent), 0644); err != nil {
+		t.Fatalf("Failed to write prompt file: %v", err)
+	}
+
+	// First call: creates a brand-new conversation and seeds it.
+	first, err := ts.Client.CreateSession(api.CreateSessionRequest{
+		InitialPromptName: "singleton-unloaded-prompt",
+	})
+	if err != nil {
+		t.Fatalf("First CreateSession failed: %v", err)
+	}
+	if first.Reused {
+		t.Fatalf("First CreateSession should not be reused, got Reused=true")
+	}
+	t.Logf("Created first session: %s", first.SessionID)
+
+	var (
+		mu              sync.Mutex
+		completionCount int
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, first.SessionID, api.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			mu.Lock()
+			defer mu.Unlock()
+			completionCount++
+			t.Logf("Prompt complete #%d: %d events", completionCount, eventCount)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+
+	// Wait for the first seeded prompt to complete so the session goes idle
+	// (empty queue, not prompting) before we evict it from memory.
+	waitFor(t, 20*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return completionCount >= 1
+	}, "first prompt complete")
+
+	// Close the WebSocket so no observers remain attached (mirrors the real
+	// scenario where the tab was closed / user left the app).
+	ws.Close()
+
+	// Evict the session from the SessionManager while leaving it non-archived
+	// in the store. This forces bs == nil inside reuseSingletonSession on the
+	// next CreateSession — exactly the shape from mitto-stw's production repro.
+	sm := ts.Server.GetSessionManager()
+	sm.CloseSession(first.SessionID, "test_evict_for_mitto_stw")
+	waitFor(t, 5*time.Second, func() bool {
+		return sm.GetSession(first.SessionID) == nil
+	}, "session evicted from SessionManager")
+
+	// Sanity: the session must still be findable in the store (non-archived)
+	// so FindSingletonCandidate routes the next create to it.
+	meta, err := ts.Store.GetMetadata(first.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata after evict failed: %v", err)
+	}
+	if meta.Archived {
+		t.Fatalf("session unexpectedly archived after CloseSession — cannot exercise bs==nil singleton-reuse path")
+	}
+
+	// Second call: same singleton prompt, same working dir — must route to the
+	// SAME conversation (reused:true) with bs == nil, enqueuing but not
+	// dispatching from within reuseSingletonSession.
+	second, err := ts.Client.CreateSession(api.CreateSessionRequest{
+		InitialPromptName: "singleton-unloaded-prompt",
+	})
+	if err != nil {
+		t.Fatalf("Second CreateSession failed: %v", err)
+	}
+	if !second.Reused {
+		t.Errorf("Second CreateSession should be reused, got Reused=false")
+	}
+	if second.SessionID != first.SessionID {
+		t.Fatalf("Second SessionID = %q, want same as first %q", second.SessionID, first.SessionID)
+	}
+
+	// Confirm the seed landed in the queue via the bs==nil branch.
+	if qlen, err := ts.Store.Queue(first.SessionID).Len(); err != nil {
+		t.Fatalf("Queue.Len failed: %v", err)
+	} else if qlen != 1 {
+		t.Fatalf("Queue length after bs==nil reuse = %d, want 1 (seed should have been enqueued)", qlen)
+	}
+
+	// Reconnect via WebSocket — this fires ResumeSessionBackground async, which
+	// re-registers the BS. The queued named prompt should then dispatch and
+	// complete. Under the bug, no TryProcessQueuedMessage kick is scheduled
+	// after resume, so the queue stays at length 1 and this waitFor times out.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel2()
+	ws2, err := ts.Client.Connect(ctx2, first.SessionID, api.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			mu.Lock()
+			defer mu.Unlock()
+			completionCount++
+			t.Logf("Prompt complete #%d (after resume): %d events", completionCount, eventCount)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Second Connect failed: %v", err)
+	}
+	defer ws2.Close()
+	if err := ws2.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("Second LoadEvents failed: %v", err)
+	}
+
+	// Wait for the reseeded prompt to dispatch and complete on the resumed BS.
+	waitFor(t, 25*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return completionCount >= 2
+	}, "second (reseeded) prompt complete after resume of unloaded session")
+
+	// Queue must drain — the seeded item was processed, not left dangling.
+	if qlen, err := ts.Store.Queue(first.SessionID).Len(); err == nil && qlen != 0 {
+		t.Errorf("Queue length after resume+dispatch = %d, want 0 (queue must drain)", qlen)
+	}
+
+	// Verify the event log shows two user_prompt events for the singleton prompt
+	// (initial create+seed, then bs==nil reseed dispatched after resume).
+	events, err := ts.Store.ReadEvents(first.SessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	var promptCount int
+	for _, ev := range events {
+		if ev.Type != "user_prompt" {
+			continue
+		}
+		dataMap, ok := ev.Data.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := dataMap["prompt_name"].(string); name == "singleton-unloaded-prompt" {
+			promptCount++
+		}
+	}
+	if promptCount != 2 {
+		t.Errorf("user_prompt events with prompt_name=%q = %d, want 2 (initial + reseed after resume)",
+			"singleton-unloaded-prompt", promptCount)
 	}
 }

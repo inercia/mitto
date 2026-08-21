@@ -1,0 +1,39 @@
+{{/*
+  Canonical tracker discovery, decomposition, and epic-grouping conventions for
+  planning workflows that turn an approved source (plan or specification) into
+  beads. Source loading and approval remain consumer-specific.
+
+  Consumers:
+    - docs/propose-a-plan.prompt.yaml
+    - docs/implement-spec.prompt.yaml
+*/}}
+## Ticket conventions and decomposition
+
+Learn the project's beads conventions and detect overlapping work before proposing
+tickets:
+
+```bash
+bd list --limit 30 --json
+bd types
+bd list --type epic --status open --json
+bd list --all --json
+```
+
+Inspect plausible duplicates with `bd show <id> --long --json`. Reuse an existing
+ticket in the coverage plan when it already satisfies the proposed scope; do not
+create a duplicate or modify unrelated pre-existing tickets without user approval.
+
+{{ template "beads-issues/shared/decomposition-work-item-quality" . }}
+
+### Epic grouping
+
+Group related work under an epic only when at least two work items share one clear,
+specific objective. An epic is a coordination container: give it a concise goal,
+completion definition, and child summary, but keep implementation acceptance
+criteria on its children. Leave genuinely standalone work at the top level. Never
+create a one-child epic or force unrelated items together merely because they touch
+the same broad subsystem.
+
+Build a minimal dependency DAG. Distinguish actual prerequisites from work that can
+proceed in parallel. Ensure every requirement or approved plan step maps to at least
+one proposed bead or an explicitly identified existing bead.

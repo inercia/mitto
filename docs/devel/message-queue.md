@@ -132,9 +132,260 @@ The `LoopRunner` checks all active sessions for due scheduled messages on each p
 
 Scheduled messages display a ⏰ badge with a relative time string (e.g., "in 5 min", "in 2h") in the queue dropdown. The display updates every 30 seconds.
 
+## Loop Prompts: Multi-Trigger Architecture
+
+A loop prompt's `Triggers` field (`session.LoopPrompt.Triggers`, plural — see
+[docs/config/prompts.md § Loop Prompts](../config/prompts.md#loop-prompts) for
+the frontmatter shape) is a **list**, not a single value (mitto-r6j). Every
+listed trigger arms **independently** and stays armed for the lifetime of the
+loop: a `[onTasks, onCompletion]` loop is simultaneously watching for beads
+changes AND re-arming after every turn, from the moment it is enabled.
+
+### Independent arming, one dispatch slot
+
+`LoopRunner.checkSession` arms every trigger leg on each poll tick, in a fixed
+order — event-driven legs first (`onTasks` baseline bootstrap, `onCompletion`
+timer bootstrap/self-heal), then the `schedule` due-check last — which is what
+establishes the **`onTasks` > `onChild` > `onCompletion` > `schedule`**
+precedence described below. But arming is not the same as firing: the five
+trigger mechanisms below are otherwise independent event sources, each
+capable of calling into the same delivery path at any time:
+
+| Trigger        | Fires from                                                                                                                                                                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `schedule`     | The poll loop's due-check (`NextScheduledAt` reached)                                                                                                                                                                                                  |
+| `onCompletion` | A one-shot timer armed by `OnConversationIdle` when the agent stops                                                                                                                                                                                    |
+| `onTasks`      | `OnBeadsChanged`, when a workspace-wide `BeadsWatcher` event lands                                                                                                                                                                                     |
+| `onChild`      | `OnConversationIdle`'s child leg (→ `OnChildEndResponse`) for `anyEndResponse`, the `session.Store` delete observer (→ `OnChildDeleted`) for `anyDeleted`, and the `session.Store` loop-stopped observer (→ `OnChildLoopStopped`) for `anyLoopStopped` |
+| `onSlack`      | The shared Slack integration fan-out/journal, matched against credential-free installation/channel/filter subscription rows                                                                                                                            |
+
+Because these sources are independent, two of them can want to deliver a run
+in the same narrow window (e.g. the agent finishes a turn — arming
+`onCompletion` — at the same moment a beads file changes or Slack event arrives). Only **one**
+delivered run is allowed at a time per conversation: `LoopRunner.claimDispatch`
+holds a per-session, first-come-first-served slot (`dispatchInFlight`),
+claimed just before `deliverPrompt` and released in `OnComplete` (or any
+synchronous failure). A trigger that cannot claim the slot is **coalesced**:
+`ErrLoopDispatchCoalesced` short-circuits the loser with no schedule advance
+or failure backoff. Ordinary trigger fires are dropped; durable `onSlack`
+recipients are restored to pending and retried after the conversation becomes
+idle. The winning
+trigger is recorded on the delivered `PromptMeta.LoopTrigger` and surfaced to
+clients as `loop_updated.triggers` (the full armed set) alongside the
+back-compat singular `loop_updated.trigger` (the primary/first entry).
+
+### Per-message trigger provenance (mitto-rg79)
+
+Separately from `loop_updated` (which reports the loop's _configured_ trigger
+set), each individual delivered prompt carries its own **provenance** —
+which trigger actually fired _this_ dispatch, distinct from siblings that
+never fired. `deriveUserPromptProvenance`
+(`internal/conversation/bgsession_prompt.go`) maps the dispatch-time
+`PromptMeta` (`LoopTrigger`, `Forced`, `RunOnStart`, and the bounded Slack
+event batch) onto `session.PromptProvenance`, persisted on
+`UserPromptData.Provenance` (`internal/session/types.go`, `omitempty` — nil
+for ordinary human-typed/ad-hoc prompts) and broadcast on the `user_prompt`
+WebSocket message. `Provenance.Slack` (`session.PromptSlackProvenance`)
+carries only credential-free `installation_id`/`channel_id`/`event_count`
+derived from the first event of the batch — never event text/bodies/secrets.
+`IsLoopRunOnStart` takes precedence over `IsLoopForced` when both are set
+(the boot pulse is reported as "startup", not "forced"). The frontend maps
+provenance to an icon/label/tooltip via `promptProvenance.js`
+(`describeProvenance`/`getPromptIcon`), rendered on `NamedPromptPill`
+(`Message.js`) per-message and summarized as "Last loop delivery" in the
+session Properties panel (`SessionPanel.js`, sourced from the most recent
+message carrying provenance).
+
+Separately from the persisted `PromptProvenance`, the same winning trigger
+(`PromptMeta.LoopTrigger`) is threaded into `processors.ProcessorInput.TriggerKind`
+by `buildProcessorInput` and surfaced to prompt bodies as `{{ .Trigger.Kind }}`,
+alongside `{{ .Trigger.IsManual }}` / `{{ .Trigger.IsRunOnStart }}` (mitto-qzqm).
+Unlike `.Trigger.OnTasks`/`.OnSlack`, these three fields are populated for
+**every** loop dispatch — not just ones carrying a structured payload — so a
+prompt can uniformly branch on `schedule`/`onCompletion`/`onTasks`/`onChild`/
+`onSlack` without inspecting which structured sub-block is non-nil. See
+[docs/devel/prompt-templates.md § Trigger context](prompt-templates.md) for
+the template-facing details.
+
+**`onChild` fire detail (mitto-qvlh):** `fireOnChild` threads the completing
+child's ID, the lifecycle event, and (for `anyLoopStopped`) the child's own
+`StoppedReason` through a `LoopDispatchOptions.OnChild` envelope into
+`PromptMeta.Trigger.OnChild` (`internal/conversation/loop_runner_child.go` →
+`triggerNowFromChild`, `internal/conversation/loop_runner.go`). Two surfaces
+consume it: (1) the **template surface** `{{ .Trigger.OnChild.{ChildID,
+Event, StoppedReason} }}` (see
+[docs/devel/prompt-templates.md § Trigger context](prompt-templates.md)),
+populated only for `onChild` fires; and (2) the **persisted provenance**
+`session.PromptProvenance.OnChild` (`session.PromptOnChildProvenance`),
+set by `deriveUserPromptProvenance` only when `LoopTrigger == TriggerOnChild`
+and `meta.Trigger.OnChild` is non-nil. Both surfaces deliberately omit the
+child's name/title — `ChildID` is a bounded session identifier only, since by
+the time an `anyDeleted` fire reaches here the deleted child's metadata
+(including its name) may already be gone. A dispatch coalesced by another
+in-flight trigger for the same parent (`claimDispatch` failure) never reaches
+the `PromptTriggerContext`/provenance construction at all, so a losing
+`onChild` fire produces neither template context nor persisted detail.
+
+```mermaid
+flowchart TB
+    subgraph Sources["Independent event sources"]
+        SCHED["Poll loop<br/>(due-check)"]
+        COMP["OnConversationIdle<br/>(agent stops → timer)"]
+        TASKS["OnBeadsChanged<br/>(BeadsWatcher fsnotify)"]
+        CHILD["Child idle / child deleted<br/>(OnChildEndResponse / OnChildDeleted)"]
+        SLACK["Slack journal batch<br/>(onSlack)"]
+    end
+
+    SCHED -->|"triggerNowFull(firedBy=schedule)"| CLAIM
+    COMP -->|"triggerNowFull(firedBy=onCompletion)"| CLAIM
+    TASKS -->|"triggerNowFull(firedBy=onTasks)"| CLAIM
+    CHILD -->|"triggerNowFull(firedBy=onChild)"| CLAIM
+    SLACK -->|"TriggerNowWithSlackEvents(firedBy=onSlack)"| CLAIM
+
+    CLAIM{{"claimDispatch(sessionID, firedBy)<br/>one slot per session"}}
+    CLAIM -->|"slot free → claimed"| DELIVER["deliverPrompt<br/>PromptMeta.LoopTrigger = firedBy"]
+    CLAIM -->|"slot held by another trigger"| DROP["ErrLoopDispatchCoalesced<br/>ordinary fire dropped<br/>Slack recipient remains pending"]
+
+    DELIVER --> AGENT[ACP Agent]
+    AGENT -->|OnComplete| RELEASE["releaseDispatch(sessionID)"]
+    RELEASE -.->|"re-arms"| Sources
+```
+
+`onChild`'s three event sources are wired at different layers: `anyEndResponse`
+rides the same `OnConversationIdle` callback that arms `onCompletion` (see
+[Loop Prompts: On-Completion Delivery](#loop-prompts-on-completion-delivery)
+below) — it resolves the child's parent from the child's own metadata (still
+present at idle time) and forwards to `fireOnChild`. `anyDeleted` is wired
+through `session.Store.SetDeleteObserver` (`internal/session/store.go`),
+invoked once per removed session **after** the store's internal lock is
+released (so an observer calling back into the store cannot deadlock), and
+registered in `internal/web/server.go` as `store.SetDeleteObserver(s.loopRunner.OnChildDeleted)`.
+Unlike the idle path, `OnChildDeleted` receives the parent session ID as an
+explicit argument from the caller — by observer time the child's own metadata
+is already gone, so it cannot be resolved from the child side.
+
+`anyLoopStopped` (mitto-q6my) is wired through `session.Store.SetLoopStoppedObserver`,
+registered as `store.SetLoopStoppedObserver(s.loopRunner.OnChildLoopStopped)`
+next to the delete observer. `LoopStore.MarkStopped` — the single funnel every
+stop path writes through (auto-stop on max iterations/duration,
+resume/delivery/context failures, MCP `loop_enabled: false`, REST pause,
+archiving) — invokes it once per **real** stop transition, after its write and
+after the `LoopStore`'s internal lock is released. A transition is "the loop
+was still enabled, **or** no `StoppedReason` has been recorded yet": the two
+caller-initiated disable paths (MCP `loop_enabled: false`, REST pause) run
+`Update{Enabled: false}` _before_ `MarkStopped`, so an enabled-only check would
+never fire for them, while `StoppedReason` — written only by `MarkStopped` and
+cleared only on re-enable — keeps a re-stamp of an already-recorded stop
+silent. Like
+the idle path, `OnChildLoopStopped` resolves the parent from the stopped
+child's own metadata (still present at notification time) — but guards
+`childID != parentID` so a loop stopping itself never re-fires its own
+`onChild` trigger.
+
+### Shared caps, per-trigger settings
+
+`MaxIterations` and `MaxDurationSeconds` are **loop-wide**: `RecordSent`
+increments the single `IterationCount` and checks the single `FirstRunAt`
+elapsed-time anchor on every delivered run, **regardless of which trigger
+fired it**. A `[schedule, onCompletion]` loop with `maxIterations: 10` stops
+after 10 runs total, however the mix of schedule-ticks vs. post-turn
+re-arms landed. By contrast, each trigger's own settings — `schedule`'s
+`value`/`unit`/`at`, `onCompletion`'s `delay`, `onTasks`'s `condition`/
+`coalesceDuringBusy`/`settleWindow`/`cooldown` — apply only to that trigger's
+own firing decision; `onSlack` installation/channel/event/thread filters apply
+only to Slack matching (see [Configuration fields](#configuration-fields-sessionloopprompt) below).
+
+### onSlack persistence and prompt context
+
+`LoopPrompt.SlackSubscriptions` stores only opaque installation IDs, channel
+IDs, and normalized filter enums. Credentials and Slack SDK values remain in
+the process-level integration catalog/vault. `Normalize` trims IDs, applies the
+safe `anyHumanMessage`/`any` defaults, and sorts subscriptions canonically by
+installation/channel/filter. Duplicate installation/channel rows are rejected.
+An enabled loop armed for `onSlack` requires at least one subscription; a
+disabled draft may omit them.
+
+Subscriptions may target public or private channels. The catalog picker labels
+privacy and bot membership, but the persisted loop contract remains only the
+opaque channel ID. Slack exposes private channels and delivers `message.groups`
+events only after the bot has been invited; a temporarily invisible saved ID is
+therefore preserved rather than cleared.
+
+One delivery exposes a bounded slice at `.Trigger.OnSlack.Events` (maximum 20
+events and 32 KiB total). Event DTOs contain only installation/channel/event
+IDs, kind, author, timestamps, text, and `Untrusted: true`; no credentials or
+raw SDK structures. `.Trigger.Slack` remains a temporary first-event alias for
+the environment PoC. Before template evaluation, each text value is JSON-escaped
+between enforced `<!-- SLACK_UNTRUSTED_START -->` and
+`<!-- SLACK_UNTRUSTED_END -->` data delimiters, so Slack input cannot forge the
+closing marker. Attachments and files are excluded and are never fetched.
+The entire batch claims one dispatch slot and increments the shared loop iteration
+once.
+
+The catalog-backed manager snapshots matching recipients into a profile-scoped
+file journal before acknowledging Slack. `event_id` is the durable dedupe key;
+recipient state is independent, so a successful fan-out peer can commit while a
+busy peer returns to `pending`. A two-second settle timer starts ordered drains,
+and the composed `SessionManager` idle callback retries pending work after the
+loop runner's normal idle bookkeeping. Startup changes interrupted `delivering`
+states back to `pending`, yielding at-least-once semantics: a crash after ACP
+dispatch but before the delivered-state write may duplicate one batch.
+
+Delivered tombstones expire after 24 hours. Pending/failed recipients older
+than 24 hours become expired dead letters, and event text is scrubbed as soon
+as all recipients are terminal. Connection status exposes only aggregate
+pending, failed, and dead-letter counts.
+
+Partial `loop.json` updates preserve unknown top-level fields and unknown
+trigger strings already loaded from a newer version, while explicit trigger
+replacement rejects unknown values. Full replacement cannot preserve fields an
+older caller omits. An older binary cannot execute `onSlack`; disable/remove it
+before downgrade rather than mutating the active config with the older version.
+
+### Trigger-scoped guards do not cross-confuse
+
+The `onTasks` busy guard and quiescence rebase (Layer 1/Layer 2, described in
+[Loop Prompts: On-Tasks Delivery](#loop-prompts-on-tasks-delivery) below) key
+off `isTasksSubtreeBusy`, which checks whether the conversation (or a
+delegated child) is **currently prompting** — not which trigger caused that
+activity. This is deliberate: in a `[onTasks, onCompletion]` loop, a run that
+was actually fired by `onCompletion` still occupies the same "busy" slot an
+`onTasks`-fired run would, so the `onTasks` quiescence rebase correctly waits
+for it to finish and absorbs its edits into the new baseline — an
+`onCompletion`-driven turn's own beads edits never masquerade as an
+external, re-fire-worthy delta. Combined with the single dispatch-claim slot
+above (mutual exclusion across triggers, not just within one), a multi-trigger
+loop never delivers two overlapping runs, and no trigger's bookkeeping is
+corrupted by a run a sibling trigger initiated.
+
+### Testing
+
+`internal/conversation/loop_runner_test.go` (`TestBuildLoopUpdatedData_ExposesTriggerSet`,
+dispatch-claim coalescing tests) and `internal/session/loop_test.go` cover
+independent arming, the coalescing claim, and shared-cap accounting across
+trigger combinations.
+`TestLoopRunner_CheckSession_Precedence_OnCompletionWinsOverSchedule` additionally
+pins the precedence _ordering_ through `checkSession` itself rather than the
+generic claim: with both legs simultaneously eligible, the event-driven leg takes
+the claim and the schedule fire is coalesced without advancing `NextScheduledAt`.
+Note that `onTasks` is dispatched from `OnBeadsChanged`, not from `checkSession`
+(which only bootstraps its baseline), so its precedence over the other triggers
+reduces to the same first-caller-wins claim.
+On the parsing side, `internal/prompts` covers the trigger-list validation matrix
+(including inert per-trigger blocks) and `TestLoadPromptFile_MigratesLegacyLoopSchema_WritesBackToDisk`
+joins the in-memory legacy-schema migration with its on-disk write-back through
+`LoadPromptFile`.
+The `onChild` leg's guard chain (armed/event-membership/archived-parent/cooldown/
+coalescing) is unit-tested in `internal/conversation/loop_runner_test.go`
+(`TestLoopRunner_FireOnChild_*`, `TestLoopRunner_OnChildEndResponse_*`,
+`TestLoopRunner_OnChildDeleted_*`). `tests/integration/inprocess/loop_onchild_e2e_test.go`
+(`TestLoopOnChildE2E`) covers it end-to-end against the mock ACP server,
+including the one seam no unit test reaches: a real `session.Store.Delete`
+call flowing through the wired `SetDeleteObserver` seam into a live delivery.
+
 ## Loop Prompts: On-Completion Delivery
 
-Loop prompts normally fire on a fixed schedule (checked by the `LoopRunner` poll loop). A loop prompt may instead set `trigger: onCompletion`, which fires the next run **after the agent stops responding**, rather than on a clock.
+Loop prompts normally fire on a fixed schedule (checked by the `LoopRunner` poll loop). A loop prompt may instead arm the `onCompletion` trigger, which fires the next run **after the agent stops responding**, rather than on a clock.
 
 ### Delivery model
 
@@ -181,7 +432,7 @@ The schedule-based poll loop and the on-completion timers are independent paths 
 
 ## Loop Prompts: On-Tasks Delivery
 
-A loop prompt may set `trigger: onTasks`, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
+A loop prompt may arm the `onTasks` trigger, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
 
 ### Trigger semantics
 
@@ -227,7 +478,7 @@ Changes.Added.exists(i, i.type == "bug" && i.priority <= 1)
 
 Each `onTasks` conversation keeps its **own** baseline file (`tasks_baseline.json`, alongside `loop.json`) holding the raw `bd list` JSON at the time it was last considered "current" for that conversation. The baseline is **per-conversation, not per-working-directory** — several `onTasks` conversations watching the same directory each diff against their own baseline, which is what makes Layer 2 loop prevention (below) possible without any actor/attribution support from `bd`.
 
-### Loop prevention (4 layers)
+### Loop prevention (3 layers)
 
 An `onTasks` conversation (or a child it delegates to) will usually _edit_ beads itself as part of doing its work — without safeguards this would re-trigger itself indefinitely, since its own edits show up as a fresh delta against the baseline.
 
@@ -242,8 +493,8 @@ sequenceDiagram
     Watcher->>PR: OnBeadsChanged(event)
     PR->>PR: Layer 1 — isTasksSubtreeBusy(sessionID)?
     alt conversation or a delegated child is busy
-        PR->>PR: armTasksRebase (quiescence timer)
-        Note over PR: event dropped for now
+        PR->>PR: markTasksRefirePending (sticky) + armTasksRebase (quiescence timer)
+        Note over PR: delta deferred, NOT dropped (mitto-cwg.1)
     else idle
         PR->>PR: Layer 0 — maxDuration reached? cooldown active?
         alt guard trips
@@ -257,7 +508,6 @@ sequenceDiagram
                 alt condition true
                     PR->>Agent: TriggerNow (fires the run)
                     PR->>Baseline: Set(curr) — baseline advances immediately
-                    PR->>PR: Layer 3 — recordTasksFireOutcome(delta)
                 else condition false/error
                     PR->>PR: skip (fail-closed on error)
                 end
@@ -267,14 +517,23 @@ sequenceDiagram
 
     Note over PR,Agent: run (and any delegated children) finish and go idle
     PR->>PR: quiescence window elapses
-    PR->>Baseline: rebase to latest snapshot (Layer 2)
-    Note over Baseline: absorbs the run's own edits — they never<br/>reappear as a delta against the NEXT event
+    alt tasksRefirePending set, or CoalesceDuringBusy=false
+        PR->>Baseline: diff(pre-run baseline, curr)
+        alt material delta AND Layer 0 guards pass AND condition true
+            PR->>Agent: TriggerNow (fires once more, mitto-cwg.1)
+            PR->>Baseline: Set(curr) — baseline advances with the re-fire
+        else guard blocks, or no material delta
+            PR->>Baseline: rebase to latest snapshot (plain)
+        end
+    else
+        PR->>Baseline: rebase to latest snapshot (Layer 2)
+        Note over Baseline: absorbs the run's own edits — they never<br/>reappear as a delta against the NEXT event
+    end
 ```
 
 - **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinLoopTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
-- **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated. This is the guard against the run's OWN in-flight edits.
-- **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 30s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters. **Opt-in re-fire (`CoalesceDuringBusy=false`, mitto-dmb):** loops that need event-driven fidelity (e.g. "every time an issue is filed with label X, spawn a triage child") can set `coalesce_during_busy: false` on the loop config. When set, the quiescence rebase first diffs the pre-run baseline against the current snapshot and — if a material delta remains, Layer 0 (cooldown, `MaxDuration`, `MaxIterations`) allows, and the CEL `condition` evaluates true — fires **once more** via the normal firing path with the accumulated delta available as `.Trigger.OnTasks.Changes.*`, then rebases. Only one pending accumulated-delta slot is kept per session (bounded by construction). Default (`true` / unset) preserves the silent-absorb behaviour.
-- **Layer 3 — no-progress circuit breaker.** `recordTasksFireOutcome` tracks, per conversation, the set of issue IDs touched (`Changes.Touched`) by consecutive fires. When `tasksNoProgressLimit` (3) consecutive fires touch **no issue beyond** what the previous fire already touched, the trigger auto-pauses (`loopStore.MarkStopped(session.StoppedReasonNoProgress)`) — this catches a condition that is steady-state-true (e.g. a threshold that baseline-rebase alone cannot silence) before it can hot-loop.
+- **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated immediately. This is the guard against the run's OWN in-flight edits. **The deferred delta is not dropped**: `processTasksChange` also sets a sticky `tasksRefirePending` flag (mitto-cwg.1) so Layer 2 knows a real fs-watcher delta is still pending once the subtree goes idle.
+- **Layer 2 — quiescence rebase.** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 10s) fires `fireTasksRebase`. **A fs-watcher delta that arrived during the busy window is never silently absorbed (mitto-cwg.1):** if `tasksRefirePending` is set — regardless of `CoalesceDuringBusy` — `fireTasksRebase` diffs the pre-run baseline against the current snapshot and, if a material delta remains and Layer 0 (cooldown, `MaxDuration`, `MaxIterations`) and the CEL `condition` allow it, fires **once more** via the normal firing path with the accumulated delta available as `.Trigger.OnTasks.Changes.*`, then rebases the baseline to the post-re-fire snapshot. If no guard blocks it, this happens exactly once per busy window no matter how many fs events landed during it (the flag is "mark, don't stack"). Only when nothing was pending during the busy window (no fs-watcher delta arrived while busy) does the plain rebase run, absorbing only the run's own self-edits. **`CoalesceDuringBusy=false` (mitto-dmb)** is now a narrower opt-out: it forces the same re-fire path unconditionally at quiescence (useful for loops with event-driven fidelity needs even when `tasksRefirePending` wasn't set); the `true`/unset default governs only that separate opt-out, not fs-watcher deltas, which always re-fire per the paragraph above.
 
 **Out of scope:** actor-based delta filtering (skipping only _other actors'_ edits) was investigated and explicitly deferred — `internal/beads/cli.go` does not stamp a per-change actor, and `bd list --json` exposes only `created_by`/`owner`, not a last-touched actor. The baseline-rebase approach (Layer 2) makes this unnecessary for correctness today.
 
@@ -291,15 +550,15 @@ Beads that just changed in this working directory:
 {{ end }}{{ end }}
 ```
 
-| Namespace                          | Shape                                                                                                                                                                                                                        |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.Trigger.OnTasks.Changes.Added`    | `[]map[string]any` — issues present in the current snapshot but not the previous baseline                                                                                                                                        |
-| `.Trigger.OnTasks.Changes.Updated`  | `[]map[string]any` — issues present in both snapshots whose canonical fields differ                                                                                                                                              |
-| `.Trigger.OnTasks.Changes.Removed`  | `[]map[string]any` — issues present in the previous baseline but no longer in the current snapshot                                                                                                                               |
-| `.Trigger.OnTasks.Changes.Closed`   | `[]map[string]any` — issues whose status transitioned to `closed`                                                                                                                                                                |
-| `.Trigger.OnTasks.Changes.Reopened` | `[]map[string]any` — issues whose status transitioned from `closed` back to open                                                                                                                                                |
-| `.Trigger.OnTasks.Changes.LabelAdded` | `[]map[string]any` — issues that gained at least one label between baseline and current                                                                                                                                        |
-| `.Trigger.OnTasks.Changes.Touched`  | `[]map[string]any` — `Added ∪ Updated` (the convenient superset for prompts that don't care about the distinction)                                                                                                              |
+| Namespace                             | Shape                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `.Trigger.OnTasks.Changes.Added`      | `[]map[string]any` — issues present in the current snapshot but not the previous baseline                          |
+| `.Trigger.OnTasks.Changes.Updated`    | `[]map[string]any` — issues present in both snapshots whose canonical fields differ                                |
+| `.Trigger.OnTasks.Changes.Removed`    | `[]map[string]any` — issues present in the previous baseline but no longer in the current snapshot                 |
+| `.Trigger.OnTasks.Changes.Closed`     | `[]map[string]any` — issues whose status transitioned to `closed`                                                  |
+| `.Trigger.OnTasks.Changes.Reopened`   | `[]map[string]any` — issues whose status transitioned from `closed` back to open                                   |
+| `.Trigger.OnTasks.Changes.LabelAdded` | `[]map[string]any` — issues that gained at least one label between baseline and current                            |
+| `.Trigger.OnTasks.Changes.Touched`    | `[]map[string]any` — `Added ∪ Updated` (the convenient superset for prompts that don't care about the distinction) |
 
 Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`.
 
@@ -315,35 +574,36 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 
 ### Configuration fields (`session.LoopPrompt`)
 
-| Field             | JSON               | Meaning                                                                                                           |
-| ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `Trigger`         | `trigger`          | `"onTasks"`                                                                                                       |
-| `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change                                                         |
-| `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
-| `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
-| `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-in re-fire (mitto-dmb). Nil/`true` (default) = silent absorption during busy. `false` = fire once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`. |
-| `StoppedReason`   | `stopped_reason`   | `"noProgress"` when Layer 3 auto-paused the loop (also `maxIterations`/`maxDuration`, shared with other triggers) |
+| Field                | JSON                   | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Triggers`           | `triggers`             | Canonical armed-trigger list, e.g. `["onTasks"]` or `["onTasks", "onCompletion"]`. `Trigger`/`trigger` (singular) is kept in sync with `Triggers[0]` for on-disk/wire back-compat (`Normalize()`); see [EffectiveTriggers](#loop-prompts-multi-trigger-architecture).                                                                                                                                                                                                                                                                                                                                                      |
+| `Condition`          | `condition`            | CEL expression; empty = fire on any material beads change. Only meaningful when `onTasks` is armed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `ConditionPreset`    | `condition_preset`     | Optional UI preset id that was compiled into `Condition`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `CooldownSeconds`    | `cooldown_seconds`     | Per-conversation cooldown floor; `0` = use the global floor                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-out (mitto-dmb) unconditionally forcing the quiescence re-fire path even when no fs-watcher delta was deferred. Nil/`true` (default) does **not** mean "always silently absorb" — a fs-watcher delta that arrived during the busy window always re-fires once at quiescence regardless of this setting (mitto-cwg.1, via the sticky `tasksRefirePending` flag); this field only gates the plain-rebase case where nothing was pending. `false` additionally fires once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`, even when nothing was flagged pending. |
+| `StoppedReason`      | `stopped_reason`       | `"maxIterations"` / `"maxDuration"` when the loop auto-stopped after hitting a cap; shared with other triggers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### Opting in from a prompt file (`loop:` frontmatter)
 
-`config.PromptLoop` mirrors the runtime field as `coalesceDuringBusy` (camelCase, matching the other frontmatter keys such as `maxIterations` and `maxDuration`). When the prompt is instantiated as a loop via `mitto_conversation_new` / `mitto_conversation_update`, `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills `loop_coalesce_during_busy` from this field **only** when the caller did not set it explicitly — the same "explicit caller wins" rule the other frontmatter defaults follow, and honouring `loop_apply_prompt_defaults: false` to disable the whole merge. Example:
+The frontmatter mirrors the runtime field as `loop.onTasks.coalesceDuringBusy`, nested under the `onTasks` trigger block (mitto-r6j; see [docs/config/prompts.md § Loop Prompts](../config/prompts.md#loop-prompts) for the full grouped schema). When the prompt is instantiated as a loop via `mitto_conversation_new` / `mitto_conversation_update`, `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills `loop_coalesce_during_busy` from this field **only** when the caller did not set it explicitly — the same "explicit caller wins" rule the other frontmatter defaults follow, and honouring `loop_apply_prompt_defaults: false` to disable the whole merge. Example:
 
 ```yaml
 loop:
-  trigger: onTasks
-  condition: 'Changes.Touched.exists(i, i.status == "open")'
-  # Opt in to per-event re-fire: at quiescence, fire once more with the
-  # accumulated delta so newly-arrived issues get picked up promptly.
-  coalesceDuringBusy: false
+  trigger: [onTasks]
+  onTasks:
+    condition: 'Changes.Touched.exists(i, i.status == "open")'
+    # Opt in to per-event re-fire: at quiescence, fire once more with the
+    # accumulated delta so newly-arrived issues get picked up promptly.
+    coalesceDuringBusy: false
   maxIterations: 20
   maxDuration: "4h"
 ```
 
-Two builtin prompts adopt this (mitto-f9q): `beads-refine-implementation.prompt.yaml` and `beads-issue-loop-processing.prompt.yaml`. Both also render a `## Triggered by these beads changes` preamble in the prompt body using `{{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}` so the agent sees which specific beads drove the fire without re-invoking `bd`.
+Two builtin prompts adopt this (mitto-f9q): `config/prompts/builtin/beads/refine-implementation.prompt.yaml` and `config/prompts/builtin/beads-issues/loop-processing.prompt.yaml`. Both also render a `## Triggered by these beads changes` preamble in the prompt body using `{{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}` so the agent sees which specific beads drove the fire without re-invoking `bd`.
 
 ### Testing
 
-`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, the no-progress circuit breaker, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
+`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
 
 ## Title Generation
 
@@ -375,6 +635,17 @@ sequenceDiagram
 | `QueueTitleWorker`           | `internal/web/queue_title.go`  | Sequential request processor |
 | `GenerateQueuedMessageTitle` | `internal/auxiliary/global.go` | Prompt for title generation  |
 | `Queue.UpdateTitle`          | `internal/session/queue.go`    | Persist title to queue.json  |
+
+### Conversation auto-title recovery
+
+Conversation titles use one retained job per session. When title-session creation
+is load-shed because the shared ACP process has active foreground RPCs, the job
+subscribes to `SharedACPProcess`'s zero-RPC edge instead of relying only on the
+30/60/120-second polling cadence. `ACPProcessManager` coalesces these waits per
+workspace and requires a 100ms stable idle window before admitting deferred work,
+so queued foreground RPCs keep priority. Same-purpose auxiliary creation remains
+serialized by `auxCreateMu`; the capped polling delay is retained as a fallback if
+the provider cannot expose quiescence or the process stops.
 
 ### QueueTitleWorker
 
@@ -426,12 +697,12 @@ Resolution is deferred to the target conversation's context so that workspace-sp
 
 All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, beads-issue menus, beads-list menus) go through a **single shared helper** — never POST the full prompt body directly:
 
-| Export                                                                                                | Purpose                                                                |
-| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `buildSeedQueueBody(prompt, {arguments})`                                                             | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
-| `seedConversationWithPrompt(sessionId, prompt, {arguments})`                                          | POST `{prompt_name}` to an existing session's queue                    |
-| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, loop})` | Create a new conversation (one-time or loop — see below)           |
-| `configureLoopSchedule(sessionId, prompt, loop, {fetchImpl})`                                 | PUT loop config onto an already-created session                    |
+| Export                                                                                            | Purpose                                                                |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `buildSeedQueueBody(prompt, {arguments})`                                                         | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
+| `seedConversationWithPrompt(sessionId, prompt, {arguments})`                                      | POST `{prompt_name}` to an existing session's queue                    |
+| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, loop})` | Create a new conversation (one-time or loop — see below)               |
+| `configureLoopSchedule(sessionId, prompt, loop, {fetchImpl})`                                     | PUT loop config onto an already-created session                        |
 
 #### One-time path (no `loop`)
 
@@ -709,7 +980,7 @@ Named-prompt items persist `prompt_name` and `arguments`; `message` is empty. Th
 ### Design Decisions
 
 1. **Separate file**: Queue is transient (messages removed when processed), unlike append-only events
-2. **Atomic writes**: Uses `fileutil.WriteJSONAtomic()` to prevent corruption
+2. **Atomic writes**: Uses `fileutil.WriteJSONAtomicIfDirExists()` to prevent corruption AND to prevent a queue write racing a concurrent `Store.Delete` from resurrecting the deleted session directory as an orphan containing only `queue.json` (mitto-32ef)
 3. **Title in queue**: Stored with message for persistence across server restarts
 
 ## Automatic Queue Dequeuing
@@ -730,11 +1001,11 @@ The queue system supports automatic dequeuing for idle agent sessions:
 
 ### Methods
 
-| Method                       | Location            | Purpose                                                         |
-| ---------------------------- | ------------------- | --------------------------------------------------------------- |
-| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously     |
-| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/loop checking, respects delay elapsed time |
-| `ProcessPendingQueues()`     | `SessionManager`    | Called on server startup, resumes sessions with queued items    |
+| Method                       | Location            | Purpose                                                      |
+| ---------------------------- | ------------------- | ------------------------------------------------------------ |
+| `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously  |
+| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/loop checking, respects delay elapsed time  |
+| `ProcessPendingQueues()`     | `SessionManager`    | Called on server startup, resumes sessions with queued items |
 
 ## Frontend Integration
 

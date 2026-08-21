@@ -1,0 +1,83 @@
+{{- /*
+  support/channel-fragment-read — inline ONE topical fragment of the per-channel
+  support playbook AT RENDER TIME.
+
+  Fragments live under `.mitto/support/<channel-id>/<fragment>.md`, one topic
+  per file. Standard fragments: scope, tone, investigation, resources,
+  escalation, redirects.
+
+  Architectural intent (mitto-eyf): the fragment CONTENT is embedded verbatim
+  into the rendered prompt via Go text/template — the agent never reads the
+  file at runtime. This makes prompts auditable (the exact bytes the agent
+  received are visible in event logs), deterministic (no per-run filesystem
+  drift), and cheaper (no shell/tool round-trip).
+
+  When the fragment file is MISSING, the template falls back to a short
+  `[CONTEXT]` note and generic defaults without requesting or writing a file.
+  For `tone`, it also inlines support/shared/default-tone.
+
+  Callers pass named fields via a `dict`:
+
+      Channel:  the Slack channel id (e.g. C0XXXXXXX). Required. Callers that
+                do not know the channel at render time (per-bead prompts that
+                receive only IssueID) should pass "" — the template then emits
+                a minimal runtime-read instruction as a last-resort fallback,
+                so the caller still gets fragment content.
+      Fragment: short filename stem (no extension). One of:
+                "scope" | "tone" | "investigation" | "resources"
+                | "escalation" | "redirects".
+      Purpose:  short caller-supplied phrase spliced into "use it to <Purpose>".
+      Owner:    legacy compatibility field; no Support prompt owns writes to
+                playbook Markdown files anymore.
+      OwnerAsk: legacy compatibility field; ignored. Missing files never grant
+                permission to ask for content or write a replacement.
+  Usage (rendered as a single Markdown bullet — the CALLER supplies the
+  leading `- `):
+
+      - {{ template "support/shared/channel-fragment-read"
+           (dict "Channel"  $channel
+                 "Fragment" "tone"
+                 "Purpose"  "shape the tone when drafting the reply"
+                 "Owner"    "Support: reply to user"
+                 "OwnerAsk" false) }}
+*/ -}}
+{{- $channel := .Channel -}}
+{{- $fragment := .Fragment -}}
+{{- $purpose  := .Purpose  -}}
+{{- $path := printf ".mitto/support/%s/%s.md" $channel $fragment -}}
+{{- if and $channel (FileExists $path) -}}
+**Channel `{{ $fragment }}` (embedded from `{{ $path }}`)** — this is the
+authoritative `{{ $fragment }}` guide for channel `{{ $channel }}`; use it to
+{{ $purpose }}. It **overrides** the generic defaults in the caller prompt.
+
+<!-- BEGIN {{ $path }} -->
+{{ ReadFile $path }}
+<!-- END {{ $path }} -->
+{{- else if $channel -}}
+**Channel `{{ $fragment }}` fragment MISSING** (`{{ $path }}` does not exist for channel
+`{{ $channel }}`). Leave the playbook unchanged, optionally log a short `[CONTEXT]`
+bead comment noting `{{ $fragment }}.md missing — using generic defaults`, and continue
+with the generic defaults in this section. Do not ask to create the file.
+{{ if eq $fragment "tone" }}
+Use this default tone guidance:
+
+{{ template "support/shared/default-tone" . }}
+{{- end }}
+{{- else -}}
+**Channel `{{ $fragment }}` fragment (runtime read fallback)** — the caller did not
+supply a channel id at render time, so this fragment could not be inlined. Using the
+bead's `slack_channel` value, read
+**`.mitto/support/<channel-id>/{{ $fragment }}.md`** (e.g. `C0XXXXXXX` →
+`.mitto/support/C0XXXXXXX/{{ $fragment }}.md`). This is the authoritative
+`{{ $fragment }}` guide for this channel — use it to {{ $purpose }}. **If it exists**,
+honor its guidance; it **overrides** the generic defaults below.
+**If it does not exist**, leave the playbook unchanged, optionally log a short
+`[CONTEXT]` bead comment noting `{{ $fragment }}.md missing — using generic defaults`,
+and continue with the generic defaults in this section. Do not ask to create the file.
+{{ if eq $fragment "tone" }}
+Use this default tone guidance:
+
+{{ template "support/shared/default-tone" . }}
+{{- end }}
+{{- end -}}
+{{- /* no trailing newline */ -}}

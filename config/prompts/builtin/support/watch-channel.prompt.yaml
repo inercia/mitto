@@ -1,0 +1,516 @@
+icon: loop
+name: 'Support: watch channel'
+menus: prompts
+description: 'Watch a Slack channel for customer questions: triage each new question (and its thread) into a beads issue with state labels, gather information to answer, and keep every bead in sync with the real Slack conversation. Never posts to Slack.'
+backgroundColor: '#C8E6C9'
+group: Support
+tags:
+- loop
+- support
+target:
+  title: "Support: watch {{ .Args.SlackChannelID }}"
+  reuse:
+    title: true
+    coalesce: true
+parameters:
+  - name: SlackChannelID
+    type: text
+    required: true
+    description: 'The Slack channel ID to watch for customer questions (e.g. C0XXXXXXX).'
+  - name: SlackWorkspaceURL
+    type: text
+    required: true
+    description: 'Base Slack workspace URL used to build message permalinks (e.g. https://yourteam.slack.com). No trailing slash.'
+  - name: LookbackDays
+    type: text
+    group: Advanced
+    required: false
+    description: 'How many days of channel history to scan each run (default 2).'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
+loop:
+  trigger: [schedule]
+  schedule:
+    value: 15
+    unit: minutes
+  mode: optional
+  default: true
+prompt: |-
+  {{- $channel := .Args.SlackChannelID -}}
+  {{- $ws := .Args.SlackWorkspaceURL -}}
+  {{- $days := Arg "LookbackDays" "2" -}}
+  # Support — Watch Channel (Triage + Keep Beads in Sync)
+
+  {{ template "_shared/session-context" . }}
+  {{ template "support/shared/playbook-files-policy" . }}
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  Available ACP servers:
+  {{ Default "(none)" .ACP.AvailableText }}
+
+  Existing child conversations (spawned by previous runs):
+  {{ .Children.MCPText }}
+
+  When spawning investigation conversations, prefer a `"coding"` or `"fast"` tagged server. **Never**
+  configure spawned conversations as loops — each is a one-off investigation of a single bead.
+
+  ## What this does
+
+  Listen to the Slack channel **`{{ $channel }}`**. For every **new open customer question**
+  (and its thread) create/maintain a **beads** (`bd`) issue whose `state:*` label tracks where the
+  conversation stands. Gather the information needed to answer, and keep every tracked bead in sync
+  with the real Slack thread.
+
+  > ⚠️ **This prompt NEVER posts to Slack.** Posting a reply is done — with your explicit approval —
+  > by the **"Support: reply to user"** and **"Support: gather more information"** prompts.
+
+  ## Run mode
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent scheduled run** — nobody is watching.
+  - Use **only** `mitto_ui_notify` for status and summaries. Do **NOT** call `mitto_ui_options` /
+    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the channel bootstrap gate and the
+    channel scope gate below** — they would otherwise block with no one to answer.
+  - **Exception — the channel bootstrap gate + channel scope gate.** If any mandatory playbook
+    fragment (`scope.md`, `investigation.md`, `escalation.md`) is missing you cannot triage /
+    investigate this channel correctly, so you MAY use blocking `mitto_ui_form` /
+    `mitto_ui_options` / `mitto_ui_textbox` calls **with a short `timeout_seconds` (60s)** to ask
+    for the missing content and save the file. If nobody answers before the timeout, fall back to
+    a `mitto_ui_notify` warning, then continue triage + reconcile but **skip drafting** this run —
+    the next iteration asks again.
+  - Otherwise do triage + reconcile beads normally.
+  {{- else }}
+
+  **Interactive run** (first send, or force-triggered ▶️) — a user is present, so use the interactive
+  `mitto_ui_*` tools freely. Run the **channel bootstrap gate first** (one-time playbook setup: it
+  asks for the mandatory fragments if missing and offers the optional ones), then the **channel
+  scope gate** as a per-iteration safety net.
+  {{- end }}
+
+  ## CRITICAL: user interaction rules
+
+  > - ❌ NEVER present numbered options and ask the user to type a number/keyword.
+  > - ✅ Use `mitto_ui_options` (choices), `mitto_ui_textbox` (review/edit), `mitto_ui_form`
+  >   (structured input), `mitto_ui_notify` (non-blocking notifications).
+  > - ⚠️ NEVER post a reply to the Slack channel from this prompt.
+
+  ## Slack tools (names vary by MCP server)
+
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "You need tools that can: (a) read recent channel history (e.g. `slack_get_channel_history*`, `conversations_history_slack`), and (b) read a thread's replies (e.g. `slack_get_thread_replies*`)." "NoPosting" true "ReadMetadata" false) }}
+
+  ## Beads tracking model (one bead per Slack thread)
+
+  Run `bd` from the workspace root. If `bd list` reports no database, run `bd init` first.
+
+  - **Deduplicate by thread.** Before creating, look up the thread:
+    `bd list --metadata-field slack_thread_ts=<ts> --all`. If a match exists, **reuse** it. Never
+    create a second bead for the same thread.
+  - **Permalink.** Build it from the thread ts by removing the dot and prefixing `p`:
+    `{{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>` (e.g. `1770802214.391359` → `p1770802214391359`).
+  - **Create** with the `support, support-question` labels, a priority (`-p`) set by **intervention
+    urgency** (see **Priority = urgency of your intervention** below — a freshly-triaged bead is
+    `state:triaged` → **P2**), the fixed markdown description via `-d`, and metadata. Use `$'...'` so
+    `\n` become real newlines:
+    ```
+    bd create "<short question summary>" -t task -p P2 -l support,support-question \
+      -d $'# Question\n\n<question text>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>)\n' \
+      --metadata '{"slack_thread_ts":"<ts>","slack_channel":"{{ $channel }}","slack_url":"<permalink>"}'
+    ```
+    **Never pass a file path to `-d`.** `bd`'s `-d`/`--description` takes the description text
+    **literally** — it has **no `@file` expansion** (unlike `gh`). Writing the body to a temp file and
+    passing `-d @/tmp/....txt` (or `-d /tmp/....txt`) stores the raw path string as the description. If
+    the description is long enough that inline `$'...'` is awkward, write it to a file and read it back
+    with **`--body-file <path>`** (or `--stdin`), e.g. `bd create "<summary>" ... --body-file /tmp/desc.md`.
+  - **Priority (`-p`):** set by **intervention urgency**, not customer impact — see **Priority =
+    urgency of your intervention** below. A brand-new triaged bead is `state:triaged` → **P2**.
+  - **Comments = full history.** Log every relevant message as a markdown comment (preserve layout
+    with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`). Header then blank line then body:
+    ```
+    **[TAG @author · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**
+
+    <content in markdown>
+    ```
+    Tags: `[INBOUND @user]` customer messages · `[OUTBOUND us]` our posted replies ·
+    `[CONTEXT @other]` messages from other participants · `[STATE]` a state transition + reason.
+
+    {{ template "support/shared/message-comment-key" . }}
+  - **Everything is GitHub-flavored Markdown.** Both the bead **description** (`-d`) and **every
+    comment** must be valid markdown — headings, **bold**, `inline code`, fenced code blocks, lists and
+    links so the bead reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or
+    stdin; never flatten a comment into one line.
+  - **Any proposed/draft reply to the customer MUST be enclosed in a clearly delimited block** so the
+    exact customer-facing text is unambiguous — wrap **only** the reply between these two fences, on
+    their own lines (nothing else inside them):
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Everything outside the fences (the `[OUTBOUND]` header, notes, confidence) is context; everything
+    *inside* is the verbatim reply. The **"Support: investigate"** children use this same convention.
+  - **State via a single `state:*` label** (never `bd set-state` — it spawns child event beads).
+    Read the current label from `bd show <id>`, then swap in place:
+    `bd update <id> --remove-label state:<previous> --add-label state:<new>` (for the first
+    transition just `--add-label state:triaged`). Lifecycle:
+
+    | state | meaning |
+    |-------|---------|
+    | `triaged` | auto-created during triage, not yet worked (initial) |
+    | `gathering-info` | actively working it — investigating to answer (docs/tools/playbook) |
+    | `need-info` | need more details from the customer before we can answer |
+    | `drafting` | have a draft answer, pending your review |
+    | `awaiting-customer` | we posted a reply, waiting on the customer |
+    | `awaiting-us` | customer responded, our turn to act |
+    | `resolved` | answered/accepted (also `bd close <id>`) |
+    | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
+    | `out-of-scope` | not our area / not something we will pursue (also `bd close <id>`) |
+
+    > 🚫 **A closed bead is terminal — respect it.** Any ticket already `bd close`d (states `resolved`,
+    > `stale`, `out-of-scope`) is intentionally done: we will **not** keep working it. **Never reopen a
+    > closed bead and never flip it to an active state** (`awaiting-us`, etc.), even if a new Slack
+    > message later lands on its thread. Every reconcile `bd list` here is scoped to
+    > `--status open,in_progress`, which already excludes closed beads — do not work around that.
+
+    Whenever you change a bead's `state:*` label, **recompute its priority** per the rubric below.
+
+  ## Priority = urgency of *your* intervention
+
+  Priority does **not** reflect customer-impact severity — it reflects **how urgently _you_ (the human
+  operator) must step in**. Recompute it whenever a bead's `state:*` changes and apply it with
+  `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest), adding a short
+  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment:
+
+  | Priority | Intervention urgency | When |
+  |----------|----------------------|------|
+  | **P1** | HIGH — actionable, waiting on **your** approval | A draft (reply **or** clarifying question) is ready and pending your OK to post — typically `state:drafting`. Bump to **P0** only if that draft answers an escalation / outage / broad-impact thread (you are the bottleneck on an urgent fix). |
+  | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
+  | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
+
+  ## Channel playbook gate: read before triage
+
+  Fragments live under **`.mitto/support/{{ $channel }}/`**, one topic per file. Read the available
+  guidance on every iteration, but keep the entire directory read-only under the policy above.
+
+  1. **Scope fragment.**
+     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "know what this channel is (and is not) responsible for before triaging" "Owner" "" "OwnerAsk" false) }}
+  2. **Tone fragment.**
+     - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep triage summaries and any notifications consistent with the channel's voice" "Owner" "" "OwnerAsk" false) }}
+  3. If either fragment is missing, do not create it or ask to populate it. Continue with the generic
+     defaults and mention the missing guidance in the run summary. Record newly discovered patterns
+     on the relevant bead, not in `.mitto/support/{{ $channel }}/*.md`.
+
+  ## Instructions
+
+  > **Run the channel playbook gate above FIRST** at the start of every iteration — before Step 0
+  > and everything else. The **channel playbook gate** is a read-only,
+  > per-iteration safety net for `scope.md`. Children read the other fragments during
+  > investigation.
+
+  ### 0. Ensure beads ready + housekeeping
+
+  - Verify the database (`bd list`; if none, `bd init`).
+  - Load tracked questions: `bd list -l support-question --all` and review their `state:*` labels.
+  - **Auto-close stale:** find tracked issues with no activity for **10+ days**
+    (`bd list -l support-question --status open,in_progress --updated-before <cutoff> --all`, e.g.
+    cutoff `date -u -v-10d +%Y-%m-%d`). For each, verify it is truly stale (no recent comments, no
+    open blockers, no unanswered customer message), then
+    `bd update <id> --remove-label state:<prev> --add-label state:stale` and
+    `bd close <id> -r "auto-closed: no activity for 10+ days"`.
+  - **Out-of-scope close:** if a tracked ticket is **not our area / not something we will pursue**
+    (wrong team, out of our expertise, explicitly declined), close it to
+    `state:out-of-scope`: `bd update <id> --remove-label state:<prev> --add-label state:out-of-scope`
+    then `bd close <id> -r "out-of-scope: <reason>"`. If a customer is waiting, post a brief, polite
+    hand-off (point them to the right team/channel) before closing — do not silently drop them.
+
+  ### 1. Fetch recent questions
+
+  > ⚠️ **Steps 1 and 3 are two separate reads — do NOT collapse them.** Step 1 reads the
+  > **channel history** (top-level messages, which is where a brand-new customer question
+  > lives). Step 3 reads **thread replies** for each already-tracked bead. Executing only
+  > Step 3's thread-reply reads does **not** satisfy Step 1: a new top-level question does
+  > not appear in any existing thread's replies, and the tracked bead list from Step 0 by
+  > definition contains **no** bead for a question you have not discovered yet. You MUST
+  > run Step 1's channel-history fetch on every iteration, even when `bd list` already
+  > returns open beads and even when the channel looks quiet.
+
+  - Read the last **{{ $days }} days** of history from `{{ $channel }}`.
+  - Keep messages that look like **open** questions/requests for help. Skip ones that already look
+    resolved — the asker said "thanks / that worked", someone gave an accepted answer, or a positive
+    reaction marks it helpful. Treat a clearly-negative reaction (answer not helpful) as still open.
+
+  > 🔒 **Auditable channel-history gate — this is not satisfiable in prose.** A correct
+  > run emits **at least one `slack_get_channel_history*` (or `conversations_history*`)
+  > call this iteration**, scoped to channel `{{ $channel }}` and covering the last
+  > `{{ $days }}` days. Reading only individual threads (Step 3) is **not** a substitute:
+  > a brand-new top-level question does not appear in any tracked bead's thread replies.
+  > If by the time you reach Step 2 you have made **zero** channel-history calls this
+  > iteration, you have **not** completed Step 1 — go back and fetch channel history
+  > now, before triaging or reconciling anything. Do not assert "channel is quiet" or
+  > "no new questions" for any run in which you have not actually fetched channel
+  > history.
+
+  ### 2. Triage — create a bead per NEW open question
+
+  - For each candidate, dedup by thread ts. If a bead exists **and is still open**
+    (`open`/`in_progress`), it is ongoing → handle in Step 3. **If the matching bead is already
+    `bd close`d** (`resolved` / `stale` / `out-of-scope`), it is intentionally done: **skip it** —
+    do **not** reopen it, do **not** route it to reconcile, and do **not** create a duplicate bead
+    for the same thread. (Optionally add a one-line `[CONTEXT]` note on the closed bead recording the
+    new message, but leave it closed.) Only treat a thread as genuinely new when it has **no** bead at
+    all, open or closed.
+  - If none exists, **create** one now (see **Beads tracking model**): priority `-p`, labels
+    `support,support-question`, the fixed `# Question / # User / # Links` description via `-d`,
+    metadata with `slack_thread_ts` / `slack_channel` / `slack_url`, an `[INBOUND]` comment with the
+    original question, and `bd update <id> --add-label state:triaged`.
+  - If a **tracked** thread got a helpful reaction / accepted answer, close it:
+    `bd update <id> --remove-label state:<prev> --add-label state:resolved` then `bd close <id>`.
+
+  ### 3. Reconcile ongoing threads with their beads
+
+  First list the tracked, still-open beads
+  (`bd list -l support-question --status open,in_progress --all`). Let **N** = that count. Then
+  **process them one bead at a time, start to finish**, in a loop.
+
+  > 🔁 **Iterate per bead — do NOT batch.** For **each** open bead, complete the full cycle before
+  > moving to the next one: (1) `bd show <id>` + `bd comments <id>`, (2) **immediately** fetch *that
+  > bead's* Slack thread with one `slack_get_thread_replies*` call, (3) reconcile it (add new
+  > comments, apply the state change / closure), (4) **then** move on to the next bead. Do **not**
+  > read all beads first and then fetch all threads in a second pass — interleave read-then-reconcile
+  > per bead so you hold only one thread's context at a time and reason about it while it is fresh.
+
+  > ⚠️ **Re-read the Slack thread for EVERY open bead — no exceptions.** The beads parked in the
+  > customer's court (`state:awaiting-customer` and `state:need-info`) are exactly the ones to check
+  > hardest: re-fetch each thread and see **whether the customer has since replied**. If they have (a
+  > real answer/follow-up, not a bare "thanks"), the ball is back with us → flip to `state:awaiting-us`.
+  > Never skip a bead just because it was "waiting on them" last run — that is precisely where a new
+  > customer reply is waiting to be noticed.
+
+  > 🔒 **Auditable thread-reply gate — this is not satisfiable in prose.** Because you fetch exactly
+  > one thread per bead, a correct run emits **exactly N `slack_get_thread_replies*` (read-thread-replies)
+  > calls** — one per open bead, each using that bead's stored `slack_thread_ts` / `slack_channel`.
+  > Reading channel history is **not** a substitute here (and, conversely, satisfying this gate does
+  > **not** satisfy Step 1's separate channel-history gate — they are two independent reads):
+  > a customer reply posted *inside* a thread does **not** appear in channel history, and a brand-new
+  > top-level question does **not** appear in any thread's replies. If by the end of the loop you have
+  > made fewer than **N** thread-fetch calls, you have **not** reconciled every bead — go back and
+  > process the remaining beads now. Do not assert "no customer replies" for any bead whose thread you
+  > have not actually fetched this run.
+
+  For each open bead, in the loop above:
+
+  - Load `bd show <id>` + `bd comments <id>`, then re-fetch its Slack thread using the stored
+    `slack_thread_ts`.
+  - Add a markdown comment for **each new** thread message not yet captured (`[INBOUND]` customer /
+    `[CONTEXT]` others / `[OUTBOUND]` any of our own replies), applying the `ts:` dedup key from
+    **Comments = full history**: skip any message whose `ts` already appears in `bd comments <id>`.
+  - **First check for closure.** If the customer's last message just **acknowledges / closes** the
+    thread — "thanks", "that worked", "got it", "sorted", or a positive reaction on our answer, with
+    **no new question** — and we already replied (`awaiting-customer`, or otherwise answered), the
+    thread is **resolved**: swap to `state:resolved` and `bd close <id> -r "resolved: customer
+    confirmed"`. Do **NOT** flip it to `awaiting-us` (an acknowledgment is not a new question — doing
+    so re-opens an answered ticket for another unneeded reply). Only skip resolving if the
+    acknowledgment is bundled with a genuine follow-up question.
+  - Otherwise update the `state:*` label to reflect reality: last message from the customer **needing
+    action** (a real follow-up, not a mere acknowledgment) → `state:awaiting-us`; last message is ours
+    and they have **not** replied yet → stays `state:awaiting-customer`.
+  - **If the bead is in `awaiting-customer` and the customer just replied** (posted anything after our
+    last message that is a real answer/follow-up, not a bare "thanks") → `state:awaiting-us`. This is
+    the core "did the customer give feedback yet?" check — a bead must never sit in `awaiting-customer`
+    once the customer has actually responded.
+  - **If the bead is in `need-info` and the customer just replied** (provided the info we asked for,
+    answered our clarifying question, or spoke last) → `state:awaiting-us`. Treat `need-info` like
+    `awaiting-customer` once the customer responds — never leave it stranded in `need-info`. (The
+    closure check above still applies first: a bare "thanks" while in `need-info` still resolves, it
+    does not become `awaiting-us`.)
+  - Do not override `drafting` if our pending action still stands (a draft awaiting review). Add a
+    short `[STATE]` comment noting any change.
+  - **After any state change, recompute priority** (see **Priority = urgency of your intervention**):
+    `drafting` → P1; `triaged` / `gathering-info` / `awaiting-us` (our court) → P2; `awaiting-customer`
+    / `need-info` (we posted a reply or clarifying question, ball in the customer's court) → P3.
+  {{- if .Permissions.CanStartConversation }}
+  - **Reap finished investigation children.** A child spawned by Step 4 is **done** once its bead has
+    left the in-flight states — i.e. the bead is now `drafting` / `need-info` (the two terminal
+    outcomes of "Support: investigate"), or has otherwise moved off `triaged` / `gathering-info` /
+    `awaiting-us`. For each such bead, find the matching child in `{{ .Children.MCPText }}` (its ID
+    appears in the child's title / `beads_issue`); if that child is **idle** (not currently prompting,
+    no queued prompts), **archive** it to free the max-children cap and keep dedup clean for the next
+    iteration:
+    ```
+    mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+    **Archive, never delete** — the investigation transcript stays inspectable for auditing. Never
+    archive a child that is still prompting or whose bead is still `gathering-info` (it is mid-flight);
+    leave it running and reap it on a later iteration.
+  {{- end }}
+
+  ### 4. Gather info + draft — proactively, in parallel children (only if the playbook exists)
+
+  > ⚠️ **This step is ACTION, not description.** A `triaged` (or `awaiting-us`) bead that reaches
+  > Step 5 with no investigation spawned, no existing child covering it, and no explicit "over the
+  > 3-cap — deferred" note is a **bug in this run**, not a "next action" for the human. Never write a
+  > summary that reports investigable beads as pending work; the whole point of Step 4 is to have
+  > **already acted** on them by the time you print Step 5.
+
+  Do **not** investigate every bead inline this run — that serialises the work and can blow the
+  run's time budget. Instead, **delegate each investigable bead to its own child conversation** so
+  they run **in parallel**, each executing the canonical **"Support: investigate"** prompt (which
+  follows the same playbook, records findings, and leaves a draft → `state:drafting`).
+
+  - **Which beads to investigate.** A bead is **investigable** this run when it is **our turn and not
+    already in flight**: its `state:*` is `triaged` or `awaiting-us` (not `drafting` / `need-info` /
+    `awaiting-customer` / `resolved` / `stale`), it has a usable `slack_channel` + `slack_thread_ts`,
+    and there is no open child already working it (see dedup below). Skip anything already
+    `state:gathering-info` or `state:drafting` — it is in progress or waiting on you.
+  - **Enumerate first, then act.** Before spawning anything, build (mentally or in a scratch note)
+    the **explicit list of investigable beads** for this run — every open bead in `state:triaged` or
+    `state:awaiting-us` from Step 3, sorted highest-priority / oldest first. This list is the input
+    to the spawn loop below; Step 5's what's-next table must be able to account for **every** bead on
+    it with a concrete disposition (`spawned`, `already covered by <child-id>`, or `deferred: over
+    3-cap`). If the list is empty, say so explicitly — do not silently skip.
+  {{- if .Permissions.CanStartConversation }}
+
+  - **Spawn one child per investigable bead (parallel) — MANDATORY.** Cap at **3 spawns per run**
+    (highest priority / oldest first). Before spawning, **dedup against `{{ .Children.MCPText }}`**:
+    skip any bead whose ID already appears in an existing child's title — never spawn a second
+    investigation for the same bead. For **every remaining** investigable bead up to the cap, you
+    **MUST** issue the spawn call **this run** — do not defer it to the next iteration, do not
+    describe it as "ready for investigation", do not list it under "next actions". For each selected
+    bead `<id>` spawn (do **not** pre-set the state here — the child's own Step 2 owns the
+    `state:gathering-info` transition, so setting it now would produce a redundant no-op
+    `gathering-info → gathering-info` swap in the child):
+    ```
+    mitto_conversation_new(
+      self_id: "{{ .Session.ID }}",
+      title: "Investigate <id>: <short summary>",
+      beads_issue: "<id>",
+      prompt_name: "Support: investigate",
+      arguments: { "IssueID": "<id>", "SlackChannelID": "{{ $channel }}" },
+      acp_server: <prefer a "coding" or "fast" tagged server>)
+    ```
+    Passing `SlackChannelID` here lets the child inline the channel's playbook fragments at
+    prompt-render time (no runtime file read); it is also carried through into the child's
+    bead metadata via its own Step 2.
+    The child runs "Support: investigate" end-to-end on that bead: it gathers the answer from the
+    channel's playbook fragments under **`.mitto/support/{{ $channel }}/`** (owning
+    `investigation.md`, `resources.md`, `escalation.md`, and optionally `redirects.md`), records
+    `[CONTEXT]` findings, and — on a confident answer — saves an `[OUTBOUND]` DRAFT and sets
+    `state:drafting`. **Do not wait** for the children;
+    they report their own results on the bead and via their own notifications. This run continues to
+    its summary while investigations proceed in the background; the next iteration's Step 3 reconcile
+    will pick up their `state:drafting` / `need-info` outcomes.
+  - **Beyond the cap / already in flight.** Investigable beads not spawned this run — **only**
+    because they are over the 3-cap, or already covered by an existing child — are left as-is for the
+    next iteration; do **not** investigate them inline. Record each such bead with its explicit
+    reason (`deferred: over 3-cap (rank #4)` or `already covered by <child-id>`) so Step 5 can tag it
+    correctly.
+  - **Pre-Step-5 disposition gate — check before writing the summary.** For **every** bead on your
+    investigable list, you must be able to state one of exactly these outcomes for **this run**:
+    - `spawned <child-id>` — a fresh `mitto_conversation_new` call landed this run, or
+    - `already covered by <child-id>` — an open, non-idle child from `{{ .Children.MCPText }}` is
+      already investigating this bead, or
+    - `deferred: over 3-cap` — the bead ranked below the top 3 by priority/age (record its rank).
+
+    If **any** investigable bead has none of these dispositions, you have **not** executed Step 4 —
+    go back and spawn now (respecting the cap). Only once every investigable bead carries one of the
+    three tags may you move to Step 5.
+  {{- else }}
+
+  - **Child spawning is unavailable** (the *Can start conversation* permission is off), so fall back
+    to inline investigation — but only for the **single** highest-priority investigable bead this run
+    to protect the time budget: set `state:gathering-info`, follow the channel's playbook fragments
+    under **`.mitto/support/{{ $channel }}/`** to gather the answer, record a **proposed reply** as
+    an `[OUTBOUND]`-style *draft* comment (clearly marked "DRAFT — not yet posted", the reply text
+    **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** — see the Beads tracking
+    model) and set `state:drafting`. Leave the rest for subsequent iterations, tagging each as
+    `deferred: no-spawn-permission` for Step 5. If you learn a reusable in-scope/out-of-scope
+    pattern, record it on the bead; do not append it to the channel playbook.
+  {{- end }}
+
+  - If a bead genuinely cannot be answered without more detail from the customer, set `state:need-info`
+    and note what is missing (the interactive **"Support: gather more information"** prompt will ask
+    them) — do not spawn an investigation for it.
+  - **Never post to Slack here** (nor do the children). Drafts wait for review in
+    **"Support: reply to user"**.
+  - If `scope.md` does not exist for this channel, use the generic scope defaults and note the
+    missing guidance; do not create or repair the file.
+
+  ### 5. Summary
+
+  - **Always end the iteration with a "what's next" table** listing every open tracked bead you
+    touched or reviewed this run, one row per bead:
+    `| <id> | <state:*> | <what's next> | <last activity> |`. In the
+    **Bead** column use the **full bead ID exactly as `bd` reports it, including the project prefix**
+    (e.g. `mitto-u2i`, not the bare suffix `u2i`) — Mitto only recognises and links the full ID, so a
+    truncated ID renders as plain text. The **what's next** cell is a short human phrase derived from
+    the bead's current `state:*` label (use this exact mapping so it reads the same across runs and
+    prompts):
+
+    {{ template "support/shared/whats-next-mapping" (dict "IncludeClosed" true) }}
+
+    **The "What's next" cell must be a markdown link to the Slack thread**, using the phrase above as
+    the link text and the bead's stored `slack_url` metadata as the target:
+    `[<what's next phrase>](<slack_url>)`. Read `slack_url` from the bead you already loaded this run
+    (`bd show <id>` metadata); if for some reason a bead has no `slack_url`, reconstruct the permalink
+    from its `slack_thread_ts` (`{{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>`). Only fall back
+    to plain text if neither is available.
+
+    **`triaged` rows must carry their Step-4 disposition** so "Needs investigation" is never printed
+    as a bare "someone should look at this". Append the disposition tag from the Step-4 gate — in
+    parentheses, after the link — using this exact vocabulary:
+    - `(— investigating: spawned <child-id>)` — a fresh child was spawned **this run**;
+    - `(— being investigated by <child-id>)` — an existing child is already working it;
+    - `(— queued: over 3-cap, rank #<n>)` — deferred to next iteration by the priority cap;
+    - `(— queued: no-spawn-permission)` — only when `Can start conversation` is off and this bead
+      wasn't the single inline pick.
+
+    If a `triaged` row has none of these dispositions, Step 4 was not executed for that bead — go
+    back to Step 4 and act before printing the summary.
+
+    Render it as (note the **full** IDs, the linked what's-next cell, the `triaged` disposition
+    tags, and the relative **Last activity** ages):
+    ```markdown
+    | Bead | State | What's next | Last activity |
+    |------|-------|-------------|---------------|
+    | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) | 3h ago |
+    | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) | 2d ago |
+    | mitto-5ce | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770912223441201) (— investigating: spawned 20260721-…-abcd) | 12m ago |
+    | mitto-v22 | triaged | [Needs investigation](https://acme.slack.com/archives/C02JYLD3FFU/p1770913001772440) (— queued: over 3-cap, rank #4) | 5d ago |
+    ```
+  - Then send a `mitto_ui_notify` summarizing the run: new questions triaged, beads updated, how many
+    **investigations were spawned** (and for which beads), and how many beads are `drafting` (ready
+    for your review) vs `need-info` vs `awaiting-customer`. On silent runs keep the notify concise but
+    **still print the what's-next table** in the run output.
+  - **Channel-history self-check before you claim "channel is quiet".** If your summary or
+    `mitto_ui_notify` is about to say "channel is quiet", "no new questions", or "0 new questions
+    triaged", first confirm you actually made **at least one `slack_get_channel_history*` /
+    `conversations_history*` call this iteration** (Step 1's auditable gate). If you did not, you
+    have not looked at the channel — go back to Step 1 and fetch channel history **now**, then
+    re-do Step 2 (triage) before printing the summary. "Quiet" is only a valid conclusion after an
+    actual channel-history read.
+  - **Never list an investigable bead under a "next actions" / "recommendations" section as work
+    still to do** — by the time you write Step 5 you have either spawned it, confirmed an existing
+    child is on it, or deferred it over the 3-cap (all captured inline on the bead's row). The only
+    genuine human next actions in this summary are: (a) reviewing beads now in `drafting`, and
+    (b) responding to beads in `awaiting-us`.
+
+  ## Notes
+
+  - The bead is the single source of truth — always load it (`bd show` + `bd comments`) before acting.
+  - Per-bead follow-ups: **"Support: check status"** (refresh a thread onto its bead),
+    **"Support: investigate"** (dig for the answer using the channel playbook + record a draft),
+    **"Support: gather more information"** (ask the customer), **"Support: reply to user"** (post our
+    answer). All posting requires your explicit approval.
+  - The channel playbook lives under **`.mitto/support/{{ $channel }}/`** as topical fragments
+    (`scope.md`, `tone.md`, `investigation.md`, `resources.md`, `escalation.md`, `redirects.md`).
+    All are read-only unless the user directly requests a specific playbook-file change. Read
+    `scope.md` before triaging when present, and record newly learned patterns on beads instead.
+  - **Proactive investigation** — Step 4 delegates investigable beads (`state:triaged` /
+    `awaiting-us`) to parallel one-off children running **"Support: investigate"**, capped at **3 per
+    run** and deduped against existing children so a bead is never investigated twice at once. Spawned
+    children are **never** loops; this run does not block on them — their `state:drafting` / `need-info`
+    outcomes are picked up by the next iteration's reconcile (Step 3). When the *Can start
+    conversation* permission is off, Step 4 falls back to investigating just the single
+    highest-priority bead inline.
+  - **Child cleanup** — Step 3 reaps finished investigation children each iteration: once a child's
+    bead has reached a terminal outcome (`state:drafting` / `need-info`) and the child is idle, it is
+    **archived** (never deleted, so the transcript stays inspectable) to free the max-children cap and
+    keep the dedup list clean.

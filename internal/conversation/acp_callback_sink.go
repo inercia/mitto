@@ -7,9 +7,9 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
@@ -166,7 +166,7 @@ func (acpCallbackSink) onContextUsageUpdate(d acpCallbackDeps, size, used int) {
 
 // --- Stream callbacks ---
 
-func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string) {
+func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html, markdown string) {
 	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
@@ -178,7 +178,7 @@ func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string)
 		Seq:       seq,
 		Type:      session.EventTypeAgentMessage,
 		Timestamp: time.Now(),
-		Data:      session.AgentMessageData{Text: html},
+		Data:      session.AgentMessageData{Text: html, Markdown: markdown},
 	}, "agent message")
 
 	// Notify all observers
@@ -207,7 +207,7 @@ func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string)
 	}
 
 	d.cbNotifyObservers(func(o SessionObserver) {
-		o.OnAgentMessage(seq, html)
+		o.OnAgentMessage(seq, html, markdown)
 	})
 }
 
@@ -257,6 +257,12 @@ func (acpCallbackSink) onToolCall(d acpCallbackDeps, seq int64, id, title, statu
 func (acpCallbackSink) onMittoToolCall(d acpCallbackDeps, requestID string) {
 	if d.cbIsClosed() {
 		return
+	}
+	if requestID == "" {
+		// Some agents omit RawInput from ACP tool_call events. The conversation's
+		// stable ID is the only safe legacy correlation key; shared placeholders
+		// such as "init" can cross-wire concurrent callers.
+		requestID = d.cbSessionID()
 	}
 
 	if !d.cbRegisterPendingMCPRequest(requestID) {
@@ -659,11 +665,45 @@ func recordEventWithSeqHelper(rec *session.Recorder, lg *slog.Logger, event sess
 	if rec == nil {
 		return
 	}
-	if err := rec.RecordEventWithSeq(event); err != nil && lg != nil {
-		if strings.Contains(err.Error(), "session not started") {
-			lg.Warn("Failed to persist "+kind, "seq", event.Seq, "error", err)
-		} else {
-			lg.Error("Failed to persist "+kind, "seq", event.Seq, "error", err)
-		}
+	if err := rec.RecordEventWithSeq(event); err != nil {
+		logPersistFailure(lg, kind, err, "seq", event.Seq)
 	}
+}
+
+// logPersistFailure logs a session-event persistence failure with a single
+// message and level shared across every writer (mitto-hk6k). Before this,
+// the after-phase Recorder path (recordEventWithSeqHelper, above) and the
+// close-phase Store path (SessionManager.ApplyOnCloseProcessors) each chose
+// their own wording and level independently, so a log scan for one
+// under-reported the other. Expected session-lifecycle errors — the
+// recorder already stopped/suspended (session.ErrSessionNotStarted), or the
+// session directory already gone (session.ErrSessionNotFound, e.g. a
+// deleted session racing a fire-and-forget close-phase writer) — are logged
+// at WARN; anything else is unexpected and logged at ERROR.
+func logPersistFailure(lg *slog.Logger, kind string, err error, attrs ...any) {
+	if lg == nil || err == nil {
+		return
+	}
+	level := slog.LevelError
+	if errors.Is(err, session.ErrSessionNotStarted) || errors.Is(err, session.ErrSessionNotFound) {
+		level = slog.LevelWarn
+	}
+	args := append(append([]any{}, attrs...), "error", err)
+	lg.Log(context.Background(), level, "Failed to persist "+kind, args...)
+}
+
+// logProcessorRunPersistenceSkipped is the shared lifecycle-omission summary
+// for live after-phase and fire-and-forget close-phase processor pipelines.
+func logProcessorRunPersistenceSkipped(lg *slog.Logger, phase, sessionID, reason string, omitted int64, attrs ...any) {
+	if lg == nil || omitted <= 0 {
+		return
+	}
+	args := []any{
+		"session_id", sessionID,
+		"phase", phase,
+		"reason", reason,
+		"omitted_processor_runs", omitted,
+	}
+	args = append(args, attrs...)
+	lg.Debug("processor_run persistence skipped", args...)
 }

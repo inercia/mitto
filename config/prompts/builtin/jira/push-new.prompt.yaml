@@ -1,0 +1,144 @@
+icon: tag
+name: 'JIRA: push to new'
+menus: beadsIssues, conversation
+description: Create a new JIRA ticket from a local-only beads issue, using the project's saved JIRA query to infer project, type, components and other defaults
+backgroundColor: '#D1C4E9'
+group: JIRA
+tags:
+- jira
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The local-only beads issue to push to a new JIRA ticket
+  - name: Query
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional per-run override for the JQL query used to infer ticket defaults. Accepts either a raw JQL string (e.g. `project = ABC AND statusCategory != Done`) or a JIRA URL that identifies a set of tickets — a saved-filter link (`.../issues/?filter=12345`), a RapidBoard link (`.../secure/RapidBoard.jspa?rapidView=32735&quickFilter=220833`), or a browse link (`.../browse/ABC-123`). If empty, the saved "Jira Tasks" user data is used. This value is used for this run only and does not overwrite the saved query.'
+enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && !("jira-sync" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync"))'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'JIRA: sync tasks'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if not $target -}}
+  There is **no linked bead** for this conversation and no `IssueID` argument was provided. This prompt only pushes a specific local-only bead to a new JIRA ticket — send one `mitto_ui_notify` explaining that a bead is required, then **stop**.
+  {{- else }}
+
+  The **target bead** is `{{ $target }}`. Create a **new** JIRA ticket for this bead, deriving the new ticket's field values from the tickets returned by the project's saved JIRA query, then link the bead to it. This prompt only ever **creates** in JIRA; it never edits or deletes existing JIRA content.
+  {{- end }}
+
+  {{ template "_shared/interaction-mode" . }}
+
+  ## Access Method
+
+  {{ template "jira/shared/access-method" (dict "Note" "the search tool in Step 3, the create-issue tool in Step 6, and the add-comment tool in Step 8") }}
+
+  ## Step 1 — Load the bead
+
+  ```bash
+  bd show {{ $target }} --json
+  bd comments {{ $target }} --json    # or the equivalent JSON subcommand for this bd version
+  ```
+
+  From the bead capture: `title`, `description`, `issue_type`, `priority`, `external_ref`, `labels`, and every existing beads comment (id, author, created, body).
+
+  This prompt is for **local-only** beads. If `external_ref` is already set (regardless of prefix) or the bead already carries the `jira-sync` label, it is already linked — that is `JIRA: push issue`'s job, not this one. Send one `mitto_ui_notify` explaining the bead is already linked to JIRA, then **stop**.
+
+  ## Step 2 — Resolve the project's JIRA query
+
+  {{ template "jira/shared/resolve-query" (dict "Ctx" . "Next" "continue to Step 3 — Sample the query to infer ticket defaults") }}
+
+  ## Step 3 — Sample the query to infer ticket defaults
+
+  Run the JQL from Step 2 over a bounded sample of the **most recently updated** matching tickets (cap at 50).
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  Call **`jira_search_jira`** with the JQL, `fields="*all"`, and `max_results=50`.
+  {{- else }}
+
+  Run:
+
+  ```bash
+  jira issue list -q "<the JQL from Step 2>" --raw --paginate 50
+  ```
+  {{- end }}
+
+  From the sample, derive:
+
+  - **Project key** — the project the sampled tickets belong to.
+  - **Issue type** — the most common type in the sample, reconciled with the bead's own `issue_type` (prefer a JIRA type that matches the bead's type in spirit — e.g. bead `bug` → JIRA `Bug`).
+  - **Commonly-set fields** — components, labels, priority, fix version, epic/parent link, sprint, and any project-specific custom fields that are **consistently** populated across the sample — together with their observed allowed values / ids, so the create call in Step 6 does not fail validation.
+
+  Report which fields are **inferred** (from the sample) vs. left **unset** — never invent a value for a field the sample does not support.
+
+  ## Step 4 — Compose the ticket
+
+  - **Summary**: the bead's `title`.
+  - **Description**: the bead's `description`, converted from Markdown to JIRA markup:
+
+  {{ template "jira/shared/md2jira" . }}
+
+  ## Step 5 — Confirm
+
+  **Interactive mode** — present the composed summary, description, and every inferred/unset field (from Steps 3–4) via `mitto_ui_form` or `mitto_ui_options`, allowing the user to confirm, edit any field, or cancel. If the user cancels, **stop** without creating anything.
+
+  **Silent mode** (scheduled loop) — a JIRA ticket is never created unattended. Send one `mitto_ui_notify` summarising the bead and the inferred ticket fields, and explaining that interactive confirmation is required, then **stop**.
+
+  ## Step 6 — Create the ticket
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  Call **`jira_create_issue_jira`** with the confirmed `project_key`, `summary`, `issue_type`, `description`, and an `additional_fields` object carrying the confirmed components/labels/priority/fix version/epic/sprint.
+  {{- else }}
+
+  Run the **`jira` CLI** equivalent (see the Access Method table above), writing the description to a temp file and passing it via `--template`.
+  {{- end }}
+
+  If creation fails (invalid project key, unknown component, permission error), report the error and **stop** without retrying — do not fall back to a degraded ticket.
+
+  ## Step 7 — Link the bead (create phase)
+
+  {{ template "jira/shared/link-bead" (dict "Phase" "create" "Target" $target) }}
+
+  ## Step 8 — Mirror existing bead comments
+
+  Load the bead's comments from Step 1, then:
+
+  {{ template "jira/shared/mirror-comments-out" . }}
+
+  In this prompt, `<bead-id>` is `{{ $target }}`.
+
+  ## Step 9 — Link the bead (commit phase)
+
+  {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" $target) }}
+
+  ## Step 10 — Summary
+
+  Render a **markdown summary table**:
+
+  ```
+  | JIRA ticket | Beads ticket | Change / notes |
+  |---|---|---|
+  | <KEY> | {{ $target }} | <short human sentence, actions joined with `; `> |
+  ```
+
+  - **JIRA ticket** — the new JIRA key (e.g. `ABC-123`) or `—` if creation failed.
+  - **Beads ticket** — `{{ $target }}`.
+  - **Change / notes** — describe what happened (ticket created, N comments mirrored, inferred fields used, creation failure). Prefix with `⚠️` on any error.
+
+  Always render the table in interactive mode. This prompt never runs unattended past Step 5, so there is no silent-mode summary path.
+
+  ## Guidelines
+
+  - **Create-only**: this prompt only creates a new JIRA ticket and links the bead to it. It never closes the bead, never transitions or edits an existing JIRA ticket, and never deletes anything. Use `JIRA: push issue` once a bead is linked, or `JIRA: sync tasks` for a full batch sync.
+  - **Never invent field values**: only set a field when the Step 3 sample supports it with a consistent value/shape.
+  - **High-water mark**: `metadata.jira_updated` is written only after the ticket exists and every eligible comment has been mirrored (Step 9) — never earlier.
+  - **Idempotent guard**: Step 1's already-linked check prevents this prompt from ever double-creating a ticket for the same bead.

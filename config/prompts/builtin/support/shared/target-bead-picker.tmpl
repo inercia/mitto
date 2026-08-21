@@ -1,0 +1,59 @@
+{{- /*
+  support/target-bead-picker — the full "Step 1: Identify the target
+  bead" block used at the top of every single-bead support prompt
+  (check-status, investigate, reply-to-user, gather-info).
+
+  The block always:
+    1. resolves $target from either .Session.BeadsIssue (context-menu
+       launch) or .Args.IssueID (parameter form),
+    2. if a target was resolved, prints the "launched from bead" line
+       so the prompt operates directly on it,
+    3. otherwise runs a `mitto_ui_options` picker over the open
+       `support-question` beads. When a Filter is passed, the picker
+       narrows the candidate universe to that state and adds an
+       "if there are no such beads, notify and stop" nudge.
+
+  The template-call syntax `{{ template "name" X }}` accepts a single
+  value, so callers pass a small `dict` carrying both the ctx and the
+  optional filter label:
+
+      generic (all open questions):
+          {{ template "support/shared/target-bead-picker"
+             (dict "Ctx" . "Filter" "") }}
+
+      drafting-only:
+          {{ template "support/shared/target-bead-picker"
+             (dict "Ctx" . "Filter" "state:drafting"
+                   "EmptyMessage" "nothing is ready to answer") }}
+
+      need-info-only:
+          {{ template "support/shared/target-bead-picker"
+             (dict "Ctx" . "Filter" "state:need-info"
+                   "EmptyMessage" "nothing is awaiting a customer detail (nothing to follow up on)") }}
+
+  Whitespace contract identical to the other _shared fragments: body
+  is column-1 Markdown, no leading/trailing newline; callers use plain
+  `{{ template ... }}` (no trim markers) and rely on YAML newlines.
+*/ -}}
+{{- $ctx := .Ctx -}}
+{{- $filter := .Filter -}}
+{{- $emptyMsg := .EmptyMessage -}}
+{{- $target := "" -}}
+{{- if $ctx.Session.BeadsIssue }}{{ $target = $ctx.Session.BeadsIssue }}{{ else if $ctx.Args.IssueID }}{{ $target = $ctx.Args.IssueID }}{{ end -}}
+{{- if $target }}
+- This prompt was launched from bead **`{{ $target }}`** — operate on it directly (skip the picker).
+{{- else if eq $filter "" }}
+- **No linked bead** — show a picker: list open tracked questions
+  `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
+  `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
+  one `{label: "<id> [state] — <short summary>"}` per bead, timeout 300). If the user cancels,
+  acknowledge and stop.
+{{- else }}
+- **No linked bead** — show a picker: list candidates and keep only those in `{{ $filter }}`:
+  `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
+  `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
+  one `{label: "<id> [state] — <short summary>"}` per bead, timeout 300).
+- If there are no `{{ $filter }}` beads, `mitto_ui_notify` (info) that {{ if $emptyMsg }}{{ $emptyMsg }}{{ else }}nothing matches{{ end }} and stop.
+  If the user cancels, acknowledge and stop.
+{{- end }}
+{{- /* no trailing newline */ -}}

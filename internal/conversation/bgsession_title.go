@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// NeedsTitle returns true if the session has no title yet and needs auto-title generation.
-// Returns false if the session already has a title (either auto-generated or user-set).
+// NeedsTitle returns true if the session needs an initial or upgraded auto-title.
+// Returns false if the session already has a final title.
 func (bs *BackgroundSession) NeedsTitle() bool {
 	return bs.titleCoord.needsTitle(bs)
 }
@@ -49,6 +49,15 @@ func (bs *BackgroundSession) TriggerTitleGenerationFromLoop(prompt, promptName s
 
 // sessionHasNoTitle reports whether the session currently lacks a name.
 func (bs *BackgroundSession) sessionHasNoTitle() bool {
+	if bs.store == nil || bs.persistedID == "" {
+		return false
+	}
+	meta, err := bs.store.GetMetadata(bs.persistedID)
+	return err == nil && meta.Name == ""
+}
+
+// sessionNeedsTitle reports whether the session needs an initial or upgraded title.
+func (bs *BackgroundSession) sessionNeedsTitle() bool {
 	return SessionNeedsTitle(bs.store, bs.persistedID)
 }
 

@@ -1,0 +1,126 @@
+icon: list
+name: Mention — plan phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID whose @mitto mention is being planned
+  - name: MentionTS
+    type: text
+    required: false
+    description: RFC3339 timestamp of the @mitto mention being processed (dedup key)
+  - name: MentionBody
+    type: text
+    required: false
+    description: Verbatim body of the @mitto mention (already scoped by the router)
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
+description: Internal phase-tier prompt — plan a fix/feature @mitto mention and add the `mention-planned` label. Invoked by name from the mention driver; runs on the Reasoning tier.
+group: Tasks
+backgroundColor: '#B3E5FC'
+preferredModels:
+  - modelTag: Reasoning
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Mention — Plan Phase
+
+  This is the **plan** stage of the label-encoded @mitto-mention state machine
+  (`mention-investigated` → `mention-planned` → `mention-implemented` for the fix/feature
+  route). It is normally invoked by name from the `Mention — driver` router, which
+  selects this phase when a fix-style mention carries `mention-investigated` but not
+  yet `mention-planned`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $suffix := "" -}}
+  {{ if .Args.MentionTS }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." .Args.MentionTS }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"      $target
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+  ) }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array, description, prior comments (especially the
+  `Investigation [tier: Reasoning]:` comment from the investigate phase — it tells you
+  the root cause and code locations), and any related acceptance criteria. If
+  `mention-planned` is already present, this phase's work is already done — `bd comment`
+  a note that the phase re-ran redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Produce an implementation plan
+
+  This is a **scheduled, silent** phase (invoked by the router's on-completion loop).
+  Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` — decide
+  autonomously; if something is genuinely unclear or unsolvable without user input,
+  defer via **Step 4**.
+
+  Read the bead's description, acceptance criteria, the investigate-phase findings,
+  and any related code so the plan is grounded in the actual codebase — do not
+  speculate about code you have not opened. The mention body (already scoped by the
+  router){{ if .Args.MentionBody }}:
+
+  ```
+  {{ .Args.MentionBody }}
+  ```
+  {{ else }} is available in the bead's comment stream at the timestamp above.{{ end }}
+
+  Produce a concrete implementation plan: the approach, key design decisions, and
+  the files/areas the implement phase will touch. Keep it scoped to what the mention
+  asked for — do not gold-plate.
+
+  ## Step 3 — Record the plan and advance the label
+
+  When the plan is concrete enough for the next phase to implement it, record it on
+  the bead and advance the state:
+
+  ```bash
+  bd comment {{ $target }} "Plan [tier: Reasoning]: <approach, key design decisions, files/areas touched — scoped to the @mitto mention>."
+  bd update {{ $target }} --add-label mention-planned
+  ```
+
+  Only add the label after the comment is posted. Then stop — the router's next
+  scheduled run will pick up the `mention-planned` state and dispatch the implement
+  phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-bead>"
+      "Label"       "mention-planned"
+      "BlockedAt"   "mention-plan"
+      "Style"       "long"
+      "LoopWord"    "router"
+  ) }}
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`mention-planned`). Do
+    not investigate, implement, or answer — those are separate phases.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the phase; never assume labels from a prior run or from `Item.*`.
+  - **Always log to the tracker** with `bd comment` so progress is auditable.
+  - **Tier tag every comment.** Prefix the plan with `Plan [tier: Reasoning]:` so the
+    tier split is observable in the bead history (mitto-91wk acceptance criteria).

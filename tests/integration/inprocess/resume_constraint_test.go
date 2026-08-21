@@ -7,15 +7,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // setupTestServerWithModelConstraint creates a test server whose mock-acp server
@@ -80,7 +81,7 @@ func setupTestServerWithModelConstraint(t *testing.T, pattern string) *TestServe
 		Server:     srv,
 		HTTPServer: httpServer,
 		Store:      store,
-		Client:     client.New(httpServer.URL),
+		Client:     api.New(httpServer.URL),
 		TempDir:    tmpDir,
 		MockACPCmd: mockACPCmd,
 	}
@@ -98,7 +99,7 @@ func TestResumeModelConstraint(t *testing.T) {
 
 	ts := setupTestServerWithModelConstraint(t, "Opus")
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{
 		Name: "Resume Constraint Test",
 	})
 	if err != nil {
@@ -110,7 +111,7 @@ func TestResumeModelConstraint(t *testing.T) {
 	// populates model info (lazy creation defers this to the first prompt).
 	var promptComplete bool
 	var promptMu sync.Mutex
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			t.Logf("Connected: session=%s", sid)
 		},
@@ -189,4 +190,72 @@ func TestResumeModelConstraint(t *testing.T) {
 		return resumedBS.GetConfigValue("model") == expectedModelID
 	}, "model constraint to be re-applied on resume (Opus)")
 	t.Logf("Post-resume model: %s", resumedBS.GetConfigValue("model"))
+}
+
+// TestResumeModelConstraint_LandsBeforeQueuedPrompt reproduces mitto-qori.
+// A queued turn must not reach the agent until the startup model constraint has
+// successfully landed, even when the first set_model attempt fails transiently.
+func TestResumeModelConstraint_LandsBeforeQueuedPrompt(t *testing.T) {
+	const (
+		sessionID    = "mitto-qori-resume-order"
+		promptMarker = "MITTO_QORI_QUEUED_PROMPT"
+	)
+	orderFile := filepath.Join(t.TempDir(), "rpc-order.log")
+	ts := setupTestServerWithModelConstraintAndEnv(t, "Opus", map[string]string{
+		"MOCK_RPC_ORDER_FILE":       orderFile,
+		"MOCK_SET_MODEL_FAIL_FIRST": "1",
+	})
+	workingDir := filepath.Join(ts.TempDir, "workspace")
+
+	if err := ts.Store.Create(session.Metadata{
+		SessionID:  sessionID,
+		Name:       "mitto-qori resume ordering",
+		ACPServer:  "mock-acp",
+		WorkingDir: workingDir,
+		Status:     session.SessionStatusActive,
+	}); err != nil {
+		t.Fatalf("create persisted session: %v", err)
+	}
+	if _, err := ts.Store.Queue(sessionID).Add(promptMarker, nil, nil, "test", nil, 0, nil, ""); err != nil {
+		t.Fatalf("seed persisted queue: %v", err)
+	}
+
+	bs, err := ts.Server.GetSessionManager().ResumeSession(sessionID, "mitto-qori resume ordering", workingDir)
+	if err != nil {
+		t.Fatalf("resume session: %v", err)
+	}
+	t.Cleanup(func() { bs.Close("test_cleanup") })
+
+	deadline := time.Now().Add(3 * time.Second)
+	var lines []string
+	for time.Now().Before(deadline) {
+		lines = readRPCOrder(t, orderFile)
+		if indexRPCLineContaining(lines, "set_model\t", "claude-opus-4-6") >= 0 &&
+			indexRPCLineContaining(lines, promptMarker) >= 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	modelIdx := indexRPCLineContaining(lines, "set_model\t", "claude-opus-4-6")
+	promptIdx := indexRPCLineContaining(lines, promptMarker)
+	if modelIdx < 0 || promptIdx < 0 {
+		t.Fatalf("missing successful model switch or queued prompt in RPC order: set_model=%d prompt=%d lines=%q", modelIdx, promptIdx, lines)
+	}
+	if modelIdx >= promptIdx {
+		t.Fatalf("queued prompt reached agent before startup model constraint landed: set_model=%d prompt=%d lines=%v", modelIdx, promptIdx, lines)
+	}
+}
+
+func indexRPCLineContaining(lines []string, parts ...string) int {
+	for i, line := range lines {
+		matched := true
+		for _, part := range parts {
+			matched = matched && strings.Contains(line, part)
+		}
+		if matched {
+			return i
+		}
+	}
+	return -1
 }

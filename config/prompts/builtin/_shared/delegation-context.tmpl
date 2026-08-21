@@ -1,0 +1,36 @@
+{{/*
+  delegation-context — the standard "Session context for delegation"
+  preamble that lets a prompt hand off work to child conversations via
+  `mitto_conversation_new` / `mitto_conversation_send_prompt`.
+
+  Renders the running session's ID (used as `self_id` in every `mitto_*`
+  tool call), the workspace's configured ACP-server catalog, and the
+  currently-existing children (when any). The children section is
+  emitted only when `.Children.AllText` is non-empty so an empty
+  workspace does not print a stray "Existing children:" heading.
+
+  Consumers: code/cleanup-code, code/optimize, code/refactor,
+  code/simplify, ci/fix-ci, ci/fix-errors.
+
+  Usage — parameter-less; renders against the ambient
+  *PromptEnabledContext so `.Session`, `.ACP`, and `.Children` resolve:
+
+      {{ template "_shared/delegation-context" . }}
+
+  The fragment uses only `.` accessors and no funcs, so it is safe to
+  attach to every render context (target.title paths included).
+*/}}
+**Session context for delegation:**
+
+Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
+
+Available ACP servers:
+{{ .ACP.AvailableText }}
+{{- if .Children.AllText }}
+
+Existing children:
+{{ .Children.AllText }}
+{{- else }}
+
+No children conversations.
+{{- end }}

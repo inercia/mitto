@@ -24,11 +24,11 @@ Conversation settings live under the `conversations` key in `~/.mittorc` or `set
 
 ```yaml
 conversations:
-  auto_approve: false        # Auto-approve agent tool calls (default: false)
-  auto_archive: 0            # Auto-archive after N minutes of inactivity (0 = disabled)
-  auto_delete: 0             # Auto-delete archived conversations after N minutes (0 = disabled)
+  auto_approve: false # Auto-approve agent tool calls (default: false)
+  auto_archive: 0 # Auto-archive after N minutes of inactivity (0 = disabled)
+  auto_delete: 0 # Auto-delete archived conversations after N minutes (0 = disabled)
   external_images:
-    enabled: false            # Allow external HTTPS images in responses (default: false)
+    enabled: false # Allow external HTTPS images in responses (default: false)
 ```
 
 ### Inline Processors
@@ -82,24 +82,28 @@ Loop conversations run on a schedule indefinitely by default. To prevent runaway
 2. **User-configurable default cap** (`max_loop_iterations` in settings) — applies when no per-prompt cap is set.
 3. **Hardcoded backstop** (`GlobalMaxLoopIterations = 1000`) — an absolute ceiling that always applies, even when both the per-prompt cap and user cap are set to 0 (unlimited).
 
-The **effective cap** is the smallest positive value among the three: per-prompt `max_iterations`, the configured `max_loop_iterations`, and the hardcoded backstop of 1000.
+The **effective cap** depends on whether the prompt author has expressed an opinion:
+
+- **Per-prompt cap `= 0` (unlimited)** — the prompt author has explicitly opted out of any per-prompt cap (the standing-supervisor contract). The `max_loop_iterations` config default is **ignored**; only the hardcoded backstop of 1000 applies.
+- **Per-prompt cap `> 0`** — the effective cap is the smallest positive of `{ per-prompt max_iterations, max_loop_iterations, 1000 }`.
 
 Examples:
+
 - Per-prompt cap = 0 (unlimited), config cap = 0 (unlimited) → effective cap = 1000 (backstop)
 - Per-prompt cap = 5, config cap = 100 → effective cap = 5
-- Per-prompt cap = 0, config cap = 200 → effective cap = 200
+- Per-prompt cap = 0, config cap = 200 → effective cap = 1000 (author opted out; config default ignored)
 - Per-prompt cap = 2000, config cap = 50 → effective cap = 50
 
 ### Configuration
 
 ```yaml
 conversations:
-  max_loop_iterations: 100  # Default cap for all loop conversations (default: 100, 0 = unlimited)
+  max_loop_iterations: 100 # Default cap for all loop conversations (default: 100, 0 = unlimited)
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `max_loop_iterations` | integer | `100` | Default maximum number of scheduled runs for any loop conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
+| Field                 | Type    | Default | Description                                                                                                                               |
+| --------------------- | ------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_loop_iterations` | integer | `100`   | Default maximum number of scheduled runs for any loop conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
 
 **Via Settings UI:**
 
@@ -110,22 +114,22 @@ conversations:
 
 ## On-Completion Trigger and Max Duration
 
-Loop conversations can fire on a fixed schedule (the default) or **after the agent stops responding** (`trigger: onCompletion`). On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
+Loop conversations can fire on a fixed schedule (the default), **after the agent stops responding** (`onCompletion`), when beads/tasks change (`onTasks`), or on several of these at once — see [Loop Prompts → Triggers](prompts.md#triggers-independent-multi-trigger-arming) for the full multi-trigger schema. On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
 
 To prevent runaway hot loops, the on-completion `delay` is clamped up to a global floor:
 
 ```yaml
 conversations:
-  min_loop_completion_delay_seconds: 5  # Floor for the onCompletion delay (default: 5)
+  min_loop_completion_delay_seconds: 5 # Floor for the onCompletion delay (default: 5)
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `min_loop_completion_delay_seconds` | integer | `5` | Lower bound (seconds) applied to every on-completion loop `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
+| Field                               | Type    | Default | Description                                                                                                                                                         |
+| ----------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `min_loop_completion_delay_seconds` | integer | `5`     | Lower bound (seconds) applied to every on-completion loop `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
 
 A conversation can also be bounded by **wall-clock time** via the loop prompt's `maxDuration` (a duration string such as `30m`, `4h`, `1d`). Measured from the first run, once it elapses the conversation auto-stops (the loop prompt is **disabled**, not deleted) on the next check — for both `schedule` and `onCompletion` triggers. This complements the iteration limit above: a loop stops at whichever bound (max iterations or max duration) is reached first.
 
-See the prompt-side schema in [Loop Prompts → Triggers](prompts.md#triggers-schedule-vs-on-completion).
+See the prompt-side schema in [Loop Prompts → Triggers](prompts.md#triggers-independent-multi-trigger-arming).
 
 ## Related Documentation
 

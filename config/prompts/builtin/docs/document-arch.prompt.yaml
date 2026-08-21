@@ -1,0 +1,33 @@
+icon: layers
+name: Document Architecture
+menus: prompts, !promptsLoop
+description: Update developer/architecture documentation for the changes we just made
+group: Documentation
+backgroundColor: '#CE93D8'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'Document Architecture'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Before updating any documentation, read the code changes we made and any existing
+  architecture documentation. Understand what changed and how it affects the system's
+  design before writing or updating docs.
+
+  Update the developer and architecture documentation to reflect the changes we just made.
+
+  ### Architecture-specific coverage
+
+  1. **New packages/modules**: Add to architecture docs, create dedicated doc if complex
+  2. **API changes**: Update relevant docs with new interfaces, methods, types
+  3. **Flow changes**: Update diagrams if the project uses them
+  4. **Design decisions**: Document rationale for non-obvious choices
+  5. **New patterns**: Add examples and guidelines
+
+  Write for developers contributing to the codebase. Explain design decisions and
+  trade-offs so future contributors understand the reasoning behind architectural
+  choices, and use Mermaid diagrams when they make flows or relationships clearer.
+
+  {{ template "docs/shared/documentation-quality" . }}

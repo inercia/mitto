@@ -108,6 +108,23 @@ export const CYCLING_MODE_OPTIONS = [
 ];
 
 /**
+ * Palette of preset colors offered by the "Change color" conversation menu.
+ * Each hex is stored uppercase in `session.background_color`.
+ */
+export const CONVERSATION_COLORS = [
+  { name: "Red", hex: "#FFCDD2" },
+  { name: "Orange", hex: "#FFE0B2" },
+  { name: "Yellow", hex: "#FFF9C4" },
+  { name: "Green", hex: "#C8E6C9" },
+  { name: "Teal", hex: "#B2DFDB" },
+  { name: "Blue", hex: "#B3E5FC" },
+  { name: "Indigo", hex: "#C5CAE9" },
+  { name: "Purple", hex: "#E1BEE7" },
+  { name: "Pink", hex: "#F8BBD0" },
+  { name: "Grey", hex: "#E0E0E0" },
+];
+
+/**
  * Keyboard shortcuts configuration
  * Used by the KeyboardShortcutsDialog to display available shortcuts
  *

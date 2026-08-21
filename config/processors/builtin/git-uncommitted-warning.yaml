@@ -1,0 +1,54 @@
+##########################################################################################
+# Builtin processor: warns the agent to protect uncommitted changes in the working tree.
+#
+# When the workspace is a git repository AND the working tree has pending changes
+# (staged, unstaged, or untracked — anything git status --porcelain reports), this
+# processor prepends a safety warning that lists the affected files and instructs
+# the agent to confirm with the user before running any destructive git operation.
+#
+# Activation conditions:
+#   - GitRepo() — the working directory is inside a git work tree
+#   - GitDirModified() — git status --porcelain reports at least one pending change
+# Both gates fail-closed to false outside a repo or when git is unavailable, so this
+# processor stays silent on non-git workspaces and clean trees automatically.
+#
+# Throttling:
+#   - Fires on the first message, then re-runs periodically (matches session-context)
+#     so the warning stays fresh across long conversations without spamming every turn.
+#
+# Uses text-mode (no external command).
+##########################################################################################
+name: git-uncommitted-warning
+description: "Warns the agent to protect uncommitted changes in the working tree"
+enabled: true
+enabledWhen: 'GitRepo() && GitDirModified()'
+when:
+  on: userPrompt
+  match: first
+  rerun:
+    afterTime: 30m
+    afterSentMsgs: 20
+    afterTokens: 80000
+mutate: prepend
+priority: 15
+text: |
+  [Uncommitted Changes Warning]
+  The working tree has uncommitted changes:
+
+  ```
+  {{ range GitStatusFiles }}{{ . }}
+  {{ end }}```
+
+  Before running any destructive git operation (checkout -f, reset --hard,
+  clean -fd, stash drop, rebase, branch -D, worktree remove,
+  restore --source, switch --discard-changes), you MUST:
+
+  1. Confirm with the user before discarding, resetting, or overwriting any
+     of these changes.
+  2. Prefer non-destructive alternatives — `git stash push -u`, a WIP commit
+     on a scratch branch, or `git add -N` — when in doubt.
+
+  Do NOT assume uncommitted changes are safe to drop just because they look
+  unrelated to the current task: a concurrent conversation, a loop, or the
+  user may be actively working on them.
+  ---

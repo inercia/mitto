@@ -21,6 +21,11 @@ import {
   migrateLegacyTabStorage,
   getDensity,
   setDensity,
+  getDashboardHiddenCharts,
+  setDashboardHiddenCharts,
+  initUIPreferences,
+  onUIPreferencesLoaded,
+  _resetUIPreferencesStateForTests,
 } from "./storage.js";
 
 const DENSITY_KEY = "mitto_conversation_density";
@@ -69,6 +74,202 @@ beforeEach(() => {
   Object.defineProperty(window, "sessionStorage", {
     value: sessionStorageMock,
     writable: true,
+  });
+});
+
+// =============================================================================
+// UI Preferences Server Sync Tests (mitto-7gta.17 slice S1: SDK client)
+// =============================================================================
+//
+// initUIPreferences()/saveUIPreferencesToServer() were migrated from
+// authFetch/secureFetch onto getSdkClient().misc.uiPreferences.get()/.save()
+// in slice S1 but had no dedicated coverage — the module-level `global.fetch`
+// stub above only prevents test crashes, it never asserted on the request or
+// on how a response (or a failure) is applied. These tests fill that gap.
+
+/** A successful JSON response. `.text()` is what sdk/core/transport.js's
+ * decodeBody() reads; `.json()` is what sdk/auth/browser-cookie.js's CSRF
+ * token pre-flight (fired for the PUT save) reads — both are provided so
+ * either code path can decode the same mock response. */
+function jsonResponse(data, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (name) =>
+        name.toLowerCase() === "content-type" ? "application/json" : null,
+    },
+    text: () => Promise.resolve(JSON.stringify(data)),
+    json: () => Promise.resolve(data),
+  };
+}
+
+/** A non-2xx response, for exercising the SDK's MittoApiError throw path. */
+function errorResponse(status, body) {
+  return {
+    ok: false,
+    status,
+    headers: { get: () => null },
+    text: () => Promise.resolve(JSON.stringify(body)),
+  };
+}
+
+describe("initUIPreferences", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    _resetUIPreferencesStateForTests();
+  });
+
+  test("fetches GET /api/ui-preferences via the SDK client and syncs every field to localStorage", async () => {
+    const prefs = {
+      grouping_mode: "workspace",
+      expanded_groups: { foo: true },
+      prompt_sort_mode: "name",
+      font_size: "large",
+      theme: "dark",
+      theme_light: "mitto-light",
+      theme_dark: "mitto-dark",
+      follow_system_theme: false,
+      follow_system_reduced_motion: true,
+      reduce_animations: true,
+      dashboard_hidden_charts: ["tokens"],
+    };
+    let capturedUrl;
+    let capturedMethod;
+    global.fetch = (url, init) => {
+      capturedUrl = url;
+      capturedMethod = init?.method;
+      return Promise.resolve(jsonResponse(prefs));
+    };
+
+    await initUIPreferences();
+
+    expect(capturedMethod).toBe("GET");
+    expect(capturedUrl).toContain("/api/ui-preferences");
+    expect(mockStore["mitto_conversation_grouping_mode"]).toBe("workspace");
+    expect(JSON.parse(mockStore["mitto_conversation_expanded_groups"])).toEqual(
+      {
+        foo: true,
+      },
+    );
+    expect(mockStore["mitto_prompt_sort_mode"]).toBe("name");
+    expect(mockStore["mitto-font-size"]).toBe("large");
+    expect(mockStore["mitto-theme"]).toBe("dark");
+    expect(mockStore["mitto-theme-light"]).toBe("mitto-light");
+    expect(mockStore["mitto-theme-dark"]).toBe("mitto-dark");
+    expect(mockStore["mitto-follow-system-theme"]).toBe("false");
+    expect(mockStore["mitto-follow-system-reduced-motion"]).toBe("true");
+    expect(mockStore["mitto-reduce-animations"]).toBe("true");
+    expect(JSON.parse(mockStore["mitto-dashboard-hidden-charts"])).toEqual([
+      "tokens",
+    ]);
+  });
+
+  test("notifies onUIPreferencesLoaded listeners with the fetched preferences", async () => {
+    const prefs = { grouping_mode: "server" };
+    global.fetch = () => Promise.resolve(jsonResponse(prefs));
+
+    const received = [];
+    const unsubscribe = onUIPreferencesLoaded((p) => received.push(p));
+
+    await initUIPreferences();
+
+    expect(received).toEqual([prefs]);
+    unsubscribe();
+  });
+
+  test("a listener subscribed after load has already completed fires immediately with the cached prefs", async () => {
+    const prefs = { grouping_mode: "server" };
+    global.fetch = () => Promise.resolve(jsonResponse(prefs));
+    await initUIPreferences();
+
+    const received = [];
+    onUIPreferencesLoaded((p) => received.push(p));
+
+    expect(received).toEqual([prefs]);
+  });
+
+  test("caches the sync promise: a second call does not issue a second request", async () => {
+    let fetchCount = 0;
+    global.fetch = () => {
+      fetchCount++;
+      return Promise.resolve(jsonResponse({ grouping_mode: "server" }));
+    };
+
+    await initUIPreferences();
+    await initUIPreferences();
+
+    expect(fetchCount).toBe(1);
+  });
+
+  test("a network failure is caught and does not throw or populate localStorage", async () => {
+    global.fetch = () => Promise.reject(new Error("network down"));
+
+    await expect(initUIPreferences()).resolves.toBeUndefined();
+    expect(mockStore["mitto_conversation_grouping_mode"]).toBeUndefined();
+  });
+
+  test("a non-2xx response (SDK throws MittoApiError) is caught and does not throw", async () => {
+    global.fetch = () => Promise.resolve(errorResponse(500, { error: "boom" }));
+
+    await expect(initUIPreferences()).resolves.toBeUndefined();
+  });
+});
+
+describe("saveUIPreferencesToServer (via setGroupingMode)", () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    _resetUIPreferencesStateForTests();
+  });
+
+  test("PUTs the current preferences to /api/ui-preferences after the debounce window", async () => {
+    let capturedUrl;
+    let capturedMethod;
+    let capturedBody;
+    global.fetch = (url, init) => {
+      capturedUrl = url;
+      capturedMethod = init?.method;
+      capturedBody = init?.body ? JSON.parse(init.body) : null;
+      return Promise.resolve(jsonResponse({}));
+    };
+
+    setGroupingMode("workspace");
+    // Debounce is 500ms; wait past it for the async save to fire.
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    expect(capturedMethod).toBe("PUT");
+    expect(capturedUrl).toContain("/api/ui-preferences");
+    expect(capturedBody.grouping_mode).toBe("workspace");
+  });
+
+  test("debounces rapid successive changes into a single PUT", async () => {
+    // Count only the actual save PUTs, not the CSRF-token GET pre-flight
+    // browserCookieAuth issues once per state-changing request.
+    let putCount = 0;
+    global.fetch = (url, init) => {
+      if ((init?.method || "GET").toUpperCase() === "PUT") putCount++;
+      return Promise.resolve(jsonResponse({}));
+    };
+
+    setGroupingMode("server");
+    setGroupingMode("workspace");
+    setGroupingMode("folder");
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    expect(putCount).toBe(1);
+  });
+
+  test("a failed PUT is caught and does not throw or propagate", async () => {
+    global.fetch = () => Promise.resolve(errorResponse(500, { error: "boom" }));
+
+    expect(() => setGroupingMode("workspace")).not.toThrow();
+    // Let the debounced, now-rejecting save settle without an unhandled
+    // rejection surfacing (it must be caught internally).
+    await new Promise((resolve) => setTimeout(resolve, 550));
   });
 });
 
@@ -608,5 +809,138 @@ describe("setDensity", () => {
     expect(getDensity()).toBe("comfortable");
     setDensity("condensed");
     expect(getDensity()).toBe("condensed");
+  });
+});
+
+// =============================================================================
+// getDashboardHiddenCharts / setDashboardHiddenCharts (mitto-4t8 / mitto-3i2)
+// =============================================================================
+//
+// Pins the storage-level contract used by StatsCharts.js's
+// useDashboardHiddenCharts hook: (a) parsing rejects unknown ids and non-array
+// payloads defensively, (b) writes filter to strings and dispatch the
+// live-update CustomEvent BEFORE the debounced server sync, so any open
+// Dashboard reacts instantly.
+
+const DASHBOARD_HIDDEN_CHARTS_KEY = "mitto-dashboard-hidden-charts";
+const DASHBOARD_EVENT_NAME = "mitto-dashboard-hidden-charts-changed";
+
+describe("getDashboardHiddenCharts", () => {
+  test("returns [] when nothing persisted", () => {
+    expect(getDashboardHiddenCharts()).toEqual([]);
+  });
+
+  test("returns the persisted array when it is a subset of the known ids", () => {
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify(["tokens", "model_usage"]),
+    );
+    expect(getDashboardHiddenCharts()).toEqual(["tokens", "model_usage"]);
+  });
+
+  test("drops unknown ids and non-string entries (opt-out defence)", () => {
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify(["tokens", "bogus", 42, null, "tool_calls"]),
+    );
+    // Only canonical ids survive; ordering follows the persisted array.
+    expect(getDashboardHiddenCharts()).toEqual(["tokens", "tool_calls"]);
+  });
+
+  test("returns [] when the stored value is not an array", () => {
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify({ tokens: true }),
+    );
+    expect(getDashboardHiddenCharts()).toEqual([]);
+  });
+
+  test("returns [] when the stored value is malformed JSON", () => {
+    localStorageMock.setItem(DASHBOARD_HIDDEN_CHARTS_KEY, "not-json");
+    // The parse error is swallowed with a console.warn; the caller sees the
+    // safe fallback (empty array = everything visible).
+    expect(getDashboardHiddenCharts()).toEqual([]);
+  });
+
+  test("accepts the beads_activity / beads_cycle_time ids (mitto-5rm6)", () => {
+    // Pins that KNOWN_DASHBOARD_CHART_IDS was actually extended for the
+    // beads throughput charts, not just claimed in a commit message — a
+    // dropped mirror entry would otherwise silently un-hide-able these two
+    // charts (getDashboardHiddenCharts filters unknown ids out on read).
+    localStorageMock.setItem(
+      DASHBOARD_HIDDEN_CHARTS_KEY,
+      JSON.stringify(["beads_activity", "beads_cycle_time"]),
+    );
+    expect(getDashboardHiddenCharts()).toEqual([
+      "beads_activity",
+      "beads_cycle_time",
+    ]);
+  });
+});
+
+describe("setDashboardHiddenCharts", () => {
+  test("writes a JSON-encoded array to localStorage", () => {
+    setDashboardHiddenCharts(["tokens", "tool_calls"]);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(
+      JSON.stringify(["tokens", "tool_calls"]),
+    );
+  });
+
+  test("coerces a non-array input to [] (never throws)", () => {
+    setDashboardHiddenCharts(null);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(JSON.stringify([]));
+    setDashboardHiddenCharts(undefined);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(JSON.stringify([]));
+    setDashboardHiddenCharts("tokens");
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(JSON.stringify([]));
+  });
+
+  test("filters out non-string entries before persisting", () => {
+    setDashboardHiddenCharts(["tokens", 42, null, "tool_calls", undefined]);
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(
+      JSON.stringify(["tokens", "tool_calls"]),
+    );
+  });
+
+  test("dispatches the mitto-dashboard-hidden-charts-changed CustomEvent with the sanitised ids", () => {
+    const events = [];
+    const listener = (e) => events.push(e);
+    window.addEventListener(DASHBOARD_EVENT_NAME, listener);
+    try {
+      setDashboardHiddenCharts(["tokens", 7, "model_usage"]);
+    } finally {
+      window.removeEventListener(DASHBOARD_EVENT_NAME, listener);
+    }
+    expect(events).toHaveLength(1);
+    // Every open Dashboard reads `detail.ids` and re-renders on this signal.
+    expect(events[0].detail).toEqual({ ids: ["tokens", "model_usage"] });
+    // Payload matches what was persisted (no drift between the localStorage
+    // write and the broadcast — the hook can read either as source of truth).
+    expect(mockStore[DASHBOARD_HIDDEN_CHARTS_KEY]).toBe(
+      JSON.stringify(["tokens", "model_usage"]),
+    );
+  });
+
+  test("dispatches the CustomEvent even for an empty selection (show-everything path)", () => {
+    // Regression: the "show everything again" path (user unhides the last
+    // chart in Settings ▸ Dashboard) must still broadcast so the Dashboard
+    // stops rendering the empty-state fallback.
+    const events = [];
+    const listener = (e) => events.push(e);
+    window.addEventListener(DASHBOARD_EVENT_NAME, listener);
+    try {
+      setDashboardHiddenCharts([]);
+    } finally {
+      window.removeEventListener(DASHBOARD_EVENT_NAME, listener);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0].detail).toEqual({ ids: [] });
+  });
+
+  test("round-trips through getDashboardHiddenCharts", () => {
+    setDashboardHiddenCharts(["tokens", "prompts_vs_turns"]);
+    expect(getDashboardHiddenCharts()).toEqual(["tokens", "prompts_vs_turns"]);
+    setDashboardHiddenCharts([]);
+    expect(getDashboardHiddenCharts()).toEqual([]);
   });
 });

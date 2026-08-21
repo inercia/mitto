@@ -1,0 +1,65 @@
+{{/*
+  claim-entry — passive-claim + first-heartbeat block placed at the top of
+  every L2 loop-driver's per-iteration body (feature / bug / mention).
+  Adds the `in-flight` label (idempotent) and stamps three metadata keys:
+
+    claimed_by         — session ID of this L2 driver conversation
+    claimed_at         — RFC 3339 UTC, set once on the initial claim
+    claim_heartbeat_at — RFC 3339 UTC, refreshed every iteration
+
+  Bead `status` intentionally STAYS `open` — the whole point of the design
+  (mitto-ial): a driver crash mid-work must not leave the bead stranded in
+  `in_progress`, and `bd close` still lands cleanly regardless. The L1
+  orchestrator's Step 2R reaper is the crash-recovery guarantee.
+
+  Idempotency: on re-entry, if `claimed_by` already equals this session ID,
+  we skip the label add and only refresh `claim_heartbeat_at` (below). If
+  `claimed_by` is set to a DIFFERENT session, this driver was spawned onto
+  a bead another loop is already claiming — post a comment and defer to
+  Step 4 rather than clobber the peer.
+
+  Usage — right after the "Load LIVE state" step, before any label branch:
+
+      {{ template "beads-issues/shared/claim-entry" (dict
+          "Target"    $target
+          "SessionID" .Session.ID
+      ) }}
+
+  Parameters:
+    Target    — the resolved bead ID (empty string skips the whole block —
+                the driver's own missing-target handler already fires).
+    SessionID — this driver conversation's session ID.
+*/}}
+{{- if .Target }}
+## Step 0 — Claim + first heartbeat (crash-recovery guarantee)
+
+This driver claims the bead **passively** — adding the `in-flight` label and
+three metadata keys — while leaving `status=open` so a driver crash does not
+strand the bead. The L1 orchestrator's Step 2R reaper releases stale claims.
+
+Read the current claim before writing:
+
+```bash
+claim_owner=$(bd show {{ .Target }} --json | jq -r '.[0].metadata.claimed_by // empty')
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if [ -z "$claim_owner" ]; then
+  # Fresh claim: add label + stamp all three keys.
+  bd update {{ .Target }} --add-label in-flight \
+    --set-metadata "claimed_by={{ .SessionID }}" \
+    --set-metadata "claimed_at=$now" \
+    --set-metadata "claim_heartbeat_at=$now"
+  bd comment {{ .Target }} "Driver {{ .SessionID }}: claimed (in-flight) at $now."
+elif [ "$claim_owner" = "{{ .SessionID }}" ]; then
+  # Re-entry: refresh heartbeat only (label already present).
+  bd update {{ .Target }} --set-metadata "claim_heartbeat_at=$now"
+else
+  # Foreign claim: another driver owns this bead. Do NOT clobber; defer.
+  bd comment {{ .Target }} "Driver {{ .SessionID }}: bead already claimed by $claim_owner; deferring to peer."
+  # Fall through to Step 4 (Blocked → Defer + Handoff) below.
+fi
+```
+
+If the foreign-claim branch fired, jump to **Step 4 (Blocked → Defer + Handoff)**
+now with root cause `bead is claimed by peer conversation $claim_owner` — do not
+proceed with any phase work this iteration.
+{{- end }}

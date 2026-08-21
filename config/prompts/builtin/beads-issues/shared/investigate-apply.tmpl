@@ -1,0 +1,45 @@
+{{/*
+  investigate-apply — the write-back block that persists an Investigation
+  Report into a bead: enriched description / acceptance / design, the report
+  itself as a durable `bd comment`, and the mandatory audit note. Shared by
+  beads-issues/investigate and beads/investigate-all-more ("Investigate ALL
+  more") so the two prompts cannot drift on which fields they touch or on
+  the always-append-an-audit-note invariant.
+
+  Parameters (dict):
+    Target        — the bead ID (multi-bead callers pass `<bead-id>`).
+    ExtraCommands — optional extra command lines appended inside the same
+                    bash fence (e.g. a `bd label add` that flags the bead as
+                    already investigated). Renders nothing when unset.
+
+      {{ template "beads-issues/shared/investigate-apply" (dict
+          "Target" $target) }}
+      {{ template "beads-issues/shared/investigate-apply" (dict
+          "Target" "<bead-id>"
+          "ExtraCommands" "bd label add investigated <bead-id>") }}
+*/}}
+Enrich the bead (only the fields that changed). Write longer text to a temp file and pass it via a
+`*-file` flag to preserve Markdown:
+
+```bash
+bd update {{ .Target }} --body-file /tmp/bead-desc.md     # enriched description
+bd update {{ .Target }} --acceptance "<testable criteria>"
+bd update {{ .Target }} --design-file /tmp/bead-design.md # design/approach notes
+# Record the investigation in the bead's history for future reference — write the Investigation
+# Report (findings, code locations, approach, resolved questions) to a temp file and post it as a
+# comment:
+bd comment {{ .Target }} --file /tmp/investigation-report.md
+# Audit note (always) — what changed and why, in plain language:
+bd update {{ .Target }} --append-notes "<what changed and why — e.g. 'After deeper investigation, the bug stems from <root cause>; updated the description and acceptance criteria accordingly.'>"
+# Optional: --add-label <l>, -p <0-4>, -t <type> if the investigation changed them
+{{- with .ExtraCommands }}
+{{ . }}
+{{- end }}
+```
+
+**Always** append the audit note above whenever you change any field — record *what changed and
+why* in plain language, even for small edits, so the bead carries its own history. The `bd comment`
+posts the fuller investigation findings as a durable work artifact in the bead's discussion.
+
+Keep the design **self-contained** — a later implementer should not need to re-derive context.
+Reference exact paths and existing patterns rather than vague descriptions.

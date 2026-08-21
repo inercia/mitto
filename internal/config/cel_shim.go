@@ -18,6 +18,9 @@ type PromptEnabledContext = cel.PromptEnabledContext
 type IterationContext = cel.IterationContext
 type TriggerContext = cel.TriggerContext
 type TriggerOnTasksContext = cel.TriggerOnTasksContext
+type TriggerOnChildContext = cel.TriggerOnChildContext
+type TriggerSlackContext = cel.TriggerSlackContext
+type TriggerOnSlackContext = cel.TriggerOnSlackContext
 type TasksChangesView = cel.TasksChangesView
 type ACPServerInfo = cel.ACPServerInfo
 type ACPContext = cel.ACPContext
@@ -26,11 +29,14 @@ type SessionContext = cel.SessionContext
 type ParentContext = cel.ParentContext
 type ChildInfo = cel.ChildInfo
 type ChildrenContext = cel.ChildrenContext
+type PeerInfo = cel.PeerInfo
+type PeersContext = cel.PeersContext
 type ServerToolState = cel.ServerToolState
 type ServerToolInfo = cel.ServerToolInfo
 type ToolsContext = cel.ToolsContext
 type ItemContext = cel.ItemContext
 type PermissionsContext = cel.PermissionsContext
+type PromptsContext = cel.PromptsContext
 
 // --- Types (tasks_condition.go) ---
 type TasksSnapshot = cel.TasksSnapshot
@@ -57,5 +63,7 @@ var (
 	ValidateCondition          = cel.ValidateCondition
 	FormatACPServers           = cel.FormatACPServers
 	FormatChildren             = cel.FormatChildren
+	FormatPeers                = cel.FormatPeers
 	BuildTemplateFuncMap       = cel.BuildTemplateFuncMap
+	NormalizeTasksUpstream     = cel.NormalizeTasksUpstream
 )

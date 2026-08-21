@@ -165,7 +165,9 @@ type configDeps interface {
 
 	// Record a user-initiated session change to the timeline and push it live to
 	// observers (no-op when no recorder). Generic: kind discriminates the change.
-	cmRecordSessionChange(kind, value, previousValue string)
+	// Returns the recorder's persistence error (if any) so callers can avoid
+	// logging/broadcasting success when the timeline write failed (mitto-9zy1).
+	cmRecordSessionChange(kind, value, previousValue string) error
 }
 
 // configManager is a stateless collaborator owning session-config + model-baseline logic.
@@ -184,14 +186,33 @@ func (c configManager) getConfigValue(d configDeps, configID string) string {
 }
 
 func (c configManager) setConfigOption(d configDeps, ctx context.Context, configID, value string) error {
-	return c.setConfigOptionWithOpts(d, ctx, configID, value, true)
+	err := c.setConfigOptionWithOpts(d, ctx, configID, value, true, true)
+	if err == nil {
+		return nil
+	}
+	opt, ok := d.cmFindByID(configID)
+	if ok && opt.Category == ConfigOptionCategoryModel && isRetryableModelPreferenceError(err) {
+		// Preserve a failed user selection as the intended baseline without
+		// optimistically changing the effective config value. The next prompt's
+		// model-preference preflight will retry this baseline after the agent warms.
+		d.cmSetBaselineAndClearOverride(value)
+		c.persistBaselineModel(d, value)
+		if l := d.cmLogger(); l != nil {
+			l.Info("Preserving retryable model change as pending baseline",
+				"session_id", d.cmSessionID(), "model", value)
+		}
+	}
+	return err
 }
 
 // setConfigOptionWithOpts is the core of setConfigOption. recordTimeline controls
 // whether a model change emits a user-facing session_change timeline pill. The
 // startup/constraint auto-select path passes false so re-selecting the configured
 // model on every session resume does not repeat an identical "Model changed" pill.
-func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline bool) error {
+// deferWhilePrompting is false for startup constraints: a deferred handshake reserves
+// isPrompting before it reports models, but the constraint must land before that turn
+// reaches the agent rather than being deferred behind it (mitto-qori).
+func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline, deferWhilePrompting bool) error {
 	if d.cmIsClosed() {
 		return fmt.Errorf("session is closed")
 	}
@@ -217,7 +238,7 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 	// Under promptMu: if prompting, defer to pending store; otherwise proceed immediately.
 	// Lock ordering: promptMu → pendingConfigMu (never the reverse).
 	d.cmLockPromptMu()
-	if d.cmIsPrompting() {
+	if d.cmIsPrompting() && deferWhilePrompting {
 		d.cmLockPendingConfig()
 		d.cmSetPendingEntry(configID, value)
 		d.cmUnlockPendingConfig()
@@ -263,6 +284,7 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 	}
 	category := opt.Category
 
+	var recordErr error
 	if category == ConfigOptionCategoryMode && d.cmUsesLegacyModes() {
 		if err := d.cmSetSessionMode(ctx, value); err != nil {
 			if l := d.cmLogger(); l != nil {
@@ -288,7 +310,7 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 		d.cmSetBaselineAndClearOverride(value)
 		c.persistBaselineModel(d, value)
 		if recordTimeline {
-			d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
+			recordErr = d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
 		}
 	} else {
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
@@ -297,6 +319,15 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 	d.cmUpdateConfigOptionValue(configID, value)
 	c.persistConfigValue(d, configID, value)
 
+	// mitto-9zy1 defect 2a: when the session-change timeline event failed to
+	// persist, do not claim success — skip the "Config option changed" INFO log
+	// and the live config-changed notification, and surface the failure to the
+	// caller instead. The RPC-applied model change and local config-option state
+	// above are still reflected; only the misleading success signal is suppressed.
+	if recordErr != nil {
+		return fmt.Errorf("failed to record session change for %s: %w", configID, recordErr)
+	}
+
 	if l := d.cmLogger(); l != nil {
 		l.Info("Config option changed", "config_id", configID, "value", value)
 	}
@@ -304,15 +335,15 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 	return nil
 }
 
-func (c configManager) applyConfigConstraints(d configDeps, category string) {
+func (c configManager) applyConfigConstraints(d configDeps, category string) error {
 	constraint := d.cmGetACPServerConstraint(category)
 	if constraint == nil || constraint.Pattern == "" {
-		return
+		return nil
 	}
 
 	opt, ok := d.cmFindByCategory(category)
 	if !ok || len(opt.Options) == 0 {
-		return
+		return nil
 	}
 
 	matchedValue := MatchConstraintOption(constraint, opt.Options)
@@ -322,7 +353,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 				"category", category, "match_mode", constraint.MatchMode,
 				"pattern", constraint.Pattern, "available_count", len(opt.Options))
 		}
-		return
+		return nil
 	}
 
 	alreadySet := opt.CurrentValue == matchedValue
@@ -333,7 +364,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 		if l := d.cmLogger(); l != nil {
 			l.Debug("ACP server constraint: already set to matching value", "category", category, "value", matchedValue)
 		}
-		return
+		return nil
 	}
 
 	if l := d.cmLogger(); l != nil {
@@ -351,7 +382,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 			select {
 			case <-time.After(jitter):
 			case <-d.cmSessionCtx().Done():
-				return
+				return d.cmSessionCtx().Err()
 			}
 		}
 	}
@@ -359,15 +390,43 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 	ctx, cancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
 	defer cancel()
 
-	if err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false); err != nil {
+	err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false, false)
+	if category == ConfigOptionCategoryModel && err != nil && isRetryableModelPreferenceError(err) {
+		timer := time.NewTimer(modelSwitchWarmRetryDelay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return err
+		}
 		if l := d.cmLogger(); l != nil {
-			l.Warn("ACP server constraint: failed to auto-select option (best-effort, falling back to current model)",
+			l.Info("Retrying startup model constraint after cold-agent cooldown",
+				"session_id", d.cmSessionID(), "model", matchedValue)
+		}
+		err = c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false, false)
+	}
+	if err != nil {
+		if l := d.cmLogger(); l != nil {
+			l.Warn("ACP server constraint: failed to auto-select option; queued prompts remain pending",
 				"category", category, "value", matchedValue, "error", err)
 		}
+		return err
 	}
+	return nil
 }
 
 func (c configManager) flushPendingConfig(d configDeps) {
+	if d.cmIsClosed() {
+		// mitto-9zy1 defect 2b: unlike setConfigOptionWithOpts, this deferred-flush
+		// call site had no liveness gate at all, so a config change deferred while
+		// prompting could still be applied after the session was closed (e.g. from
+		// the prompt-completion tail racing teardown). Leave the pending map
+		// undrained; there is no live session left to apply it to.
+		if l := d.cmLogger(); l != nil {
+			l.Debug("Skipping deferred config flush; session is closed", "session_id", d.cmSessionID())
+		}
+		return
+	}
 	pending := d.cmDrainPendingConfig()
 	if len(pending) == 0 {
 		return

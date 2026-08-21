@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -100,6 +103,30 @@ type BackgroundSession struct {
 	lastResponseComplete     time.Time // When the agent last completed a response (for queue delay)
 	queuedDeliveryInProgress bool      // true while a popped message is sleeping through delay
 
+	// Startup constraints are applied asynchronously from the ACP model callback.
+	// Queue delivery waits for that initial work so a resumed queued turn cannot
+	// overtake the configured model switch (mitto-qori).
+	startupConstraintWG       sync.WaitGroup
+	startupConstraintPending  atomic.Int32
+	startupConstraintFailed   atomic.Bool
+	startupConstraintRecovery atomic.Bool
+	startupConstraintMu       sync.Mutex
+	startupConstraintGen      int
+	startupConstraintGenSet   bool
+
+	// activePromptName / activePromptArgs record the workspace-prompt name and
+	// argument map of the dispatch that is currently in flight (isPrompting ==
+	// true). Both fields are guarded by promptMu and set alongside isPrompting
+	// = true at the point of no return in PromptWithMeta; they are cleared
+	// alongside every isPrompting = false transition via clearActiveDispatchLocked.
+	// Empty activePromptName means the in-flight dispatch is a free-text prompt
+	// (no PromptName). Read via ActivePromptDispatch (returns a shallow copy of
+	// the argument map so callers cannot mutate the live state). Consumed by
+	// the target.reuseCoalesce check in session_create / mcpserver so a
+	// duplicate identical dispatch onto a busy conversation can be a no-op.
+	activePromptName string
+	activePromptArgs map[string]string
+
 	// lastAgentActivityAt records the time (Unix nanos) of the most recent streamed
 	// update received from the agent during a prompt. It is reset when a prompt starts
 	// and updated on every ACP SessionUpdate. The prompt inactivity watchdog reads it
@@ -136,6 +163,7 @@ type BackgroundSession struct {
 
 	// Conversation processing
 	processorManager               *processors.Manager             // Unified processor pipeline (text-mode + command-mode)
+	afterProcessorRunOmissions     atomic.Int64                    // Lifecycle-race marker omissions, drained once per ApplyAfter pipeline
 	workspaceProcessorArgOverrides map[string]map[string]string    // Per-processor argument overrides from .mittorc (procName → argName → value)
 	workingDir                     string                          // Working directory for processor execution
 	isFirstPrompt                  bool                            // True until first prompt is sent (for processor conditions)
@@ -163,6 +191,7 @@ type BackgroundSession struct {
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
 	workspaceUUID   string                  // Workspace UUID for secure file links
+	acpServer       string                  // ACP server name (informational; propagated to observers/stats)
 
 	// Restricted runner for sandboxed execution
 	runner *runner.Runner // Optional runner for restricted execution (nil = direct execution)
@@ -210,7 +239,8 @@ type BackgroundSession struct {
 	acpCommand           string                                 // Command used to start ACP process (for restart)
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
-	stderrPatterns       *CompiledStderrPatterns                // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
+	stderrPatterns       *procstart.CompiledStderrPatterns      // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
+	agentDefaultEnv      map[string]string                      // Per-agent default env vars from metadata.yaml defaults.env (mitto-6dur); nil = none
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	// initialModelPreference is the per-workspace initial-model preference
@@ -306,6 +336,20 @@ type BackgroundSession struct {
 	// "resume" (UNSTABLE resume API), "load" (history replay), or "new" (fresh session)
 	resumeMethod string
 
+	// acpContextTurns is a tri-state counter tracking how many prompt turns have
+	// been dispatched on the CURRENT ACP session since it was last known to be
+	// empty (mitto-s9g2). Values:
+	//   contextTurnsUnknown (-1): virginity is NOT authoritative — the session was
+	//     resumed/loaded (or the counter hasn't been classified yet), so the agent
+	//     may already hold history we cannot see from Go. Treat as "not empty".
+	//   0: the session was created fresh in THIS process and has dispatched no
+	//     turns yet (or was just cleared) — provably empty.
+	//   N > 0: N turns have been dispatched since the last fresh-create/clear.
+	// Always initialized to contextTurnsUnknown in both constructors so the
+	// zero value of the struct never falsely claims virginity. See
+	// acpContextIsEmpty/markACPContextFresh/markACPContextUnknown/noteACPTurnDispatched.
+	acpContextTurns atomic.Int64
+
 	// creationCtx is the context passed for the initial ACP session creation RPC.
 	// It is set from BackgroundSessionConfig.CreationCtx and nil'd out after the RPC
 	// completes so we don't hold a reference longer than necessary.
@@ -317,6 +361,12 @@ type BackgroundSession struct {
 	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
 	// When nil, PromptMeta.PromptName resolution is skipped.
 	promptResolver PromptResolver
+	// promptFragmentsResolver returns the workspace-scoped fragment registry used
+	// by top-level and nested prompt renders.
+	promptFragmentsResolver PromptFragmentsResolver
+	// beadsDatabaseModeResolver returns the current effective per-folder Beads
+	// database mode at prompt-send time.
+	beadsDatabaseModeResolver func(context.Context, string) (config.BeadsDatabaseMode, error)
 
 	// preferredModelsResolver resolves a prompt name to its preferredModels list.
 	// Used in PromptWithMeta to auto-select models for named prompts without a
@@ -327,6 +377,13 @@ type BackgroundSession struct {
 	// Used by the prompt dispatcher (mitto-pchx.3) to read per-parameter cache config
 	// when merging cached values into supplied arguments and writing them back.
 	promptParametersResolver func(name, workingDir string) []config.PromptParameter
+
+	// promptsCache is the workspace prompt registry used to snapshot Names /
+	// EnabledNames into the render-time PromptEnabledContext (mitto-s1w). May
+	// be nil when no cache is wired (tests, suspended sessions) — in that
+	// case ctx.Prompts stays zero-valued and .Prompts.Exists / .Prompts.Enabled
+	// fail-closed. Set via BackgroundSessionConfig.PromptsCache.
+	promptsCache *config.PromptsCache
 
 	// Model preference override tracking (guarded by modelMu).
 	modelMu        sync.Mutex // Protects baselineModel and overrideActive
@@ -469,7 +526,14 @@ type BackgroundSessionConfig struct {
 	// StderrPatterns holds per-agent compiled stderr patterns (crash / ignore /
 	// degraded classes; mitto-k6h). Nil means only the hardcoded baseline
 	// applies. Compiled once by the web layer from agent metadata.yaml.
-	StderrPatterns *CompiledStderrPatterns
+	StderrPatterns *procstart.CompiledStderrPatterns
+
+	// AgentDefaultEnv holds per-agent default environment variables declared
+	// in metadata.yaml (defaults.env, e.g. NODE_OPTIONS; mitto-6dur). Resolved
+	// once by the web layer, mirroring StderrPatterns above. Nil means no
+	// agent-authored defaults apply; an explicit Env entry (acp_servers[].env)
+	// still overrides it (see procstart.BuildACPProcessEnv layering).
+	AgentDefaultEnv map[string]string
 
 	// PruneConfig is the pruning configuration for the session recorder.
 	// When set, the recorder automatically prunes old events after each recording
@@ -479,6 +543,10 @@ type BackgroundSessionConfig struct {
 	// PromptResolver resolves a named workspace prompt to its full text at send time.
 	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
 	PromptResolver PromptResolver
+	// PromptFragmentsResolver resolves the workspace-scoped fragment registry.
+	PromptFragmentsResolver PromptFragmentsResolver
+	// BeadsDatabaseModeResolver resolves the effective per-folder Beads mode.
+	BeadsDatabaseModeResolver func(context.Context, string) (config.BeadsDatabaseMode, error)
 
 	// PreferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// When set and PromptMeta.PreferredModels is empty, the list is resolved from the
@@ -489,6 +557,12 @@ type BackgroundSessionConfig struct {
 	// Used by the prompt dispatcher (mitto-pchx.3) to read per-parameter cache config
 	// when merging cached values into supplied arguments and writing them back.
 	PromptParametersResolver func(name, workingDir string) []config.PromptParameter
+
+	// PromptsCache is the workspace prompt registry snapshotted at render
+	// time to populate ctx.Prompts.Names / EnabledNames for the
+	// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} template predicates
+	// (mitto-s1w). Nil is safe: predicates fail-closed.
+	PromptsCache *config.PromptsCache
 
 	// IsChildPrompting checks if a child session's agent is currently responding.
 	// Used to populate children.promptingCount in the CEL context for enabledWhen.
@@ -563,6 +637,7 @@ func NewTestBackgroundSessionPromptingWithCtx(sessionID string, prompting bool, 
 func (bs *BackgroundSession) SimulatePromptComplete() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	if bs.promptCond != nil {
 		bs.promptCond.Broadcast()
 	}
@@ -578,28 +653,32 @@ func (bs *BackgroundSession) SimulateClose() {
 // BackgroundSessionTestOpts carries optional fields for NewTestBackgroundSession.
 // Only set the fields your test needs; zero values are used for the rest.
 type BackgroundSessionTestOpts struct {
-	SessionID      string
-	WorkingDir     string
-	WorkspaceUUID  string
-	ACPID          string
-	IsPrompting    bool
-	NextSeq        int64
-	Store          *session.Store
-	PromptResolver PromptResolver
+	SessionID               string
+	WorkingDir              string
+	WorkspaceUUID           string
+	ACPID                   string
+	IsPrompting             bool
+	NextSeq                 int64
+	Store                   *session.Store
+	PromptResolver          PromptResolver
+	PromptFragmentsResolver PromptFragmentsResolver
+	ContextFlushCommand     string
 }
 
 // NewTestBackgroundSession creates a BackgroundSession from test options.
 // Use this for tests that need to set multiple private fields.
 func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession {
 	bs := &BackgroundSession{
-		persistedID:    opts.SessionID,
-		workingDir:     opts.WorkingDir,
-		workspaceUUID:  opts.WorkspaceUUID,
-		acpID:          opts.ACPID,
-		isPrompting:    opts.IsPrompting,
-		nextSeq:        opts.NextSeq,
-		store:          opts.Store,
-		promptResolver: opts.PromptResolver,
+		persistedID:             opts.SessionID,
+		workingDir:              opts.WorkingDir,
+		workspaceUUID:           opts.WorkspaceUUID,
+		acpID:                   opts.ACPID,
+		isPrompting:             opts.IsPrompting,
+		nextSeq:                 opts.NextSeq,
+		store:                   opts.Store,
+		promptResolver:          opts.PromptResolver,
+		promptFragmentsResolver: opts.PromptFragmentsResolver,
+		contextFlushCommand:     opts.ContextFlushCommand,
 	}
 	return bs
 }
@@ -623,6 +702,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		fileLinksConfig:                cfg.FileLinksConfig,
 		apiPrefix:                      cfg.APIPrefix,
 		workspaceUUID:                  cfg.WorkspaceUUID,
+		acpServer:                      cfg.ACPServer,
 		runner:                         cfg.Runner,
 		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
 		onUIPromptStateChanged:         cfg.OnUIPromptStateChanged,
@@ -632,19 +712,26 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onTitleGenerated:               cfg.OnTitleGenerated,
 		onSelfDestruct:                 cfg.OnSelfDestruct,
 		onTurnIdle:                     cfg.OnTurnIdle,
-		acpCommand:                     cfg.ACPCommand,               // Store for restart
-		acpCwd:                         cfg.ACPCwd,                   // Store for restart
-		serverEnv:                      cfg.Env,                      // Store for restart
-		stderrPatterns:                 cfg.StderrPatterns,           // Per-agent stderr regex patterns (mitto-k6h)
-		globalMcpServer:                cfg.GlobalMCPServer,          // Global MCP server for session registration
-		auxiliaryManager:               cfg.AuxiliaryManager,         // Workspace-scoped auxiliary manager
-		availableACPServers:            cfg.AvailableACPServers,      // Pre-computed workspace server list
-		promptResolver:                 cfg.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		acpCommand:                     cfg.ACPCommand,              // Store for restart
+		acpCwd:                         cfg.ACPCwd,                  // Store for restart
+		serverEnv:                      cfg.Env,                     // Store for restart
+		stderrPatterns:                 cfg.StderrPatterns,          // Per-agent stderr regex patterns (mitto-k6h)
+		agentDefaultEnv:                cfg.AgentDefaultEnv,         // Per-agent default env vars (mitto-6dur)
+		globalMcpServer:                cfg.GlobalMCPServer,         // Global MCP server for session registration
+		auxiliaryManager:               cfg.AuxiliaryManager,        // Workspace-scoped auxiliary manager
+		availableACPServers:            cfg.AvailableACPServers,     // Pre-computed workspace server list
+		promptResolver:                 cfg.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
+		promptFragmentsResolver:        cfg.PromptFragmentsResolver, // Workspace-scoped prompt fragments
+		beadsDatabaseModeResolver:      cfg.BeadsDatabaseModeResolver,
 		preferredModelsResolver:        cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
 		promptParametersResolver:       cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		promptsCache:                   cfg.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		isChildPrompting:               cfg.IsChildPrompting,         // Callback to check if a child session is prompting
 		creationCtx:                    cfg.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
+	// Fail-safe default: virginity is unknown until a handshake site proves the
+	// session was created fresh (mitto-s9g2). Must be set before any handshake runs.
+	bs.acpContextTurns.Store(contextTurnsUnknown)
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = applyModelConstraintOverride(
@@ -660,8 +747,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
-		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
-			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		bs.processorManager.SetPromptCompletionFunc(func(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
+			saveCount, err := bs.auxiliaryManager.PromptProcessorTracked(ctx, workspaceUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
 		})
 	}
 
@@ -757,6 +845,17 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		// No store - initialize nextSeq to 1 to prevent seq=0 errors
 		bs.nextSeq = 1
 	}
+
+	// Wire processor-run instrumentation (mitto-fm89 Stats tab): every
+	// processor invocation is appended as a session.EventTypeProcessorRun event.
+	// Placed after the recorder is set up above so the wiring can persist events.
+	bs.wireProcessorRunRecorder()
+
+	// Wire the mitto-3421 pending-dispatch spool and mitto-exr/mitto-yfv8
+	// notify seams on this live session's processor manager, so an after-phase
+	// prompt-mode processor that exhausts its saturation retry budget is
+	// spooled for later retry instead of silently lost (mitto-q95p).
+	bs.wireProcessorPendingDispatch()
 
 	// Log runner information
 	if bs.logger != nil {
@@ -867,6 +966,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		fileLinksConfig:                config.FileLinksConfig,
 		apiPrefix:                      config.APIPrefix,
 		workspaceUUID:                  config.WorkspaceUUID,
+		acpServer:                      config.ACPServer,
 		runner:                         config.Runner,
 		onStreamingStateChanged:        config.OnStreamingStateChanged,
 		onUIPromptStateChanged:         config.OnUIPromptStateChanged,
@@ -875,19 +975,27 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onConfigChanged:                config.OnConfigOptionChanged,
 		onTitleGenerated:               config.OnTitleGenerated,
 		onSelfDestruct:                 config.OnSelfDestruct,
-		acpCommand:                     config.ACPCommand,               // Store for restart
-		acpCwd:                         config.ACPCwd,                   // Store for restart
-		serverEnv:                      config.Env,                      // Store for restart
-		stderrPatterns:                 config.StderrPatterns,           // Per-agent stderr regex patterns (mitto-k6h)
-		globalMcpServer:                config.GlobalMCPServer,          // Global MCP server for session registration
-		auxiliaryManager:               config.AuxiliaryManager,         // Workspace-scoped auxiliary manager
-		availableACPServers:            config.AvailableACPServers,      // Pre-computed workspace server list
-		promptResolver:                 config.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		onTurnIdle:                     config.OnTurnIdle,              // mitto-aqtf: wire end-of-turn hook on resume, matching NewBackgroundSession
+		acpCommand:                     config.ACPCommand,              // Store for restart
+		acpCwd:                         config.ACPCwd,                  // Store for restart
+		serverEnv:                      config.Env,                     // Store for restart
+		stderrPatterns:                 config.StderrPatterns,          // Per-agent stderr regex patterns (mitto-k6h)
+		agentDefaultEnv:                config.AgentDefaultEnv,         // Per-agent default env vars (mitto-6dur)
+		globalMcpServer:                config.GlobalMCPServer,         // Global MCP server for session registration
+		auxiliaryManager:               config.AuxiliaryManager,        // Workspace-scoped auxiliary manager
+		availableACPServers:            config.AvailableACPServers,     // Pre-computed workspace server list
+		promptResolver:                 config.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
+		promptFragmentsResolver:        config.PromptFragmentsResolver, // Workspace-scoped prompt fragments
+		beadsDatabaseModeResolver:      config.BeadsDatabaseModeResolver,
 		preferredModelsResolver:        config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
 		promptParametersResolver:       config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		promptsCache:                   config.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		isChildPrompting:               config.IsChildPrompting,         // Callback to check if a child session is prompting
 		creationCtx:                    config.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
+	// Fail-safe default: virginity is unknown until a handshake site proves the
+	// session was created fresh (mitto-s9g2). Must be set before any handshake runs.
+	bs.acpContextTurns.Store(contextTurnsUnknown)
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = applyModelConstraintOverride(
@@ -901,8 +1009,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
-		bs.processorManager.SetPromptFunc(func(ctx context.Context, workspaceUUID, processorName, prompt string) error {
-			return bs.auxiliaryManager.PromptProcessorAsync(ctx, workspaceUUID, processorName, prompt)
+		bs.processorManager.SetPromptCompletionFunc(func(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
+			saveCount, err := bs.auxiliaryManager.PromptProcessorTracked(ctx, workspaceUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
 		})
 	}
 
@@ -966,6 +1075,17 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		bs.nextSeq = 1
 	}
 
+	// Wire processor-run instrumentation (mitto-fm89 Stats tab): every
+	// processor invocation is appended as a session.EventTypeProcessorRun event.
+	// Placed after the recorder is resumed above so the wiring can persist events.
+	bs.wireProcessorRunRecorder()
+
+	// Wire the mitto-3421 pending-dispatch spool and mitto-exr/mitto-yfv8
+	// notify seams on this live session's processor manager, so an after-phase
+	// prompt-mode processor that exhausts its saturation retry budget is
+	// spooled for later retry instead of silently lost (mitto-q95p).
+	bs.wireProcessorPendingDispatch()
+
 	// Log runner information
 	if bs.logger != nil {
 		runnerType := "exec"
@@ -993,6 +1113,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Use shared process if available, otherwise start a new per-session process.
 	if config.SharedProcess != nil {
+		// Snapshot the generation before attempting resume — before this call can
+		// fail and before this session's own restart request — so Restart() can
+		// later tell whether another session already remediated the SAME process
+		// death (mitto-x611 restart-storm fix).
+		observedGen := config.SharedProcess.Generation()
 		if err := bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
 			// Auto-restart the shared process if we hit a pipe/connection error.
 			// This happens when the OS killed the ACP subprocess during app backgrounding
@@ -1009,20 +1134,33 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 				}
 				bs.recordRestart(mittoAcp.RestartReasonResumeFailure)
 
-				// Restart the shared OS process. SharedACPProcess.Restart() is rate-limited
-				// and idempotent — if another session already triggered a restart, this
-				// returns the already-restarted process without starting another one.
-				if restartErr := config.SharedProcess.Restart(); restartErr != nil {
+				// Restart the shared OS process. Restart() is idempotent per observed
+				// death (generation-checked, mitto-x611) — if another session already
+				// triggered a restart for the same death, this returns without
+				// starting another one.
+				if restartErr := config.SharedProcess.Restart(observedGen); restartErr != nil {
+					// mitto-ei81: a concurrent GC recycle may have closed this exact
+					// SharedProcess instance out from under us between the failed
+					// resume above and this restart attempt — that instance's
+					// process-lifetime context is permanently cancelled and can
+					// never be restarted. Record a dedicated cold-start outcome so
+					// this benign, self-resolving race (the caller retries with a
+					// fresh process) is separable from a genuine startup failure.
+					outcome := "shared_restart_failed"
+					if errors.Is(restartErr, acperrors.ErrProcessClosedConcurrently) {
+						outcome = "resume_racing_recycle"
+					}
 					if bs.logger != nil {
 						bs.logger.Warn("Failed to restart shared ACP process on resume",
 							"session_id", bs.persistedID,
+							"outcome", outcome,
 							"error", restartErr)
 					}
 					cancel()
 					if bs.recorder != nil {
 						bs.recorder.Suspend()
 					}
-					bs.finishColdTrace("shared_restart_failed", "error", restartErr.Error())
+					bs.finishColdTrace(outcome, "error", restartErr.Error())
 					return nil, fmt.Errorf("ACP process restart failed on resume: %w", restartErr)
 				}
 
@@ -1090,12 +1228,89 @@ func (bs *BackgroundSession) GetACPID() string {
 	return bs.acpID
 }
 
+// contextFlushCommandAllowlist is the ordered set of agent-advertised slash
+// command names (without the leading "/") treated as context-flush
+// equivalents when no static contextFlushCommand is configured for the ACP
+// server. "clear" is preferred over "compact" because compact is lossy
+// summarization, not a flush. Live evidence (mitto-1o8): Claude Code
+// advertises "compact" and "context" over ACP but NOT "clear" — even though
+// "/clear" is exactly its static default and does work — so detection must
+// only ever fill a gap, never override a configured value.
+//
+// Per-agent status (mitto-1o8): claude-code and augment carry a verified static
+// default in their agents/builtin metadata. The remaining builtin agents (amp,
+// cline, codex, cursor, gemini, github-copilot, goose, junie, kilo,
+// mistral-vibe, opencode, qwen-code) declare none — no live session evidence
+// was available to verify one — and are covered by this runtime fallback
+// whenever they advertise "clear" or "compact".
+var contextFlushCommandAllowlist = []string{"clear", "compact"}
+
 // ContextFlushCommand returns the agent-native context-flush command (e.g.
-// "/clear") configured for this session's ACP server, or "" when the feature is
-// not configured. Used by the API/UI to decide whether to expose the flush action.
+// "/clear") to use for this session's ACP server, or "" when no such command
+// is known. Used by the API/UI to decide whether to expose the flush action,
+// and by FlushContext/flushContextInPlace to know what to send.
+//
+// Resolution order (mitto-1o8):
+//  1. The statically configured value (agents/builtin metadata default or a
+//     settings.json override) — authoritative, never overridden by detection.
+//  2. A runtime fallback: the first name in contextFlushCommandAllowlist that
+//     the agent has advertised via the ACP available_commands notification.
+//
+// Resolved on every read rather than cached, since available commands can
+// arrive after the session starts and are stored separately (cbGetAvailableCommands).
 func (bs *BackgroundSession) ContextFlushCommand() string {
-	return bs.contextFlushCommand
+	if cmd := strings.TrimSpace(bs.contextFlushCommand); cmd != "" {
+		return cmd
+	}
+	advertised := bs.cbGetAvailableCommands()
+	if len(advertised) == 0 {
+		return ""
+	}
+	for _, allowed := range contextFlushCommandAllowlist {
+		for _, cmd := range advertised {
+			if cmd.Name == allowed {
+				return "/" + allowed
+			}
+		}
+	}
+	return ""
 }
+
+// contextTurnsUnknown is the sentinel value for BackgroundSession.acpContextTurns
+// meaning virginity is not authoritative (session resumed/loaded, or not yet
+// classified). See the acpContextTurns field doc for the full tri-state contract.
+const contextTurnsUnknown int64 = -1
+
+// markACPContextFresh records that the current ACP session is known to be empty
+// right now — either because it was just created fresh in this process, or
+// because a context-flush/clear just succeeded on it.
+func (bs *BackgroundSession) markACPContextFresh() { bs.acpContextTurns.Store(0) }
+
+// markACPContextUnknown records that virginity cannot be asserted for the current
+// ACP session (e.g. it was resumed or loaded, replaying agent-side history that
+// Go cannot see).
+func (bs *BackgroundSession) markACPContextUnknown() { bs.acpContextTurns.Store(contextTurnsUnknown) }
+
+// noteACPTurnDispatched records that a prompt turn is about to be dispatched on
+// the current ACP session. It only increments a already-classified-fresh counter
+// (>= 0); the unknown sentinel (-1) is never promoted into a count by this call —
+// only markACPContextFresh/markACPContextUnknown reclassify the session.
+func (bs *BackgroundSession) noteACPTurnDispatched() {
+	for {
+		cur := bs.acpContextTurns.Load()
+		if cur < 0 {
+			return
+		}
+		if bs.acpContextTurns.CompareAndSwap(cur, cur+1) {
+			return
+		}
+	}
+}
+
+// acpContextIsEmpty reports whether the current ACP session is provably empty
+// (created fresh in this process, no turns dispatched since). Returns false for
+// the unknown sentinel, so resumed/loaded sessions always fail safe to "not empty".
+func (bs *BackgroundSession) acpContextIsEmpty() bool { return bs.acpContextTurns.Load() == 0 }
 
 // StartedAt returns when this session was started or resumed.
 // Used by the GC to apply a grace period to freshly started sessions.
@@ -1154,6 +1369,62 @@ func (bs *BackgroundSession) IsPrompting() bool {
 	return bs.isPrompting
 }
 
+// StartupRecoveryPending reports whether startup model work is active or
+// waiting for a failed shared-process generation to be replaced.
+func (bs *BackgroundSession) StartupRecoveryPending() bool {
+	return bs.startupConstraintPending.Load() > 0 || bs.startupConstraintRecovery.Load()
+}
+
+func (bs *BackgroundSession) signalResponseStateChanged() {
+	bs.promptMu.Lock()
+	if bs.promptCond != nil {
+		bs.promptCond.Broadcast()
+	}
+	bs.promptMu.Unlock()
+}
+
+// ActivePromptDispatch returns the PromptName and Arguments of the dispatch
+// currently in flight together with a prompting flag. When ok is false, no
+// prompt is in flight and (name, args) are zero. When ok is true and name is
+// empty, the in-flight dispatch is a free-text prompt (no workspace prompt
+// name). The returned args map is a shallow copy so callers may inspect it
+// without holding promptMu; keys and values are strings (immutable).
+// Consumed by target.reuseCoalesce coalescing (mitto-djs1).
+//
+// Nil-receiver safe (mitto-djz): callers route this method through an interface
+// (bgSessionLike / mcpserver.BackgroundSession) after calling
+// SessionManager.GetSession, which returns a typed-nil *BackgroundSession for
+// a not-yet-loaded target. The Go interface-nil trap makes the wrapped
+// {type=*BackgroundSession, value=nil} pass `!= nil` guards at every caller,
+// so the guard must live at the method boundary itself.
+func (bs *BackgroundSession) ActivePromptDispatch() (name string, args map[string]string, ok bool) {
+	if bs == nil {
+		return "", nil, false
+	}
+	bs.promptMu.Lock()
+	defer bs.promptMu.Unlock()
+	if !bs.isPrompting {
+		return "", nil, false
+	}
+	name = bs.activePromptName
+	if len(bs.activePromptArgs) > 0 {
+		args = make(map[string]string, len(bs.activePromptArgs))
+		for k, v := range bs.activePromptArgs {
+			args[k] = v
+		}
+	}
+	return name, args, true
+}
+
+// clearActiveDispatchLocked clears activePromptName/activePromptArgs. Callers
+// MUST hold promptMu. Kept next to the field declarations so every
+// isPrompting=false transition can defensively invoke it and stay in sync
+// (mitto-djs1). Cheap when already zero.
+func (bs *BackgroundSession) clearActiveDispatchLocked() {
+	bs.activePromptName = ""
+	bs.activePromptArgs = nil
+}
+
 // GetPromptCount returns the number of prompts sent in this session.
 func (bs *BackgroundSession) GetPromptCount() int {
 	bs.promptMu.Lock()
@@ -1192,8 +1463,9 @@ func (bs *BackgroundSession) WaitForResponseComplete(timeout time.Duration) bool
 	bs.promptMu.Lock()
 	defer bs.promptMu.Unlock()
 
-	// If not prompting, return immediately
-	if !bs.isPrompting {
+	// Startup model recovery is an idle transport gap, not response completion:
+	// queued work will dispatch once the required model becomes active.
+	if !bs.isPrompting && !bs.StartupRecoveryPending() {
 		return true
 	}
 
@@ -1205,10 +1477,10 @@ func (bs *BackgroundSession) WaitForResponseComplete(timeout time.Duration) bool
 	done := make(chan bool, 1)
 	go func() {
 		bs.promptMu.Lock()
-		for bs.isPrompting && bs.closed.Load() == 0 {
+		for (bs.isPrompting || bs.StartupRecoveryPending()) && bs.closed.Load() == 0 {
 			bs.promptCond.Wait()
 		}
-		completed := !bs.isPrompting || bs.closed.Load() != 0
+		completed := (!bs.isPrompting && !bs.StartupRecoveryPending()) || bs.closed.Load() != 0
 		bs.promptMu.Unlock()
 		done <- completed
 	}()
@@ -1514,6 +1786,7 @@ func (bs *BackgroundSession) Close(reason string) {
 	if !bs.closed.CompareAndSwap(0, 1) {
 		return // Already closed
 	}
+	wasPrompting := bs.IsPrompting()
 
 	// Notify all observers that the ACP connection is being stopped.
 	// This must happen BEFORE we cancel the context or close resources,
@@ -1550,7 +1823,7 @@ func (bs *BackgroundSession) Close(reason string) {
 			// Build session end data with context about the session state
 			endData := session.SessionEndData{
 				Reason:       reason,
-				WasPrompting: bs.IsPrompting(),
+				WasPrompting: wasPrompting,
 				ACPConnected: bs.acpClient != nil,
 			}
 
@@ -1615,18 +1888,32 @@ func (bs *BackgroundSession) unregisterFromGlobalMCP() {
 	}
 }
 
-// startSessionMcpServer registers with the global MCP server.
-// We don't pass McpServers to ACP - the agent should have the MCP server
-// pre-configured globally (e.g., in ~/.augment/settings.json).
-// Returns empty McpServers slice.
+// startSessionMcpServer registers with the global MCP server and, when the
+// agent supports HTTP MCP, injects a per-conversation authenticated transport.
+// The globally configured endpoint remains the fallback for older agents.
 func (bs *BackgroundSession) startSessionMcpServer(
 	store *session.Store,
 	agentCapabilities acp.AgentCapabilities,
 ) []acp.McpServer {
-	// Register with the global MCP server
 	bs.registerWithGlobalMCP(store)
-	// Return empty - MCP is configured globally, not passed per-session
-	return []acp.McpServer{}
+	if bs.globalMcpServer == nil || !agentCapabilities.McpCapabilities.Http {
+		return []acp.McpServer{}
+	}
+	binding, ok := bs.globalMcpServer.SessionHTTPBinding(bs.persistedID)
+	if !ok {
+		return []acp.McpServer{}
+	}
+	return []acp.McpServer{{
+		Http: &acp.McpServerHttpInline{
+			Type: "http",
+			Name: "mitto",
+			Url:  binding.URL,
+			Headers: []acp.HttpHeader{{
+				Name:  binding.HeaderName,
+				Value: binding.HeaderValue,
+			}},
+		},
+	}}
 }
 
 // stopSessionMcpServer unregisters from global MCP server.
@@ -1692,6 +1979,13 @@ func (e *sessionError) Error() string {
 // GetWorkspaceUUID returns the workspace UUID associated with this session.
 func (bs *BackgroundSession) GetWorkspaceUUID() string {
 	return bs.workspaceUUID
+}
+
+// GetACPServer returns the ACP server name this session was created against
+// (e.g. "Auggie (Opus)"). Informational; used to label session-scoped stats
+// deltas (stats.4).
+func (bs *BackgroundSession) GetACPServer() string {
+	return bs.acpServer
 }
 
 // FreshCachedArgNames returns the parameter names with fresh (non-expired) cached

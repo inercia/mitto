@@ -1,0 +1,40 @@
+{{- /*
+  support/ask-tone — owner-ask step for the `tone.md` fragment.
+  Owner: `Support: reply to user`.
+
+  Rendered by the owner prompt when `.mitto/support/<channel-id>/tone.md`
+  does not yet exist. Instructs the agent to open a focused `mitto_ui_form`
+  covering only tone/reply guidelines (~5 fields), then write the file.
+
+  Fields on the `dict` argument:
+
+    TimeoutSeconds:  int. Timeout for the `mitto_ui_form` call. Interactive
+                     owners (reply-to-user) pass 300; silent owners pass a
+                     short value.
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
+  emits no trailing newline; callers use plain `{{ template ... }}`.
+*/ -}}
+{{- $timeout := .TimeoutSeconds -}}
+**Ask + write `tone.md`.** Open a focused `mitto_ui_form` (`timeout_seconds: {{ $timeout }}`) titled
+  "Channel tone — how should we address customers in this channel?" with these fields (all required
+  unless noted):
+  - `addressing` (textarea) — "Addressing rules: do we use names? formal or casual? any conventions
+    on greetings/sign-offs?"
+  - `hedging` (textarea) — "Hedging: how sure should we sound? examples of acceptable hedges
+    ('I think that…', 'It seems like…') vs assertions to avoid."
+  - `length_target` (text) — "Length target: short-and-conversational, medium, long-and-detailed?
+    Any word/line targets?"
+  - `formatting` (textarea, optional) — "Formatting quirks: markdown allowed? code fences? links
+    inline or as footnotes? emojis?"
+  - `do_nots` (textarea) — "Do-nots: patterns/phrases to avoid entirely (e.g. 'let me know if you
+    need anything else', apologising, direct name-mentioning)."
+
+  When the form returns, create `.mitto/support/<channel-id>/` if it does not exist, then write the
+  result to `.mitto/support/<channel-id>/tone.md` as a Markdown document with sections
+  `# Addressing`, `# Hedging`, `# Length target`, `# Formatting` (only if non-empty), and
+  `# Do-nots`. Confirm the write via `mitto_ui_notify` (success). If the form times out or is
+  aborted, do **not** write a partial file — fall back per the caller's policy (for interactive
+  owners, notify and continue using the built-in generic style below; for silent owners, log a
+  `[CONTEXT]` note and skip drafting).
+{{- /* no trailing newline */ -}}

@@ -1,0 +1,43 @@
+{{- /*
+  pr-description-no-beads — the canonical "keep the beads tracker out of the
+  PR" constraint, applied to every PR/MR title and body this repo's prompts
+  produce.
+
+  Consumers: git/shared/create-or-update-pr (interactive),
+  beads-issues/shared/push-and-open-pr (headless driver path).
+
+  Why a fragment: the rule has to stay bit-identical across the interactive
+  and headless PR paths, and it is load-bearing for the `--fill` ban — the L1
+  driver commit convention requires a `(refs <bead-id>)` footer on every
+  commit, so `gh pr create --fill` / `glab mr create --fill` would copy bead
+  IDs straight into the PR body.
+
+  Usage — parameter-less, uses only builtin actions (no funcs, no `.`
+  accessors), so it is safe to attach to every render context:
+
+      {{ template "git/shared/pr-description-no-beads" . }}
+*/ -}}
+**PR title and description must not mention the beads tracker.** Beads is a
+local, repo-internal task tracker; its IDs are meaningless to a reader of the
+pull request. Keep out of both the title and the body:
+
+- bead IDs in any form (`mitto-abc`, `beads:mitto-abc`, `#mitto-abc`)
+- `(refs <bead-id>)` footers copied from commit messages
+- `bd` commands, and phrases like "beads issue", "the bead", "closes the epic"
+
+Describe the change in reader-facing terms instead — what behavior changed,
+why, and how it was verified. Referencing a real upstream issue tracker
+(GitHub issues, JIRA) is fine; only the beads tracker is excluded.
+
+Because commits in this repo carry `(refs <bead-id>)` footers, **never pass
+the `--fill` flag** to `gh pr create` / `glab mr create` when any commit on
+the branch references a bead — that flag copies commit bodies verbatim into
+the PR. Write an explicit title and body instead:
+
+```bash
+gh pr create --title "<title>" --body "<body>" --base <target-branch>
+```
+
+If the body contains backticks or other shell-hostile characters, write it to
+a temporary file first and pass `--body-file <path>`.
+{{- /* no trailing newline */ -}}

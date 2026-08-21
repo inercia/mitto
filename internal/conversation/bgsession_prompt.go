@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,31 @@ func redactArgValue(name, value string) string {
 		return string(runes[:maxArgValueLen]) + "…"
 	}
 	return value
+}
+
+// persistableArguments returns a copy of args with any sensitive-named keys
+// (per isSensitiveArgName) omitted entirely, for exact-replay persistence in
+// the user_prompt event and broadcast. Unlike redactArgValue/buildArgumentMetadata,
+// surviving values are stored raw and untruncated — the persisted map must be
+// exactly replayable or the key must be absent (never a "***" placeholder or a
+// truncated value). Returns nil when args is empty or nothing survives
+// filtering, so callers can rely on it for both the recorder (omitempty) and
+// the observer notification.
+func persistableArguments(args map[string]string) map[string]string {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(args))
+	for name, value := range args {
+		if isSensitiveArgName(name) {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // buildArgumentMetadata derives the sorted argument_names list and the ordered
@@ -110,6 +136,12 @@ func (bs *BackgroundSession) SetPromptResolver(resolver PromptResolver) {
 	bs.promptResolver = resolver
 }
 
+// SetPromptFragmentsResolver sets the workspace-scoped fragment resolver used
+// by prompt rendering.
+func (bs *BackgroundSession) SetPromptFragmentsResolver(resolver PromptFragmentsResolver) {
+	bs.promptFragmentsResolver = resolver
+}
+
 // LoopKind classifies how a loop prompt was triggered so the dispatch path can
 // distinguish a normal scheduled/onCompletion delivery from a manual "run now" without
 // matching the magic SenderID string. LoopKindNone means the prompt is not a
@@ -131,6 +163,12 @@ type PromptMeta struct {
 	FileIDs      []string        // IDs of files attached to the prompt
 	OnComplete   func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsLoopForced bool            // True when this loop prompt was triggered manually via "run now"
+	// IsLoopRunOnStart is true when this loop prompt was fired by the boot-pulse
+	// (mitto-ystk). Mirrors ProcessorInput.IsLoopRunOnStart, the CEL
+	// Session.IsLoopRunOnStart variable, and the @mitto:loop_run_on_start
+	// placeholder. Set only on the initial startup pulse; false on all
+	// subsequent scheduled/onCompletion/onTasks/forced deliveries.
+	IsLoopRunOnStart bool
 	// QueueOrigin carries session.QueueOrigin* for queue dispatches: "agent" for
 	// cross-session/MCP sends (fail-closed on template errors), "user"/empty for
 	// human-typed messages that were queued (fail-open, delivered verbatim);
@@ -139,6 +177,10 @@ type PromptMeta struct {
 	// LoopKind classifies a loop run (none/scheduled/forced). Set by the
 	// LoopRunner. Drives the Iteration.IsUninterrupted continuation signal.
 	LoopKind LoopKind
+	// LoopTrigger names the trigger that won this dispatch for a multi-trigger
+	// loop (mitto-r6j.2): schedule, onCompletion, onTasks, onChild, or onSlack. Set by the
+	// LoopRunner; empty for non-loop prompts.
+	LoopTrigger session.LoopTrigger
 	// IterationNumber is the 0-based index of the current loop run (loop.IterationCount
 	// at dispatch). Zero for non-loop prompts. Feeds the {{ .Iteration.* }} template namespace.
 	IterationNumber int
@@ -175,15 +217,43 @@ type PromptMeta struct {
 	// allocations in the hot path. See prompt_dispatcher.go for the copy into
 	// ProcessorInput.TriggerOnTasksChanges (mitto-xkn).
 	Trigger *PromptTriggerContext
+	// modelPreferenceResolved is set by resolveAndSubstitute (mitto-y78i) once
+	// it has already attempted this dispatch's model-switch preference — for
+	// templated bodies, ahead of rendering — so buildProcessorInput's
+	// ModelName/ModelTags reflect the ACTUAL outcome (landed or deferred)
+	// instead of blindly trusting intendedModelID's optimistic guess, and so
+	// PromptWithMeta's later applyModelPreference call (in the background
+	// goroutine) skips re-attempting the switch and paying modelSwitchSyncGrace
+	// a second time. Left false (the pre-existing behavior) for FreshContext
+	// dispatches, whose switch must run after createFreshContextSession.
+	modelPreferenceResolved bool
 }
 
 // PromptTriggerContext holds trigger-source data threaded from the LoopRunner
 // through the prompt dispatch pipeline into the template evaluation context.
 // Only non-nil sub-fields represent triggers that actually fired for this
-// dispatch (currently: OnTasks).
+// dispatch (currently: OnTasks, OnSlack).
 type PromptTriggerContext struct {
 	// OnTasks is populated only when a beads change fired an onTasks loop.
 	OnTasks *PromptOnTasksContext
+	// OnChild is populated only when a child-conversation lifecycle event
+	// fired an onChild loop (mitto-qvlh).
+	OnChild *PromptOnChildContext
+	// OnSlack is populated with a bounded batch when onSlack fired.
+	OnSlack *PromptOnSlackContext
+	// Slack is the first event compatibility alias for the environment PoC.
+	// Deprecated: use OnSlack.Events.
+	Slack *PromptSlackContext
+}
+
+// PromptOnChildContext carries the child-lifecycle detail that fired an
+// onChild loop dispatch (mitto-qvlh). ChildID intentionally does NOT include
+// the child's name/title — by the time an anyDeleted fire reaches here, the
+// deleted child's metadata (including its name) may already be gone.
+type PromptOnChildContext struct {
+	ChildID       string
+	Event         session.ChildEvent
+	StoppedReason session.StoppedReason
 }
 
 // PromptOnTasksContext carries the beads change delta already computed by
@@ -193,6 +263,77 @@ type PromptTriggerContext struct {
 // BuildCELContext lifts the slices onto the template PromptEnabledContext.
 type PromptOnTasksContext struct {
 	Changes *config.TasksDelta
+}
+
+// PromptOnSlackContext carries the bounded normalized Slack event batch that
+// caused one onSlack dispatch. One batch consumes one loop iteration.
+type PromptOnSlackContext struct {
+	Events []PromptSlackEvent
+}
+
+// PromptSlackEvent is the credential-free, SDK-free template representation of
+// one Slack event. Every string is bounded before PromptMeta is constructed.
+//
+// SENSITIVITY: Text is UNTRUSTED external content. Before PromptMeta is built,
+// it is JSON-escaped inside a fixed data-only delimiter that Slack input cannot
+// forge. Never persist it to loop.json or generic event metadata, or log it.
+type PromptSlackEvent struct {
+	InstallationID  string
+	EventID         string
+	ChannelID       string
+	Kind            string
+	AuthorID        string
+	Timestamp       string
+	ThreadTimestamp string
+	// Untrusted is always true and makes provenance explicit to templates.
+	Untrusted bool
+	// Text is a JSON-escaped, explicitly untrusted data-only prompt block.
+	Text string
+}
+
+// PromptSlackContext is the legacy single-event type name.
+// Deprecated: use PromptSlackEvent via PromptOnSlackContext.Events.
+type PromptSlackContext = PromptSlackEvent
+
+// deriveUserPromptProvenance builds a credential-free session.PromptProvenance
+// from the dispatch PromptMeta (mitto-rg79). Returns nil for ordinary
+// human-typed/ad-hoc prompts (LoopTrigger empty, not forced, not the startup
+// pulse) so old-shape events/payloads are unaffected. Both IsLoopForced and
+// IsLoopRunOnStart are recorded verbatim (raw fidelity); presentation layers
+// that need a single label prefer startup over forced when both are true —
+// see web/static/utils/promptProvenance.js.
+//
+// Never copies Slack event Text/bodies — only InstallationID/ChannelID (both
+// non-secret identifiers) and the batch length.
+func deriveUserPromptProvenance(meta PromptMeta) *session.PromptProvenance {
+	if meta.LoopTrigger == "" && !meta.IsLoopForced && !meta.IsLoopRunOnStart {
+		return nil
+	}
+	p := &session.PromptProvenance{
+		LoopTrigger:      meta.LoopTrigger,
+		IsLoopForced:     meta.IsLoopForced,
+		IsLoopRunOnStart: meta.IsLoopRunOnStart,
+	}
+	if meta.LoopTrigger == session.TriggerOnSlack && meta.Trigger != nil && meta.Trigger.OnSlack != nil {
+		events := meta.Trigger.OnSlack.Events
+		if len(events) > 0 {
+			first := events[0]
+			p.Slack = &session.PromptSlackProvenance{
+				InstallationID: first.InstallationID,
+				ChannelID:      first.ChannelID,
+				EventCount:     len(events),
+			}
+		}
+	}
+	if meta.LoopTrigger == session.TriggerOnChild && meta.Trigger != nil && meta.Trigger.OnChild != nil {
+		oc := meta.Trigger.OnChild
+		p.OnChild = &session.PromptOnChildProvenance{
+			ChildID:       oc.ChildID,
+			Event:         string(oc.Event),
+			StoppedReason: string(oc.StoppedReason),
+		}
+	}
+	return p
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.
@@ -225,7 +366,7 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 //     any returned error.
 //   - Works for both direct-conn (acpConn) and shared-process (sharedProcess) sessions.
 func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
-	cmd := strings.TrimSpace(bs.contextFlushCommand)
+	cmd := strings.TrimSpace(bs.ContextFlushCommand())
 	if cmd == "" {
 		return &sessionError{"context flush command not configured for this server"}
 	}
@@ -250,20 +391,57 @@ func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
 }
 
 // FlushContext clears the agent's conversation context by sending the configured
-// agent-native context-flush command (e.g. "/clear") through the normal prompt
-// path. It runs asynchronously like any other prompt. Returns an error when no
-// flush command is configured for this session's ACP server, or when the session
-// is closed. Callers (e.g. the REST handler) should gate on IsPrompting() to
-// avoid issuing a flush while a turn is in flight.
+// agent-native context-flush command (e.g. "/clear") directly to the existing ACP
+// session via flushContextInPlace — the same in-place primitive used by the loop
+// FreshContext path (see createFreshContextSession) — instead of routing through
+// the full PromptWithMeta pipeline. Routing through PromptWithMeta previously
+// wrapped/processor-polluted the command (breaking the agent's prefix-recognition
+// contract for slash commands) and persisted+broadcast a fake user turn for what
+// is a UI-only control action (mitto-ip1).
+//
+// It runs asynchronously (dispatched in a goroutine), mirroring the async
+// contract of the normal prompt path: callers (e.g. the REST handler) get an
+// immediate nil return and the flush RPC completes in the background. Streaming
+// is suppressed for the duration so the flush turn never reaches the recorder,
+// observers, or the transcript; on success a "context_cleared" timeline pill is
+// recorded instead. Returns an error synchronously when no flush command is
+// configured for this session's ACP server, when the session is closed, or when
+// there is no live ACP session ID to flush. Callers should gate on IsPrompting()
+// to avoid issuing a flush while a turn is in flight.
 func (bs *BackgroundSession) FlushContext() error {
-	cmd := strings.TrimSpace(bs.contextFlushCommand)
+	cmd := strings.TrimSpace(bs.ContextFlushCommand())
 	if cmd == "" {
 		return &sessionError{"context flush command not configured for this server"}
 	}
 	if bs.IsClosed() {
 		return &sessionError{"session is closed"}
 	}
-	return bs.PromptWithMeta(cmd, PromptMeta{SenderID: "context-flush"})
+	if bs.acpID == "" {
+		return &sessionError{"no ACP session ID available for in-place flush"}
+	}
+
+	go func() {
+		flushCtx, flushCancel := context.WithTimeout(bs.ctx, 30*time.Second)
+		defer flushCancel()
+		if err := bs.flushContextInPlace(flushCtx); err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("In-place context flush failed",
+					"error", err, "session_id", bs.persistedID)
+			}
+			bs.notifyObservers(func(o SessionObserver) {
+				o.OnError("Failed to clear context: " + err.Error())
+			})
+			return
+		}
+		// The manual flush succeeded: the session is now provably empty (mitto-s9g2).
+		// This only resets the counter — the manual action does not skip itself.
+		bs.markACPContextFresh()
+		// Surface the context clear in the conversation timeline (mirrors the
+		// loop FreshContext pill recorded by createFreshContextSession).
+		bs.cmRecordSessionChange("context_cleared", "flush", "")
+	}()
+
+	return nil
 }
 
 // PromptWithMeta sends a message with optional metadata to the agent. This runs asynchronously.
@@ -340,6 +518,7 @@ retryAfterRestart:
 					"elapsed", elapsed)
 			}
 			bs.isPrompting = false
+			bs.clearActiveDispatchLocked()
 			bs.lastResponseComplete = time.Now()
 			bs.promptMu.Unlock()
 
@@ -395,6 +574,19 @@ retryAfterRestart:
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
 	bs.promptCount++
+	// Record the in-flight dispatch identity so a duplicate identical
+	// dispatch via target.reuseCoalesce can be a no-op (mitto-djs1).
+	// A shallow copy of Arguments keeps callers isolated from later
+	// mutation (map is passed by reference through the queue path).
+	bs.activePromptName = meta.PromptName
+	if len(meta.Arguments) > 0 {
+		bs.activePromptArgs = make(map[string]string, len(meta.Arguments))
+		for k, v := range meta.Arguments {
+			bs.activePromptArgs[k] = v
+		}
+	} else {
+		bs.activePromptArgs = nil
+	}
 	bs.TouchActivity()
 
 	// Check if we need to inject conversation history (first prompt of resumed session).
@@ -435,11 +627,34 @@ retryAfterRestart:
 		bs.onPlanStateChanged(bs.persistedID, nil)
 	}
 
+	// FreshContext seq reservation (mitto-c36): when the loop turn will flush the
+	// context (either via in-place flush command or a new ACP session), reserve the
+	// "context_cleared" pill seq BEFORE the user-prompt seq so the persisted transcript
+	// orders as pill(N) → user_prompt(N+1) → agent_stream(N+2..). The reserved seq is
+	// consumed inside createFreshContextSession on the async goroutine below. If the
+	// flush/new-session ultimately does not fire (e.g. flush RPC error), the seq
+	// becomes a persistence-tolerated gap.
+	var freshContextPillSeq int64
+	if meta.FreshContext && bs.recorder != nil {
+		freshContextPillSeq = bs.getNextSeq()
+	}
+
 	// Persist user prompt with image/file references and prompt ID.
 	// Seq is pre-assigned from the shared getNextSeq() counter so that the user-prompt
 	// event is ordered atomically with respect to any concurrent streaming events.
 	// This avoids the duplicate/out-of-order seq bug caused by AppendEvent assigning
 	// seq independently from the in-memory counter.
+	// persistArgs holds the raw (exactly replayable) argument values to persist
+	// and broadcast, with sensitive-named keys omitted (see persistableArguments).
+	// Computed unconditionally so both the recorder call below and the observer
+	// notification further down use the same filtered map.
+	persistArgs := persistableArguments(meta.Arguments)
+
+	// Derive credential-free trigger provenance (mitto-rg79) BEFORE persisting so
+	// both the recorded event and the live observer notification carry the same
+	// value. Nil for ordinary human-typed/ad-hoc prompts.
+	provenance := deriveUserPromptProvenance(meta)
+
 	var userPromptSeq int64
 	if bs.recorder != nil {
 		userPromptSeq = bs.getNextSeq()
@@ -447,7 +662,17 @@ retryAfterRestart:
 		if len(meta.Meta) > 0 {
 			recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
 		}
-		if err := bs.recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, message, imageRefs, fileRefs, meta.PromptID, meta.PromptName, argCount, recordOpts...); err != nil && bs.logger != nil {
+		data := session.UserPromptData{
+			Message:       message,
+			Images:        imageRefs,
+			Files:         fileRefs,
+			PromptID:      meta.PromptID,
+			PromptName:    meta.PromptName,
+			ArgumentCount: argCount,
+			Arguments:     persistArgs,
+			Provenance:    provenance,
+		}
+		if err := bs.recorder.RecordUserPromptDataWithSeq(userPromptSeq, data, recordOpts...); err != nil && bs.logger != nil {
 			bs.logger.Error("Failed to persist user prompt", "error", err)
 		}
 	}
@@ -472,7 +697,7 @@ retryAfterRestart:
 	}
 
 	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount)
+		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount, persistArgs, provenance)
 	})
 
 	// Build processor input and assemble final content blocks.
@@ -482,6 +707,22 @@ retryAfterRestart:
 
 	// Run prompt in background
 	go func() {
+		// PromptWithMeta has already returned success to its caller, so every exit
+		// from this goroutine must invoke OnComplete exactly once. Normal completion
+		// goes through finalizeTurn below; abort paths (including deferred-handshake
+		// failure and session closure) fall back to this defer. Keeping release with
+		// the owning turn avoids a stale lifecycle cleanup releasing a newer claim.
+		abortedErr := &sessionError{"prompt ended before completion finalization"}
+		var completionErr error = abortedErr
+		if meta.OnComplete != nil {
+			originalOnComplete := meta.OnComplete
+			var completionOnce sync.Once
+			meta.OnComplete = func(err error) {
+				completionOnce.Do(func() { originalOnComplete(err) })
+			}
+			defer func() { meta.OnComplete(completionErr) }()
+		}
+
 		// autoRetried guards a single automatic retry after an ACP crash during
 		// streaming. On the first crash we restart the process and jump back to
 		// retryPrompt; if the retry also crashes we fall through to the normal
@@ -494,8 +735,16 @@ retryAfterRestart:
 		if !bs.promptDisp.completeHandshakeOrAbort(bs) {
 			return
 		}
-		freshContextSessionID := bs.promptDisp.createFreshContextSession(bs, meta)
-		bs.promptDisp.applyModelPreference(bs, meta)
+		freshContextSessionID := bs.promptDisp.createFreshContextSession(bs, meta, freshContextPillSeq)
+		// mitto-y78i: resolveAndSubstitute already attempted this dispatch's
+		// model-switch preference ahead of the template render (for
+		// non-FreshContext dispatches) — skip re-attempting it here so the
+		// prompt does not pay modelSwitchSyncGrace a second time. FreshContext
+		// dispatches never set modelPreferenceResolved, so they keep applying
+		// it here, after the fresh session is created, as before.
+		if !meta.modelPreferenceResolved {
+			bs.promptDisp.applyModelPreference(bs, meta)
+		}
 
 		// Declare all variables that are live across the retryPrompt goto target
 		// here, before the label, so that Go's "no jumping over declarations" rule
@@ -575,6 +824,10 @@ retryAfterRestart:
 			acpSessionIDForPrompt = freshContextSessionID
 		}
 
+		// Track that a turn is being dispatched on the current ACP session, so a
+		// later FreshContext iteration can tell it is no longer virgin (mitto-s9g2).
+		bs.noteACPTurnDispatched()
+
 		promptStartedAt = time.Now() // captured for after-phase processors
 		if bs.sharedProcess != nil {
 			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(acpSessionIDForPrompt), finalBlocks)
@@ -586,6 +839,10 @@ retryAfterRestart:
 		}
 		promptCancel()             // cancel context to unblock the health-monitor goroutine
 		promptEndedAt = time.Now() // captured for after-phase processors
+		completionErr = err
+		if completionErr == nil {
+			completionErr = abortedErr
+		}
 
 		bs.promptDisp.accumulateTokenUsage(bs, promptResp, message)
 
@@ -635,6 +892,7 @@ func (bs *BackgroundSession) Cancel() error {
 	bs.promptMu.Lock()
 	wasPrompting := bs.isPrompting
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
@@ -661,6 +919,15 @@ func (bs *BackgroundSession) Cancel() error {
 		bs.flushPendingConfig()
 	}
 
+	// mitto-79x: Cancel() only clears local prompting state — it never used to
+	// trigger the queue dispatcher, so any message queued while wedged stayed
+	// stranded forever (the dispatcher is entirely event-driven; there is no
+	// periodic self-heal). Async because TryProcessQueuedMessage ultimately
+	// calls promptWithMeta, which re-acquires promptMu.
+	if wasPrompting {
+		go bs.TryProcessQueuedMessage()
+	}
+
 	return cancelErr
 }
 
@@ -672,6 +939,7 @@ func (bs *BackgroundSession) ForceReset() {
 	bs.promptMu.Lock()
 	wasPrompting := bs.isPrompting
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
@@ -704,6 +972,11 @@ func (bs *BackgroundSession) ForceReset() {
 	// is idle (best effort; the RPC fails fast if the agent connection is dead).
 	bs.flushPendingConfig()
 
+	// mitto-79x: see the matching comment in Cancel() — ForceReset() has the same
+	// drain gap. Async because TryProcessQueuedMessage ultimately calls
+	// promptWithMeta, which re-acquires promptMu.
+	go bs.TryProcessQueuedMessage()
+
 	if bs.logger != nil {
 		bs.logger.Warn("Session forcefully reset due to unresponsive agent")
 	}
@@ -714,7 +987,42 @@ func (bs *BackgroundSession) ForceReset() {
 // =============================================================================
 
 func (bs *BackgroundSession) pdPromptResolver() PromptResolver { return bs.promptResolver }
-func (bs *BackgroundSession) pdWorkingDir() string             { return bs.workingDir }
+func (bs *BackgroundSession) pdPromptFragmentsResolver() PromptFragmentsResolver {
+	return bs.promptFragmentsResolver
+}
+func (bs *BackgroundSession) pdWorkingDir() string { return bs.workingDir }
+
+func (bs *BackgroundSession) pdBeadsDatabaseMode() config.BeadsDatabaseMode {
+	if bs.beadsDatabaseModeResolver == nil {
+		return config.BeadsDatabaseModeLocal
+	}
+	mode, err := bs.beadsDatabaseModeResolver(bs.ctx, bs.workingDir)
+	if err != nil {
+		if bs.logger != nil {
+			bs.logger.Warn("failed to resolve Beads database mode for prompt context; using local",
+				"error", err,
+				"working_dir", bs.workingDir)
+		}
+		return config.BeadsDatabaseModeLocal
+	}
+	return mode
+}
+
+// pdPromptsSnapshot returns a lazy fn that snapshots the workspace prompt
+// registry for the render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }}
+// predicates (mitto-s1w). Returns nil when no PromptsCache is wired — the
+// dispatcher hands the nil fn to ProcessorInput, and BuildCELContext leaves
+// ctx.Prompts zero-valued (predicates fail-closed).
+func (bs *BackgroundSession) pdPromptsSnapshot() func() *config.PromptsSnapshot {
+	if bs.promptsCache == nil {
+		return nil
+	}
+	cache := bs.promptsCache
+	return func() *config.PromptsSnapshot {
+		snap := cache.NamesSnapshot()
+		return &snap
+	}
+}
 
 func (bs *BackgroundSession) pdAgentSupportsImages() bool { return bs.agentSupportsImages }
 
@@ -764,11 +1072,63 @@ func (bs *BackgroundSession) pdListChildSessions() ([]session.Metadata, error) {
 	return bs.store.ListChildSessions(bs.persistedID)
 }
 
+// pdListWorkspacePeers returns non-archived sessions sharing this session's
+// workspace (identified by the (WorkingDir, ACPServer) composite key, which
+// maps 1:1 to a WorkspaceUUID in the registry), excluding self. Returns an
+// empty slice — never nil — when no store is available so callers can range
+// unconditionally. Errors from store.List are propagated so the caller can
+// swallow them the same way sibling helpers do.
+func (bs *BackgroundSession) pdListWorkspacePeers() ([]session.Metadata, error) {
+	if bs.store == nil || bs.persistedID == "" {
+		return nil, fmt.Errorf("store not available")
+	}
+	if bs.workingDir == "" && bs.acpServer == "" {
+		return []session.Metadata{}, nil
+	}
+	all, err := bs.store.List()
+	if err != nil {
+		return nil, err
+	}
+	peers := make([]session.Metadata, 0, len(all))
+	for _, m := range all {
+		if m.SessionID == bs.persistedID {
+			continue
+		}
+		if m.Archived {
+			continue
+		}
+		if m.WorkingDir != bs.workingDir || m.ACPServer != bs.acpServer {
+			continue
+		}
+		peers = append(peers, m)
+	}
+	return peers, nil
+}
+
 func (bs *BackgroundSession) pdIsChildPrompting(childSessionID string) bool {
 	if bs.isChildPrompting == nil {
 		return false
 	}
 	return bs.isChildPrompting(childSessionID)
+}
+
+// pdChildQueueLength returns the number of pending queued prompts on the
+// given child session, or 0 when the store is unavailable or the length
+// cannot be read. Errors are swallowed to match the best-effort semantics
+// of the surrounding child/peer enumeration.
+func (bs *BackgroundSession) pdChildQueueLength(childSessionID string) int {
+	if bs.store == nil || childSessionID == "" {
+		return 0
+	}
+	q := bs.store.Queue(childSessionID)
+	if q == nil {
+		return 0
+	}
+	n, err := q.Len()
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (bs *BackgroundSession) pdCachedMCPToolNames() []string {
@@ -824,6 +1184,27 @@ func (bs *BackgroundSession) pdBuildPromptWithHistory(message string) string {
 
 func (bs *BackgroundSession) pdHasSharedProcess() bool { return bs.sharedProcess != nil }
 
+// pdSharedProcessHistory reports whether this session's shared process has
+// previously completed at least one successful session RPC, corroborating
+// -32603 "query closed" handshake-failure diagnosis (mitto-azk). Backed by
+// MCPInitDone(), which latches on the first successful session/new or
+// session/load and is NOT reset by Restart() — a process recycle keeps the
+// prior latch, so a first-contact failure on a freshly-restarted process is
+// still reported as "warm". This errs safely: it only ever removes the
+// (possibly misleading) auth hint, never adds one, and the underlying agent
+// did previously authenticate successfully in this Mitto run. Returns
+// ProcessHistoryUnknown when no shared process is configured (legacy
+// per-session process ownership) and ProcessHistoryCold/Warm otherwise.
+func (bs *BackgroundSession) pdSharedProcessHistory() mittoAcp.ProcessHistory {
+	if bs.sharedProcess == nil {
+		return mittoAcp.ProcessHistoryUnknown
+	}
+	if bs.sharedProcess.MCPInitDone() {
+		return mittoAcp.ProcessHistoryWarm
+	}
+	return mittoAcp.ProcessHistoryCold
+}
+
 func (bs *BackgroundSession) pdCompleteDeferredHandshake() error {
 	return bs.completeDeferredHandshake()
 }
@@ -860,6 +1241,7 @@ func (bs *BackgroundSession) pdRecordErrorEvent(seq int64, msg string) error {
 func (bs *BackgroundSession) pdResetPromptingStateForAbort() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.promptCond.Broadcast()
 	bs.promptMu.Unlock()
@@ -881,6 +1263,8 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	if err != nil {
 		return "", err
 	}
+	// A brand-new session created fresh in this process is provably empty (mitto-s9g2).
+	bs.markACPContextFresh()
 	return string(freshSess.SessionId), nil
 }
 
@@ -945,6 +1329,15 @@ func (bs *BackgroundSession) pdRecordSessionChange(kind, value, previousValue st
 	bs.cmRecordSessionChange(kind, value, previousValue)
 }
 
+// pdRecordSessionChangeWithSeq (mitto-c36) is the seq-aware sibling of
+// pdRecordSessionChange used by createFreshContextSession to emit the
+// "context_cleared" pill with a caller-reserved seq allocated in PromptWithMeta
+// before the user-prompt seq. Passing a zero seq is a caller bug — the
+// dispatcher falls back to the plain seq-allocating variant in that case.
+func (bs *BackgroundSession) pdRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string) {
+	bs.cmRecordSessionChangeWithSeq(seq, kind, value, previousValue)
+}
+
 // === New in 2.5-d ===
 
 func (bs *BackgroundSession) pdSetLastUsage(usage *acp.Usage) {
@@ -981,9 +1374,16 @@ func (bs *BackgroundSession) pdReadLastAgentMessage() string {
 	return session.GetLastAgentMessage(events)
 }
 
+// pdDismissActiveUIPrompt dismisses any active blocking UI prompt. See
+// promptDeps.pdDismissActiveUIPrompt (mitto-nisb).
+func (bs *BackgroundSession) pdDismissActiveUIPrompt() {
+	bs.DismissActiveUIPrompt()
+}
+
 func (bs *BackgroundSession) pdMarkPromptComplete() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
+	bs.clearActiveDispatchLocked()
 	bs.promptStartTime = time.Time{}
 	bs.lastResponseComplete = time.Now()
 	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
@@ -1108,11 +1508,20 @@ func (bs *BackgroundSession) pdReacquirePromptingState() {
 
 // === New in mitto-2tm ===
 
-func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.contextFlushCommand }
+func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.ContextFlushCommand() }
 
 func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
-	return bs.flushContextInPlace(ctx)
+	err := bs.flushContextInPlace(ctx)
+	if err == nil {
+		// The in-place flush succeeded: the session is now provably empty (mitto-s9g2).
+		bs.markACPContextFresh()
+	}
+	return err
 }
+
+// === New in mitto-s9g2: skip redundant FreshContext clear on a virgin session ===
+
+func (bs *BackgroundSession) pdContextIsEmpty() bool { return bs.acpContextIsEmpty() }
 
 // Cold-start diagnostics (mitto-3mv WI-2). Delegates to the nil-safe helper.
 func (bs *BackgroundSession) pdColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }

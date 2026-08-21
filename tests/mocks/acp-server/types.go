@@ -157,6 +157,22 @@ type SetSessionConfigOptionResult struct {
 	ConfigOptions []SessionConfigOption `json:"configOptions"`
 }
 
+// SetSessionModelParams mirrors the SDK's UnstableSetSessionModelRequest sent
+// over the `session/set_model` RPC (ACP 0.13). Mitto switched to this primary
+// RPC in mitto-vd5; the legacy `session/set_config_option` path remains only
+// as a single-shot fallback when the agent replies -32601.
+type SetSessionModelParams struct {
+	Meta      map[string]any `json:"_meta,omitempty"`
+	SessionID string         `json:"sessionId"`
+	ModelID   string         `json:"modelId"`
+}
+
+// SetSessionModelResult mirrors the SDK's UnstableSetSessionModelResponse: an
+// otherwise-empty envelope (only _meta is carried).
+type SetSessionModelResult struct {
+	Meta map[string]any `json:"_meta,omitempty"`
+}
+
 // SessionModeState represents the set of modes and the one currently active.
 type SessionModeState struct {
 	AvailableModes []SessionMode `json:"availableModes"`

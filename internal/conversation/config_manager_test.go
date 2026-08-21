@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -37,8 +39,10 @@ type fakeConfigDeps struct {
 	pendingConfig map[string]string
 
 	// injected errors
-	setModeErr  error
-	setModelErr error
+	setModeErr          error
+	setModelErr         error
+	setModelErrors      []error
+	recordSessionChgErr error
 
 	// recorders
 	modeRPCCalls      []string
@@ -102,6 +106,11 @@ func (f *fakeConfigDeps) cmSetSessionModel(_ context.Context, modelID string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.modelRPCCalls = append(f.modelRPCCalls, modelID)
+	if len(f.setModelErrors) > 0 {
+		err := f.setModelErrors[0]
+		f.setModelErrors = f.setModelErrors[1:]
+		return err
+	}
 	return f.setModelErr
 }
 
@@ -209,10 +218,11 @@ func (f *fakeConfigDeps) cmNotifyConfigChanged(configID, value string) {
 	defer f.mu.Unlock()
 	f.notifiedConfig = append(f.notifiedConfig, [3]string{f.sessionID, configID, value})
 }
-func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) {
+func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sessionChanges = append(f.sessionChanges, [3]string{kind, value, previousValue})
+	return f.recordSessionChgErr
 }
 
 // --- Tests ---
@@ -314,6 +324,55 @@ func TestConfigManager_SetConfigOption_IdlePath_ModelRPC(t *testing.T) {
 	// Config notify should fire.
 	if len(d.notifiedConfig) == 0 {
 		t.Fatal("expected config changed notification")
+	}
+}
+
+func TestConfigManager_SetConfigOption_RetryableModelFailurePreservesBaselineIntent(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.currentModelID = "m-1"
+	d.setModelErr = &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    map[string]string{"error": "context deadline exceeded"},
+	}
+
+	err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err == nil {
+		t.Fatal("expected retryable model RPC failure")
+	}
+	if d.baselineModel != "m-2" {
+		t.Fatalf("baselineModel = %q, want pending user intent m-2", d.baselineModel)
+	}
+	if len(d.persistedBaseline) != 1 || d.persistedBaseline[0] != "m-2" {
+		t.Fatalf("persistedBaseline = %v, want [m-2]", d.persistedBaseline)
+	}
+	if d.currentModelID != "m-1" {
+		t.Fatalf("currentModelID = %q, want effective model m-1", d.currentModelID)
+	}
+	if got := c.getConfigValue(d, ConfigOptionCategoryModel); got != "m-1" {
+		t.Fatalf("displayed config model = %q, want effective model m-1", got)
+	}
+	if len(d.notifiedConfig) != 0 {
+		t.Fatalf("unexpected optimistic config notification: %v", d.notifiedConfig)
+	}
+}
+
+func TestConfigManager_SetConfigOption_NonRetryableModelFailureKeepsBaseline(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-1"
+	d.setModelErr = errors.New("model unavailable")
+
+	err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err == nil {
+		t.Fatal("expected non-retryable model RPC failure")
+	}
+	if d.baselineModel != "m-1" {
+		t.Fatalf("baselineModel = %q, want unchanged baseline m-1", d.baselineModel)
+	}
+	if len(d.persistedBaseline) != 0 {
+		t.Fatalf("unexpected persisted baseline after non-retryable failure: %v", d.persistedBaseline)
 	}
 }
 
@@ -581,6 +640,47 @@ func TestConfigManager_ApplyConfigConstraints_MatchesOption(t *testing.T) {
 
 	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
 		t.Fatalf("expected model RPC for 'm-2', got %v", d.modelRPCCalls)
+	}
+}
+
+func TestConfigManager_ApplyConfigConstraints_RetriesRetryableModelFailure(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+	}
+	d.currentModelID = "m-1"
+	d.setModelErrors = []error{context.DeadlineExceeded, nil}
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("expected warm retry to recover, got %v", err)
+	}
+	if len(d.modelRPCCalls) != 2 {
+		t.Fatalf("expected two model RPC attempts, got %v", d.modelRPCCalls)
+	}
+}
+
+func TestConfigManager_ApplyConfigConstraints_PromptReservationDoesNotDefer(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+	}
+	d.currentModelID = "m-1"
+	d.isPrompting = true
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("apply startup model constraint: %v", err)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
+		t.Fatalf("startup constraint must land before the reserved prompt, got RPCs %v", d.modelRPCCalls)
+	}
+	if pending := d.cmDrainPendingConfig(); len(pending) != 0 {
+		t.Fatalf("startup constraint must not be deferred behind the reserved prompt, got %v", pending)
 	}
 }
 

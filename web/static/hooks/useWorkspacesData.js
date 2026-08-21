@@ -8,7 +8,9 @@
 // the previously-selected workspace across a reload/reopen.
 const { useState, useCallback } = window.preact;
 
-import { endpoints, fetchConfig } from "../utils/index.js";
+import { fetchConfig } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorStatus } from "../utils/sdkErrors.js";
 import { getBasename } from "../lib.js";
 
 export function useWorkspacesData({
@@ -32,9 +34,19 @@ export function useWorkspacesData({
     prevSelectedWorkspaceKeyRef.current = null;
     setLoading(true);
     try {
-      const [config, runnersRes] = await Promise.all([
+      const [config, runnersResult] = await Promise.all([
         fetchConfig(null, true),
-        fetch(endpoints.runners.supported(), { credentials: "same-origin" }),
+        // A non-2xx status falls back to the default runner list below
+        // (mirrors the old `if (runnersRes.ok)` guard); only a
+        // network-level failure propagates to the outer catch, same as the
+        // old raw `fetch()`'s rejection.
+        getSdkClient()
+          .serverConfig.supportedRunners()
+          .then((data) => ({ ok: true, data }))
+          .catch((err) => {
+            if (errorStatus(err) === undefined) throw err;
+            return { ok: false };
+          }),
       ]);
       const servers = config.acp_servers || [];
       setAcpServers(servers);
@@ -84,8 +96,8 @@ export function useWorkspacesData({
       } else {
         setSelectedWorkspaceKey(null);
       }
-      if (runnersRes.ok) {
-        setSupportedRunners((await runnersRes.json()) || []);
+      if (runnersResult.ok) {
+        setSupportedRunners(runnersResult.data || []);
       } else {
         setSupportedRunners([
           { type: "exec", label: "exec (no restrictions)", supported: true },

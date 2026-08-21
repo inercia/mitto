@@ -1,0 +1,77 @@
+icon: globe
+name: Submit changes
+menus: prompts, !conversation, !promptsLoop
+description: Submit changes
+group: Submission of changes
+backgroundColor: '#B2DFDB'
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'Submission of changes'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
+
+  ### 1. Check for Uncommitted Changes
+
+  ```bash
+  git status --porcelain
+  ```
+
+  If uncommitted changes exist: inform user to commit first (use "Commit Changes" prompt), then stop.
+
+  ### 2. Ensure Feature Branch
+
+  {{ template "git/shared/ensure-feature-branch" . }}
+
+  ### 3. Identify Target Remote and Branch
+
+  {{ template "git/shared/identify-remote-branch" . }}
+
+  ### 4. Check if Rebase Needed
+
+  {{ template "git/shared/check-behind-base" . }}
+
+  ### 5. Create or Update PR
+
+  {{ template "git/shared/create-or-update-pr" . }}
+
+  ### 6. Update Agent Rules (Optional)
+
+  {{ template "git/shared/update-agent-rules" . }}
+
+  ## Summary Report
+
+  ✅ Changes Submitted
+  📋 Status:
+  - Branch: <branch-name>
+  - Action: [Created new PR | Updated existing PR]
+  - Rebase: [Not needed | Completed | N/A]
+  🔗 PR: <pr-url>
+  📝 Rules Updated: [Yes - added X | No updates needed]
+
+  ## Guidelines
+
+  - The user already asked to submit and open a PR — **do not ask a
+    final "shall I push and create the PR?" confirmation** when
+    detection resolved cleanly. State the resolved remote/branch and
+    proceed. The form/textbox in Step 5 already collects the details
+    the user actually needs to review (title, base, reviewers, body).
+  - Detect the correct remote via an existing PR, an upstream tracking
+    branch, or the standard fork convention (`origin` = your fork,
+    `upstream` = canonical) — do not assume blindly, but do not treat
+    a normal fork setup as ambiguous.
+  - Distinguish target vs push remote: push to `origin`, PR targets
+    `upstream` in fork workflows.
+  - Use `--force-with-lease` when force pushing.
+  - Confirm a new branch name **only when Step 2 has to create one**
+    (on `main`/`master`/protected). Do not re-confirm an existing
+    feature branch.
+  - Only ask about remote resolution on **genuine ambiguity** (see the
+    "Proceed or confirm" block in Step 3).
+  - Stop if uncommitted changes exist — do not auto-commit.
+  - Use rebase, not merge, for updating branches.
+  - Document learnings in rules only with user approval.

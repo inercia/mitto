@@ -1,0 +1,116 @@
+{{/*
+  beads-issues/shared/rank-candidates — the ONE canonical "what do I work on
+  next?" ordering rule, shared by every prompt that has to choose between
+  several candidate beads.
+
+  Before this fragment existed, six prompts each restated a slightly different
+  subset of the rule (beads/work, beads-issues/work, loop-until-complete,
+  loop-processing §2B/§2C, misc/continue, beads/reevaluate) — some ranked
+  blocking leverage above declared priority, others the reverse, and one
+  cross-referenced a ranking step that did not exist. The canonical order is:
+
+      unblocked-only (hard filter) → declared priority (with the epic-finishing
+      promotion) → epic completion → blocking leverage → readiness
+      [→ bead ID asc, when Deterministic]
+
+  Priority is authoritative and the rest are tie-breaks *within* a priority
+  band. That preserves `loop-processing`'s pinned "a P0 ALWAYS runs before a
+  P3" invariant while still making dependency leverage matter everywhere.
+
+  The one bounded exception is the **epic-finishing promotion**: a bead whose
+  closure also closes its epic is ranked as if one band higher (never above
+  P0). Without it the rule strands epic tails forever — the leftover
+  "document XYZ" / "test ABC" children are low priority AND block nothing, so
+  they lose criterion 2 to any higher-priority bead elsewhere and criterion 4
+  to anything with dependents, and their epic never closes. The promotion is
+  deliberately narrow (last child only, one band, ranking-only) so it drains
+  tails without letting a large half-done epic outrank genuinely urgent work.
+
+  The output is a ranked **shortlist** of the top N (default 3), not a single
+  winner: deciding how many of the shortlist to actually act on belongs to the
+  calling prompt (a single-target flow takes #1 and keeps the rest as fallback;
+  a flow with a concurrency cap may take as many as the cap allows).
+
+  Usage:
+
+      {{ template "beads-issues/shared/rank-candidates" (dict
+          "Set"           "the available (ready, not-in-progress) beads"
+          "Deterministic" true
+          "PreFiltered"   false
+          "TopN"          3
+      ) }}
+
+  Parameters:
+    Set           — noun phrase for the candidate set (default "the
+                    candidates"): "the epic's children", "the survivors", …
+    Deterministic — when true, append "bead ID ascending" as the final
+                    tie-break so the ordering is reproducible across runs.
+                    Automated/loop callers set this; interactive ones need
+                    not.
+    PreFiltered   — when true, the caller has ALREADY dropped blocked beads
+                    from the set, so criterion 1 is phrased as a re-check
+                    rather than a filtering instruction.
+    TopN          — shortlist length (default 3). Set to 1 for callers that
+                    genuinely need a single pick and have no use for
+                    fallbacks.
+
+  Self-contained: emits a numbered list plus a short closing paragraph, safe
+  wherever a list is expected.
+*/}}
+{{- $set := "the candidates" -}}
+{{- with .Set }}{{ $set = . }}{{ end -}}
+{{- $topN := 3 -}}
+{{- with .TopN }}{{ $topN = . }}{{ end -}}
+Order {{ $set }} by these criteria, applied **in this exact order**:
+
+1. **Dependencies first — unblocked only.** {{ if .PreFiltered }}The set is already
+   filtered to unblocked beads; re-check before committing to a choice that no
+   blocker appeared in the meantime.{{ else }}A bead with any unmet blocker is not a
+   candidate at all — drop it (or mark it blocked) rather than ranking it.{{ end }}
+   Read the edges from `bd dep tree <id>` (or the `bd ready --json` output). Treat
+   **implicit** ordering as binding too: a bead that establishes schema,
+   infrastructure, or shared scaffolding that its siblings build on comes before
+   them even without a declared `blocks` edge.
+2. **Declared priority.** Among unblocked candidates, order by the tracker's
+   declared priority — `critical → high → medium → low`, i.e. `bd`'s numeric
+   `priority` **ascending** (`P0` before `P1` before `P2` before `P3`). Priority is
+   **authoritative**: a P0 always comes before a P3. Never demote something because
+   it "looks small" nor promote it because it "looks urgent" — if the recorded
+   priority is wrong, fix it explicitly with `bd update <id> --priority <0-4>`
+   instead of quietly reordering.
+
+   **One exception — the epic-finishing promotion.** A candidate whose closure
+   would also close its parent epic (it is the epic's **last** open child) ranks
+   here as if its priority were **one band higher** (a P3 last child ranks among
+   the P2s). The promotion is capped at P1 — it never jumps a bead ahead of a P0 —
+   applies to ranking only (do **not** run `bd update --priority`), and applies
+   only to a genuine last child: verify with
+   `bd list --parent <epic> --status open,in_progress,blocked` that no other
+   unfinished child remains — do **not** infer it from `bd dep tree`, which shows
+   dependency edges rather than epic membership. This
+   exists because epic tails are usually low-priority chores ("document XYZ",
+   "test ABC") that block nothing, so they lose every other criterion and the epic
+   stays open indefinitely.
+3. **Epic completion.** Break remaining ties (including ties created by the
+   promotion above) in favour of the candidate that leaves its epic closest to
+   done — fewest open siblings remaining after it closes. A bead with no parent
+   epic is treated as "one remaining", i.e. it neither wins nor loses this
+   criterion against a genuine last child. Prefer **finishing** a partly-done epic
+   over opening a new front.
+4. **Blocking leverage.** Then break ties by how much each candidate unblocks —
+   the number of beads it blocks, directly and transitively. Higher leverage first:
+   finishing it frees the most downstream work.
+5. **Readiness to start.** Remaining ties go to the candidate that can be started
+   immediately with no setup{{ if .Deterministic }}, and any tie still standing is
+   broken by **bead ID ascending** so the ordering is reproducible across runs{{ end }}.
+
+{{ if gt $topN 1 -}}
+Produce the **top {{ $topN }}** of that ordering as a shortlist (fewer if the set is
+smaller), each with its bead ID and a one-line reason it placed where it did. The
+shortlist is ordered — #1 is the best pick. **Do not decide here how many of them to
+act on**: the step that invoked this ranking says whether it takes only #1 (keeping the
+rest as fallbacks if the top pick turns out to be unworkable) or several at once.
+{{- else -}}
+Take the **single top-ranked** candidate, and state in one line why it beat the
+runner-up.
+{{- end }}

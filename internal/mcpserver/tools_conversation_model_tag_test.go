@@ -54,6 +54,7 @@ func (m *mockBackgroundSessionForModelTag) callsSnapshot() []string {
 
 // Remaining BackgroundSession methods — no-op stubs.
 func (m *mockBackgroundSessionForModelTag) IsPrompting() bool                   { return false }
+func (m *mockBackgroundSessionForModelTag) StartupRecoveryPending() bool        { return false }
 func (m *mockBackgroundSessionForModelTag) HasQueuedDeliveryInProgress() bool   { return false }
 func (m *mockBackgroundSessionForModelTag) GetQueueConfig() *config.QueueConfig { return m.queueConfig }
 func (m *mockBackgroundSessionForModelTag) GetEventCount() int                  { return 0 }
@@ -70,6 +71,9 @@ func (m *mockBackgroundSessionForModelTag) LastQueuedSendError() (string, time.T
 func (m *mockBackgroundSessionForModelTag) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForModelTag) WaitForResponseComplete(time.Duration) bool {
 	return true
+}
+func (m *mockBackgroundSessionForModelTag) ActivePromptDispatch() (string, map[string]string, bool) {
+	return "", nil, false
 }
 
 // mockSessionManagerForModelTag is a SessionManager stub whose GetSession and
@@ -132,6 +136,7 @@ func (m *mockSessionManagerForModelTag) BroadcastSessionArchived(string, bool, .
 func (m *mockSessionManagerForModelTag) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForModelTag) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForModelTag) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForModelTag) ApplyOnCloseProcessors(string, string)     {}
 func (m *mockSessionManagerForModelTag) GetWorkspaces() []config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForModelTag) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil

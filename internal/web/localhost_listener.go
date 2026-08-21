@@ -3,9 +3,35 @@ package web
 import (
 	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
+	"strings"
 
 	"github.com/inercia/mitto/internal/logging"
 )
+
+// PrimaryListenerAddress validates that host is safe for the unauthenticated
+// primary listener and returns a correctly formatted host:port address.
+// Non-loopback traffic must use StartExternalListener so requests retain their
+// external provenance and receive scanner-defense protections.
+func PrimaryListenerAddress(host string, port int, authEnabled bool) (string, error) {
+	normalized := strings.TrimSpace(host)
+	if strings.HasPrefix(normalized, "[") && strings.HasSuffix(normalized, "]") {
+		normalized = strings.TrimSuffix(strings.TrimPrefix(normalized, "["), "]")
+	}
+
+	loopback := strings.EqualFold(normalized, "localhost")
+	if addr, err := netip.ParseAddr(normalized); err == nil {
+		loopback = addr.WithZone("").Unmap().IsLoopback()
+	}
+	if loopback {
+		return net.JoinHostPort(normalized, strconv.Itoa(port)), nil
+	}
+	if !authEnabled {
+		return "", fmt.Errorf("non-loopback primary bind %q requires effective authentication; configure authentication and use --port-external", host)
+	}
+	return "", fmt.Errorf("non-loopback primary bind %q must use StartExternalListener; use --port-external instead of --host", host)
+}
 
 // LocalhostListener wraps a net.Listener and only accepts connections from localhost.
 // This provides socket-level security by rejecting non-localhost connections before

@@ -84,12 +84,11 @@ func (s *Store) ForceInterruptLock(sessionID, clientType string) (*Lock, error) 
 // acquireLock is the internal implementation for lock acquisition.
 func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool) (*Lock, error) {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	// Check if session exists
 	if !s.sessionExistsLocked(sessionID) {
@@ -184,12 +183,11 @@ func (s *Store) acquireLock(sessionID, clientType string, force, interrupt bool)
 // GetLockInfo retrieves the current lock information for a session.
 // Returns nil if the session is not locked.
 func (s *Store) GetLockInfo(sessionID string) (*LockInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	lockPath := s.lockPath(sessionID)
 	info, err := s.readLockFile(lockPath)
@@ -411,12 +409,11 @@ type LockCheckResult struct {
 
 // CheckLockStatus checks the lock status of a session and returns detailed information.
 func (s *Store) CheckLockStatus(sessionID string) (*LockCheckResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	// Check if session exists
 	if !s.sessionExistsLocked(sessionID) {

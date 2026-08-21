@@ -1,0 +1,131 @@
+icon: play
+name: Continue in existing
+description: Continue work by sending instructions to an existing child conversation
+group: Work flow
+menus: prompts, conversation
+parameters:
+  - name: TargetConversation
+    type: childSessionId
+    description: The child conversation to continue (one you spawned from this conversation)
+    required: true
+backgroundColor: '#FFF9C4'
+enabledWhen: Session.HasMessages && Children.Exists && Permissions.CanSendPrompt && !Session.IsLoopConversation
+prompt: |
+  Continue working on this by sending instructions to the existing conversation you
+  selected (`{{ .Args.TargetConversation }}` — typically a child you spawned). Build on what it
+  has already accomplished; don't repeat work.
+
+  ## Phase 1: Context
+
+  {{ template "_shared/session-id-line" . }}
+
+  {{ with .Children.Get .Args.TargetConversation -}}
+  The target conversation is **{{ .Name }}** (`{{ .ID }}`), running on **{{ .ACPServer }}**,
+  currently {{ if .IsPrompting }}**running**{{ else }}**idle**{{ end }}. Build on what it
+  has already accomplished.
+  {{- else -}}
+  The target conversation `{{ .Args.TargetConversation }}` was not found (it may have been
+  deleted). Inform the user and abort.
+  {{- end }}
+
+  ## Phase 2: Prepare Instructions
+
+  Based on the conversation context and the overall goal, prepare continuation
+  instructions for the target conversation. Build on what it has already accomplished;
+  don't repeat work. Be specific about what to do next.
+
+  ## Phase 3: Confirm (and choose whether to wait)
+
+  Present the proposed instructions to the user:
+
+  ```markdown
+  ## Continue Conversation
+
+  {{ with .Children.Get .Args.TargetConversation -}}
+  **Target:** {{ .Name }} (`{{ .ID }}`)
+  **Status:** {{ if .IsPrompting }}running{{ else }}idle{{ end }}
+  **Server:** {{ .ACPServer }}
+  {{- else -}}
+  **Target:** `{{ .Args.TargetConversation }}` _(not found — may have been deleted)_
+  {{- end }}
+
+  **Proposed Instructions:**
+  ---
+  <continuation prompt>
+  ---
+  ```
+
+  Confirm and pick the wait behaviour in a single
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s):
+
+  ```
+  question: "Send these instructions to <target title>?"
+  options:
+    - label: "Send and wait for a report"
+      description: "Send, then block until the conversation reports back when done"
+    - label: "Send without waiting"
+      description: "Send and return immediately; monitor in the Conversations panel"
+  allow_free_text: true
+  free_text_placeholder: "Describe what to do differently..."
+  ```
+
+  On timeout: abort. Do not send without explicit confirmation. Free-text feedback means
+  revise the instructions and present this confirmation again.
+
+  **If the user chose to wait**, pick a short, descriptive `task_id` (e.g.
+  `"iter2-fix-tests"`) and append this reporting block to the instructions before sending:
+
+  ```
+  When complete, report via
+
+  mitto_children_tasks_report:
+      self_id: "<the target conversation's own session ID>"
+      task_id: "<task_id from the parent's wait call>"
+      status: "completed" | "failed" | "partial"
+      summary: "<what was accomplished>"
+      details: "<files modified, errors, discoveries, open questions>"
+
+  Do this as your final action.
+  ```
+
+  ## Phase 4: Send Instructions
+
+  `mitto_conversation_send_prompt(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Args.TargetConversation }}", prompt: <confirmed instructions>)`
+
+  ## Phase 5: Wait or Report
+
+  **If the user chose to wait:**
+
+  ```
+  mitto_children_tasks_wait(self_id, children_list: ["{{ .Args.TargetConversation }}"], task_id: "<task_id>", timeout_seconds: 600)
+  ```
+
+  Inform user: "Waiting for the conversation to report... Monitor in the Conversations panel."
+
+  {{ template "_shared/loop/wait-with-retry" . }}
+
+  > Note: `mitto_children_tasks_wait` only receives a report when `{{ .Args.TargetConversation }}`
+  > is a **child of this conversation**. If the target is not a child of this session, it
+  > cannot report back here — send without waiting instead.
+
+  **If the user chose not to wait:**
+
+  ```markdown
+  ✅ Instructions Sent
+
+  **Sent To:** <title> (`{{ .Args.TargetConversation }}`)
+  **Instructions:** <brief summary>
+
+  The conversation will continue working. You can:
+  - Monitor progress in the Conversations panel
+  - Wait for a status report from it
+  - Use "Continue in existing" again to send more instructions
+  ```
+
+  ## Guidelines
+
+  - Review the target conversation's current state before sending instructions
+  - Build on what it has already accomplished — don't repeat work
+  - Be specific about what to do next
+  - Consider whether it is currently busy (running) vs idle
+  - Get user confirmation before sending

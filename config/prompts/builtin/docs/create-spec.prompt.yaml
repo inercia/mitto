@@ -1,0 +1,135 @@
+icon: list
+name: Create spec
+menus: prompts, !promptsLoop
+description: Interactively build a developer-ready specification through guided questions
+group: Planning
+backgroundColor: '#FFECB3'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: Dirname
+    type: dirname
+    required: true
+    remember: folder
+    glob:
+      - "docs"
+      - "spec"
+      - "specs"
+      - "**/docs"
+      - "**/spec"
+      - "**/specs"
+    description: Target directory for the specification. The picker proposes existing docs, spec, and specs folders at any depth in the workspace.
+  - name: Filename
+    type: text
+    required: false
+    group: Advanced
+    default: "spec-<feature>.md"
+    description: Optional output filename override. Leave unchanged or empty to derive spec-<feature>.md from the feature or topic.
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Create a Developer-Ready Specification
+
+  Target directory: `{{ .Args.Dirname }}`
+  Filename setting: `{{ Default "spec-<feature>.md" .Args.Filename }}`
+
+  {{- if .Session.HasMessages }}
+  ## Context mode — synthesize the discussed feature
+
+  Review the conversation so far and identify the concrete feature, change, or
+  technical topic under discussion. Synthesize the specification from that context;
+  do **not** restart with the generic "What do you want to build?" question.
+
+  Extract established requirements, decisions, constraints, affected users, success
+  criteria, and unresolved points. Read relevant repository files and existing docs
+  to verify technical claims. Ask a focused clarifying question only when a missing
+  answer would materially change scope or acceptance criteria.
+  {{- else }}
+  ## Fresh-conversation mode — establish the topic first
+
+  There is no prior conversation context. Do **not** draft or write a specification
+  yet. Use `mitto_ui_form(self_id: "{{ .Session.ID }}")` to ask:
+
+  **"What do you want to create a spec for?"**
+
+  Collect the feature/topic in a required text field named `topic`. Then conduct a
+  short clarifying discussion before drafting. Ask one focused question at a time,
+  summarize each answer briefly, and stop once you understand:
+
+  1. the problem, intended users, and desired outcome;
+  2. in-scope and out-of-scope behavior;
+  3. success criteria and important edge/error cases;
+  4. material technical, security, performance, compatibility, or dependency constraints.
+
+  Prefer 2–4 high-value questions; do not turn the interaction into an exhaustive
+  questionnaire. Read relevant repository files once the topic identifies the area.
+  {{- end }}
+
+  ## Determine the output path
+
+  Derive `<feature>` as a concise lowercase kebab-case slug from the discussed or
+  collected topic (for example, "Workspace authentication" → `workspace-auth`).
+
+  - If `Filename` is empty or equals the literal default `spec-<feature>.md`, use
+    `spec-<derived-feature>.md`.
+  - Otherwise use `{{ .Args.Filename }}` as the advanced filename override. It must
+    be a filename only (no `/`, `..`, or absolute path); append `.md` if it has no
+    extension.
+  - The final workspace-relative path is
+    `{{ .Args.Dirname }}/<resolved-filename>`—normally
+    `{{ .Args.Dirname }}/spec-<derived-feature>.md`.
+
+  Verify `{{ .Args.Dirname }}` exists and is a directory. Do not silently select a
+  different directory. If the resolved file already exists, use
+  `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask whether to replace it,
+  choose another filename, or cancel; never overwrite without approval.
+
+  ## Draft the specification
+
+  Generate the spec in memory first, then present it for review before saving.
+
+  The spec should follow this structure:
+
+  ```markdown
+  # Requirements Document
+
+  ## Introduction
+  [2-3 sentences: what and why]
+
+  ## Goals and Non-Goals
+
+  ## Requirements
+
+  ### Requirement 1
+  **User Story:** As a [role], I want [goal], so that [benefit].
+  #### Acceptance Criteria
+  1. GIVEN [context] WHEN [action] THEN [result]
+
+  ## Non-Functional Requirements
+  ### Performance
+  ### Security
+  ### Other Constraints
+
+  ## Edge Cases
+
+  ## Dependencies and Compatibility
+
+  ## Verification Strategy
+
+  ## Open Questions
+  ```
+
+  Make every requirement concrete and testable. Distinguish facts established by
+  the conversation/repository from assumptions; unresolved decisions belong under
+  Open Questions rather than being invented.
+
+  ## Review and save
+
+  Before writing, present the complete Markdown specification in
+  `mitto_ui_textbox(self_id: "{{ .Session.ID }}")` for review and editing. Use the
+  submitted text as the final content. If the user cancels, ask what to revise and
+  present it again; make no file changes until they submit the review.
+
+  Write the approved text to the resolved path with a file-editing tool. Report the
+  exact path and the feature slug used. Do not implement the specification or make
+  unrelated repository changes.

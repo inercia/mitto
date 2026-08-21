@@ -87,6 +87,10 @@ function renderFolderEditor({
   // Shortcuts tab (grouped state/handlers from useFolderShortcutsConfig)
   shortcuts,
   shortcutsHandlers,
+  // Prompt parameter dialog opener (drilled through to WorkspaceFolderBeadsTab
+  // so the Prompt Actions sliders button can collect args for parametrized
+  // Pull/Push/Sync prompts).
+  onOpenPromptParamDialog,
 }) {
   const { editName, editCode, editColor, editGroup, editAutoChildren } = edits;
   const {
@@ -168,49 +172,51 @@ function renderFolderEditor({
                             <label class="label" for="ws-working-dir"
                               >Working Directory</label
                             >
-                            ${isNewFolder
-                              ? html`
-                                  <div class="flex gap-2">
+                            <div class="ws-working-dir-slot">
+                              ${isNewFolder
+                                ? html`
+                                    <div class="flex gap-2">
+                                      <input
+                                        id="ws-working-dir"
+                                        type="text"
+                                        value=${firstWs.working_dir}
+                                        onInput=${(e) =>
+                                          updateNewFolderPath(e.target.value)}
+                                        placeholder="/path/to/project"
+                                        class="input input-sm flex-1 ${isIncomplete
+                                          ? "border-error"
+                                          : ""}"
+                                      />
+                                      ${hasNativeFolderPicker() &&
+                                      html`
+                                        <button
+                                          onClick=${async () => {
+                                            const p = await pickFolder();
+                                            if (p) updateNewFolderPath(p);
+                                          }}
+                                          class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
+                                          data-tip="Browse"
+                                          aria-label="Browse"
+                                        >
+                                          <${FolderIcon} className="w-4 h-4" />
+                                        </button>
+                                      `}
+                                    </div>
+                                    ${isIncomplete &&
+                                    html`<p class="label text-error">
+                                      Please select a folder for this workspace.
+                                    </p>`}
+                                  `
+                                : html`
                                     <input
                                       id="ws-working-dir"
                                       type="text"
                                       value=${firstWs.working_dir}
-                                      onInput=${(e) =>
-                                        updateNewFolderPath(e.target.value)}
-                                      placeholder="/path/to/project"
-                                      class="input input-sm flex-1 ${isIncomplete
-                                        ? "border-error"
-                                        : ""}"
+                                      readonly
+                                      class="input input-sm w-full cursor-default"
                                     />
-                                    ${hasNativeFolderPicker() &&
-                                    html`
-                                      <button
-                                        onClick=${async () => {
-                                          const p = await pickFolder();
-                                          if (p) updateNewFolderPath(p);
-                                        }}
-                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
-                                        data-tip="Browse"
-                                        aria-label="Browse"
-                                      >
-                                        <${FolderIcon} className="w-4 h-4" />
-                                      </button>
-                                    `}
-                                  </div>
-                                  ${isIncomplete &&
-                                  html`<p class="label text-error">
-                                    Please select a folder for this workspace.
-                                  </p>`}
-                                `
-                              : html`
-                                  <input
-                                    id="ws-working-dir"
-                                    type="text"
-                                    value=${firstWs.working_dir}
-                                    readonly
-                                    class="input input-sm w-full cursor-default"
-                                  />
-                                `}
+                                  `}
+                            </div>
                             <label class="label" for="ws-display-name"
                               >Display Name</label
                             >
@@ -504,6 +510,7 @@ function renderFolderEditor({
                         beads=${beads}
                         beadsSetters=${beadsSetters}
                         beadsHandlers=${beadsHandlers}
+                        onOpenPromptParamDialog=${onOpenPromptParamDialog}
                       />`
                     }
 

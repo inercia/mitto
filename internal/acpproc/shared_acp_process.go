@@ -2,10 +2,12 @@ package acpproc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -16,11 +18,40 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
 )
+
+// traceSessionResponse dumps the full session/new|session/load|session/resume
+// response as JSON at INFO level when MITTO_ACP_TRACE_SESSION_RESP=1. Opt-in
+// only: this is a wire-level diagnostic for cases where the parsed struct is
+// suspiciously empty (e.g. ConfigOptions=[]) and we need to confirm the agent
+// actually sent that vs an SDK deserialization gap. No-op when unset or when
+// logger is nil. The env is read on every call so it can be flipped without
+// restart. Response payloads may contain _meta which is opaque — do not enable
+// this in shared/production environments.
+func traceSessionResponse(logger *slog.Logger, source string, resp any) {
+	if logger == nil {
+		return
+	}
+	if os.Getenv("MITTO_ACP_TRACE_SESSION_RESP") != "1" {
+		return
+	}
+	buf, err := json.Marshal(resp)
+	if err != nil {
+		logger.Info("ACP session response trace (marshal failed)",
+			"source", source, "error", err)
+		return
+	}
+	logger.Info("ACP session response trace",
+		"source", source,
+		"payload_bytes", len(buf),
+		"payload_json", string(buf))
+}
 
 const (
 	// maxProcessStartRetries is the maximum number of times to retry starting the ACP process.
@@ -269,14 +300,46 @@ type SharedACPProcessConfig struct {
 	// OnMCPInitTimeout is called at most once when the agent reports its internal
 	// MCP-init wait has timed out. The pending session/new should then be aborted with
 	// an actionable error rather than waiting for the RPC deadline to elapse
-	// (mitto-8ul.1). Optional.
-	OnMCPInitTimeout func()
+	// (mitto-8ul.1). The []string argument carries the names of the MCP servers the
+	// agent reported as timed out on the same stderr chunk, or nil if the chunk
+	// carried no per-server status line (mitto-m8nx AC2). Optional.
+	OnMCPInitTimeout func(servers []string)
 	// StderrPatterns holds per-agent compiled stderr regex patterns (mitto-k6h).
 	// Nil means only the hardcoded baseline crash patterns apply. Compiled once
 	// by the caller from the agent's metadata.yaml. Kept as a pointer to
-	// CompiledStderrPatterns (defined in internal/conversation) so acpproc does
-	// NOT depend on internal/agents.
-	StderrPatterns *conversation.CompiledStderrPatterns
+	// procstart.CompiledStderrPatterns (leaf subpackage) so acpproc does NOT
+	// depend on internal/agents and internal/conversation can consume the same
+	// type without an import cycle (mitto-iuw2).
+	StderrPatterns *procstart.CompiledStderrPatterns
+
+	// AgentDefaultEnv holds per-agent default environment variables declared in
+	// the agent's metadata.yaml (defaults.env, e.g.
+	// NODE_OPTIONS=--max-old-space-size=N; mitto-6dur). Resolved once by the
+	// caller (mirrors StderrPatterns above) and layered by
+	// procstart.BuildACPProcessEnv below Env (an explicit acp_servers[].env
+	// entry still wins). Kept as a separate field rather than folded into Env
+	// so it is NOT part of sharedProcessConfigMatchesWorkspace's reuse-key
+	// comparison — folding it into Env would make every pre-existing process
+	// look "changed" on the first post-upgrade resolve and force a spurious
+	// mass-restart.
+	AgentDefaultEnv map[string]string
+}
+
+type processTerminationIntent struct {
+	mu     sync.RWMutex
+	reason string
+}
+
+func (i *processTerminationIntent) mark(reason string) {
+	i.mu.Lock()
+	i.reason = reason
+	i.mu.Unlock()
+}
+
+func (i *processTerminationIntent) shutdownReason() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.reason
 }
 
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
@@ -293,6 +356,18 @@ type SharedACPProcess struct {
 	client *MultiplexClient
 	wait   func() error
 	cancel context.CancelFunc // for restricted runner processes
+	// terminationIntent belongs to the current OS process generation. The wait
+	// closure captures the same pointer so a replacement never inherits intent.
+	terminationIntent *processTerminationIntent
+
+	// generation is bumped (under mu) each time Restart() actually kills and
+	// replaces the process. Restart() snapshots this value on entry and
+	// re-checks it (under mu) right before killing, so a caller whose
+	// observed death has already been remediated by a concurrent Restart()
+	// call no-ops instead of tearing down the healthy replacement — fixes
+	// the mitto-x611 restart storm (N sessions independently detecting the
+	// same process death each triggering a redundant kill+start cycle).
+	generation int
 
 	// Process death detection (Fix A: faster crash detection)
 	// processDone is closed when the ACP OS process exits, providing sub-second
@@ -314,7 +389,9 @@ type SharedACPProcess struct {
 	// session/load, and session/new). The GC checks this counter before stopping an
 	// idle process to avoid killing the pipe while an RPC is in-flight (LoadSession
 	// can take 70+ seconds).
-	activeRPCs atomic.Int32
+	activeRPCs      atomic.Int32
+	activeRPCMu     sync.Mutex
+	activeRPCIdleCh chan struct{}
 
 	// setModelSem serialises set_model RPCs per process so concurrent callers queue
 	// instead of racing the serially-served agent subprocess (mitto-3q9).
@@ -385,6 +462,17 @@ type SharedACPProcess struct {
 	mcpInitMu         sync.Mutex
 	mcpInitTimeoutCh  chan struct{}
 
+	// mcpInitInProgressSince records when the current mcpInitInProgress window
+	// began (stamped at the false->true edge in onMCPInitProgress, cleared
+	// back to the zero Time whenever mcpInitInProgress is cleared to false).
+	// Guarded by mcpInitMu. Used by GC Tier 5 (mitto-13n.1) to detect a
+	// handshake the agent silently abandons — MCPInitInProgress()==true,
+	// MCPInitDone()==false, with no MCPInitTimedOut() stderr line ever
+	// observed — by bounding how long the in-progress state may persist
+	// before the process is treated as wedged, rather than relying solely on
+	// the agent's own (sometimes never-emitted) timeout signal.
+	mcpInitInProgressSince time.Time
+
 	// mcpInitDoneCh is closed exactly once (via mcpInitDoneOnce) when mcpInitDone
 	// first latches, so WaitForMCPInit can block until the process is warm without
 	// polling (mitto-54k.4).
@@ -398,6 +486,13 @@ type SharedACPProcess struct {
 	// and self-inflicting saturation. The gate is a capacity-1 semaphore held only
 	// on the cold path (extendedBudget=true); warm calls bypass it entirely.
 	coldStartGate chan struct{}
+
+	// loadReplaySuppressions identifies sessions whose session/load history replay
+	// must be discarded before it enters the SDK's shared bounded notification queue.
+	// Guarded by loadReplayMu; each state uses an atomic counter because filtering
+	// runs on the SDK reader goroutine while LoadSession runs on its caller goroutine.
+	loadReplayMu           sync.RWMutex
+	loadReplaySuppressions map[acp.SessionId]*loadReplaySuppression
 
 	// Logger
 	logger *slog.Logger
@@ -518,6 +613,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		return "", fmt.Errorf("parse command: %w", err)
 	}
 	mittoEnv := mittoAcp.BuildMittoEnv("", p.config.WorkingDir, p.config.ACPServer, "")
+	agentHintEnv := mittoAcp.BuildAgentHintEnv(p.config.ACPServer)
 	expandedArgs := mittoAcp.ExpandArgs(args, mittoEnv)
 	if p.logger != nil {
 		changedIndices := make([]int, 0)
@@ -548,7 +644,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var wait func() error
 	var cmd *exec.Cmd
 
-	stderrCollector := conversation.NewStderrCollector(8192, p.logger)
+	stderrCollector := procstart.NewStderrCollector(procstart.DefaultStderrCollectorBytes, p.logger)
+	terminationIntent := &processTerminationIntent{}
+	p.terminationIntent = terminationIntent
 	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
 	// suppressed from the debug-level stderr log. Nil is a safe no-op.
 	if p.config.StderrPatterns != nil {
@@ -597,6 +695,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if !p.mcpInitInProgress.CompareAndSwap(false, true) {
 			return
 		}
+		p.mcpInitMu.Lock()
+		p.mcpInitInProgressSince = time.Now()
+		p.mcpInitMu.Unlock()
 		if p.logger != nil {
 			p.logger.Info("ACP agent reports MCP servers initializing",
 				"acp_server", p.config.ACPServer)
@@ -605,11 +706,12 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			cb()
 		}
 	}
-	onMCPInitTimeout := func() {
+	onMCPInitTimeout := func(servers []string) {
 		p.mcpInitTimedOut.Store(true)
 		if p.logger != nil {
 			p.logger.Warn("ACP agent reports MCP initialization timed out",
-				"acp_server", p.config.ACPServer)
+				"acp_server", p.config.ACPServer,
+				"mcp_servers", servers)
 		}
 		p.mcpInitMu.Lock()
 		ch := p.mcpInitTimeoutCh
@@ -623,7 +725,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			}
 		}
 		if cb := p.config.OnMCPInitTimeout; cb != nil {
-			cb()
+			cb(servers)
 		}
 	}
 
@@ -651,8 +753,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		// Build env using the same layering as the direct-exec branch below so that
 		// server-specific vars (from settings.json acp_servers[].env) AND MITTO_* vars
-		// are propagated to the restricted-runner-spawned process.
-		runnerEnv := conversation.BuildACPProcessEnv(p.config.Env, mittoEnv)
+		// are propagated to the restricted-runner-spawned process. agentHintEnv
+		// (e.g. AGENT_MODE=1) sits below serverEnv so per-server settings can override.
+		runnerEnv := procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv, p.config.AgentDefaultEnv)
 		stdin, stdout, stderr, wait, err = p.config.Runner.RunWithPipes(runCtx, args[0], args[1:], runnerEnv)
 		if err != nil {
 			runCancel()
@@ -670,9 +773,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 				"acp_server", p.config.ACPServer)
 		}
 
-		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
+		signalStartupActivity = procstart.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
+		procstart.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -700,8 +803,8 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}
 
 		// Set environment variables for the ACP subprocess. Same layering as the
-		// runner branch (os.Environ + server-specific Env + MITTO_*).
-		cmd.Env = conversation.BuildACPProcessEnv(p.config.Env, mittoEnv)
+		// runner branch (os.Environ + agent hints + server-specific Env + MITTO_*).
+		cmd.Env = procstart.BuildACPProcessEnv(p.config.Env, mittoEnv, agentHintEnv, p.config.AgentDefaultEnv)
 
 		if p.logger != nil && len(p.config.Env) > 0 {
 			envKeys := make([]string, 0, len(p.config.Env))
@@ -731,9 +834,9 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		if cmd.Process != nil {
 			pid = cmd.Process.Pid
 		}
-		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
+		signalStartupActivity = procstart.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
+		procstart.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -755,24 +858,53 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 					"exit_code", exitErr.ExitCode(),
 					"acp_server", p.config.ACPServer,
 				}
+				shutdownReason := terminationIntent.shutdownReason()
+				if shutdownReason == "" && p.ctx.Err() != nil {
+					shutdownReason = "context_cancelled"
+				}
+				intentional := shutdownReason != ""
+				var (
+					sig      os.Signal
+					signaled bool
+				)
 				if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 					if status.Signaled() {
-						logAttrs = append(logAttrs, "signal", status.Signal().String())
+						signaled = true
+						sig = status.Signal()
+						// Keep the legacy `signal=<Go string>` field for
+						// back-compat with existing log-grep habits.
+						logAttrs = append(logAttrs, "signal", sig.String())
 					}
 				}
+				// mitto-7vq: enrich with canonical death_signal + stderr tail
+				// so operators can tell OOM (SIGKILL) from panic (SIGSEGV) from
+				// upstream disconnect. Intentional shutdowns get death_signal
+				// for symmetry but skip the stderr tail (not diagnostic).
+				var tailCollector *procstart.StderrCollector
+				if !intentional {
+					tailCollector = stderrCollector
+				}
+				logAttrs = append(logAttrs,
+					procstart.AbnormalExitAttrs(sig, signaled, tailCollector, procstart.DefaultStderrTailBytes)...)
 
 				// Log at DEBUG if we intentionally killed it, WARN if it crashed on its own
-				if p.ctx.Err() != nil {
+				if intentional {
+					logAttrs = append(logAttrs, "shutdown_reason", shutdownReason)
 					p.logger.Debug("ACP process exited (intentional shutdown)", logAttrs...)
 				} else {
 					p.logger.Warn("ACP process exited abnormally", logAttrs...)
 				}
 			} else {
 				// Non-ExitError wait failures (shouldn't happen in practice)
-				if p.ctx.Err() != nil {
+				shutdownReason := terminationIntent.shutdownReason()
+				if shutdownReason == "" && p.ctx.Err() != nil {
+					shutdownReason = "context_cancelled"
+				}
+				if shutdownReason != "" {
 					p.logger.Debug("ACP process wait error (intentional shutdown)",
 						"error", err,
-						"acp_server", p.config.ACPServer)
+						"acp_server", p.config.ACPServer,
+						"shutdown_reason", shutdownReason)
 				} else {
 					p.logger.Warn("ACP process wait error",
 						"error", err,
@@ -824,13 +956,13 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}()
 	}
 
-	filteredStdout := mittoAcp.NewJSONLineFilterReader(stdout, p.logger)
+	filteredStdout := mittoAcp.NewJSONLineFilterReaderWithFilter(stdout, p.logger, p.filterLoadReplayNotification)
 
 	// Use a larger notification queue for shared processes since all sessions
 	// multiplex over the same connection. The default 1024 can overflow when
 	// many sessions stream concurrently, killing the connection.
 	p.conn = acp.NewClientSideConnection(p.client, stdin, filteredStdout,
-		acp.WithMaxQueuedNotifications(8192))
+		acp.WithMaxQueuedNotifications(sharedACPNotificationQueueCapacity))
 	if p.logger != nil {
 		p.conn.SetLogger(logging.DowngradeACPSDKErrors(p.logger))
 	}
@@ -900,7 +1032,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			p.logger.Warn("ACP process initialization failed", logAttrs...)
 		}
 
-		p.killProcess()
+		p.killProcess("")
 		return stderrOutput, fmt.Errorf("failed to initialize: %w", err)
 	}
 
@@ -1079,10 +1211,19 @@ func (p *SharedACPProcess) evaluateSaturationRateTriggerLocked(now time.Time) {
 func (p *SharedACPProcess) recordRPCTimeout() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
-	now := time.Now()
+	p.recordRPCFailureLocked(time.Now())
+}
+
+// recordRPCFailureLocked is the shared escalation body for both full RPC
+// deadlines (recordRPCTimeout) and the agent's self-reported "query closed
+// before response received" wedge (recordRPCWedgeFailure, mitto-aoo). Both
+// are direct evidence the shared process cannot complete a session/new, so
+// they feed the SAME consecutive-timeout fast path and rolling window.
+// Callers must hold saturationMu.
+func (p *SharedACPProcess) recordRPCFailureLocked(now time.Time) {
 	p.saturationCurrentBucketLocked(now).timeouts++
 	if p.inProbe {
-		// Probe timed out: immediately escalate and re-saturate.
+		// Probe failed: immediately escalate and re-saturate.
 		p.inProbe = false
 		p.saturationLevel++
 		p.consecutiveRPCTimeouts = 0
@@ -1098,6 +1239,21 @@ func (p *SharedACPProcess) recordRPCTimeout() {
 	// Consecutive threshold not reached — the rate/rolling-window trigger may still
 	// fire for the intermittent-storm case (mitto-5eq).
 	p.evaluateSaturationRateTriggerLocked(now)
+}
+
+// recordRPCWedgeFailure records a NewSession/LoadSession RPC failing with the
+// agent's "query closed before response received" wedge signature (mitto-aoo,
+// see isAgentQueryClosedErr). This reply is fast (1-10ms), not a timeout, but
+// it is direct, self-reported evidence the agent's query loop is torn down
+// and can never complete another session/new on this process — so it is fed
+// into the SAME consecutive-timeout fast path as recordRPCTimeout rather than
+// only the rolling window (unlike recordRPCBudgetBail/recordDegradedStderr,
+// which record softer signals). Deliberately not gated on extendedBudget: a
+// 1-10ms failure cannot be cold-start MCP latency.
+func (p *SharedACPProcess) recordRPCWedgeFailure() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	p.recordRPCFailureLocked(time.Now())
 }
 
 // recordRPCBudgetBail records a mid-flight budget-exhaustion bail from
@@ -1280,6 +1436,32 @@ func (p *SharedACPProcess) MCPInitDone() bool {
 	return p.mcpInitDone.Load()
 }
 
+// MCPInitInProgress reports whether the shared process's stderr monitor has
+// observed the agent actively waiting on an MCP-init handshake that has not
+// yet completed (mitto-337). Edge-detected true/false via the stderr monitor
+// (see onMCPInitProgress/mcpInitInProgress field doc); cleared on each
+// successful session/new or session/load RPC. Used alongside MCPInitDone() by
+// getOrCreateAuxiliarySession to bail proactively on a quiescent-but-MCP-gated
+// process — checking this flag alone (without MCPInitDone()) would also match
+// the normal per-session re-handshake on agents like Auggie that re-run MCP
+// init on every warm session/new (mitto-29q), so callers must gate on
+// (!MCPInitDone() && MCPInitInProgress()) to target only the cold-start case.
+func (p *SharedACPProcess) MCPInitInProgress() bool {
+	return p.mcpInitInProgress.Load()
+}
+
+// MCPInitInProgressSince reports when the current MCPInitInProgress() window
+// began, or the zero Time if no window is currently open (see
+// mcpInitInProgressSince field doc). Used by GC Tier 5 (mitto-13n.1) to bound
+// how long a process may sit in the in-progress-but-not-done state before
+// being treated as wedged, independent of MCPInitTimedOut() which the agent
+// does not always emit.
+func (p *SharedACPProcess) MCPInitInProgressSince() time.Time {
+	p.mcpInitMu.Lock()
+	defer p.mcpInitMu.Unlock()
+	return p.mcpInitInProgressSince
+}
+
 // WaitForMCPInit blocks until the shared process's MCP-init window closes
 // (mcpInitDone latched via a successful session RPC), ctx is done, or the
 // process exits. Returns true only if the process became warm. Used by the
@@ -1398,6 +1580,33 @@ func rpcErrorCode(err error) (int, bool) {
 	return 0, false
 }
 
+// ErrSharedProcessSaturated is re-exported from internal/acpproc/acperrors
+// so consumers already importing internal/acpproc get the classifier through
+// the same package they use for aux calls. The canonical definition lives in
+// acperrors to keep the classifier surface cycle-free (internal/acpproc
+// imports internal/conversation, which cannot in turn import
+// internal/acpproc — mitto-ammz.1).
+var ErrSharedProcessSaturated = acperrors.ErrSharedProcessSaturated
+
+// ErrProcessSaturated, ErrProcessBusy, and ErrMCPInitGated are re-exported
+// from internal/acpproc/acperrors (same rationale as ErrSharedProcessSaturated
+// above) so the three bail sites in acp_process_manager.go can return the
+// specific sentinel for their condition using the same acpproc-local name
+// they already use for the umbrella (mitto-13n.2).
+var (
+	ErrProcessSaturated = acperrors.ErrProcessSaturated
+	ErrProcessBusy      = acperrors.ErrProcessBusy
+	ErrMCPInitGated     = acperrors.ErrMCPInitGated
+)
+
+// IsAgentInternalDeadlineErr is re-exported from internal/acpproc/acperrors
+// (same rationale as ErrSharedProcessSaturated). Prefer acperrors as the
+// import path from packages that only need the classifier and do not depend
+// on internal/acpproc otherwise.
+func IsAgentInternalDeadlineErr(err error) bool {
+	return acperrors.IsAgentInternalDeadlineErr(err)
+}
+
 // isAgentInternalDeadlineErr reports whether err is the agent's OWN internal
 // deadline firing on a session/new (or session/load) RPC — the auggie
 // "session/new wedge" signature (mitto-y1g follow-up): the agent's handler
@@ -1425,10 +1634,34 @@ func isAgentInternalDeadlineErr(err error) bool {
 		strings.Contains(msg, "context deadline")
 }
 
+// isAgentQueryClosedErr reports whether err is the agent's "query closed
+// before response received" wedge signature on a session/new (or
+// session/load) RPC (mitto-aoo): a JSON-RPC application error -32603
+// ("Internal error") whose data carries "query closed before response
+// received". Observed returning in 1-10ms — the process is alive and
+// answering JSON-RPC, but its internal query loop is torn down and can never
+// create another session. Unlike isAgentInternalDeadlineErr this is not a
+// deadline/timeout signature, so it previously fed zero saturation samples:
+// neither the consecutive-timeout fast path nor the mitto-5eq rolling window
+// ever saw it, so a process wedged this way was never recycled by GC Tier
+// 5/6 (observed: 38 consecutive session/new failures over 9h). Keep this in
+// sync with acperrors.IsAgentQueryClosedErr.
+func isAgentQueryClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	code, ok := rpcErrorCode(err)
+	if !ok || code != -32603 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "query closed before response received")
+}
+
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	totalStart := time.Now()
 
@@ -1458,7 +1691,11 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	// draining the full retry budget on a process that is not responding — which
 	// previously surfaced as a user-visible "context deadline exceeded".
 	if p.isSaturated() {
-		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+		// mitto-wub: wrap acperrors.ErrProcessSaturated alongside context.DeadlineExceeded
+		// (mirrors the acp_process_manager.go aux-session bails) so callers upstream —
+		// notably session_manager.go's ACP-start failure counter — can errors.Is for the
+		// sentinel and recognize this as transient saturation, not a hard start failure.
+		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	// Probe mode (mitto-13ck.2): isSaturated() sets inProbe when a cooldown elapses.
@@ -1604,7 +1841,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				if !extendedBudget {
 					p.recordRPCBudgetBail()
 				}
-				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w", reason, attempt-1, context.DeadlineExceeded)
+				// mitto-wub: see the isSaturated() bail above — wrap the sentinel too.
+				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w: %w", reason, attempt-1, acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 			}
 		}
 
@@ -1665,7 +1903,22 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			p.recordRPCSuccess()
 			p.markMCPInitDone()
 			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+			p.mcpInitMu.Lock()
+			p.mcpInitInProgressSince = time.Time{}
+			p.mcpInitMu.Unlock()
+			traceSessionResponse(p.logger, "new", sessResp)
+			// mitto-886: local-profile fallback (branch 3) is applied later on the
+			// BackgroundSession side via applySynthesizedModelsIfEmpty (config not in
+			// scope here). Pass "" so this log line remains byte-identical to the
+			// pre-mitto-886 output; the fallback, when it happens, logs its own
+			// "ACP session model fallback" line.
+			conversation.LogSessionConfigOptions(p.logger, "new", sessResp.ConfigOptions, "")
 			models, modelCfgId := conversation.ModelStateFromConfigOptions(sessResp.ConfigOptions)
+			if models == nil {
+				// Fall back to the SDK-decoded top-level `models` field (Auggie
+				// ships its catalog there rather than in configOptions[]; mitto-i8n).
+				models = conversation.ModelStateFromACP(sessResp.Models)
+			}
 			handle := &conversation.SessionHandle{
 				SessionID:     string(sessResp.SessionId),
 				Process:       p,
@@ -1723,8 +1976,15 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		//     the wedge (rpc_ms=30000, ctx_remaining_ms=29999, rpc_code=-32603) never
 		//     tripped saturation, so the wedged process was never recycled and the
 		//     interactive prompt stayed gated behind a dead session/new handler.
+		//  3. The agent's OWN "query closed before response received" wedge
+		//     (mitto-aoo): a JSON-RPC -32603 returned in 1-10ms, not a deadline.
+		//     Direct evidence the agent's query loop is torn down and will never
+		//     complete another session/new. Not gated on extendedBudget: a
+		//     1-10ms failure cannot be cold-start MCP latency.
 		if isAgentInternalDeadlineErr(err) {
 			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			p.recordRPCWedgeFailure()
 		} else if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
@@ -1737,6 +1997,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				"ctx_remaining_ms", ctxRemainingMs,
 				"rpc_code", rpcCode,
 				"agent_internal_deadline", isAgentInternalDeadlineErr(err),
+				"agent_query_closed", isAgentQueryClosedErr(err),
 				"extended_mcp_budget", extendedBudget,
 				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
@@ -1753,8 +2014,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 
 // LoadSession attempts to load/resume an existing ACP session.
 func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	totalStart := time.Now()
 
@@ -1780,7 +2041,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	// Saturation fail-fast (mitto-13ck.2): see NewSession. A hung/overloaded shared
 	// process makes session/load hang its full deadline; fail fast instead.
 	if p.isSaturated() {
-		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+		// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
+		return nil, fmt.Errorf("shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	if caps == nil || !caps.LoadSession {
@@ -1869,8 +2131,11 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	}
 
 	rpcStart := time.Now()
+	loadSessionID := acp.SessionId(acpSessionID)
+	p.beginLoadReplaySuppression(loadSessionID)
+	defer p.endLoadReplaySuppression(loadSessionID)
 	loadResp, err := conn.LoadSession(rpcCtx, acp.LoadSessionRequest{
-		SessionId:  acp.SessionId(acpSessionID),
+		SessionId:  loadSessionID,
 		Cwd:        cwd,
 		McpServers: mcpServers,
 	})
@@ -1887,6 +2152,10 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		}
 		if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			// mitto-aoo: fast "query closed before response received" wedge,
+			// not a deadline. Not gated on extendedBudget (see NewSession).
+			p.recordRPCWedgeFailure()
 		}
 		if p.logger != nil {
 			p.logger.Info("SharedACPProcess.LoadSession failed",
@@ -1895,6 +2164,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 				"ctx_remaining_ms", ctxRemainingMs,
 				"ctx_already_expired", ctxAlreadyExpired,
 				"extended_mcp_budget", extendedBudget,
+				"agent_query_closed", isAgentQueryClosedErr(err),
 				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
 		}
@@ -1904,7 +2174,15 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	p.recordRPCSuccess()
 	p.markMCPInitDone()
 	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+	p.mcpInitMu.Lock()
+	p.mcpInitInProgressSince = time.Time{}
+	p.mcpInitMu.Unlock()
+	traceSessionResponse(p.logger, "load", loadResp)
+	conversation.LogSessionConfigOptions(p.logger, "load", loadResp.ConfigOptions, "")
 	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
+	if loadModels == nil {
+		loadModels = conversation.ModelStateFromACP(loadResp.Models)
+	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
 		Capabilities:  *caps,
@@ -1930,8 +2208,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 // This is faster than LoadSession but requires the agent to support session/resume
 // and still have the session in memory.
 func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	totalStart := time.Now()
 
@@ -1981,7 +2259,12 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
+	traceSessionResponse(p.logger, "resume", resumeResp)
+	conversation.LogSessionConfigOptions(p.logger, "resume", resumeResp.ConfigOptions, "")
 	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
+	if resumeModels == nil {
+		resumeModels = conversation.ModelStateFromACP(resumeResp.Models)
+	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
 		Capabilities:  *caps,
@@ -2022,8 +2305,8 @@ func (p *SharedACPProcess) ProcessDone() <-chan struct{} {
 
 // Prompt sends a prompt to a specific session on this shared process.
 func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, content []acp.ContentBlock) (acp.PromptResponse, error) {
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	p.mu.RLock()
 	conn := p.conn
@@ -2046,37 +2329,64 @@ func (p *SharedACPProcess) ActiveRPCs() int32 {
 	return p.activeRPCs.Load()
 }
 
-// RSSBytes returns the resident set size in bytes summed over this process's
-// tree (the ACP agent process plus all of its descendants). Used by the GC's
-// memory-recycle tier to decide whether an idle process has grown bloated
-// enough to be reclaimed.
-func (p *SharedACPProcess) RSSBytes() (uint64, error) {
-	p.mu.RLock()
-	if p.cmd == nil || p.cmd.Process == nil {
-		p.mu.RUnlock()
-		return 0, fmt.Errorf("shared ACP process is not running")
+func (p *SharedACPProcess) beginRPC() {
+	p.activeRPCMu.Lock()
+	if p.activeRPCs.Add(1) == 1 {
+		p.activeRPCIdleCh = make(chan struct{})
 	}
-	pid := p.cmd.Process.Pid
-	p.mu.RUnlock()
-
-	return processTreeRSS(pid)
+	p.activeRPCMu.Unlock()
 }
 
-// RSSBytesDetailed returns the RSS breakdown of this process's tree: the RSS of
-// the ACP agent process itself, the RSS summed over all descendants (typically
-// MCP children), and the number of descendant processes counted. Used by the
-// GC's memory-recycle log lines so operators can distinguish agent-side growth
-// from MCP-child growth without a live ps probe (mitto-3gu).
-func (p *SharedACPProcess) RSSBytesDetailed() (parent uint64, descendants uint64, descendantCount int, err error) {
+func (p *SharedACPProcess) endRPC() {
+	p.activeRPCMu.Lock()
+	if p.activeRPCs.Add(-1) == 0 && p.activeRPCIdleCh != nil {
+		close(p.activeRPCIdleCh)
+		p.activeRPCIdleCh = nil
+	}
+	p.activeRPCMu.Unlock()
+}
+
+// WaitForQuiescence blocks until all in-flight RPCs finish, the process exits,
+// or ctx is cancelled. The transition notification prevents deferred auxiliary
+// work from missing short idle windows between fixed polling instants.
+func (p *SharedACPProcess) WaitForQuiescence(ctx context.Context) bool {
+	p.activeRPCMu.Lock()
+	if p.activeRPCs.Load() == 0 {
+		p.activeRPCMu.Unlock()
+		return true
+	}
+	idleCh := p.activeRPCIdleCh
+	if idleCh == nil {
+		idleCh = make(chan struct{})
+		p.activeRPCIdleCh = idleCh
+	}
+	p.activeRPCMu.Unlock()
+
+	p.mu.RLock()
+	processDone := p.processDone
+	p.mu.RUnlock()
+	select {
+	case <-idleCh:
+		return true
+	case <-processDone:
+		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// memorySample returns effective memory and the RSS breakdown from one process
+// topology snapshot. Tier 4 uses this unified sample to avoid repeated walks.
+func (p *SharedACPProcess) memorySample() (processMemorySample, error) {
 	p.mu.RLock()
 	if p.cmd == nil || p.cmd.Process == nil {
 		p.mu.RUnlock()
-		return 0, 0, 0, fmt.Errorf("shared ACP process is not running")
+		return processMemorySample{}, fmt.Errorf("shared ACP process is not running")
 	}
 	pid := p.cmd.Process.Pid
 	p.mu.RUnlock()
 
-	return processTreeRSSDetailed(pid)
+	return sampleProcessTreeMemory(pid)
 }
 
 // Cancel cancels the current operation for a specific session.
@@ -2114,10 +2424,12 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 // process) and retries on transient timeouts so burst startups don't race the
 // serially-served agent subprocess (mitto-3q9).
 func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error {
-	// Read conn and processDone under RLock; keep existing nil-check semantics.
+	// Read conn under RLock; keep existing nil-check semantics. processDone is
+	// re-read fresh AFTER the semaphore acquisition below (mitto-qy0j) since a
+	// long queueing wait can span a process restart — capturing it here would
+	// be immediately superseded and stale.
 	p.mu.RLock()
 	conn := p.conn
-	processDone := p.processDone
 	p.mu.RUnlock()
 
 	if conn == nil {
@@ -2131,7 +2443,8 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	// NON-saturated process still gets its full per-attempt budget (mitto-f7q) — only an
 	// already-tripped saturation flag short-circuits here.
 	if p.isSaturated() {
-		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w", context.DeadlineExceeded)
+		// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
+		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
 	// Acquire the per-process serialisation semaphore, respecting caller ctx.
@@ -2152,9 +2465,43 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		return fmt.Errorf("set_model: cancelled while waiting for serialization slot: %w", ctx.Err())
 	}
 
+	// mitto-qy0j: re-check saturation/liveness AFTER winning the serialization
+	// slot, using freshly-read process state. The pre-semaphore checks above
+	// only see the process as it was BEFORE this caller queued — a sibling
+	// call ahead of us (e.g. another child conversation requesting the same
+	// model) may have exhausted its own attempts and tripped saturation, or
+	// the process may have died/been replaced entirely, while we waited.
+	// Without this recheck every queued sibling still burns a full attempt-1
+	// budget (up to 20s) against an already-confirmed-degraded process before
+	// the mid-flight (attempt>1) fail-fast below ever gets a chance to apply —
+	// turning N sibling requests into N independent deadline/recycle cycles
+	// instead of one failure epoch plus fast fails for the rest.
+	p.mu.RLock()
+	freshConn := p.conn
+	processDone := p.processDone
+	p.mu.RUnlock()
+	if freshConn == nil {
+		return fmt.Errorf("set_model: shared ACP process is not running")
+	}
+	if freshConn != conn {
+		// The process was restarted while we queued: our sessionID belongs to
+		// a generation that no longer exists on the new connection. Fail so
+		// the caller re-derives a fresh generation/session instead of issuing
+		// an RPC that can only ever return "session not found".
+		return fmt.Errorf("set_model: shared ACP process was replaced while waiting for the serialization slot")
+	}
+	select {
+	case <-processDone:
+		return fmt.Errorf("set_model: ACP process has exited while waiting for the serialization slot")
+	default:
+	}
+	if p.isSaturated() {
+		return fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot; failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
+	}
+
 	// Track as an active RPC for GC visibility (mirrors other methods).
-	p.activeRPCs.Add(1)
-	defer p.activeRPCs.Add(-1)
+	p.beginRPC()
+	defer p.endRPC()
 
 	var lastErr error
 	for attempt := 1; attempt <= setSessionModelMaxAttempts; attempt++ {
@@ -2180,7 +2527,8 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		// the next attempt boundary instead of draining another full 8s budget. Attempt 1
 		// always proceeds so a single slow set_model on a healthy process keeps its budget.
 		if attempt > 1 && p.isSaturated() {
-			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w", attempt-1, context.DeadlineExceeded)
+			// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
+			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w: %w", attempt-1, acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 		}
 
 		// Backoff between retries (skip before first attempt).
@@ -2206,14 +2554,36 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 			ctxRemainingMs = time.Until(dl).Milliseconds()
 		}
 
+		// Primary path (mitto-vd5): the ACP 0.13 schema moved model semantics out
+		// of the generic ConfigOptions collection into a dedicated top-level
+		// 'models' field plus a dedicated session/set_model RPC. Auggie 0.34+
+		// only recognises the new RPC and rejects session/set_config_option with
+		// -32601 Method not found. Prefer the new RPC; fall back to the legacy
+		// setter (single-shot, inside this same attempt) on -32601 so pre-0.13
+		// agents keep working.
 		rpcStart := time.Now()
-		_, err := conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
-			ValueId: &acp.SetSessionConfigOptionValueId{
-				SessionId: sessionID,
-				ConfigId:  conversation.ModelConfigId,
-				Value:     acp.SessionConfigValueId(modelID),
-			},
+		_, err := conn.UnstableSetSessionModel(attemptCtx, acp.UnstableSetSessionModelRequest{
+			SessionId: sessionID,
+			ModelId:   acp.UnstableModelId(modelID),
 		})
+		if code, ok := rpcErrorCode(err); ok && code == -32601 {
+			// Legacy fallback for pre-0.13-schema agents that only implement
+			// session/set_config_option. One-shot inside this attempt — do NOT
+			// consume a separate retry-loop iteration.
+			if p.logger != nil {
+				p.logger.Debug("SetSessionModel: legacy fallback (pre-0.13 agent)",
+					"session_id", sessionID,
+					"model_id", modelID,
+					"attempt", attempt)
+			}
+			_, err = conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
+				ValueId: &acp.SetSessionConfigOptionValueId{
+					SessionId: sessionID,
+					ConfigId:  conversation.ModelConfigId,
+					Value:     acp.SessionConfigValueId(modelID),
+				},
+			})
+		}
 		rpcDuration := time.Since(rpcStart)
 		attemptCancel()
 
@@ -2230,7 +2600,18 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		lastErr = err
-		if errors.Is(err, context.DeadlineExceeded) {
+		// mitto-qy0j: a cold/wedged agent's own internal deadline on session/set_model
+		// surfaces as a client-side *acp.RequestError{-32603} manufactured by the SDK's
+		// toReqErr (NOT errors.Is(err, context.DeadlineExceeded)-compatible — it has no
+		// Unwrap). Without this classification these RPC timeouts fed zero saturation
+		// samples, so a wedged shared process was never recycled by GC Tier 5/6 even
+		// though NewSession/LoadSession already handle the identical signature via
+		// isAgentInternalDeadlineErr/isAgentQueryClosedErr (mitto-y1g, mitto-aoo).
+		if isAgentInternalDeadlineErr(err) {
+			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			p.recordRPCWedgeFailure()
+		} else if errors.Is(err, context.DeadlineExceeded) {
 			p.recordRPCTimeout()
 		}
 		retryable := isRetryableSetModelError(err)
@@ -2273,12 +2654,33 @@ func setModelFailureIsTerminal(attempt int, retryable bool) bool {
 }
 
 // isRetryableSetModelError reports whether a set_model error is worth retrying.
-// set_model is idempotent so retrying on timeout is safe.
+// set_model is idempotent so retrying on timeout is safe. The agent's own internal
+// deadline (-32603 "context deadline exceeded", mitto-qy0j) and the "query closed
+// before response received" wedge (mitto-aoo) are treated as retryable too, mirroring
+// isRetryableCreateError, so the bounded retry loop keeps retrying — and recording
+// each attempt's timeout toward saturation via the classification above — instead of
+// relying solely on the string-Contains fallback below.
+//
+// mitto-gbf5: an upstream connect-timeout brownout (UND_ERR_CONNECT_TIMEOUT /
+// apiStatus=unavailable) is checked BEFORE the generic "timeout" substring
+// fallback and is deliberately NOT retryable here. Unlike a local slow RPC,
+// the upstream API being unreachable will not resolve within the next
+// attempt's budget, so retrying just burns the full setSessionModelMaxAttempts
+// budget (~43s) for no benefit and delays surfacing the real condition.
 func isRetryableSetModelError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if mittoAcp.IsUpstreamUnavailableError(err) {
+		return false
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if isAgentInternalDeadlineErr(err) {
+		return true
+	}
+	if isAgentQueryClosedErr(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
@@ -2304,6 +2706,14 @@ func isRetryableCreateError(err error) bool {
 		return true
 	}
 	if isAgentInternalDeadlineErr(err) {
+		return true
+	}
+	if isAgentQueryClosedErr(err) {
+		// mitto-aoo: retry the wedge signature too so the bounded
+		// sessionCreateMaxAttempts loop records multiple consecutive failure
+		// samples (recordRPCWedgeFailure) within a single NewSession call,
+		// tripping saturation on the first wedged create instead of waiting
+		// for sessionSaturationTimeoutThreshold separate caller attempts.
 		return true
 	}
 	msg := strings.ToLower(err.Error())
@@ -2365,11 +2775,14 @@ func (p *SharedACPProcess) WorkingDir() string {
 // Close terminates the ACP process and cleans up resources.
 func (p *SharedACPProcess) Close() {
 	p.ctxCancel()
-	p.killProcess()
+	p.killProcess("close")
 }
 
 // killProcess terminates the ACP process.
-func (p *SharedACPProcess) killProcess() {
+func (p *SharedACPProcess) killProcess(reason string) {
+	if reason != "" && p.terminationIntent != nil {
+		p.terminationIntent.mark(reason)
+	}
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -2420,10 +2833,49 @@ func (p *SharedACPProcess) recordRestart() {
 	p.restartTimes = append(p.restartTimes, time.Now())
 }
 
-// Restart kills the old process and starts a new one.
+// Generation returns the current process generation, bumped each time
+// Restart() actually replaces the process. See conversation.SharedProcess.Generation
+// for the intended caller-side usage (snapshot before detecting/acting on a death).
+func (p *SharedACPProcess) Generation() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.generation
+}
+
+// Restart kills the old process and starts a new one, but only if the
+// process generation still matches observedGen. Pass
+// conversation.RestartAnyGeneration to force an unconditional restart.
 // All sessions must re-register their callbacks and LoadSession after restart.
-// Returns nil on success. Returns an *mittoAcp.ACPClassifiedError for permanent failures.
-func (p *SharedACPProcess) Restart() error {
+// Returns nil on success (including the already-remediated no-op case).
+// Returns an *mittoAcp.ACPClassifiedError for permanent failures.
+//
+// Idempotency (mitto-x611): concurrent callers may each independently observe
+// the same underlying process death and call Restart() around the same time.
+// canRestart()/CanRestartGlobal are rate limits, not a dedup, so without the
+// generation check below every concurrent caller would unconditionally kill
+// whatever process is currently running — including a healthy replacement a
+// prior caller already started — producing a restart storm. observedGen MUST
+// be captured by the caller as early as possible (ideally at the moment the
+// death was detected, before any backoff/rate-limit delay of its own) so that
+// all callers reacting to the SAME death agree on the generation they intend
+// to replace; it is re-checked under mu immediately before killing, since the
+// rate-limit check and backoff wait below are not synchronized against other
+// Restart() callers.
+func (p *SharedACPProcess) Restart(observedGen int) error {
+	if observedGen != conversation.RestartAnyGeneration {
+		p.mu.RLock()
+		curGen := p.generation
+		p.mu.RUnlock()
+		if curGen != observedGen {
+			if p.logger != nil {
+				p.logger.Info("Shared ACP process already restarted by another caller, skipping redundant restart",
+					"command", p.config.ACPCommand,
+					"cwd", p.config.ACPCwd)
+			}
+			return nil
+		}
+	}
+
 	if !p.canRestart() {
 		return fmt.Errorf("restart limit exceeded (%d restarts in %v)", mittoAcp.MaxACPRestarts, mittoAcp.ACPRestartWindow)
 	}
@@ -2454,6 +2906,42 @@ func (p *SharedACPProcess) Restart() error {
 		}
 	}
 
+	// Re-check the generation now, under mu, right before killing — the rate
+	// limit check and backoff wait above are not synchronized against other
+	// Restart() callers, so the process this caller observed as dead may
+	// already have been replaced while we were waiting.
+	p.mu.Lock()
+	if observedGen != conversation.RestartAnyGeneration && p.generation != observedGen {
+		p.mu.Unlock()
+		if p.logger != nil {
+			p.logger.Info("Shared ACP process already restarted by another caller, skipping redundant restart",
+				"command", p.config.ACPCommand,
+				"cwd", p.config.ACPCwd)
+		}
+		return nil
+	}
+
+	// mitto-ei81: bail out here if this instance was already permanently
+	// retired by a concurrent Close() (e.g. a GC Tier 5 saturated-idle
+	// recycle) racing this very restart. Close() cancels p.ctx exactly once
+	// and it can never be un-cancelled, so proceeding to startProcess() below
+	// is doomed — exec.CommandContext(p.ctx, ...) fails immediately with a
+	// generic "context canceled" that looks like a transient startup failure
+	// rather than what it actually is: a lost race against a legitimate
+	// recycle. Detect it up front and return a distinguishable sentinel so
+	// the caller knows to fetch a fresh process instead of retrying this one.
+	select {
+	case <-p.ctx.Done():
+		p.mu.Unlock()
+		if p.logger != nil {
+			p.logger.Warn("Shared ACP process restart aborted: process was closed by a concurrent operation",
+				"command", p.config.ACPCommand,
+				"cwd", p.config.ACPCwd)
+		}
+		return acperrors.ErrProcessClosedConcurrently
+	default:
+	}
+
 	if p.logger != nil {
 		p.logger.Info("Restarting shared ACP process",
 			"restart_count", p.restartCount+1,
@@ -2461,10 +2949,10 @@ func (p *SharedACPProcess) Restart() error {
 			"cwd", p.config.ACPCwd)
 	}
 
-	p.mu.Lock()
-	p.killProcess()
+	p.killProcess("restart")
 	p.conn = nil
 	p.capabilities = nil
+	p.generation++
 	p.mu.Unlock()
 
 	p.recordRestart()

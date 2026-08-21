@@ -12,8 +12,8 @@ import (
 // titleDeps supplies the live, side-effecting primitives the titleCoordinator
 // orchestrates. BackgroundSession satisfies it in production; tests use a fake.
 type titleDeps interface {
-	// sessionHasNoTitle reports whether the session currently lacks a name.
-	sessionHasNoTitle() bool
+	// sessionNeedsTitle reports whether the session needs an initial or upgraded title.
+	sessionNeedsTitle() bool
 	// startTitleGeneration kicks off async title generation from the message text.
 	startTitleGeneration(message string)
 	// resolvePromptName resolves a named workspace prompt to its full text
@@ -32,19 +32,20 @@ type titleCoordinator struct{}
 
 // needsTitle reports whether the session still needs an auto-generated title.
 func (titleCoordinator) needsTitle(d titleDeps) bool {
-	return d.sessionHasNoTitle()
+	return d.sessionNeedsTitle()
 }
 
-// retryIfNeeded triggers async title generation if the session still has no title.
+// retryIfNeeded triggers async title generation if the session needs an initial
+// title or still has a quick fallback that should be upgraded.
 // Called after prompt completion to catch failed initial attempts and prompts that
 // arrived via paths that don't trigger title generation (queue, MCP send_prompt,
 // loop prompts).
 func (c titleCoordinator) retryIfNeeded(d titleDeps, message string) {
-	if !d.sessionHasNoTitle() {
+	if !d.sessionNeedsTitle() {
 		return
 	}
 	if lg := d.titleLogger(); lg != nil {
-		lg.Info("Session still has no title after prompt completion, retrying title generation",
+		lg.Info("Session still needs a final title after prompt completion, retrying title generation",
 			"session_id", d.titleSessionID())
 	}
 	d.startTitleGeneration(message)

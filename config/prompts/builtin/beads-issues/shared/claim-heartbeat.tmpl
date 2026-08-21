@@ -1,0 +1,38 @@
+{{/*
+  claim-heartbeat — bare `claim_heartbeat_at` refresh, used by L2 drivers
+  whose Step 0 already established the passive claim on a prior iteration
+  and only needs to update the heartbeat timestamp this turn. This is a
+  companion to `claim-entry.tmpl` — `claim-entry` handles first-claim +
+  refresh; `claim-heartbeat` is the leaner form for callers that already
+  did the claim/foreign-claim check via `claim-entry` (i.e. every L2
+  loop-driver, since `claim-entry` is idempotent and covers both cases).
+
+  Currently NOT invoked directly — `claim-entry` covers the heartbeat via
+  its `claimed_by == self` branch, avoiding a double-write per iteration.
+  Kept as a named fragment for two reasons:
+
+    1. Future callers that want a pure heartbeat (no first-claim path)
+       can invoke this without pulling in the foreign-claim / defer
+       branches from `claim-entry`.
+    2. Symmetry with `claim-clear.tmpl` — each side of the claim/refresh/
+       clear lifecycle has a dedicated named fragment, so
+       grep-and-audit ("who touches claim metadata?") is trivially
+       answered by `rg 'claim-(entry|heartbeat|clear)'`.
+
+  Usage — after Step 0's initial claim, once per iteration:
+
+      {{ template "beads-issues/shared/claim-heartbeat" (dict
+          "Target" $target
+      ) }}
+
+  Parameters:
+    Target — the resolved bead ID (empty string skips the whole block).
+*/}}
+{{- if .Target }}
+Refresh the claim heartbeat so the L1 reaper's staleness check treats this
+driver as alive:
+
+```bash
+bd update {{ .Target }} --set-metadata "claim_heartbeat_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+{{- end }}

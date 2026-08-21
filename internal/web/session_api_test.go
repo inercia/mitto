@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1369,7 +1370,7 @@ func TestHandleListSessions_LoopGlanceFields_Schedule(t *testing.T) {
 		Prompt:             "hello",
 		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
 		Enabled:            true,
-		Trigger:            session.TriggerSchedule,
+		Triggers:           []session.LoopTrigger{session.TriggerSchedule},
 		MaxIterations:      10,
 		IterationCount:     3,
 		DelaySeconds:       0,
@@ -1429,7 +1430,7 @@ func TestHandleListSessions_LoopGlanceFields_OnCompletion(t *testing.T) {
 	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:             "run on idle",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       60,
 		MaxDurationSeconds: 7200,
 	}); err != nil {
@@ -1476,12 +1477,11 @@ func TestHandleListSessions_LoopGlanceFields_EmptyTriggerReportsSchedule(t *test
 	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	// Trigger="" is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
+	// Triggers unset is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
 	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:    "hello",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
-		Trigger:   "",
 	}); err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
@@ -2091,6 +2091,103 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 	}
 }
 
+// TestFilterPromptsByEnabled_DebugLogAggregation pins the mitto-t3i behavior:
+// filterPromptsByEnabled must emit at most ONE aggregated Debug record per
+// call naming all prompts hidden by enabledWhen (never one record per hidden
+// prompt), and that record must never carry the CEL "expression" field. It
+// also pins that nothing is logged at all when DEBUG logging is disabled, and
+// that the fail-open Warn branches (invalid/unevaluable expressions) are left
+// untouched, still carrying "expression".
+func TestFilterPromptsByEnabled_DebugLogAggregation(t *testing.T) {
+	prompts := []config.WebPrompt{
+		makePrompt("shown"),
+		makePrompt("hidden-1", withEnabledWhen("Session.IsChild")),
+		makePrompt("hidden-2", withEnabledWhen("Session.IsChild")),
+		makePrompt("hidden-3", withEnabledWhen("Session.IsChild")),
+	}
+	ctx := &config.PromptEnabledContext{Session: config.SessionContext{IsChild: false}}
+
+	t.Run("debug enabled: single aggregated record, no expression field", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		server := &Server{logger: logger}
+
+		got := server.filterPromptsByEnabled(prompts, ctx)
+
+		var gotNames []string
+		for _, p := range got {
+			gotNames = append(gotNames, p.Name)
+		}
+		if len(gotNames) != 1 || gotNames[0] != "shown" {
+			t.Fatalf("filtering result changed by logging refactor: got %v, want [shown]", gotNames)
+		}
+
+		output := buf.String()
+		lines := 0
+		for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
+			if strings.Contains(line, "Prompts hidden by enabledWhen") {
+				lines++
+			}
+		}
+		if lines != 1 {
+			t.Fatalf("got %d 'Prompts hidden by enabledWhen' records, want exactly 1 (output: %s)", lines, output)
+		}
+		if !strings.Contains(output, "hidden_count=3") {
+			t.Errorf("expected hidden_count=3 in output, got: %s", output)
+		}
+		for _, name := range []string{"hidden-1", "hidden-2", "hidden-3"} {
+			if !strings.Contains(output, name) {
+				t.Errorf("expected hidden prompt name %q in aggregated record, got: %s", name, output)
+			}
+		}
+		if strings.Contains(output, "expression=") {
+			t.Errorf("aggregated hidden-prompt record must not contain the CEL expression, got: %s", output)
+		}
+	})
+
+	t.Run("debug disabled: no hidden-prompt record emitted", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		server := &Server{logger: logger}
+
+		got := server.filterPromptsByEnabled(prompts, ctx)
+
+		var gotNames []string
+		for _, p := range got {
+			gotNames = append(gotNames, p.Name)
+		}
+		if len(gotNames) != 1 || gotNames[0] != "shown" {
+			t.Fatalf("filtering result changed by logging refactor: got %v, want [shown]", gotNames)
+		}
+
+		if strings.Contains(buf.String(), "Prompts hidden by enabledWhen") {
+			t.Errorf("expected no hidden-prompt record when DEBUG is disabled, got: %s", buf.String())
+		}
+	})
+
+	t.Run("fail-open Warn branches keep the expression field", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		server := &Server{logger: logger}
+
+		invalidPrompts := []config.WebPrompt{
+			makePrompt("bad-cel", withEnabledWhen("this is not valid CEL !!")),
+		}
+		got := server.filterPromptsByEnabled(invalidPrompts, &config.PromptEnabledContext{})
+
+		if len(got) != 1 || got[0].Name != "bad-cel" {
+			t.Fatalf("expected fail-open inclusion of bad-cel, got %v", got)
+		}
+		output := buf.String()
+		if !strings.Contains(output, "Invalid enabledWhen expression") {
+			t.Fatalf("expected Invalid enabledWhen expression warning, got: %s", output)
+		}
+		if !strings.Contains(output, "expression=") {
+			t.Errorf("fail-open Warn branch must still carry the expression field, got: %s", output)
+		}
+	})
+}
+
 // TestHandleUpdateSession_BeadsIssue verifies that PATCH /api/sessions/{id} with
 // beads_issue persists the value and GET returns it.
 func TestHandleUpdateSession_BeadsIssue(t *testing.T) {
@@ -2620,5 +2717,289 @@ func TestQueueMoveViaRouter(t *testing.T) {
 	}
 	if resp.Messages[1].ID != msg1.ID {
 		t.Errorf("messages[1].ID = %q, want %q (msg1 should be second)", resp.Messages[1].ID, msg1.ID)
+	}
+}
+
+// TestBuildPromptEnabledContext_WorkspacePeers verifies that the web server's
+// buildPromptEnabledContext populates the Workspace.Peers block (mitto-4d6)
+// from the store: non-archived sessions sharing the current session's
+// (WorkingDir, ACPServer) composite key — excluding self, excluding archived
+// entries, excluding foreign working-dir or ACP-server rows. The IsPrompting
+// counters must be zero here because no BackgroundSession is registered
+// against these session IDs (the peers are store-only rows).
+func TestBuildPromptEnabledContext_WorkspacePeers(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const (
+		workDir = "/tmp/mitto-peers-ws"
+		acpSrv  = "auggie"
+	)
+
+	// Self: the session we resolve the context for.
+	if err := store.Create(session.Metadata{
+		SessionID:  "self",
+		Name:       "Self",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Create(self): %v", err)
+	}
+	// Peer A: same workspace — must appear.
+	if err := store.Create(session.Metadata{
+		SessionID:  "peer-a",
+		Name:       "Peer A",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+		BeadsIssue: "mitto-a",
+	}); err != nil {
+		t.Fatalf("Create(peer-a): %v", err)
+	}
+	// Peer B: same workspace — must appear.
+	if err := store.Create(session.Metadata{
+		SessionID:       "peer-b",
+		Name:            "Peer B",
+		ACPServer:       acpSrv,
+		WorkingDir:      workDir,
+		ParentSessionID: "self",
+		ChildOrigin:     session.ChildOriginAuto,
+	}); err != nil {
+		t.Fatalf("Create(peer-b): %v", err)
+	}
+	// Different working directory — must be excluded.
+	if err := store.Create(session.Metadata{
+		SessionID:  "other-dir",
+		Name:       "Other Dir",
+		ACPServer:  acpSrv,
+		WorkingDir: "/tmp/other-ws",
+	}); err != nil {
+		t.Fatalf("Create(other-dir): %v", err)
+	}
+	// Different ACP server — must be excluded.
+	if err := store.Create(session.Metadata{
+		SessionID:  "other-acp",
+		Name:       "Other ACP",
+		ACPServer:  "claude-code",
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Create(other-acp): %v", err)
+	}
+	// Archived peer — must be excluded even though workspace matches.
+	if err := store.Create(session.Metadata{
+		SessionID:  "peer-arch",
+		Name:       "Archived Peer",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+		Archived:   true,
+	}); err != nil {
+		t.Fatalf("Create(peer-arch): %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	ctx := server.buildPromptEnabledContext("self")
+	if ctx == nil {
+		t.Fatal("buildPromptEnabledContext returned nil")
+	}
+
+	peers := ctx.Workspace.Peers
+	if peers.Count != 2 {
+		t.Fatalf("Workspace.Peers.Count = %d, want 2 (peer-a + peer-b); All=%+v", peers.Count, peers.All)
+	}
+	if !peers.Exists {
+		t.Errorf("Workspace.Peers.Exists = false, want true")
+	}
+	if peers.PromptingCount != 0 {
+		t.Errorf("Workspace.Peers.PromptingCount = %d, want 0 (no BackgroundSession registered)", peers.PromptingCount)
+	}
+	if peers.IdleCount != 2 {
+		t.Errorf("Workspace.Peers.IdleCount = %d, want 2", peers.IdleCount)
+	}
+	if len(peers.All) != 2 {
+		t.Fatalf("len(Workspace.Peers.All) = %d, want 2", len(peers.All))
+	}
+
+	got := map[string]config.PeerInfo{}
+	for _, p := range peers.All {
+		got[p.ID] = p
+	}
+	// Self must never appear in its own peer list.
+	if _, ok := got["self"]; ok {
+		t.Error("self appeared in Workspace.Peers.All (must be excluded)")
+	}
+	// Foreign workspace / ACP / archived rows must never appear.
+	for _, id := range []string{"other-dir", "other-acp", "peer-arch"} {
+		if _, ok := got[id]; ok {
+			t.Errorf("%q appeared in Workspace.Peers.All (must be excluded)", id)
+		}
+	}
+
+	pa, ok := got["peer-a"]
+	if !ok {
+		t.Fatal("peer-a missing from Workspace.Peers.All")
+	}
+	if pa.Name != "Peer A" || pa.ACPServer != acpSrv || pa.BeadsIssue != "mitto-a" || pa.IsPrompting {
+		t.Errorf("peer-a field mismatch: %+v", pa)
+	}
+
+	pb, ok := got["peer-b"]
+	if !ok {
+		t.Fatal("peer-b missing from Workspace.Peers.All")
+	}
+	if pb.Name != "Peer B" || pb.ACPServer != acpSrv || pb.ParentID != "self" ||
+		pb.Origin != string(session.ChildOriginAuto) || pb.IsPrompting {
+		t.Errorf("peer-b field mismatch: %+v", pb)
+	}
+}
+
+// TestBuildPromptEnabledContext_WorkspacePeersEmpty verifies that a session
+// with no workspace siblings yields a zero-valued Peers block (Exists=false,
+// Count=0), so downstream CEL / templates read safe defaults.
+func TestBuildPromptEnabledContext_WorkspacePeersEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  "lonely",
+		Name:       "Lonely",
+		ACPServer:  "auggie",
+		WorkingDir: "/tmp/lonely-ws",
+	}); err != nil {
+		t.Fatalf("Create(lonely): %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	ctx := server.buildPromptEnabledContext("lonely")
+	if ctx == nil {
+		t.Fatal("buildPromptEnabledContext returned nil")
+	}
+	peers := ctx.Workspace.Peers
+	if peers.Count != 0 || peers.Exists || peers.PromptingCount != 0 || peers.IdleCount != 0 || len(peers.All) != 0 {
+		t.Errorf("expected zero-valued Peers, got %+v", peers)
+	}
+}
+
+// TestBuildPromptEnabledContext_PromptsSnapshot verifies that the web server's
+// buildPromptEnabledContext populates ctx.Prompts from the PromptsCache
+// (mitto-s1w) so template {{ .Prompts.Enabled }} / {{ .Prompts.Exists }}
+// predicates and CEL enabledWhen gates see the same enabled set as
+// mitto_prompt_get. A nil PromptsCache leaves ctx.Prompts zero-valued so the
+// predicates fail-closed.
+func TestBuildPromptEnabledContext_PromptsSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("mkdir prompts: %v", err)
+	}
+	entries := map[string]string{
+		"alpha.prompt.yaml":    "name: \"Alpha\"\nprompt: |\n  a\n",
+		"beta.prompt.yaml":     "name: \"Beta\"\nprompt: |\n  b\n",
+		"disabled.prompt.yaml": "name: \"Disabled Prompt\"\nenabled: false\nprompt: |\n  x\n",
+	}
+	for f, content := range entries {
+		if err := os.WriteFile(filepath.Join(promptsDir, f), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+
+	storeDir := t.TempDir()
+	store, err := session.NewStore(storeDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const (
+		workDir = "/tmp/mitto-prompts-snap-ws"
+		acpSrv  = "auggie"
+	)
+	if err := store.Create(session.Metadata{
+		SessionID:  "self",
+		Name:       "Self",
+		ACPServer:  acpSrv,
+		WorkingDir: workDir,
+	}); err != nil {
+		t.Fatalf("Create(self): %v", err)
+	}
+
+	cache := config.NewPromptsCache()
+
+	server := &Server{
+		config: Config{
+			PromptsCache: cache,
+		},
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	// Session-scoped context path.
+	ctx := server.buildPromptEnabledContext("self")
+	if ctx == nil {
+		t.Fatal("buildPromptEnabledContext returned nil")
+	}
+	if !ctx.Prompts.Enabled("Alpha") {
+		t.Errorf("ctx.Prompts.Enabled(\"Alpha\") = false, want true (Names=%v EnabledNames=%v)",
+			ctx.Prompts.Names, ctx.Prompts.EnabledNames)
+	}
+	if !ctx.Prompts.Exists("beta") { // case-insensitive
+		t.Errorf("ctx.Prompts.Exists(\"beta\") = false, want true (case-insensitive)")
+	}
+	if ctx.Prompts.Enabled("Disabled Prompt") {
+		t.Errorf("ctx.Prompts.Enabled(\"Disabled Prompt\") = true, want false (disabled prompts filtered)")
+	}
+	if ctx.Prompts.Exists("Disabled Prompt") {
+		t.Errorf("ctx.Prompts.Exists(\"Disabled Prompt\") = true, want false (disabled prompts filtered)")
+	}
+
+	// Session-less workspace-namespace path — applyWorkspaceNamespace resets and
+	// repopulates ctx.Prompts from the same PromptsCache.
+	wsCtx := &config.PromptEnabledContext{}
+	// Seed with stale values to prove the reset actually happens.
+	wsCtx.Prompts = config.PromptsContext{
+		Names:        []string{"stale"},
+		EnabledNames: []string{"stale"},
+	}
+	server.applyWorkspaceNamespace(wsCtx, workDir)
+	if !wsCtx.Prompts.Enabled("Alpha") {
+		t.Errorf("applyWorkspaceNamespace: Enabled(\"Alpha\") = false, want true (Names=%v)", wsCtx.Prompts.Names)
+	}
+	if wsCtx.Prompts.Exists("stale") {
+		t.Errorf("applyWorkspaceNamespace: stale Names leaked through (Names=%v)", wsCtx.Prompts.Names)
+	}
+
+	// Nil PromptsCache: ctx.Prompts stays zero-valued (fail-closed).
+	nilCacheServer := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+	nilCtx := nilCacheServer.buildPromptEnabledContext("self")
+	if nilCtx == nil {
+		t.Fatal("buildPromptEnabledContext (nil cache) returned nil")
+	}
+	if len(nilCtx.Prompts.Names) != 0 || len(nilCtx.Prompts.EnabledNames) != 0 {
+		t.Errorf("nil PromptsCache: expected zero-valued Prompts, got Names=%v EnabledNames=%v",
+			nilCtx.Prompts.Names, nilCtx.Prompts.EnabledNames)
+	}
+	if nilCtx.Prompts.Enabled("Alpha") {
+		t.Error("nil PromptsCache: Enabled(...) should fail-closed (false)")
 	}
 }

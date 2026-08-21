@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestWebSocketConnection tests basic WebSocket connection lifecycle.
@@ -16,7 +16,7 @@ func TestWebSocketConnection(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session first
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestWebSocketConnection(t *testing.T) {
 		clientID     string
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnected: func(sid, cid, acp string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -102,7 +102,7 @@ func TestWebSocketKeepalive(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestWebSocketKeepalive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{})
+	ws, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestWebSocketRename(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestWebSocketRename(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{})
+	ws, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}

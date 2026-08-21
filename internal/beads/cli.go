@@ -8,20 +8,35 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/inercia/mitto/internal/bdexec"
 )
 
 const (
 	defaultTimeout = 15 * time.Second
 	initTimeout    = 60 * time.Second
 	syncTimeout    = 120 * time.Second
-	// readTimeout bounds read-only bd invocations. It is larger than
+	// ReadTimeout bounds read-only bd invocations. It is larger than
 	// defaultTimeout because read-heavy queries (list, status, label list-all)
 	// on a warm-cold dolt DB can occasionally exceed the write-path budget
-	// without indicating a real failure.
-	readTimeout = 45 * time.Second
+	// without indicating a real failure. Exported (mitto-f8zx) so callers
+	// with their own polling cadence around a runJSONRead-based call (e.g.
+	// mcpserver's beads-wait loop) can size their poll interval strictly
+	// greater than this deadline instead of hand-copying the value, which
+	// previously let the two silently invert (readTimeout 45s > a 30s poll
+	// interval elsewhere caused back-to-back subprocess spawns).
+	ReadTimeout = 45 * time.Second
+	// readTimeout is a package-local alias so existing call sites below need
+	// no further changes.
+	readTimeout = ReadTimeout
+	// LabelsReadTimeout bounds label suggestions well below the generic read
+	// budget. The endpoint is cosmetic and must not hold up all beads traffic
+	// when bd is contended (mitto-i2ep).
+	LabelsReadTimeout = 4 * time.Second
 )
 
 // Runner executes a bd subcommand in a directory. The returned error is the
@@ -34,6 +49,30 @@ type Runner interface {
 	// path to set BD_ALLOW_REMOTE_MIGRATE=1 for a single invocation without
 	// affecting the parent process or other bd calls.
 	RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (stdout []byte, stderr string, err error)
+}
+
+// limitedRunner applies the per-database and process-wide bd concurrency bounds
+// around any Runner, including test doubles and web-layer wrappers (mitto-i2ep).
+type limitedRunner struct {
+	inner Runner
+}
+
+func (r limitedRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+	release, err := bdexec.Acquire(ctx, dir)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+	return r.inner.Run(ctx, dir, args...)
+}
+
+func (r limitedRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
+	release, err := bdexec.Acquire(ctx, dir)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+	return r.inner.RunWithEnv(ctx, dir, extraEnv, args...)
 }
 
 // execRunner is the default Runner that invokes the real bd binary. When actor
@@ -51,6 +90,10 @@ func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 func (r execRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Dir = dir
+	// Bound Wait's post-cancellation process/pipe cleanup so a timed-out cache
+	// fill returns within CacheFillMaxElapsed rather than consuming its caller's
+	// remaining HTTP deadline (mitto-b4zs).
+	cmd.WaitDelay = commandCleanupTimeout
 	if r.actor != "" || len(extraEnv) > 0 {
 		cmd.Env = envWithActor(r.actor)
 		if len(extraEnv) > 0 {
@@ -87,6 +130,16 @@ func exitCodeFromErr(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 0
+}
+
+// preserveContextError keeps timeout/cancellation classification when a runner
+// reports only the process-level symptom (for example "signal: killed"). The
+// original error remains in the chain for exit-code and diagnostic inspection.
+func preserveContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+		return errors.Join(ctxErr, err)
+	}
+	return err
 }
 
 // maxDiagnosticLen bounds captured bd output logged on failure so a large
@@ -187,6 +240,7 @@ func (c *cliClient) runRaw(ctx context.Context, timeout time.Duration, dir strin
 
 	out, stderr, err := c.runner.Run(ctx, dir, args...)
 	if err != nil {
+		err = preserveContextError(ctx, err)
 		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
 	}
 	return out, nil
@@ -207,6 +261,7 @@ func (c *cliClient) runJSONOnceWithTimeout(ctx context.Context, dir string, time
 		if j := recoverableJSON(out, []byte(stderr)); j != nil {
 			return j, nil
 		}
+		err = preserveContextError(ctx, err)
 		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
 	}
 	if !json.Valid(out) {
@@ -231,11 +286,20 @@ func (c *cliClient) runJSON(ctx context.Context, dir string, args ...string) ([]
 // runJSONRead is like runJSON but retries ONCE on a transient dolt-lock
 // failure. It is safe only for read-only commands (no risk of a duplicate
 // write). Reads use readTimeout (larger than defaultTimeout) to absorb
-// warm-cold dolt DB latency without SIGKILLing bd.
+// warm-cold dolt DB latency without SIGKILLing bd. Pass bd's global
+// --readonly flag before the subcommand so opening a workspace for polling can
+// never auto-apply schema migrations (notably the accidental bd v1.2.1 v65
+// migration, which ran even for ordinary list/status commands).
 func (c *cliClient) runJSONRead(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	out, err := c.runJSONOnceWithTimeout(ctx, dir, readTimeout, args...)
-	if err != nil && isTransientLock(err) {
-		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, args...)
+	readArgs := make([]string, 0, len(args)+1)
+	readArgs = append(readArgs, "--readonly")
+	readArgs = append(readArgs, args...)
+	out, err := c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
+	if err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		isTransientLock(err) {
+		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
 	}
 	return out, err
 }
@@ -348,6 +412,36 @@ func (c *cliClient) ListClosedIDs(ctx context.Context, dir string) ([]string, er
 	return ids, nil
 }
 
+// statusItem is the minimal shape needed to read id -> status pairs from
+// "bd list --id <csv> --all --json".
+type statusItem struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func (c *cliClient) Statuses(ctx context.Context, dir string, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return map[string]string{}, nil
+	}
+	// Batch: one subprocess for all ids via "bd list --id <csv> --all --json".
+	csv := strings.Join(ids, ",")
+	out, err := c.runJSONRead(ctx, dir, "list", "--id", csv, "--all", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var items []statusItem
+	if err := json.Unmarshal(out, &items); err != nil {
+		return nil, &CmdError{Err: errors.New("failed to parse bd list output")}
+	}
+	result := make(map[string]string, len(items))
+	for _, it := range items {
+		if it.ID != "" {
+			result[it.ID] = it.Status
+		}
+	}
+	return result, nil
+}
+
 func (c *cliClient) DeleteIDs(ctx context.Context, dir string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -387,6 +481,9 @@ func (c *cliClient) Update(ctx context.Context, dir string, p UpdateParams) erro
 	}
 	if p.Notes != nil {
 		args = append(args, "--notes", *p.Notes)
+	}
+	for _, key := range p.UnsetMetadata {
+		args = append(args, "--unset-metadata", key)
 	}
 	_, err := c.runRaw(ctx, defaultTimeout, dir, args...)
 	return err
@@ -432,13 +529,62 @@ func (c *cliClient) Label(ctx context.Context, dir string, p LabelParams) error 
 	return err
 }
 
-// ListAllLabels returns the JSON array produced by "bd label list-all --json":
-// a list of {"label","count"} objects for every unique label in the database.
-// An uninitialized folder has no label database, so an empty JSON array is
-// returned rather than letting bd fail.
+// listLabelsItem is the minimal shape needed to aggregate per-label counts
+// from "bd list --all --json".
+type listLabelsItem struct {
+	Labels []string `json:"labels"`
+}
+
+// labelCount mirrors the {"label","count"} shape "bd label list-all --json"
+// produces, so ListAllLabels's callers (HandleBeadsLabelsAll, the frontend's
+// label-suggestion datalist) see an unchanged response format.
+type labelCount struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// ListAllLabels returns a list of {"label","count"} objects for every unique
+// label in the database. An uninitialized folder has no issue database, so an
+// empty JSON array is returned rather than letting bd fail.
+//
+// This deliberately derives the aggregate from "bd list --all --json" instead
+// of running "bd label list-all --json": the latter was measured (mitto-i2ep)
+// to take 30-37s on a real-world repo and to hold bd's exclusive Dolt
+// noms/LOCK for the full duration, blocking every other concurrent bd
+// invocation (show/list/ready/status, and writes) in the same repo. "bd list
+// --all --json" returns the same per-issue label data in well under a second
+// and was verified to produce byte-identical label/count aggregates.
 func (c *cliClient) ListAllLabels(ctx context.Context, dir string) ([]byte, error) {
 	if !isInitialized(dir) {
 		return []byte("[]"), nil
 	}
-	return c.runJSONRead(ctx, dir, "label", "list-all", "--json")
+	labelsCtx, cancel := context.WithTimeout(ctx, LabelsReadTimeout)
+	defer cancel()
+	out, err := c.runJSONRead(labelsCtx, dir, "list", "--json", "--all", "-n", "0")
+	if err != nil {
+		if errors.Is(labelsCtx.Err(), context.DeadlineExceeded) {
+			return []byte("[]"), nil
+		}
+		return nil, err
+	}
+	var items []listLabelsItem
+	if jsonErr := json.Unmarshal(out, &items); jsonErr != nil {
+		return nil, &CmdError{Err: errors.New("failed to parse bd list output")}
+	}
+	counts := make(map[string]int)
+	order := make([]string, 0)
+	for _, it := range items {
+		for _, label := range it.Labels {
+			if _, seen := counts[label]; !seen {
+				order = append(order, label)
+			}
+			counts[label]++
+		}
+	}
+	sort.Strings(order)
+	result := make([]labelCount, 0, len(order))
+	for _, label := range order {
+		result = append(result, labelCount{Label: label, Count: counts[label]})
+	}
+	return json.Marshal(result)
 }

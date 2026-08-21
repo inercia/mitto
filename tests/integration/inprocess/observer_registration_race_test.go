@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestObserverRegistrationRace_EventsDuringLoadEvents tests the race window
@@ -38,7 +38,7 @@ import (
 func TestObserverRegistrationRace_EventsDuringLoadEvents(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestObserverRegistrationRace_EventsDuringLoadEvents(t *testing.T) {
 	aConnected := make(chan struct{})
 	var aCompletions int32
 
-	wsA, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	wsA, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected:      func(_, _, _ string) { close(aConnected) },
 		OnPromptComplete: func(_ int) { atomic.AddInt32(&aCompletions, 1) },
 	})
@@ -119,12 +119,12 @@ func TestObserverRegistrationRace_EventsDuringLoadEvents(t *testing.T) {
 	bCompleteCh := make(chan struct{})
 	bCompleteOnce := sync.Once{}
 
-	wsB, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	wsB, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnConnected: func(_, _, _ string) {
 			t.Logf("Client B connected")
 			close(bConnected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			bMu.Lock()
 			bEventsLoadedCnt++
 			n := bEventsLoadedCnt

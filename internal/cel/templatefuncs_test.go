@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"text/template"
+	"time"
 )
 
 // =============================================================================
@@ -305,6 +307,61 @@ func TestBuildTemplateFuncMap_GitFuncsRenderSmoke(t *testing.T) {
 	}
 	if got != "yes" {
 		t.Errorf("GitRepo render = %q, want %q", got, "yes")
+	}
+}
+
+// TestBuildTemplateFuncMap_GitStatusFilesRenderSmoke verifies GitStatusFiles
+// returns porcelain lines that render correctly through RenderPromptTemplate,
+// and that it yields an empty slice on a clean repo / nil outside a repo.
+func TestBuildTemplateFuncMap_GitStatusFilesRenderSmoke(t *testing.T) {
+	dir := newGitRepo(t)
+
+	// Clean tree: expect empty range output.
+	cleanCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	cleanFM := BuildTemplateFuncMap(cleanCtx)
+	got, err := RenderPromptTemplate("test", `[{{ range GitStatusFiles }}{{ . }}|{{ end }}]`, cleanCtx, cleanFM)
+	if err != nil {
+		t.Fatalf("render error (clean): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("GitStatusFiles on clean repo = %q, want %q", got, "[]")
+	}
+
+	// Dirty tree: modify tracked file and add an untracked one.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dirtyCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	dirtyFM := BuildTemplateFuncMap(dirtyCtx)
+	got, err = RenderPromptTemplate("test", `{{ range GitStatusFiles }}{{ . }}
+{{ end }}`, dirtyCtx, dirtyFM)
+	if err != nil {
+		t.Fatalf("render error (dirty): %v", err)
+	}
+	if !strings.Contains(got, "tracked.txt") {
+		t.Errorf("GitStatusFiles output missing 'tracked.txt': %q", got)
+	}
+	if !strings.Contains(got, "new.txt") {
+		t.Errorf("GitStatusFiles output missing 'new.txt': %q", got)
+	}
+	if !strings.Contains(got, "??") {
+		t.Errorf("GitStatusFiles output missing '??' status code for untracked file: %q", got)
+	}
+
+	// Non-repo: expect nil slice → empty range output.
+	plain := t.TempDir()
+	plainCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: plain}}
+	plainFM := BuildTemplateFuncMap(plainCtx)
+	got, err = RenderPromptTemplate("test", `[{{ range GitStatusFiles }}{{ . }}|{{ end }}]`, plainCtx, plainFM)
+	if err != nil {
+		t.Fatalf("render error (non-repo): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("GitStatusFiles on non-repo = %q, want %q", got, "[]")
 	}
 }
 
@@ -610,6 +667,9 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 		{`{{ Contains "foobar" "bar" }}`, "true"},
 		{`{{ HasPrefix "foobar" "foo" }}`, "true"},
 		{`{{ HasSuffix "foobar" "baz" }}`, "false"},
+		{`{{ Dir "a/b/test_foo.md" }}`, "a/b"},
+		{`{{ Dir "test_foo.md" }}`, "."},
+		{`{{ Dir "" }}`, "."},
 	}
 	for _, tc := range cases {
 		got, err := RenderPromptTemplate("test", tc.body, nil, fm)
@@ -621,6 +681,181 @@ func TestBuildTemplateFuncMap_StringUtils(t *testing.T) {
 			t.Errorf("render %q = %q, want %q", tc.body, got, tc.want)
 		}
 	}
+}
+
+// TestBuildTemplateFuncMap_DirWithFileExistsAndReadFile pins the composition
+// used by the "Run scripted test" builtin prompt: derive a sibling file path
+// from a workspace-relative argument via Dir, then conditionally inline it via
+// FileExists / ReadFile.
+func TestBuildTemplateFuncMap_DirWithFileExistsAndReadFile(t *testing.T) {
+	dir := t.TempDir()
+	// Set up   <folder>/tests/test_foo.md   and   <folder>/tests/cleanup.md
+	subdir := filepath.Join(dir, "tests")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "test_foo.md"), []byte("test body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "cleanup.md"), []byte("wipe tmp files"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{{- $cleanupFile := printf "%s/cleanup.md" (Dir .Args.Test) -}}` +
+		`{{- if FileExists $cleanupFile -}}` +
+		`FOUND at {{ $cleanupFile }}: {{ ReadFile $cleanupFile }}` +
+		`{{- else -}}` +
+		`MISSING: create {{ $cleanupFile }}` +
+		`{{- end -}}`
+
+	// Cleanup exists — sibling of the test file at tests/cleanup.md.
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: dir},
+		Args:      map[string]string{"Test": "tests/test_foo.md"},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (present): %v", err)
+	}
+	if want := "FOUND at tests/cleanup.md: wipe tmp files"; got != want {
+		t.Errorf("cleanup-present render = %q, want %q", got, want)
+	}
+
+	// Cleanup absent — remove it and re-render; the else branch must fire and
+	// mention the derived path so users know where to create the file.
+	if err := os.Remove(filepath.Join(subdir, "cleanup.md")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (absent): %v", err)
+	}
+	if want := "MISSING: create tests/cleanup.md"; got != want {
+		t.Errorf("cleanup-absent render = %q, want %q", got, want)
+	}
+
+	// Test file at repo root — Dir should return "." so the derived path is
+	// "./cleanup.md" (path.Dir semantics), still workspace-relative.
+	ctxRoot := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: dir},
+		Args:      map[string]string{"Test": "test_bar.md"},
+	}
+	fmRoot := BuildTemplateFuncMap(ctxRoot)
+	got, err = RenderPromptTemplate("t", body, ctxRoot, fmRoot)
+	if err != nil {
+		t.Fatalf("render (root): %v", err)
+	}
+	if want := "MISSING: create ./cleanup.md"; got != want {
+		t.Errorf("root-test render = %q, want %q", got, want)
+	}
+}
+
+// TestBuildTemplateFuncMap_DirEdgeCases pins the behaviour of Dir on path
+// shapes a prompt author can realistically hit (absolute, backslash, trailing
+// slash, ".." segments) and — where relevant — how the derived path composes
+// with FileExists / ReadFile. These are regression pins for mitto-qv2: no
+// behavioural change is intended, but a future refactor of Dir, readFile's
+// containment check, or the FileExists jail must not silently weaken these
+// interactions.
+func TestBuildTemplateFuncMap_DirEdgeCases(t *testing.T) {
+	// Shared workspace with a small on-disk fixture: <folder>/a/b/x.md
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "a", "b")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "x.md"), []byte("x body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	fm := BuildTemplateFuncMap(ctx)
+	dirFn := fm["Dir"].(func(string) string)
+
+	// --- Direct Dir() assertions: pin path.Dir semantics on each shape. ---
+	t.Run("direct", func(t *testing.T) {
+		cases := []struct {
+			name string
+			in   string
+			want string
+		}{
+			// Absolute path: Dir returns the parent as-is; the jail is enforced
+			// downstream by ReadFile (see composition subtests below).
+			{"absolute", "/etc/passwd", "/etc"},
+			// Backslash path: path.Dir treats "\" as a literal on all platforms
+			// (workspace paths are documented as forward-slash), so a
+			// Windows-authored path silently degrades to ".". This is a
+			// decision, not an accident — pin it.
+			{"backslash", `a\b\x.md`, "."},
+			// Trailing-slash shapes that composed printf paths rely on.
+			{"trailing_slash_nested", "a/b/", "a/b"},
+			{"trailing_slash_shallow", "a/", "a"},
+			{"root", "/", "/"},
+			// ".." segment: Dir preserves it; the jail rejection happens in
+			// ReadFile (see composition subtests below).
+			{"parent_segment", "../x.md", ".."},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := dirFn(tc.in); got != tc.want {
+					t.Errorf("Dir(%q) = %q, want %q", tc.in, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// --- Composition assertions: ReadFile must reject unsafe derived paths. ---
+	// FileExists (via evaluator.statResolved) does NOT reject absolute paths,
+	// so we do not assert on its output here — the security-relevant contract
+	// is that ReadFile's jail holds, so a runaway "%s/leaf.md" template cannot
+	// exfiltrate arbitrary files even when Dir happily returns "/etc" or "..".
+	t.Run("readfile_rejects_absolute_derived", func(t *testing.T) {
+		body := `{{ ReadFile (printf "%s/passwd" (Dir .Args.Test)) }}`
+		ctx2 := &PromptEnabledContext{
+			Workspace: WorkspaceContext{Folder: dir},
+			Args:      map[string]string{"Test": "/etc/passwd"},
+		}
+		got, err := RenderPromptTemplate("t", body, ctx2, BuildTemplateFuncMap(ctx2))
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "" {
+			t.Errorf("ReadFile of absolute-derived path = %q, want %q", got, "")
+		}
+	})
+
+	t.Run("readfile_rejects_parent_escape_derived", func(t *testing.T) {
+		body := `{{ ReadFile (printf "%s/cleanup.md" (Dir .Args.Test)) }}`
+		ctx2 := &PromptEnabledContext{
+			Workspace: WorkspaceContext{Folder: dir},
+			Args:      map[string]string{"Test": "../x.md"},
+		}
+		got, err := RenderPromptTemplate("t", body, ctx2, BuildTemplateFuncMap(ctx2))
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "" {
+			t.Errorf("ReadFile of ..-derived path = %q, want %q", got, "")
+		}
+	})
+
+	// Trailing-slash composition: Dir("a/b/") = "a/b", so the derived leaf is
+	// a normal in-workspace path and ReadFile should return the fixture body.
+	t.Run("readfile_trailing_slash_composes", func(t *testing.T) {
+		body := `{{ ReadFile (printf "%s/x.md" (Dir .Args.Test)) }}`
+		ctx2 := &PromptEnabledContext{
+			Workspace: WorkspaceContext{Folder: dir},
+			Args:      map[string]string{"Test": "a/b/"},
+		}
+		got, err := RenderPromptTemplate("t", body, ctx2, BuildTemplateFuncMap(ctx2))
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if want := "x body"; got != want {
+			t.Errorf("ReadFile of trailing-slash-derived path = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestUserData verifies the UserData template function.
@@ -698,11 +933,11 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
 	expected := []string{
 		"Arg", "Default", "UserData",
-		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
-		"GitFileModified", "GitDirModified", "GitFileTracked", "GitFileDeleted",
-		"BeadsCount", "HasBeads",
-		"PromptText",
-		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
+		"FileExists", "DirExists", "ReadFile", "ReadTemplate", "CommandExists", "HasPattern", "Model",
+		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
+		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadIsOpen", "BeadMetadata",
+		"PromptText", "PromptTextWithArgs", "ArgsMap",
+		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join", "Dir",
 	}
 	for _, key := range expected {
 		if fm[key] == nil {
@@ -747,6 +982,109 @@ func TestBuildTemplateFuncMap_FileExistsParity(t *testing.T) {
 		if got != wantGo {
 			t.Errorf("template fileExists(%q) = %q, pure-Go = %q", path, got, wantGo)
 		}
+	}
+}
+
+// TestReadFile_Basic covers the happy path, missing-file, and directory cases.
+func TestReadFile_Basic(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hello.md"), []byte("hi\nworld"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"present", "hello.md", "hi\nworld"},
+		{"missing", "absent.md", ""},
+		{"empty_path", "", ""},
+		{"is_dir", "sub", ""},
+		{"path_escape_dotdot", "../etc/passwd", ""},
+		{"absolute_path_rejected", "/etc/passwd", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readFile(tmpDir, tc.path)
+			if got != tc.want {
+				t.Errorf("readFile(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadFile_SizeCap verifies content beyond readFileMaxBytes is truncated
+// rather than returned in full or aborted.
+func TestReadFile_SizeCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Write cap+1024 bytes; expect exactly cap bytes back.
+	big := make([]byte, readFileMaxBytes+1024)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "big.md"), big, 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(tmpDir, "big.md")
+	if len(got) != readFileMaxBytes {
+		t.Errorf("readFile(big.md) len = %d, want %d (cap)", len(got), readFileMaxBytes)
+	}
+}
+
+// TestReadFile_TemplateInlining verifies ReadFile plugged into
+// RenderPromptTemplate inlines contents at render time.
+func TestReadFile_TemplateInlining(t *testing.T) {
+	tmpDir := t.TempDir()
+	fragDir := filepath.Join(tmpDir, ".mitto", "support", "C0TEST")
+	if err := os.MkdirAll(fragDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := "**Scope:** channel-specific triage rules go here."
+	if err := os.WriteFile(filepath.Join(fragDir, "scope.md"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmpDir}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// Present: inline body.
+	tmplPresent := `{{- if FileExists ".mitto/support/C0TEST/scope.md" -}}` +
+		`{{ ReadFile ".mitto/support/C0TEST/scope.md" }}` +
+		`{{- else -}}FALLBACK{{- end -}}`
+	got, err := RenderPromptTemplate("t", tmplPresent, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (present): %v", err)
+	}
+	if got != body {
+		t.Errorf("present: got %q, want %q", got, body)
+	}
+
+	// Missing: fallback branch.
+	tmplMissing := `{{- if FileExists ".mitto/support/C0TEST/tone.md" -}}` +
+		`{{ ReadFile ".mitto/support/C0TEST/tone.md" }}` +
+		`{{- else -}}FALLBACK{{- end -}}`
+	got, err = RenderPromptTemplate("t", tmplMissing, ctx, fm)
+	if err != nil {
+		t.Fatalf("render (missing): %v", err)
+	}
+	if got != "FALLBACK" {
+		t.Errorf("missing: got %q, want FALLBACK", got)
+	}
+}
+
+// TestReadFile_NilCtxSafe verifies ReadFile is safe when BuildTemplateFuncMap
+// is called with a nil ctx (folder == ""): every call returns "".
+func TestReadFile_NilCtxSafe(t *testing.T) {
+	fm := BuildTemplateFuncMap(nil)
+	got, err := RenderPromptTemplate("t", `[{{ ReadFile "anything.md" }}]`, nil, fm)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("nil-ctx ReadFile got %q, want []", got)
 	}
 }
 
@@ -842,6 +1180,47 @@ func TestFormatChildren(t *testing.T) {
 				{ID: "sess-2", Name: "Tests", ACPServer: "auggie"},
 			},
 			"sess-1 (Research) [claude-code], sess-2 (Tests) [auggie]",
+		},
+		{
+			"single with beads issue",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b"}},
+			"sess-1 (Research) [claude-code] {mitto-59b}",
+		},
+		{
+			"bare id with beads issue",
+			[]ChildInfo{{ID: "sess-1", BeadsIssue: "mitto-123"}},
+			"sess-1 {mitto-123}",
+		},
+		{
+			"beads issue without name",
+			[]ChildInfo{{ID: "sess-1", ACPServer: "auggie", BeadsIssue: "mitto-abc"}},
+			"sess-1 [auggie] {mitto-abc}",
+		},
+		{
+			"multi mixed beads issue",
+			[]ChildInfo{
+				{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b"},
+				{ID: "sess-2", Name: "Tests", ACPServer: "auggie"},
+			},
+			"sess-1 (Research) [claude-code] {mitto-59b}, sess-2 (Tests) [auggie]",
+		},
+		// mitto-p9r: QueuedCount is a per-child struct field for template consumers
+		// ({{ range .Children.All }} … {{ .QueuedCount }}); it must NOT alter the
+		// default FormatChildren rendered string (byte-identical goldens preserved).
+		{
+			"queued-count does not affect rendering",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code", QueuedCount: 5}},
+			"sess-1 (Research) [claude-code]",
+		},
+		{
+			"queued-count with beads issue does not affect rendering",
+			[]ChildInfo{{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b", QueuedCount: 3}},
+			"sess-1 (Research) [claude-code] {mitto-59b}",
+		},
+		{
+			"queued-count on bare id does not affect rendering",
+			[]ChildInfo{{ID: "sess-1", QueuedCount: 2}},
+			"sess-1",
 		},
 	}
 	for _, tc := range cases {
@@ -963,6 +1342,249 @@ func TestTemplateFuncs_MCPChildrenFiltersCorrectly(t *testing.T) {
 	}
 	if want := "m1 (MCP child) [auggie]"; mcpGot != want {
 		t.Errorf("Children.MCPText: got %q, want %q", mcpGot, want)
+	}
+}
+
+// TestChildrenContext_Get_DirectMethodCall exercises the Get lookup accessor
+// directly (independent of template rendering) to pin the pure Go contract:
+// found → non-nil pointer to the matching ChildInfo, unknown/empty id → nil,
+// searches .All so any origin (mcp/auto/human) matches.
+func TestChildrenContext_Get_DirectMethodCall(t *testing.T) {
+	ctx := ChildrenContext{
+		All: []ChildInfo{
+			{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp", IsPrompting: true, BeadsIssue: "mitto-1"},
+			{ID: "s2", Name: "Helper", ACPServer: "claude-code", Origin: "auto"},
+			{ID: "s3", Name: "Human child", ACPServer: "auggie", Origin: "human"},
+		},
+		MCP: []ChildInfo{
+			{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp", IsPrompting: true, BeadsIssue: "mitto-1"},
+		},
+	}
+
+	// Found: mcp-origin child.
+	if got := ctx.Get("s1"); got == nil {
+		t.Fatal("Get(\"s1\"): got nil, want non-nil pointer to Worker")
+	} else if got.Name != "Worker" || got.ACPServer != "auggie" || !got.IsPrompting || got.BeadsIssue != "mitto-1" {
+		t.Errorf("Get(\"s1\"): fields mismatch: %+v", *got)
+	}
+
+	// Found: auto-origin child (Get searches .All, not .MCP).
+	if got := ctx.Get("s2"); got == nil {
+		t.Fatal("Get(\"s2\"): got nil, want non-nil pointer to Helper")
+	} else if got.Name != "Helper" || got.Origin != "auto" {
+		t.Errorf("Get(\"s2\"): fields mismatch: %+v", *got)
+	}
+
+	// Found: human-origin child.
+	if got := ctx.Get("s3"); got == nil || got.Origin != "human" {
+		t.Errorf("Get(\"s3\"): want human-origin child, got %+v", got)
+	}
+
+	// Not found → nil.
+	if got := ctx.Get("does-not-exist"); got != nil {
+		t.Errorf("Get(unknown): want nil, got %+v", *got)
+	}
+
+	// Empty id short-circuits to nil so an unset .Args placeholder is safe.
+	if got := ctx.Get(""); got != nil {
+		t.Errorf("Get(\"\"): want nil, got %+v", *got)
+	}
+
+	// Zero-valued ChildrenContext (no children at all) → nil for any id.
+	var zero ChildrenContext
+	if got := zero.Get("s1"); got != nil {
+		t.Errorf("zero ChildrenContext.Get: want nil, got %+v", *got)
+	}
+}
+
+// TestTemplateFuncs_ChildrenGet_TemplateRender verifies the accessor works
+// end-to-end through the prompt template renderer — the canonical usage pattern
+// documented in docs/config/prompts.md ({{ with .Children.Get "id" }}...{{ else }}...{{ end }}).
+func TestTemplateFuncs_ChildrenGet_TemplateRender(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		Children: ChildrenContext{
+			All: []ChildInfo{
+				{ID: "s1", Name: "Worker", ACPServer: "auggie", Origin: "mcp", IsPrompting: true},
+				{ID: "s2", Name: "Helper", ACPServer: "claude-code", Origin: "auto", IsPrompting: false},
+			},
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// Found + IsPrompting=true → "running" branch, inlines all four fields.
+	body := `{{ with .Children.Get "s1" }}{{ .Name }} ({{ .ID }}) on {{ .ACPServer }} — {{ if .IsPrompting }}running{{ else }}idle{{ end }}{{ else }}not found{{ end }}`
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "Worker (s1) on auggie — running"; got != want {
+		t.Errorf("Children.Get found+prompting: got %q, want %q", got, want)
+	}
+
+	// Found + IsPrompting=false → "idle" branch.
+	body = `{{ with .Children.Get "s2" }}{{ .Name }} — {{ if .IsPrompting }}running{{ else }}idle{{ end }}{{ else }}not found{{ end }}`
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "Helper — idle"; got != want {
+		t.Errorf("Children.Get found+idle: got %q, want %q", got, want)
+	}
+
+	// Not found → {{ else }} branch fires (nil pointer is falsy for `with`).
+	body = `{{ with .Children.Get "missing" }}{{ .Name }}{{ else }}not found{{ end }}`
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "not found"; got != want {
+		t.Errorf("Children.Get missing: got %q, want %q", got, want)
+	}
+
+	// Empty id → {{ else }} branch (unset .Args placeholder should be safe).
+	body = `{{ with .Children.Get "" }}{{ .Name }}{{ else }}empty-id{{ end }}`
+	got, err = RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("Children.Get render error: %v", err)
+	}
+	if want := "empty-id"; got != want {
+		t.Errorf("Children.Get empty id: got %q, want %q", got, want)
+	}
+}
+
+// TestTemplateFuncs_ChildrenGet_ZeroValueCtx verifies the accessor is safe on
+// a zero-valued PromptEnabledContext — nil-safe, no panic, {{ else }} fires.
+func TestTemplateFuncs_ChildrenGet_ZeroValueCtx(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+
+	body := `{{ with .Children.Get "s1" }}{{ .Name }}{{ else }}no-children{{ end }}`
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("zero-value ctx Children.Get: unexpected error: %v", err)
+	}
+	if got != "no-children" {
+		t.Errorf("zero-value ctx Children.Get: got %q, want %q", got, "no-children")
+	}
+}
+
+// =============================================================================
+// FormatPeers tests (mitto-4d6)
+// =============================================================================
+
+func TestFormatPeers(t *testing.T) {
+	cases := []struct {
+		name  string
+		peers []PeerInfo
+		want  string
+	}{
+		{"nil", nil, ""},
+		{"empty", []PeerInfo{}, ""},
+		{
+			"single with name and acp",
+			[]PeerInfo{{ID: "sess-1", Name: "Driver", ACPServer: "auggie"}},
+			"sess-1 (Driver) [auggie]",
+		},
+		{
+			"single no-name",
+			[]PeerInfo{{ID: "sess-1", ACPServer: "claude-code"}},
+			"sess-1 [claude-code]",
+		},
+		{
+			"single no-acp",
+			[]PeerInfo{{ID: "sess-1", Name: "Fixer"}},
+			"sess-1 (Fixer)",
+		},
+		{
+			"bare id only",
+			[]PeerInfo{{ID: "sess-1"}},
+			"sess-1",
+		},
+		{
+			"single with beads issue",
+			[]PeerInfo{{ID: "sess-1", Name: "Driver", ACPServer: "auggie", BeadsIssue: "mitto-4d6"}},
+			"sess-1 (Driver) [auggie] {mitto-4d6}",
+		},
+		{
+			"bare id with beads issue",
+			[]PeerInfo{{ID: "sess-1", BeadsIssue: "mitto-123"}},
+			"sess-1 {mitto-123}",
+		},
+		{
+			"multi mixed beads issue",
+			[]PeerInfo{
+				{ID: "sess-1", Name: "Fix mitto-4d6", ACPServer: "auggie", BeadsIssue: "mitto-4d6"},
+				{ID: "sess-2", Name: "Implement mitto-abc", ACPServer: "claude-code"},
+			},
+			"sess-1 (Fix mitto-4d6) [auggie] {mitto-4d6}, sess-2 (Implement mitto-abc) [claude-code]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatPeers(tc.peers); got != tc.want {
+				t.Errorf("FormatPeers() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPeersContext_AllText verifies that PeersContext.AllText() delegates to
+// FormatPeers and produces the same byte-identical output as the template
+// accessor { .Workspace.Peers.AllText }.
+func TestPeersContext_AllText(t *testing.T) {
+	pc := PeersContext{
+		All: []PeerInfo{
+			{ID: "s1", Name: "Peer A", ACPServer: "auggie", BeadsIssue: "mitto-1"},
+			{ID: "s2", ACPServer: "claude-code"},
+		},
+	}
+	want := "s1 (Peer A) [auggie] {mitto-1}, s2 [claude-code]"
+	if got := pc.AllText(); got != want {
+		t.Errorf("PeersContext.AllText() = %q, want %q", got, want)
+	}
+
+	// Zero value returns empty string.
+	if got := (PeersContext{}).AllText(); got != "" {
+		t.Errorf("zero PeersContext.AllText() = %q, want \"\"", got)
+	}
+}
+
+// TestTemplateFuncs_WorkspacePeersAllText verifies the { .Workspace.Peers.AllText }
+// template accessor renders correctly from a populated PromptEnabledContext.
+func TestTemplateFuncs_WorkspacePeersAllText(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{
+			Peers: PeersContext{
+				Count:  2,
+				Exists: true,
+				All: []PeerInfo{
+					{ID: "s1", Name: "Driver", ACPServer: "auggie", BeadsIssue: "mitto-4d6"},
+					{ID: "s2", Name: "Helper", ACPServer: "claude-code"},
+				},
+			},
+		},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", `{{ .Workspace.Peers.AllText }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("Workspace.Peers.AllText render error: %v", err)
+	}
+	if want := "s1 (Driver) [auggie] {mitto-4d6}, s2 (Helper) [claude-code]"; got != want {
+		t.Errorf("Workspace.Peers.AllText: got %q, want %q", got, want)
+	}
+}
+
+// TestTemplateFuncs_WorkspacePeersEmpty verifies that { .Workspace.Peers.AllText }
+// returns "" when the peers slice is nil or empty (zero-value safety).
+func TestTemplateFuncs_WorkspacePeersEmpty(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+	got, err := RenderPromptTemplate("t", `{{ .Workspace.Peers.AllText }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("zero-value Workspace.Peers.AllText render error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("zero-value Workspace.Peers.AllText: got %q, want \"\"", got)
 	}
 }
 
@@ -1130,18 +1752,80 @@ func TestBuildTemplateFuncMap_CondWhenKeysPresent(t *testing.T) {
 func installFakeBd(t *testing.T, stdout string, exitCode int) string {
 	t.Helper()
 	dir := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n", stdout, exitCode)
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n", stdout, exitCode)
 	bdPath := filepath.Join(dir, "bd")
 	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
-	// Clear the cache so a previous test's result doesn't shadow this one.
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	// Clear the caches so a previous test's result doesn't shadow this one.
+	InvalidateAllBeadsCaches()
 	return dir
+}
+
+func TestRunBdUsesReadonlyOpen(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nprintf '[]\\n'\n", argsPath)
+	if err := os.WriteFile(filepath.Join(dir, "bd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, ok := runBd(t.TempDir(), "list", "--json"); !ok {
+		t.Fatal("runBd() failed")
+	}
+	got, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "--readonly\nlist\n--json\n"; string(got) != want {
+		t.Fatalf("bd args = %q, want %q", got, want)
+	}
+}
+
+// installCountingFakeBd is like installFakeBd but the fake `bd` script also
+// appends one byte to a counter file on every invocation, so tests can assert
+// the EXACT number of times bd was forked (mitto-z0t A1/A2/A3/A4: snapshot-
+// cache sharing, singleflight collapse, negative-cache non-reexec, and
+// invalidation forcing re-exec). When sleepSeconds is non-empty (e.g. "0.2")
+// the script sleeps that long before emitting stdout, widening the race
+// window so concurrent callers actually overlap inside a singleflight.Do.
+// Returns the fake-bd dir and the counter file path; use countBdCalls to read it.
+func installCountingFakeBd(t *testing.T, stdout string, exitCode int, sleepSeconds string) (dir, counterFile string) {
+	t.Helper()
+	dir = t.TempDir()
+	counterFile = filepath.Join(dir, "calls.count")
+	sleepLine := ""
+	if sleepSeconds != "" {
+		sleepLine = "sleep " + sleepSeconds + "\n"
+	}
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\nprintf 'x' >> \"%s\"\n%scat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n",
+		counterFile, sleepLine, stdout, exitCode)
+	bdPath := filepath.Join(dir, "bd")
+	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	InvalidateAllBeadsCaches()
+	return dir, counterFile
+}
+
+// countBdCalls reads the counter file written by installCountingFakeBd's
+// fake script and returns the number of invocations recorded so far (0 if
+// the file does not exist yet, i.e. bd was never invoked).
+func countBdCalls(t *testing.T, counterFile string) int {
+	t.Helper()
+	data, err := os.ReadFile(counterFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatal(err)
+	}
+	return len(data)
 }
 
 // TestBeadsCount_EmptyResult verifies that a legitimate empty result (bd exit
@@ -1206,9 +1890,7 @@ func TestBeadsCount_FailOpenWhenMissing(t *testing.T) {
 	// Force an isolated PATH with no bd.
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 
 	got := beadsCount(emptyDir, "support-question", "open,in_progress")
 	if got != beadsCountFailOpen {
@@ -1319,9 +2001,7 @@ func TestBeadHasLabels_EmptyIDOrLabels(t *testing.T) {
 func TestBeadHasLabels_FailOpenWhenMissing(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 
 	if !beadHasLabels(emptyDir, "mitto-1", "support-question,state:drafting") {
 		t.Errorf("beadHasLabels missing bd = false, want true (fail-open)")
@@ -1418,9 +2098,7 @@ func TestBeadIsOpen_FailOpen(t *testing.T) {
 
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
-	beadsCacheMu.Lock()
-	beadsCache = map[string]beadsCacheEntry{}
-	beadsCacheMu.Unlock()
+	InvalidateAllBeadsCaches()
 	if !beadIsOpen(emptyDir, "mitto-1") {
 		t.Errorf("beadIsOpen missing bd = false, want true (fail-open)")
 	}
@@ -1461,6 +2139,145 @@ func TestBeadIsOpen_CELParity(t *testing.T) {
 	}
 }
 
+// TestBeadMetadata_PresentArrayShape verifies happy-path retrieval from the
+// current `bd show --json` shape, a single-element ARRAY ([{...}]).
+func TestBeadMetadata_PresentArrayShape(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0TEST","other":"x"}}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "C0TEST" {
+		t.Errorf("beadMetadata array-shape slack_channel = %q, want %q", got, "C0TEST")
+	}
+}
+
+// TestBeadMetadata_PresentObjectShape verifies parsing of the legacy bare
+// object shape (`{...}`, older bd) — the extended bdBead struct piggybacks on
+// parseBdShow's dual-shape tolerance.
+func TestBeadMetadata_PresentObjectShape(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","metadata":{"slack_channel":"C0LEG"}}`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "C0LEG" {
+		t.Errorf("beadMetadata object-shape slack_channel = %q, want %q", got, "C0LEG")
+	}
+}
+
+// TestBeadMetadata_MissingKey verifies that a present metadata map without the
+// requested key returns "" (fail-open / natural nil-map indexing semantics).
+func TestBeadMetadata_MissingKey(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"other":"x"}}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata missing key = %q, want %q", got, "")
+	}
+}
+
+// TestBeadMetadata_NullMetadata verifies that a null metadata field decodes to
+// a nil map and returns "" (nil-map indexing is safe).
+func TestBeadMetadata_NullMetadata(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":null}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata null metadata = %q, want %q", got, "")
+	}
+}
+
+// TestBeadMetadata_NoMetadataField verifies that a bead JSON with no metadata
+// field at all (as real bd currently emits — see AGENTS.md observations) still
+// returns "" without erroring.
+func TestBeadMetadata_NoMetadataField(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open","labels":["support-question"]}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata absent metadata field = %q, want %q", got, "")
+	}
+}
+
+// TestBeadMetadata_EmptyID verifies fail-open on an empty id (skips exec).
+func TestBeadMetadata_EmptyID(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0TEST"}}]`, 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata empty id = %q, want %q (fail-open)", got, "")
+	}
+	if got := beadMetadata(tmp, "   ", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata whitespace id = %q, want %q (fail-open)", got, "")
+	}
+}
+
+// TestBeadMetadata_FailOpenWhenBdMissing verifies fail-open ("") when bd is
+// absent from PATH — mirrors TestBeadHasLabels_FailOpenWhenMissing.
+func TestBeadMetadata_FailOpenWhenBdMissing(t *testing.T) {
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	InvalidateAllBeadsCaches()
+
+	if got := beadMetadata(emptyDir, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata missing bd = %q, want %q (fail-open)", got, "")
+	}
+}
+
+// TestBeadMetadata_FailOpenOnBadJSON verifies fail-open ("") when bd emits
+// unparseable stdout.
+func TestBeadMetadata_FailOpenOnBadJSON(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata bad JSON = %q, want %q (fail-open)", got, "")
+	}
+}
+
+// TestBeadMetadata_Caching verifies repeated in-window calls return the same
+// value without re-execing bd. Mirrors TestBeadsCount_Cache: install one fake
+// stdout, take the first value, swap the fake mid-test, verify the second
+// call still returns the cached first value.
+func TestBeadMetadata_Caching(t *testing.T) {
+	dir := installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0FIRST"}}]`, 0)
+	tmp := t.TempDir()
+
+	first := beadMetadata(tmp, "mitto-1", "slack_channel")
+	if first != "C0FIRST" {
+		t.Fatalf("first beadMetadata = %q, want %q", first, "C0FIRST")
+	}
+
+	// Swap the fake bd's stdout in place.
+	bdPath := filepath.Join(dir, "bd")
+	newScript := "#!/bin/sh\ncat <<'MITTO_BD_EOF'\n[{\"id\":\"mitto-1\",\"metadata\":{\"slack_channel\":\"C0SECOND\"}}]\nMITTO_BD_EOF\nexit 0\n"
+	if err := os.WriteFile(bdPath, []byte(newScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	second := beadMetadata(tmp, "mitto-1", "slack_channel")
+	if second != first {
+		t.Errorf("cached beadMetadata second call = %q, want %q (cache miss?)", second, first)
+	}
+}
+
+// TestBeadMetadata_TemplateFuncRender verifies BeadMetadata renders through
+// RenderPromptTemplate — the actual production usage path (a support prompt
+// falls back to it when SlackChannelID was not passed at spawn time).
+func TestBeadMetadata_TemplateFuncRender(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","metadata":{"slack_channel":"C0TMPL"}}]`, 0)
+	tmp := t.TempDir()
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	body := `{{- $c := "" -}}{{- if eq $c "" -}}{{- $c = BeadMetadata "mitto-1" "slack_channel" -}}{{- end -}}channel={{ $c }}`
+	got, err := RenderPromptTemplate("test", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render BeadMetadata: %v", err)
+	}
+	if got != "channel=C0TMPL" {
+		t.Errorf("BeadMetadata render = %q, want %q", got, "channel=C0TMPL")
+	}
+}
+
 // TestBeadsCount_TemplateFuncRender verifies BeadsCount/HasBeads render through
 // RenderPromptTemplate (mirrors TestBuildTemplateFuncMap_GitFuncsRenderSmoke).
 func TestBeadsCount_TemplateFuncRender(t *testing.T) {
@@ -1484,6 +2301,204 @@ func TestBeadsCount_TemplateFuncRender(t *testing.T) {
 	}
 	if got != "count=1" {
 		t.Errorf("BeadsCount render = %q, want %q", got, "count=1")
+	}
+}
+
+// =============================================================================
+// mitto-z0t: showBead snapshot sharing, singleflight collapse, negative
+// caching, and watcher-driven invalidation.
+// =============================================================================
+
+// TestShowBead_SharedSnapshotCollapsesExecsAcrossGates verifies mitto-z0t D1:
+// evaluating BeadHasLabels, BeadIsOpen and BeadMetadata for the SAME (folder,
+// id) — as the conversation/prompts menu does for one linked bead — forks
+// `bd show` at most ONCE, because all three derive from the shared showBead
+// snapshot cache instead of each forking their own `bd show`.
+func TestShowBead_SharedSnapshotCollapsesExecsAcrossGates(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t,
+		`[{"id":"mitto-1","status":"open","labels":["support-question","state:drafting"],"metadata":{"slack_channel":"C0TEST"}}]`,
+		0, "")
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels = false, want true")
+	}
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("beadIsOpen = false, want true")
+	}
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "C0TEST" {
+		t.Errorf("beadMetadata = %q, want %q", got, "C0TEST")
+	}
+
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Errorf("bd exec count = %d, want 1 (beadHasLabels+beadIsOpen+beadMetadata should share one showBead snapshot)", n)
+	}
+}
+
+// TestShowBead_SingleflightCollapsesConcurrentExecs verifies mitto-z0t D2:
+// concurrent showBead misses on the SAME (folder, id) key collapse into a
+// single `bd show` fork via beadsShowSF, instead of each goroutine forking
+// its own bd in parallel. The fake bd sleeps briefly so all goroutines are
+// guaranteed to be in flight before the first one returns and populates the
+// cache.
+func TestShowBead_SingleflightCollapsesConcurrentExecs(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t,
+		`[{"id":"mitto-1","status":"open","labels":["support-question"]}]`, 0, "0.2")
+	tmp := t.TempDir()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if !beadIsOpen(tmp, "mitto-1") {
+				t.Errorf("beadIsOpen concurrent = false, want true")
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := countBdCalls(t, counterFile); got != 1 {
+		t.Errorf("bd exec count under concurrency = %d, want 1 (singleflight should collapse all %d callers)", got, n)
+	}
+}
+
+// TestBeadsCount_SingleflightCollapsesConcurrentExecs mirrors
+// TestShowBead_SingleflightCollapsesConcurrentExecs for the beadsCount /
+// beadsListSF path (`bd list`), the other half of mitto-z0t D2.
+func TestBeadsCount_SingleflightCollapsesConcurrentExecs(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, `[{"id":"a"},{"id":"b"}]`, 0, "0.2")
+	tmp := t.TempDir()
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if got := beadsCount(tmp, "support-question", "open,in_progress"); got != 2 {
+				t.Errorf("beadsCount concurrent = %d, want 2", got)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := countBdCalls(t, counterFile); got != 1 {
+		t.Errorf("bd exec count under concurrency = %d, want 1 (singleflight should collapse all %d callers)", got, n)
+	}
+}
+
+// TestShowBead_NegativeCacheDoesNotReexecWithinTTL verifies mitto-z0t D3 for
+// the showBead path: a FAILING `bd show` (non-zero exit) is memoised too, so
+// repeated evaluations within beadsFailCacheTTL do not re-fork bd on every
+// single call — a broken/slow bd is no longer the hottest possible path.
+// Fail-open semantics (beadIsOpen/beadHasLabels return true, beadMetadata
+// returns "") must be preserved throughout.
+func TestShowBead_NegativeCacheDoesNotReexecWithinTTL(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, "error: not a beads repo", 1, "")
+	tmp := t.TempDir()
+
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("beadIsOpen fail-open = false, want true")
+	}
+	if !beadHasLabels(tmp, "mitto-1", "support-question") {
+		t.Errorf("beadHasLabels fail-open = false, want true")
+	}
+	if got := beadMetadata(tmp, "mitto-1", "slack_channel"); got != "" {
+		t.Errorf("beadMetadata fail-open = %q, want %q", got, "")
+	}
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Errorf("bd exec count after 3 failed lookups = %d, want 1 (negative cache should collapse them)", n)
+	}
+}
+
+// TestBeadsCount_NegativeCacheDoesNotReexecWithinTTL mirrors the above for
+// the beadsCount path (`bd list`).
+func TestBeadsCount_NegativeCacheDoesNotReexecWithinTTL(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, "error: not a beads repo", 1, "")
+	tmp := t.TempDir()
+
+	for i := 0; i < 3; i++ {
+		if got := beadsCount(tmp, "support-question", "open,in_progress"); got != beadsCountFailOpen {
+			t.Errorf("beadsCount fail-open = %d, want %d", got, beadsCountFailOpen)
+		}
+	}
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Errorf("bd exec count after 3 failed lookups = %d, want 1 (negative cache should collapse them)", n)
+	}
+}
+
+// TestBeadsFailCache_ExpiresAndSelfHeals verifies that once beadsFailCacheTTL
+// elapses, a subsequent call re-execs bd (self-healing) rather than staying
+// negatively cached forever — i.e. the negative cache in D3 is bounded, not
+// permanent. Uses a real sleep past the TTL; kept as a single instance to
+// bound the added test time.
+func TestBeadsFailCache_ExpiresAndSelfHeals(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t, "error: not a beads repo", 1, "")
+	tmp := t.TempDir()
+
+	if got := beadsCount(tmp, "support-question", "open,in_progress"); got != beadsCountFailOpen {
+		t.Fatalf("beadsCount fail-open = %d, want %d", got, beadsCountFailOpen)
+	}
+	if n := countBdCalls(t, counterFile); n != 1 {
+		t.Fatalf("bd exec count after first failure = %d, want 1", n)
+	}
+
+	time.Sleep(beadsFailCacheTTL + 200*time.Millisecond)
+
+	if got := beadsCount(tmp, "support-question", "open,in_progress"); got != beadsCountFailOpen {
+		t.Errorf("beadsCount fail-open after TTL = %d, want %d", got, beadsCountFailOpen)
+	}
+	if n := countBdCalls(t, counterFile); n != 2 {
+		t.Errorf("bd exec count after TTL expiry = %d, want 2 (should have re-execed)", n)
+	}
+}
+
+// TestInvalidateBeadsCache_ForcesReexec verifies mitto-z0t D5: calling
+// InvalidateBeadsCache(folder) drops both the beadsCount cache and the
+// showBead snapshot cache for that folder, so the NEXT call re-execs bd
+// immediately instead of waiting out the (now 30s) beadsCacheTTL. This is
+// what lets OnBeadsChanged (internal/web) keep results fresh despite the
+// longer TTL.
+func TestInvalidateBeadsCache_ForcesReexec(t *testing.T) {
+	_, counterFile := installCountingFakeBd(t,
+		`[{"id":"mitto-1","status":"open","labels":["support-question"]}]`, 0, "")
+	tmp := t.TempDir()
+
+	// Prime both caches for this folder.
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Fatalf("beadIsOpen = false, want true")
+	}
+	if got := beadsCount(tmp, "support-question", "open,in_progress"); got != 1 {
+		t.Fatalf("beadsCount = %d, want 1", got)
+	}
+	if n := countBdCalls(t, counterFile); n != 2 {
+		t.Fatalf("bd exec count after priming = %d, want 2 (one showBead + one list)", n)
+	}
+
+	// Still within TTL: repeat calls must NOT re-exec.
+	beadIsOpen(tmp, "mitto-1")
+	beadsCount(tmp, "support-question", "open,in_progress")
+	if n := countBdCalls(t, counterFile); n != 2 {
+		t.Fatalf("bd exec count before invalidation = %d, want 2 (cache should mask repeats)", n)
+	}
+
+	InvalidateBeadsCache(tmp)
+
+	// A DIFFERENT folder's cache entries must be unaffected by invalidating tmp.
+	other := t.TempDir()
+	beadIsOpen(other, "mitto-1")
+	if n := countBdCalls(t, counterFile); n != 3 {
+		t.Fatalf("bd exec count after unrelated-folder call = %d, want 3", n)
+	}
+
+	// The invalidated folder must re-exec on the very next call for both
+	// the showBead snapshot and the beadsCount list.
+	beadIsOpen(tmp, "mitto-1")
+	beadsCount(tmp, "support-question", "open,in_progress")
+	if n := countBdCalls(t, counterFile); n != 5 {
+		t.Errorf("bd exec count after InvalidateBeadsCache = %d, want 5 (both caches for tmp should have re-execed)", n)
 	}
 }
 
@@ -1560,6 +2575,291 @@ func TestBuildTemplateFuncMap_PromptText(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "empty prompt name") {
 			t.Errorf("error should mention 'empty prompt name'; got %v", err)
+		}
+	})
+}
+
+// TestBuildTemplateFuncMap_Dict verifies the `dict` helper builds a
+// map[string]any from alternating key/value pairs (the well-known Sprig
+// signature) and rejects odd-arity/bad-key calls. Shared support fragments
+// rely on this to pass structured arguments through the single-value
+// `{{ template "name" X }}` call syntax.
+func TestBuildTemplateFuncMap_Dict(t *testing.T) {
+	ctx := &PromptEnabledContext{}
+	fm := BuildTemplateFuncMap(ctx)
+
+	// Happy path: even number of args, string keys, mixed value types.
+	got, err := RenderPromptTemplate("dict-happy",
+		`{{ $d := dict "Name" "alice" "N" 3 }}{{ $d.Name }}={{ $d.N }}`, nil, fm)
+	if err != nil {
+		t.Fatalf("dict happy path: %v", err)
+	}
+	if got != "alice=3" {
+		t.Errorf("dict happy path = %q, want %q", got, "alice=3")
+	}
+
+	// Empty dict.
+	got, err = RenderPromptTemplate("dict-empty", `{{ len (dict) }}`, nil, fm)
+	if err != nil {
+		t.Fatalf("dict empty: %v", err)
+	}
+	if got != "0" {
+		t.Errorf("dict empty len = %q, want %q", got, "0")
+	}
+
+	// Odd arity must surface as an execute error.
+	_, err = RenderPromptTemplate("dict-odd", `{{ dict "K" }}`, nil, fm)
+	if err == nil {
+		t.Fatalf("dict odd arity: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "odd number of arguments") {
+		t.Errorf("dict odd arity error should mention 'odd number of arguments'; got %v", err)
+	}
+
+	// Non-string key must surface as an execute error.
+	_, err = RenderPromptTemplate("dict-badkey", `{{ dict 1 "v" }}`, nil, fm)
+	if err == nil {
+		t.Fatalf("dict bad key: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "want string") {
+		t.Errorf("dict bad key error should mention 'want string'; got %v", err)
+	}
+}
+
+// =============================================================================
+// mitto-47y.1 — Two-pass nested prompt args
+// =============================================================================
+
+// TestBuildTemplateFuncMap_PromptTextWithArgs verifies the two-pass template
+// function that fetches a prompt body by NAME and sub-renders it against a
+// fresh {{ .Args.X }} scope (mitto-47y.1). Covers the happy path, all
+// fail-closed guards, and the recursion cap.
+func TestBuildTemplateFuncMap_PromptTextWithArgs(t *testing.T) {
+	// Bodies keyed by prompt name for the fake resolver.
+	bodies := map[string]string{
+		"greeter":         `Hello {{ .Args.Name }}!`,
+		"plain":           `no args here`,
+		"broken":          `{{ .Args.X `, // parse error
+		"self-recursive":  `{{ PromptTextWithArgs "self-recursive" .Args }}`,
+		"reads-outer-arg": `outer={{ Arg "Outer" }} inner={{ .Args.Inner }}`,
+	}
+	resolver := func(name string) (string, error) {
+		if b, ok := bodies[name]; ok {
+			return b, nil
+		}
+		return "", fmt.Errorf("resolver: unknown %q", name)
+	}
+
+	t.Run("resolves and sub-renders with inner args", func(t *testing.T) {
+		ctx := &PromptEnabledContext{
+			PromptTextResolver: resolver,
+			Args:               map[string]string{"Name": "outer-name"},
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		body := `{{ PromptTextWithArgs "greeter" (dict "Name" "alice") }}`
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "Hello alice!" {
+			t.Errorf("got %q, want %q", got, "Hello alice!")
+		}
+	})
+
+	t.Run("inner body without .Args.X still renders", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "plain" (dict) }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "no args here" {
+			t.Errorf("got %q, want %q", got, "no args here")
+		}
+	})
+
+	t.Run("parent ctx.Args not mutated after nested render", func(t *testing.T) {
+		outerArgs := map[string]string{"Outer": "keep-me"}
+		ctx := &PromptEnabledContext{
+			PromptTextResolver: resolver,
+			Args:               outerArgs,
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		body := `{{ PromptTextWithArgs "greeter" (dict "Name" "bob") }}|outer-after={{ Arg "Outer" }}`
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "Hello bob!|outer-after=keep-me" {
+			t.Errorf("got %q, want %q", got, "Hello bob!|outer-after=keep-me")
+		}
+		// Parent map identity + content must be untouched.
+		if len(outerArgs) != 1 || outerArgs["Outer"] != "keep-me" {
+			t.Errorf("parent Args mutated: %v", outerArgs)
+		}
+	})
+
+	t.Run("accepts map[string]string as args", func(t *testing.T) {
+		ctx := &PromptEnabledContext{
+			PromptTextResolver: resolver,
+			Args:               map[string]string{"Inner": `{"Name":"raw"}`},
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		// ArgsMap decodes the JSON into a map[string]string and feeds it.
+		body := `{{ PromptTextWithArgs "greeter" (ArgsMap "Inner") }}`
+		got, err := RenderPromptTemplate("t", body, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "Hello raw!" {
+			t.Errorf("got %q, want %q", got, "Hello raw!")
+		}
+	})
+
+	t.Run("nil resolver fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: nil}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "greeter" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for nil resolver, got nil")
+		}
+		if !strings.Contains(err.Error(), "no resolver") {
+			t.Errorf("error should mention 'no resolver'; got %v", err)
+		}
+	})
+
+	t.Run("empty name fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for empty name, got nil")
+		}
+		if !strings.Contains(err.Error(), "empty prompt name") {
+			t.Errorf("error should mention 'empty prompt name'; got %v", err)
+		}
+	})
+
+	t.Run("resolver error propagates", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "does-not-exist" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected resolver error, got nil")
+		}
+		if !strings.Contains(err.Error(), "does-not-exist") {
+			t.Errorf("error should mention prompt name; got %v", err)
+		}
+	})
+
+	t.Run("sub-render parse error fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "broken" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected sub-render parse error, got nil")
+		}
+		if !strings.Contains(err.Error(), "parse error") {
+			t.Errorf("error should mention 'parse error'; got %v", err)
+		}
+	})
+
+	t.Run("recursion cap exceeded fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		// self-recursive body calls itself; depth caps at promptTextMaxDepth (3).
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "self-recursive" (dict) }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected recursion cap error, got nil")
+		}
+		if !strings.Contains(err.Error(), "recursion depth exceeded") {
+			t.Errorf("error should mention 'recursion depth exceeded'; got %v", err)
+		}
+	})
+
+	t.Run("bad args type rejected", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		// Pass a string where a map is expected — must fail-closed rather than silently render empty.
+		_, err := RenderPromptTemplate("t", `{{ PromptTextWithArgs "greeter" "not-a-map" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected type error, got nil")
+		}
+		if !strings.Contains(err.Error(), "args must be") {
+			t.Errorf("error should mention 'args must be'; got %v", err)
+		}
+	})
+}
+
+// TestBuildTemplateFuncMap_ArgsMap verifies ArgsMap reads args[name] as a
+// JSON-encoded map[string]string and fails-closed on malformed JSON while
+// tolerating absent fields (mitto-47y.1).
+func TestBuildTemplateFuncMap_ArgsMap(t *testing.T) {
+	t.Run("happy path decodes JSON map", func(t *testing.T) {
+		ctx := &PromptEnabledContext{
+			Args: map[string]string{"Payload": `{"A":"1","B":"two"}`},
+		}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Payload" }}{{ index $m "A" }}|{{ index $m "B" }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "1|two" {
+			t.Errorf("got %q, want %q", got, "1|two")
+		}
+	})
+
+	t.Run("absent field returns empty non-nil map", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: map[string]string{}}
+		fm := BuildTemplateFuncMap(ctx)
+		// len() on a nil map is 0 too, but the closure must return a non-nil
+		// map so ranging and follow-on ArgsMap-consumers don't blow up.
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Missing" }}len={{ len $m }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "len=0" {
+			t.Errorf("got %q, want %q", got, "len=0")
+		}
+	})
+
+	t.Run("empty string field returns empty map", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: map[string]string{"Payload": ""}}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Payload" }}len={{ len $m }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "len=0" {
+			t.Errorf("got %q, want %q", got, "len=0")
+		}
+	})
+
+	t.Run("malformed JSON fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: map[string]string{"Payload": `{not json`}}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("t", `{{ ArgsMap "Payload" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected JSON parse error, got nil")
+		}
+		if !strings.Contains(err.Error(), "ArgsMap") {
+			t.Errorf("error should mention ArgsMap; got %v", err)
+		}
+	})
+
+	t.Run("nil ctx.Args safe (nil-map indexing)", func(t *testing.T) {
+		ctx := &PromptEnabledContext{Args: nil}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("t",
+			`{{ $m := ArgsMap "Anything" }}len={{ len $m }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "len=0" {
+			t.Errorf("got %q, want %q", got, "len=0")
 		}
 	})
 }

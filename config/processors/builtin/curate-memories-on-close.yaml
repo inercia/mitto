@@ -1,21 +1,28 @@
 ##########################################################################################
-# Builtin processor: prunes obsolete entries from the beads memory store on close.
+# Builtin processor: curates the beads memory store on close — primarily by MERGING
+# overlapping memories into a canonical survivor, and only secondarily by forgetting
+# entries that are demonstrably dead.
 #
-# Complements `extract-memories-on-close` (which ADDS memories via `bd remember`) by
-# REMOVING durable-memory entries that have become obsolete or superseded. Runs at
-# conversation close as a fire-and-forget auxiliary agent; the session is already
-# archived and there is no UI to notify.
+# Complements `extract-memories-on-close` (which ADDS/refines memories via
+# `bd remember`) by reducing redundancy and pruning dead entries. Runs at conversation
+# close as a fire-and-forget auxiliary agent; the session is already archived and
+# there is no UI to notify.
 #
-# Approach B — auto-forget only on STRONG signal:
-#   - `obsolete`   : the memory body self-declares SUPERSEDED / FALSIFIED / RETRACTED /
-#                    CORRECTED / WITHDRAWN → auto `bd forget <key>`.
-#   - `superseded` : another memory in the store clearly supersedes this one AND that
-#                    survivor has been verified via `bd recall <survivor>` to inline
-#                    the essential facts → auto `bd forget <key>` (subject to guardrails).
-#   - `uncertain`  : refers to files, PRs, issue IDs, or branches that may no longer
-#                    apply → file a `bd create --type task --priority p3` for human
-#                    triage instead of auto-forgetting.
-#   - `keep`       : everything else (default when unsure).
+# Primary action — merge, not delete:
+#   - `merge`     : two or more memories cover the same topic → consolidate the
+#                   essential facts into one canonical survivor via
+#                   `bd remember --key <survivor>`, verified with `bd recall`. Losers
+#                   are marked SUPERSEDED (naming the survivor) so they become
+#                   `forget`-eligible on a LATER run — never forgotten in the same
+#                   run they were merged in.
+#   - `forget`    : the memory body ALREADY self-declares OBSOLETE/SUPERSEDED and
+#                   NAMES a survivor key (e.g. from a prior run's merge step) → auto
+#                   `bd forget <key>`, subject to guardrails (age, cap, verification).
+#   - `uncertain` : refers to files, PRs, issue IDs, or branches that may no longer
+#                   apply → collected across the whole run and filed as AT MOST ONE
+#                   deduplicated `bd create --type task --priority p3` (never one
+#                   issue per candidate).
+#   - `keep`      : everything else (default when unsure).
 #
 # Activation gates (all must hold):
 #   1. `bd` command exists on PATH (CommandExists CEL gate)
@@ -29,7 +36,7 @@
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 ##########################################################################################
 name: curate-memories-on-close
-description: "Prunes obsolete/superseded entries from the bd memory store on close (auto-forget on strong signal; uncertain cases become bd tasks)"
+description: "Merges overlapping bd memories into a canonical survivor, forgets only self-declared obsolete/superseded entries (guarded), and files at most one deduplicated review task for uncertain candidates"
 enabled: true
 when:
   on: conversationClosed
@@ -44,71 +51,146 @@ enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !Session.IsLoop'
 
 prompt: |
   You curate the beads memory store for {{ .Workspace.Folder }} after a conversation
-  has closed. Your ONLY job is to remove entries that are DEMONSTRABLY obsolete —
-  nothing else. When in doubt, KEEP the memory.
+  has closed. Your PRIMARY job is to reduce redundancy by MERGING memories that cover
+  the same topic into one canonical survivor. Your SECONDARY job is to forget entries
+  that are DEMONSTRABLY dead — nothing more. When in doubt, KEEP the memory.
 
   ## 1. Load the current memories
 
-  Run `bd memories --json` to get the full store. If it is empty or has fewer than
-  3 memories, exit silently.
+  Run `bd memories --json` to get the full store (a JSON object mapping key → full
+  body). If it is empty or has fewer than 3 memories, exit silently.
 
   ## 2. Classify each memory
 
   For each key, decide exactly one of:
 
-  - `obsolete`   — the memory body self-declares SUPERSEDED, FALSIFIED, RETRACTED,
-                   CORRECTED, or WITHDRAWN (typically near the start of the body).
-  - `superseded` — another, NEWER memory in the store clearly covers the same topic
-                   and either names this key as superseded/downgraded or plainly
-                   subsumes its essential facts.
-  - `uncertain`  — the memory refers to concrete files, PRs, issue IDs, branches, or
-                   ticket numbers that may no longer exist / be current, but you
-                   cannot confidently confirm it is stale.
-  - `keep`       — anything else. This is the default.
+  - `merge`     — two or more memories clearly cover the same topic and should be
+                  consolidated. Pick the most complete / most recent as the
+                  survivor; the rest are losers for that cluster.
+  - `forget`    — the memory body ALREADY, EXPLICITLY declares OBSOLETE or
+                  SUPERSEDED (typically near the start of the body) AND NAMES the
+                  key of the memory that supersedes it. Do not infer this from
+                  context or from your own judgment that another memory covers the
+                  same ground — the self-declaration must be literal and must name
+                  a survivor key. (This is normally the result of a PRIOR run's
+                  merge step — see step 3 — reaching the age guardrail.)
+  - `uncertain` — refers to concrete files, PRs, issue IDs, branches, or ticket
+                  numbers that may no longer exist / be current, but you cannot
+                  confidently confirm it is stale, and it is not a `merge` case.
+  - `keep`      — anything else. This is the default.
 
-  ## 3. Enforce guardrails BEFORE acting
+  ## 3. Merge overlapping memories (primary action)
+
+  For each `merge` cluster:
+
+  1. Compose ONE coherent merged body that inlines the essential facts from every
+     member of the cluster — do not simply concatenate the bodies.
+  2. Write it to the survivor's key (this updates that entry in place):
+
+         bd remember --key <survivor-key> "<merged-content>"
+
+  3. Verify: run `bd recall <survivor-key>` and confirm the merged body actually
+     contains the essential facts from every loser in the cluster. If any fact is
+     missing, redo step 2 before continuing — do not proceed to step 4 until the
+     survivor is verified complete.
+  4. Mark each loser as superseded, naming the survivor, so it becomes `forget`-
+     eligible on a LATER run once the age guardrail (below) clears it. Preserve
+     the loser's FULL original body after the marker so a later run can verify
+     that the survivor really contains every essential fact. Do NOT forget a
+     loser in the same run it was merged:
+
+         bd remember --key <loser-key> "SUPERSEDED by <survivor-key> on <YYYY-MM-DD UTC> -- merged into that entry. Original memory: <full-original-body>"
+
+  ## 4. Enforce guardrails BEFORE forgetting
 
   Apply ALL of these; violating any single one means the memory stays:
 
   - **KEEP is the default.** When in any doubt, keep the memory.
-  - **Cap forgets at 3 this run.** If more strong-signal candidates exist, downgrade
-    the excess to `uncertain` and file review tasks instead of forgetting them.
-  - **Never forget the newest memory of a topical cluster.** If two or more memories
-    overlap and it is not clear which is later / authoritative, keep them all.
-  - **Verify the survivor before forgetting a `superseded` candidate.** Run
-    `bd recall <survivor-key>` and confirm the survivor's body inlines the essential
-    facts of the candidate. If it does not, keep both.
-  - **Do not forget any memory you consulted this run** to make a classification
-    decision — that memory is by definition still influencing the store's behaviour.
-  - **Do not forget memories younger than 7 days.** Recent entries may still be
-    evolving; too fresh to be confidently "superseded". Use the memory's created /
-    updated timestamp from `bd memories --json`.
-  - **No secrets in `bd create` titles or descriptions.** When filing an `uncertain`
-    review task, copy the memory KEY only — never paste the memory body verbatim
-    into the beads issue.
+  - **Cap forgets at 3 this run.** If more `forget`-eligible candidates exist, leave
+    the excess for a later run — do not rush them through.
+  - **Verify the survivor before forgetting.** Run `bd recall <survivor-key>` (the
+    key named in the candidate's own OBSOLETE/SUPERSEDED declaration) and confirm
+    its body inlines the essential facts of the candidate being forgotten. If it
+    does not, keep the candidate.
+  - **Do not forget memories younger than 7 days.** Require an explicit UTC marker
+    date in the candidate's own declaration (the `on <YYYY-MM-DD UTC>` written in
+    step 3) and verify that at least 7 days have elapsed. `bd memories --json` does
+    not expose per-memory timestamps. If the declaration has no date or the date is
+    malformed, keep the memory and include its key in the review task instead.
+  - **No secrets in `bd create`/`bd comment` titles or descriptions.** When filing
+    or updating the review task in step 6, copy memory KEYS only — never paste a
+    memory body verbatim into the beads issue.
 
-  ## 4. Act
+  ## 5. Act on `forget` candidates
 
-  Resolve every candidate to exactly one of the actions below.
+  For each `forget` candidate that PASSES every guardrail above (up to the cap of 3
+  total this run):
 
-  - For each `obsolete` and `superseded` candidate that PASSES every guardrail above
-    (up to the cap of 3 total this run):
+      bd forget <key>
 
-        bd forget <key>
+  For `keep`: do nothing.
 
-  - For each `uncertain` candidate:
+  ## 6. File AT MOST ONE review task for `uncertain` candidates
 
-        bd create --type task --priority p3 \
-          --title "Review possibly-stale memory: <key>" \
-          --description "Memory key <key> may no longer apply. Run \
-        'bd recall <key>' and either 'bd forget <key>' or keep it. \
-        Reasoning: <one-sentence why the classifier flagged it>."
+  Collect ALL `uncertain` candidates from this run — do not create one issue per
+  candidate. If the list is empty, skip this section entirely.
 
-  - For `keep`: do nothing.
+  1. Search for an existing, still-open review task with the exact stable title
+     `Review possibly-stale beads memories`:
 
-  ## 5. Silent completion
+         bd query 'title="Review possibly-stale beads memories" AND (status=open OR status=in_progress OR status=blocked OR status=deferred)' --json
 
-  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
-  post any user-visible summary — the session is already archived and there is no
-  active UI to notify. If nothing needed doing (no obsolete/superseded/uncertain
-  candidates, or every candidate failed a guardrail), just exit silently.
+     `title=` in `bd query` is a CONTAINS match, not exact — treat a result as a
+     match only if its own `title` field is character-for-character identical to
+     `Review possibly-stale beads memories`.
+
+  2. If a match exists, load its full description and comments first:
+
+         bd show <id> --json
+
+     Remove keys already present anywhere in that issue. If no new keys remain,
+     do nothing. Otherwise append one comment instead of creating a duplicate:
+
+         bd comment <id> --stdin
+
+     with only the new keys/one-line reasons.
+
+  3. If no exact match exists, create exactly ONE new issue covering every
+     `uncertain` candidate collected in this run:
+
+         bd create --type task --priority p3 \
+           --title "Review possibly-stale beads memories" \
+           --description "The following memory keys may no longer apply. For each, \
+         run 'bd recall <key>' and either 'bd forget <key>' or keep it:
+         - <key-1>: <one-sentence reason>
+         - <key-2>: <one-sentence reason>"
+
+  The description (and any comment in step 2) lists ONLY keys and one-line reasons
+  — never memory bodies, and never secrets.
+
+  ## 7. Completion
+
+  This is a background clean-up processor with no attached UI — do NOT call
+  `mitto_ui_notify` (it requires a live session and will fail here). If nothing
+  needed doing (no merge/forget/uncertain candidates, or every candidate failed a
+  guardrail), just exit silently — do NOT call any notify tool.
+
+  If you DID call `bd remember --key`, `bd forget`, `bd create`, or `bd comment`,
+  surface it as a workspace-scoped toast (visible to any client currently viewing
+  this workspace) instead of a chat message. Get your own session ID via
+  `mitto_conversation_get_current` first, then:
+
+  {{ if .Workspace.UUID -}}
+  ```
+  mitto_workspace_ui_notify(
+    self_id: "<your session ID, from mitto_conversation_get_current>",
+    workspace_uuid: "{{ .Workspace.UUID }}",
+    title: "Memories curated",
+    message: "<one line: how many merged / how many forgotten / how many flagged for review>",
+    style: "success"
+  )
+  ```
+  {{- else -}}
+  No workspace UUID is available for this run — skip the toast and exit silently
+  even if you made changes.
+  {{- end }}

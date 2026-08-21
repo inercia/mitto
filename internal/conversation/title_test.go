@@ -77,6 +77,54 @@ func TestSessionNeedsTitle_NonExistentSession(t *testing.T) {
 	}
 }
 
+// TestSessionNeedsTitle_FallbackTitleStillNeedsUpgrade reproduces mitto-ee3:
+// after GenerateAndSetTitle's step 1 sets a quick fallback title, Metadata.Name is
+// non-empty but the title is not the real LLM-generated one. The current
+// SessionNeedsTitle only checks meta.Name == "", so it returns false and
+// titleCoordinator.retryIfNeeded short-circuits forever — the fallback title
+// permanently blocks any upgrade even after auxiliary health recovers.
+//
+// This test seeds a session with a fallback-only title (Name set,
+// NameIsFallback=true) and asserts SessionNeedsTitle returns true so that the
+// prompt_complete quiescence path can re-attempt LLM title generation.
+//
+// EXPECTED TO FAIL on current tree (SessionNeedsTitle returns false when Name
+// is set, regardless of NameIsFallback). Will pass after the Fix phase widens
+// the predicate to treat fallback-only titles as needing generation.
+func TestSessionNeedsTitle_FallbackTitleStillNeedsUpgrade(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-fallback"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Simulate GenerateAndSetTitle step 1: quick fallback populates Name and
+	// marks it as a fallback (the marker is the mechanism the Fix phase will
+	// use to distinguish fallback from real titles).
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Name = "Fix the login bug"
+		m.NameIsFallback = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	if !SessionNeedsTitle(store, sessionID) {
+		t.Fatal("mitto-ee3: SessionNeedsTitle should return true for a fallback-only " +
+			"title so retryIfNeeded can upgrade it to the real LLM-generated title. " +
+			"Got false — fallback title permanently blocks the upgrade path.")
+	}
+}
+
 func TestGenerateAndSetTitle_NilStore(t *testing.T) {
 	// Should not panic with nil store
 	GenerateAndSetTitle(TitleGenerationConfig{

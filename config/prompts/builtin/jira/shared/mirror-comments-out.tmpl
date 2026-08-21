@@ -1,0 +1,30 @@
+{{- /*
+  jira/mirror-comments-out — canonical beads → JIRA comment mirroring loop:
+  skip `[jira]`-prefixed (round-trip protection), skip ids already in
+  `metadata.jira_pushed_comments`, post remaining with a `[mitto]` prefix,
+  and extend the metadata list. Extracted per mitto-g61 from push-issue
+  Step 4 and sync-tasks Step 8B, which shipped near-identical copies.
+  The caller supplies the surrounding "load the bead's comments" step and
+  any bead-id substitution around this fragment; the fragment uses the
+  generic `<bead-id>` placeholder throughout.
+*/ -}}
+For each of the bead's comments:
+
+- **Skip** any comment whose body starts with `[jira]` — that comment was mirrored **from** JIRA by the pull side and must not loop back.
+- **Skip** any comment whose id is already listed in `metadata.jira_pushed_comments` (already mirrored on a prior run).
+- Otherwise, post the comment to JIRA prefixed with `[mitto]` so the pull side can recognise the round-trip. Compose the body as `[mitto] <bd-author> @ <bd-created>: <body>`. It will still come back on the next pull as `[jira] <author> @ <time>: [mitto] <body>` and be tracked by `jira_synced_comments` without duplication.
+
+Use **`jira_add_comment`** when MCP tools are available (capture the resulting JIRA comment id if the tool returns it). Otherwise use the **`jira` CLI**:
+
+```bash
+# write the composed body to a temp file, then:
+jira issue comment add <KEY> --body-file /tmp/jira-<key>.push-<comment-id>.md
+```
+
+After all eligible comments for this bead are pushed, extend the metadata list:
+
+```bash
+bd update <bead-id> --set-metadata jira_pushed_comments="<previous ids + new bead-comment ids>"
+```
+
+**Never push** in silent mode when a comment/transition tool errors with a permission or auth failure — record it in the summary and continue instead of retrying (retries against a permission failure just waste API budget).

@@ -181,7 +181,19 @@ server-level and belong to the **folder**, not to any individual workspace:
   active or stored conversations. Folder-native; defaults to `false`; preserved
   across `LoadWorkspaces()`/`SaveWorkspaces()` via `ApplyFolderDefaults` /
   `extractFolderSettings`.
-- `beads` — folder-native beads integration settings (e.g. upstream task system)
+- `beads` — folder-native beads integration settings: `databaseMode` (`local` or
+  `shared`) controls Dolt replication independently from the upstream task system.
+  A missing legacy value is inferred once from the presence of a Dolt remote and
+  persisted, so later native configuration drift cannot silently change policy.
+  `local` reconciles `no-push=true`, `dolt.local-only=true`, and
+  `dolt.auto-push=false`; Mitto-created databases default to local, and local
+  migration never invokes Dolt push/pull, bootstrap, or remote publication.
+  `shared` requires an existing Dolt remote, removes only those three policy
+  guards, and never changes remote definitions. External task synchronization
+  (`beads.upstream`) remains independent from this replication policy. The
+  effective mode is resolved at prompt menu and send time, exposed as
+  `Workspace.BeadsDatabaseMode`, and forwarded to command processors as
+  `database_mode`.
 
 `folders.json` (in `$MITTO_DIR`, keyed by working directory) is the
 **authoritative store** for these values — not merely a deduplication of
@@ -192,9 +204,9 @@ folder-level information always lives in `folders.json`. The split is
 `LoadWorkspaces()` is always fully populated, so no other code
 (`SessionManager`, REST API, frontend) needs to know `folders.json` exists.
 
-| Phase | Function | Behavior |
-| ----- | -------- | -------- |
-| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads the authoritative `folders.json`, and merges folder values into each workspace via `ApplyFolderDefaults`. The folder value **always wins** over any value still on a workspace (collapsing divergent legacy values). |
+| Phase | Function           | Behavior                                                                                                                                                                                                                                                                                             |
+| ----- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Load  | `LoadWorkspaces()` | Reads `workspaces.json`, loads the authoritative `folders.json`, and merges folder values into each workspace via `ApplyFolderDefaults`. The folder value **always wins** over any value still on a workspace (collapsing divergent legacy values).                                                  |
 | Save  | `SaveWorkspaces()` | Calls `extractFolderSettings` to hoist each folder-level field (first non-empty value across the group, divergence collapses) into `folders.json`, merges folder-native fields (`beads`) via `preserveFolderNativeFields`, then writes `folders.json` **first**, then the cleaned `workspaces.json`. |
 
 `folders.json` is written before `workspaces.json` so folder-level values can
@@ -228,7 +240,7 @@ via `ApplyFolderDefaults` after the three-way workspace loading step.
       "color": "#ff5500",
       "group": "development",
       "pinned": true,
-      "beads": { "upstream": "github" }
+      "beads": { "databaseMode": "shared", "upstream": "github" }
     }
   }
 }

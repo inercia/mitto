@@ -4,12 +4,20 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/logging"
 )
+
+// ErrSessionNotStarted is returned by Recorder.recordEvent/RecordEventWithSeq
+// when an event is recorded after the recorder has been stopped/suspended (or
+// before it started). It is a sentinel (mirroring ErrSessionNotFound) so
+// callers can classify it with errors.Is instead of matching on the error
+// string (mitto-hk6k).
+var ErrSessionNotStarted = errors.New("session not started")
 
 // MaxMetaBytes is the maximum allowed size (in bytes) of a JSON-encoded event
 // metadata bag. If the bag exceeds this cap, it is dropped in its entirety
@@ -219,44 +227,63 @@ func (r *Recorder) Resume() error {
 
 // RecordUserPrompt records a user prompt event.
 func (r *Recorder) RecordUserPrompt(message string, opts ...RecordOption) error {
-	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0, opts...)
+	return r.RecordUserPromptComplete(message, nil, nil, "", "", 0, nil, opts...)
 }
 
 // RecordUserPromptWithImages records a user prompt event with optional image references.
 func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef, opts ...RecordOption) error {
-	return r.RecordUserPromptComplete(message, images, nil, "", "", 0, opts...)
+	return r.RecordUserPromptComplete(message, images, nil, "", "", 0, nil, opts...)
 }
 
 // RecordUserPromptComplete records a user prompt event with optional image/file references, prompt ID, prompt name, and argument count.
 // The promptID is a client-generated ID used for delivery confirmation on reconnect.
 // The promptName is the name of the workspace prompt used (for UI rendering); empty string means no named prompt.
 // The argumentCount is the number of Go-template .Args values supplied; 0 means no arguments (ad-hoc or no-arg named prompt).
-func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
+// The arguments map holds the raw (exactly replayable) .Args values for named prompts, with any
+// sensitive-named keys already omitted by the caller; nil/empty means nothing to persist.
+func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, arguments map[string]string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount, Arguments: arguments},
 	}, opts))
 }
 
 // RecordUserPromptCompleteWithSeq records a user prompt event with a pre-assigned sequence number.
 // The seq must have been obtained from getNextSeq() so that user-prompt persistence shares the
 // same monotonic counter as the streaming path and avoids duplicate / out-of-order seq numbers.
-func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
+func (r *Recorder) RecordUserPromptCompleteWithSeq(seq int64, message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, arguments map[string]string, opts ...RecordOption) error {
 	return r.RecordEventWithSeq(applyOptions(Event{
 		Seq:       seq,
 		Type:      EventTypeUserPrompt,
 		Timestamp: time.Now(),
-		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount},
+		Data:      UserPromptData{Message: message, Images: images, Files: files, PromptID: promptID, PromptName: promptName, ArgumentCount: argumentCount, Arguments: arguments},
+	}, opts))
+}
+
+// RecordUserPromptDataWithSeq records a user prompt event from a complete,
+// pre-built UserPromptData (mitto-rg79). Unlike RecordUserPromptCompleteWithSeq,
+// this accepts the full typed struct directly (including optional Provenance)
+// instead of exploding it into positional parameters, so new UserPromptData
+// fields don't require new recorder method signatures. The seq must have been
+// obtained from getNextSeq(), same as RecordUserPromptCompleteWithSeq.
+func (r *Recorder) RecordUserPromptDataWithSeq(seq int64, data UserPromptData, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
+		Type:      EventTypeUserPrompt,
+		Timestamp: time.Now(),
+		Data:      data,
 	}, opts))
 }
 
 // RecordAgentMessage records an agent message event.
-func (r *Recorder) RecordAgentMessage(text string, opts ...RecordOption) error {
+// markdown is the raw pre-conversion markdown for this message, when available
+// (mitto-pscc.3); pass "" if unknown.
+func (r *Recorder) RecordAgentMessage(text, markdown string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeAgentMessage,
 		Timestamp: time.Now(),
-		Data:      AgentMessageData{Text: text},
+		Data:      AgentMessageData{Text: text, Markdown: markdown},
 	}, opts))
 }
 
@@ -310,6 +337,23 @@ func (r *Recorder) RecordPlan(entries []PlanEntry, opts ...RecordOption) error {
 // RecordPermission records a permission event.
 func (r *Recorder) RecordPermission(title, selectedOption, outcome string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
+		Type:      EventTypePermission,
+		Timestamp: time.Now(),
+		Data: PermissionData{
+			Title:          title,
+			SelectedOption: selectedOption,
+			Outcome:        outcome,
+		},
+	}, opts))
+}
+
+// RecordPermissionWithSeq records a permission decision with a pre-assigned
+// sequence number obtained from getNextSeq(), so the event shares the same
+// monotonic counter as concurrent streamed events instead of taking an
+// independently-computed seq from Store.AppendEvent (mitto-t7xv).
+func (r *Recorder) RecordPermissionWithSeq(seq int64, title, selectedOption, outcome string, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
 		Type:      EventTypePermission,
 		Timestamp: time.Now(),
 		Data: PermissionData{
@@ -427,7 +471,7 @@ func (r *Recorder) recordEvent(event Event) error {
 	defer r.mu.Unlock()
 
 	if !r.started {
-		return fmt.Errorf("session not started")
+		return ErrSessionNotStarted
 	}
 
 	if err := r.store.AppendEvent(r.sessionID, event); err != nil {
@@ -456,7 +500,7 @@ func (r *Recorder) RecordEventWithSeq(event Event) error {
 	defer r.mu.Unlock()
 
 	if !r.started {
-		return fmt.Errorf("session not started")
+		return ErrSessionNotStarted
 	}
 
 	if err := r.store.RecordEvent(r.sessionID, event); err != nil {
@@ -537,6 +581,24 @@ func (r *Recorder) RecordSessionChangeWithSeq(seq int64, data SessionChangeData,
 // This creates an audit trail of user decisions made through the UI prompt system.
 func (r *Recorder) RecordUIPromptAnswer(requestID, optionID, label string, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
+		Type:      EventTypeUIPromptAnswer,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"request_id": requestID,
+			"option_id":  optionID,
+			"label":      label,
+		},
+	}, opts))
+}
+
+// RecordUIPromptAnswerWithSeq records a user's response to a UI prompt with a
+// pre-assigned sequence number obtained from getNextSeq(), so the event
+// participates in the same monotonic ordering as concurrent streamed events
+// instead of taking an independently-computed seq from Store.AppendEvent
+// (mitto-t7xv).
+func (r *Recorder) RecordUIPromptAnswerWithSeq(seq int64, requestID, optionID, label string, opts ...RecordOption) error {
+	return r.RecordEventWithSeq(applyOptions(Event{
+		Seq:       seq,
 		Type:      EventTypeUIPromptAnswer,
 		Timestamp: time.Now(),
 		Data: map[string]interface{}{

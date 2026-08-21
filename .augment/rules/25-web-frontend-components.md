@@ -47,11 +47,12 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `QueueDropdown`     | Queued messages panel                         |
 | `Message`           | User/agent/tool/error messages                |
 | `SettingsDialog`    | Settings modal                                |
-| `SessionPanel`      | Unified overlay (Changes + Properties tabs)   |
+| `SessionPanel`      | Properties/Changes/Loop/Advanced overlay      |
 | `ContextMenu`       | Right-click menu with viewport-aware position |
 | `SessionItem`       | List item with swipe, menu, status            |
 | `Toolbar`           | Config-driven action bar (see below)          |
 | `ShortcutsEditor`   | Global+folder shortcut button config panel    |
+| `TaskLabelColorsEditor` | Ordered global task label/title-color panel |
 
 ## ChatInput
 
@@ -91,6 +92,8 @@ Used in `BeadsView.js` list actions and issue-detail header — prefer over ad-h
 
 **ShortcutsEditor** (`ShortcutsEditor.js`) — one panel reused for both **global** (Settings dialog) and **folder** (Workspaces dialog) shortcut config. Consumers (conversations/beadsIssue/tasksList toolbars) merge global + folder shortcuts at render: global first, folder duplicates of a global `prompt` dropped; leftover duplicates render greyed-out via `redundantPromptNames`. Backend mirror: `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`); type `config.ShortcutButton{Icon, Prompt}`. Refresh via `mitto:global_shortcuts_updated`/`mitto:folder_shortcuts_updated` window events. See `08-config.md` for backend details.
 
+**TaskLabelColorsEditor** (`TaskLabelColorsEditor.js`) — ordered global label/color rows in Settings → Tasks, using the same fieldset/join and add/move/remove controls as `ShortcutsEditor` plus native color and hex inputs. List transforms live in `utils/taskLabelColors.js`. Consumers must derive the first exact label match at render time and listen for `mitto:task_label_colors_updated`; never store a color on an issue.
+
 ## Icons
 
 Naming: `[Name]Icon` (e.g., `TrashIcon`, `QueueIcon`). Always `CloseIcon` SVG, never `✕`. Sizes: `w-4 h-4` (toasts), `w-5 h-5` (dialogs).
@@ -108,7 +111,14 @@ function badge(label, className = "") {
 
 ## Side Panel Overlay Pattern
 
-`SessionPanel`: unified tabbed panel (Changes/Properties/User Data). Parent manages open/close. Changes: `GET /api/sessions/{id}/changes` with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` (150ms).
+`SessionPanel`: unified radio-tab panel with Properties, Changes, conditional Loop, and Advanced tabs. Parent manages open/close and the requested tab. Changes uses `GET /api/sessions/{id}/changes` with status badges (A=green, M=amber, D=red). Animation: `isClosing`/`shouldRender` (150ms). If a selected Loop tab becomes unavailable after detach or conversation switch, fall back to Properties.
+
+Loop UI ownership is split intentionally:
+
+- `LoopControlBar` stays compact in `ChatInput`; its settings gear calls the parent `onOpenLoopSettings` callback to open `SessionPanel` on Loop. Never reintroduce an expandable inline editor or `loop-expand-toggle`.
+- `LoopSettingsTab` owns the staged common settings and the canonical automatic/lifecycle trigger list: `schedule`, `onCompletion`, `onTasks`, `onChild`. A save replaces the full list, keeps that canonical order, preserves unknown future triggers, and enforces that `onChild` is not the sole trigger.
+- `CallbackTriggerSection` is the separate **External callback** card after the four trigger cards. It owns `callback.json` CRUD and paused-loop presentation. It is never included in `triggers`, `child_events`, or the loop PATCH, and it does not belong in Advanced.
+- Complete `loop_updated` payloads synchronize the open tab and compact bar. Guard session switches and stale fetches with session IDs/version refs rather than allowing an older GET to overwrite a newer event.
 
 ## useToast Hook
 
@@ -123,8 +133,8 @@ Durations: info/success=5s, warning=10s. `error` toasts NEVER auto-dismiss — t
 
 ## useResizeHandle / useSwipeNavigation
 
-- `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key)
-- `useSwipeNavigation`: swipe left/right with threshold, 500ms window
+- `useResizeHandle`: drag to resize. ChatInput uses two instances (QueueDropdown + textarea; max-height in `mitto_ui_textarea_max_height` key).
+- `useSwipeNavigation`: swipe left/right with threshold, 500ms window. **Two independent swipe-nav entry points exist — any fix must land in BOTH**: touch/mobile via `isInsideHorizontallyScrollable()` in `hooks/useSwipeNavigation.js`, and macOS trackpad via `isOverHorizontallyScrollable()` in `utils/globalHandlers.js` (called from `menu_darwin.m` → `window.mittoNextConversation()`). Both guards use the `overflow-x` + `scrollWidth > clientWidth` heuristic, which is false for non-overflowing strips (and jsdom reports both as 0). For regions that must absorb horizontal swipes even when not overflowing (e.g. `.mitto-carousel` in `ChatInput.js`), set `data-mitto-no-swipe` on the container — both guards short-circuit on it in the ancestor walk.
 
 ## daisyUI Tabs (Radio-based + State-Driven)
 

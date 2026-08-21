@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // setupDeferredConfigServer creates a test server whose mock ACP process records the
@@ -142,7 +142,7 @@ func deferAndAssertMidTurn(t *testing.T, ts *TestServer, orderFile, sessionID, c
 func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, wantValue string, confirm func(t *testing.T, bs *conversation.BackgroundSession)) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "deferred-" + configID})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "deferred-" + configID})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -151,7 +151,7 @@ func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, want
 	var mu sync.Mutex
 	var completes int
 	var errs []string
-	cb := client.SessionCallbacks{
+	cb := api.SessionCallbacks{
 		OnPromptComplete: func(int) { mu.Lock(); completes++; mu.Unlock() },
 		OnError:          func(m string) { mu.Lock(); errs = append(errs, m); mu.Unlock() },
 	}
@@ -200,11 +200,13 @@ func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, want
 
 // TestDeferredModelConfig_FlushesBeforeQueuedPrompt verifies that a model change made
 // while the agent is prompting is deferred (no mid-turn RPC, turn not cancelled),
-// reflected optimistically, and flushed via session/set_config_option BEFORE the next
+// reflected optimistically, and flushed via session/set_model BEFORE the next
 // queued prompt — applying only the last-write-wins value. The RPC label matches the
-// v0.13.5 wire method ("set_config_option"); the mock records it that way.
+// ACP 0.13 primary wire method ("set_model", mitto-vd5); the mock records it that
+// way. The pre-0.13 legacy path ("set_config_option") is exercised separately in
+// TestSetSessionModel_LegacyFallback_PreSchema013.
 func TestDeferredModelConfig_FlushesBeforeQueuedPrompt(t *testing.T) {
-	runDeferredConfigTest(t, "model", "set_config_option", "claude-opus-4-6", "claude-haiku-4-5",
+	runDeferredConfigTest(t, "model", "set_model", "claude-opus-4-6", "claude-haiku-4-5",
 		func(t *testing.T, bs *conversation.BackgroundSession) {
 			waitFor(t, 10*time.Second, func() bool {
 				am := bs.AgentModels()

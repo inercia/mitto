@@ -1,0 +1,75 @@
+{{- /*
+  github/shared/pr-rebase-if-behind — rebase a PR branch onto its base in a
+  temporary worktree, force-push with --force-with-lease on success, or
+  notify (and optionally spawn a rebase-conflict child) on failure.
+
+  Callers: babysit-this-pr §3a, babysit-my-prs §3a.
+
+  Placeholders substituted by the agent from the surrounding context:
+    <number>       — the PR number
+    <owner>/<repo> — the target repository
+    <headRefName>  — the PR's branch
+    <baseRefName>  — the PR's base branch
+    <title>        — the PR title
+
+  Interaction mode: callers already established interactive vs silent mode.
+  This fragment refers to that mode in shorthand.
+*/ -}}
+Check whether the PR branch is behind its base and cannot cleanly merge:
+
+```bash
+gh pr view <number> --repo <owner>/<repo> --json mergeStateStatus,mergeable,baseRefName,headRefName
+```
+
+If the PR is behind and needs a rebase:
+
+- **Interactive mode**: ask before rebasing (offer "Yes, rebase", "Skip",
+  "Spawn a conversation to handle it").
+- **Silent mode**: `mitto_ui_notify` (`info`) that a rebase is starting and
+  proceed automatically.
+
+Do the rebase inside a **temporary worktree** — never mutate the user's main
+checkout. Run the git commands inside a local checkout of `<owner>/<repo>`
+(the current folder if it is that repo, otherwise the temp clone from
+Step 1):
+
+```bash
+git fetch origin <baseRefName> <headRefName>
+TMPDIR=$(mktemp -d)
+git worktree add "$TMPDIR" origin/<headRefName> --detach
+cd "$TMPDIR" && git rebase origin/<baseRefName>
+```
+
+**On conflicts**:
+
+```bash
+git rebase --abort
+cd - && git worktree remove "$TMPDIR" --force
+```
+
+Then `mitto_ui_notify` (`warning`, `sound: true`, `native: true`) that manual
+rebase is needed. If `mitto_conversation_new` is available and no dedup match
+exists, spawn a one-off rebase-conflict child:
+
+```
+mitto_conversation_new(self_id: "{{ .Session.ID }}",
+  title: "Rebase PR #<number>: <title>",
+  initial_prompt: "PR #<number> (<title>) in <owner>/<repo> needs rebasing onto <baseRefName> but has conflicts.
+    Check out branch <headRefName>, rebase onto origin/<baseRefName>,
+    resolve the conflicts, and force-push with --force-with-lease.
+    Never touch the main checkout at <repo path> — use a fresh worktree.",
+  acp_server: <prefer "coding" or "fast" tagged server>)
+```
+
+Then skip to the next step (or the next PR in a multi-PR loop).
+
+**On success**:
+
+```bash
+git push --force-with-lease origin HEAD:refs/heads/<headRefName>
+cd - && git worktree remove "$TMPDIR" --force
+```
+
+Then `mitto_ui_notify` (`success`) that the PR was rebased.
+
+If the PR is already up-to-date on its base, this step is **not actionable**.

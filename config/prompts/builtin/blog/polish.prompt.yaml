@@ -1,0 +1,178 @@
+icon: sparkles
+name: 'Blog: polish'
+menus: beadsIssues, prompts
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The bead whose blog draft to polish
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post files live (repo-relative)
+  - name: Mode
+    type: text
+    default: General
+    required: false
+    description: Kind of polish to apply
+    options:
+      - General
+      - Concise
+      - Expand
+      - Technical
+      - Sharpen opening
+      - Fluent
+description: Blog -- polish a `blog`/`draft` post file with one of six focus modes (General, Concise, Expand, Technical, Sharpen opening, Fluent); rewrites the file in place and updates labels
+backgroundColor: '#C8E6C9'
+group: Blog
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
+target:
+  reuse:
+    issue: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "_shared/session-context" . }}
+
+  # Blog: Polish -- rewrite a draft post in place with a focused pass
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this polish pass"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
+
+  This prompt takes a `blog`/`draft`-labelled bead, loads the post file it
+  points at, and rewrites it **in place** with a single focused polish pass.
+  Unlike `content-review` (diagnostic) or `fact-check` (verification), this
+  prompt actually edits the draft. The kind of polish is controlled by the
+  `Mode` parameter, so a caller can invoke this prompt multiple times with
+  different modes and each run applies exactly one focused pass.
+
+  ## Step 1 -- Locate the post file
+
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+
+  ## Step 2 -- Load the drafting voice
+
+  Bring the standard drafting voice into the working context so the polish
+  pass measures the rewrite against the same yardstick the ideation prompt
+  used:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "audience"
+             "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "tone"
+             "DefaultText" "Direct, slightly informal, opinionated where the argument warrants it. No marketing filler; no needless hedging.") }}
+
+  ## Step 3 -- Acknowledge the requested mode
+
+  Applying **{{ .Args.Mode }}** polish on this pass. Do not dispatch a
+  `mitto_ui_options` menu -- the mode has already been chosen via the
+  parameter dropdown.
+
+  ## Step 4 -- Read the draft
+
+  ```bash
+  cat "$post_abs"
+  ```
+
+  ## Step 5 -- Mode-specific focus
+
+  {{- if eq .Args.Mode "General" }}
+  **General polish.** Focus on overall clarity and tightness: remove filler,
+  fix awkward phrasing, smooth ragged transitions, and correct any obvious
+  errors -- but keep the structure and argument intact. This is the default
+  when the caller has not chosen a more specialised pass.
+  {{- else if eq .Args.Mode "Concise" }}
+  **Concise polish.** Cut ruthlessly: aim to drop 20-40% of the words while
+  preserving every distinct claim. Kill hedges ("perhaps", "arguably",
+  "somewhat"), collapse redundant restatements, and prefer one strong verb
+  over an adverbial pile-up. Do not sacrifice a load-bearing example or
+  citation just to hit a word count.
+  {{- else if eq .Args.Mode "Expand" }}
+  **Expand polish.** Identify sections that are too brisk -- single-sentence
+  explanations of load-bearing ideas, hand-wavy claims that would benefit
+  from an example, or transitions that skip a step in the argument -- and
+  expand them with a concrete example, a diagram-worthy description, or a
+  code snippet where applicable. Do **not** pad passages that are already
+  earning their length; expansion must add signal, not volume.
+  {{- else if eq .Args.Mode "Technical" }}
+  **Technical polish.** Sharpen technical precision: replace vague verbs
+  (`handles`, `manages`, `does`, `deals with`) with specific ones; add
+  missing type/interface/function names where the referent is ambiguous;
+  convert wishy-washy performance claims ("much faster", "significantly
+  better") into concrete numbers with units, or explicit caveats when the
+  numbers are not available. Fix any code fences whose language tag is
+  wrong or missing.
+  {{- else if eq .Args.Mode "Sharpen opening" }}
+  **Sharpen opening polish.** Rewrite **only** the first two paragraphs of
+  the post -- the reader must know within the first paragraph what the post
+  argues and why they should keep reading. Cut any preamble that delays the
+  thesis. Do **not** touch the rest of the post on this pass; if you spot
+  other issues, note them for a later run rather than editing them.
+  {{- else if eq .Args.Mode "Fluent" }}
+  **Fluent polish.** Improve sentence-to-sentence rhythm and paragraph
+  transitions: vary sentence length, smooth abrupt topic shifts, and add
+  connective phrasing where one paragraph starts a new thought without
+  linking back to the previous. Do **not** touch content shape, claims,
+  or structure on this pass -- fluent polish is purely about the reading
+  cadence.
+  {{- else }}
+  **Unknown mode `{{ .Args.Mode }}`.** Fall back to a general polish pass:
+  focus on overall clarity and tightness without changing the structure or
+  argument. Note the unknown mode in the finish comment so the caller can
+  correct the invocation.
+  {{- end }}
+
+  ## Step 6 -- Rewrite the file in place
+
+  Apply the polish pass by overwriting `$post_abs` with the polished version.
+  Do this **in place** -- no new file, no `.bak`, no scratch copy in `/tmp`.
+  The git working tree is the audit trail; leave a clean diff:
+
+  ```bash
+  # After writing the polished draft to $post_abs:
+  git diff --stat "$post_abs"
+  git diff "$post_abs" | head -200
+  ```
+
+  If the diff is empty (the mode's target axis was already met), that is a
+  valid outcome -- record it in the finish comment rather than inventing
+  edits.
+
+  ## Step 7 -- Update labels
+
+  Judge the outcome against the mode's target axis:
+
+  - **Confident finish** -- the target axis is genuinely met and no other
+    issues surfaced during the pass:
+    ```bash
+    bd update {{ $target }} --remove-label needs-polish
+    # Auto-graduate to ready when no other needs-* labels remain:
+    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' 2>/dev/null | grep -c '^needs-' || true)
+    if [ "$remaining" = "0" ]; then
+      bd update {{ $target }} --add-label ready
+    fi
+    ```
+  - **Unfinished** -- more work of this kind (or a different mode) is
+    needed:
+    ```bash
+    bd update {{ $target }} --add-label needs-polish
+    bd update {{ $target }} --remove-label ready
+    ```
+    Comment on the bead explaining what remains and, if useful, which
+    `Mode` a follow-up run should use.
+
+  ## Step 8 -- Notify
+
+  Report via `mitto_ui_notify_mitto` -- title `"Polish complete"`, message
+  `"{{ $target }} - {{ .Args.Mode }} - <one-line summary of what changed>"`.

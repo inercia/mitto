@@ -38,6 +38,28 @@ func BuildMittoEnv(sessionID, workingDir, acpServer, workspaceUUID string) map[s
 	return env
 }
 
+// BuildAgentHintEnv returns a map of "agent hint" environment variables that
+// announce agent presence to shells the ACP subprocess later spawns for tool
+// use (Bash tool, run_command, hooks, …). Common shell rc snippets use
+// AGENT_MODE (and vendor-specific sentinels like AUGMENT_AGENT) to skip heavy
+// interactive plugins so agent-issued shell invocations stay fast and quiet.
+//
+// These are Mitto-authored but user-overridable: BuildACPProcessEnv layers
+// them below serverEnv, so a user can set e.g. AGENT_MODE="" in settings.json
+// acp_servers[].env to disable them per-server. This is intentionally distinct
+// from BuildMittoEnv (MITTO_* identity vars) which stays at the highest
+// precedence layer and must not be spoofed.
+//
+// Currently emits AGENT_MODE=1 unconditionally. AUGMENT_AGENT and other
+// agent-specific hints may be added later once acpServer is reliably plumbed
+// to every call site (today several callers pass empty acpServer).
+func BuildAgentHintEnv(acpServer string) map[string]string {
+	_ = acpServer // reserved for future per-agent hints (e.g. AUGMENT_AGENT)
+	return map[string]string{
+		"AGENT_MODE": "1",
+	}
+}
+
 // ExpandCommand expands $MITTO_* and ${MITTO_*} references in a command string.
 // Non-MITTO variables (e.g. $HOME) are left untouched as literal "$KEY" strings.
 // MITTO_* variables not present in mittoEnv are expanded to empty string.

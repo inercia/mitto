@@ -17,23 +17,38 @@ import (
 	builtinConfig "github.com/inercia/mitto/config"
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
+	"github.com/inercia/mitto/internal/cel"
+	"github.com/inercia/mitto/internal/coldstart"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
+	"github.com/inercia/mitto/internal/instancefile"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
+	"github.com/inercia/mitto/internal/prompts"
+	"github.com/inercia/mitto/internal/rememberedargs"
+	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/slackbridge"
+	"github.com/inercia/mitto/internal/slackcatalog"
+	"github.com/inercia/mitto/internal/stats"
 	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
 	mittoWeb "github.com/inercia/mitto/web"
+)
+
+const (
+	webReadHeaderTimeout = 10 * time.Second
+	webMaxHeaderBytes    = 1 << 20 // 1 MiB
 )
 
 // Config holds the web server configuration.
@@ -81,6 +96,12 @@ type Config struct {
 	// If Path is empty, access logging is disabled.
 	AccessLog AccessLogConfig
 
+	// EnablePProf registers the net/http/pprof debug endpoints (/debug/pprof/*)
+	// on the mux. Off by default (mitto-aek); resolve via configPkg.PProfEnabled
+	// before constructing Config so CLI flag / env var / settings.json
+	// precedence is applied consistently across entry points.
+	EnablePProf bool
+
 	// DisableAuxiliaryPrewarm disables auxiliary session pre-warming on process creation.
 	// Used in tests to avoid interference with mock ACP servers.
 	DisableAuxiliaryPrewarm bool
@@ -88,6 +109,16 @@ type Config struct {
 	// Logger overrides the default logger (logging.Web()). When nil, the global
 	// web logger is used. Primarily used by tests to capture log output.
 	Logger *slog.Logger
+
+	// SharedTokenFromInstanceFile reports whether MittoConfig.Web.Auth.SharedToken
+	// (if any) was adopted from instance.json rather than configured explicitly
+	// by the operator (MITTO_SHARED_TOKEN, settings.json, or the keychain).
+	// Set by the caller (internal/cmd/web.go, cmd/mitto-app/main.go) BEFORE
+	// constructing the server, since the adoption decision needs to happen
+	// before NewServer builds the AuthManager from MittoConfig.Web.Auth
+	// (mitto-pscc.9). Gates whether POST /api/auth/rotate-token will rotate
+	// the token (only instance.json-sourced tokens are rotatable this way).
+	SharedTokenFromInstanceFile bool
 }
 
 // GetWorkspaces returns the effective list of workspaces.
@@ -160,13 +191,20 @@ type Server struct {
 	// Auth manager for handling authentication (nil if auth is disabled)
 	authManager *middleware.AuthManager
 
+	// sharedTokenFromInstanceFile mirrors Config.SharedTokenFromInstanceFile
+	// (mitto-pscc.9): whether the active shared token was adopted from
+	// instance.json (rotatable via POST /api/auth/rotate-token) rather than
+	// operator-configured (not rotatable this way). See rotateSharedToken.
+	sharedTokenFromInstanceFile bool
+
 	// CSRF manager for protecting state-changing requests
 	csrfManager *middleware.CSRFManager
 
 	// Security components
-	rateLimiter      *middleware.GeneralRateLimiter
-	wsSecurityConfig middleware.WebSocketSecurityConfig
-	proxyChecker     *middleware.TrustedProxyChecker
+	rateLimiter         *middleware.GeneralRateLimiter
+	wsSecurityConfig    middleware.WebSocketSecurityConfig
+	wsConnectionLimiter *wsConnectionLimiter
+	proxyChecker        *middleware.TrustedProxyChecker
 
 	// External access listener management
 	externalListener   net.Listener
@@ -179,6 +217,16 @@ type Server struct {
 
 	// Loop runner for scheduled prompt delivery
 	loopRunner *conversation.LoopRunner
+
+	// slackManager pools production Socket Mode connections by app profile.
+	slackManager  *slackbridge.Manager
+	slackBridgeMu sync.Mutex
+
+	// slackBridgeCancel stops the experimental Slack event source
+	// (internal/slackbridge, mitto-qewp PoC), when configured via env vars.
+	// Nil when the feature is disabled (the common case).
+	slackBridgeCancel context.CancelFunc
+	slackBridgeDone   <-chan struct{}
 
 	// Callback index for mapping callback tokens to session IDs
 	callbackIndex       *conversation.CallbackIndex
@@ -274,7 +322,51 @@ type Server struct {
 	// apiHandlers holds the REST handlers extracted into the internal/web/handlers
 	// sub-package. Routing stays in server.go; the actual handler logic lives there.
 	apiHandlers *handlers.Handlers
+
+	// rememberedArgs persists per-workspace prompt-argument values so that
+	// arguments declared `remember: folder` pre-fill the next time the prompt
+	// dialog opens for the same workspace (mitto-x8v). Nil when the appdir
+	// helper failed to resolve at startup; callers treat that as inert.
+	rememberedArgs *rememberedargs.Store
+
+	// Dashboard time-series stats subsystem (mitto-a86b). statsStore is the
+	// underlying persistence (SQLite in production, Noop when disabled or
+	// when Open fails during startup); statsAggregator batches live events
+	// via the SessionManager observer wiring; statsBackfiller replays
+	// events.jsonl on startup and every 6h to repair drift and rebuild
+	// stats on estimator-version bumps. All three are nil when the
+	// subsystem was not wired (test / CLI paths).
+	statsStore      stats.Store
+	statsAggregator stats.Aggregator
+	statsBackfiller stats.Backfiller
+	// statsBeadsSource (mitto-5rm6.3) periodically re-derives the beads_*
+	// throughput/cycle-time metrics from `bd list` snapshots, independently
+	// of statsBackfiller/statsAggregator (beads are state, not an event
+	// stream — see internal/stats/beads_source.go's package doc). Nil when
+	// the stats subsystem was not wired.
+	statsBeadsSource *stats.BeadsSource
+	// statsRetention (mitto-a86b.9) runs the nightly prune + weekly Sunday
+	// VACUUM against statsStore. Nil when the subsystem was not wired.
+	statsRetention *stats.RetentionWorker
+	// statsUptime (mitto-c45m) periodically records how many seconds the
+	// server process was alive, feeding statsBeadsSource's active-cycle
+	// fold. Nil when the stats subsystem was not wired.
+	statsUptime *stats.UptimeRecorder
+
+	// goroutineGaugeStop cancels the periodic goroutine gauge (mitto-x3x)
+	// started in NewServer. Nil when the gauge was not started (test /
+	// MITTO_TEST_MODE paths, matching the ACP process GC gating above).
+	goroutineGaugeStop func()
 }
+
+type serverLegacySlackController struct {
+	server *Server
+	cfg    slackbridge.Config
+}
+
+func (c *serverLegacySlackController) Active() bool { return c.server.legacySlackBridgeActive() }
+func (c *serverLegacySlackController) Start() error { return c.server.startLegacySlackBridge(c.cfg) }
+func (c *serverLegacySlackController) Stop() bool   { return c.server.stopLegacySlackBridge() }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
 // This is used by the frontend to construct API URLs.
@@ -443,6 +535,19 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
+	// Start the periodic goroutine gauge (mitto-x3x) under the same gating as
+	// the ACP process GC above, so tests and MITTO_TEST_MODE runs do not gain
+	// a background ticker that would shift the documented ~18-goroutine fixed
+	// baseline (docs/devel/web-interface.md "Triaging goroutine counts").
+	// coldstart.Contention()'s per-category providers (prompting, live ACP,
+	// connected WS clients, open MCP SSE streams) are registered by the
+	// session manager and MCP server constructors above/below, independent of
+	// this gauge's own start/stop.
+	var goroutineGaugeStop func()
+	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
+		goroutineGaugeStop = coldstart.StartGauge(context.Background(), logger, 0)
+	}
+
 	// Set global conversations config for message processing
 	if config.MittoConfig != nil {
 		sessionMgr.SetGlobalConversations(config.MittoConfig.Conversations)
@@ -521,7 +626,10 @@ func NewServer(config Config) (*Server, error) {
 	// Initialize trusted proxy checker
 	var proxyChecker *middleware.TrustedProxyChecker
 	if securityCfg != nil && len(securityCfg.TrustedProxies) > 0 {
-		proxyChecker = middleware.NewTrustedProxyChecker(securityCfg.TrustedProxies)
+		proxyChecker = middleware.NewTrustedProxyChecker(
+			securityCfg.TrustedProxies,
+			securityCfg.TrustedProxyHeaders...,
+		)
 		middleware.SetDefaultProxyChecker(proxyChecker)
 		logger.Info("Trusted proxies configured", "count", len(securityCfg.TrustedProxies))
 	}
@@ -549,6 +657,14 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	// Initialize REST CORS config from the same allowlist used for WebSocket
+	// origins (mitto-7gta.27) — one allowlist governs cross-origin browser
+	// access for both transports. Empty by default: no CORS headers emitted.
+	corsConfig := middleware.DefaultCORSConfig()
+	if securityCfg != nil && len(securityCfg.AllowedOrigins) > 0 {
+		corsConfig.AllowedOrigins = securityCfg.AllowedOrigins
+	}
+
 	// Initialize CSRF manager
 	csrfMgr := middleware.NewCSRFManager()
 
@@ -559,6 +675,14 @@ func NewServer(config Config) (*Server, error) {
 
 	// Set API prefix on CSRF manager for exempt path matching
 	csrfMgr.SetAPIPrefix(apiPrefix)
+
+	// Let CSRF exempt requests carrying a valid shared bearer token (mitto-7gta.26).
+	// CSRF wraps OUTSIDE auth (see the handler chain below), so it cannot read an
+	// auth decision from context; ValidateBearerRequest lets it validate the token
+	// independently instead of merely detecting the Authorization header.
+	if authMgr != nil {
+		csrfMgr.SetTokenAuthChecker(authMgr.ValidateBearerRequest)
+	}
 
 	// Initialize access logger (nil if disabled)
 	var accessLogger *AccessLogger
@@ -587,6 +711,27 @@ func NewServer(config Config) (*Server, error) {
 		auxiliaryManager.MCPToolsPersistDir = mcpCacheDir
 	} else {
 		logger.Warn("mcp tools persistence disabled: cannot resolve cache dir", "error", cerr)
+	}
+
+	// Broadcast prompts_changed after an async MCP tools re-verify triggered
+	// by a suspect persisted snapshot (mitto-dza, Fix 4). This lets
+	// `enabledWhen` tool-gates re-evaluate against the freshly loaded LLM-only
+	// tools within seconds of a restart, instead of waiting for the TTL to
+	// expire. Uses the same broadcast surface as the event-driven watcher
+	// (WSMsgTypePromptsChanged).
+	auxiliaryManager.MCPToolsRefreshedHook = func(workspaceUUID string) {
+		if eventsManager == nil {
+			return
+		}
+		eventsManager.Broadcast(WSMsgTypePromptsChanged, map[string]interface{}{
+			"changed_dirs": []string{},
+			"timestamp":    time.Now().UTC().Format(time.RFC3339),
+			"reason":       "mcp_tools_reverified",
+		})
+		if logger != nil {
+			logger.Debug("Broadcasted prompts_changed after mcp tools async re-verify",
+				"workspace_uuid", workspaceUUID)
+		}
 	}
 
 	// Wire deterministic MCP tool discovery (mitto-sys.2/mitto-sys.3/mitto-sys.6):
@@ -659,7 +804,7 @@ func NewServer(config Config) (*Server, error) {
 		// hardcoded stderrCrashPatterns baseline in internal/conversation still
 		// applies unconditionally — this only adds per-agent extensions.
 		stderrCache := newStderrPatternsCache()
-		compileFor := func(acpServer string) *conversation.CompiledStderrPatterns {
+		compileFor := func(acpServer string) *procstart.CompiledStderrPatterns {
 			if acpServer == "" {
 				return nil
 			}
@@ -678,17 +823,52 @@ func NewServer(config Config) (*Server, error) {
 				stderrCache.put(acpServer, nil)
 				return nil
 			}
-			spec := conversation.StderrPatternsSpec{
+			spec := procstart.StderrPatternsSpec{
 				Crash:    agent.Metadata.StderrPatterns.Crash,
 				Ignore:   agent.Metadata.StderrPatterns.Ignore,
 				Degraded: agent.Metadata.StderrPatterns.Degraded,
 			}
-			compiled := conversation.CompileStderrPatterns(spec, logger)
+			compiled := procstart.CompileStderrPatterns(spec, logger)
 			stderrCache.put(acpServer, compiled)
 			return compiled
 		}
 		acpProcessMgr.StderrPatternsResolver = compileFor
 		sessionMgr.SetStderrPatternsResolver(compileFor)
+
+		// Wire per-agent default env resolver (mitto-6dur). Given an ACP server
+		// name it resolves the ACP server → agent metadata → Defaults.Env, so
+		// metadata-declared defaults (e.g. NODE_OPTIONS=--max-old-space-size=N)
+		// reach spawned ACP subprocesses even when settings.json
+		// acp_servers[].env is empty (servers confirmed before mitto-qphs, or
+		// added without dir_name). Results are cached per ACP server name so
+		// GetOrCreateProcess does not re-parse metadata.yaml on every call. An
+		// explicit acp_servers[].env entry still overrides the agent default
+		// (procstart.BuildACPProcessEnv layers it below Env).
+		agentDefaultEnvCache := newAgentDefaultEnvCache()
+		resolveAgentDefaultEnv := func(acpServer string) map[string]string {
+			if acpServer == "" {
+				return nil
+			}
+			if cached, ok := agentDefaultEnvCache.get(acpServer); ok {
+				return cached
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(acpServer)
+			}
+			if acpType == "" {
+				acpType = acpServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil || agent.Metadata.Defaults == nil || len(agent.Metadata.Defaults.Env) == 0 {
+				agentDefaultEnvCache.put(acpServer, nil)
+				return nil
+			}
+			agentDefaultEnvCache.put(acpServer, agent.Metadata.Defaults.Env)
+			return agent.Metadata.Defaults.Env
+		}
+		acpProcessMgr.AgentDefaultEnvResolver = resolveAgentDefaultEnv
+		sessionMgr.SetAgentDefaultEnvResolver(resolveAgentDefaultEnv)
 
 		// Wire per-agent fork-cost signal (mitto-7yj). Resolves a workspace to
 		// its ACP agent metadata and reports whether that agent forks a fresh
@@ -755,25 +935,47 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s := &Server{
-		config:               config,
-		logger:               logger,
-		apiPrefix:            apiPrefix,
-		eventsManager:        eventsManager,
-		sessionManager:       sessionMgr,
-		store:                store,
-		authManager:          authMgr,
-		csrfManager:          csrfMgr,
-		rateLimiter:          rateLimiter,
-		wsSecurityConfig:     wsSecurityConfig,
-		proxyChecker:         proxyChecker,
-		accessLogger:         accessLogger,
-		defense:              scannerDefense,
-		acpProcessManager:    acpProcessMgr,
-		auxiliaryManager:     auxiliaryManager,
-		negativeSessionCache: NewNegativeSessionCache(),
-		recentStartFails:     make(map[string]time.Time),
-		beads:                beads.NewClient(),
-		mcpAvailable:         true,
+		config:                      config,
+		logger:                      logger,
+		apiPrefix:                   apiPrefix,
+		eventsManager:               eventsManager,
+		sessionManager:              sessionMgr,
+		store:                       store,
+		authManager:                 authMgr,
+		sharedTokenFromInstanceFile: config.SharedTokenFromInstanceFile,
+		csrfManager:                 csrfMgr,
+		rateLimiter:                 rateLimiter,
+		wsSecurityConfig:            wsSecurityConfig,
+		wsConnectionLimiter:         newWSConnectionLimiter(defaultMaxWSConnectionsPerIP, defaultMaxWSConnections),
+		proxyChecker:                proxyChecker,
+		accessLogger:                accessLogger,
+		defense:                     scannerDefense,
+		acpProcessManager:           acpProcessMgr,
+		auxiliaryManager:            auxiliaryManager,
+		negativeSessionCache:        NewNegativeSessionCache(),
+		recentStartFails:            make(map[string]time.Time),
+		beads:                       beads.NewClient(),
+		mcpAvailable:                true,
+		goroutineGaugeStop:          goroutineGaugeStop,
+	}
+
+	// Remembered prompt-arguments store (mitto-x8v, mitto-47y.6.2). Resolved
+	// against appdir.RememberedArgsDir (folder scope) and
+	// appdir.RememberedArgsConversationDir (conversation scope); an empty
+	// baseDir on either side leaves that namespace inert so callers can
+	// no-op cleanly.
+	if raDir, err := appdir.RememberedArgsDir(); err == nil {
+		s.rememberedArgs = rememberedargs.NewStore(raDir)
+	} else {
+		if logger != nil {
+			logger.Warn("Failed to resolve remembered-args dir; feature disabled", "error", err)
+		}
+		s.rememberedArgs = rememberedargs.NewStore("")
+	}
+	if raConvDir, err := appdir.RememberedArgsConversationDir(); err == nil {
+		s.rememberedArgs.WithConversationBaseDir(raConvDir)
+	} else if logger != nil {
+		logger.Warn("Failed to resolve remembered-args-conversation dir; conversation scope disabled", "error", err)
 	}
 
 	// Bound concurrent interactive ResumeSession calls issued from the
@@ -802,9 +1004,16 @@ func NewServer(config Config) (*Server, error) {
 	// Order (outermost → inner): CachingClient → cliClient → suppressingBeadsRunner → execRunner.
 	// Cache hits skip both the exec and the suppression window.
 	if config.BeadsCache {
-		s.beadsCache = beads.NewCachingClient(s.beads)
+		ttl := beads.DefaultCacheTTL
+		if config.MittoConfig != nil && config.MittoConfig.Web.Beads != nil {
+			ttl = config.MittoConfig.Web.Beads.EffectiveReadCacheTTL()
+		}
+		s.beadsCache = beads.NewCachingClientWithTTL(s.beads, ttl)
 		s.beads = s.beadsCache
 	}
+	sessionMgr.SetBeadsDatabaseModeResolver(func(ctx context.Context, workingDir string) (configPkg.BeadsDatabaseMode, error) {
+		return beads.ResolveDatabaseMode(ctx, s.beads, workingDir)
+	})
 
 	// The REST handlers sub-package facade is constructed later in NewServer,
 	// after callbackIndex, callbackRateLimiter and loopRunner are
@@ -826,6 +1035,34 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
 	})
 
+	// Surface a toast when the GC's health-recycle tiers (Tier 5/6) restart a
+	// shared ACP process that stopped completing session/new or session/load
+	// RPCs (mitto-aoo, the "query closed before response received" wedge).
+	acpProcessMgr.SetOnHealthRecycled(func(workspaceUUID, reason string, saturationLevel, sessionCount int) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastHealthRecycled(workspaceUUID, workspaceName, workingDir, reason, saturationLevel, sessionCount)
+	})
+
+	// Surface a toast when GC Tier 5 detects (or clears) a degraded shared
+	// ACP process — saturated, MCP-init gated, or MCP-init wedged (mitto-13n.3).
+	// Unlike SetOnHealthRecycled above, this fires BEFORE the idle safety gates
+	// that can delay an actual recycle indefinitely, closing the previously
+	// silent pre-recycle window.
+	acpProcessMgr.SetOnDegraded(func(workspaceUUID, state string, degraded bool) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastAgentDegraded(workspaceUUID, workspaceName, workingDir, state, degraded)
+	})
+
 	// MCP-init lifecycle notifications (mitto-8ul.1): fired at most once per shared
 	// process. "initializing" is informational; "timed out" indicates the agent gave
 	// up on its own MCP-init wait budget and the pending session/new was aborted.
@@ -839,14 +1076,14 @@ func NewServer(config Config) (*Server, error) {
 		}
 		s.BroadcastMCPInitializing(workspaceUUID, workspaceName, workingDir)
 	})
-	acpProcessMgr.SetOnMCPInitTimedOut(func(workspaceUUID string) {
+	acpProcessMgr.SetOnMCPInitTimedOut(func(workspaceUUID string, servers []string) {
 		workspaceName := ""
 		workingDir := ""
 		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
 			workspaceName = ws.Name
 			workingDir = ws.WorkingDir
 		}
-		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir)
+		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir, servers)
 	})
 
 	// Adaptive pre-warming (mitto-mw0): expose the global PrewarmConfig to the
@@ -868,6 +1105,31 @@ func NewServer(config Config) (*Server, error) {
 		}
 		s.BroadcastPrewarmPinAlert(workspaceUUID, workspaceName, workingDir, reason, expired)
 	})
+
+	// Bootstrap the process-wide fragment registry BEFORE starting the MCP
+	// server so that any prompt lookup triggered by an early MCP client (or by
+	// PromptsCache warming during MCP startup) sees the installed fragments.
+	// Without this, PrecompileTemplateConds fails closed with `template
+	// "_shared/…" not defined` for the entire window between MCP accept and
+	// the deferred fragment install, and the failed cache result is sticky
+	// until an fs-watcher event or ForceReload (mitto-9jh.1). Uses
+	// getFragmentScanDirs() — which lists the builtin dir as its own root —
+	// so short fragment names ("_shared/…") resolve correctly.
+	{
+		fragDirs := s.getFragmentScanDirs()
+		if reg, ferrs, err := prompts.ReloadFragmentsFromDirs(fragDirs); err != nil {
+			logger.Warn("Failed to bootstrap fragment registry", "error", err, "dirs", fragDirs)
+		} else {
+			prompts.SetCurrentFragments(reg)
+			logger.Info("Fragment registry bootstrapped", "count", reg.Len(), "dirs", fragDirs, "errors", len(ferrs))
+			if reg.Len() == 0 {
+				logger.Warn("Fragment registry bootstrapped empty; prompts that reference {{ template \"_shared/…\" . }} will fail to load until a fs-watcher fragment change re-installs the registry", "dirs", fragDirs)
+			}
+			for _, fe := range ferrs {
+				logger.Warn("Fragment load error at bootstrap", "path", fe.Path, "error", fe.Err)
+			}
+		}
+	}
 
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
@@ -891,6 +1153,7 @@ func NewServer(config Config) (*Server, error) {
 				SessionManager:    &sessionManagerAdapter{sm: sessionMgr},
 				PromptsCache:      config.PromptsCache,
 				BeadsCacheMetrics: s.beadsCacheMetricsCallback(),
+				BeadsClient:       s.beads,
 			},
 		)
 		if err != nil {
@@ -942,6 +1205,90 @@ func NewServer(config Config) (*Server, error) {
 			"title":      title,
 		})
 	}
+
+	// Dashboard time-series stats subsystem (mitto-a86b): SQLite-backed Store
+	// + Aggregator + Backfiller. Open uses appdir.StatsDir() so the on-disk
+	// layout matches the sessions dir. When Open fails (unwritable disk,
+	// corrupt db, MITTO_DIR unresolvable), fall back to a NoopStore so the
+	// rest of the server keeps working — stats are a diagnostic, not
+	// load-bearing. The Aggregator is attached to the SessionManager so every
+	// session (fresh + resume) gets a statsObserver at registration time.
+	if statsDir, err := appdir.StatsDir(); err != nil {
+		logger.Warn("stats: cannot resolve stats dir; using noop store", "error", err)
+		s.statsStore = &stats.NoopStore{}
+	} else if err := os.MkdirAll(statsDir, 0o755); err != nil {
+		logger.Warn("stats: cannot create stats dir; using noop store", "dir", statsDir, "error", err)
+		s.statsStore = &stats.NoopStore{}
+	} else {
+		dbPath := filepath.Join(statsDir, "stats.db")
+		if st, err := stats.Open(context.Background(), dbPath); err != nil {
+			logger.Warn("stats: cannot open stats db; using noop store", "path", dbPath, "error", err)
+			s.statsStore = &stats.NoopStore{}
+		} else {
+			s.statsStore = st
+			logger.Info("stats: opened dashboard stats db", "path", dbPath)
+		}
+	}
+	s.statsAggregator = stats.NewAggregator(s.statsStore, stats.AggregatorOptions{})
+	sessionMgr.SetStatsAggregator(s.statsAggregator)
+	// Backfiller: reuse the sessionMgr's workspace registry to resolve each
+	// persisted session's workspace UUID from its working_dir + acp_server.
+	// The manager owns the registry; we consult it here without holding any
+	// SessionManager lock (GetWorkspaceByDirAndACP / GetWorkspace take their
+	// own RLock).
+	resolver := func(m session.Metadata) stats.SessionContext {
+		sc := stats.SessionContext{
+			SessionID:     m.SessionID,
+			WorkingDir:    m.WorkingDir,
+			ACPServer:     m.ACPServer,
+			BaselineModel: m.BaselineModel,
+		}
+		if ws := sessionMgr.GetWorkspaceByDirAndACP(m.WorkingDir, m.ACPServer); ws != nil {
+			sc.Workspace = ws.UUID
+		} else if ws := sessionMgr.GetWorkspace(m.WorkingDir); ws != nil {
+			sc.Workspace = ws.UUID
+		}
+		return sc
+	}
+	s.statsBackfiller = stats.NewBackfiller(s.statsStore, s.statsAggregator, store, resolver, stats.BackfillerOptions{
+		Logger: logger,
+	})
+	s.statsBackfiller.Start(context.Background())
+
+	// BeadsSource (mitto-5rm6.3): periodic full re-derivation of the beads_*
+	// metrics from a `bd list` snapshot per workspace. Uses s.beads (the
+	// injectable Client — possibly wrapped by beads.NewCachingClient and/or
+	// the watcher-suppression runner set up above) as the BeadsLister; its
+	// List(ctx, dir) signature matches stats.BeadsLister exactly. Workspace
+	// enumeration reuses the same source/dedup as getBeadsWatchDirs so both
+	// subsystems agree on which directories are in scope.
+	s.statsBeadsSource = stats.NewBeadsSource(s.statsStore, s.beads, s.beadsStatsWorkspaces, stats.BeadsSourceOptions{
+		Logger: logger,
+	})
+	s.statsBeadsSource.Start(context.Background())
+
+	// UptimeRecorder (mitto-c45m): periodic heartbeat feeding
+	// statsBeadsSource's active-cycle fold (see internal/stats/uptime.go).
+	s.statsUptime = stats.NewUptimeRecorder(s.statsStore, stats.UptimeRecorderOptions{
+		Logger: logger,
+	})
+	s.statsUptime.Start(context.Background())
+
+	// Retention worker (mitto-a86b.9): nightly prune of hourly rows past the
+	// configured retention window (default 90d) + weekly Sunday VACUUM.
+	// Reads retention nil-safe from MittoConfig.Stats so unconfigured
+	// installs get the default; explicit 0 disables pruning.
+	var statsRetention time.Duration
+	if config.MittoConfig != nil {
+		statsRetention = config.MittoConfig.Stats.GetRetention()
+	} else {
+		statsRetention = (&configPkg.StatsConfig{}).GetRetention()
+	}
+	s.statsRetention = stats.NewRetentionWorker(s.statsStore, stats.RetentionWorkerOptions{
+		Retention: statsRetention,
+		Logger:    logger,
+	})
+	s.statsRetention.Start(context.Background())
 
 	// Wire the onTasks CEL condition compile-validator into the session package's
 	// injected seam. session must stay independent of config/acp/web, so it exposes
@@ -1028,8 +1375,58 @@ func NewServer(config Config) (*Server, error) {
 	// Construct the REST handlers sub-package facade. Built here (not earlier)
 	// so the late-initialized callbackIndex, callbackRateLimiter and
 	// loopRunner are non-nil when wired into Deps.
+	var slackCatalog *slackcatalog.Service
+	if catalogPath, err := appdir.SlackCatalogPath(); err != nil {
+		logger.Warn("Slack integration catalog disabled: resolve path", "error", err)
+	} else {
+		slackCatalog = slackcatalog.NewService(
+			slackcatalog.NewFileStore(catalogPath), secrets.DefaultManager(), slackcatalog.NewSlackClient(), nil,
+		)
+	}
+	if slackCatalog != nil {
+		s.slackManager = slackbridge.NewManager(store, slackCatalog, secrets.DefaultManager(), s.loopRunner, logger)
+		slackCatalog.SetReferenceChecker(s.slackManager)
+		slackCatalog.SetChangeObserver(func(change slackcatalog.Change) {
+			if change.InstallationID != "" {
+				if err := s.slackManager.ReconcileAll(); err != nil {
+					logger.Warn("Failed to refresh Slack routing after catalog change", "error_class", "reconcile")
+				}
+				return
+			}
+			if change.Credential {
+				s.slackManager.RestartApp(change.AppID)
+			}
+		})
+		s.slackManager.SetStatusCallback(func(status slackbridge.ConnectionStatus) {
+			s.eventsManager.Broadcast("slack_connection_status", status)
+		})
+	}
+	slackEnvConfig, slackEnvStatus := slackbridge.InspectEnvironment()
+	legacySlack := &serverLegacySlackController{server: s, cfg: slackEnvConfig}
+	slackEnvironment := slackbridge.NewEnvironmentMigration(
+		slackEnvConfig, slackEnvStatus, store, slackCatalog, legacySlack, s.slackManager,
+	)
+	if sessionMgr != nil && s.slackManager != nil {
+		sessionMgr.SetSlackReconciler(slackEnvironment)
+	}
+	if slackEnvStatus.Present {
+		if !slackEnvStatus.Complete {
+			logger.Warn("Deprecated Slack environment adapter disabled: incomplete configuration",
+				"missing_variables", slackEnvStatus.MissingVariables)
+		} else if current, err := slackEnvironment.Status(); err != nil {
+			logger.Warn("Deprecated Slack environment adapter disabled: managed precedence check failed", "error_class", "reconcile")
+		} else if current.Shadowed {
+			logger.Warn("Managed Slack configuration supersedes deprecated environment adapter",
+				"channel_id", current.ChannelID, "target_session_id", current.TargetSessionID)
+		} else {
+			_ = legacySlack.Start()
+		}
+	}
+
 	s.apiHandlers = handlers.New(handlers.Deps{
 		Logger:                   logger,
+		SlackCatalog:             slackCatalog,
+		SlackEnvironment:         slackEnvironment,
 		ConfigReadOnly:           config.ConfigReadOnly,
 		MittoConfig:              config.MittoConfig,
 		RCFilePath:               config.RCFilePath,
@@ -1071,6 +1468,7 @@ func NewServer(config Config) (*Server, error) {
 		BroadcastBeadsCleanupProgress:     s.BroadcastBeadsCleanupProgress,
 		BootstrapOnCompletion:             s.loopRunner.BootstrapOnCompletion,
 		BroadcastSettingsUpdated:          s.BroadcastSessionSettingsUpdated,
+		BroadcastTaskLabelColorsUpdated:   s.BroadcastTaskLabelColorsUpdated,
 		BroadcastSessionDeleted:           s.BroadcastSessionDeleted,
 		BroadcastACPStartFailed:           s.BroadcastACPStartFailed,
 		BroadcastACPStopped:               s.BroadcastACPStopped,
@@ -1084,6 +1482,18 @@ func NewServer(config Config) (*Server, error) {
 		},
 		ResolvePromptSingleton: func(promptName, workingDir string) bool {
 			return s.resolveSingletonByPromptName(promptName, workingDir)
+		},
+		ResolvePromptReuseIssue: func(promptName, workingDir string) bool {
+			return s.resolveReuseIssueByPromptName(promptName, workingDir)
+		},
+		ResolvePromptTarget: func(promptName, workingDir string, args map[string]string, beadsIssue string) (handlers.ResolvedPromptTarget, error) {
+			return s.resolvePromptTargetByPromptName(promptName, workingDir, args, beadsIssue)
+		},
+		ResolvePromptReuseCoalesce: func(promptName, workingDir string) bool {
+			return s.resolveReuseCoalesceByPromptName(promptName, workingDir)
+		},
+		ResolvePromptSuppressAutoChildren: func(promptName, workingDir string) bool {
+			return s.resolveSuppressAutoChildrenByPromptName(promptName, workingDir)
 		},
 		RemoveNegativeCache: func(sessionID string) {
 			if s.negativeSessionCache != nil {
@@ -1150,12 +1560,41 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess()
 		},
+		RotateSharedToken: s.rotateSharedToken,
 		ImprovePrompt: func() func(context.Context, string, string) (string, error) {
 			if s.auxiliaryManager == nil {
 				return nil
 			}
 			return s.auxiliaryManager.ImprovePrompt
 		}(),
+		StatsStore: s.statsStore,
+		StatsBackfillerInProgress: func() bool {
+			return s.statsBackfiller != nil && s.statsBackfiller.InProgress()
+		},
+		RememberFolderArgs: func(workspaceUUID, promptName string, args map[string]string) error {
+			if s.rememberedArgs == nil {
+				return nil
+			}
+			return s.rememberedArgs.Set(workspaceUUID, promptName, args)
+		},
+		GetRememberedArgs: func(workspaceUUID, promptName string) (map[string]string, error) {
+			if s.rememberedArgs == nil {
+				return map[string]string{}, nil
+			}
+			return s.rememberedArgs.Get(workspaceUUID, promptName)
+		},
+		RememberConversationArgs: func(sessionID, promptName string, args map[string]string) error {
+			if s.rememberedArgs == nil {
+				return nil
+			}
+			return s.rememberedArgs.SetConversation(sessionID, promptName, args)
+		},
+		GetRememberedConversationArgs: func(sessionID, promptName string) (map[string]string, error) {
+			if s.rememberedArgs == nil {
+				return map[string]string{}, nil
+			}
+			return s.rememberedArgs.GetConversation(sessionID, promptName)
+		},
 	})
 
 	// Auto-unarchive recovery: retry unarchiving loop conversations archived due
@@ -1172,6 +1611,11 @@ func NewServer(config Config) (*Server, error) {
 			m.ArchivedAt = time.Time{}
 			m.ArchiveReason = ""
 			m.AutoUnarchiveLastAttemptAt = time.Time{}
+			// mitto-wub (Defect 3): mirrors the manual unarchive path in
+			// internal/web/handlers/session_update.go — reset the failure counter so
+			// the resume attempt below gets a full threshold's worth of retries
+			// instead of re-archiving on its first transient failure.
+			m.ACPStartFailureCount = 0
 		}); err != nil {
 			return err
 		}
@@ -1212,6 +1656,9 @@ func NewServer(config Config) (*Server, error) {
 	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
 	}
+	promptFragmentsResolverFunc := func(workingDir string) (*configPkg.FragmentRegistry, error) {
+		return s.resolvePromptFragments(workingDir)
+	}
 	preferredModelsResolverFunc := func(promptName string, workingDir string) []configPkg.PromptPreferredModel {
 		return s.resolvePreferredModelsByPromptName(promptName, workingDir)
 	}
@@ -1221,14 +1668,48 @@ func NewServer(config Config) (*Server, error) {
 	s.loopRunner.SetPromptResolver(promptResolverFunc)
 	if s.sessionManager != nil {
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
+		s.sessionManager.SetPromptFragmentsResolver(promptFragmentsResolverFunc)
 		s.sessionManager.SetPreferredModelsResolver(preferredModelsResolverFunc)
 		s.sessionManager.SetPromptParametersResolver(promptParametersResolverFunc)
-		// Wire event-driven on-completion loop firing: sessions notify the runner
-		// when they go idle so it can arm the next onCompletion run.
-		s.sessionManager.SetOnConversationIdle(s.loopRunner.OnConversationIdle)
+		// Pass the workspace prompt registry to every new/resumed session so the
+		// render-time {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} predicates
+		// snapshot the same view mitto_prompt_get reads (mitto-s1w).
+		s.sessionManager.SetPromptsCache(s.config.PromptsCache)
+		// Compose all idle consumers through the SessionManager's single callback:
+		// arm event-driven loop legs, then drain durable Slack work that previously
+		// lost the dispatch slot to a busy/coalesced run.
+		s.sessionManager.SetOnConversationIdle(func(sessionID string) {
+			s.loopRunner.OnConversationIdle(sessionID)
+			if s.slackManager != nil {
+				s.slackManager.OnConversationIdle(sessionID)
+			}
+		})
 	}
 
+	// Wire event-driven onChild(deleted) loop firing: the store notifies the
+	// runner once per session removed by Delete (target plus any cascade
+	// descendants) so a parent armed for onChild can fire on child deletion
+	// (mitto-987y.5). Independent of sessionManager being non-nil.
+	store.SetDeleteObserver(func(sessionID, parentSessionID string) {
+		s.loopRunner.OnChildDeleted(sessionID, parentSessionID)
+		if s.slackManager != nil {
+			s.slackManager.RemoveSession(sessionID)
+		}
+	})
+
+	// Wire event-driven onChild(anyLoopStopped) loop firing: the store
+	// notifies the runner once a session's own loop transitions into the
+	// stopped state, across every MarkStopped call site, so a parent armed
+	// for onChild can fire when a child driver declares itself done
+	// (mitto-q6my). Independent of sessionManager being non-nil.
+	store.SetLoopStoppedObserver(s.loopRunner.OnChildLoopStopped)
+
 	s.loopRunner.Start()
+	if s.slackManager != nil {
+		if err := s.slackManager.Start(); err != nil {
+			logger.Warn("Slack connection manager failed to start", "error_class", "reconcile")
+		}
+	}
 
 	// Wire up loop runner to MCP server for the run-now tool.
 	// The loop runner is created after the MCP server, so we use a setter.
@@ -1238,6 +1719,10 @@ func NewServer(config Config) (*Server, error) {
 
 	// Build callback index from existing sessions
 	s.buildCallbackIndex()
+
+	// (Fragment registry bootstrap was moved above the MCP server start to
+	// avoid an early-boot window where MCP-triggered prompt lookups landed
+	// against an empty registry and poisoned the PromptsCache — mitto-9jh.1.)
 
 	// Initialize prompts watcher for monitoring prompt file changes
 	if promptsWatcher, err := configPkg.NewPromptsWatcher(logger); err != nil {
@@ -1257,6 +1742,12 @@ func NewServer(config Config) (*Server, error) {
 	} else {
 		s.beadsWatcher = beadsWatcher
 		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+		// Wire the watcher into the MCP server so the
+		// mitto_conversation_wait beads_issues_reached_state branch can
+		// subscribe to debounced .beads/ change events (mitto-7rw).
+		if s.mcpServer != nil {
+			s.mcpServer.SetBeadsWatcher(s.beadsWatcher)
+		}
 		// Also subscribe the loop runner so onTasks loop conversations
 		// can fire (or rebase their diff baseline) when beads change.
 		// Record the watcher on the runner so Stop() can Unsubscribe(r)
@@ -1272,6 +1763,11 @@ func NewServer(config Config) (*Server, error) {
 		if s.beadsCache != nil {
 			s.beadsCacheSubscriber = &beadsCacheWatcherSubscriber{cache: s.beadsCache}
 			s.beadsWatcher.Subscribe(s.beadsCacheSubscriber, s.getBeadsWatchDirs())
+		}
+		// mitto-5rm6.3: refresh the beads_* dashboard metrics on external
+		// bd mutations too, not just on the periodic timer.
+		if s.statsBeadsSource != nil {
+			s.beadsWatcher.Subscribe(&statsBeadsSourceWatcherSubscriber{source: s.statsBeadsSource, logger: logger}, s.getBeadsWatchDirs())
 		}
 		s.beadsWatcher.Start()
 		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
@@ -1299,6 +1795,15 @@ func NewServer(config Config) (*Server, error) {
 	mux.HandleFunc("/robots.txt", handleRobotsTxt)
 	if apiPrefix != "" {
 		mux.HandleFunc(apiPrefix+"/robots.txt", handleRobotsTxt)
+	}
+
+	// pprof debug endpoints: opt-in only (mitto-aek). Registered unprefixed
+	// (not through apiRoutes/apiPrefix) so `go tool pprof` URLs work verbatim.
+	// When disabled, the patterns are simply never registered, so requests
+	// fall through to the static catch-all below and 404 like any other
+	// unknown path.
+	if s.maybeRegisterPProfRoutes(mux, config.EnablePProf) {
+		logger.Warn("pprof debug endpoints enabled (loopback-only)", "path", "/debug/pprof/")
 	}
 
 	// Static files: use filesystem directory if specified, otherwise use embedded assets
@@ -1338,6 +1843,15 @@ func NewServer(config Config) (*Server, error) {
 	// This protects all state-changing API requests (POST, PUT, PATCH, DELETE)
 	handler = csrfMgr.CSRFMiddleware(handler)
 
+	// Wrap with CORS middleware (mitto-7gta.27), just outside CSRF/Auth.
+	// A preflight (OPTIONS) request carries no cookie/CSRF token, so it must
+	// terminate here rather than reach CSRF (which would 403 it) or Auth
+	// (which would 401/redirect it). Non-preflight requests fall through to
+	// the existing chain unchanged; only response headers are added. Stays
+	// inside rate limiting and request-size limiting below so preflights
+	// remain a metered, bounded surface. No-op when AllowedOrigins is empty.
+	handler = middleware.CORSMiddleware(corsConfig)(handler)
+
 	// Wrap with security middlewares (applied in reverse order)
 	// 1. Request size limit (1MB max for request bodies)
 	handler = middleware.RequestSizeLimitMiddleware(1 * 1024 * 1024)(handler)
@@ -1346,7 +1860,12 @@ func NewServer(config Config) (*Server, error) {
 	handler = rateLimiter.Middleware(handler)
 
 	// 3. Request timeout (excludes WebSocket connections)
-	handler = middleware.RequestTimeoutMiddleware(middleware.DefaultRequestTimeout)(handler)
+	// POST /api/beads/migrate is exempted because `bd migrate schema` can
+	// legitimately take minutes; the handler owns its own 6-minute budget.
+	handler = middleware.RequestTimeoutMiddleware(
+		middleware.DefaultRequestTimeout,
+		apiPrefix+"/api/beads/migrate",
+	)(handler)
 
 	// 4. Security headers (non-CSP headers)
 	headerSecurityConfig := middleware.DefaultSecurityConfig()
@@ -1388,7 +1907,11 @@ func NewServer(config Config) (*Server, error) {
 		handler = s.defenseRecordingMiddleware(handler)
 	}
 
-	s.httpServer = &http.Server{Handler: handler}
+	s.httpServer = &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: webReadHeaderTimeout,
+		MaxHeaderBytes:    webMaxHeaderBytes,
+	}
 
 	s.sessionManager.WorkspaceRegistry().LogDuplicateWorkingDirs(logger)
 
@@ -1427,6 +1950,13 @@ func (s *Server) Shutdown() error {
 	// Stop external listener if running (uses its own externalMu internally)
 	s.StopExternalListener()
 
+	// Stop and join the experimental Slack source before closing sessions or
+	// the loop runner, so no inbound event can race the shutdown sequence.
+	s.stopLegacySlackBridge()
+	if s.slackManager != nil {
+		s.slackManager.Close()
+	}
+
 	// Close all background sessions
 	if s.sessionManager != nil {
 		s.sessionManager.CloseAll("server_shutdown")
@@ -1455,6 +1985,33 @@ func (s *Server) Shutdown() error {
 	// Close session store
 	if s.store != nil {
 		s.store.Close()
+	}
+
+	// Close stats subsystem in retention→backfiller→beadsSource→uptime→
+	// aggregator→store order: stop the retention worker first so a mid-run
+	// VACUUM cannot observe a closed DB; then stop the backfiller, beads
+	// source, and uptime recorder (no more agg.Ingest / ReplaceDeltas /
+	// UpsertDeltas writes — the three are independent of each other and can
+	// close in any order) before the aggregator flushes any pending deltas,
+	// and the store stays alive until after that final flush so no deltas
+	// are lost.
+	if s.statsRetention != nil {
+		_ = s.statsRetention.Close()
+	}
+	if s.statsBackfiller != nil {
+		_ = s.statsBackfiller.Close()
+	}
+	if s.statsBeadsSource != nil {
+		_ = s.statsBeadsSource.Close()
+	}
+	if s.statsUptime != nil {
+		_ = s.statsUptime.Close()
+	}
+	if s.statsAggregator != nil {
+		_ = s.statsAggregator.Close()
+	}
+	if s.statsStore != nil {
+		_ = s.statsStore.Close()
 	}
 
 	// Close queue title worker
@@ -1500,6 +2057,11 @@ func (s *Server) Shutdown() error {
 		s.beadsWatcher.Close()
 	}
 
+	// Stop the periodic goroutine gauge (mitto-x3x)
+	if s.goroutineGaugeStop != nil {
+		s.goroutineGaugeStop()
+	}
+
 	// Shut down the HTTP server with a timeout so we don't hang indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1513,9 +2075,101 @@ func (s *Server) Shutdown() error {
 	return nil
 }
 
+func (s *Server) startLegacySlackBridge(cfg slackbridge.Config) error {
+	s.slackBridgeMu.Lock()
+	defer s.slackBridgeMu.Unlock()
+	if s.slackBridgeCancel != nil {
+		select {
+		case <-s.slackBridgeDone:
+			s.slackBridgeCancel, s.slackBridgeDone = nil, nil
+		default:
+			return nil
+		}
+	}
+	slackBridge := slackbridge.NewBridge(cfg, s.loopRunner, s.logger)
+	slackSource := slackbridge.NewSlackSource(cfg, s.logger, slackBridge.SetSelfUserID)
+	slackCtx, slackCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.slackBridgeCancel, s.slackBridgeDone = slackCancel, done
+	go func() {
+		defer close(done)
+		slackBridge.Run(slackCtx, slackSource)
+	}()
+	s.logger.Warn("Deprecated Slack environment adapter enabled; import it from Settings > Slack",
+		"channel_id", cfg.ChannelID, "target_session_id", cfg.TargetSessionID)
+	return nil
+}
+
+func (s *Server) legacySlackBridgeActive() bool {
+	s.slackBridgeMu.Lock()
+	defer s.slackBridgeMu.Unlock()
+	if s.slackBridgeCancel == nil || s.slackBridgeDone == nil {
+		return false
+	}
+	select {
+	case <-s.slackBridgeDone:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *Server) stopLegacySlackBridge() bool {
+	s.slackBridgeMu.Lock()
+	defer s.slackBridgeMu.Unlock()
+	if s.slackBridgeCancel == nil {
+		return false
+	}
+	cancel, done := s.slackBridgeCancel, s.slackBridgeDone
+	s.slackBridgeCancel, s.slackBridgeDone = nil, nil
+	cancel()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			s.logger.Warn("Timed out waiting for Slack event source shutdown")
+		}
+	}
+	return true
+}
+
 // IsShutdown returns whether the server has been shut down.
 func (s *Server) IsShutdown() bool {
 	return s.shutdown.Load()
+}
+
+// rotateSharedToken implements Deps.RotateSharedToken (mitto-pscc.9): see
+// that field's doc comment on handlers.Deps for the full contract. It
+// refuses (via the sentinel errors handlers exports) when no shared token is
+// configured, or when the configured token was operator-supplied rather
+// than adopted from instance.json. instance.json is rewritten BEFORE the
+// live AuthManager is updated, so a failed write leaves the previous token
+// valid everywhere instead of desyncing memory from disk.
+func (s *Server) rotateSharedToken() (string, error) {
+	if s.authManager == nil || !s.authManager.HasSharedToken() {
+		return "", handlers.ErrSharedTokenNotConfigured
+	}
+	if !s.sharedTokenFromInstanceFile {
+		return "", handlers.ErrSharedTokenNotRotatable
+	}
+
+	newToken, err := instancefile.GenerateToken()
+	if err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+
+	inst, err := instancefile.Read()
+	if err != nil {
+		return "", fmt.Errorf("read instance file: %w", err)
+	}
+	inst.Token = newToken
+	if err := instancefile.Write(inst); err != nil {
+		return "", fmt.Errorf("write instance file: %w", err)
+	}
+
+	s.authManager.SetSharedToken(newToken)
+
+	return instancefile.Fingerprint(newToken), nil
 }
 
 // Logger returns the server's logger.
@@ -1564,14 +2218,14 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			s.logger.Debug("HTTP request (static)",
 				"method", r.Method,
 				"path", path,
-				"raw_uri", r.RequestURI,
+				"raw_uri", requestURIForLog(r),
 				"client_ip", clientIP,
 			)
 		} else {
 			s.logger.Debug("HTTP request",
 				"method", r.Method,
 				"path", path,
-				"raw_uri", r.RequestURI,
+				"raw_uri", requestURIForLog(r),
 				"client_ip", clientIP,
 				"user_agent", r.UserAgent(),
 			)
@@ -1579,6 +2233,19 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestURIForLog(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if strings.HasSuffix(r.URL.Path, "/api/slack/oauth/callback") {
+		if r.URL.RawQuery != "" {
+			return r.URL.Path + "?<redacted>"
+		}
+		return r.URL.Path
+	}
+	return r.RequestURI
 }
 
 // BroadcastSessionRenamed notifies all connected clients that a session was renamed.
@@ -1609,6 +2276,9 @@ func (s *Server) BroadcastSessionPinned(sessionID string, pinned bool) {
 
 // BroadcastSessionArchived notifies all connected clients that a session's archived state changed.
 func (s *Server) BroadcastSessionArchived(sessionID string, archived bool, reason ...session.ArchiveReason) {
+	if s.slackManager != nil {
+		_ = s.slackManager.ReconcileSession(sessionID)
+	}
 	data := map[string]interface{}{
 		"session_id": sessionID,
 		"archived":   archived,
@@ -1641,6 +2311,15 @@ func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[
 	}
 }
 
+// BroadcastTaskLabelColorsUpdated tells all clients to refetch the global
+// task-label color mapping after a successful settings update.
+func (s *Server) BroadcastTaskLabelColorsUpdated() {
+	if s.eventsManager == nil {
+		return
+	}
+	s.eventsManager.Broadcast(WSMsgTypeTaskLabelColorsUpdated, map[string]interface{}{})
+}
+
 // BroadcastSessionBeadsIssueUpdated notifies all connected clients that a
 // session's linked beads issue ID changed (via REST PATCH or MCP tools).
 func (s *Server) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
@@ -1658,6 +2337,9 @@ func (s *Server) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string)
 
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
+	if s.slackManager != nil {
+		s.slackManager.RemoveSession(sessionID)
+	}
 	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionDeleted, map[string]string{
 		"session_id": sessionID,
 	})
@@ -1671,6 +2353,9 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 // BroadcastLoopUpdated notifies all connected clients that a session's loop state changed.
 // This includes the full loop config so clients can update their frequency panels.
 func (s *Server) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
+	if s.slackManager != nil {
+		_ = s.slackManager.ReconcileSession(sessionID)
+	}
 	data := conversation.BuildLoopUpdatedData(sessionID, loop)
 	s.eventsManager.Broadcast(conversation.WSMsgTypeLoopUpdated, data)
 
@@ -1870,17 +2555,22 @@ func (s *Server) BroadcastLoopStarted(sessionID, sessionName string) {
 
 // BroadcastHookFailed notifies all connected clients that a lifecycle hook failed.
 // This allows the frontend to show a toast notification about the hook failure.
-func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string, output string) {
+// When transient is true, the failure was classified as a known self-healing
+// pattern (e.g. cloudflared loopback DNS refusal, mitto-y6i) and the frontend
+// should render it quietly (info-style toast) rather than a red error.
+func (s *Server) BroadcastHookFailed(name string, exitCode int, errorMsg string, output string, transient bool) {
 	s.eventsManager.Broadcast(WSMsgTypeHookFailed, map[string]interface{}{
 		"name":      name,
 		"exit_code": exitCode,
 		"error":     errorMsg,
 		"output":    output,
+		"transient": transient,
 	})
 
 	if s.logger != nil {
 		s.logger.Warn("Broadcast hook failed", "name", name, "exit_code", exitCode, "error", errorMsg,
 			"output", output,
+			"transient", transient,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -1922,6 +2612,55 @@ func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDi
 	}
 }
 
+// BroadcastHealthRecycled notifies all connected clients that the GC's health-recycle
+// tiers (Tier 5: saturated + idle, or Tier 6: confirmed-degraded) stopped a shared
+// ACP process that had stopped completing session/new or session/load RPCs
+// (mitto-aoo). This lets the frontend show a toast instead of leaving users to read
+// a misleading agent-side error. Affected conversations resume transparently
+// against a freshly-built process on next focus.
+func (s *Server) BroadcastHealthRecycled(workspaceUUID, workspaceName, workingDir, reason string, saturationLevel, sessionCount int) {
+	s.eventsManager.Broadcast(WSMsgTypeHealthRecycled, map[string]interface{}{
+		"workspace_uuid":   workspaceUUID,
+		"workspace_name":   workspaceName,
+		"working_dir":      workingDir,
+		"reason":           reason,
+		"saturation_level": saturationLevel,
+		"session_count":    sessionCount,
+	})
+
+	if s.logger != nil {
+		s.logger.Info("Broadcast health recycled",
+			"workspace_uuid", workspaceUUID,
+			"reason", reason,
+			"saturation_level", saturationLevel,
+			"session_count", sessionCount,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastAgentDegraded notifies all connected clients that a workspace's
+// shared ACP process entered (degraded=true) or recovered from (degraded=false)
+// a degraded state — saturated, MCP-init gated, or MCP-init wedged (mitto-13n.3).
+// Fired before an eventual health recycle, so this is often the ONLY
+// user-visible signal for the (potentially long) window during which the
+// process is degraded but not yet idle enough to recycle.
+func (s *Server) BroadcastAgentDegraded(workspaceUUID, workspaceName, workingDir, state string, degraded bool) {
+	s.eventsManager.Broadcast(WSMsgTypeAgentDegraded, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+		"state":          state,
+		"degraded":       degraded,
+	})
+	if s.logger != nil {
+		s.logger.Warn("Broadcast agent degraded",
+			"workspace_uuid", workspaceUUID,
+			"state", state,
+			"degraded", degraded,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastMCPInitializing notifies all connected clients that the agent for a
 // workspace is currently blocked waiting for one or more MCP servers to initialize
 // (mitto-8ul.1). Informational — the pending session/new is still expected to
@@ -1941,16 +2680,21 @@ func (s *Server) BroadcastMCPInitializing(workspaceUUID, workspaceName, workingD
 
 // BroadcastMCPInitTimedOut notifies all connected clients that the agent's MCP-init
 // wait elapsed before every MCP server finished handshake (mitto-8ul.1). The pending
-// session/new has been aborted with an actionable error.
-func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir string) {
+// session/new has been aborted with an actionable error. servers carries the names
+// of the MCP server(s) the agent reported as timed out (extracted from the same
+// stderr chunk), or nil/empty if the agent's stderr did not include a per-server
+// status line — callers fall back to naming only the workspace (mitto-m8nx AC2).
+func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir string, servers []string) {
 	s.eventsManager.Broadcast(WSMsgTypeMCPInitTimedOut, map[string]interface{}{
 		"workspace_uuid": workspaceUUID,
 		"workspace_name": workspaceName,
 		"working_dir":    workingDir,
+		"mcp_servers":    servers,
 	})
 	if s.logger != nil {
 		s.logger.Warn("Broadcast MCP init timed out",
 			"workspace_uuid", workspaceUUID,
+			"mcp_servers", servers,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -2034,7 +2778,7 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 			DownHook:  hooksConfig.Down,
 			Port:      s.hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+				s.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 			},
 			OnRestart: func(attempt int) {
 				s.BroadcastHookRestarted(attempt)
@@ -2125,6 +2869,12 @@ func (a *sessionManagerAdapter) DeleteChildSessions(parentID string) {
 	a.sm.DeleteChildSessions(parentID)
 }
 
+// ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a
+// session being closed (mitto-sj6v).
+func (a *sessionManagerAdapter) ApplyOnCloseProcessors(sessionID string, reason string) {
+	a.sm.ApplyOnCloseProcessors(sessionID, reason)
+}
+
 // GetWorkspaces returns all configured workspaces.
 func (a *sessionManagerAdapter) GetWorkspaces() []configPkg.WorkspaceSettings {
 	return a.sm.GetWorkspaces()
@@ -2203,11 +2953,89 @@ func (a *sessionManagerAdapter) IsMCPInitTimeout(err error) bool {
 // OnPromptsChanged is called by the PromptsWatcher when prompt files change.
 // It broadcasts the change to all connected clients via the global events WebSocket.
 func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
+	// mitto-ayl.1: invalidate the CEL glob-mode FileExists/DirExists cache on
+	// any prompt/fragment change. PromptsChangeEvent carries prompt
+	// directories, not workspace roots, so no per-folder scope is available
+	// here (contrast OnBeadsChanged) — use the All variant. Prompt changes
+	// are debounced and rare and the cache map is tiny, and after any
+	// prompt/fragment edit the whole enabledWhen gate set is re-evaluated and
+	// shown to the user, so it should see fresh glob state. Done
+	// unconditionally, before the eventsManager nil-check below, so
+	// invalidation still happens with zero WebSocket clients connected.
+	cel.InvalidateAllGlobCaches()
+
+	// Bulk builtin deployment writes many mutually-dependent prompt and
+	// fragment files. Ignore intermediate watcher batches while its transaction
+	// marker is present; the generation/marker completion event schedules one
+	// authoritative fragment-first reload after the tree is complete
+	// (mitto-aczx).
+	if prompts.DeploymentInProgress(s.getPromptsWatchDirs()) {
+		if s.logger != nil {
+			s.logger.Debug("Deferring prompts reload during bulk deployment")
+		}
+		return
+	}
+
 	if s.eventsManager == nil {
 		return
 	}
 
-	// Force reload the prompts cache so next API call gets fresh data
+	// Rebuild the fragment registry BEFORE reloading the prompts cache when
+	// co-located *.tmpl files changed (mitto-g61.5, ordering fix mitto-ag0 /
+	// mitto-ezw). PromptsCache.ForceReload re-parses every consumer template
+	// against the process-wide fragment registry via PrecompileTemplateConds,
+	// so if we swapped the registry AFTER the cache reload every consumer
+	// that references a newly-added / renamed / updated fragment would be
+	// evaluated against the stale registry, fail precompile with
+	// `template "…" not defined`, and get dropped from promptsByName — the
+	// exact data-loss window observed in the 2026-07-27 log (480 WARN
+	// `failed to load prompt file`, 43 loop-firing failures, 4 dropped
+	// user-composed queued prompts). Swap first, then reload.
+	//
+	// Walk the same user-writable directories the watcher is subscribed to
+	// and install a freshly-merged registry via SetCurrentFragments. On a
+	// top-level walk failure keep the previous registry (do NOT install a
+	// partial one) so a transient FS error does not blank out working
+	// fragments; per-file failures are non-fatal and surface as error
+	// toasts identical to the prompt-load path below.
+	if event.HasFragmentChanges {
+		dirs := s.getFragmentScanDirs()
+		newReg, ferrs, err := prompts.ReloadFragmentsFromDirs(dirs)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Failed to reload fragment registry after file change; keeping previous registry",
+					"error", err,
+					"dirs", dirs)
+			}
+			s.eventsManager.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Fragment reload failed",
+				"message": err.Error(),
+				"style":   "error",
+			})
+		} else {
+			prompts.SetCurrentFragments(newReg)
+			if s.logger != nil {
+				s.logger.Debug("Reloaded fragment registry",
+					"count", newReg.Len(),
+					"dirs", dirs,
+					"errors", len(ferrs))
+			}
+		}
+		for _, fe := range ferrs {
+			s.eventsManager.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Fragment failed to load",
+				"message": fmt.Sprintf("%s: %v", fe.Path, fe.Err),
+				"style":   "error",
+			})
+		}
+	}
+
+	// Force reload the prompts cache so next API call gets fresh data. Runs
+	// AFTER the fragment-registry swap above so consumers precompile against
+	// the fresh registry (mitto-ag0 / mitto-ezw). Kept unconditional for
+	// backward compatibility: pre-mitto-g61.5 events arrived without the
+	// HasPromptChanges flag, and the cache regenerates cheaply on demand —
+	// the extra work is a no-op when no *.prompt.yaml actually changed.
 	if s.config.PromptsCache != nil {
 		if _, err := s.config.PromptsCache.ForceReload(); err != nil && s.logger != nil {
 			s.logger.Warn("Failed to reload prompts cache after file change", "error", err)
@@ -2236,6 +3064,8 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 	if s.logger != nil {
 		s.logger.Debug("Broadcasted prompts_changed event",
 			"changed_dirs", event.ChangedDirs,
+			"has_prompt_changes", event.HasPromptChanges,
+			"has_fragment_changes", event.HasFragmentChanges,
 			"client_count", s.eventsManager.ClientCount())
 	}
 }
@@ -2251,6 +3081,39 @@ func (s *Server) getPromptsWatchDirs() []string {
 	}
 
 	// Add additional directories from global config
+	if s.config.MittoConfig != nil && len(s.config.MittoConfig.PromptsDirs) > 0 {
+		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
+	}
+
+	return dirs
+}
+
+// getFragmentScanDirs returns the directories to scan for *.tmpl fragments,
+// in merge order (earlier wins on short-name collisions; later entries can
+// still contribute uniquely-named fragments).
+//
+// Fragment names are formed relative to the SCAN ROOT, so the builtin dir
+// MUST be listed as its own root: scanning the parent MITTO_DIR/prompts/
+// yields names like "builtin/_shared/session-context" that no prompt
+// references, while scanning MITTO_DIR/prompts/builtin/ yields the intended
+// "_shared/session-context" name.
+func (s *Server) getFragmentScanDirs() []string {
+	var dirs []string
+
+	// 1. Builtin prompts root — produces the short names ("_shared/…",
+	//    "github/shared/pr-comments") that embedded prompts reference via
+	//    `{{ template "_shared/session-context" . }}`.
+	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
+		dirs = append(dirs, builtinDir)
+	}
+
+	// 2. User-writable prompts root — for hand-authored fragments dropped
+	//    directly under MITTO_DIR/prompts/ or subdirs (not under builtin/).
+	if promptsDir, err := appdir.PromptsDir(); err == nil {
+		dirs = append(dirs, promptsDir)
+	}
+
+	// 3. Additional directories from global config.
 	if s.config.MittoConfig != nil && len(s.config.MittoConfig.PromptsDirs) > 0 {
 		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
 	}
@@ -2330,9 +3193,53 @@ func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
 	return func() beads.CacheMetrics { return s.beadsCache.Metrics() }
 }
 
+// statsBeadsSourceWatcherSubscriber adapts *stats.BeadsSource to
+// watcher.BeadsSubscriber so a debounced .beads/ change event triggers an
+// out-of-band Run pass, keeping the dashboard's beads_* metrics fresh
+// between the periodic (default 6h) passes. Runs Run in its own goroutine
+// so a bd-list-heavy pass never blocks BeadsWatcher's synchronous
+// subscriber fan-out (other subscribers, e.g. the loop runner, must not
+// wait on it); Run's own inProgress/pending guard already coalesces
+// overlapping passes (mitto-2o5e: a burst of N triggers costs at most two
+// full passes, not N), so no additional debouncing is needed here.
+// mitto-5rm6.3.
+type statsBeadsSourceWatcherSubscriber struct {
+	source *stats.BeadsSource
+	logger *slog.Logger
+}
+
+func (b *statsBeadsSourceWatcherSubscriber) OnBeadsChanged(_ watcher.BeadsChangeEvent) {
+	if b == nil || b.source == nil {
+		return
+	}
+	go func() {
+		if err := b.source.Run(context.Background()); err != nil && b.logger != nil {
+			b.logger.Warn("stats: beads source watcher-triggered refresh failed", "error", err)
+		}
+	}()
+}
+
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
 // It broadcasts the change to all connected clients via the global events WebSocket.
 func (s *Server) OnBeadsChanged(event watcher.BeadsChangeEvent) {
+	// mitto-z0t D5: invalidate the CEL enabledWhen beads caches (beadsCount /
+	// showBead snapshot) for every changed working dir so external mutations
+	// (bd from another process, direct .beads/ writes, git pulls) are reflected
+	// immediately rather than waiting out beadsCacheTTL. Done unconditionally,
+	// before the eventsManager nil-check below, so invalidation still happens
+	// even with no WebSocket clients connected. Uses this unconditional
+	// subscriber rather than beadsCacheWatcherSubscriber (which is only wired
+	// when --beads-cache is enabled) since internal/cel's cache runs regardless
+	// of that flag.
+	// mitto-ayl.1: also invalidate the CEL glob-mode FileExists/DirExists
+	// cache for each changed working dir. event.WorkingDirs are workspace
+	// roots, which is exactly the "folder" component of the glob cache's
+	// composite key, so this rides the existing loop with no new watcher.
+	for _, dir := range event.WorkingDirs {
+		cel.InvalidateBeadsCache(dir)
+		cel.InvalidateGlobCache(dir)
+	}
+
 	if s.eventsManager == nil {
 		return
 	}
@@ -2367,6 +3274,50 @@ func (s *Server) getBeadsWatchDirs() []string {
 		dirs = append(dirs, d)
 	}
 	return dirs
+}
+
+// beadsStatsWorkspaces implements stats.BeadsWorkspaceLister for
+// statsBeadsSource: the same workspace enumeration + working-dir dedup as
+// getBeadsWatchDirs, but returning each workspace's UUID alongside its
+// directory (needed to attribute beads_* deltas per workspace) rather than
+// the derived .beads/ watch path. Deduped by WorkingDir, not UUID, to match
+// getBeadsWatchDirs' semantics (two workspace entries sharing one directory,
+// e.g. different ACP servers, must not double-count the same bd snapshot).
+func (s *Server) beadsStatsWorkspaces() []stats.BeadsWorkspace {
+	seen := make(map[string]struct{})
+	var out []stats.BeadsWorkspace
+	for _, ws := range s.sessionManager.GetWorkspaces() {
+		if ws.WorkingDir == "" {
+			continue
+		}
+		if _, ok := seen[ws.WorkingDir]; ok {
+			continue
+		}
+		seen[ws.WorkingDir] = struct{}{}
+		out = append(out, stats.BeadsWorkspace{UUID: ws.UUID, Dir: ws.WorkingDir})
+	}
+	return out
+}
+
+// resolvePromptFragments builds the fragment registry for one workspace using
+// the same ordered prompt directories as named-prompt resolution.
+func (s *Server) resolvePromptFragments(workingDir string) (*configPkg.FragmentRegistry, error) {
+	dirs := []string{appdir.WorkspacePromptsDir(workingDir)}
+	if s.sessionManager != nil {
+		for _, dir := range s.sessionManager.GetWorkspacePromptsDirs(workingDir) {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(workingDir, dir)
+			}
+			dirs = append(dirs, dir)
+		}
+	}
+	fragments, loadErrors, err := configPkg.LoadScopedFragmentsFromDirs(dirs)
+	if s.logger != nil {
+		for _, loadErr := range loadErrors {
+			s.logger.Warn("Failed to load workspace prompt fragment", "workspace", workingDir, "error", loadErr)
+		}
+	}
+	return fragments, err
 }
 
 // resolvePromptByName resolves a prompt name to its full text for a given working directory.
@@ -2452,6 +3403,23 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 				return "", fmt.Errorf("prompt %q has no content", promptName)
 			}
 			return p.Prompt, nil
+		}
+	}
+
+	// mitto-8bg: distinguish a transient template fragment compile-race from a
+	// genuinely missing/renamed prompt. When a consumer prompt references a
+	// `_shared/foo` fragment and the fragment registry has not yet been refreshed
+	// by the fs-watcher, PromptsCache drops the consumer from promptsByName and
+	// records the parse error in LoadErrors() with a `template "..." not defined`
+	// signature. Wrap the "not found" with ErrPromptTransientCompileRace so the
+	// loop-runner strike counter can skip it and avoid auto-pausing on the race.
+	if s.config.PromptsCache != nil {
+		for _, le := range s.config.PromptsCache.LoadErrors() {
+			if le.Err != nil && strings.Contains(le.Err.Error(), "not defined") &&
+				strings.Contains(le.Err.Error(), "template ") {
+				return "", fmt.Errorf("%w: prompt %q not found (load errors present)",
+					conversation.ErrPromptTransientCompileRace, promptName)
+			}
 		}
 	}
 
@@ -2619,6 +3587,385 @@ func (s *Server) resolveSingletonByPromptName(promptName, workingDir string) boo
 	for _, p := range merged {
 		if strings.EqualFold(p.Name, promptName) {
 			return p.Singleton
+		}
+	}
+	return false
+}
+
+// resolveReuseIssueByPromptName resolves a prompt name to whether its
+// target.reuseIssue flag is set. Uses the same resolution pipeline as
+// resolveSingletonByPromptName. Returns false when the prompt is not found
+// or does not declare target.reuseIssue.
+func (s *Server) resolveReuseIssueByPromptName(promptName, workingDir string) bool {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for reuseIssue resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts (same as resolvePromptByName)
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for reuseIssue resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.Target != nil && p.Target.Reuse != nil && p.Target.Reuse.Issue
+		}
+	}
+	return false
+}
+
+// resolveSuppressAutoChildrenByPromptName resolves a prompt name to whether
+// its target.suppressAutoChildren flag is set. Uses the same 5-tier
+// resolution pipeline as resolveReuseIssueByPromptName (global file →
+// settings → ACP-specific → workspace-dir → workspace-inline). Returns
+// false when the prompt is not found or does not declare the flag
+// (mitto-nlx).
+func (s *Server) resolveSuppressAutoChildrenByPromptName(promptName, workingDir string) bool {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for suppressAutoChildren resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for suppressAutoChildren resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.Target != nil && p.Target.SuppressAutoChildren
+		}
+	}
+	return false
+}
+
+// resolvePromptTargetByPromptName resolves a prompt name to its full
+// target: block — title (rendered as a Go text/template against args +
+// beadsIssue + workingDir, mitto-5qbo), reuseTitle, and backgroundColor
+// (mitto-8sk). Uses the same resolution pipeline as
+// resolveSingletonByPromptName / resolveReuseIssueByPromptName. Returns a
+// zero-value ResolvedPromptTarget with a nil error when the prompt is not
+// found or has no target block. Returns a non-nil err on template render or
+// empty-output error so the HTTP handler can reject the create.
+func (s *Server) resolvePromptTargetByPromptName(promptName, workingDir string, args map[string]string, beadsIssue string) (handlers.ResolvedPromptTarget, error) {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for reuseTitle resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for reuseTitle resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			target := p.Target
+			title := ""
+			reuseTitle := false
+			backgroundColor := ""
+			noArchive := false
+			if target != nil {
+				title = target.Title
+				reuseTitle = target.Reuse != nil && target.Reuse.Title
+				backgroundColor = target.BackgroundColor
+				noArchive = target.NoArchive
+			}
+			// mitto-8s89: fall back to the top-level prompt backgroundColor
+			// (the "prompt button" color) when target.backgroundColor is
+			// unset — every builtin prompt sets the former and none set the
+			// latter, so without this fallback the color is silently
+			// dropped. The top-level field is not validated at load time
+			// (see hexColorRe's doc comment), so gate it here to avoid
+			// leaking a non-hex value into the sidebar accent stripe.
+			if strings.TrimSpace(backgroundColor) == "" && prompts.IsValidHexColor(p.BackgroundColor) {
+				backgroundColor = p.BackgroundColor
+			}
+			if title != "" {
+				ctx := prompts.PromptTargetContext{Args: args}
+				ctx.Session.BeadsIssue = beadsIssue
+				ctx.Workspace.Folder = workingDir
+				rendered, err := prompts.RenderPromptTargetTitle(p.Name, title, ctx)
+				if err != nil {
+					return handlers.ResolvedPromptTarget{}, err
+				}
+				title = rendered
+			}
+			return handlers.ResolvedPromptTarget{
+				Title:           title,
+				ReuseTitle:      reuseTitle,
+				BackgroundColor: backgroundColor,
+				NoArchive:       noArchive,
+			}, nil
+		}
+	}
+	return handlers.ResolvedPromptTarget{}, nil
+}
+
+// resolveReuseCoalesceByPromptName resolves a prompt name to whether its
+// target.reuseCoalesce flag is true. Uses the same resolution pipeline as
+// resolveSingletonByPromptName / resolvePromptTargetByPromptName. Returns
+// false when the prompt is not found, has no target block, or has reuseCoalesce
+// unset / false. Consumed by the coalescing check in session_create (mitto-djs1).
+func (s *Server) resolveReuseCoalesceByPromptName(promptName, workingDir string) bool {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for reuseCoalesce resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for reuseCoalesce resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.Target != nil && p.Target.Reuse != nil && p.Target.Reuse.Coalesce != nil && *p.Target.Reuse.Coalesce
 		}
 	}
 	return false

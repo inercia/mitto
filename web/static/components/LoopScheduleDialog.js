@@ -2,9 +2,12 @@
 // A modal dialog for collecting a loop schedule (value, unit, optional at time)
 // pre-filled from a prompt's `loop` frontmatter defaults.
 
-const { useState, useEffect, useCallback, html, Fragment } = window.preact;
+const { useState, useEffect, useCallback, html } = window.preact;
 import { Modal } from "./Modal.js";
-import { parseDurationToSeconds } from "../hooks/useConversationSeeding.js";
+import {
+  parseDurationToSeconds,
+  readPromptLoopDefaults,
+} from "../hooks/useConversationSeeding.js";
 
 /**
  * Convert total seconds into the largest whole value+unit pair.
@@ -87,54 +90,65 @@ function localToUtcTime(localTime) {
 /**
  * LoopScheduleDialog — modal to collect a loop schedule for a prompt.
  *
- * Pre-fills from `prompt.loop` defaults (if present).
- * Calls `onConfirm({ value, unit, at? })` with `at` in UTC HH:MM (days only).
- * Calls `onCancel()` when dismissed.
+ * Pre-fills from the prompt's `loop:` frontmatter defaults (mitto-r6j nested
+ * per-trigger schema — `schedule`, `onCompletion`, `onTasks` blocks).
+ *
+ * The user picks any non-empty subset of triggers via a checkbox row; each
+ * selected trigger's attribute sub-panel is shown, unselected sub-panels are
+ * hidden. `onConfirm` receives:
+ *   {
+ *     triggers: string[],            // armed triggers, at least one entry
+ *     value, unit, at?,              // schedule frequency (at UTC HH:MM)
+ *     maxIterations,                 // 0 = unlimited
+ *     delaySeconds,                  // onCompletion delay in seconds
+ *     maxDurationSeconds,            // 0 = unlimited
+ *     condition?,                    // onTasks CEL (only when onTasks armed)
+ *   }
  *
  * @param {Object} props
  * @param {boolean} props.isOpen
  * @param {Object|null} props.prompt - Prompt object with optional .loop defaults
- * @param {Function} props.onConfirm - Called with { value, unit, at? } on confirm
+ * @param {Function} props.onConfirm - Called with the confirm payload above
  * @param {Function} props.onCancel - Called on cancel / close
  */
-export function LoopScheduleDialog({
-  isOpen,
-  prompt,
-  onConfirm,
-  onCancel,
-}) {
-  const defaults = prompt?.loop || {};
-  const [value, setValue] = useState(defaults.value || 1);
-  const [unit, setUnit] = useState(defaults.unit || "hours");
+export function LoopScheduleDialog({ isOpen, prompt, onConfirm, onCancel }) {
+  const defaults = readPromptLoopDefaults(prompt?.loop);
+  const [value, setValue] = useState(defaults.value);
+  const [unit, setUnit] = useState(defaults.unit);
   // `at` stored in local time for display; defaults.at is in UTC — convert on init.
   const [at, setAt] = useState(() => utcToLocalTime(defaults.at) || "");
   // maxIterations: 0 = unlimited, positive = capped. Pre-filled from prompt defaults.
-  const [maxIterations, setMaxIterations] = useState(
-    defaults.maxIterations ?? 0,
-  );
-  // Trigger type: "schedule" (default) or "onCompletion"
-  const [trigger, setTrigger] = useState(defaults.trigger || "schedule");
+  const [maxIterations, setMaxIterations] = useState(defaults.maxIterations);
+  // Armed triggers (mitto-r6j): a Set of {"schedule", "onCompletion",
+  // "onTasks"}. The dialog enforces non-empty (Confirm is disabled when 0).
+  const [triggers, setTriggers] = useState(() => new Set(defaults.triggers));
   // On-completion delay in seconds (min 5)
-  const [delay, setDelay] = useState(defaults.delay ?? 5);
+  const [delay, setDelay] = useState(defaults.delay || 5);
+  // On-tasks CEL condition (optional). Empty string = fire on any task change.
+  const [condition, setCondition] = useState(defaults.condition);
   // Max duration: stored as value+unit for display, converted on confirm
   const [maxDurValue, setMaxDurValue] = useState(
     () =>
-      secondsToValueUnit(parseDurationToSeconds(defaults.maxDuration)).value,
+      secondsToValueUnit(parseDurationToSeconds(prompt?.loop?.maxDuration))
+        .value,
   );
   const [maxDurUnit, setMaxDurUnit] = useState(
-    () => secondsToValueUnit(parseDurationToSeconds(defaults.maxDuration)).unit,
+    () =>
+      secondsToValueUnit(parseDurationToSeconds(prompt?.loop?.maxDuration))
+        .unit,
   );
 
   // Reset to prompt defaults whenever the prompt changes (dialog re-opened).
   useEffect(() => {
-    const d = prompt?.loop || {};
-    setValue(d.value || 1);
-    setUnit(d.unit || "hours");
+    const d = readPromptLoopDefaults(prompt?.loop);
+    setValue(d.value);
+    setUnit(d.unit);
     setAt(utcToLocalTime(d.at) || "");
-    setMaxIterations(d.maxIterations ?? 0);
-    setTrigger(d.trigger || "schedule");
-    setDelay(d.delay ?? 5);
-    const mdSecs = parseDurationToSeconds(d.maxDuration);
+    setMaxIterations(d.maxIterations);
+    setTriggers(new Set(d.triggers));
+    setDelay(d.delay || 5);
+    setCondition(d.condition);
+    const mdSecs = parseDurationToSeconds(prompt?.loop?.maxDuration);
     const { value: mdv, unit: mdu } = secondsToValueUnit(mdSecs);
     setMaxDurValue(mdv);
     setMaxDurUnit(mdu);
@@ -146,33 +160,72 @@ export function LoopScheduleDialog({
     if (newUnit !== "days") setAt("");
   }, []);
 
+  // Toggle a trigger in the armed-set. If unchecking would leave the set
+  // empty, keep the trigger armed (dialog invariant: at least one).
+  const toggleTrigger = useCallback((name) => {
+    setTriggers((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        if (next.size <= 1) return prev; // reject going to empty
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  }, []);
+
+  const armsSchedule = triggers.has("schedule");
+  const armsOnCompletion = triggers.has("onCompletion");
+  const armsOnTasks = triggers.has("onTasks");
+
   const handleConfirm = useCallback(() => {
-    const schedule = { value: Math.max(1, Math.min(999, value || 1)), unit };
-    if (unit === "days" && at) {
-      schedule.at = localToUtcTime(at);
+    // Preserve the canonical order (schedule, onCompletion, onTasks) so the
+    // wire payload is stable regardless of the click order the user chose.
+    // Any other armed trigger (e.g. a future onChild, seeded from prompt
+    // frontmatter) is appended afterward instead of dropped — a non-nil
+    // `triggers` field REPLACES the stored list wholesale server-side, so
+    // silently filtering it here would permanently disarm it (mitto-987y.7).
+    const order = ["schedule", "onCompletion", "onTasks"];
+    const known = order.filter((t) => triggers.has(t));
+    const unknown = [...triggers].filter((t) => !order.includes(t));
+    const triggersList = [...known, ...unknown];
+    if (triggersList.length === 0) return; // Confirm button disabled anyway
+    const result = {
+      triggers: triggersList,
+      value: Math.max(1, Math.min(999, value || 1)),
+      unit,
+      maxIterations: Math.max(0, maxIterations || 0),
+      delaySeconds: Math.max(0, delay || 0),
+      maxDurationSeconds: valueUnitToSeconds(maxDurValue, maxDurUnit),
+    };
+    if (armsSchedule && unit === "days" && at) {
+      result.at = localToUtcTime(at);
     }
-    // Include maxIterations: 0 = unlimited, positive = capped run count.
-    schedule.maxIterations = Math.max(0, maxIterations || 0);
-    // Trigger type and related fields
-    schedule.trigger = trigger;
-    schedule.delaySeconds = Math.max(0, delay || 0);
-    schedule.maxDurationSeconds = valueUnitToSeconds(maxDurValue, maxDurUnit);
-    onConfirm?.(schedule);
+    if (armsOnTasks) {
+      result.condition = condition;
+    }
+    onConfirm?.(result);
   }, [
+    triggers,
     value,
     unit,
     at,
     maxIterations,
-    trigger,
     delay,
+    condition,
     maxDurValue,
     maxDurUnit,
+    armsSchedule,
+    armsOnTasks,
     onConfirm,
   ]);
 
   const handleCancel = useCallback(() => {
     onCancel?.();
   }, [onCancel]);
+
+  const canConfirm = triggers.size > 0;
 
   const footer = html`
     <button
@@ -184,6 +237,7 @@ export function LoopScheduleDialog({
     </button>
     <button
       onClick=${handleConfirm}
+      disabled=${!canConfirm}
       class="btn btn-primary btn-sm"
       data-testid="loop-schedule-confirm"
     >
@@ -209,93 +263,149 @@ export function LoopScheduleDialog({
           `
         }
 
-        <!-- Trigger tabs: Schedule | On completion -->
-        <div class="tabs tabs-border">
-          <input
-            type="radio"
-            name="loop-schedule-trigger"
-            role="tab"
-            aria-label="Schedule"
-            class="tab"
-            checked=${trigger === "schedule"}
-            onChange=${() => setTrigger("schedule")}
-            data-testid="loop-schedule-trigger-tab-schedule"
-          />
-          <input
-            type="radio"
-            name="loop-schedule-trigger"
-            role="tab"
-            aria-label="On completion"
-            class="tab"
-            checked=${trigger === "onCompletion"}
-            onChange=${() => setTrigger("onCompletion")}
-            data-testid="loop-schedule-trigger-tab-oncompletion"
-          />
-        </div>
+        <!-- Trigger checkboxes (mitto-r6j): armable set of {schedule, onCompletion, onTasks}. -->
+        <fieldset
+          class="flex flex-col gap-2"
+          data-testid="loop-schedule-triggers"
+        >
+          <legend class="text-mitto-text-muted dark:text-mitto-text-300 mb-1">
+            Fire on
+          </legend>
+          <div class="flex flex-wrap gap-4">
+            <label class="label cursor-pointer gap-2 py-0">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                checked=${armsSchedule}
+                onChange=${() => toggleTrigger("schedule")}
+                data-testid="loop-schedule-trigger-check-schedule"
+              />
+              <span class="label-text">Schedule</span>
+            </label>
+            <label class="label cursor-pointer gap-2 py-0">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                checked=${armsOnCompletion}
+                onChange=${() => toggleTrigger("onCompletion")}
+                data-testid="loop-schedule-trigger-check-oncompletion"
+              />
+              <span class="label-text">On completion</span>
+            </label>
+            <label class="label cursor-pointer gap-2 py-0">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                checked=${armsOnTasks}
+                onChange=${() => toggleTrigger("onTasks")}
+                data-testid="loop-schedule-trigger-check-ontasks"
+              />
+              <span class="label-text">On tasks</span>
+            </label>
+          </div>
+        </fieldset>
 
-        <!-- State-driven content: schedule row or on-completion delay -->
+        <!-- Per-trigger sub-panels: show iff the corresponding trigger is armed. -->
         ${
-          trigger === "schedule"
-            ? html`<div class="flex flex-wrap items-center gap-3">
-                <span
-                  class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                  >Run every</span
-                >
-                <input
-                  type="number"
-                  min="1"
-                  max="999"
-                  value=${value}
-                  onInput=${(e) => setValue(parseInt(e.target.value, 10) || 1)}
-                  class="input input-sm w-20 text-center shrink-0"
-                  data-testid="loop-schedule-value"
-                />
-                <select
-                  value=${unit}
-                  onChange=${handleUnitChange}
-                  class="select select-sm w-28 shrink-0"
-                  data-testid="loop-schedule-unit"
-                >
-                  <option value="minutes">minutes</option>
-                  <option value="hours">hours</option>
-                  <option value="days">days</option>
-                </select>
-                ${unit === "days" &&
-                html`
-                  <span
-                    class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                    >at</span
-                  >
-                  <input
-                    type="time"
-                    value=${at}
-                    onInput=${(e) => setAt(e.target.value)}
-                    class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
-                    placeholder="HH:MM"
-                    data-testid="loop-schedule-at"
-                  />
-                `}
-              </div>`
-            : html`<div class="flex flex-wrap items-center gap-3">
-                <span
-                  class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                  >Wait</span
-                >
-                <input
-                  type="number"
-                  min="5"
-                  value=${delay}
-                  onInput=${(e) =>
-                    setDelay(Math.max(5, parseInt(e.target.value, 10) || 5))}
-                  class="input input-sm w-20 text-center shrink-0"
-                  data-testid="loop-schedule-delay"
-                />
-                <span
-                  class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                >
-                  seconds after the agent finishes (min 5s)
-                </span>
-              </div>`
+          armsSchedule &&
+          html`<div
+            class="flex flex-wrap items-center gap-3"
+            data-testid="loop-schedule-panel-schedule"
+          >
+            <span
+              class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+              >Run every</span
+            >
+            <input
+              type="number"
+              min="1"
+              max="999"
+              value=${value}
+              onInput=${(e) => setValue(parseInt(e.target.value, 10) || 1)}
+              class="input input-sm w-20 text-center shrink-0"
+              data-testid="loop-schedule-value"
+            />
+            <select
+              value=${unit}
+              onChange=${handleUnitChange}
+              class="select select-sm w-28 shrink-0"
+              data-testid="loop-schedule-unit"
+            >
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+            </select>
+            ${unit === "days" &&
+            html`
+              <span
+                class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                >at</span
+              >
+              <input
+                type="time"
+                value=${at}
+                onInput=${(e) => setAt(e.target.value)}
+                class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
+                placeholder="HH:MM"
+                data-testid="loop-schedule-at"
+              />
+            `}
+          </div>`
+        }
+        ${
+          armsOnCompletion &&
+          html`<div
+            class="flex flex-wrap items-center gap-3"
+            data-testid="loop-schedule-panel-oncompletion"
+          >
+            <span
+              class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+              >Wait</span
+            >
+            <input
+              type="number"
+              min="5"
+              value=${delay}
+              onInput=${(e) =>
+                setDelay(Math.max(5, parseInt(e.target.value, 10) || 5))}
+              class="input input-sm w-20 text-center shrink-0"
+              data-testid="loop-schedule-delay"
+            />
+            <span
+              class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+            >
+              seconds after the agent finishes (min 5s)
+            </span>
+          </div>`
+        }
+        ${
+          armsOnTasks &&
+          html`<div
+            class="flex flex-col gap-2"
+            data-testid="loop-schedule-panel-ontasks"
+          >
+            <p class="text-mitto-text-muted dark:text-mitto-text-300">
+              The loop re-fires whenever tasks in .beads/ change matching the
+              condition below.
+            </p>
+            <label
+              class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+            >
+              Condition (optional CEL expression)
+            </label>
+            <input
+              type="text"
+              value=${condition}
+              onInput=${(e) => setCondition(e.target.value)}
+              class="input input-sm w-full"
+              data-testid="loop-schedule-condition"
+            />
+            <span
+              class="text-xs text-mitto-text-muted dark:text-mitto-text-300"
+            >
+              Leave empty to fire on any task change.
+            </span>
+          </div>`
         }
 
         <div class="flex flex-wrap items-center gap-3">

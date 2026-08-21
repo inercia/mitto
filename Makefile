@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-sdk-contract test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -18,18 +18,30 @@ GOMOD=$(GOCMD) mod
 GOFMT=$(GOCMD) fmt
 
 # Node parameters
-NPM=npm
+NPM=bun
 
 # Build flags
 LDFLAGS=-ldflags "-s -w"
 
+# macOS Keychain support requires cgo. Do not let an inherited
+# CGO_ENABLED=0 silently exclude the dependency's implementation.
+CGO_BUILD_ENV=
+ifeq ($(shell $(GOCMD) env GOOS),darwin)
+CGO_BUILD_ENV=CGO_ENABLED=1
+endif
+
 # Main build target
 build:
-	$(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/mitto
+	$(CGO_BUILD_ENV) $(GOBUILD) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/mitto
+
+# Debug build: no -s -w stripping, so external samplers (sample, atos) can
+# resolve Go symbols. Pair with --pprof / MITTO_PPROF=1 (mitto-aek).
+build-debug:
+	$(CGO_BUILD_ENV) $(GOBUILD) -o $(BINARY_NAME) ./cmd/mitto
 
 # Install to GOPATH/bin
 install:
-	$(GOCMD) install ./cmd/mitto
+	$(CGO_BUILD_ENV) $(GOCMD) install ./cmd/mitto
 
 # Run all unit tests (Go + JavaScript)
 test: test-go test-js
@@ -37,12 +49,15 @@ test: test-go test-js
 # Run Go unit tests (excludes integration tests)
 test-go:
 	@echo "Running Go unit tests..."
-	$(GOTEST) -v ./internal/... ./cmd/...
+	$(GOTEST) -v ./internal/... ./cmd/... ./pkg/... ./examples/...
 
-# Run JavaScript unit tests
+# Run JavaScript unit tests (Bun; happy-dom preloaded via bunfig.toml).
+# `web/static` scope matches the roots of the old Jest config and keeps
+# `bun test`'s recursive discovery away from `tests/ui/specs/*.spec.ts`
+# (Playwright specs, which use an incompatible test runner).
 test-js: deps-js
 	@echo "Running JavaScript tests..."
-	$(NPM) test
+	bun test web/static
 
 # Validate builtin model-tag references against the canonical Go tag set.
 # Fails if any builtin prompt references a modelTag not in config.CanonicalModelTags(),
@@ -59,6 +74,42 @@ check-model-tags:
 check-stderr-patterns:
 	@echo "Validating builtin agent stderr patterns..."
 	$(GOTEST) -run 'TestBuiltinAgents_StderrPatternsCompile' ./internal/agents/
+
+# Umbrella target that runs every static prompt/model validator (mitto-11m).
+# Wired from .github/workflows/tests.yml so a broken fragment reference, typo'd
+# modelTag, or invalid prompt YAML fails CI before unit tests even run.
+# Two validators:
+#   1. check-model-tags — pure Go tests, no MITTO_DIR needed.
+#   2. mitto prompts verify — needs the embedded builtin prompts deployed to
+#      MITTO_DIR (fresh checkouts have neither), so we build+deploy first.
+check-prompts: check-model-tags build
+	@echo "Deploying embedded builtin prompts to MITTO_DIR for verification..."
+	./$(BINARY_NAME) prompts update-builtin --force
+	@echo "Validating prompts and fragments (schema, templates, fragment refs)..."
+	./$(BINARY_NAME) prompts verify
+
+# Regenerate the SDK's generated .d.ts declaration files (mitto-7gta.20) from
+# its JSDoc-annotated plain-JS source via `tsc --emitDeclarationOnly
+# --allowJs --checkJs`. Output: web/static/sdk/types/ (committed — see
+# docs/devel/js-client-library.md §1). The SDK stays plain JavaScript; this
+# adds no build step for consumers.
+sdk-types: deps-js
+	@echo "Generating SDK type declarations..."
+	cd web/static/sdk && bunx tsc -p tsconfig.json
+
+# Fails if the committed web/static/sdk/types/ declarations are stale
+# relative to the JSDoc-annotated source (mirrors the CodeMirror-bundle
+# freshness check below). Untracked output is checked too, so a brand-new
+# SDK module whose .d.ts was never committed also fails the gate.
+# Reproduce a failure locally with: make sdk-types
+check-sdk-types: sdk-types
+	@if ! git diff --quiet -- web/static/sdk/types || \
+		[ -n "$$(git ls-files --others --exclude-standard -- web/static/sdk/types)" ]; then \
+		echo "SDK type declarations are out of date. Run 'make sdk-types' and commit web/static/sdk/types/." >&2; \
+		git diff --stat -- web/static/sdk/types; \
+		git ls-files --others --exclude-standard -- web/static/sdk/types; \
+		exit 1; \
+	fi
 
 # =============================================================================
 # Integration & UI Tests
@@ -82,6 +133,15 @@ test-integration-go: build build-mock-acp
 	@echo "Running Go integration tests..."
 	$(GOTEST) -v -tags=integration ./tests/integration/...
 
+# Run the SDK contract-smoke test only: drives both the Go SDK (pkg/api) and
+# the JS SDK (web/static/sdk, via a Bun subprocess) through the same
+# create/prompt/stream/queue/loop scenario against one in-process server with
+# the mock ACP agent, asserting the two clients observe identical behavior.
+# Skips the JS side (t.Skip) if `bun` is not on PATH.
+test-integration-sdk-contract: build build-mock-acp
+	@echo "Running SDK contract-smoke test..."
+	$(GOTEST) -v -tags=integration ./tests/integration/inprocess/... -run TestSDKContract_GoAndJSAgree
+
 # Run CLI integration tests only
 test-integration-cli: build build-mock-acp
 	@echo "Running CLI integration tests..."
@@ -102,27 +162,47 @@ test-integration-runner: build
 	@echo "Running runner integration tests..."
 	$(GOTEST) -v ./internal/runner/... -run TestRunnerFallback
 
+# Run the restricted-runner end-to-end smoke test (mitto prompt + mock ACP)
+test-runner-smoke: build build-mock-acp
+	@echo "Running restricted-runner smoke test..."
+	./tests/manual/restricted-runner-smoke.sh
+
+# Run the restricted-runner smoke-script assertion unit test (no build deps,
+# cross-platform; verifies the assert_runner_log_line contract against
+# synthetic log inputs, including the Linux+firejail hard-fail branch).
+test-runner-smoke-assert:
+	@echo "Running restricted-runner smoke-assert unit test..."
+	./tests/manual/test-restricted-runner-smoke-assert.sh
+
+# Regression guard for mitto-txpp.4 — pins the "Bun is the package manager"
+# invariants (bun.lock present, package-lock.json gone, no npm ci/install,
+# no npx outside the Playwright carve-out, workflow uses setup-bun and
+# hashes bun.lock, README documents Bun). Cross-platform, no build deps.
+test-bun-tooling:
+	@echo "Running Bun tooling smoke test..."
+	./tests/manual/bun-tooling-smoke.sh
+
 # Run all integration tests (Go-based, uses mock ACP)
 test-integration: test-integration-go
 
 # Run UI tests with Playwright
 test-ui: build tailwind build-mock-acp
 	@echo "Running UI tests..."
-	npx playwright test --config=tests/ui/playwright.config.ts
+	bunx playwright test --config=tests/ui/playwright.config.ts
 
 # Run UI tests in headed mode (visible browser)
 test-ui-headed: build tailwind build-mock-acp
 	@echo "Running UI tests (headed)..."
-	npx playwright test --config=tests/ui/playwright.config.ts --headed
+	bunx playwright test --config=tests/ui/playwright.config.ts --headed
 
 # Run UI tests in debug mode
 test-ui-debug: build tailwind build-mock-acp
 	@echo "Running UI tests (debug)..."
-	npx playwright test --config=tests/ui/playwright.config.ts --debug
+	bunx playwright test --config=tests/ui/playwright.config.ts --debug
 
 # Show Playwright test report
 test-ui-report:
-	npx playwright show-report tests/ui/playwright-report
+	bunx playwright show-report tests/ui/playwright-report
 
 # Run all tests (unit + integration + UI)
 test-all: test test-integration test-ui
@@ -130,7 +210,7 @@ test-all: test test-integration test-ui
 # Setup test environment (install Playwright browsers, etc.)
 test-setup: deps
 	@echo "Setting up test environment..."
-	npx playwright install chromium
+	bunx playwright install chromium
 	@echo "Test environment ready."
 
 # Clean test artifacts
@@ -171,12 +251,12 @@ fmt-check:
 # Format documentation markdown files (requires prettier)
 fmt-docs: deps-js
 	@echo "Formatting documentation markdown files..."
-	npx prettier --write "docs/**/*.md"
+	bunx prettier --write "docs/**/*.md"
 
 # Check documentation formatting (fails if files need formatting)
 fmt-docs-check: deps-js
 	@echo "Checking documentation formatting..."
-	npx prettier --check "docs/**/*.md"
+	bunx prettier --check "docs/**/*.md"
 
 # Lint Go code (requires golangci-lint)
 lint-go:
@@ -245,7 +325,7 @@ deps-go:
 deps-js:
 	@if [ ! -d "node_modules" ]; then \
 		echo "Installing JavaScript dependencies..."; \
-		$(NPM) install; \
+		bun install --frozen-lockfile; \
 	fi
 
 # Build Tailwind CSS (generates web/static/tailwind.css)
@@ -294,7 +374,7 @@ build-mac-app: deps-go
 	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(APP_BINARY)" ./cmd/mitto-app
 	@# Build and bundle the CLI binary (used for MCP STDIO proxy)
 	@echo "Compiling $(BINARY_NAME) CLI..."
-	$(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(BINARY_NAME)" ./cmd/mitto
+	CGO_ENABLED=1 $(GOBUILD) $(LDFLAGS) -o "$(APP_BUNDLE)/Contents/MacOS/$(BINARY_NAME)" ./cmd/mitto
 	@# Copy Info.plist
 	@cp platform/mac/Info.plist "$(APP_BUNDLE)/Contents/"
 	@# Copy icon

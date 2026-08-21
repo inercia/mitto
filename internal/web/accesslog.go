@@ -276,6 +276,13 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 		identity := &middleware.AuthIdentity{}
 		r = r.WithContext(context.WithValue(r.Context(), middleware.ContextKeyAuthIdentity, identity))
 
+		// Same trick for security anomalies raised during login (currently just
+		// the Split-IP CSRF fingerprint mismatch). The inner login handler
+		// writes into this holder via middleware.SetSplitIPFlag; we read it
+		// after ServeHTTP returns and promote the event type accordingly.
+		anomaly := &middleware.AuthAnomaly{}
+		r = r.WithContext(context.WithValue(r.Context(), middleware.ContextKeyAuthAnomaly, anomaly))
+
 		// Wrap response writer to capture status code
 		wrapped := &accessLogResponseWriter{
 			ResponseWriter: w,
@@ -289,6 +296,14 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 		eventType := a.determineEventType(r, wrapped.statusCode, isExternal)
 		if eventType == "" {
 			return // Not a security-relevant event, skip logging
+		}
+
+		// Promote the event type when the inner handler flagged a Split-IP
+		// CSRF fingerprint mismatch, so the anomaly is attributable to its
+		// underlying login outcome (e.g. "login_success+split_ip",
+		// "login_failed+split_ip") without inventing a new event taxonomy.
+		if anomaly.SplitIP {
+			eventType += "+split_ip"
 		}
 
 		// Extract username: prefer the mutable holder written by AuthMiddleware

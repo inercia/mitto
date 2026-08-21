@@ -41,6 +41,15 @@ const (
 // which an attacker cannot do due to same-origin policy restrictions on cookies.
 type CSRFManager struct {
 	apiPrefix string // API prefix for checking exempt paths
+
+	// tokenAuthChecker, when set, lets CSRFMiddleware exempt requests carrying a
+	// valid shared-token bearer credential (mitto-7gta.26) from the double-submit
+	// cookie check. CSRF wraps OUTSIDE auth in the middleware chain (server.go),
+	// so it cannot read an auth decision from the request context — this checker
+	// is the seam that lets it validate the token independently. It MUST validate
+	// the token, not merely detect the Authorization header: exempting on header
+	// presence alone would be a CSRF bypass for cookie-authenticated browsers.
+	tokenAuthChecker func(*http.Request) bool
 }
 
 // NewCSRFManager creates a new CSRF manager.
@@ -51,6 +60,13 @@ func NewCSRFManager() *CSRFManager {
 // SetAPIPrefix sets the API prefix for checking exempt paths.
 func (c *CSRFManager) SetAPIPrefix(prefix string) {
 	c.apiPrefix = prefix
+}
+
+// SetTokenAuthChecker installs a validator that CSRFMiddleware consults to
+// exempt requests authenticated via a shared bearer token. Pass nil to disable
+// the exemption (the default; existing double-submit-cookie behaviour only).
+func (c *CSRFManager) SetTokenAuthChecker(checker func(*http.Request) bool) {
+	c.tokenAuthChecker = checker
 }
 
 // Close is a no-op for the stateless CSRF manager.
@@ -133,10 +149,7 @@ func VerifyIPFromToken(tokenValue, ip, userAgent string) bool {
 // SetCSRFCookie sets the CSRF token cookie on the response.
 // The request is used to determine if we're on localhost (to set Secure flag appropriately).
 func (c *CSRFManager) SetCSRFCookie(w http.ResponseWriter, r *http.Request, token string) {
-	// Determine if we should set Secure flag.
-	// WKWebView (macOS app) doesn't send Secure cookies over http://localhost,
-	// so we need to set Secure=false for localhost connections.
-	secure := !isLocalhostRequest(r)
+	secure := shouldUseSecureCookie(r)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookieName,
@@ -254,6 +267,17 @@ func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 
 		// Skip CSRF check for WebSocket upgrade requests
 		if r.Header.Get("Upgrade") == "websocket" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Skip CSRF check for requests carrying a valid shared bearer token
+		// (mitto-7gta.26). Programmatic clients (SDK, CLI) authenticate via
+		// Authorization: Bearer <token> and never hold the CSRF cookie/header
+		// pair a browser session would. The checker VALIDATES the token, not
+		// merely detects the header, so a garbage/invalid header still falls
+		// through to the normal double-submit cookie enforcement below.
+		if c.tokenAuthChecker != nil && c.tokenAuthChecker(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

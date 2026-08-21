@@ -24,10 +24,12 @@ import {
   ROLE_USER,
   ROLE_AGENT,
   ROLE_THOUGHT,
+  ROLE_ERROR,
   generatePromptId,
   savePendingPrompt,
   removePendingPrompt,
   getPendingPromptsForSession,
+  limitMessages,
 } from "../lib.js";
 
 /**
@@ -40,9 +42,9 @@ import {
  * @param {Function} props.clearActionButtons
  * @param {Function} props.setSessions
  * @param {Function} props.sendToSession — (sessionId, msg) => boolean
- * @param {Function} props.waitForSessionConnection — (sessionId, timeout?) => Promise<WebSocket>
+ * @param {Function} props.waitForSessionConnection — (sessionId, timeout?) => Promise<import("../sdk/index.js").SessionStream>
  * @param {Function} props.isConnectionHealthy — (sessionId) => boolean
- * @param {{ current: Object<string, WebSocket> }} props.sessionWsRefs — from C1
+ * @param {{ current: Object<string, import("../sdk/index.js").SessionStream> }} props.sessionWsRefs — from C1 (mitto-7gta.30)
  * @param {boolean} props.isMobileDevice — from C3, tunes INITIAL_ACK_TIMEOUT_MS
  * @param {{ current: Object<string, { resolve, reject, timeoutId }> }} props.pendingSendsRef
  * @param {{ current: Object<string, { promptId: string, seq: number }> }} props.lastConfirmedPromptRef
@@ -51,6 +53,7 @@ import {
  *   cancelPrompt: Function,
  *   forceReset: Function,
  *   retryPendingPrompts: Function,
+ *   rejectOversizedPromptsForSession: Function,
  *   resolvePendingSendsForSession: Function
  * }}
  */
@@ -100,6 +103,36 @@ export function useWSDeliveryVerification({
     }
   }, []);
 
+  // Close code 1009 means the server rejected the frame before it could parse
+  // prompt_id. Quarantine every pending prompt for this session so reconnect
+  // recovery cannot replay the same poison frame indefinitely.
+  const rejectOversizedPromptsForSession = useCallback((sessionId) => {
+    const message =
+      "Message is too large to send. Shorten it or attach the content as a file.";
+    const pending = getPendingPromptsForSession(sessionId);
+    for (const { promptId } of pending) {
+      removePendingPrompt(promptId);
+      const inFlight = pendingSendsRef.current[promptId];
+      if (inFlight) {
+        clearTimeout(inFlight.timeoutId);
+        inFlight.reject(new Error(message));
+        delete pendingSendsRef.current[promptId];
+      }
+    }
+    setSessions((prev) => {
+      const session = prev[sessionId];
+      if (!session) return prev;
+      const messages = limitMessages([
+        ...session.messages,
+        { role: ROLE_ERROR, text: message, timestamp: Date.now() },
+      ]);
+      return {
+        ...prev,
+        [sessionId]: { ...session, messages, isStreaming: false },
+      };
+    });
+  }, []);
+
   /**
    * Send a prompt to the active session.
    * Returns a Promise that resolves on ACK or rejects on timeout/failure.
@@ -118,15 +151,14 @@ export function useWSDeliveryVerification({
         throw new Error("No active session");
       }
 
-      // Check if WebSocket is connected and healthy
+      // Check if the session stream is connected and healthy
       let ws = sessionWsRefs.current[activeSessionId];
       const isHealthy = isConnectionHealthy(activeSessionId) ?? true;
-      const needsReconnect =
-        !ws || ws.readyState !== WebSocket.OPEN || !isHealthy;
+      const needsReconnect = !ws || ws.state !== "open" || !isHealthy;
 
       if (needsReconnect) {
         console.log(
-          `Connection needs reconnect before sending (ws=${!!ws}, readyState=${ws?.readyState}, healthy=${isHealthy})`,
+          `Connection needs reconnect before sending (ws=${!!ws}, state=${ws?.state}, healthy=${isHealthy})`,
         );
         // Force close any existing zombie connection
         if (ws) {
@@ -379,6 +411,7 @@ export function useWSDeliveryVerification({
     cancelPrompt,
     forceReset,
     retryPendingPrompts,
+    rejectOversizedPromptsForSession,
     resolvePendingSendsForSession,
   };
 }

@@ -17,7 +17,8 @@
 
 const { useState, useEffect, useCallback, useMemo, useRef } = window.preact;
 
-import { secureFetch, endpoints } from "../../../utils/index.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
+import { errorMessage } from "../../../utils/sdkErrors.js";
 import { useIssueLabels } from "./useIssueLabels.js";
 import { useIssueComments } from "./useIssueComments.js";
 import { useCreateMode } from "./useCreateMode.js";
@@ -53,6 +54,14 @@ export function useBeadsDetailPanel({
   loadingIssueId,
   loadError,
   onRetry,
+  // In-viewer navigation history (mitto-qluh.2). Threaded through from
+  // BeadsIssueView so PanelBody can render Back/Forward buttons wired to
+  // the viewer's history stack. Undefined when the panel is used outside
+  // the single-issue viewer.
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   const isOpen = isCreating || !!issue || !!isLoading;
   const lastIssueRef = useRef(issue);
@@ -162,41 +171,33 @@ export function useBeadsDetailPanel({
       if (improvingDesc || !text || !text.trim()) return;
       setImprovingDesc(true);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+      // Covers two 55s server attempts plus Retry-After and client overhead.
+      const timeoutId = setTimeout(() => controller.abort(), 125000);
       try {
-        const response = await secureFetch(endpoints.aux.improvePrompt(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: text,
-            workspace_uuid:
-              (typeof window !== "undefined" &&
-                window.mittoCurrentWorkspaceUUID) ||
-              (typeof sessionStorage !== "undefined" &&
-                sessionStorage.getItem("mittoCurrentWorkspaceUUID")) ||
-              "",
-          }),
-          signal: controller.signal,
-        });
+        const workspaceUUID =
+          (typeof window !== "undefined" && window.mittoCurrentWorkspaceUUID) ||
+          (typeof sessionStorage !== "undefined" &&
+            sessionStorage.getItem("mittoCurrentWorkspaceUUID")) ||
+          "";
+        const respData = await getSdkClient().misc.improvePrompt(
+          text,
+          workspaceUUID,
+          { signal: controller.signal },
+        );
         clearTimeout(timeoutId);
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(
-            errData?.error?.message ||
-              errData?.message ||
-              "Failed to improve description",
-          );
-        }
-        const respData = await response.json();
         if (respData.improved_prompt) {
           setText(respData.improved_prompt);
         }
       } catch (err) {
         clearTimeout(timeoutId);
+        // The SDK wraps every fetch-level failure (including an aborted
+        // request) in a MittoNetworkError, with the original DOMException
+        // preserved as `.cause` — so the abort check must look there, not at
+        // `err.name` directly (which is always "MittoNetworkError" here).
         const msg =
-          err.name === "AbortError"
+          err.name === "AbortError" || err.cause?.name === "AbortError"
             ? "Request timed out. Please try again."
-            : err.message || "Failed to improve description";
+            : errorMessage(err, "Failed to improve description");
         showToast && showToast({ style: "error", title: msg });
       } finally {
         setImprovingDesc(false);
@@ -323,6 +324,12 @@ export function useBeadsDetailPanel({
     subtasks,
     onSelectIssue,
     showToast,
+    // In-viewer navigation history (mitto-qluh.2) — passed through verbatim
+    // to PanelBody so the bottom bar can wire Back/Forward buttons.
+    canGoBack,
+    canGoForward,
+    onGoBack,
+    onGoForward,
     // Bundles (7)
     create,
     view: {

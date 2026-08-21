@@ -9,11 +9,38 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// defaultCacheTTL is the backstop expiry for cached read payloads. Writer-side
-// invalidation is the primary freshness mechanism; the TTL just bounds staleness
-// when an external process mutates the bd database without going through this
-// CachingClient (e.g. bd run manually from the shell).
-const defaultCacheTTL = 60 * time.Second
+// DefaultCacheTTL is the backstop expiry for cached read payloads. Writer-side
+// invalidation (defer c.Invalidate(dir) on every mutating method) plus the
+// .beads/ fsnotify watcher are the primary freshness mechanisms; this TTL only
+// bounds staleness in the corner cases those two paths can miss:
+//   - fsnotify holes on NFS / SMB / other network mounts,
+//   - Linux inotify per-user watch-limit exhaustion,
+//   - the watch-registration race (a workspace read before its .beads/ watch is
+//     installed),
+//   - the 2 s BeadsSelfSuppressGrace window hiding a rapid external write.
+//
+// A 10 min backstop is a substantial hit-rate win over the historical 60 s
+// default (mitto-9ni) while remaining a strict upper bound for the corner
+// cases above. Overridable per-deployment via web.beads.read_cache_ttl in
+// settings.json / .mittorc.
+const (
+	DefaultCacheTTL = 10 * time.Minute
+
+	// cacheFillTimeout bounds the complete detached singleflight fetch, including
+	// any read retry. commandCleanupTimeout bounds os/exec cleanup after that
+	// context expires. Keep their sum below the 55s bd-backed handler budget.
+	cacheFillTimeout      = 50 * time.Second
+	commandCleanupTimeout = 2 * time.Second
+
+	// CacheFillMaxElapsed is exported so the HTTP layer can pin the invariant
+	// that a cache leader plus command cleanup finishes before its caller budget.
+	CacheFillMaxElapsed = cacheFillTimeout + commandCleanupTimeout
+)
+
+type cacheGeneration struct {
+	global uint64
+	dir    uint64
+}
 
 // cacheEntry is a single cached read payload. For JSON reads (List, Ready,
 // Status, ListAllLabels) payload holds the raw JSON bytes. For ConfigShow the
@@ -30,11 +57,16 @@ type cacheEntry struct {
 // workspace's cache slot. Entries expire after a TTL floor as a backstop
 // against missed external invalidation events.
 type CachingClient struct {
-	inner Client
-	ttl   time.Duration
+	inner       Client
+	ttl         time.Duration
+	fillTimeout time.Duration
 
 	mu      sync.RWMutex
 	entries map[string]map[string]cacheEntry // dir -> methodTag -> entry
+	// Generations prevent a fetch that started before invalidation from storing
+	// its now-stale result after the invalidation completed.
+	globalGeneration uint64
+	dirGenerations   map[string]uint64
 
 	sf singleflight.Group
 
@@ -70,9 +102,27 @@ type CacheMetrics struct {
 // wiring code.
 func NewCachingClient(inner Client) *CachingClient {
 	return &CachingClient{
-		inner:   inner,
-		ttl:     defaultCacheTTL,
-		entries: make(map[string]map[string]cacheEntry),
+		inner:          inner,
+		ttl:            DefaultCacheTTL,
+		fillTimeout:    cacheFillTimeout,
+		entries:        make(map[string]map[string]cacheEntry),
+		dirGenerations: make(map[string]uint64),
+	}
+}
+
+// NewCachingClientWithTTL wraps inner with an in-memory read cache using
+// the supplied ttl. Non-positive ttl falls back to DefaultCacheTTL so
+// callers can pass a config-derived value without pre-validation.
+func NewCachingClientWithTTL(inner Client, ttl time.Duration) *CachingClient {
+	if ttl <= 0 {
+		ttl = DefaultCacheTTL
+	}
+	return &CachingClient{
+		inner:          inner,
+		ttl:            ttl,
+		fillTimeout:    cacheFillTimeout,
+		entries:        make(map[string]map[string]cacheEntry),
+		dirGenerations: make(map[string]uint64),
 	}
 }
 
@@ -82,6 +132,10 @@ func NewCachingClient(inner Client) *CachingClient {
 func (c *CachingClient) evictDir(dir string) {
 	c.mu.Lock()
 	delete(c.entries, dir)
+	if c.dirGenerations == nil {
+		c.dirGenerations = make(map[string]uint64)
+	}
+	c.dirGenerations[dir]++
 	c.mu.Unlock()
 }
 
@@ -109,6 +163,7 @@ func (c *CachingClient) InvalidateFromWatcher(dir string) {
 func (c *CachingClient) InvalidateAll() {
 	c.mu.Lock()
 	c.entries = make(map[string]map[string]cacheEntry)
+	c.globalGeneration++
 	c.mu.Unlock()
 	c.invalidWorkspaceRemoved.Add(1)
 }
@@ -171,9 +226,21 @@ func (c *CachingClient) Metrics() CacheMetrics {
 	}
 }
 
-// store records a cache entry for (dir, tag).
-func (c *CachingClient) store(dir, tag string, entry cacheEntry) {
+func (c *CachingClient) generationFor(dir string) cacheGeneration {
+	c.mu.RLock()
+	generation := cacheGeneration{global: c.globalGeneration, dir: c.dirGenerations[dir]}
+	c.mu.RUnlock()
+	return generation
+}
+
+// storeIfCurrent records an entry only if no invalidation occurred after the
+// fetch captured generation. The lock makes comparison and store atomic.
+func (c *CachingClient) storeIfCurrent(dir, tag string, entry cacheEntry, generation cacheGeneration) {
 	c.mu.Lock()
+	if c.globalGeneration != generation.global || c.dirGenerations[dir] != generation.dir {
+		c.mu.Unlock()
+		return
+	}
 	slot, ok := c.entries[dir]
 	if !ok {
 		slot = make(map[string]cacheEntry)
@@ -186,6 +253,12 @@ func (c *CachingClient) store(dir, tag string, entry cacheEntry) {
 // doJSON is the shared cache-then-singleflight body for read methods returning
 // []byte. It skips the cache entirely for uninitialized dirs (see cache.go
 // contract note) so the isInitialized short-circuit payload is never stored.
+//
+// Uses sf.DoChan (not sf.Do) so followers can abandon the wait on ctx
+// cancellation rather than block on the leader's WaitGroup past their own
+// request deadline (mitto-kij). The leader is detached from any one caller but
+// has its own total budget; a late result is cached only if no invalidation
+// occurred while it was in flight (mitto-b4zs).
 func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(context.Context) ([]byte, error)) ([]byte, error) {
 	if !isInitialized(dir) {
 		return fetch(ctx)
@@ -195,26 +268,36 @@ func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(
 		return entry.payload, nil
 	}
 	key := dir + "\x00" + tag
-	v, err, shared := c.sf.Do(key, func() (any, error) {
+	ch := c.sf.DoChan(key, func() (any, error) {
 		if entry, ok := c.lookup(dir, tag); ok {
 			c.hits.Add(1)
 			return entry.payload, nil
 		}
 		c.misses.Add(1)
-		out, err := fetch(ctx)
+		generation := c.generationFor(dir)
+		// Detach from the caller so one caller cannot abort a shared fetch, but
+		// cap the entire fetch (including retries) below the HTTP request budget.
+		fillCtx, cancel := context.WithTimeout(context.Background(), c.fillTimeout)
+		defer cancel()
+		out, err := fetch(fillCtx)
 		if err != nil {
 			return nil, err
 		}
-		c.store(dir, tag, cacheEntry{payload: out, capturedAt: time.Now()})
+		c.storeIfCurrent(dir, tag, cacheEntry{payload: out, capturedAt: time.Now()}, generation)
 		return out, nil
 	})
-	if shared {
-		c.singleflightShared.Add(1)
+	select {
+	case r := <-ch:
+		if r.Shared {
+			c.singleflightShared.Add(1)
+		}
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.([]byte), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	if err != nil {
-		return nil, err
-	}
-	return v.([]byte), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +335,8 @@ func (c *CachingClient) ListAllLabels(ctx context.Context, dir string) ([]byte, 
 // ConfigShow returns the cached bd config map for dir, populating on miss.
 // Uses the same singleflight group as the []byte readers, but stores the
 // decoded map in a dedicated cacheEntry field so the two representations do
-// not collide.
+// not collide. Mirrors doJSON's DoChan + ctx-observing select so followers
+// do not block past their request deadline (mitto-kij).
 func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]string, error) {
 	const tag = "configshow"
 	if !isInitialized(dir) {
@@ -263,26 +347,34 @@ func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]
 		return entry.configMap, nil
 	}
 	key := dir + "\x00" + tag
-	v, err, shared := c.sf.Do(key, func() (any, error) {
+	ch := c.sf.DoChan(key, func() (any, error) {
 		if entry, ok := c.lookup(dir, tag); ok && entry.configMap != nil {
 			c.hits.Add(1)
 			return entry.configMap, nil
 		}
 		c.misses.Add(1)
-		out, err := c.inner.ConfigShow(ctx, dir)
+		generation := c.generationFor(dir)
+		fillCtx, cancel := context.WithTimeout(context.Background(), c.fillTimeout)
+		defer cancel()
+		out, err := c.inner.ConfigShow(fillCtx, dir)
 		if err != nil {
 			return nil, err
 		}
-		c.store(dir, tag, cacheEntry{configMap: out, capturedAt: time.Now()})
+		c.storeIfCurrent(dir, tag, cacheEntry{configMap: out, capturedAt: time.Now()}, generation)
 		return out, nil
 	})
-	if shared {
-		c.singleflightShared.Add(1)
+	select {
+	case r := <-ch:
+		if r.Shared {
+			c.singleflightShared.Add(1)
+		}
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.(map[string]string), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	if err != nil {
-		return nil, err
-	}
-	return v.(map[string]string), nil
 }
 
 // Show returns the cached payload for `bd show <id>` in dir, populating on
@@ -306,6 +398,13 @@ func (c *CachingClient) Show(ctx context.Context, dir, id string) ([]byte, error
 // caching.
 func (c *CachingClient) ListClosedIDs(ctx context.Context, dir string) ([]string, error) {
 	return c.inner.ListClosedIDs(ctx, dir)
+}
+
+// Statuses is called from mitto_conversation_wait's beads_issues_reached_state
+// branch. Waiters need to observe fresh statuses on every re-evaluation, so
+// this deliberately bypasses the cache.
+func (c *CachingClient) Statuses(ctx context.Context, dir string, ids []string) (map[string]string, error) {
+	return c.inner.Statuses(ctx, dir, ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +485,12 @@ func (c *CachingClient) Sync(ctx context.Context, dir, integration, action strin
 func (c *CachingClient) EnsureInitialized(ctx context.Context, dir string) error {
 	defer c.Invalidate(dir)
 	return c.inner.EnsureInitialized(ctx, dir)
+}
+
+// MigrateLocal invalidates dir then delegates to inner.
+func (c *CachingClient) MigrateLocal(ctx context.Context, dir string) ([]byte, error) {
+	defer c.Invalidate(dir)
+	return MigrateLocal(ctx, c.inner, dir)
 }
 
 // MigrateRemote invalidates dir then delegates to inner. A schema migration

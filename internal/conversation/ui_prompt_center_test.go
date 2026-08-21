@@ -110,7 +110,7 @@ func (r *promptRecorderObserver) OnUIPromptDismiss(id, reason string) {
 	r.record("dismiss:" + id + ":" + reason)
 }
 func (r *promptRecorderObserver) OnNotification(req UINotifyRequest)            { r.record("notify") }
-func (r *promptRecorderObserver) OnAgentMessage(int64, string)                  {}
+func (r *promptRecorderObserver) OnAgentMessage(int64, string, string)          {}
 func (r *promptRecorderObserver) OnAgentThought(int64, string)                  {}
 func (r *promptRecorderObserver) OnToolCall(int64, string, string, string)      {}
 func (r *promptRecorderObserver) OnToolUpdate(int64, string, *string)           {}
@@ -126,7 +126,7 @@ func (r *promptRecorderObserver) OnQueueReordered([]session.QueuedMessage)      
 func (r *promptRecorderObserver) OnError(string)                                {}
 func (r *promptRecorderObserver) OnPromptComplete(int)                          {}
 func (r *promptRecorderObserver) OnActionButtons([]ActionButton)                {}
-func (r *promptRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *promptRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string, *session.PromptProvenance) {
 }
 func (r *promptRecorderObserver) OnACPStopped(string) {}
 func (r *promptRecorderObserver) OnACPStarted()       {}

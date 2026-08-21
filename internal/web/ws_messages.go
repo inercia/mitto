@@ -224,6 +224,37 @@ const (
 	//         "rss_bytes": uint64, "threshold_bytes": uint64, "session_count": int }
 	WSMsgTypeMemoryRecycled = "memory_recycled"
 
+	// WSMsgTypeHealthRecycled notifies that the GC's health-recycle tiers (Tier 5:
+	// saturated + idle, or Tier 6: confirmed-degraded even while busy) stopped a
+	// shared ACP process that had stopped completing session/new or session/load
+	// RPCs (mitto-aoo) — e.g. the "query closed before response received" wedge,
+	// which previously produced 38 consecutive failures over 9h with no other
+	// user-visible signal. Affected conversations resume transparently against a
+	// freshly-built process on next focus. Broadcast on /api/events to all
+	// connected clients. Data: { "workspace_uuid": string, "workspace_name": string,
+	// "working_dir": string, "reason": string ("saturated_idle"|"confirmed_degraded"),
+	// "saturation_level": int, "session_count": int }
+	WSMsgTypeHealthRecycled = "agent_recycled"
+
+	// WSMsgTypeAgentDegraded notifies that a workspace's shared ACP process has
+	// entered or recovered from a degraded state (mitto-13n.3): saturated by
+	// repeated RPC timeouts, permanently gated on a timed-out MCP-init
+	// handshake, or wedged in an MCP-init handshake that started but never
+	// completed. Unlike WSMsgTypeHealthRecycled (fired AFTER the process is
+	// stopped and only once the process is also fully idle), this fires as
+	// soon as GC Tier 5 detects the degraded predicate — closing the window
+	// where a busy or not-yet-idle degraded process gives the user no signal
+	// at all (previously observed lasting ~100 minutes with zero user-visible
+	// indication). Fired at most once per healthy<->degraded transition edge
+	// per workspace; the recovery edge (degraded=false) is NOT fired when the
+	// transition is itself a health recycle (WSMsgTypeHealthRecycled already
+	// covers that case). Broadcast on /api/events to all connected clients.
+	// Data: { "workspace_uuid": string, "workspace_name": string,
+	// "working_dir": string, "state": string
+	// ("process_saturated"|"mcp_init_gated"|"mcp_init_wedged"|""),
+	// "degraded": bool }
+	WSMsgTypeAgentDegraded = "agent_degraded"
+
 	// WSMsgTypeMCPInitializing notifies that the agent for a workspace is currently
 	// blocked waiting for one or more MCP servers to initialize (mitto-8ul.1). This is
 	// an informational "session/new may take longer than usual" hint the UI can use to
@@ -237,7 +268,9 @@ const (
 	// elapsed before all MCP servers finished handshake (mitto-8ul.1). The pending
 	// session/new (or session/load) call has been aborted with an actionable error. The
 	// UI can use this to display a persistent notification pointing at MCP configuration.
-	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string }.
+	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string,
+	// "mcp_servers": []string (nil/empty when the agent's stderr carried no per-server
+	// status line — mitto-m8nx AC2) }.
 	WSMsgTypeMCPInitTimedOut = "mcp_init_timed_out"
 
 	// WSMsgTypePrewarmPinAlert notifies that the adaptive pre-warming controller
@@ -354,6 +387,11 @@ const (
 	// Data: { "changed_dirs": []string, "timestamp": string (ISO 8601) }
 	WSMsgTypePromptsChanged = "prompts_changed"
 
+	// WSMsgTypeTaskLabelColorsUpdated notifies clients that the global ordered
+	// task-label color mapping changed and should be refetched.
+	// Data: {}
+	WSMsgTypeTaskLabelColorsUpdated = "task_label_colors_updated"
+
 	// WSMsgTypeBeadsChanged notifies that beads issues have changed on disk.
 	// Sent when another agent or CLI (bd, git pull, bd dolt pull) modifies the .beads/ directory.
 	// Clients should refresh their tasks/issues view when receiving this message.
@@ -408,6 +446,20 @@ const (
 	// prompt ends, or the agent dies.
 	// Data: { "session_id": string, "idle_ms": int64, "tool_title": string (optional), "is_prompting": true }
 	WSMsgTypeAgentWorking = "agent_working"
+
+	// WSMsgTypeSessionArchivePending is RESERVED: it is documented in
+	// docs/devel/websockets/protocol-spec.md (the archive state diagram) and
+	// handled by the frontend's global-events switch, but no server code
+	// path emits it today (mitto-7gta.16 audit: confirmed via `git log -S`
+	// there is no prior emitter either — this was spec/frontend-only from
+	// the start). Declared here purely so the string is not a magic literal
+	// on the frontend and the SDK's Go<->spec drift test
+	// (web/static/sdk/realtime/events.test.js) has a symbol to match on both
+	// sides. Wire it up to an actual Broadcast() call when the archive-
+	// pending UI state is implemented server-side; until then no code should
+	// reference this constant to broadcast.
+	// Data: { "session_id": string, "archive_pending": bool }
+	WSMsgTypeSessionArchivePending = "session_archive_pending"
 )
 
 // =============================================================================
@@ -440,7 +492,7 @@ type BufferedEvent struct {
 // EventPersister defines the interface for persisting buffered events.
 // This is implemented by session.Recorder to allow decoupled persistence.
 type EventPersister interface {
-	RecordAgentMessage(html string) error
+	RecordAgentMessage(html, markdown string) error
 	RecordAgentThought(text string) error
 	RecordToolCall(toolCallID, title, status, kind string, rawInput, rawOutput any) error
 	RecordToolCallUpdate(toolCallID string, status, title *string) error
@@ -451,7 +503,8 @@ type EventPersister interface {
 
 // AgentMessageData holds data for an agent message event.
 type AgentMessageData struct {
-	HTML string
+	HTML     string
+	Markdown string // Raw pre-conversion markdown, when available (mitto-pscc.3)
 }
 
 // AgentThoughtData holds data for an agent thought event.
@@ -513,14 +566,16 @@ func (b *EventBuffer) LastSeq() int64 {
 }
 
 // AppendAgentMessage appends an agent message chunk to the buffer.
-// If the last event is also an agent message, the text is concatenated and returns (lastSeq, false).
+// If the last event is also an agent message, the html and markdown are each
+// concatenated in lockstep and returns (lastSeq, false).
 // If this creates a new event, it uses the provided seq and returns (seq, true).
-func (b *EventBuffer) AppendAgentMessage(seq int64, html string) (int64, bool) {
+func (b *EventBuffer) AppendAgentMessage(seq int64, html, markdown string) (int64, bool) {
 	if len(b.events) > 0 {
 		last := &b.events[len(b.events)-1]
 		if last.Type == BufferedEventAgentMessage {
 			if data, ok := last.Data.(*AgentMessageData); ok {
 				data.HTML += html
+				data.Markdown += markdown
 				return last.Seq, false // Appended to existing event
 			}
 		}
@@ -528,7 +583,7 @@ func (b *EventBuffer) AppendAgentMessage(seq int64, html string) (int64, bool) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventAgentMessage,
 		Seq:  seq,
-		Data: &AgentMessageData{HTML: html},
+		Data: &AgentMessageData{HTML: html, Markdown: markdown},
 	})
 	return seq, true // Created new event
 }
@@ -667,7 +722,7 @@ func (e BufferedEvent) ReplayTo(observer conversation.SessionObserver) {
 		}
 	case BufferedEventAgentMessage:
 		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
-			observer.OnAgentMessage(e.Seq, data.HTML)
+			observer.OnAgentMessage(e.Seq, data.HTML, data.Markdown)
 		}
 	case BufferedEventToolCall:
 		if data, ok := e.Data.(*ToolCallData); ok {
@@ -702,7 +757,7 @@ func (e BufferedEvent) PersistTo(persister EventPersister) error {
 		}
 	case BufferedEventAgentMessage:
 		if data, ok := e.Data.(*AgentMessageData); ok && data.HTML != "" {
-			return persister.RecordAgentMessage(data.HTML)
+			return persister.RecordAgentMessage(data.HTML, data.Markdown)
 		}
 	case BufferedEventToolCall:
 		if data, ok := e.Data.(*ToolCallData); ok {

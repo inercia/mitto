@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -25,8 +27,10 @@ import (
 // All methods are prefixed with "pd" to avoid clashing with BackgroundSession's public API.
 type promptDeps interface {
 	// Prompt resolver
-	pdPromptResolver() PromptResolver // may return nil
+	pdPromptResolver() PromptResolver                   // may return nil
+	pdPromptFragmentsResolver() PromptFragmentsResolver // may return nil
 	pdWorkingDir() string
+	pdBeadsDatabaseMode() config.BeadsDatabaseMode
 
 	// Agent capabilities
 	pdAgentSupportsImages() bool
@@ -52,9 +56,26 @@ type promptDeps interface {
 	pdGetMetadataForID(id string) (session.Metadata, error)
 	pdListChildSessions() ([]session.Metadata, error)
 	pdIsChildPrompting(childSessionID string) bool
+	// pdChildQueueLength returns the number of pending queued prompts on the
+	// given child (or peer) session. Returns 0 when the store is unavailable
+	// or the length cannot be read — errors are swallowed, mirroring the
+	// best-effort semantics of pdListChildSessions / pdListWorkspacePeers.
+	pdChildQueueLength(childSessionID string) int
+	// pdListWorkspacePeers returns non-archived sessions that share this session's
+	// workspace (same working directory and ACP server), excluding self.
+	// Returns an empty slice when no store is available or no peers exist.
+	// Errors are best-effort — the caller swallows them like the sibling list.
+	pdListWorkspacePeers() ([]session.Metadata, error)
 
 	// MCP tool names from the auxiliary manager (empty when unavailable)
 	pdCachedMCPToolNames() []string
+
+	// pdPromptsSnapshot returns a lazy fn that snapshots the workspace prompt
+	// registry (names + enabled names) for the {{ .Prompts.Exists }} /
+	// {{ .Prompts.Enabled }} template predicates. May return nil when no
+	// PromptsCache is available (tests / suspended sessions), in which case
+	// the predicates fail-closed at render time.
+	pdPromptsSnapshot() func() *config.PromptsSnapshot
 
 	// User data from the store (nil when unavailable or empty)
 	pdGetUserData() (*session.UserData, error)
@@ -78,6 +99,11 @@ type promptDeps interface {
 
 	// Handshake
 	pdHasSharedProcess() bool
+	// pdSharedProcessHistory reports whether the shared process had previously
+	// completed at least one successful session RPC before this handshake
+	// attempt, corroborating -32603 "query closed" cause diagnosis (mitto-azk).
+	// Returns mittoAcp.ProcessHistoryUnknown when there is no shared process.
+	pdSharedProcessHistory() mittoAcp.ProcessHistory
 	pdCompleteDeferredHandshake() error
 	// pdRecommendedHandshakeDeadline returns the outer wall-clock budget the
 	// deferred session/new handshake should be bounded by (mitto-f51). Derived
@@ -111,6 +137,11 @@ type promptDeps interface {
 	// pdRecordSessionChange assigns a seq, persists a session-change timeline
 	// event via the recorder, and notifies observers. Used for the model-override pill.
 	pdRecordSessionChange(kind, value, previousValue string)
+	// pdRecordSessionChangeWithSeq (mitto-c36) is the seq-aware sibling used to
+	// emit the "context_cleared" pill with a seq reserved upstream in PromptWithMeta
+	// BEFORE the user-prompt seq, so the pill orders before the user prompt in the
+	// persisted transcript.
+	pdRecordSessionChangeWithSeq(seq int64, kind, value, previousValue string)
 
 	// Per-conversation prompt-argument cache (mitto-pchx.3): resolver returns the prompt's
 	// declared parameter list (with optional Cache config); Get/Set bridge to the in-memory store.
@@ -173,14 +204,100 @@ type promptDeps interface {
 	// with streaming suppressed so the flush turn stays out of the transcript.
 	pdFlushContextInPlace(ctx context.Context) error
 
+	// pdContextIsEmpty reports whether the current ACP session is provably empty
+	// (created fresh in this process, no turns dispatched since) — mitto-s9g2.
+	// Used by createFreshContextSession to skip a redundant clear on the first
+	// FreshContext loop iteration. Returns false (fail safe) for resumed/loaded
+	// sessions, where virginity cannot be asserted.
+	pdContextIsEmpty() bool
+
 	// Cold-start diagnostics (mitto-3mv WI-2). Nil-safe — no-op when the
 	// session's cold-start trace has not been begun or has been finalized.
 	pdColdPhase(name string, kv ...any)
+
+	// pdDismissActiveUIPrompt dismisses any active blocking mitto_ui_* prompt
+	// (MCP tool questions, permissions, etc.), if one is outstanding. No-op
+	// when there is none. Called at end-of-turn (mitto-nisb) so a prompt the
+	// agent never got an answer to (crash, watchdog, error) does not survive
+	// past the turn and get re-sent to a reconnecting client.
+	pdDismissActiveUIPrompt()
 }
 
 // promptDispatcher is a stateless collaborator holding safe synchronous chunks of
 // PromptWithMeta that contain no goto labels and no goroutines.
 type promptDispatcher struct{}
+
+// nestedArgsCallRE matches the two idiomatic forms of a PromptTextWithArgs
+// invocation in a resolved prompt body, capturing the "_Args" field name that
+// carries the nested inner arguments (mitto-47y.4). Both shapes are documented
+// on rules/07-prompts.md:
+//
+//	PromptTextWithArgs .Args.Prompt (ArgsMap "Prompt_Args")   → captures "Prompt_Args" in group 1
+//	PromptTextWithArgs .Args.Prompt .Args.Prompt_Args          → captures "Prompt_Args" in group 2
+//
+// The regex is deliberately narrow: it does NOT try to handle arbitrary
+// template expressions (e.g. computed picker names built via printf). Those
+// simply don't match and the validator stays silent (correct — we can't
+// reason about them statically).
+var nestedArgsCallRE = regexp.MustCompile(
+	`PromptTextWithArgs\s+[\.\w"]+\s+(?:\(\s*ArgsMap\s+"([^"]+)"|\.Args\.([A-Za-z_][A-Za-z0-9_]*))`,
+)
+
+// warnMissingNestedArgs scans the resolved prompt body for PromptTextWithArgs
+// calls and emits a single WARN when an MCP/agent-origin dispatch supplied the
+// bare picker key (e.g. "Prompt") but forgot the sibling "<PickerName>_Args"
+// key that carries the nested inner arguments. This is fail-open on the
+// validation itself: the render still proceeds and simply yields empty inner
+// values — the WARN just makes the dropped-arg bug visible in the log so
+// callers can fix their mirroring (see rules/07-prompts.md "Nested _Args").
+//
+// The heuristic distinguishes an intentional no-inner-args dispatch (bare
+// picker key ALSO absent → silent) from the mirroring bug (bare picker key
+// present, "_Args" sibling missing → WARN). It matches the loop-arg
+// mirroring lesson (memory mitto-rtdr).
+//
+// Warns at most once per dispatch on the FIRST missing "_Args" field — a
+// noisy per-occurrence log would flood on prompts that pick several nested
+// bodies. Missing logger / regex miss → silent no-op.
+func warnMissingNestedArgs(logger *slog.Logger, promptName, body string, args map[string]string) {
+	if logger == nil || body == "" {
+		return
+	}
+	matches := nestedArgsCallRE.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return
+	}
+	for _, m := range matches {
+		field := m[1]
+		if field == "" {
+			field = m[2]
+		}
+		if field == "" {
+			continue
+		}
+		if _, ok := args[field]; ok && args[field] != "" {
+			continue
+		}
+		// Only warn when the companion bare picker key (field with the "_Args"
+		// suffix stripped) IS present — otherwise the caller almost certainly
+		// meant "no inner args here" and staying silent is correct.
+		companion := strings.TrimSuffix(field, "_Args")
+		if companion == field {
+			// field did not end in "_Args" — not the mirroring bug shape.
+			continue
+		}
+		if v, ok := args[companion]; !ok || v == "" {
+			continue
+		}
+		logger.Warn(
+			"MCP dispatch: nested inner args missing; will render empty. See rules/07-prompts.md 'Nested _Args'.",
+			"prompt", promptName,
+			"missing_key", field,
+			"companion_key", companion,
+		)
+		return
+	}
+}
 
 // SenderID sentinels for non-human dispatch paths: queued messages (which include
 // MCP cross-session sends via mitto_conversation_send_prompt) and loop runs.
@@ -188,6 +305,22 @@ const (
 	senderIDQueue = "queue"
 	senderIDLoop  = "loop-runner"
 )
+
+// isTemplateExecuteError reports whether err is a text/template EXECUTE error
+// (template parsed OK but referenced a missing field/method at run time) as
+// opposed to a PARSE error (structural — unbalanced action, unknown template
+// ref, etc.). RenderPromptTemplate wraps the two classes with stable "parse
+// error:" / "render error:" prefixes (see internal/prompts/template.go); this
+// helper matches the render-error prefix. Used by resolveAndSubstitute to
+// downgrade agent-origin queue dispatches from fail-closed to fail-open on
+// execute errors only (mitto-z6f), preserving the mitto-e7u fail-closed
+// guarantee for structurally broken templates.
+func isTemplateExecuteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "render error:")
+}
 
 // resolveAndSubstitute covers the top of PromptWithMeta:
 //  1. Name-resolution: if meta.PromptName != "", resolve via promptResolver
@@ -256,6 +389,17 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 	}
 
+	// mitto-47y.4: for MCP/agent-origin dispatches, warn (fail-open) when the
+	// resolved body calls PromptTextWithArgs but the caller forgot the
+	// "<PickerName>_Args" sibling key. Human free-text and human queued
+	// messages are exempt (no template contract). Runs after cache read/merge
+	// so companion-key detection sees the effective argument map.
+	isMCPAgentDispatch := (meta.SenderID == senderIDQueue && meta.QueueOrigin == session.QueueOriginAgent) ||
+		(meta.PromptName != "" && meta.SenderID == "")
+	if isMCPAgentDispatch {
+		warnMissingNestedArgs(d.pdLogger(), meta.PromptName, message, meta.Arguments)
+	}
+
 	// Template render (mitto-m7sb.5): runs after name-resolution and cache
 	// read/merge, so .Args (built from meta.Arguments) includes cached values.
 	// Fast-path guard avoids buildProcessorInput for non-template bodies (the
@@ -274,6 +418,22 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		if d.pdHasSharedProcess() {
 			_ = d.pdCompleteDeferredHandshake()
 		}
+		// mitto-y78i: resolve (and, if needed, attempt) any per-prompt model
+		// preference NOW, before the template renders, so a tier-check
+		// fragment consuming .Session.ModelTags reflects the model this turn
+		// actually dispatches on rather than merely the one it intends to
+		// reach — applyModelPreference already knows, by the time it
+		// returns, whether the switch landed within modelSwitchSyncGrace or
+		// was deferred to the background. Skipped for FreshContext
+		// dispatches: applyModelPreference must run AFTER
+		// createFreshContextSession there (a switch applied before
+		// session/new targets the wrong session and is discarded), so those
+		// keep the pre-existing optimistic-render behavior — the later call
+		// in PromptWithMeta's goroutine still applies it post-fresh-session.
+		if !meta.FreshContext {
+			p.applyModelPreference(d, meta)
+			meta.modelPreferenceResolved = true
+		}
 		input := p.buildProcessorInput(d, message, false, meta)
 		tctx := processors.BuildCELContext(input)
 		// Wire the PromptText resolver (mitto-85y.3): resolves a workspace-prompt
@@ -287,12 +447,23 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 				return resolver(name, workingDir)
 			}
 		}
+		fragments := config.CurrentFragments()
+		if resolver := d.pdPromptFragmentsResolver(); resolver != nil {
+			var ferr error
+			fragments, ferr = resolver(d.pdWorkingDir())
+			if ferr != nil {
+				return "", 0, meta, fmt.Errorf("load workspace prompt fragments: %w", ferr)
+			}
+			if fragments != nil {
+				tctx.TemplateFragments = fragments.All()
+			}
+		}
 		funcs := config.BuildTemplateFuncMap(tctx)
 		name := meta.PromptName
 		if name == "" {
 			name = "prompt"
 		}
-		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
+		rendered, rerr := config.RenderPromptTemplateWithFragments(name, message, tctx, funcs, fragments)
 		if rerr != nil {
 			// Named prompts and loop-runner dispatches always fail-closed. Queue
 			// dispatches now distinguish origin: agent-originated (cross-session/MCP
@@ -304,6 +475,23 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 			// input, so pasted text containing {{ is delivered literally (mitto-nvb).
 			failClosed := meta.PromptName != "" || meta.SenderID == senderIDLoop ||
 				(meta.SenderID == senderIDQueue && meta.QueueOrigin == session.QueueOriginAgent)
+			// mitto-z6f: within the agent-origin queue-dispatch fail-closed branch,
+			// downgrade EXECUTE errors (template parsed OK but referenced a missing
+			// struct field/method on *cel.PromptEnabledContext at exec time) to
+			// fail-open. Rationale: parse errors signal the sender intended a
+			// template but broke its syntax — silent raw delivery yields garbage on
+			// the receiver, so keep failing closed to preserve mitto-e7u. Execute
+			// errors typically mean the body is prose that HAPPENED to trip
+			// HasTemplateSyntax (e.g. quoted fragment docs containing literal
+			// "{{ .DefaultText }}"). Failing closed there silently drops legitimate
+			// content after mitto-omu's bounded retry — 3 messages were lost this
+			// way on session 20260727-163316-99e4efda. Named prompts and loop
+			// dispatches still fail closed on execute errors (their bodies are
+			// authored templates whose data contract must hold).
+			if failClosed && meta.PromptName == "" && meta.SenderID == senderIDQueue &&
+				isTemplateExecuteError(rerr) {
+				failClosed = false
+			}
 			if failClosed {
 				return "", 0, meta, rerr
 			}
@@ -444,7 +632,9 @@ func (p promptDispatcher) buildAttachmentBlocks(d promptDeps, imageIDs, fileIDs 
 func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFirst bool, meta PromptMeta) *processors.ProcessorInput {
 	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
 	var childSessions []processors.ChildSession
+	var workspacePeers []processors.PeerSession
 	var advancedSettings map[string]bool
+	var hasMessages bool
 
 	if d.pdHasStore() {
 		if sessionMeta, err := d.pdGetSessionMetadata(); err == nil {
@@ -453,6 +643,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 			parentSessionID = sessionMeta.ParentSessionID
 			advancedSettings = sessionMeta.AdvancedSettings
 			beadsIssue = sessionMeta.BeadsIssue
+			hasMessages = !sessionMeta.LastUserMessageAt.IsZero()
 		}
 		if parentSessionID != "" {
 			if parentMeta, err := d.pdGetMetadataForID(parentSessionID); err == nil {
@@ -469,6 +660,21 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 					IsAutoChild: child.ChildOrigin == session.ChildOriginAuto,
 					ChildOrigin: string(child.ChildOrigin),
 					IsPrompting: isPrompting,
+					BeadsIssue:  child.BeadsIssue,
+					QueuedCount: d.pdChildQueueLength(child.SessionID),
+				})
+			}
+		}
+		if peers, err := d.pdListWorkspacePeers(); err == nil {
+			for _, peer := range peers {
+				workspacePeers = append(workspacePeers, processors.PeerSession{
+					ID:          peer.SessionID,
+					Name:        peer.Name,
+					ACPServer:   peer.ACPServer,
+					ParentID:    peer.ParentSessionID,
+					ChildOrigin: string(peer.ChildOrigin),
+					IsPrompting: d.pdIsChildPrompting(peer.SessionID),
+					BeadsIssue:  peer.BeadsIssue,
 				})
 			}
 		}
@@ -480,6 +686,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	var hasMittoRC bool
 	var hasMetadataDescription bool
 	var userDataSchemaJSON string
+	var tasksUpstream string
 	workingDir := d.pdWorkingDir()
 	if workingDir != "" {
 		rc, rcErr := config.LoadWorkspaceRC(workingDir)
@@ -496,6 +703,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		if rcErr == nil && rc != nil && rc.Metadata != nil && rc.Metadata.Description != "" {
 			hasMetadataDescription = true
 		}
+		tasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
 	}
 
 	var userDataJSON string
@@ -512,13 +720,32 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		}
 	}
 
-	// Resolve the CURRENT model's capability tags (config models: profiles) for the
+	// Resolve the model's capability tags (config models: profiles) for the
 	// Model(tag) template func and Session.HasModelTag CEL macro. Degrades to empty
 	// (no tags) when agentModels is nil — never errors the render. See mitto-i5sr.
+	//
+	// The tags describe the model this turn will RUN on, which for a prompt
+	// declaring preferredModels is the model applyModelPreference is about to
+	// switch to — not the one left over from the previous turn. applyModelPreference
+	// runs later in the dispatch pipeline (inside PromptWithMeta's goroutine), so
+	// rendering against the active model would make a tier-declaring prompt always
+	// observe the stale tier.
 	var modelName string
 	var modelTags []string
 	if models := d.pdGetAgentModels(); models != nil {
-		modelName = ModelDisplayName(models, string(models.CurrentModelId))
+		modelID := string(models.CurrentModelId)
+		// mitto-y78i: once resolveAndSubstitute has already attempted the
+		// switch for this dispatch (meta.modelPreferenceResolved), models.
+		// CurrentModelId is the authoritative outcome — landed (equals the
+		// intended model) or deferred (still the prior model) — so trust it
+		// instead of intendedModelID's optimistic guess, which does not know
+		// whether the switch actually landed.
+		if !meta.modelPreferenceResolved {
+			if intended := p.intendedModelID(d, meta, models); intended != "" {
+				modelID = intended
+			}
+		}
+		modelName = ModelDisplayName(models, modelID)
 		modelTags = d.pdResolveModelTags(modelName)
 	}
 
@@ -528,10 +755,51 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	if meta.Trigger != nil && meta.Trigger.OnTasks != nil {
 		triggerOnTasksChanges = meta.Trigger.OnTasks.Changes
 	}
+	// Thread the onChild trigger detail (if any) through so the
+	// {{ .Trigger.OnChild.* }} template namespace can render — nil for all
+	// non-onChild dispatches (mitto-qvlh).
+	var triggerOnChildDetail *processors.TriggerOnChildDetail
+	if meta.Trigger != nil && meta.Trigger.OnChild != nil {
+		triggerOnChildDetail = &processors.TriggerOnChildDetail{
+			ChildID:       meta.Trigger.OnChild.ChildID,
+			Event:         string(meta.Trigger.OnChild.Event),
+			StoppedReason: string(meta.Trigger.OnChild.StoppedReason),
+		}
+	}
+	// Thread the canonical Slack event batch through for
+	// {{ .Trigger.OnSlack.Events }}, retaining the first-event
+	// {{ .Trigger.Slack.* }} compatibility alias.
+	var triggerSlackEvent *processors.TriggerSlackEvent
+	var triggerOnSlackEvents []processors.TriggerSlackEvent
+	if meta.Trigger != nil && meta.Trigger.OnSlack != nil {
+		triggerOnSlackEvents = make([]processors.TriggerSlackEvent, len(meta.Trigger.OnSlack.Events))
+		for i, event := range meta.Trigger.OnSlack.Events {
+			triggerOnSlackEvents[i] = processors.TriggerSlackEvent{
+				InstallationID: event.InstallationID,
+				EventID:        event.EventID, ChannelID: event.ChannelID, Kind: event.Kind,
+				AuthorID: event.AuthorID, Timestamp: event.Timestamp,
+				ThreadTimestamp: event.ThreadTimestamp, Untrusted: event.Untrusted, Text: event.Text,
+			}
+		}
+	}
+	if meta.Trigger != nil && meta.Trigger.Slack != nil {
+		triggerSlackEvent = &processors.TriggerSlackEvent{
+			InstallationID:  meta.Trigger.Slack.InstallationID,
+			EventID:         meta.Trigger.Slack.EventID,
+			ChannelID:       meta.Trigger.Slack.ChannelID,
+			Kind:            meta.Trigger.Slack.Kind,
+			AuthorID:        meta.Trigger.Slack.AuthorID,
+			Timestamp:       meta.Trigger.Slack.Timestamp,
+			ThreadTimestamp: meta.Trigger.Slack.ThreadTimestamp,
+			Untrusted:       meta.Trigger.Slack.Untrusted,
+			Text:            meta.Trigger.Slack.Text,
+		}
+	}
 
 	return &processors.ProcessorInput{
 		Message:                message,
 		IsFirstMessage:         isFirst,
+		HasMessages:            hasMessages,
 		SessionID:              d.pdSessionID(),
 		WorkingDir:             workingDir,
 		ParentSessionID:        parentSessionID,
@@ -542,24 +810,33 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		BeadsIssue:             beadsIssue,
 		AvailableACPServers:    d.pdAvailableACPServers(),
 		ChildSessions:          childSessions,
+		WorkspacePeers:         workspacePeers,
 		MCPToolNames:           mcpToolNames,
 		IsLoop:                 meta.SenderID == senderIDLoop,
 		IsLoopForced:           meta.IsLoopForced,
+		IsLoopRunOnStart:       meta.IsLoopRunOnStart,
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
 		IterationUninterrupted: meta.IterationUninterrupted,
+		TriggerKind:            meta.LoopTrigger,
 		TriggerOnTasksChanges:  triggerOnTasksChanges,
+		TriggerOnChildDetail:   triggerOnChildDetail,
+		TriggerSlackEvent:      triggerSlackEvent,
+		TriggerOnSlackEvents:   triggerOnSlackEvents,
 		Arguments:              meta.Arguments,
 		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,
 		HasMittoRC:             hasMittoRC,
 		HasMetadataDescription: hasMetadataDescription,
+		TasksUpstream:          tasksUpstream,
+		DatabaseMode:           d.pdBeadsDatabaseMode(),
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
 		UserData:               userDataMap,
 		ModelTags:              modelTags,
 		ModelName:              modelName,
 		ProcessorArgOverrides:  d.pdWorkspaceProcessorArgOverrides(),
+		PromptsSnapshotFn:      d.pdPromptsSnapshot(),
 	}
 }
 
@@ -719,7 +996,8 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
 		friendlyMsg = "The agent is still starting up — please resend your message."
 	} else {
-		friendlyMsg = "Could not start the agent session: " + mittoAcp.FormatACPError(handshakeErr) + " Please resend your message."
+		hints := mittoAcp.FormatErrorHints{ProcessHistory: d.pdSharedProcessHistory()}
+		friendlyMsg = "Could not start the agent session: " + mittoAcp.FormatACPErrorWithContext(handshakeErr, hints) + " Please resend your message."
 	}
 	if d.pdHasRecorder() {
 		seq := d.pdGetNextSeq()
@@ -778,9 +1056,36 @@ func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
 // When no flush command is configured, falls back to the original NewSession path
 // (direct-conn only, gated by pdHasACPConn). Returns the new session ID on success,
 // or "" on failure or when FreshContext is not requested.
-func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta) string {
+//
+// pillSeq (mitto-c36) is a seq reserved upstream in PromptWithMeta BEFORE the
+// user-prompt seq is allocated. When > 0, the "context_cleared" pill is recorded
+// with this reserved seq so it orders before the user prompt in the persisted
+// transcript. When 0 (never in the production path, only in tests that don't care),
+// falls back to the plain pdRecordSessionChange which allocates its own seq.
+func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta, pillSeq int64) string {
 	if !meta.FreshContext {
 		return ""
+	}
+
+	// mitto-s9g2: skip the clear entirely when the current ACP session is
+	// provably empty (created fresh in this process, no turns dispatched since).
+	// No pill, no flush RPC, no session/new — the reserved pillSeq becomes a
+	// tolerated seq gap, same as the existing flush-error path. Resumed/loaded
+	// sessions report pdContextIsEmpty()==false (fail safe) and keep flushing.
+	if d.pdContextIsEmpty() {
+		if l := d.pdLogger(); l != nil {
+			l.Debug("Skipping FreshContext clear: ACP session has no turns yet",
+				"session_id", d.pdSessionID())
+		}
+		return ""
+	}
+
+	recordPill := func(value string) {
+		if pillSeq > 0 {
+			d.pdRecordSessionChangeWithSeq(pillSeq, "context_cleared", value, "")
+			return
+		}
+		d.pdRecordSessionChange("context_cleared", value, "")
 	}
 
 	// Prefer in-place flush when the ACP server has a flush command configured.
@@ -793,15 +1098,21 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 				l.Info("In-place context flush succeeded for loop FreshContext run",
 					"session_id", d.pdSessionID())
 			}
-		} else {
-			if l := d.pdLogger(); l != nil {
-				l.Warn("In-place context flush failed, continuing with main prompt",
-					"error", err,
-					"session_id", d.pdSessionID())
-			}
+			// Surface the context clear in the conversation timeline (mitto-so19).
+			recordPill("flush")
+			// Main prompt continues on the existing (now-flushed) session.
+			return ""
 		}
-		// Always return "" — main prompt continues on the existing session.
-		return ""
+		if l := d.pdLogger(); l != nil {
+			l.Warn("In-place context flush failed, falling back to a fresh ACP session",
+				"error", err,
+				"session_id", d.pdSessionID())
+		}
+		// mitto-2efc: do NOT return "" here unconditionally — a session whose
+		// /clear itself fails (e.g. the ACP session is wedged, returning the
+		// same upstream error on every RPC) cannot be recovered by continuing
+		// on the same session. Fall through to the new-ACP-session fallback
+		// below so FreshContext can still escalate to a clean session.
 	}
 
 	// Fallback: create a new ACP session (direct-conn only).
@@ -821,6 +1132,8 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 				"fresh_session_id", sessID,
 				"session_id", d.pdSessionID())
 		}
+		// Surface the context clear in the conversation timeline (mitto-so19).
+		recordPill("new_session")
 		return sessID
 	}
 	if l := d.pdLogger(); l != nil {
@@ -846,6 +1159,67 @@ var modelSwitchSyncGrace = 3 * time.Second
 // A var so tests can shrink it.
 var modelSwitchAsyncBudget = 90 * time.Second
 
+// modelSwitchWarmRetryDelay waits out the shared process's first saturation
+// cooldown before spending the still-available outer budget on one warm retry.
+// Mirror of acpproc sessionSaturationCooldownBase; keep the two in sync.
+// A var so tests can shrink it.
+var modelSwitchWarmRetryDelay = 30 * time.Second
+
+func isRetryableModelPreferenceError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, acperrors.ErrProcessSaturated) ||
+		acperrors.IsAgentInternalDeadlineErr(err) ||
+		acperrors.IsAgentQueryClosedErr(err) ||
+		mittoAcp.IsACPConnectionError(err)
+}
+
+func (p promptDispatcher) setPreferredModelWithWarmRetry(d promptDeps, ctx context.Context, desired string) error {
+	firstErr := d.pdSetActiveModelOnly(ctx, desired)
+	if firstErr == nil || !isRetryableModelPreferenceError(firstErr) {
+		return firstErr
+	}
+
+	timer := time.NewTimer(modelSwitchWarmRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return firstErr
+	}
+
+	if l := d.pdLogger(); l != nil {
+		l.Info("Retrying model preference after cold-agent cooldown",
+			"session_id", d.pdSessionID(),
+			"model", desired)
+	}
+	if retryErr := d.pdSetActiveModelOnly(ctx, desired); retryErr != nil {
+		return fmt.Errorf("warm model-switch retry after initial failure %v: %w", firstErr, retryErr)
+	}
+	return nil
+}
+
+// intendedModelID resolves the model this turn is meant to run on, given the
+// dispatch's preferredModels (explicit on meta, or declared by the named prompt).
+// It mirrors applyModelPreference's resolution but performs no RPC and records no
+// pill, so buildProcessorInput can render the template against the tier the prompt
+// asked for instead of the tier left over from the previous turn.
+//
+// Returns "" when there is no preference, when nothing resolves, or when the
+// preference cannot be honoured — leaving the caller on the active model.
+func (p promptDispatcher) intendedModelID(d promptDeps, meta PromptMeta, models *SessionModelState) string {
+	if models == nil {
+		return ""
+	}
+	preferredModels := meta.PreferredModels
+	if len(preferredModels) == 0 && meta.PromptName != "" {
+		preferredModels = d.pdResolvePreferredModels(meta.PromptName)
+	}
+	if len(preferredModels) == 0 {
+		return ""
+	}
+	return SelectPreferredModel(preferredModels, d.pdModelProfiles(), models)
+}
+
 // applyModelPreference ensures the correct model is active before sending the prompt.
 // Implements set-if-different (lazy): only issues a SetSessionModel RPC when the
 // desired model differs from the current active model. No-op when agentModels is nil.
@@ -858,13 +1232,40 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	}
 
 	if models == nil {
+		// mitto-ishl: when the agent never advertises a model catalog (e.g.
+		// every Auggie session today) a declared preferredModels used to be
+		// silently dropped, taking the ⚡ model_override pill with it. Try to
+		// resolve the preference against a synthetic state built from the
+		// caller's global model profiles so the pill still fires — we cannot
+		// issue set_model (no ACP model to switch to), but the pill is a
+		// display-only signal of which tier the prompt intended.
+		if len(preferredModels) > 0 {
+			synth := SynthesizeModelStateFromProfiles(d.pdModelProfiles())
+			if synth != nil {
+				if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), synth); resolved != "" {
+					baseline := d.pdReadBaselineModel()
+					d.pdRecordSessionChange(
+						ConfigOptionCategoryModelOverride,
+						ModelDisplayName(synth, resolved),
+						baseline,
+					)
+					d.pdWriteOverrideActive(true)
+					if l := d.pdLogger(); l != nil {
+						l.Info("apply_model_preference",
+							"session_id", d.pdSessionID(),
+							"prompt_name", meta.PromptName,
+							"preferred_models", preferredModels,
+							"resolved", resolved,
+							"decision", "synth_profile_pill")
+					}
+					return
+				}
+			}
+		}
 		if l := d.pdLogger(); l != nil {
-			// mitto-ishl: when the agent never advertises a model catalog (e.g.
-			// every Auggie session today) a declared preferredModels is silently
-			// dropped. Split the two cases so tier-switching failures are loud:
-			// a genuine no-preference no-op stays at DEBUG; a dropped tier switch
-			// escalates to WARN with a distinct decision code that operators can
-			// grep for.
+			// Preference declared but no profile resolves (or none configured):
+			// keep the WARN escalation so tier-switching failures are loud.
+			// A genuine no-preference no-op stays at DEBUG.
 			if len(preferredModels) > 0 {
 				l.Warn("apply_model_preference",
 					"session_id", d.pdSessionID(),
@@ -896,28 +1297,33 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	isOverride := desired != "" && desired != baseline
 	switching := desired != "" && desired != currentModel
 
-	finalizeOverride := func(switchFailed bool) {
-		if isOverride && !switchFailed {
-			d.pdRecordSessionChange(
-				ConfigOptionCategoryModelOverride,
-				ModelDisplayName(models, desired),
-				ModelDisplayName(models, baseline),
-			)
-		}
-		d.pdWriteOverrideActive(isOverride)
-	}
+	// mitto-fvt: a synthesized catalog (models.Synthesized) is a Mitto-local
+	// UI aid built from profile display names, never confirmed by the agent
+	// or backend (see SynthesizeModelStateFromProfiles). If desired agrees
+	// with currentModel purely because both happen to equal the same
+	// synthetic name — e.g. a persisted baseline surviving an ACP restart
+	// that wiped the agent's real catalog — that agreement is NOT proof a
+	// real model is bound server-side. Trusting it here is exactly the
+	// wedge reported in mitto-fvt: applyModelPreference short-circuits
+	// forever while chat-stream 404s "selected model is not available".
+	// Force a re-verification attempt via pdSetActiveModelOnly instead of
+	// skipping, so a poisoned session gets a chance to recover (or fail
+	// loudly) rather than looping silently.
+	reverifySynthetic := models.Synthesized && !switching && desired != ""
 
 	if l := d.pdLogger(); l != nil {
-		decision := "switching"
-		if !switching {
-			switch {
-			case len(preferredModels) == 0:
-				decision = "skip_no_preference"
-			case !matched:
-				decision = "skip_no_match"
-			default:
-				decision = "skip_already_satisfied"
-			}
+		var decision string
+		switch {
+		case switching:
+			decision = "switching"
+		case reverifySynthetic:
+			decision = "reverify_synthetic_catalog"
+		case len(preferredModels) == 0:
+			decision = "skip_no_preference"
+		case !matched:
+			decision = "skip_no_match"
+		default:
+			decision = "skip_already_satisfied"
 		}
 		l.Debug("apply_model_preference",
 			"session_id", d.pdSessionID(),
@@ -926,7 +1332,23 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 			"baseline", baseline,
 			"current_model", currentModel,
 			"desired", desired,
+			"synthesized_catalog", models.Synthesized,
 			"decision", decision)
+	}
+
+	finalizeOverride := func(switchFailed bool) {
+		if isOverride && !switchFailed {
+			d.pdRecordSessionChange(
+				ConfigOptionCategoryModelOverride,
+				ModelDisplayName(models, desired),
+				ModelDisplayName(models, baseline),
+			)
+		}
+		d.pdWriteOverrideActive(isOverride && !switchFailed)
+	}
+
+	if reverifySynthetic {
+		switching = true
 	}
 
 	if !switching {
@@ -947,7 +1369,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	go func() {
 		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget)
 		defer setCancel()
-		setErr := d.pdSetActiveModelOnly(setCtx, desired)
+		setErr := p.setPreferredModelWithWarmRetry(d, setCtx, desired)
 		if setErr != nil {
 			if l := d.pdLogger(); l != nil {
 				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
@@ -1080,15 +1502,17 @@ func (p promptDispatcher) handlePromptSuccess(
 	// dispatched is true when another queued turn was started (the session is
 	// not yet idle); it gates agentIdle after-phase processors below.
 	dispatched := d.pdProcessNextQueuedMessage()
-	sessionIdle = !dispatched
 
 	// Retry title generation if session still has no title.
 	d.pdRetryTitleGenerationIfNeeded(message)
 
+	// Read the last agent message once and reuse for both follow-up analysis
+	// and the sessionIdle gate below (mitto-vn3). Cheap when store is nil.
+	agentMessage := d.pdReadLastAgentMessageFromStore()
+
 	// Async follow-up analysis (non-blocking).
 	isEndTurn := promptResp.StopReason == acp.StopReasonEndTurn
 	if d.pdActionButtonsEnabled() && isEndTurn {
-		agentMessage := d.pdReadLastAgentMessageFromStore()
 		if agentMessage != "" {
 			if d.pdHasImmediateQueuedMessages() {
 				if l := d.pdLogger(); l != nil {
@@ -1101,9 +1525,18 @@ func (p promptDispatcher) handlePromptSuccess(
 	}
 
 	// Apply after-phase processors (agentResponded + agentIdle pipeline).
+	// The agentIdle flag here is queue-drain only; it is intentionally NOT
+	// gated on turn semantics so the after-processors pipeline keeps firing
+	// for every terminal turn (including cancels / max_turn_requests).
 	d.pdApplyAfterProcessors(d.pdSessionCtx(), message, meta.SenderID,
 		string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp, !dispatched)
 
+	// sessionIdle gates the on-completion loop hook (pdOnTurnIdle → LoopRunner
+	// armCompletionTimer). It must be true only when the turn actually reached
+	// a semantic end (endTurn) AND the agent produced some assistant text —
+	// otherwise a tool-only or degenerate endTurn-with-no-text turn silently
+	// re-arms the loop and drives a runaway (mitto-vn3).
+	sessionIdle = !dispatched && isEndTurn && agentMessage != ""
 	return sessionIdle
 }
 
@@ -1112,6 +1545,13 @@ func (p promptDispatcher) handlePromptSuccess(
 // paths have been processed. The order is intentional: OnComplete fires first so
 // any iteration accounting is applied before idle hooks and self-destruct.
 func (p promptDispatcher) finalizeTurn(d promptDeps, err error, meta PromptMeta, sessionIdle bool) {
+	// Dismiss any UI prompt the agent left blocking when the turn ended
+	// without the user answering it (crash, watchdog cancel, error, or a
+	// clean end-of-turn where the agent simply stopped listening). Without
+	// this, BackgroundSession.activePrompt stays stale and gets re-sent to
+	// clients that reconnect later (mitto-nisb).
+	d.pdDismissActiveUIPrompt()
+
 	// Invoke OnComplete callback if set.
 	if meta.OnComplete != nil {
 		meta.OnComplete(err)
@@ -1171,8 +1611,21 @@ func (p promptDispatcher) handlePromptError(
 			l.Warn("prompt_cancelled_by_inactivity_watchdog",
 				"session_id", d.pdSessionID())
 		}
+		watchdogMsg := "The AI agent stopped responding (no activity for a while), so the conversation was reset. Please resend your message. If this keeps happening, switch to another conversation and back to restart the agent."
+		// Persist the error so it survives a reload / replay even when no
+		// WebSocket client is attached (mitto-vxn) — mirrors the
+		// recorder-then-notify idiom used by completeHandshakeOrAbort above.
+		if d.pdHasRecorder() {
+			seq := d.pdGetNextSeq()
+			if recErr := d.pdRecordErrorEvent(seq, watchdogMsg); recErr != nil {
+				if l := d.pdLogger(); l != nil {
+					l.Error("Failed to persist inactivity-watchdog error", "error", recErr)
+				}
+			}
+			d.pdRefreshNextSeq()
+		}
 		d.pdNotifyObservers(func(o SessionObserver) {
-			o.OnError("The AI agent stopped responding (no activity for a while), so the conversation was reset. Please resend your message. If this keeps happening, switch to another conversation and back to restart the agent.")
+			o.OnError(watchdogMsg)
 		})
 		return false
 	} else if acpDead && *autoRetried {
@@ -1225,7 +1678,8 @@ func (p promptDispatcher) handlePromptError(
 	}
 
 	// Transient error: ACP process is still alive.
-	userFriendlyErr := mittoAcp.FormatACPError(err)
+	hints := mittoAcp.FormatErrorHints{ProcessHistory: d.pdSharedProcessHistory()}
+	userFriendlyErr := mittoAcp.FormatACPErrorWithContext(err, hints)
 	d.pdNotifyObservers(func(o SessionObserver) {
 		o.OnError(userFriendlyErr)
 	})
@@ -1238,8 +1692,12 @@ func (p promptDispatcher) handlePromptError(
 	// Context-too-large (413): all queued messages will fail until the user starts a fresh
 	//   conversation — stop the queue.
 	// Rate-limit: the API will reject the next message too — stop the queue;
-	//   the keepalive-driven TryProcessQueuedMessage will retry once the session is idle.
-	if !mittoAcp.IsContextTooLargeError(err) && !mittoAcp.IsRateLimitError(err) {
+	//   the keepalive poll (mitto-79x, session_ws.go handleKeepalive) retries
+	//   TryProcessQueuedMessage once the session is idle.
+	// Auth error (mitto-r5o): upstream CLI's session token has expired — every queued
+	//   message will hit the same "Authentication required" until the user re-authenticates
+	//   the CLI. Stop the queue.
+	if !mittoAcp.IsContextTooLargeError(err) && !mittoAcp.IsRateLimitError(err) && !mittoAcp.IsAuthError(err) {
 		// Apply any config changes deferred during this turn before
 		// dispatching the next queued message.
 		d.pdFlushPendingConfig()

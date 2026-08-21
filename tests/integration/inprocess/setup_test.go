@@ -12,10 +12,10 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestServer wraps a web.Server with test utilities.
@@ -23,7 +23,7 @@ type TestServer struct {
 	Server     *web.Server
 	HTTPServer *httptest.Server
 	Store      *session.Store
-	Client     *client.Client
+	Client     *api.Client
 	TempDir    string
 	MockACPCmd string
 }
@@ -107,7 +107,7 @@ func SetupTestServer(t *testing.T, opts ...func(*web.Config)) *TestServer {
 	t.Cleanup(httpServer.Close)
 
 	// Create client
-	mittoClient := client.New(httpServer.URL)
+	mittoClient := api.New(httpServer.URL)
 
 	return &TestServer{
 		Server:     srv,
@@ -122,22 +122,35 @@ func SetupTestServer(t *testing.T, opts ...func(*web.Config)) *TestServer {
 // findMockACPServer locates the mock ACP server binary.
 func findMockACPServer(t *testing.T) string {
 	t.Helper()
+	return findRepoFile(t, filepath.Join("tests", "mocks", "acp-server", "mock-acp-server"),
+		"mock-acp-server not found. Run 'make build-mock-acp' first")
+}
 
-	// Try to find project root
+// findRepoFile walks upward from the current working directory looking for
+// relPath, returning its absolute path once found. Used to locate repo-root
+// artifacts (built binaries, fixture scripts) regardless of which package's
+// test binary is running (each go test invocation's cwd is that package's
+// directory, arbitrarily deep under the repo root). Calls t.Skip with
+// skipMsg if relPath is never found by the time the filesystem root is
+// reached — mirroring the historical behavior of findMockACPServer, whose
+// upward-walk this generalizes (mitto-7gta.25).
+func findRepoFile(t *testing.T, relPath, skipMsg string) string {
+	t.Helper()
+
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Failed to get working directory: %v", err)
 	}
 
 	for {
-		mockPath := filepath.Join(dir, "tests", "mocks", "acp-server", "mock-acp-server")
-		if _, err := os.Stat(mockPath); err == nil {
-			return mockPath
+		candidate := filepath.Join(dir, relPath)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
 		}
 
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Skip("mock-acp-server not found. Run 'make build-mock-acp' first")
+			t.Skip(skipMsg)
 		}
 		dir = parent
 	}

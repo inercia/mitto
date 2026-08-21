@@ -31,7 +31,7 @@ for file in "${HTML_FILES[@]}"; do
     "$file" > "$tmpfile"
 
   echo "Linting $file..."
-  if ! npx htmlhint "$tmpfile"; then
+  if ! bunx htmlhint "$tmpfile"; then
     EXIT_CODE=1
   fi
 done

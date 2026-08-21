@@ -14,8 +14,15 @@
 import {
   readBeadsResponse,
   matchesSearch,
+  computeEffectiveStreamingSet,
+  taskTitleBackground,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
 } from "../utils/beads.js";
+// Namespaced import so a missing named export (e.g. isBeadsSchemaSkew before the
+// mitto-n5mw fix lands) does NOT cause a module-load SyntaxError that would
+// take the whole test file down — the missing helpers just show up as
+// `undefined` on the namespace object.
+import * as beadsUtils from "../utils/beads.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -671,7 +678,6 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
   });
 });
 
-
 // =============================================================================
 // BeadsIssueView in-viewer navigation history stack (mitto-qluh.1)
 // =============================================================================
@@ -726,8 +732,7 @@ function goBack(state) {
 function goForward(state) {
   return {
     ...state,
-    pos:
-      state.pos < state.history.length - 1 ? state.pos + 1 : state.pos,
+    pos: state.pos < state.history.length - 1 ? state.pos + 1 : state.pos,
   };
 }
 
@@ -743,6 +748,12 @@ function canGoForward(state) {
 function currentId(state) {
   return state.history[state.pos];
 }
+
+// mitto-qluh.2 — the visible Back/Forward buttons in PanelBody's bottom bar
+// are pure JSX derived from the state exercised above (canGoBack/canGoForward
+// and the goBack/goForward callbacks). No reducer-level assertion is added
+// here; button rendering / click wiring will be covered by Playwright in a
+// follow-up bead.
 
 describe("BeadsIssueView history stack — initial state", () => {
   test("seeds a single-entry stack with pos=0", () => {
@@ -945,6 +956,385 @@ describe("BeadsIssueView history stack — external prop reset", () => {
   });
 });
 
+// =============================================================================
+// BeadsView (main tasks-list flavor) in-panel navigation history stack
+// =============================================================================
+//
+// The main BeadsView owns a simpler in-panel navigation stack than
+// BeadsIssueView: no browser-history integration, and the "closed" state is
+// modeled with `pos = -1` and an empty `history`. Mutators mirrored below:
+//   - listClickReducer(state, issue)   — a click on a list row (selectIssue).
+//   - panelSelectReducer(state, depObj) — a dep/subtask/parent click inside
+//                                         the panel (handlePanelSelectIssue).
+//   - goBackReducer(state) / goForwardReducer(state) — bottom-bar chevrons.
+//
+// Same jsdom limitation as above (BeadsView.js reads window.preact at module
+// load) means we exercise these as pure reducer helpers rather than driving
+// the real component. If the stack logic in BeadsView.js changes, these
+// helpers must be updated to match.
+// =============================================================================
+
+/** Initial state when the panel is closed: empty history, pos=-1. */
+function makeClosedPanel() {
+  return { history: [], pos: -1 };
+}
+
+/**
+ * Mirrors selectIssue in BeadsView.js: a list-row click either opens the
+ * clicked issue (resetting the stack to a single root entry) or toggles the
+ * panel closed if the same issue is already showing.
+ */
+function listClickReducer(state, issue) {
+  const currentId = state.pos >= 0 ? state.history[state.pos] : null;
+  if (currentId && currentId === issue.id) {
+    return makeClosedPanel();
+  }
+  return { history: [issue.id], pos: 0 };
+}
+
+/**
+ * Mirrors handlePanelSelectIssue in BeadsView.js: an in-panel dep/subtask
+ * click truncates any forward entries, pushes the new id, and advances pos.
+ * A click matching the current id is a no-op. A falsy id is ignored.
+ */
+function panelSelectReducer(state, depObj) {
+  const id = depObj && depObj.id;
+  if (!id) return state;
+  if (state.pos >= 0 && state.history[state.pos] === id) return state;
+  const newHistory = [...state.history.slice(0, state.pos + 1), id];
+  return { history: newHistory, pos: newHistory.length - 1 };
+}
+
+/** Mirrors goBack in BeadsView.js (clamped at 0; no-op when pos<=0). */
+function goBackReducer(state) {
+  if (state.pos <= 0) return state;
+  return { ...state, pos: state.pos - 1 };
+}
+
+/** Mirrors goForward in BeadsView.js (clamped at history.length-1). */
+function goForwardReducer(state) {
+  if (state.pos < 0 || state.pos >= state.history.length - 1) return state;
+  return { ...state, pos: state.pos + 1 };
+}
+
+/** Derived flags exposed to the panel. */
+function panelCanGoBack(state) {
+  return state.pos > 0;
+}
+function panelCanGoForward(state) {
+  return state.pos >= 0 && state.pos < state.history.length - 1;
+}
+function panelCurrentId(state) {
+  return state.pos >= 0 ? state.history[state.pos] : null;
+}
+
+describe("BeadsView panel history — initial state", () => {
+  test("closed panel has empty history and pos=-1", () => {
+    const s = makeClosedPanel();
+    expect(s.history).toEqual([]);
+    expect(s.pos).toBe(-1);
+    expect(panelCurrentId(s)).toBeNull();
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+});
+
+describe("BeadsView panel history — list-row click", () => {
+  test("opening from the list resets history to [id]/pos=0", () => {
+    const s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    expect(s.history).toEqual(["mitto-aaa"]);
+    expect(s.pos).toBe(0);
+    expect(panelCurrentId(s)).toBe("mitto-aaa");
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("opening a different issue from the list resets the stack", () => {
+    // User has clicked into aaa, drilled into bbb via a dep, then clicks
+    // ccc in the list — the panel should reset to a fresh [ccc]/pos=0 stack.
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    s = listClickReducer(s, { id: "mitto-ccc" });
+    expect(s.history).toEqual(["mitto-ccc"]);
+    expect(s.pos).toBe(0);
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("clicking the same list issue again toggles the panel closed", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = listClickReducer(s, { id: "mitto-aaa" });
+    expect(s.history).toEqual([]);
+    expect(s.pos).toBe(-1);
+    expect(panelCurrentId(s)).toBeNull();
+  });
+
+  test("toggle-close ignores prior in-panel navigation state", () => {
+    // Even with a multi-entry stack, re-clicking whatever is CURRENTLY shown
+    // in the list closes the panel entirely.
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    // The panel currently shows bbb (pos=1). Re-clicking bbb in the list
+    // toggles closed because the list-row check compares to currentId.
+    s = listClickReducer(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual([]);
+    expect(s.pos).toBe(-1);
+  });
+});
+
+describe("BeadsView panel history — in-panel dep click", () => {
+  test("dep click pushes and advances pos", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    expect(s.pos).toBe(1);
+    expect(panelCurrentId(s)).toBe("mitto-bbb");
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("several sequential dep clicks extend the stack", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = panelSelectReducer(s, { id: "mitto-ddd" });
+    expect(s.history).toEqual([
+      "mitto-aaa",
+      "mitto-bbb",
+      "mitto-ccc",
+      "mitto-ddd",
+    ]);
+    expect(s.pos).toBe(3);
+    expect(panelCurrentId(s)).toBe("mitto-ddd");
+  });
+
+  test("dep click matching the current id is a no-op", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    const before = s;
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(s).toBe(before);
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    expect(s.pos).toBe(1);
+  });
+
+  test("dep click after goBack truncates the forward chain", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = panelSelectReducer(s, { id: "mitto-ddd" });
+    // history: [aaa, bbb, ccc, ddd], pos=3
+    s = goBackReducer(s); // pos=2 (ccc)
+    s = goBackReducer(s); // pos=1 (bbb)
+    // Branch at bbb: discards [ccc, ddd] and pushes eee.
+    s = panelSelectReducer(s, { id: "mitto-eee" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb", "mitto-eee"]);
+    expect(s.pos).toBe(2);
+    expect(panelCurrentId(s)).toBe("mitto-eee");
+    expect(panelCanGoForward(s)).toBe(false);
+    expect(panelCanGoBack(s)).toBe(true);
+  });
+
+  test("dep click with missing/empty/falsy id is ignored", () => {
+    const s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    expect(panelSelectReducer(s, {})).toBe(s);
+    expect(panelSelectReducer(s, { id: "" })).toBe(s);
+    expect(panelSelectReducer(s, { id: null })).toBe(s);
+    expect(panelSelectReducer(s, null)).toBe(s);
+    expect(panelSelectReducer(s, undefined)).toBe(s);
+  });
+});
+
+describe("BeadsView panel history — goBack / goForward", () => {
+  test("goBack decrements pos and updates canGo* flags", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    // pos=2 (ccc)
+    s = goBackReducer(s);
+    expect(panelCurrentId(s)).toBe("mitto-bbb");
+    expect(s.pos).toBe(1);
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(true);
+  });
+
+  test("goBack at pos=0 is a no-op (does not go negative)", () => {
+    const s0 = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    const s1 = goBackReducer(s0);
+    expect(s1).toBe(s0);
+    expect(s1.pos).toBe(0);
+    expect(panelCurrentId(s1)).toBe("mitto-aaa");
+  });
+
+  test("goForward increments pos and retraces the forward chain", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = goBackReducer(s); // pos=1 (bbb)
+    s = goForwardReducer(s);
+    expect(panelCurrentId(s)).toBe("mitto-ccc");
+    expect(s.pos).toBe(2);
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("goForward at the end of history is a no-op (clamped)", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    const before = s;
+    s = goForwardReducer(s);
+    expect(s).toBe(before);
+    expect(s.pos).toBe(1);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("goBack/goForward on a closed panel are no-ops", () => {
+    const closed = makeClosedPanel();
+    expect(goBackReducer(closed)).toBe(closed);
+    expect(goForwardReducer(closed)).toBe(closed);
+    expect(panelCanGoBack(closed)).toBe(false);
+    expect(panelCanGoForward(closed)).toBe(false);
+  });
+});
+
+describe("BeadsView panel history — canGoBack / canGoForward derivations", () => {
+  test("root entry: both false", () => {
+    const s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    expect(panelCanGoBack(s)).toBe(false);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+
+  test("middle of a stack after goBack: both true", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    s = panelSelectReducer(s, { id: "mitto-ccc" });
+    s = goBackReducer(s);
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(true);
+  });
+
+  test("tail of a stack: only back is true", () => {
+    let s = listClickReducer(makeClosedPanel(), { id: "mitto-aaa" });
+    s = panelSelectReducer(s, { id: "mitto-bbb" });
+    expect(panelCanGoBack(s)).toBe(true);
+    expect(panelCanGoForward(s)).toBe(false);
+  });
+});
+
+// =============================================================================
+// mitto-qluh.3 — computePopstateAction (browser History API integration)
+// =============================================================================
+//
+// Mirrors the pure decision helper exported from BeadsView.js:
+//   export function computePopstateAction(newState, ourKey, currentPos, historyLen)
+// BeadsView.js cannot be imported under jsdom (it reads `window.preact` at
+// module load, see the "Duplicated helpers" convention in this file), so the
+// helper's logic is duplicated verbatim below and exercised directly. If the
+// implementation in BeadsView.js changes, this copy must be updated.
+function computePopstateAction(newState, ourKey, currentPos, historyLen) {
+  if (!newState || newState.__mittoBeadsKey !== ourKey) {
+    return { kind: "close" };
+  }
+  const raw = newState.__mittoBeadsPos;
+  const numeric =
+    typeof raw === "number" && Number.isFinite(raw) ? raw : currentPos;
+  const upper = historyLen > 0 ? historyLen - 1 : 0;
+  const clamped = Math.max(0, Math.min(upper, numeric));
+  const delta = clamped - currentPos;
+  if (delta === 0) return { kind: "noop" };
+  return { kind: "setPos", pos: clamped, delta };
+}
+
+describe("computePopstateAction — direction & clamping", () => {
+  const KEY = "test-key-abc";
+
+  test("forward navigation returns setPos with the target pos", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 2 };
+    const action = computePopstateAction(state, KEY, 0, 3);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(2);
+    expect(action.delta).toBe(2);
+  });
+
+  test("back navigation returns setPos with the target pos", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 0 };
+    const action = computePopstateAction(state, KEY, 1, 2);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(0);
+    expect(action.delta).toBe(-1);
+  });
+
+  test("same pos is a no-op", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 1 };
+    const action = computePopstateAction(state, KEY, 1, 3);
+    expect(action.kind).toBe("noop");
+  });
+
+  test("null state closes the overlay (popped past our anchor)", () => {
+    const action = computePopstateAction(null, KEY, 0, 1);
+    expect(action.kind).toBe("close");
+  });
+
+  test("undefined state closes the overlay", () => {
+    const action = computePopstateAction(undefined, KEY, 0, 1);
+    expect(action.kind).toBe("close");
+  });
+
+  test("mismatched key closes the overlay (foreign popstate)", () => {
+    const state = { __mittoBeadsKey: "other-key", __mittoBeadsPos: 1 };
+    const action = computePopstateAction(state, KEY, 0, 2);
+    expect(action.kind).toBe("close");
+  });
+
+  test("missing key on state closes the overlay", () => {
+    const state = { __mittoBeadsPos: 1 };
+    const action = computePopstateAction(state, KEY, 0, 2);
+    expect(action.kind).toBe("close");
+  });
+
+  test("pos > historyLen-1 is clamped to historyLen-1", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 99 };
+    const action = computePopstateAction(state, KEY, 0, 3);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(2);
+    expect(action.delta).toBe(2);
+  });
+
+  test("negative pos is clamped to 0", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: -5 };
+    const action = computePopstateAction(state, KEY, 2, 3);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(0);
+    expect(action.delta).toBe(-2);
+  });
+
+  test("non-numeric pos falls back to currentPos (yields noop)", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: "banana" };
+    const action = computePopstateAction(state, KEY, 1, 3);
+    expect(action.kind).toBe("noop");
+  });
+
+  test("empty history (historyLen=0) clamps upper bound to 0", () => {
+    const state = { __mittoBeadsKey: KEY, __mittoBeadsPos: 4 };
+    const action = computePopstateAction(state, KEY, 0, 0);
+    expect(action.kind).toBe("noop");
+  });
+
+  test("preserves extra state fields (spread-first invariant is caller-side)", () => {
+    // The helper does not read/emit unrelated fields; it only branches on
+    // __mittoBeadsKey and __mittoBeadsPos. Confirm foreign fields do not
+    // affect the decision.
+    const state = {
+      unrelated: "value",
+      __mittoBeadsKey: KEY,
+      __mittoBeadsPos: 1,
+    };
+    const action = computePopstateAction(state, KEY, 0, 2);
+    expect(action.kind).toBe("setPos");
+    expect(action.pos).toBe(1);
+  });
+});
 
 // =============================================================================
 // mitto-zbfq — BeadsIssueView single-Drawer mount across loading → loaded
@@ -973,6 +1363,51 @@ const __filename_bv = fileURLToPath(import.meta.url);
 const __dirname_bv = dirname(__filename_bv);
 const BEADS_VIEW_PATH = resolve(__dirname_bv, "BeadsView.js");
 
+describe("task label title backgrounds (mitto-ggs6)", () => {
+  const mappings = [
+    { label: "needs-human", color: "#ef4444" },
+    { label: "blocked", color: "#f59e0b" },
+  ];
+
+  test("first configured matching label wins regardless of issue label order", () => {
+    expect(
+      taskTitleBackground({ labels: ["blocked", "needs-human"] }, mappings),
+    ).toBe("#ef4444");
+  });
+
+  test("matching is exact and missing labels remain uncolored", () => {
+    expect(
+      taskTitleBackground({ labels: ["needs-human-review"] }, mappings),
+    ).toBe("");
+    expect(taskTitleBackground({}, mappings)).toBe("");
+  });
+
+  test("removing the matched task label or mapping immediately removes the color", () => {
+    const issue = { labels: ["needs-human"] };
+    expect(taskTitleBackground(issue, mappings)).toBe("#ef4444");
+    expect(taskTitleBackground({ labels: [] }, mappings)).toBe("");
+    expect(taskTitleBackground(issue, mappings.slice(1))).toBe("");
+  });
+
+  test("BeadsView applies the derived color to the title span only", () => {
+    const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+    expect(source).toMatch(
+      /<span\s+data-testid="beads-issue-title"\s+style=\$\{titleBackground\s*\?\s*\{ backgroundColor: titleBackground \}\s*:\s*undefined\}/,
+    );
+    expect(source).not.toMatch(/BeadsIssueRow[\s\S]{0,300}backgroundColor/);
+  });
+
+  test("an open BeadsView refetches mappings when the global event arrives", () => {
+    const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+    expect(source).toMatch(
+      /const handler = \(\) => loadTaskLabelColors\(\);\s*window\.addEventListener\("mitto:task_label_colors_updated", handler\)/,
+    );
+    expect(source).toMatch(
+      /loadTaskLabelColors[\s\S]*?getSdkClient\(\)\.taskLabelColors\.getGlobal\(\)/,
+    );
+  });
+});
+
 describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
   const source = readFileSync(BEADS_VIEW_PATH, "utf8");
 
@@ -985,7 +1420,10 @@ describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
     const startIdx = source.indexOf(startMarker);
     expect(startIdx).toBeGreaterThan(-1);
     // Find the next top-level function declaration after this one.
-    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
     const endIdx = afterStart === -1 ? source.length : afterStart;
     return source.slice(startIdx, endIdx);
   }
@@ -1015,13 +1453,1039 @@ describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
     const startMarker = "function BeadsDetailPanel(";
     const startIdx = source.indexOf(startMarker);
     expect(startIdx).toBeGreaterThan(-1);
-    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
     const endIdx = afterStart === -1 ? source.length : afterStart;
     const body = source.slice(startIdx, endIdx);
 
     // The buggy gate — collapse whitespace so line breaks / formatting do not
     // hide it from the assertion.
     const collapsed = body.replace(/\s+/g, " ");
-    expect(collapsed).not.toMatch(/if\s*\(\s*!\s*h\.creating\s*&&\s*!\s*h\.data\s*\)\s*return\s+null/);
+    expect(collapsed).not.toMatch(
+      /if\s*\(\s*!\s*h\.creating\s*&&\s*!\s*h\.data\s*\)\s*return\s+null/,
+    );
+  });
+});
+
+// =============================================================================
+// mitto-n5mw: write handlers must not swallow beads_schema_skew (409)
+// =============================================================================
+//
+// Only fetchList routes `data.code === "beads_schema_skew"` into
+// setSchemaSkew(...) — every other write handler in BeadsView.js falls through
+// to a plain error toast whose title carries the migration message but offers
+// no path to SchemaSkewDialog. This reproduction has two layers:
+//
+//   1. Contract: utils/beads.js must export isBeadsSchemaSkew() and
+//      toSchemaSkewState() so every write handler can share one branch.
+//   2. Wiring:   each write handler in BeadsView.js must call the helper on
+//      its error branch (source-inspection assertion, matching the existing
+//      mitto-zbfq test pattern — a full DOM/render test is impractical here
+//      because BeadsView imports window.preact globals at module load time).
+//
+// Both layers fail today and must pass once the fix lands.
+
+describe("mitto-n5mw: write handlers must not swallow beads_schema_skew (409)", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Slice a named handler body from the file so the assertions are scoped to
+  // its error branch instead of the whole 3303-line component.
+  function extractHandlerBody(marker) {
+    const startIdx = source.indexOf(marker);
+    expect(startIdx).toBeGreaterThan(-1);
+    // Handler bodies are ~30–110 lines; slice a generous window and stop at
+    // the next top-level `const handle` / `function ` declaration so we do
+    // not bleed into the next handler.
+    const afterStart = source.indexOf(
+      "\n  const handle",
+      startIdx + marker.length,
+    );
+    const afterFn = source.indexOf("\nfunction ", startIdx + marker.length);
+    const candidates = [afterStart, afterFn].filter((i) => i > startIdx);
+    const endIdx = candidates.length ? Math.min(...candidates) : source.length;
+    return source.slice(startIdx, endIdx);
+  }
+
+  describe("utils/beads.js exports the shared schema-skew helpers", () => {
+    test("isBeadsSchemaSkew is exported", () => {
+      expect(typeof beadsUtils.isBeadsSchemaSkew).toBe("function");
+    });
+
+    test("toSchemaSkewState is exported", () => {
+      expect(typeof beadsUtils.toSchemaSkewState).toBe("function");
+    });
+
+    test("isBeadsSchemaSkew detects the canonical 409 code", () => {
+      const data = {
+        error: "The beads database needs migration",
+        code: "beads_schema_skew",
+        details: { db_path: "/x/.beads", hint: "run bd migrate", options: [] },
+      };
+      expect(beadsUtils.isBeadsSchemaSkew(data)).toBe(true);
+    });
+
+    test("isBeadsSchemaSkew returns false for unrelated errors", () => {
+      expect(
+        beadsUtils.isBeadsSchemaSkew({ error: "boom", code: "bd_failed" }),
+      ).toBe(false);
+      expect(beadsUtils.isBeadsSchemaSkew({ error: "boom" })).toBe(false);
+      expect(beadsUtils.isBeadsSchemaSkew(null)).toBe(false);
+      expect(beadsUtils.isBeadsSchemaSkew(undefined)).toBe(false);
+    });
+
+    test("toSchemaSkewState maps the flattened envelope into SchemaSkewDialog state", () => {
+      const data = {
+        error: "The beads database at /x/.beads needs migration",
+        code: "beads_schema_skew",
+        details: {
+          db_path: "/x/.beads",
+          hint: "run bd migrate",
+          options: ["allow_migrate_from_ui"],
+          allow_migrate_from_ui: false,
+        },
+      };
+      expect(beadsUtils.toSchemaSkewState(data)).toEqual({
+        message: "The beads database at /x/.beads needs migration",
+        dbPath: "/x/.beads",
+        hint: "run bd migrate",
+        options: ["allow_migrate_from_ui"],
+        allowMigrate: false,
+        databaseMode: "shared",
+      });
+    });
+
+    test("toSchemaSkewState tolerates missing details", () => {
+      const state = beadsUtils.toSchemaSkewState({
+        error: "msg",
+        code: "beads_schema_skew",
+      });
+      expect(state.message).toBe("msg");
+      expect(state.dbPath).toBe("");
+      expect(state.hint).toBe("");
+      expect(state.options).toEqual([]);
+      expect(state.allowMigrate).toBe(true);
+      expect(state.databaseMode).toBe("shared");
+    });
+  });
+
+  describe("BeadsDetailPanelWrapper write handlers route schema_skew to onSchemaSkew", () => {
+    // The wrapper cannot reach setSchemaSkew directly (it lives in the parent
+    // BeadsView), so the fix threads a callback prop (e.g. onSchemaSkew(data))
+    // through to it. Every error branch must gate on isBeadsSchemaSkew and
+    // call that callback before falling back to the plain toast.
+
+    test("handleToggleStatus (wrapper) branches on isBeadsSchemaSkew", () => {
+      // The wrapper's handleToggleStatus lives before the main-view one; its
+      // body appears first in the file. We slice just that first occurrence.
+      const idx = source.indexOf("const handleToggleStatus = useCallback");
+      expect(idx).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const handle", idx + 30);
+      const body = source.slice(idx, nextIdx > idx ? nextIdx : idx + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("handleToggleDefer (wrapper) branches on isBeadsSchemaSkew", () => {
+      const idx = source.indexOf("const handleToggleDefer = useCallback");
+      expect(idx).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", idx + 30);
+      const body = source.slice(idx, nextIdx > idx ? nextIdx : idx + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("confirmDeleteIssue (wrapper) branches on isBeadsSchemaSkew", () => {
+      // Two confirmDeleteIssue definitions exist (wrapper + main view). The
+      // wrapper's is the FIRST occurrence.
+      const idx = source.indexOf("const confirmDeleteIssue = useCallback");
+      expect(idx).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", idx + 30);
+      const body = source.slice(idx, nextIdx > idx ? nextIdx : idx + 4000);
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+  });
+
+  describe("Main BeadsView write handlers route schema_skew to setSchemaSkew", () => {
+    // These handlers all live inside the main BeadsView function and have
+    // setSchemaSkew / setShowMigrateDialog in scope, so they can populate the
+    // dialog directly.
+
+    test("handleCleanup branches on isBeadsSchemaSkew", () => {
+      const body = extractHandlerBody("const handleCleanup = useCallback");
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("main-view confirmDeleteIssue branches on isBeadsSchemaSkew (and does not just accumulate closeFailed / childDeleteFailed on 409)", () => {
+      // The second occurrence of confirmDeleteIssue is the main-view one.
+      const first = source.indexOf("const confirmDeleteIssue = useCallback");
+      expect(first).toBeGreaterThan(-1);
+      const second = source.indexOf(
+        "const confirmDeleteIssue = useCallback",
+        first + 1,
+      );
+      expect(second).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", second + 30);
+      const body = source.slice(
+        second,
+        nextIdx > second ? nextIdx : second + 8000,
+      );
+      // Guard on the parent delete branch.
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+      // Child loops must also honour schema_skew — either by bailing early or
+      // by calling the helper. Look for at least two mentions inside the body
+      // (parent branch + at least one child loop bail).
+      const hits = body.match(/isBeadsSchemaSkew\s*\(/g) || [];
+      expect(hits.length).toBeGreaterThanOrEqual(2);
+    });
+
+    test("main-view handleToggleStatus branches on isBeadsSchemaSkew", () => {
+      const first = source.indexOf("const handleToggleStatus = useCallback");
+      const second = source.indexOf(
+        "const handleToggleStatus = useCallback",
+        first + 1,
+      );
+      expect(second).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", second + 30);
+      const body = source.slice(
+        second,
+        nextIdx > second ? nextIdx : second + 4000,
+      );
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("main-view handleToggleDefer branches on isBeadsSchemaSkew", () => {
+      const first = source.indexOf("const handleToggleDefer = useCallback");
+      const second = source.indexOf(
+        "const handleToggleDefer = useCallback",
+        first + 1,
+      );
+      expect(second).toBeGreaterThan(-1);
+      const nextIdx = source.indexOf("\n  const ", second + 30);
+      const body = source.slice(
+        second,
+        nextIdx > second ? nextIdx : second + 4000,
+      );
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+
+    test("handleAddDependencyEdge branches on isBeadsSchemaSkew", () => {
+      const body = extractHandlerBody(
+        "const handleAddDependencyEdge = useCallback",
+      );
+      expect(body).toMatch(/isBeadsSchemaSkew\s*\(/);
+    });
+  });
+});
+
+// =============================================================================
+// mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX
+// =============================================================================
+//
+// The bead flipped `web.beads.allow_migrate_from_ui` from opt-in to default-on
+// kill-switch and consolidated the risk copy directly into the ack-checkbox
+// label (previously a stand-alone amber banner duplicated the same warning).
+// These source-scanning assertions parallel the mitto-zbfq / mitto-n5mw pattern
+// established above.
+
+describe("mitto-erry: SchemaSkewDialog copy consolidation + kill-switch UX", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Slice the SchemaSkewDialog function body so the assertions are scoped to
+  // it rather than the whole 3400-line component.
+  function extractSchemaSkewDialogSource() {
+    const startMarker = "function SchemaSkewDialog(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("ack-checkbox label carries the 'designated migrator' + '#4259' consolidated copy", () => {
+    const body = extractSchemaSkewDialogSource();
+    // Locate the ack-checkbox and slice the enclosing <label> so we assert the
+    // copy lives next to the checkbox itself, not somewhere else in the dialog.
+    const checkboxIdx = body.indexOf('data-testid="schema-skew-ack-checkbox"');
+    expect(checkboxIdx).toBeGreaterThan(-1);
+    const labelStart = body.lastIndexOf("<label", checkboxIdx);
+    expect(labelStart).toBeGreaterThan(-1);
+    const labelEnd = body.indexOf("</label>", checkboxIdx);
+    expect(labelEnd).toBeGreaterThan(-1);
+    const labelBlock = body.slice(labelStart, labelEnd);
+    expect(labelBlock).toMatch(/designated migrator/i);
+    expect(labelBlock).toMatch(/#4259/);
+  });
+
+  test("stand-alone amber warning banner is gone (copy lives in the ack label only)", () => {
+    const body = extractSchemaSkewDialogSource();
+    // A stand-alone banner would repeat the "designated migrator clone" copy
+    // outside the ack-checkbox <label>. The kill-switch error text uses a
+    // different phrasing ("designated clone") so the JSX-rendered risk copy
+    // must appear exactly once — inside the ack label — and never outside it.
+    const jsxHits = body.match(/designated migrator clone/gi) || [];
+    expect(jsxHits.length).toBe(1);
+    // And the sole hit must be scoped to the ack-checkbox <label>.
+    const checkboxIdx = body.indexOf('data-testid="schema-skew-ack-checkbox"');
+    const labelStart = body.lastIndexOf("<label", checkboxIdx);
+    const labelEnd = body.indexOf("</label>", checkboxIdx);
+    const labelBlock = body.slice(labelStart, labelEnd);
+    expect(labelBlock).toMatch(/designated migrator clone/i);
+  });
+
+  test("migrate_from_ui_disabled branch copy names the kill-switch flag", () => {
+    // Whole-file scan is fine here — the branch lives inside SchemaSkewDialog's
+    // handleConfirm error handler and cites the flag by name so admins can find
+    // it in their config.
+    expect(source).toMatch(/migrate_from_ui_disabled/);
+    expect(source).toMatch(/web\.beads\.allow_migrate_from_ui/);
+  });
+
+  test("forward schema skew cannot offer or enable the migration action", () => {
+    const body = extractSchemaSkewDialogSource();
+    expect(body).toMatch(
+      /allowMigrate\s*&&\s*\(isLocalMode \|\| mode === "adopt" \|\| ackChecked\)/,
+    );
+    expect(body).toMatch(/showConfirm=\$\{allowMigrate\}/);
+    expect(body).toMatch(/isRunning \|\| !allowMigrate/);
+    expect(body).toMatch(/"Beads recovery required"/);
+    const confirmDialogSource = readFileSync(
+      resolve(__dirname_bv, "ConfirmDialog.js"),
+      "utf8",
+    );
+    expect(confirmDialogSource).toMatch(
+      /showConfirm\s*&&[\s\S]{0,200}<button[\s\S]{0,300}data-testid="confirm-dialog-confirm"/,
+    );
+    expect(source).toMatch(
+      /schemaSkew\.allowMigrate\s*&&[\s\S]{0,300}data-testid="beads-run-migration-btn"/,
+    );
+  });
+});
+
+describe("mitto-wx5t.3: local schema remediation stays local-only", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+  const start = source.indexOf("function SchemaSkewDialog(");
+  const end = source.indexOf("\nfunction ", start + 1);
+  const body = source.slice(start, end === -1 ? source.length : end);
+
+  test("filters remote-backed options and renders only available options", () => {
+    expect(body).toMatch(
+      /options\.filter\(\(opt\) => !isLocalMode \|\| opt\.mode === "migrate"\)/,
+    );
+    expect(body).toMatch(/availableOptions\.map\(/);
+    expect(body).not.toMatch(/\$\{options\.map\(/);
+  });
+
+  test("forces an in-place migrate request even if selected mode is stale", () => {
+    expect(body).toMatch(/mode: isLocalMode \? "migrate" : mode/);
+  });
+});
+
+// =============================================================================
+// mitto-vc2m: SchemaSkewDialog.handleConfirm must use secureFetch (CSRF header)
+// =============================================================================
+//
+// The original bug: SchemaSkewDialog.handleConfirm called
+//   authFetch(endpoints.beads.migrate(), { method: "POST", ... })
+// which drops the X-CSRF-Token header, so the middleware rejects the request
+// with 403 (has_header=false has_cookie=true). Symptom on mobile: "Run
+// migration" dies with a 403 toast and never reaches the backend.
+//
+// mitto-7gta.17 slice S3: handleConfirm was migrated onto the SDK client
+// (getSdkClient().issues.migrate()). This structurally closes the whole "picked
+// the wrong fetch helper" bug class — browserCookieAuth (sdk/auth/browser-cookie.js)
+// applies the X-CSRF-Token header unconditionally to every mutating request the
+// SDK makes, so there is no authFetch/secureFetch choice left to get wrong. This
+// source-scan assertion now pins the migrate call to the SDK and guards against a
+// future regression back to a raw authFetch/secureFetch call.
+//
+// Source-scan style parallels the mitto-erry / mitto-n5mw / mitto-zbfq blocks
+// above — a full DOM render test is impractical because BeadsView imports
+// window.preact globals at module load time.
+
+describe("mitto-vc2m: SchemaSkewDialog migrate call must use the SDK client (CSRF)", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  function extractSchemaSkewDialogSource() {
+    const startMarker = "function SchemaSkewDialog(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("handleConfirm calls getSdkClient().issues.migrate(), never authFetch/secureFetch", () => {
+    const body = extractSchemaSkewDialogSource();
+    // Locate the migrate call site. Collapse whitespace so line breaks between
+    // the client accessor and the resource method do not hide it.
+    const collapsed = body.replace(/\s+/g, " ");
+
+    // Positive: the migrate POST must go through the SDK client, whose auth
+    // adapter applies X-CSRF-Token unconditionally.
+    expect(collapsed).toMatch(/getSdkClient\(\)\.issues\.migrate\s*\(/);
+
+    // Negative: neither raw fetch helper may reappear on this call site —
+    // authFetch omits X-CSRF-Token entirely (the exact 403 shape reported in
+    // mitto-vc2m), and secureFetch would be a regression back to a bespoke
+    // fetch call the SDK migration was meant to retire.
+    expect(collapsed).not.toMatch(/\bauthFetch\s*\(/);
+    expect(collapsed).not.toMatch(/\bsecureFetch\s*\(/);
+  });
+});
+
+// =============================================================================
+// mitto-cq2n.1: SchemaSkewDialog must render details.stderr, not just the
+// generic error wrapper message
+// =============================================================================
+//
+// The original bug: when POST /api/beads/migrate failed, handleConfirm's
+// catch branch called `setErrorMsg(beadsErrorFrom(err, ...).error)` — only
+// the flattened `.error` (the generic "bd exited with non-zero status: exit
+// status N" wrapper) — and never read `.stderr`, silently discarding the
+// actionable diagnostic the backend had already captured and returned in
+// `error.details.stderr` (e.g. a `bd dolt push` remote/auth failure). The fix
+// renders both the primary message and the raw (possibly multi-line) stderr.
+//
+// Source-scan style parallels the mitto-erry / mitto-vc2m blocks above.
+
+describe("mitto-cq2n.1: SchemaSkewDialog renders both errorMsg and details.stderr", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  function extractSchemaSkewDialogSource() {
+    const startMarker = "function SchemaSkewDialog(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("handleConfirm's catch branch captures beadsErrorFrom(err).stderr into state", () => {
+    const body = extractSchemaSkewDialogSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // The non-kill-switch branch must read the flattened error object once
+    // (so both .error and .stderr come from the same beadsErrorFrom() call)
+    // rather than re-deriving errorMsg via a bare `.error` accessor chain
+    // that has no sibling `.stderr` read anywhere nearby.
+    expect(collapsed).toMatch(
+      /beadsErrorFrom\(\s*err\s*,\s*["'][^"']*["']\s*\)/,
+    );
+    expect(collapsed).toMatch(/\.stderr\b/);
+    // Must be plumbed into a piece of state that is distinct from errorMsg
+    // (i.e. not silently discarded) — look for a state setter call whose
+    // name is not setErrorMsg but is invoked with a `.stderr` derived value.
+    expect(collapsed).toMatch(/setErrorStderr\s*\(/);
+  });
+
+  test("dialog resets stderr state whenever it reopens or a new attempt starts", () => {
+    const body = extractSchemaSkewDialogSource();
+    // The stale-state-leak class of bug (mitto-erry's own useEffect reset
+    // pattern) applies equally to the new stderr state: it must be cleared
+    // both on reopen (isOpen effect) and at the start of every handleConfirm
+    // attempt, mirroring how errorMsg is already reset in both places.
+    const setStderrCalls = (body.match(/setErrorStderr\(\s*""\s*\)/g) || [])
+      .length;
+    expect(setStderrCalls).toBeGreaterThanOrEqual(2);
+  });
+
+  test("dialog renders details.stderr in a distinct, multiline-preserving block", () => {
+    const body = extractSchemaSkewDialogSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // A dedicated testid must exist for the stderr block, distinct from the
+    // primary error message's testid.
+    expect(body).toMatch(/data-testid="schema-skew-dialog-error-stderr"/);
+    expect(body).toMatch(/data-testid="schema-skew-dialog-error"/);
+    // Multiline output must be preserved (whitespace-pre-wrap or a <pre>
+    // element), not collapsed the way `break-all` alone would visually
+    // squash it.
+    expect(collapsed).toMatch(/whitespace-pre-wrap|<pre\b/);
+  });
+});
+
+// =============================================================================
+// mitto-vqf — renderIssueRow bgTone: tint whole row when a linked conversation
+// is prompting on the bead.
+// =============================================================================
+//
+// Mirrors the `bgTone` ternary inside renderIssueRow (BeadsView.js ~L2501–2507):
+// a 4-way branch over (isSelected × isStreamingIssue). BeadsView.js cannot be
+// imported under jsdom (reads window.preact at module load — same limitation
+// documented above), so this file mirrors the pure computation as a small
+// helper and additionally reads the JS/CSS source to guard against silent
+// drift between the mirror and the real code.
+//
+// If the branch structure in BeadsView.js changes, `computeBgTone` below and
+// the source-guard regexes must be updated to match.
+
+/**
+ * Mirrors the `bgTone` expression in renderIssueRow. Returns the same class
+ * string the component composes for the `list-row` element background.
+ */
+function computeBgTone(isSelected, isStreamingIssue) {
+  return isSelected
+    ? isStreamingIssue
+      ? "bg-mitto-surface-3/30 beads-row-streaming"
+      : "bg-mitto-surface-3/30"
+    : isStreamingIssue
+      ? "beads-row-streaming hover:bg-red-600"
+      : "bg-mitto-surface-3/20 hover:bg-red-600";
+}
+
+describe("renderIssueRow bgTone — 4-way branch over (isSelected × isStreamingIssue)", () => {
+  test("not-selected, not-streaming: base surface tint + hover-red", () => {
+    const tone = computeBgTone(false, false);
+    expect(tone).toBe("bg-mitto-surface-3/20 hover:bg-red-600");
+    expect(tone).not.toContain("beads-row-streaming");
+  });
+
+  test("not-selected, streaming: streaming class + hover-red (hover still reachable)", () => {
+    const tone = computeBgTone(false, true);
+    expect(tone).toContain("beads-row-streaming");
+    expect(tone).toContain("hover:bg-red-600");
+    // Base surface utility is intentionally dropped on streaming rows so the
+    // .beads-row-streaming CSS rule owns the background without competing
+    // with `bg-mitto-surface-3/20`.
+    expect(tone).not.toContain("bg-mitto-surface-3/20");
+  });
+
+  test("selected, not-streaming: selection surface, no streaming class, no hover-red", () => {
+    const tone = computeBgTone(true, false);
+    expect(tone).toBe("bg-mitto-surface-3/30");
+    expect(tone).not.toContain("beads-row-streaming");
+    expect(tone).not.toContain("hover:bg-red-600");
+  });
+
+  test("selected + streaming: selection surface AND streaming class combine", () => {
+    // Per plan: selected+streaming keeps the selection tint AND the blue
+    // streaming class so the two signals combine legibly (the selection
+    // accent border is applied separately via borderTone, not part of bgTone).
+    const tone = computeBgTone(true, true);
+    expect(tone).toContain("bg-mitto-surface-3/30");
+    expect(tone).toContain("beads-row-streaming");
+    // Selected rows never take hover-red (matches non-streaming selected).
+    expect(tone).not.toContain("hover:bg-red-600");
+  });
+
+  test("truthy isSelected values (object) behave like true (mirrors `selectedIssue && …`)", () => {
+    // In BeadsView.js, `isSelected` is `selectedIssue && selectedIssue.id === issue.id`
+    // — falsy when no selection, truthy (boolean true) when matched. Guard the
+    // helper against a truthy-but-non-boolean caller passing the raw expression.
+    const tone = computeBgTone({ id: "mitto-aaa" }, true);
+    expect(tone).toContain("bg-mitto-surface-3/30");
+    expect(tone).toContain("beads-row-streaming");
+  });
+
+  test("streaming class is present iff isStreamingIssue is true (both selected states)", () => {
+    for (const sel of [true, false]) {
+      expect(computeBgTone(sel, true)).toContain("beads-row-streaming");
+      expect(computeBgTone(sel, false)).not.toContain("beads-row-streaming");
+    }
+  });
+});
+
+describe("renderIssueRow bgTone — source guard (mitto-vqf)", () => {
+  // Read the real BeadsView.js/styles-v2.css from disk and assert the
+  // implementation still matches the mirror + spec, so a future refactor
+  // that drops the streaming branch or renames the class trips a test.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const beadsViewSource = readFileSync(resolve(here, "BeadsView.js"), "utf8");
+  const stylesSource = readFileSync(
+    resolve(here, "..", "styles-v2.css"),
+    "utf8",
+  );
+
+  test("BeadsView.js still branches bgTone on isStreamingIssue", () => {
+    // The bgTone expression must still be a 4-way branch that includes the
+    // streaming class on both selected and non-selected paths.
+    expect(beadsViewSource).toMatch(/const bgTone = isSelected/);
+    // Both branches (selected+streaming and non-selected+streaming) must
+    // apply the shared semantic class.
+    const streamingBranchCount = (
+      beadsViewSource.match(/beads-row-streaming/g) || []
+    ).length;
+    expect(streamingBranchCount).toBeGreaterThanOrEqual(2);
+    // Non-selected streaming path keeps hover-red reachable.
+    expect(beadsViewSource).toContain('"beads-row-streaming hover:bg-red-600"');
+    // Selected+streaming path combines surface tint with the streaming class.
+    expect(beadsViewSource).toContain(
+      '"bg-mitto-surface-3/30 beads-row-streaming"',
+    );
+  });
+
+  test("styles-v2.css defines .beads-row-streaming in BOTH light and dark themes", () => {
+    // Per-theme rules are required so the tint reads correctly in both
+    // modes (spec: "must look good and stay readable in BOTH light and
+    // dark modes"). Use flexible whitespace so a future reformat does not
+    // trip these guards.
+    expect(stylesSource).toMatch(
+      /\.light\s+\.beads-row-streaming\s*\{[^}]*background:[^;}]+;?[^}]*\}/,
+    );
+    expect(stylesSource).toMatch(
+      /\.dark\s+\.beads-row-streaming\s*\{[^}]*background:[^;}]+;?[^}]*\}/,
+    );
+  });
+
+  test("streaming tint uses the in-progress blue family, not a new hue", () => {
+    // Spec: "Use a color from Mitto's existing palette … Do NOT introduce a
+    // new hue." The rule must reference blue-500 (rgb 59,130,246 — same
+    // family as the beadsInProgressPulse keyframe) rather than any other
+    // color name/token.
+    const lightMatch = stylesSource.match(
+      /\.light\s+\.beads-row-streaming\s*\{[^}]+\}/,
+    );
+    const darkMatch = stylesSource.match(
+      /\.dark\s+\.beads-row-streaming\s*\{[^}]+\}/,
+    );
+    expect(lightMatch).not.toBeNull();
+    expect(darkMatch).not.toBeNull();
+    expect(lightMatch[0]).toMatch(/rgba\(\s*59\s*,\s*130\s*,\s*246\s*,/);
+    expect(darkMatch[0]).toMatch(/rgba\(\s*59\s*,\s*130\s*,\s*246\s*,/);
+  });
+
+  test("hover-red rule is still defined earlier in the file with !important, so hover wins on streaming rows", () => {
+    // Spec regression guard: on a non-selected streaming row, hover-red
+    // must still be reachable. The hover-red rule sits earlier in the file
+    // and carries !important; higher specificity + !important beats the
+    // single-class .beads-row-streaming.
+    const hoverIdx = stylesSource.indexOf(".hover\\:bg-red-600:hover");
+    const streamingIdx = stylesSource.indexOf(".beads-row-streaming");
+    expect(hoverIdx).toBeGreaterThan(-1);
+    expect(streamingIdx).toBeGreaterThan(-1);
+    // Hover rule must be defined before the streaming rule (source order
+    // matters when specificity ties — but here specificity already favors
+    // the compound hover selector; this guard also protects the
+    // documented placement in the file).
+    expect(hoverIdx).toBeLessThan(streamingIdx);
+    // Both light and dark hover-red rules use !important.
+    expect(stylesSource).toMatch(
+      /\.light\s+\.hover\\:bg-red-600:hover[\s\S]*?!important/,
+    );
+    expect(stylesSource).toMatch(
+      /\.dark\s+\.hover\\:bg-red-600:hover[\s\S]*?!important/,
+    );
+  });
+});
+
+// =============================================================================
+// mitto-19j: BeadsIssueView drawer must listen for mitto:beads_changed so the
+// single-issue drawer refreshes when the on-disk bead changes externally
+// (agent `bd close`/`bd update`, sibling Mitto session, `bd` CLI, `git pull`,
+// `bd dolt pull`). The outer list view already wires this at BeadsView.js
+// L1502-1511; the drawer branch was missed and silently ages out.
+//
+// The fix is a single effect in BeadsIssueView that adds a
+// `mitto:beads_changed` window listener scoped by `working_dir` and bumps
+// `refreshNonce` (which already re-fires the /api/issues/{id} fetch at L525
+// and the sibling /api/issues list fetch at L551).
+//
+// Mirrors the source-inspection convention used for mitto-zbfq / mitto-n5mw
+// above: a pure DOM/render test of BeadsView is impractical because
+// BeadsView.js imports window.preact globals at module load time.
+
+describe("mitto-19j: BeadsIssueView listens for mitto:beads_changed", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Isolate the BeadsIssueView function body so the assertion does not
+  // accidentally match the outer BeadsView list-view listener at L1502
+  // (which is not the code under test here).
+  function extractBeadsIssueViewSource() {
+    const startMarker = "function BeadsIssueView(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("BeadsIssueView registers a mitto:beads_changed window listener", () => {
+    const body = extractBeadsIssueViewSource();
+
+    // The listener must be registered inside BeadsIssueView (not just at the
+    // outer BeadsView list-view). Accept both `addEventListener` and
+    // `window.addEventListener` spellings so the test does not couple to
+    // formatting choices.
+    expect(body).toMatch(
+      /(window\.)?addEventListener\(\s*["']mitto:beads_changed["']/,
+    );
+  });
+
+  test("BeadsIssueView listener is scoped by working_dir (no cross-workspace refetch)", () => {
+    const body = extractBeadsIssueViewSource();
+
+    // Acceptance criterion: cross-workspace events must NOT trigger a
+    // refetch. The listener must therefore consult `working_dirs` from the
+    // event detail and gate on the current `workingDir`.
+    expect(body).toMatch(/working_dirs/);
+    // And it must funnel back into the refresh mechanism the two data-fetch
+    // effects already depend on (refreshNonce).
+    expect(body).toMatch(/setRefreshNonce/);
+  });
+});
+
+// =============================================================================
+// mitto-0qn: computeEffectiveStreamingSet — extends the streaming-issue set
+// with every ancestor reached by walking issue.parent upward from any seed, so
+// an epic row tints blue when any of its transitive descendants is currently
+// prompting (visible even when the group is collapsed).
+// =============================================================================
+//
+// Covers the pure helper in utils/beads.js. A sibling source-guard describe
+// block below asserts BeadsView's renderIssueRow reads `effectiveStreamingSet`
+// (not the raw prop `issueStreamingSet`) so the wiring cannot silently
+// regress.
+
+describe("computeEffectiveStreamingSet (mitto-0qn)", () => {
+  test("empty streaming set → empty result (never mutates input)", () => {
+    const issues = [{ id: "a" }, { id: "b", parent: "a" }];
+    const seed = new Set();
+    const out = computeEffectiveStreamingSet(issues, seed);
+    expect(out).toBeInstanceOf(Set);
+    expect(out.size).toBe(0);
+    // Input untouched.
+    expect(seed.size).toBe(0);
+    // Fresh Set instance is returned, not the same reference.
+    expect(out).not.toBe(seed);
+  });
+
+  test("null / undefined streaming set → empty result", () => {
+    expect(computeEffectiveStreamingSet([{ id: "a" }], null).size).toBe(0);
+    expect(computeEffectiveStreamingSet([{ id: "a" }], undefined).size).toBe(0);
+  });
+
+  test("leaf-only, no parent → set unchanged", () => {
+    const issues = [{ id: "leaf" }];
+    const seed = new Set(["leaf"]);
+    const out = computeEffectiveStreamingSet(issues, seed);
+    expect([...out].sort()).toEqual(["leaf"]);
+    // Original set instance is not mutated.
+    expect([...seed].sort()).toEqual(["leaf"]);
+  });
+
+  test("direct parent → parent added to the set", () => {
+    const issues = [{ id: "epic1" }, { id: "task1", parent: "epic1" }];
+    const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
+    expect([...out].sort()).toEqual(["epic1", "task1"]);
+  });
+
+  test("2-deep grandparent chain → both ancestors added", () => {
+    const issues = [
+      { id: "epic1" },
+      { id: "epic2", parent: "epic1" },
+      { id: "task1", parent: "epic2" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
+    expect([...out].sort()).toEqual(["epic1", "epic2", "task1"]);
+  });
+
+  test("cycle A→B→A terminates and tints both nodes exactly once", () => {
+    const issues = [
+      { id: "a", parent: "b" },
+      { id: "b", parent: "a" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["a"]));
+    expect([...out].sort()).toEqual(["a", "b"]);
+  });
+
+  test("missing parent id in issues list → walk stops cleanly", () => {
+    // task1 references an epic that does not exist in `issues`. The parent id
+    // is still added to the effective set (the tint is a UI concern; the
+    // ancestor id is what the row read compares against), but the walk stops
+    // there without throwing.
+    const issues = [{ id: "task1", parent: "ghost-epic" }];
+    const out = computeEffectiveStreamingSet(issues, new Set(["task1"]));
+    expect([...out].sort()).toEqual(["ghost-epic", "task1"]);
+  });
+
+  test("two disjoint trees, streaming in only one → other tree untouched", () => {
+    const issues = [
+      { id: "epicA" },
+      { id: "taskA", parent: "epicA" },
+      { id: "epicB" },
+      { id: "taskB", parent: "epicB" },
+    ];
+    const out = computeEffectiveStreamingSet(issues, new Set(["taskA"]));
+    expect([...out].sort()).toEqual(["epicA", "taskA"]);
+    expect(out.has("epicB")).toBe(false);
+    expect(out.has("taskB")).toBe(false);
+  });
+
+  test("multiple seeds share ancestor → ancestor tinted once, both leaves included", () => {
+    const issues = [
+      { id: "epic1" },
+      { id: "task1", parent: "epic1" },
+      { id: "task2", parent: "epic1" },
+    ];
+    const out = computeEffectiveStreamingSet(
+      issues,
+      new Set(["task1", "task2"]),
+    );
+    expect([...out].sort()).toEqual(["epic1", "task1", "task2"]);
+  });
+
+  test("empty/undefined issues list still returns the seed set", () => {
+    const out = computeEffectiveStreamingSet([], new Set(["only"]));
+    expect([...out].sort()).toEqual(["only"]);
+    const out2 = computeEffectiveStreamingSet(undefined, new Set(["only"]));
+    expect([...out2].sort()).toEqual(["only"]);
+  });
+});
+
+describe("renderIssueRow effective-streaming-set — source guard (mitto-0qn)", () => {
+  // Guard against silent regression: renderIssueRow's isStreamingIssue read
+  // must consult the memoized `effectiveStreamingSet` (which includes
+  // ancestors), NOT the raw `issueStreamingSet` prop (leaves only). If a
+  // future refactor swaps the read back to the raw prop, the ancestor-tint
+  // acceptance criterion silently breaks — this test trips first.
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  test("BeadsView.js imports computeEffectiveStreamingSet from utils/beads.js", () => {
+    expect(source).toMatch(/computeEffectiveStreamingSet/);
+    // The import must land in the utils/beads.js import block, not from an
+    // unrelated module.
+    expect(source).toMatch(
+      /import\s*\{[\s\S]*?computeEffectiveStreamingSet[\s\S]*?\}\s*from\s*["']\.\.\/utils\/beads\.js["']/,
+    );
+  });
+
+  test("BeadsView.js memoizes effectiveStreamingSet with correct deps", () => {
+    // The memo must derive from both `issues` and `issueStreamingSet` so the
+    // tint recomputes when either the graph or the base streaming set
+    // changes (spec: tint clears within one render after streaming stops).
+    expect(source).toMatch(
+      /const\s+effectiveStreamingSet\s*=\s*useMemo\s*\(\s*\(\s*\)\s*=>\s*computeEffectiveStreamingSet\s*\(\s*issues\s*,\s*issueStreamingSet\s*\)/,
+    );
+    expect(source).toMatch(
+      /computeEffectiveStreamingSet\s*\(\s*issues\s*,\s*issueStreamingSet\s*\)\s*,\s*\[\s*issues\s*,\s*issueStreamingSet\s*\]/,
+    );
+  });
+
+  test("renderIssueRow reads effectiveStreamingSet.has(issue.id), NOT the raw prop", () => {
+    // The read that drives isStreamingIssue must consult the effective set so
+    // ancestor epic rows are tinted.
+    expect(source).toMatch(
+      /const\s+isStreamingIssue\s*=\s*effectiveStreamingSet\.has\(\s*issue\.id\s*\)/,
+    );
+    // And it must NOT read the raw prop `issueStreamingSet.has(...)` anywhere
+    // inside renderIssueRow — that would silently regress the acceptance
+    // criterion (the raw prop contains only leaves).
+    expect(source).not.toMatch(/issueStreamingSet\.has\s*\(/);
+  });
+});
+
+// =============================================================================
+// mitto-9vh: BeadsIssueView must stop polling deleted issues after the first 404
+// =============================================================================
+//
+// Bug: when an issue was deleted externally (agent bd close, sibling Mitto
+// session, git pull), the drawer's fetch effect would 404, surface the error,
+// but never mark the id as "gone". Any subsequent mitto:beads_changed event
+// (fired for any .beads/ filesystem change) bumped refreshNonce, re-running
+// the effect and re-issuing the same GET /api/issues/<id> -> 404. Observed:
+// 589 x 404 for mitto-46k in 8h from a single stale drawer, across all
+// connected clients (local + 3 mobile IPs).
+//
+// Fix (frontend-only):
+//   1. BeadsIssueView tracks 404'd ids in a per-instance goneIdsRef (Set).
+//   2. The fetch effect short-circuits any id already in the set.
+//   3. A 404 response adds the id to the set and sets loadError to
+//      {message, gone: true} (skips the toast — external deletion is expected).
+//   4. PanelBody's isLoading branch normalizes loadError (string | object) and
+//      suppresses the Retry button when gone=true (retrying would just 404).
+//
+// A full E2E test that opens the drawer, deletes the issue, fires
+// mitto:beads_changed, and counts network requests lives in
+// tests/ui/specs/beads.spec.ts ("stops polling the drawer's issue after the
+// first 404"). This file's job is to lock the source structure so the fix
+// cannot silently regress via a later refactor — matching the mitto-zbfq /
+// mitto-n5mw pattern already established in this file.
+
+describe("mitto-9vh: BeadsIssueView stops polling deleted issues", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Isolate the BeadsIssueView function body so assertions do not leak into
+  // sibling components. Same slicing pattern as the mitto-zbfq test above.
+  function extractBeadsIssueViewSource() {
+    const startMarker = "function BeadsIssueView(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf(
+      "\nfunction ",
+      startIdx + startMarker.length,
+    );
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("declares a goneIdsRef useRef(new Set()) inside BeadsIssueView", () => {
+    // The gate needs a per-instance, mutation-safe container. A ref (not
+    // state) is deliberate: mutating the Set must NOT trigger a re-render —
+    // the guard is consulted inside the fetch effect whose deps
+    // (refreshNonce/currentIssueId) already re-run on external changes.
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(
+      /const\s+goneIdsRef\s*=\s*useRef\s*\(\s*new\s+Set\s*\(\s*\)\s*\)/,
+    );
+  });
+
+  test("fetch effect short-circuits ids already in goneIdsRef before issuing a request", () => {
+    // The guard must run BEFORE the SDK call, so refreshNonce bumps on a
+    // known-gone id become a cheap no-op instead of another 404. Without
+    // this, mitto:beads_changed re-fires the same GET forever (589 x 404
+    // observed). mitto-7gta.17 slice S3: the fetch site is now
+    // getSdkClient().issues.show(...), not authFetch(endpoints.issues.show(...)).
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // Grab the guard site and the fetch site, then assert the guard's index
+    // is BEFORE the issues.show() call inside the effect.
+    const guardIdx = collapsed.search(
+      /if\s*\(\s*goneIdsRef\.current\.has\s*\(\s*currentIssueId\s*\)\s*\)/,
+    );
+    expect(guardIdx).toBeGreaterThan(-1);
+    const fetchRe =
+      /getSdkClient\s*\(\s*\)\s*\.issues\.show\s*\(\s*currentIssueId/;
+    const fetchMatch = collapsed.match(fetchRe);
+    expect(fetchMatch).not.toBeNull();
+    expect(guardIdx).toBeLessThan(collapsed.indexOf(fetchMatch[0]));
+  });
+
+  test("404 response adds the id to goneIdsRef so future refreshNonce bumps no-op", () => {
+    // The recovery half of the fix: when the fetch discovers a 404, the id
+    // must be memoized so the guard above will skip it next time. If this
+    // add() is missing, the guard is unreachable and the bug returns.
+    // mitto-7gta.17 slice S3: the SDK throws on non-2xx instead of returning
+    // a raw Response, so the 404 branch is now `isNotFoundError(err)` inside
+    // the catch block, not a `res.status === 404` check.
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // The add() lives inside the isNotFoundError(err) branch. Assert both
+    // pieces exist in that order.
+    const statusIdx = collapsed.search(/isNotFoundError\s*\(\s*err\s*\)/);
+    expect(statusIdx).toBeGreaterThan(-1);
+    const addRe = /goneIdsRef\.current\.add\s*\(\s*currentIssueId\s*\)/;
+    const addMatch = collapsed.match(addRe);
+    expect(addMatch).not.toBeNull();
+    expect(collapsed.indexOf(addMatch[0])).toBeGreaterThan(statusIdx);
+  });
+
+  test("404 branch sets loadError to a {gone: true} object so PanelBody can suppress Retry", () => {
+    // The visible half: without the gone flag, PanelBody renders a Retry
+    // button that would just re-404. The object shape distinguishes the
+    // deleted-issue case from transient errors (which stay as strings and
+    // keep the Retry button).
+    const body = extractBeadsIssueViewSource();
+    const collapsed = body.replace(/\s+/g, " ");
+    // Two setLoadError({..., gone: true}) sites — one in the guard, one in
+    // the 404 branch. Both matter: the guard preserves the notice across
+    // refreshNonce bumps, the 404 branch installs it the first time.
+    const goneSites = collapsed.match(
+      /setLoadError\s*\(\s*\{[^}]*gone\s*:\s*true[^}]*\}\s*\)/g,
+    );
+    expect(goneSites).not.toBeNull();
+    expect(goneSites.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("404 branch does NOT call showToast — external deletion must not spam every client", () => {
+    // The bug produced 589 x 404 across 4 IPs (local + 3 mobile) in 8h.
+    // Toasting each one would have quadrupled the UX pain. Isolate the 404
+    // branch specifically — the transient-error branch (the rest of the
+    // catch block) legitimately DOES toast, so a whole-effect scan would
+    // false-positive. mitto-7gta.17 slice S3: the branch guard is now
+    // isNotFoundError(err), not res.status === 404.
+    const body = extractBeadsIssueViewSource();
+    // Extract from "isNotFoundError(err)" up to the branch's closing
+    // `return;` so we only look inside that branch's body. The 404 branch
+    // ends with a bare `return;` (early-exit); the sibling catch-all code
+    // that legitimately calls showToast lives strictly after that boundary.
+    const idx = body.search(/isNotFoundError\s*\(\s*err\s*\)/);
+    expect(idx).toBeGreaterThan(-1);
+    const rest = body.slice(idx);
+    const endMatch = rest.match(/\breturn\s*;/);
+    expect(endMatch).not.toBeNull();
+    const branchBody = rest.slice(0, endMatch.index + endMatch[0].length);
+    expect(branchBody).not.toMatch(/showToast\s*\(/);
+  });
+});
+
+// =============================================================================
+// mitto-9vh: BeadsDetailPanelBody must suppress Retry when loadError.gone
+// =============================================================================
+//
+// Consumer half of the fix: PanelBody's isLoading branch renders loadError
+// via a small alert with an optional Retry button. The bug fix widens
+// loadError to `string | {message, gone: true}`; PanelBody must normalize
+// the shape (so `[object Object]` never leaks to the UI) AND drop the Retry
+// button when gone=true (retrying would just re-404 the deleted issue).
+
+describe("mitto-9vh: BeadsDetailPanelBody suppresses Retry on gone loadError", () => {
+  const PANEL_BODY_PATH = resolve(
+    __dirname_bv,
+    "beads",
+    "detail",
+    "PanelBody.js",
+  );
+  const source = readFileSync(PANEL_BODY_PATH, "utf8");
+
+  test("normalizes loadError to a string message (handles both string and object shapes)", () => {
+    // Without the normalization, an object loadError renders as
+    // "[object Object]" inside the alert <span>. The fix computes an errMsg
+    // local that reads .message when loadError is an object, else the raw
+    // string.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(
+      /const\s+errMsg\s*=\s*loadError\s*&&\s*typeof\s+loadError\s*===\s*"object"\s*\?\s*loadError\.message\s*:\s*loadError/,
+    );
+  });
+
+  test("computes errGone from the loadError.gone flag", () => {
+    // The flag drives Retry suppression below. Must be a coerced boolean
+    // (!!) so a truthy-but-non-boolean payload is safe.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(
+      /const\s+errGone\s*=\s*!!\s*\(\s*loadError\s*&&\s*typeof\s+loadError\s*===\s*"object"\s*&&\s*loadError\.gone\s*\)/,
+    );
+  });
+
+  test("Retry button render is gated on `onRetry && !errGone`, not `onRetry` alone", () => {
+    // The regression bar: a naive `onRetry ? Retry : null` would still show
+    // Retry for a deleted issue, whose only purpose would be to re-404. The
+    // gate must also consult errGone.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(/onRetry\s*&&\s*!\s*errGone/);
+    // And the pre-fix ternary — `onRetry ? html\`<button` — must NOT exist
+    // as the ONLY guard anywhere in the file. Allow the phrase in comments,
+    // but the JSX site must include the errGone conjunction.
+    // (Structural: the two-clause form above IS the JSX site; the negative
+    // assertion here would false-positive on the errGone form itself, so
+    // asserting the presence of the correct form is sufficient.)
+  });
+
+  test("alert renders errMsg (the normalized string), not raw loadError", () => {
+    // If PanelBody kept rendering ${loadError} directly, an object shape
+    // would print "[object Object]" — regressing the user-visible message.
+    // Assert the span reads errMsg.
+    const collapsed = source.replace(/\s+/g, " ");
+    expect(collapsed).toMatch(/<span>\s*\$\{\s*errMsg\s*\}\s*<\/span>/);
+    // And it must NOT render the raw ${loadError} anywhere in the isLoading
+    // alert body. Scope to just the isLoading branch: from "if (isLoading)"
+    // to the first "return html`" that closes it.
+    const isLoadingIdx = source.indexOf("if (isLoading)");
+    expect(isLoadingIdx).toBeGreaterThan(-1);
+    // Take a bounded window (roughly the length of the loading skeleton
+    // block; PanelBody.js line ~98-170 in the current implementation).
+    const branch = source.slice(isLoadingIdx, isLoadingIdx + 3000);
+    expect(branch).not.toMatch(/<span>\s*\$\{\s*loadError\s*\}\s*<\/span>/);
   });
 });

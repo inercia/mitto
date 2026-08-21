@@ -11,8 +11,17 @@
  */
 
 // In ESM mode (--experimental-vm-modules), `jest` is not auto-injected as a
-// global — it must be imported explicitly from @jest/globals.
-import { jest } from "@jest/globals";
+// global — it must be imported explicitly. testGlobals.js re-exports the
+// lifecycle globals and `jest` from whichever runner is active (Jest or
+// bun:test), so a single import works under both.
+import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "./testing/testGlobals.js";
 import { fetchConfig, invalidateConfigCache } from "./configCache.js";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +51,7 @@ function createDeferredFetch(responseData = { ok: true }) {
     } else {
       resolver({
         status: 200,
+        ok: true,
         headers: makeHeaders(),
         json: () => Promise.resolve(data),
       });
@@ -56,6 +66,7 @@ function immediateOkFetch(data = {}) {
   return jest.fn(() =>
     Promise.resolve({
       status: 200,
+      ok: true,
       headers: makeHeaders(),
       json: () => Promise.resolve(data),
     }),
@@ -78,6 +89,17 @@ afterEach(() => {
   jest.restoreAllMocks();
   jest.useRealTimers();
 });
+
+/**
+ * Resolves after the current microtask queue drains. Needed because the SDK
+ * client's `request()` (mitto-7gta.17 S1) awaits `config.auth.authorize()`
+ * before invoking `fetch`, unlike the old `authFetch()` which called `fetch`
+ * synchronously — so a fetch fired by a still-pending call is not yet
+ * reflected in `global.fetch`'s mock call count until this tick passes.
+ */
+function flush() {
+  return Promise.resolve();
+}
 
 // ---------------------------------------------------------------------------
 // TTL cache
@@ -136,6 +158,7 @@ describe("in-flight deduplication", () => {
     // Both calls issued before any response arrives
     const p1 = fetchConfig();
     const p2 = fetchConfig();
+    await flush();
 
     // Only one outbound request should have been started
     expect(global.fetch).toHaveBeenCalledTimes(1);
@@ -175,6 +198,7 @@ describe("in-flight deduplication", () => {
 
     const pa = fetchConfig("server-a");
     const pb = fetchConfig("server-b");
+    await flush();
 
     // Different keys → different in-flight entries → 2 requests
     expect(global.fetch).toHaveBeenCalledTimes(2);
@@ -209,10 +233,12 @@ describe("force=true", () => {
     global.fetch = mockFetch;
 
     const pNormal = fetchConfig(); // starts in-flight
+    await flush();
     expect(global.fetch).toHaveBeenCalledTimes(1);
 
     // force=true bypasses inflight deduplication → second HTTP request
     const pForced = fetchConfig(null, true);
+    await flush();
     expect(global.fetch).toHaveBeenCalledTimes(2);
 
     settle({ v: "normal" });
@@ -224,6 +250,7 @@ describe("force=true", () => {
 
     const p1 = fetchConfig(null, true);
     const p2 = fetchConfig(null, true);
+    await flush();
 
     expect(global.fetch).toHaveBeenCalledTimes(2);
     await Promise.all([p1, p2]);
@@ -253,6 +280,15 @@ describe("error handling", () => {
 
     const p1 = fetchConfig();
     const p2 = fetchConfig();
+
+    // Attach a silent handler to both promises BEFORE settling the deferred.
+    // Under bun's test runner, settling a rejected shared promise flags the
+    // second awaiter as an unhandled rejection during the microtask between
+    // settling p1 and attaching p2's assertion; observing them here keeps
+    // both cross-runner portable. Jest is tolerant of the sequential form.
+    p1.catch(() => {});
+    p2.catch(() => {});
+    await flush();
     expect(global.fetch).toHaveBeenCalledTimes(1); // still deduplicated
 
     settle(null, new Error("server down"));

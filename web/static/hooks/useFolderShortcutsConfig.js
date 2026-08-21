@@ -24,12 +24,8 @@
 
 const { useState, useEffect, useMemo } = window.preact;
 
-import {
-  authFetch,
-  secureFetch,
-  endpoints,
-  errorMessageFromData,
-} from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 import { promptMenuIncludes } from "../utils/prompts.js";
 
@@ -79,23 +75,22 @@ export function useFolderShortcutsConfig({
     if (!workingDir) return;
     setShortcutsLoading(true);
     setShortcutsError("");
+    const client = getSdkClient();
     Promise.all([
-      authFetch(endpoints.folders.shortcuts({ working_dir: workingDir }))
-        .then((r) => r.json())
+      client.shortcuts
+        .getFolder({ working_dir: workingDir })
         .then((data) => setShortcutsSections(data.sections || {})),
       // Global shortcuts: prompts already configured here are excluded from the
       // folder dropdowns (and any duplicate folder rows are greyed out).
-      authFetch(endpoints.global.shortcuts())
-        .then((r) => r.json())
+      client.shortcuts
+        .getGlobal()
         .then((data) => setGlobalShortcutsSections(data.sections || {}))
         .catch(() => setGlobalShortcutsSections({})),
-      authFetch(
-        endpoints.workspacePrompts.list({
+      client.prompts
+        .list({
           working_dir: workingDir,
           include_global: true,
-        }),
-      )
-        .then((r) => r.json())
+        })
         .then((data) => {
           const all = data.prompts || [];
           const byMenu = (menu) =>
@@ -182,17 +177,14 @@ export function useFolderShortcutsConfig({
         .filter((r) => r.prompt)
         .slice(0, 10);
     }
-    const res = await secureFetch(
-      endpoints.folders.shortcuts({ working_dir: workingDir }),
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sections }),
-      },
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok)
-      throw new Error(errorMessageFromData(data, "Failed to save shortcuts"));
+    let data;
+    try {
+      data = await getSdkClient().shortcuts.setFolder(workingDir, {
+        sections,
+      });
+    } catch (err) {
+      throw new Error(errorMessage(err, "Failed to save shortcuts"));
+    }
     setShortcutsSections(data.sections || {});
     // Notify any open Tasks list (BeadsView) so its shortcut buttons refresh
     // immediately, without requiring a full page reload.

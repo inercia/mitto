@@ -327,6 +327,29 @@ func TestSubstituteVariables_Children(t *testing.T) {
 			},
 			expected: "Children: c1 (A) [fast], c3",
 		},
+		{
+			name:    "children substitution with beads issue",
+			message: "@mitto:children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "sess-1", Name: "Research", ACPServer: "claude-code", BeadsIssue: "mitto-59b"},
+					{ID: "sess-2", Name: "Tests", ACPServer: "auggie"},
+				},
+			},
+			expected: "sess-1 (Research) [claude-code] {mitto-59b}, sess-2 (Tests) [auggie]",
+		},
+		{
+			name:    "mcp_children substitution with beads issue",
+			message: "Children: @mitto:mcp_children",
+			input: &ProcessorInput{
+				ChildSessions: []ChildSession{
+					{ID: "c1", Name: "A", ACPServer: "fast", ChildOrigin: "mcp", BeadsIssue: "mitto-1a"},
+					{ID: "c2", Name: "B", ACPServer: "fast", ChildOrigin: "auto", BeadsIssue: "mitto-should-be-hidden"},
+					{ID: "c3", ChildOrigin: "mcp"},
+				},
+			},
+			expected: "Children: c1 (A) [fast] {mitto-1a}, c3",
+		},
 	}
 
 	for _, tt := range tests {
@@ -365,18 +388,20 @@ func TestDelegationParity_FormatACPServers(t *testing.T) {
 }
 
 // TestDelegationParity_FormatChildren verifies that formatChildSessions and
-// formatMCPChildren produce byte-identical output to config.FormatChildren.
+// formatMCPChildren produce byte-identical output to config.FormatChildren,
+// including the BeadsIssue suffix on children that carry a linked bead
+// (mitto-59b).
 func TestDelegationParity_FormatChildren(t *testing.T) {
 	children := []ChildSession{
-		{ID: "s1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp"},
+		{ID: "s1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", BeadsIssue: "mitto-59b"},
 		{ID: "s2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto"},
-		{ID: "s3", ChildOrigin: "mcp"},
+		{ID: "s3", ChildOrigin: "mcp", BeadsIssue: "mitto-abc"},
 	}
 
 	// formatChildSessions → config.FormatChildren(all)
 	allInfos := make([]configPkg.ChildInfo, 0, len(children))
 	for _, c := range children {
-		allInfos = append(allInfos, configPkg.ChildInfo{ID: c.ID, Name: c.Name, ACPServer: c.ACPServer, Origin: c.ChildOrigin})
+		allInfos = append(allInfos, configPkg.ChildInfo{ID: c.ID, Name: c.Name, ACPServer: c.ACPServer, Origin: c.ChildOrigin, BeadsIssue: c.BeadsIssue})
 	}
 	if got, want := formatChildSessions(children), configPkg.FormatChildren(allInfos); got != want {
 		t.Errorf("formatChildSessions parity: got %q, want %q", got, want)
@@ -386,7 +411,7 @@ func TestDelegationParity_FormatChildren(t *testing.T) {
 	var mcpInfos []configPkg.ChildInfo
 	for _, c := range children {
 		if c.ChildOrigin == "mcp" {
-			mcpInfos = append(mcpInfos, configPkg.ChildInfo{ID: c.ID, Name: c.Name, ACPServer: c.ACPServer, Origin: c.ChildOrigin})
+			mcpInfos = append(mcpInfos, configPkg.ChildInfo{ID: c.ID, Name: c.Name, ACPServer: c.ACPServer, Origin: c.ChildOrigin, BeadsIssue: c.BeadsIssue})
 		}
 	}
 	if got, want := formatMCPChildren(children), configPkg.FormatChildren(mcpInfos); got != want {
@@ -518,6 +543,45 @@ func TestSubstituteVariables_LoopForced(t *testing.T) {
 			message:  "p: @mitto:loop, f: @mitto:loop_forced",
 			input:    &ProcessorInput{IsLoop: true, IsLoopForced: true},
 			expected: "p: true, f: true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SubstituteVariables(tt.message, tt.input)
+			if got != tt.expected {
+				t.Errorf("SubstituteVariables() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSubstituteVariables_LoopRunOnStart verifies the @mitto:loop_run_on_start
+// placeholder wired for the boot pulse (mitto-ystk).
+func TestSubstituteVariables_LoopRunOnStart(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		input    *ProcessorInput
+		expected string
+	}{
+		{
+			name:     "loop_run_on_start true",
+			message:  "boot: @mitto:loop_run_on_start",
+			input:    &ProcessorInput{IsLoopRunOnStart: true},
+			expected: "boot: true",
+		},
+		{
+			name:     "loop_run_on_start false",
+			message:  "boot: @mitto:loop_run_on_start",
+			input:    &ProcessorInput{IsLoopRunOnStart: false},
+			expected: "boot: false",
+		},
+		{
+			name:     "loop_run_on_start default (false)",
+			message:  "boot: @mitto:loop_run_on_start",
+			input:    &ProcessorInput{},
+			expected: "boot: false",
 		},
 	}
 

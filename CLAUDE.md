@@ -64,8 +64,14 @@ go test -v -tags integration ./tests/integration/inprocess/
 - **Log authoritative source**: Check `events.jsonl` (session dir) when debugging; server logs rotate and have gaps.
 - **daisyUI drawer GPU bug**: `.drawer-side` + fixed-position overlay compete for pointer events → blank artifacts. Fix: See `web/static/styles.css` for verified pattern. Do NOT use `translateZ(0)`.
 - **Zombie WebSocket recovery**: When phone sleeps or app backgrounded, WS may enter "zombie" state (appearing open but dead). On visibility change or app activate, force-close and reconnect. This is expected behavior — not a bug. See `.augment/rules/23-web-frontend-mobile.md` for resilience patterns.
+- **Swipe-nav has two independent paths**: horizontal-swipe conversation navigation runs through **both** `hooks/useSwipeNavigation.js` (touch/mobile) **and** `utils/globalHandlers.js` (macOS trackpad, via `menu_darwin.m`). Both guards use an `overflow-x + scrollWidth > clientWidth` heuristic that fails on non-overflowing scrollable strips (and jsdom reports both as 0). Regions that must absorb horizontal swipes even when not overflowing (e.g. `.mitto-carousel` in `ChatInput.js`) set `data-mitto-no-swipe` — honored by both guards. See `.augment/rules/25-web-frontend-components.md`.
 - **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk — session gaps, restarts, or a **concurrent loop conversation** (e.g. a PR-babysitting/cleanup loop sharing the same repo) stashing/resetting the working directory mid-task can silently drop them. Re-check with `git status`/`git diff`/re-view before relying on earlier work; if files vanish unexpectedly, check `git stash list` first — work is often auto-stashed, not lost.
 - **Cold-start MCP wedge (mitto-54k) — corrected 2026-07-08: it's a Mitto-side SSE stall, not agent-side**: symptom `⏳ mitto (timed out)`/hung first prompt for minutes. The earlier "agent-side, unfixable in Mitto" diagnosis was **wrong** — it was overturned after the same wedge reproduced in **both** auggie and Claude Code, isolated to workspaces with **concurrent MCP sessions** (e.g. multiple workspace UUIDs + an active loop sharing one `working_dir`). Root cause: `internal/mcpserver/server.go:347` builds the Streamable HTTP handler with `nil` options → stateful mode, where a POST's response can ride the client's per-session **GET SSE stream** instead of the POST body; under concurrency that stream stalls (~97s gap observed, SSE GET held open, never completes) so `initialize` times out even though Mitto's handler already returned 200 in 0ms (`duration_ms=0` in logs is a red herring). Fixed by `mitto-6hr` (P1, APPLIED): `startSSE()` passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` so POST responses resolve inline, independent of the SSE GET — **not** `Stateless: true` (breaks `UIPrompter`/`mitto_ui_options`). See `.augment/rules/42-mcpserver-development.md`. Secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm pin), `mitto-cgc` (stagger aux-session creation).
+- **MCP reaper is Mitto-owned, ownership-aware (mitto-6cz6 → mitto-txse → mitto-wat)**: `mcpStreamableHTTPOptions()` now sets `SessionTimeout: 0` (SDK auto-close disabled) because the SDK clock is POST-only — SSE `GET` keepalive reconnects are invisible to it, so it was killing SSE-only-but-live sessions mid-turn (mitto-txse: reaped at exactly 30.0 min after last POST, real `tools/call` lost). Mitto owns the reap policy instead (`reapIdleMCPSessions`, 1-min ticker, HTTP mode only): treats **any** request bearing `Mcp-Session-Id` as activity, exempts sessions with an open GET keepalive, and — mitto-wat — **never idle-reaps a protocol session while a registered ACP conversation still owns it**; when the final owner unregisters, the transport is marked retireable and DELETEd once application POSTs drain (per-lease RWMutex serializes the synthetic DELETE against in-flight POSTs). `mcpIdleSessionTimeout = 30 * time.Minute` is retained only as an upper bound for **unowned** transports. **Compound upstream risk**: auggie NEVER sends `DELETE /mcp` (auggie#162, zero call sites in shipped bundle) AND does not re-initialize on 404 (auggie#149) — today the 404 path is masked by **pooled-session failover**. If #162 is fixed upstream but #149 remains, mitigation is **raising** the unowned-transport timeout, not removing it. Re-verify after any auggie upgrade. See `.augment/rules/42-mcpserver-development.md`.
+- **MCP transport→conversation binding is authenticated and immutable (mitto-apvg)**: HTTP-capable ACP sessions receive a random, memory-only binding header injected into their `session/new` / `session/load` MCP entry; the HTTP middleware binds the resulting MCP protocol session **immutably** to that registered conversation before any tool dispatch. Conflicting rebinds return `409`. This is the primary identity path — `resolveSelfIDWithMCP` uses exact-ID matching (not FIFO) and rejects ambiguous `self_id="init"` fallbacks so concurrent cold-start `tools/call`s can't cross-wire. Never restore the legacy shared `init` FIFO: an HTTP-layer failure can leave a stale entry that maps the next conversation to the wrong session. Never log or persist the binding value. See `.augment/rules/42-mcpserver-development.md`.
+- **`mcp_session_id` format**: uppercase base32 (`YCYYTHDLWGR7QDFI2XFEAS5766`), **not** hex/UUID. Grep with `[A-Z0-9]+` (length ≥20); a hex-only regex `[a-f0-9-]+` matches nothing and once produced a fake "10 streams/session" leak diagnosis before self-correction.
+- **Rebuild-verification protocol (recurring trap)**: after asking the user to rebuild+restart, verify the fix is actually live **before** analyzing new logs. (1) `ls -la ./mitto` mtime vs `git show -s --format=%ci <fix-commit>`; (2) `strings ./mitto | grep <new-symbol>` — zero hits = not compiled in; (3) post-restart `grep <new-log-literal> mitto.log`. Bitten at least 3× (mitto-54k.3/54k.5, mitto-xetv, mitto-mzvc). See `.augment/rules/40-debugging.md`.
+- **Child task reports must be durable (mitto-wubj, commit 41819cf8)**: `childReportCollectors` in `internal/mcpserver` are in-memory; `UnregisterSession` used to delete them, silently dropping reports accepted while a parent loop conversation was temporarily suspended (normal lifecycle, not deletion). Reports are now persisted to a per-session JSON sidecar `child-reports.json` via the new `session.Store.ReadSessionSidecarJSON` / `WriteSessionSidecarJSON` API (`internal/session/store_sidecar.go`) — reusable for any session-scoped metadata that must survive suspension/restart without bloating `events.jsonl`. The sidecar API holds the per-session lock, returns `ErrSessionNotFound` if the parent was truly deleted, and writes atomically (0600). `handleChildrenTasksReport` now explicitly rejects reports whose parent no longer exists via `store.Exists`, distinguishing "temporarily suspended" from "truly deleted".
 
 ## New Agent Capability Checklist
 
@@ -120,6 +126,7 @@ Two-tier discovery for `enabledWhen`/CEL `tools.*` gating (see `docs/devel/mcp-t
 1. **Deterministic** (`internal/mcpdiscovery`): connects directly to configured MCP servers (stdio/http/sse) via `modelcontextprotocol/go-sdk` client and calls `tools/list`. Preferred — no LLM involved.
 2. **LLM fallback** (`internal/auxiliary/workspace_manager.go` `fetchMCPToolsViaLLM`): used only when a server can't be reached deterministically. `parseMCPToolsList` (`utils.go`) is **strict**: whole trimmed/unfenced response must be one JSON object with `tools`/`error` keys — no substring or bare-array extraction (that leniency caused false negatives/hallucinated tools). Retries once with a reminder prompt on parse failure or an implausible zero-tools result (checked against the deterministically-known configured server count).
 3. **Disk persistence** (mitto-sys.8): deterministic tool lists survive restarts via `appdir.MCPToolsCacheDir()` (`$MITTO_DIR/mcp-tools-cache`), one JSON snapshot per workspace, 15-min TTL (`persistedMCPTools` + `loadPersistedMCPTools`/`savePersistedMCPTools` in `workspace_manager.go`). The **LLM fallback is never written to disk** — in-memory only. `ClearMCPToolsCache` also deletes the snapshot, forcing re-probe.
+4. **Restart heuristic re-verify** (mitto-dza, Fix 4): snapshots carry `SchemaVersion` + `AnyUnreachable`. A snapshot flagged suspect (unreachable server at persist time, or pre-mitto-dza schema) is served instantly on load **and** triggers a background async re-probe (`triggerAsyncMCPToolsRefetch`, per-workspace in-flight guard, 60s bounded context). On completion `MCPToolsRefreshedHook` fires; `internal/web/server.go` wires it to broadcast `prompts_changed` with `reason: "mcp_tools_reverified"` so `enabledWhen` tool-gates re-evaluate within seconds — closes the "LLM-only servers vanish across restart" gap without weakening the anti-hallucination guarantee (LLM tools still never written to disk).
 
 **Anti-pattern**: lenient JSON extraction (searching for `{...}` substrings or bare arrays in free-form LLM text) silently accepts malformed/partial answers. Prefer strict whole-response parsing + explicit retry over "try to salvage whatever looks like JSON."
 
@@ -131,15 +138,45 @@ Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across age
 
 ## Loop Conversations
 
-**onCompletion trigger** (distinct from schedule-based loop):
+**Multi-trigger schema (mitto-r6j, breaking change)**: `loop:` frontmatter's
+`trigger:` is a **list** (`[schedule, onCompletion, onTasks]`, one or more),
+and each trigger's own fields live in a nested block of the same name
+(`schedule:`, `onCompletion:`, `onTasks:`) rather than flat siblings of
+`trigger:`. Every listed trigger **arms independently** and stays armed for
+the loop's lifetime — e.g. `[onTasks, onCompletion]` reacts to beads changes
+AND re-arms after every turn, simultaneously. When two triggers want to fire
+in the same window, exactly ONE run is delivered per conversation — the
+loser is **coalesced (dropped, not queued)** via a per-session dispatch claim
+(`LoopRunner.claimDispatch`); precedence within a tick is `onTasks >
+onCompletion > schedule`. `maxIterations`/`maxDuration` are loop-wide,
+decremented once per delivered run regardless of which trigger fired it. The
+winning trigger is recorded on `PromptMeta.LoopTrigger` and surfaced as
+`loop_updated.triggers` (full armed set) alongside the back-compat singular
+`loop_updated.trigger`. Runtime `loop.json` (`session.LoopPrompt`) was **not**
+schema-versioned or migrated — `EffectiveTriggers()`'s fallback chain already
+reads every persisted shape, so live loops from before mitto-r6j keep working
+unchanged after upgrade. A `.prompt.yaml` file on the old flat form is
+auto-migrated on load (WARN + on-disk line-splice rewrite, comments
+preserved, idempotent) by `internal/prompts/migrate`; inline `prompts:` blocks
+(`.mittorc`, `settings.yaml`, per-ACP-server) are migrated **in memory only**
+via `prompts.DecodeInlineLoop` — WARN, no on-disk rewrite (mitto-opoh). See
+[docs/config/prompts.md § Loop Prompts](docs/config/prompts.md#loop-prompts)
+and
+[docs/devel/message-queue.md § Multi-Trigger Architecture](docs/devel/message-queue.md#loop-prompts-multi-trigger-architecture).
+
+**onCompletion trigger** (event-driven, one of the three triggers above):
 - Re-fires automatically 30s after agent finishes each turn (configurable `delay_seconds`)
 - Green "Running" pill = `loop_enabled: true`, NOT generic "agent is active" status
-- Limited by `max_iterations` and `max_duration_seconds`
+- Limited by `max_iterations` and `max_duration_seconds` (shared with any other armed trigger)
 - Free-text loop prompts NOT sent to frontend → selector can't display them (UI gap)
 - `app.js` line ~1928: `headerLoopState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
 
 **Persistence symmetry (LoopStore, `internal/session/loop.go`)**: un-loop calls `Detach()` (saves settings to a slot, clears active config); re-loop/restore reads it back via `GetSaved()`. A **fresh** loop create must call `ClearSaved()` right after `Set()` so a stale saved slot doesn't leak into a later un-loop — done identically in REST (`session_loop_write.go` `handleSetLoop`) and MCP (`mcpserver/server.go` create-loop path) to keep both interfaces symmetric.
+
+**Spawning loop children — `arguments` vs `loop_arguments`**: `mitto_conversation_new`'s `arguments:` fills `.Args` only on the initial prompt; `loop_arguments:` fills `.Args` on every re-fire. When the spawned child is itself a loop, MIRROR the same resolved value into both — otherwise re-fires render with empty `.Args`, so positive-match gates (`{{ if eq .Args.Commit "true" }}`) silently resolve false and default-on gates silently fall back to the default instead of the operator's choice (bug `mitto-rtdr`, fixed 25ed20d9). `TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments` pins this on `beads-issues/loop-processing.prompt.yaml`: for each `SubmitStrategy` value (`Commit`/`Pull Request`/`None`, plus unset) every §A/§B/§C spawn block must carry both maps with the identical literal. Prefer default-on gates (`{{ if ne .Args.X "false" }}`) since parameter defaults are NOT auto-merged into `.Args` at render time.
+
+**`coalesceDuringBusy` silent-swallow**: when an `onTasks` subtree is busy, fs-watcher fires do NOT dispatch — they arm a quiescence rebase timer that silently updates the baseline on quiescence (`onTasks: baseline rebased after idle+quiescence`). Intentional coalescing, but supervisor loops can silently miss user-driven state changes for minutes until an external event re-fires the watcher. This is orthogonal to the multi-trigger dispatch coalescing above (which drops a *whole run* from a losing trigger); `coalesceDuringBusy` instead governs whether the `onTasks` trigger's *own* busy-window changes get folded silently into the next baseline rebase or trigger one more accumulated-delta fire.
 
 ## Tokensave Rule (Mandatory)
 

@@ -12,9 +12,9 @@ import {
   FolderIcon,
   LoopFilledIcon,
 } from "./Icons.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/index.js";
+import { apiUrl } from "../utils/api.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { formatTimeAgo } from "../lib.js";
 import { Drawer } from "./Drawer.js";
@@ -306,43 +306,42 @@ export function ConversationPropertiesPanel({
       const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        // Fetch loop config, callback config, available flags, and session settings in parallel
-        const [loopRes, callbackRes, flagsRes, settingsRes] =
+        // Fetch loop config, callback config, available flags, and session
+        // settings in parallel. Each call swallows its own failure (mirrors
+        // the old per-Response `x && x.ok` tolerance — the SDK throws on a
+        // non-2xx status where the old raw fetch() would just resolve with
+        // `res.ok === false`), so one endpoint failing does not blank out
+        // the other three.
+        const [loopData, callbackData, flagsData, settingsData] =
           await Promise.all([
             loopConfigured
-              ? authFetch(endpoints.sessions.loop(sessionId))
+              ? getSdkClient()
+                  .sessions.loop.get(sessionId)
+                  .catch(() => null)
               : Promise.resolve(null),
             loopConfigured
-              ? authFetch(endpoints.sessions.callback(sessionId))
+              ? getSdkClient()
+                  .sessions.getCallback(sessionId)
+                  .catch(() => null)
               : Promise.resolve(null),
-            authFetch(endpoints.misc.advancedFlags()),
-            authFetch(endpoints.sessions.settings(sessionId)),
+            getSdkClient()
+              .misc.advancedFlags()
+              .catch(() => null),
+            getSdkClient()
+              .sessions.getSettings(sessionId)
+              .catch(() => null),
           ]);
 
-        if (loopRes && loopRes.ok) {
-          const loop = await loopRes.json();
-          setLoopConfig(loop);
-        } else {
-          // No loop config or error - clear state
-          setLoopConfig(null);
-        }
+        // No loop config or error - clear state
+        setLoopConfig(loopData || null);
+        setCallbackConfig(callbackData || null);
 
-        if (callbackRes && callbackRes.ok) {
-          setCallbackConfig(await callbackRes.json());
-        } else {
-          setCallbackConfig(null);
-        }
-
-        if (flagsRes.ok) {
-          const flagsData = await flagsRes.json();
+        if (flagsData) {
           // API returns { flags: [...], configured_defaults: {...} }
           setAvailableFlags(flagsData.flags || flagsData || []);
         }
 
-        if (settingsRes.ok) {
-          const settingsData = await settingsRes.json();
-          setSessionSettings(settingsData.settings || {});
-        }
+        if (settingsData) setSessionSettings(settingsData.settings || {});
       } catch (err) {
         console.error("Failed to fetch panel data:", err);
         setFlagsError("Failed to load settings");
@@ -436,10 +435,7 @@ export function ConversationPropertiesPanel({
       );
     };
 
-    window.addEventListener(
-      "mitto:loop_config_updated",
-      handleLoopUpdated,
-    );
+    window.addEventListener("mitto:loop_config_updated", handleLoopUpdated);
     return () => {
       window.removeEventListener(
         "mitto:loop_config_updated",
@@ -499,24 +495,13 @@ export function ConversationPropertiesPanel({
       setFlagsError(null);
 
       try {
-        const res = await secureFetch(endpoints.sessions.settings(sessionId), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings: { [flagName]: newValue } }),
+        const data = await getSdkClient().sessions.updateSettings(sessionId, {
+          [flagName]: newValue,
         });
-
-        if (res.ok) {
-          const data = await res.json();
-          setSessionSettings(data.settings || {});
-        } else {
-          const errorData = await res.json().catch(() => ({}));
-          setFlagsError(
-            errorMessageFromData(errorData, "Failed to save setting"),
-          );
-        }
+        setSessionSettings(data.settings || {});
       } catch (err) {
         console.error("Failed to save flag:", err);
-        setFlagsError("Failed to save setting");
+        setFlagsError(errorMessage(err, "Failed to save setting"));
       } finally {
         setSavingFlags((prev) => ({ ...prev, [flagName]: false }));
       }
@@ -533,21 +518,14 @@ export function ConversationPropertiesPanel({
       const newValue = e.target.checked;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fresh_context: newValue }),
+        const data = await getSdkClient().sessions.loop.update(sessionId, {
+          fresh_context: newValue,
         });
-        if (res.ok) {
-          const data = await res.json();
-          setLoopConfig((prev) =>
-            prev
-              ? { ...prev, fresh_context: data.fresh_context ?? newValue }
-              : prev,
-          );
-        } else {
-          console.error("Failed to update fresh_context");
-        }
+        setLoopConfig((prev) =>
+          prev
+            ? { ...prev, fresh_context: data.fresh_context ?? newValue }
+            : prev,
+        );
       } catch (err) {
         console.error("Failed to update fresh_context:", err);
       }
@@ -556,11 +534,8 @@ export function ConversationPropertiesPanel({
   );
 
   const handleEnableCallback = useCallback(async () => {
-    const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-      method: "POST",
-    });
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const data = await getSdkClient().sessions.createCallback(sessionId);
       setCallbackConfig(data);
       try {
         await navigator.clipboard.writeText(data.callback_url);
@@ -570,6 +545,8 @@ export function ConversationPropertiesPanel({
         // Clipboard may not be available in some contexts
         console.warn("Failed to copy to clipboard:", e);
       }
+    } catch (_err) {
+      /* mirrors the prior !res.ok no-op */
     }
   }, [sessionId]);
 
@@ -594,11 +571,8 @@ export function ConversationPropertiesPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-          method: "POST",
-        });
-        if (res.ok) {
-          const data = await res.json();
+        try {
+          const data = await getSdkClient().sessions.createCallback(sessionId);
           setCallbackConfig(data);
           try {
             await navigator.clipboard.writeText(data.callback_url);
@@ -607,6 +581,8 @@ export function ConversationPropertiesPanel({
           } catch (e) {
             console.warn("Failed to copy to clipboard:", e);
           }
+        } catch (_err) {
+          /* mirrors the prior !res.ok no-op */
         }
       },
     });
@@ -620,11 +596,11 @@ export function ConversationPropertiesPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-          method: "DELETE",
-        });
-        if (res.ok) {
+        try {
+          await getSdkClient().sessions.revokeCallback(sessionId);
           setCallbackConfig(null);
+        } catch (_err) {
+          /* mirrors the prior !res.ok no-op */
         }
       },
     });

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -64,10 +65,19 @@ type FolderSettings struct {
 	// counterpart and preserved across workspace-driven saves by
 	// preserveFolderNativeFields.
 	Pinned bool `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	// LastOpenedAt records when the folder was most recently opened/pinned or
+	// received a new session, used by the "Add folder" dialog to sort hidden
+	// workspaces MRU-first. Folder-native: no per-workspace counterpart; preserved
+	// across workspace-driven saves by preserveFolderNativeFields.
+	LastOpenedAt time.Time `json:"last_opened_at,omitempty" yaml:"last_opened_at,omitempty"`
 }
 
 // BeadsFolderSettings holds folder-native beads integration settings.
 type BeadsFolderSettings struct {
+	// DatabaseMode controls whether the folder's Beads Dolt database is local-only
+	// or shared through a configured remote. It is independent from Upstream,
+	// which selects an external task system. Empty is a legacy/unresolved value.
+	DatabaseMode BeadsDatabaseMode `json:"databaseMode,omitempty" yaml:"databaseMode,omitempty"`
 	// Upstream selects the external task system beads syncs with. One of
 	// "jira", "github", "gitlab", "linear", or "prompts". An empty value (or the
 	// absence of the Beads block) means no upstream is configured ("none").
@@ -87,6 +97,31 @@ type BeadsFolderSettings struct {
 	PullPromptArgs map[string]string `json:"pullPromptArgs,omitempty" yaml:"pullPromptArgs,omitempty"`
 	PushPromptArgs map[string]string `json:"pushPromptArgs,omitempty" yaml:"pushPromptArgs,omitempty"`
 	SyncPromptArgs map[string]string `json:"syncPromptArgs,omitempty" yaml:"syncPromptArgs,omitempty"`
+}
+
+// BeadsDatabaseMode is the folder-native policy for Beads Dolt replication.
+type BeadsDatabaseMode string
+
+const (
+	BeadsDatabaseModeLocal  BeadsDatabaseMode = "local"
+	BeadsDatabaseModeShared BeadsDatabaseMode = "shared"
+)
+
+// IsValidBeadsDatabaseMode reports whether mode is one of the persisted values.
+func IsValidBeadsDatabaseMode(mode BeadsDatabaseMode) bool {
+	return mode == BeadsDatabaseModeLocal || mode == BeadsDatabaseModeShared
+}
+
+func validateFolderBeadsModes(folders map[string]FolderSettings) error {
+	for workingDir, fs := range folders {
+		if fs.Beads == nil || fs.Beads.DatabaseMode == "" {
+			continue
+		}
+		if !IsValidBeadsDatabaseMode(fs.Beads.DatabaseMode) {
+			return fmt.Errorf("folder %q has invalid beads database mode %q", workingDir, fs.Beads.DatabaseMode)
+		}
+	}
+	return nil
 }
 
 // FoldersFile is the on-disk representation of folders.json. It maps a working
@@ -111,6 +146,9 @@ func LoadFolders() (map[string]FolderSettings, error) {
 	}
 	if file.Folders == nil {
 		file.Folders = map[string]FolderSettings{}
+	}
+	if err := validateFolderBeadsModes(file.Folders); err != nil {
+		return nil, err
 	}
 	return file.Folders, nil
 }
@@ -143,6 +181,9 @@ func LoadFoldersFromFile(path string) (map[string]FolderSettings, error) {
 	if file.Folders == nil {
 		file.Folders = map[string]FolderSettings{}
 	}
+	if err := validateFolderBeadsModes(file.Folders); err != nil {
+		return nil, err
+	}
 	return file.Folders, nil
 }
 
@@ -150,6 +191,9 @@ func LoadFoldersFromFile(path string) (map[string]FolderSettings, error) {
 // When the map is empty, any existing folders.json is removed to keep the
 // data directory clean (an empty folders.json carries no information).
 func SaveFolders(folders map[string]FolderSettings) error {
+	if err := validateFolderBeadsModes(folders); err != nil {
+		return err
+	}
 	path, err := appdir.FoldersPath()
 	if err != nil {
 		return err
@@ -193,6 +237,7 @@ func ApplyFolderDefaults(workspaces []WorkspaceSettings, folders map[string]Fold
 			workspaces[i].AutoChildren = append([]AutoChild(nil), fs.AutoChildren...)
 		}
 		workspaces[i].Pinned = fs.Pinned
+		workspaces[i].LastOpenedAt = fs.LastOpenedAt
 	}
 }
 
@@ -264,6 +309,7 @@ func extractFolderSettings(workspaces []WorkspaceSettings) ([]WorkspaceSettings,
 			cleaned[i].Group = ""
 			cleaned[i].AutoChildren = nil
 			cleaned[i].Pinned = false
+			cleaned[i].LastOpenedAt = time.Time{}
 		}
 
 		if any {
@@ -326,6 +372,9 @@ func foldersEqual(a, b map[string]FolderSettings) bool {
 		if av.Pinned != bv.Pinned {
 			return false
 		}
+		if !av.LastOpenedAt.Equal(bv.LastOpenedAt) {
+			return false
+		}
 		if !autoChildrenEqual(av.AutoChildren, bv.AutoChildren) {
 			return false
 		}
@@ -345,7 +394,8 @@ func beadsEqual(a, b *BeadsFolderSettings) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.Upstream == b.Upstream &&
+	return a.DatabaseMode == b.DatabaseMode &&
+		a.Upstream == b.Upstream &&
 		a.PullPrompt == b.PullPrompt &&
 		a.PushPrompt == b.PushPrompt &&
 		a.SyncPrompt == b.SyncPrompt &&
@@ -363,10 +413,13 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 	if len(fs.AutoChildren) > 0 {
 		return false
 	}
-	if fs.Beads != nil && fs.Beads.Upstream != "" {
+	if !beadsSettingsEmpty(fs.Beads) {
 		return false
 	}
 	if fs.Pinned {
+		return false
+	}
+	if !fs.LastOpenedAt.IsZero() {
 		return false
 	}
 	for _, buttons := range fs.Shortcuts {
@@ -375,6 +428,12 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 		}
 	}
 	return true
+}
+
+func beadsSettingsEmpty(settings *BeadsFolderSettings) bool {
+	return settings == nil || (settings.DatabaseMode == "" && settings.Upstream == "" &&
+		settings.PullPrompt == "" && settings.PushPrompt == "" && settings.SyncPrompt == "" &&
+		len(settings.PullPromptArgs) == 0 && len(settings.PushPromptArgs) == 0 && len(settings.SyncPromptArgs) == 0)
 }
 
 // preserveFolderNativeFields merges folder-native settings (those not derived
@@ -401,7 +460,7 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 		if !valid[wd] {
 			continue
 		}
-		hasBeads := ex.Beads != nil && ex.Beads.Upstream != ""
+		hasBeads := !beadsSettingsEmpty(ex.Beads)
 		hasShortcuts := false
 		for _, buttons := range ex.Shortcuts {
 			if len(buttons) > 0 {
@@ -410,7 +469,8 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 			}
 		}
 		hasPinned := ex.Pinned
-		if !hasBeads && !hasShortcuts && !hasPinned {
+		hasLastOpenedAt := !ex.LastOpenedAt.IsZero()
+		if !hasBeads && !hasShortcuts && !hasPinned && !hasLastOpenedAt {
 			continue
 		}
 		if out == nil {
@@ -425,6 +485,9 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 		}
 		if hasPinned {
 			fs.Pinned = true
+		}
+		if hasLastOpenedAt {
+			fs.LastOpenedAt = ex.LastOpenedAt
 		}
 		out[wd] = fs
 	}
@@ -444,10 +507,22 @@ func SetFolderBeadsUpstream(workingDir, upstream string) error {
 		folders = map[string]FolderSettings{}
 	}
 	fs := folders[workingDir]
+	if fs.Beads == nil {
+		fs.Beads = &BeadsFolderSettings{}
+	}
+	fs.Beads.PullPrompt = ""
+	fs.Beads.PushPrompt = ""
+	fs.Beads.SyncPrompt = ""
+	fs.Beads.PullPromptArgs = nil
+	fs.Beads.PushPromptArgs = nil
+	fs.Beads.SyncPromptArgs = nil
 	if upstream == "" || upstream == "none" {
-		fs.Beads = nil
+		fs.Beads.Upstream = ""
 	} else {
-		fs.Beads = &BeadsFolderSettings{Upstream: upstream}
+		fs.Beads.Upstream = upstream
+	}
+	if beadsSettingsEmpty(fs.Beads) {
+		fs.Beads = nil
 	}
 	if folderSettingsEmpty(fs) {
 		delete(folders, workingDir)
@@ -471,20 +546,57 @@ func SetFolderBeadsPromptUpstream(workingDir, pull, push, sync string, pullArgs,
 		folders = map[string]FolderSettings{}
 	}
 	fs := folders[workingDir]
-	fs.Beads = &BeadsFolderSettings{
-		Upstream:       "prompts",
-		PullPrompt:     pull,
-		PushPrompt:     push,
-		SyncPrompt:     sync,
-		PullPromptArgs: pullArgs,
-		PushPromptArgs: pushArgs,
-		SyncPromptArgs: syncArgs,
+	if fs.Beads == nil {
+		fs.Beads = &BeadsFolderSettings{}
 	}
+	fs.Beads.Upstream = "prompts"
+	fs.Beads.PullPrompt = pull
+	fs.Beads.PushPrompt = push
+	fs.Beads.SyncPrompt = sync
+	fs.Beads.PullPromptArgs = pullArgs
+	fs.Beads.PushPromptArgs = pushArgs
+	fs.Beads.SyncPromptArgs = syncArgs
 	if folderSettingsEmpty(fs) {
 		delete(folders, workingDir)
 	} else {
 		folders[workingDir] = fs
 	}
+	return SaveFolders(folders)
+}
+
+// ConfiguredFolderBeadsDatabaseMode returns the explicit folders.json policy.
+// configured is false for legacy folders that have not yet been inferred.
+func ConfiguredFolderBeadsDatabaseMode(workingDir string) (mode BeadsDatabaseMode, configured bool, err error) {
+	folders, err := LoadFolders()
+	if err != nil {
+		return "", false, err
+	}
+	fs, ok := folders[workingDir]
+	if !ok || fs.Beads == nil || fs.Beads.DatabaseMode == "" {
+		return "", false, nil
+	}
+	return fs.Beads.DatabaseMode, true, nil
+}
+
+// SetFolderBeadsDatabaseMode persists the folder policy without changing the
+// external-task upstream or its prompt arguments.
+func SetFolderBeadsDatabaseMode(workingDir string, mode BeadsDatabaseMode) error {
+	if !IsValidBeadsDatabaseMode(mode) {
+		return fmt.Errorf("invalid beads database mode %q", mode)
+	}
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	if fs.Beads == nil {
+		fs.Beads = &BeadsFolderSettings{}
+	}
+	fs.Beads.DatabaseMode = mode
+	folders[workingDir] = fs
 	return SaveFolders(folders)
 }
 
@@ -610,4 +722,39 @@ func FolderPinned(workingDir string) bool {
 		return false
 	}
 	return fs.Pinned
+}
+
+// SetFolderLastOpenedAt stamps the folder's last-opened timestamp in
+// folders.json. Callers use this to record folder activity (pinning or a new
+// session) so the "Add folder" dialog can rank hidden folders MRU-first.
+func SetFolderLastOpenedAt(workingDir string, t time.Time) error {
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	fs.LastOpenedAt = t
+	if folderSettingsEmpty(fs) {
+		delete(folders, workingDir)
+	} else {
+		folders[workingDir] = fs
+	}
+	return SaveFolders(folders)
+}
+
+// FolderLastOpenedAt returns the folder's last-opened timestamp, or the zero
+// time if unset or on read error.
+func FolderLastOpenedAt(workingDir string) time.Time {
+	folders, err := LoadFolders()
+	if err != nil {
+		return time.Time{}
+	}
+	fs, ok := folders[workingDir]
+	if !ok {
+		return time.Time{}
+	}
+	return fs.LastOpenedAt
 }

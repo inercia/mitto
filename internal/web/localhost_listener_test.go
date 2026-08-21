@@ -2,8 +2,47 @@ package web
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
+
+func TestPrimaryListenerAddress(t *testing.T) {
+	tests := []struct {
+		name        string
+		host        string
+		authEnabled bool
+		want        string
+		wantError   string
+	}{
+		{name: "IPv4 loopback", host: "127.0.0.2", want: "127.0.0.2:8080"},
+		{name: "IPv6 loopback", host: "::1", want: "[::1]:8080"},
+		{name: "bracketed IPv6 loopback", host: "[::1]", want: "[::1]:8080"},
+		{name: "localhost hostname", host: "localhost", want: "localhost:8080"},
+		{name: "IPv4 wildcard", host: "0.0.0.0", wantError: "authentication"},
+		{name: "IPv6 wildcard", host: "::", wantError: "authentication"},
+		{name: "non-loopback IPv4", host: "192.0.2.10", wantError: "authentication"},
+		{name: "non-loopback hostname", host: "mitto.example", wantError: "authentication"},
+		{name: "authenticated non-loopback uses external listener", host: "192.0.2.10", authEnabled: true, wantError: "StartExternalListener"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := PrimaryListenerAddress(tt.host, 8080, tt.authEnabled)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("PrimaryListenerAddress(%q) error = %v, want containing %q", tt.host, err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PrimaryListenerAddress(%q) error = %v", tt.host, err)
+			}
+			if got != tt.want {
+				t.Errorf("PrimaryListenerAddress(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestCreateLocalhostListener(t *testing.T) {
 	// Create a localhost listener with random port

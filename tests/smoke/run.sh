@@ -58,7 +58,7 @@ echo ""
 echo "=== Step 5: Run Playwright tests ==="
 MITTO_TEST_URL="http://localhost:${SMOKE_PORT}" \
 MITTO_EXTERNAL_SERVER=1 \
-    npx playwright test --config=tests/ui/playwright.config.ts
+    bunx playwright test --config=tests/ui/playwright.config.ts
 echo "✅ Playwright tests passed"
 
 echo ""

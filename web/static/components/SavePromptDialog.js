@@ -1,13 +1,13 @@
 // Mitto Web Interface - Save Prompt Dialog Component
-// Modal dialog for saving the current prompt text as a markdown file with frontmatter
+// Modal dialog for saving the current prompt text as a .prompt.yaml file
+// (pure YAML document parsed by internal/prompts.ParsePromptFile).
 
 const { useState, useEffect, useCallback, useRef, html, Fragment } =
   window.preact;
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { errorMessageFromData } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
 
@@ -30,19 +30,41 @@ function nameToFilename(name) {
 }
 
 /**
- * Build the file content with YAML frontmatter.
+ * YAML double-quoted flow scalar. Escapes are a JSON-compatible subset that
+ * covers everything a name/description field will realistically contain.
+ * @param {string} s
+ * @returns {string}
+ */
+function yamlDoubleQuoted(s) {
+  return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+/**
+ * Build the file content as a pure YAML document matching the .prompt.yaml
+ * schema loaded by internal/prompts.ParsePromptFile — `name:` / optional
+ * `description:` scalars plus `prompt: |-` as a block-literal scalar with
+ * 2-space indentation. This is NOT markdown-with-frontmatter — .prompt.yaml
+ * files are parsed as whole YAML documents.
  * @param {string} name - Prompt name
  * @param {string} description - Optional description
  * @param {string} promptText - The prompt body text
- * @returns {string} Markdown content with frontmatter
+ * @returns {string} YAML document
  */
 function buildFileContent(name, description, promptText) {
-  let frontmatter = `---\nname: "${name.replace(/"/g, '\\"')}"`;
-  if (description.trim()) {
-    frontmatter += `\ndescription: "${description.trim().replace(/"/g, '\\"')}"`;
+  let out = `name: ${yamlDoubleQuoted(name)}\n`;
+  const desc = description.trim();
+  if (desc) {
+    out += `description: ${yamlDoubleQuoted(desc)}\n`;
   }
-  frontmatter += "\n---\n\n";
-  return frontmatter + promptText;
+  // "|-" strips trailing newlines; each body line is indented by 2 spaces,
+  // while empty lines remain empty (permitted within a block-literal scalar).
+  const body = promptText.replace(/\s+$/, "");
+  const indented = body
+    .split("\n")
+    .map((line) => (line.length ? "  " + line : ""))
+    .join("\n");
+  out += `prompt: |-\n${indented}\n`;
+  return out;
 }
 
 /**
@@ -140,29 +162,13 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       const content = buildFileContent(name, description, promptText);
-      const response = await secureFetch(endpoints.misc.saveFileToPath(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: fullPath, content }),
-      });
-
-      if (!response.ok) {
-        let data = null;
-        try {
-          data = await response.json();
-        } catch (_) {
-          // non-JSON body; fall back to status-based message
-        }
-        throw new Error(
-          errorMessageFromData(data, `Save failed (${response.status})`),
-        );
-      }
+      await getSdkClient().misc.saveFileToPath(fullPath, content);
 
       // Success - close dialog
       onClose?.();
     } catch (err) {
       console.error("[SavePromptDialog] save error:", err);
-      setError(err.message || "Failed to save file");
+      setError(errorMessage(err, "Failed to save file"));
     } finally {
       setIsSaving(false);
     }
@@ -185,18 +191,13 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       // Check if file already exists
-      const checkResponse = await authFetch(
-        endpoints.misc.checkFileExists({ path: fullPath }),
-      );
+      const data = await getSdkClient().misc.checkFileExists(fullPath);
 
-      if (checkResponse.ok) {
-        const data = await checkResponse.json();
-        if (data.exists) {
-          // File exists - ask for overwrite confirmation
-          setIsSaving(false);
-          setShowOverwriteConfirm(true);
-          return;
-        }
+      if (data?.exists) {
+        // File exists - ask for overwrite confirmation
+        setIsSaving(false);
+        setShowOverwriteConfirm(true);
+        return;
       }
 
       // File doesn't exist - save directly

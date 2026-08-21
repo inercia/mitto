@@ -1,0 +1,18 @@
+{{- /*
+  _shared/session-id-line — a HEADING-LESS single-sentence variant of
+  session-context, for prompts that already have their own surrounding
+  heading (e.g. `## Phase 1: Context`) or that inline the session-id
+  line inside a numbered list or paragraph flow.
+
+  Prefer `_shared/session-context` when the prompt has no context
+  heading of its own — that variant emits `## Session Context` above
+  the same sentence.
+
+  Pre-conditions: {{ .Session.ID }} must be populated by the render
+  context (guaranteed by PromptEnabledContext.Session).
+
+  Usage — parameter-less; render against the ambient context:
+
+      {{ template "_shared/session-id-line" . }}
+*/ -}}
+Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.

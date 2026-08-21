@@ -66,6 +66,49 @@ Manages the Mitto data directory, which stores configuration and session data.
 - `EnsureDir()` - Creates the directory structure if needed
 - `SettingsPath()` - Returns path to `settings.json`
 - `SessionsDir()` - Returns path to `sessions/` subdirectory
+- `CredentialsVaultPath()` - Returns the Linux credential vault path
+
+### `internal/secrets` - Process-Owned Credential Vault
+
+Provides one concurrency-safe credential manager shared by configuration and
+integration services. Credentials use typed references in a reserved global,
+Slack app-profile, or Slack workspace-installation namespace. `Status` exposes
+only whether a reference is configured; secret values are available only from
+`Resolve` and must never be logged or serialized into status APIs.
+
+The manager lazily loads one versioned vault document and caches it for the
+process lifetime. Darwin stores that document as one `AccessibleWhenUnlocked`,
+non-synchronizable item in the Mitto Keychain service. Linux stores the same
+schema at `MITTO_DIR/credentials/vault.json`; the directory is mode 0700, the
+file is mode 0600, and writes use no-follow checks, fsync, and atomic rename.
+
+Legacy `external-access` and `shared-token` helpers remain compatible. They
+resolve the vault first, fall back to old Keychain accounts, and remove legacy
+data only after a persisted write has been read back and verified.
+
+### `internal/slackcatalog` and `internal/slackbridge` - Slack Loop Triggers
+
+`internal/slackcatalog` owns process-global, non-secret Slack app and workspace
+installation metadata. Credentials are referenced through `internal/secrets`;
+catalog reads and status responses expose only configured state and validated
+Slack identities. This keeps tokens out of loop files, project workspaces,
+browser persistence, and API responses.
+
+`internal/slackbridge.Manager` turns that catalog into runtime `onSlack`
+routing. It rebuilds an index from enabled, unarchived loops, pools one Socket
+Mode worker per referenced app profile, and owns one bounded durable journal per
+profile. Events are normalized, filtered, matched by team/channel, snapshotted
+to every recipient, and persisted before Slack is acknowledged. Each recipient
+then competes for the same `LoopRunner` dispatch slot used by the other loop
+triggers; busy or coalesced recipients remain pending and retry on the next idle
+transition.
+
+The web server composes loop and Slack idle callbacks, reconciles the index on
+loop/catalog/archive/delete changes, restarts a worker after app-credential
+replacement, recovers interrupted journal deliveries before accepting traffic,
+and closes Slack workers before conversation shutdown. See
+[Slack Socket Mode Bridge](slack-bridge.md) and
+[Slack Integration Catalog](slack-integration-catalog.md).
 
 ### `internal/config` - Configuration Management
 
@@ -120,7 +163,7 @@ Implements the ACP client protocol for communicating with AI agents.
   - Permission requests
   - File read/write operations
   - Plan updates
-- **Error taxonomy & restart policy** (`errors.go`): `ACPClassifiedError`, `ClassifyACPError`, `FormatACPError`, `FormatClassifiedError`, `IsACPConnectionError`, `IsMCPInitTimeout`, `IsContextTooLargeError`, `IsRateLimitError`, `BackoffDelay`; per-session (`MaxACPRestarts`, `ACPRestartWindow`, `ACPRestartBaseDelay`, `ACPRestartMaxDelay`, `MaxACPTotalRestarts`) and cross-workspace (`MaxGlobalRestarts`, `GlobalRestartWindow`, `GlobalCooldownDuration`) restart constants, plus `RestartReason` and `MCPInitTimeoutPattern`. This is the single source of truth used by both `internal/acpproc` (shared-process restarts) and `internal/conversation` (per-session restarts).
+- **Error taxonomy & restart policy** (`errors.go`): `ACPClassifiedError`, `ClassifyACPError`, `FormatACPError`, `FormatACPErrorWithContext`, `FormatErrorHints`, `ProcessHistory`, `FormatClassifiedError`, `IsACPConnectionError`, `IsMCPInitTimeout`, `IsContextTooLargeError`, `IsRateLimitError`, `BackoffDelay`; per-session (`MaxACPRestarts`, `ACPRestartWindow`, `ACPRestartBaseDelay`, `ACPRestartMaxDelay`, `MaxACPTotalRestarts`) and cross-workspace (`MaxGlobalRestarts`, `GlobalRestartWindow`, `GlobalCooldownDuration`) restart constants, plus `RestartReason` and `MCPInitTimeoutPattern`. This is the single source of truth used by both `internal/acpproc` (shared-process restarts) and `internal/conversation` (per-session restarts).
 
 **Dependency rule:** `internal/acp` MUST NEVER import `internal/acpproc`, `internal/conversation`, or `internal/web`. All arrows point up into `internal/acp`, never down out of it. When callers alias the package, use `mittoAcp "github.com/inercia/mitto/internal/acp"` to avoid colliding with the external `github.com/coder/acp-go-sdk` (typically aliased as `acp`).
 
@@ -255,7 +298,7 @@ ACP-related code is split across three packages with a strict, one-way dependenc
 internal/conversation  →  internal/acpproc  →  internal/acp
 ```
 
-- **`internal/acp`** owns the wire/transport (client, connection, terminal, permission, filesystem, jsonline filter, command parsing) **and** the ACP failure taxonomy: `ACPClassifiedError`, `ClassifyACPError`, `FormatACPError`, `FormatClassifiedError`, `IsACPConnectionError`, `IsMCPInitTimeout`, `IsContextTooLargeError`, `IsRateLimitError`, `BackoffDelay`, and every restart constant (`MaxACPRestarts`, `ACPRestartWindow`, `ACPRestartBaseDelay`, `ACPRestartMaxDelay`, `MaxACPTotalRestarts`, `MaxGlobalRestarts`, `GlobalRestartWindow`, `GlobalCooldownDuration`) plus `RestartReason` and `MCPInitTimeoutPattern`. It MUST NOT import `internal/acpproc` or `internal/conversation`.
+- **`internal/acp`** owns the wire/transport (client, connection, terminal, permission, filesystem, jsonline filter, command parsing) **and** the ACP failure taxonomy: `ACPClassifiedError`, `ClassifyACPError`, `FormatACPError`, `FormatACPErrorWithContext`, `FormatClassifiedError`, `IsACPConnectionError`, `IsMCPInitTimeout`, `IsContextTooLargeError`, `IsRateLimitError`, `BackoffDelay`, and every restart constant (`MaxACPRestarts`, `ACPRestartWindow`, `ACPRestartBaseDelay`, `ACPRestartMaxDelay`, `MaxACPTotalRestarts`, `MaxGlobalRestarts`, `GlobalRestartWindow`, `GlobalCooldownDuration`) plus `RestartReason` and `MCPInitTimeoutPattern`. It MUST NOT import `internal/acpproc` or `internal/conversation`.
 - **`internal/acpproc`** manages the shared OS process and its restart lifecycle, MCP-tools cache, and stderr pattern matching. It imports `internal/acp` for the taxonomy and constants above.
 - **`internal/conversation`** owns per-session policy (retry accounting via `acpProcessController`, permanent-failure circuit breaker, error surfacing to observers). It imports `internal/acp` for the taxonomy and reads shared-process state via `internal/acpproc`.
 
@@ -422,7 +465,7 @@ flowchart LR
 ```jsonl
 {"type":"session_start","timestamp":"2026-01-25T14:30:52Z","data":{"session_id":"...","acp_server":"auggie","working_dir":"/home/user/project"}}
 {"type":"user_prompt","timestamp":"2026-01-25T14:30:55Z","data":{"message":"Hello, can you help me?"}}
-{"type":"agent_message","timestamp":"2026-01-25T14:30:57Z","data":{"text":"Of course! What do you need help with?"}}
+{"type":"agent_message","timestamp":"2026-01-25T14:30:57Z","data":{"html":"<p>Of course! What do you need help with?</p>","text":"Of course! What do you need help with?"}}
 {"type":"session_end","timestamp":"2026-01-25T14:35:00Z","data":{"reason":"user_quit"}}
 ```
 

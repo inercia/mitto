@@ -1,0 +1,214 @@
+icon: play
+name: Continue
+description: Continue with the current task from where we left off — optionally as a self-driving loop that stops once the task's intention is met
+group: Work flow
+menus: prompts, conversation
+backgroundColor: '#FFF9C4'
+enabledWhen: Session.HasMessages
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  mode: optional
+  default: false
+  maxIterations: 20
+  maxDuration: "4h"
+prompt: |
+  Before taking any action, review the current state of the work by reading relevant files,
+  checking git status, and understanding what has already been completed.
+
+  Continue with the current task from where we left off.
+  {{- if .Session.BeadsIssue }}
+  This conversation is linked to beads issue `{{ .Session.BeadsIssue }}`, so **that bead and its
+  follow-ups are the current task** — see the "Beads issue" section below to resolve what to work on.
+  {{- end }}
+
+  {{ template "_shared/session-id-line" . }}
+
+  ## Interaction Mode
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Scheduled mode** — a loop run; the user is not watching.
+  {{ template "_shared/silent-notify-only" . }}
+  - Decide **autonomously**; keep making the next concrete increment of
+    progress each run.
+  - **Commit** completed increments as follows:
+
+    {{ template "git/shared/safe-stage" . }}
+  - If you become genuinely blocked (ambiguous requirement, missing decision), do
+    **not** guess — notify what's blocked and stop iterating
+    (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)`).
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
+  {{- end }}
+  {{- if .Session.IsLoop }}
+
+  ## Task Intention (loop mode)
+
+  In loop mode the loop's exit condition is **"the intention of the current task is complete"** —
+  not "the next step ran". You must derive that intention, keep it in view every iteration, and
+  stop the loop as soon as it is met.
+  {{- if .Iteration.IsFirst }}
+
+  **This is the first iteration.** Determine and record the intention now:
+
+  1. Read the recent conversation, the linked bead (if any — see the "Beads issue" section below),
+     the relevant files, and `git status` / `git log` to infer **what the current task is actually
+     trying to achieve** — the *outcome*, not a list of steps. Prefer explicit sources (the linked
+     bead's description/acceptance criteria, the user's most recent instruction) over guesses.
+  2. State the intention at the top of your response as a short block:
+
+     ```
+     TASK INTENTION: <one to three sentences describing the outcome>
+     DONE WHEN: <observable, verifiable stop criteria — e.g. "tests X and Y pass", "PR #N merged",
+                 "bead <id> closed", "file F contains function G and the linter is clean">
+     ```
+
+     Keep it concrete and *observable* — something a later iteration can check by reading files or
+     running commands, not by re-reading your own claims.
+  {{- if .Session.BeadsIssue }}
+  3. Persist it durably on the linked bead so later iterations (and a fresh-context restart) can
+     recover it exactly:
+
+     ```bash
+     bd comment {{ .Session.BeadsIssue }} "Continue-loop intention: <TASK INTENTION>. Done when: <DONE WHEN>."
+     ```
+  {{- else }}
+  3. There is no linked bead; the intention block above is the durable record — restate it verbatim
+     at the top of every subsequent iteration so the loop keeps a stable target.
+  {{- end }}
+  {{- else }}
+
+  **This is a continuation iteration.** Recover the intention **before** doing any work:
+
+  1. {{ if .Session.BeadsIssue -}}
+     Re-read the most recent `Continue-loop intention:` comment on `{{ .Session.BeadsIssue }}`
+     (`bd show {{ .Session.BeadsIssue }} --long --json --include-comments`). If none exists,
+     fall back to the intention block from the first iteration in this conversation.
+     {{- else -}}
+     Re-read the `TASK INTENTION` / `DONE WHEN` block from the first iteration of this
+     conversation.
+     {{- end }}
+  2. Restate the recovered intention verbatim at the top of your response so it stays in view.
+  3. Evaluate the `DONE WHEN` criteria against the **real** current state (files, tests, git,
+     `bd show`, PR status) — never against your own prior claims. If you cannot verify a criterion
+     is met, treat it as not yet met.
+  4. If every `DONE WHEN` criterion is verifiably met, **the intention is complete** — disable the
+     loop and notify:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
+     mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Continue — task complete",
+       message: "<intention> — <how each DONE WHEN criterion was verified>", style: "success")
+     ```
+
+     Then stop; do not start new work.
+  5. If the intention has **materially changed** since it was recorded (the user redirected the
+     task, or new information invalidated the old goal), update the record{{ if .Session.BeadsIssue }}
+     with a fresh `bd comment {{ .Session.BeadsIssue }} "Continue-loop intention: ..."` on the bead{{ end }}
+     and continue against the new intention. Do not silently drift.
+  {{- end }}
+  {{- end }}
+
+  Rules:
+
+  1. Review the current state and what has been completed
+  2. Identify the next immediate step
+  3. Execute that step
+  4. Report progress and what remains
+  {{- if .Session.IsLoop }}
+  5. Do **one** concrete increment per run — do not try to finish the whole task in a single iteration.
+     After the increment, briefly restate how much of the `DONE WHEN` criteria are now met, then stop.
+  {{- end }}
+
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  In scheduled mode, if blocked or unclear: notify and stop (see above) — do not ask.
+  {{- else }}
+  If blocked or unclear, ask for clarification before proceeding.
+  {{- end }}
+
+  {{- if .Session.BeadsIssue }}
+
+  ## Beads issue: `{{ .Session.BeadsIssue }}`
+
+  This conversation is linked to a bead, so the "current task" above is that bead **and its
+  follow-ups** — resume by advancing them rather than guessing from context.
+
+  Beads is a CLI issue tracker (`bd`); issues ("beads") have IDs like `bd-xyz`.
+
+  ### B1. Load the bead and its tree
+
+  ```bash
+  bd show {{ .Session.BeadsIssue }} --long --json     # description, acceptance criteria, status
+  bd dep tree {{ .Session.BeadsIssue }}               # parent epic, blockers, and what it blocks
+  bd show {{ .Session.BeadsIssue }} --children --json # child beads (is this an epic/parent?)
+  ```
+
+  ### B2. Decide what to work on this continuation
+
+  Pick the **first** case that applies and treat the chosen bead as the work for this run:
+
+  1. **The bead has remaining work** (acceptance criteria not yet met) → keep implementing it as
+     the natural next step above. Claim it if it isn't already (`bd update {{ .Session.BeadsIssue }} --claim`).
+  2. **The bead is an epic/parent with open children** → it's a container, not directly
+     implementable; work the **next ready child** (open + unblocked per `bd dep tree`), chosen
+     with the canonical ranking below.
+  3. **The bead is complete but has follow-ups** → using `bd ready --json` to confirm readiness,
+     look in order for: a ready **dependent** (an issue this bead *blocks* that is now unblocked),
+     then a ready **sibling** under the same parent epic. Work that follow-up, again choosing
+     between several with the canonical ranking below.
+  4. **Nothing ready remains** → go to **B4** (wrap up).
+
+  When cases 2 or 3 leave you with more than one candidate:
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"           "the candidate beads"
+      "Deterministic" true
+  ) }}
+
+  **How this step consumes the ranking:** a continuation works **one bead**, so take
+  shortlist #1; #2 and #3 are fallbacks if #1 turns out not to be workable.
+
+  When you switch to a different bead (child, dependent, or sibling), keep the conversation link on
+  the right anchor:
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  - **Standalone follow-up** (dependent/sibling): claim it (`bd update <id> --claim`) and **relink**
+    this conversation — `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<id>")`.
+  - **Child of an epic**: leave the link on the **epic** (the durable anchor) so the next run still
+    resolves the epic.
+  {{- else }}
+  - Say which bead you're now working on, and for a standalone follow-up offer to relink the
+    conversation to it (`mitto_conversation_update(... beads_issue: "<id>")`).
+  {{- end }}
+
+  ### B3. If a bead becomes complete this run
+
+  When the bead you worked (`<id>`) meets all its acceptance criteria:
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  In scheduled mode, act autonomously to keep the loop moving:
+  - **Commit** its work (stage only changed files by path; never `git add -A`/`.`) with a message
+    referencing the bead. Do **NOT push** — leave that to the user.
+  - **Close** it: `bd close <id> --reason "<what was delivered>"`.
+  - Return to **B2** to pick up the next follow-up, and `mitto_ui_notify` progress.
+  {{- else }}
+  do **not** close or commit on your own. Present the finding and act only on what the user approves
+  via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` (fall back to a
+  plain question if the `mitto_*` tools are unavailable):
+  - **"Close the issue"** — `bd close <id> --reason "<what was delivered>"`.
+  - **"Commit the changes"** — commit the work for this bead with a clear message referencing it.
+  - **"Work the next follow-up"** — if B2 found a ready dependent/sibling/child, start it.
+
+  Offer these so the user can pick any combination. Honour their choice exactly.
+  {{- end }}
+
+  ### B4. When nothing ready remains
+
+  The bead and all its in-scope follow-ups are done, blocked, or deferred:
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  notify completion and **stop iterating** —
+  `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)`.
+  {{- else }}
+  say so and suggest closing/committing anything outstanding. Do not take git actions without approval.
+  {{- end }}
+  {{- end }}

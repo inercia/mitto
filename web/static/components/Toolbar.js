@@ -6,7 +6,7 @@
 //
 // Item kinds (each entry in `items`):
 //   { kind: "button",    testId, icon, tip, ariaLabel, active, disabled, danger, onClick, className }
-//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu }
+//   { kind: "dropdown",  testId, icon, tip, ariaLabel, active, caret, align, open, onToggle, menu, className, closeOnOutsideClick, portal }
 //   { kind: "overflow",  testId, tip, ariaLabel, align, open, onToggle, items: [{ testId, icon, label, active, disabled, onClick }] }
 //   { kind: "separator" }
 //   { kind: "spacer" }
@@ -29,19 +29,47 @@
 //   testId    - data-testid for the container.
 //   className - extra classes on the container.
 
-const { html, Fragment } = window.preact;
+const {
+  html,
+  Fragment,
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} = window.preact;
 
 import { ChevronDownIcon, EllipsisIcon } from "./Icons.js";
+import { Portal, PortalTooltip } from "./ContextMenu.js";
+import {
+  computePortalDropdownPlacement,
+  TOOLBAR_DROPDOWN_MARGIN,
+} from "../utils/toolbarDropdown.js";
 
 const SIZE = { xs: "btn-xs", sm: "btn-sm", md: "btn-md" };
+
+// Hover-only portal tooltips are pointless on touch devices (no hover); gate
+// them the same way daisyUI gates its CSS tooltips so taps never strand a
+// stuck bubble.
+const TOOLBAR_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+
+const TOOLBAR_TOOLTIP_DELAY_MS = 250;
 
 // Shared class list for a toolbar trigger (button or <summary>). The pill
 // container carries the border; items are borderless ghosts (see styles-v2.css
 // .mitto-toolbar rules) so groups read as one continuous surface.
-function triggerClasses(
-  size,
-  { active, danger, square = true, tip, extra = "" },
-) {
+//
+// Note: we deliberately do NOT attach daisyUI's `.tooltip.tooltip-bottom`
+// here. The pill lives inside `overflow-hidden` ancestors (panel column,
+// dialog body, sidebar), so the CSS ::before/::after bubble is clipped for
+// left/right-edge items — the leftmost button of the conversation header
+// toolbar shows only "…rsation prompts" instead of "Conversation prompts".
+// Tooltips are rendered through a body-level `PortalTooltip` (below) which
+// escapes any clipping ancestor and is clamped to the viewport.
+function triggerClasses(size, { active, danger, square = true, extra = "" }) {
   return [
     "btn btn-ghost",
     SIZE[size] || "btn-sm",
@@ -51,16 +79,57 @@ function triggerClasses(
       : danger
         ? "text-error hover:text-error"
         : "text-mitto-text-muted hover:text-mitto-text-strong",
-    tip ? "tooltip tooltip-bottom" : "",
     extra,
   ]
     .filter(Boolean)
     .join(" ");
 }
 
+// Cursor-anchored, hover-only portal tooltip. `enabled` lets callers suppress
+// the bubble transiently (e.g. while a dropdown is open) without unmounting
+// the trigger. Returns `{ handlers, node }`: spread `handlers` onto the
+// trigger element and render `node` right after it so the Portal mounts.
+function usePortalTooltip(text, enabled = true) {
+  const [pos, setPos] = useState(null);
+  const timerRef = useRef(null);
+  const show = useCallback(
+    (e) => {
+      if (!TOOLBAR_SUPPORTS_HOVER || !enabled || !text) return;
+      const x = e.clientX;
+      const y = e.clientY;
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(
+        () => setPos({ x, y }),
+        TOOLBAR_TOOLTIP_DELAY_MS,
+      );
+    },
+    [text, enabled],
+  );
+  const hide = useCallback(() => {
+    clearTimeout(timerRef.current);
+    setPos(null);
+  }, []);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+  // Hide immediately whenever the bubble is being suppressed (dropdown opens).
+  useEffect(() => {
+    if (!enabled) hide();
+  }, [enabled, hide]);
+  const handlers = {
+    onMouseEnter: show,
+    onMouseLeave: hide,
+    onMouseDown: hide,
+  };
+  const node =
+    pos && text
+      ? html`<${PortalTooltip} x=${pos.x} y=${pos.y} text=${text} />`
+      : null;
+  return { handlers, node };
+}
+
 function ToolbarButton({ item, size }) {
   const disabled = !!item.disabled;
-  return html`
+  const { handlers, node } = usePortalTooltip(item.tip, !disabled);
+  return html`<${Fragment}>
     <button
       type="button"
       data-testid=${item.testId || null}
@@ -71,20 +140,153 @@ function ToolbarButton({ item, size }) {
       class="${triggerClasses(size, {
         active: item.active,
         danger: item.danger,
-        tip: item.tip,
         extra: item.className,
       })} ${disabled ? "opacity-40 pointer-events-none" : ""}"
       data-tip=${item.tip || null}
+      onMouseEnter=${handlers.onMouseEnter}
+      onMouseLeave=${handlers.onMouseLeave}
+      onMouseDown=${handlers.onMouseDown}
     >
       ${item.icon}
     </button>
-  `;
+    ${node}
+  <//>`;
+}
+
+// Body-level fixed surface for dropdowns that must escape clipping ancestors.
+// Placement is measured before paint and recomputed while its anchor moves.
+function ToolbarPortalDropdown({ triggerRef, surfaceRef, align, menu }) {
+  const [position, setPosition] = useState({
+    left: 8,
+    top: 8,
+    visible: false,
+  });
+  const reposition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const surface = surfaceRef.current;
+    if (!trigger || !surface) return;
+    const anchorRect = trigger.getBoundingClientRect();
+    if (anchorRect.width === 0 && anchorRect.height === 0) {
+      setPosition((prev) =>
+        prev.visible ? { ...prev, visible: false } : prev,
+      );
+      return;
+    }
+    const viewportWidth =
+      window.innerWidth || document.documentElement.clientWidth;
+    const viewportHeight =
+      window.innerHeight || document.documentElement.clientHeight;
+    // Reset the live constraints before measuring so a viewport that grows can
+    // restore the menu's natural width/height instead of reusing the old cap.
+    surface.style.maxWidth = `${Math.max(
+      0,
+      viewportWidth - TOOLBAR_DROPDOWN_MARGIN * 2,
+    )}px`;
+    surface.style.maxHeight = `${Math.max(
+      0,
+      viewportHeight - TOOLBAR_DROPDOWN_MARGIN * 2,
+    )}px`;
+    const next = computePortalDropdownPlacement({
+      anchorRect,
+      menuRect: surface.getBoundingClientRect(),
+      viewportWidth,
+      viewportHeight,
+      align,
+    });
+    setPosition((prev) =>
+      prev.left === next.left &&
+      prev.top === next.top &&
+      prev.maxWidth === next.maxWidth &&
+      prev.maxHeight === next.maxHeight &&
+      prev.visible
+        ? prev
+        : { ...next, visible: true },
+    );
+  }, [align, surfaceRef, triggerRef]);
+
+  useLayoutEffect(() => {
+    reposition();
+  }, [menu, reposition]);
+  useEffect(() => {
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [reposition]);
+
+  const maxWidth = position.maxWidth ?? "calc(100vw - 1rem)";
+  const maxHeight = position.maxHeight ?? "calc(100vh - 1rem)";
+  const surfaceStyle = [
+    `opacity: ${position.visible ? "1" : "0"}`,
+    `pointer-events: ${position.visible ? "auto" : "none"}`,
+    `left: ${position.left}px`,
+    `top: ${position.top}px`,
+    `max-width: ${typeof maxWidth === "number" ? `${maxWidth}px` : maxWidth}`,
+    `max-height: ${typeof maxHeight === "number" ? `${maxHeight}px` : maxHeight}`,
+  ].join("; ");
+  return html`<${Portal}>
+    <div
+      ref=${surfaceRef}
+      class="mitto-toolbar-portal-dropdown"
+      style=${surfaceStyle}
+    >
+      ${menu}
+    </div>
+  <//>`;
 }
 
 function ToolbarDropdown({ item, size }) {
-  return html`
+  // Optional outside-click / Escape dismissal. Opt-in per item so existing
+  // dropdowns (which rely on native <details> toggle-on-summary-click) keep
+  // their behaviour. Requires the caller to drive `item.open` + `item.onToggle`
+  // so the parent's state and the DOM stay in sync when we close from here.
+  const detailsRef = useRef(null);
+  const triggerRef = useRef(null);
+  const portalSurfaceRef = useRef(null);
+  const onToggle = item.onToggle;
+  const isOpen = !!item.open;
+  const closeOnOutsideClick = !!item.closeOnOutsideClick;
+  // Suppress the portal tooltip while the dropdown is open — otherwise the
+  // bubble would hover over the expanded menu.
+  const { handlers, node } = usePortalTooltip(item.tip, !isOpen);
+  useEffect(() => {
+    if (!closeOnOutsideClick || !isOpen) return undefined;
+    const close = () => {
+      if (detailsRef.current && detailsRef.current.open) {
+        detailsRef.current.open = false;
+      }
+      if (onToggle) onToggle(false);
+    };
+    const onDocMouseDown = (e) => {
+      const el = detailsRef.current;
+      if (!el) return;
+      if (e.target && el.contains(e.target)) return;
+      if (
+        e.target &&
+        portalSurfaceRef.current &&
+        portalSurfaceRef.current.contains(e.target)
+      )
+        return;
+      close();
+    };
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [closeOnOutsideClick, isOpen, onToggle]);
+  return html`<${Fragment}>
     <details
-      class="dropdown ${item.align === "end" ? "dropdown-end" : ""}"
+      ref=${detailsRef}
+      class="dropdown ${item.align === "end" && !item.portal
+        ? "dropdown-end"
+        : ""} ${item.className || ""}"
       open=${!!item.open}
       onToggle=${(e) => {
         const open = e.currentTarget.open;
@@ -92,28 +294,42 @@ function ToolbarDropdown({ item, size }) {
       }}
     >
       <summary
+        ref=${triggerRef}
         data-testid=${item.testId || null}
         aria-label=${item.ariaLabel || item.tip || null}
         class="${triggerClasses(size, {
           active: item.active,
           square: !item.caret,
-          tip: item.tip,
           extra: `list-none ${item.caret ? "gap-1 px-2" : ""}`,
         })}"
-        data-tip=${item.tip || null}
+        data-tip=${isOpen ? null : item.tip || null}
+        onMouseEnter=${handlers.onMouseEnter}
+        onMouseLeave=${handlers.onMouseLeave}
+        onMouseDown=${handlers.onMouseDown}
       >
         ${item.icon}
         ${item.caret
           ? html`<${ChevronDownIcon} className="w-3 h-3 opacity-70" />`
           : null}
       </summary>
-      ${item.menu}
+      ${item.portal
+        ? isOpen &&
+          html`<${ToolbarPortalDropdown}
+            triggerRef=${triggerRef}
+            surfaceRef=${portalSurfaceRef}
+            align=${item.align}
+            menu=${item.menu}
+          />`
+        : item.menu}
     </details>
-  `;
+    ${node}
+  <//>`;
 }
 
 function ToolbarOverflow({ item, size }) {
-  return html`
+  const isOpen = !!item.open;
+  const { handlers, node } = usePortalTooltip(item.tip, !isOpen);
+  return html`<${Fragment}>
     <details
       class="dropdown ${item.align === "start" ? "" : "dropdown-end"}"
       open=${!!item.open}
@@ -125,8 +341,11 @@ function ToolbarOverflow({ item, size }) {
       <summary
         data-testid=${item.testId || null}
         aria-label=${item.ariaLabel || "More actions"}
-        class="${triggerClasses(size, { tip: item.tip, extra: "list-none" })}"
+        class="${triggerClasses(size, { extra: "list-none" })}"
         data-tip=${item.tip || null}
+        onMouseEnter=${handlers.onMouseEnter}
+        onMouseLeave=${handlers.onMouseLeave}
+        onMouseDown=${handlers.onMouseDown}
       >
         <${EllipsisIcon} className="w-4 h-4" />
       </summary>
@@ -158,7 +377,8 @@ function ToolbarOverflow({ item, size }) {
         )}
       </ul>
     </details>
-  `;
+    ${node}
+  <//>`;
 }
 
 export function Toolbar({
@@ -195,13 +415,25 @@ export function Toolbar({
             aria-hidden="true"
           ></span>`;
         if (item.kind === "spacer")
-          return html`<span key=${key} class="flex-1" aria-hidden="true"></span>`;
+          return html`<span
+            key=${key}
+            class="flex-1"
+            aria-hidden="true"
+          ></span>`;
         if (item.kind === "custom")
           return html`<${Fragment} key=${key}>${item.content}</${Fragment}>`;
         if (item.kind === "dropdown")
-          return html`<${ToolbarDropdown} key=${key} item=${item} size=${size} />`;
+          return html`<${ToolbarDropdown}
+            key=${key}
+            item=${item}
+            size=${size}
+          />`;
         if (item.kind === "overflow")
-          return html`<${ToolbarOverflow} key=${key} item=${item} size=${size} />`;
+          return html`<${ToolbarOverflow}
+            key=${key}
+            item=${item}
+            size=${size}
+          />`;
         return html`<${ToolbarButton} key=${key} item=${item} size=${size} />`;
       })}
     </div>

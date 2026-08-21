@@ -34,6 +34,12 @@ func ClassifyOutcome(outcome, lastPhaseName string) OutcomeClass {
 		return ClassNewFailed
 	case "shared_resume_failed", "shared_resume_retry_failed":
 		return ClassResumeFailed
+	case "resume_racing_recycle":
+		// mitto-ei81: a resume's restart raced a concurrent GC recycle that had
+		// already closed the shared process instance. Distinct from a genuine
+		// startup failure — the caller retries with a freshly-created process —
+		// but still bucketed as a resume failure for aggregation purposes.
+		return ClassResumeFailed
 	case "acp_start_failed", "initialize_failed",
 		"shared_prepare_failed", "shared_restart_failed", "spawn_failed":
 		return ClassHandshakeFailed

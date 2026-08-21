@@ -31,6 +31,12 @@ const (
 	// FoldersFileName is the name of the folders file.
 	FoldersFileName = "folders.json"
 
+	// InstanceFileName is the name of the running-instance discovery file
+	// (mitto-pscc.2). It records how to reach the currently running `mitto
+	// web` / macOS app server (URL, API prefix, bearer token) so local
+	// clients such as the CLI can find it without extra configuration.
+	InstanceFileName = "instance.json"
+
 	// SessionsDirName is the name of the sessions subdirectory.
 	SessionsDirName = "sessions"
 
@@ -69,6 +75,44 @@ const (
 	// MCPToolsCacheDirName is the name of the subdirectory holding per-workspace
 	// persisted real-MCP tools snapshots (one JSON file per workspace UUID).
 	MCPToolsCacheDirName = "mcp-tools-cache"
+
+	// StatsDirName is the name of the subdirectory holding the dashboard
+	// time-series stats SQLite database (created by the first writer under
+	// internal/stats).
+	StatsDirName = "stats"
+
+	// CredentialsDirName is the permission-hardened credential vault directory.
+	CredentialsDirName = "credentials"
+	// CredentialsVaultFileName is the versioned credential vault document.
+	CredentialsVaultFileName = "vault.json"
+	// SlackCatalogFileName stores process-global, non-secret Slack integration metadata.
+	SlackCatalogFileName = "slack_integrations.json"
+	// SlackEventJournalDirName stores per-app durable Slack event journals.
+	SlackEventJournalDirName = "slack-event-journal"
+
+	// RememberedArgsDirName is the name of the subdirectory holding per-workspace
+	// remembered prompt-argument snapshots (one JSON file per workspace UUID).
+	// See internal/rememberedargs.
+	RememberedArgsDirName = "remembered-args"
+
+	// RememberedArgsConversationDirName is the name of the subdirectory holding
+	// per-session remembered prompt-argument snapshots (one JSON file per
+	// session ID). Used for `remember: conversation` mode (mitto-47y.6.2).
+	// See internal/rememberedargs.
+	RememberedArgsConversationDirName = "remembered-args-conversation"
+
+	// ChatHistoryDirName is the name of the subdirectory holding per-conversation
+	// persisted input-history snapshots for `mitto conversation chat` (one JSON
+	// file per conversation ID). See internal/chatui/inputhistory.go (mitto-pscc.11).
+	ChatHistoryDirName = "chat-history"
+
+	// PendingProcessorDispatchDirName is the name of the subdirectory holding
+	// per-workspace spools of undelivered prompt-mode processor batches (one
+	// JSON file per workspace UUID). Deliberately independent of any single
+	// session's own directory, which may already be removed from disk by the
+	// time a saturated dispatch gives up (mitto-3421). See
+	// internal/processors.FilePendingDispatchStore.
+	PendingProcessorDispatchDirName = "pending-processor-dispatch"
 )
 
 var (
@@ -290,6 +334,19 @@ func FoldersPath() (string, error) {
 	return filepath.Join(dir, FoldersFileName), nil
 }
 
+// InstancePath returns the full path to the instance.json file.
+// This file records the currently running server's connection details
+// (url, api_prefix, external_url, token, pid, started_at) so local clients
+// (e.g. the CLI) can discover a running `mitto web` / macOS app instance
+// without extra configuration. See internal/instancefile for the reader/writer.
+func InstancePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, InstanceFileName), nil
+}
+
 // SessionsDir returns the full path to the sessions directory.
 func SessionsDir() (string, error) {
 	dir, err := Dir()
@@ -413,6 +470,108 @@ func MCPToolsCacheDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, MCPToolsCacheDirName), nil
+}
+
+// StatsDir returns the directory holding the dashboard time-series stats
+// database ($MITTO_DIR/stats). The directory is not created here; the first
+// writer (internal/stats) creates it via os.MkdirAll before opening the
+// SQLite file. Mirrors the MCPToolsCacheDir pattern.
+func StatsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, StatsDirName), nil
+}
+
+// CredentialsDir returns the credential vault directory without creating it.
+// The secrets package creates and validates this directory with mode 0700.
+func CredentialsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, CredentialsDirName), nil
+}
+
+// CredentialsVaultPath returns the Linux credential vault file path.
+func CredentialsVaultPath() (string, error) {
+	dir, err := CredentialsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, CredentialsVaultFileName), nil
+}
+
+// SlackCatalogPath returns the process-global Slack integration catalog path.
+// Token values are never written here; they live in the credential vault.
+func SlackCatalogPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SlackCatalogFileName), nil
+}
+
+// SlackEventJournalDir returns the directory holding one durable event journal
+// per Slack app profile. The directory is created by the first journal write.
+func SlackEventJournalDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SlackEventJournalDirName), nil
+}
+
+// RememberedArgsDir returns the directory holding per-workspace remembered
+// prompt-argument snapshots ($MITTO_DIR/remembered-args). The directory is not
+// created here; callers persist via fileutil.WriteJSONAtomic, which creates it
+// on first write. Mirrors the MCPToolsCacheDir pattern (mitto-x8v).
+func RememberedArgsDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, RememberedArgsDirName), nil
+}
+
+// RememberedArgsConversationDir returns the directory holding per-session
+// remembered prompt-argument snapshots ($MITTO_DIR/remembered-args-conversation).
+// The directory is not created here; callers persist via
+// fileutil.WriteJSONAtomic, which creates it on first write. Mirrors the
+// RememberedArgsDir pattern for `remember: conversation` mode (mitto-47y.6.2).
+func RememberedArgsConversationDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, RememberedArgsConversationDirName), nil
+}
+
+// ChatHistoryDir returns the directory holding per-conversation persisted
+// input-history snapshots for `mitto conversation chat`
+// ($MITTO_DIR/chat-history). The directory is not created here; callers
+// persist via fileutil.WriteJSONAtomic, which creates it on first write.
+// Mirrors the MCPToolsCacheDir pattern.
+func ChatHistoryDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ChatHistoryDirName), nil
+}
+
+// PendingProcessorDispatchDir returns the directory holding per-workspace
+// spools of undelivered prompt-mode processor batches
+// ($MITTO_DIR/pending-processor-dispatch). The directory is not created here;
+// callers persist via fileutil.WriteJSONAtomic, which creates it on first
+// write. Mirrors the RememberedArgsDir pattern (mitto-3421).
+func PendingProcessorDispatchDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, PendingProcessorDispatchDirName), nil
 }
 
 // ResetCache clears the cached directory path.

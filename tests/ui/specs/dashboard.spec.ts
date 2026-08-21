@@ -101,18 +101,18 @@ const DASHBOARD_BUTTON = 'button[title="Dashboard"]';
 const DETAIL_PANEL = "div.properties-panel";
 // Mobile viewport — matches the one used across the other mobile specs
 // (beads.spec.ts, side-panels-outside-click-mobile.spec.ts, etc.). Below the
-// Tailwind `md` breakpoint (768px) so the Dashboard's responsive pagination
-// switches to 1 list per page.
+// Tailwind `md` breakpoint (768px) so the Dashboard's responsive grid
+// (mitto-aqo.5) collapses to a single column while still rendering every list.
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 async function openDashboard(page, timeouts) {
   const btn = page.locator(DASHBOARD_BUTTON);
   await expect(btn).toBeVisible({ timeout: timeouts.appReady });
   await btn.click();
-  // Wait for the stats header to render (proves the Dashboard component mounted
-  // and the mocked /api/dashboard payload was consumed).
+  // Wait for the Dashboard heading to prove the component mounted. The stats
+  // row uses plain divs (not .stat-title) — see Dashboard.js L250,L263.
   await expect(
-    page.locator(".stat-title", { hasText: "Issues in progress" }),
+    page.locator("span.font-semibold", { hasText: "Dashboard" }).first(),
   ).toBeVisible({ timeout: timeouts.shortAction });
 }
 
@@ -154,56 +154,60 @@ testWithCleanup.describe("Global Dashboard", () => {
     async ({ page, timeouts }) => {
       await openDashboard(page, timeouts);
 
-      // Three stat titles from the header.
+      // Three stat labels from the header. The stats row uses plain divs
+      // (not daisyUI .stats) — see Dashboard.js L252-257.
       await expect(
-        page.locator(".stat-title", { hasText: "Issues in progress" }),
+        page.getByText("Issues in progress", { exact: true }),
       ).toBeVisible();
       await expect(
-        page.locator(".stat-title", { hasText: "Conversations prompting" }),
+        page.getByText("Conversations prompting", { exact: true }),
       ).toBeVisible();
       await expect(
-        page.locator(".stat-title", { hasText: "Loops active / stopped" }),
+        page.getByText("Loops active / stopped", { exact: true }),
       ).toBeVisible();
 
-      // Issues-in-progress stat value shows the mocked count (7).
-      const inProgressStat = page
-        .locator(".stat")
+      // Issues-in-progress stat value shows the mocked count (7). Locate by
+      // the stat column (min-w-0 stat cells in the header grid — see
+      // Dashboard.js L262) that contains the label; the value is the
+      // sibling .text-2xl div.
+      const inProgressCol = page
+        .locator("div.flex.flex-col.gap-1.min-w-0")
         .filter({ hasText: "Issues in progress" });
-      await expect(inProgressStat.locator(".stat-value")).toHaveText(/7/);
+      await expect(inProgressCol.locator("div.text-2xl")).toContainText("7");
 
-      // Paged grid: 4 lists across 2 pages. Page 1 shows the first two list
-      // panels (prompting + in-progress); the "Next page" arrow is present
-      // for navigation. The page indicator text was removed intentionally.
+      // Responsive grid (mitto-aqo.5): every list panel is always visible;
+      // there is no carousel/pagination.
       await expect(page.locator("#dash-slide-prompting")).toBeVisible();
       await expect(page.locator("#dash-slide-in-progress")).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Next page" }),
-      ).toBeVisible();
     },
   );
 
   testWithCleanup(
-    "all list panel labels are reachable via pagination",
+    "all four list panel labels are visible at once",
     async ({ page, timeouts }) => {
       await openDashboard(page, timeouts);
 
-      // Page 1 shows the first two labels.
+      // Responsive grid (mitto-aqo.5): all four list panels are always
+      // rendered simultaneously; there is no pagination. Assert every label
+      // is visible without any navigation.
       await expect(
-        page.getByText("Prompting conversations", { exact: true }),
+        page.getByText("Recent conversations", { exact: true }),
       ).toBeVisible();
       await expect(
         page.getByText("In-progress tasks", { exact: true }),
       ).toBeVisible();
-
-      // Advance to page 2 via the "Next page" button; assert the remaining
-      // two labels appear.
-      await page.getByRole("button", { name: "Next page" }).click();
       await expect(
         page.getByText("Ready tasks", { exact: true }),
       ).toBeVisible();
       await expect(
         page.getByText("Recently modified", { exact: true }),
       ).toBeVisible();
+
+      // And their slide containers are all mounted at the same time.
+      await expect(page.locator("#dash-slide-prompting")).toBeVisible();
+      await expect(page.locator("#dash-slide-in-progress")).toBeVisible();
+      await expect(page.locator("#dash-slide-ready")).toBeVisible();
+      await expect(page.locator("#dash-slide-recent")).toBeVisible();
     },
   );
 
@@ -243,60 +247,45 @@ testWithCleanup.describe("Global Dashboard", () => {
   );
 
   testWithCleanup(
-    "mobile viewport paginates lists one at a time",
+    "mobile viewport renders all four panels in a single column",
     async ({ page, timeouts }) => {
       // Open the dashboard on the default (desktop) viewport first — the
       // sidebar Dashboard button is always visible there, so we do not have
       // to open the mobile drawer to reach it. Then shrink the viewport,
       // which fires the (min-width:768px) matchMedia listener wired in
-      // Dashboard.js and flips listsPerPage from 2 to 1.
+      // Dashboard.js and collapses the responsive grid from 4 columns to 1.
       await openDashboard(page, timeouts);
       await page.setViewportSize(MOBILE_VIEWPORT);
 
-      // The four slide ids come from SLIDES in Dashboard.js and are stable.
-      // In mobile mode exactly one should be mounted at a time; the others
-      // are absent from the DOM (not merely hidden), because the paged grid
-      // slices SLIDES down to `listsPerPage` before rendering.
+      // Responsive grid (mitto-aqo.5): mobile only changes the column count
+      // (1 instead of 2/3/4); every list stays mounted. The four slide ids
+      // come from SLIDES in Dashboard.js and are stable.
       const promptingSlide = page.locator("#dash-slide-prompting");
       const inProgressSlide = page.locator("#dash-slide-in-progress");
       const readySlide = page.locator("#dash-slide-ready");
       const recentSlide = page.locator("#dash-slide-recent");
 
-      // Page 0 (initial): only the prompting slide is rendered.
       await expect(promptingSlide).toBeVisible({
         timeout: timeouts.shortAction,
       });
-      await expect(inProgressSlide).toHaveCount(0);
-      await expect(readySlide).toHaveCount(0);
-      await expect(recentSlide).toHaveCount(0);
-
-      // Cycle through pages 1 → 2 → 3 with the ❯ button, asserting that at
-      // each step the previous slide is unmounted and the next one appears.
-      const nextBtn = page.locator('button[aria-label="Next page"]');
-      await expect(nextBtn).toBeEnabled();
-
-      // Page 1: in-progress tasks.
-      await nextBtn.click();
       await expect(inProgressSlide).toBeVisible();
-      await expect(promptingSlide).toHaveCount(0);
-      await expect(readySlide).toHaveCount(0);
-      await expect(recentSlide).toHaveCount(0);
-
-      // Page 2: ready tasks.
-      await nextBtn.click();
       await expect(readySlide).toBeVisible();
-      await expect(inProgressSlide).toHaveCount(0);
-
-      // Page 3: recently-modified items.
-      await nextBtn.click();
       await expect(recentSlide).toBeVisible();
-      await expect(readySlide).toHaveCount(0);
 
-      // One more click wraps back to the prompting slide (page 0), matching
-      // the existing modulo arithmetic in prevPage/nextPage.
-      await nextBtn.click();
-      await expect(promptingSlide).toBeVisible();
-      await expect(recentSlide).toHaveCount(0);
+      // Panels stack vertically: each slide's top edge is strictly below the
+      // previous one's, confirming the single-column layout rather than a
+      // side-by-side row.
+      const promptingBox = await promptingSlide.boundingBox();
+      const inProgressBox = await inProgressSlide.boundingBox();
+      const readyBox = await readySlide.boundingBox();
+      const recentBox = await recentSlide.boundingBox();
+      expect(promptingBox).not.toBeNull();
+      expect(inProgressBox).not.toBeNull();
+      expect(readyBox).not.toBeNull();
+      expect(recentBox).not.toBeNull();
+      expect(inProgressBox!.y).toBeGreaterThan(promptingBox!.y);
+      expect(readyBox!.y).toBeGreaterThan(inProgressBox!.y);
+      expect(recentBox!.y).toBeGreaterThan(readyBox!.y);
     },
   );
 });

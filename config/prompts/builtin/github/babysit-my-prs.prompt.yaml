@@ -1,0 +1,295 @@
+icon: globe
+name: 'GitHub: babysit my PRs'
+menus: prompts
+parameters:
+  - name: Repository
+    type: text
+    required: false
+    description: 'Optional GitHub repository (owner/repo) to babysit. If omitted, the repository of the current folder is used.'
+description: 'Regularly check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments'
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- loop
+- github
+enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 3600
+  mode: optional
+  default: true
+  maxIterations: 30
+target:
+  title: 'GitHub: babysit my PRs'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  {{- $repoFlag := "" -}}
+  {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
+  Monitor your own open pull requests for the target repository (the current
+  folder's repo by default, or the one supplied via the `Repository` parameter),
+  keeping them up-to-date and reporting issues. Only acts on PRs where you are
+  the author. Designed to be run as a loop via `mitto_conversation_set_loop`.
+
+  {{ template "_shared/session-context" . }}
+
+  Available ACP servers:
+  {{ Default "(none)" .ACP.AvailableText }}
+
+  When spawning new conversations to fix issues, prefer `"coding"` or `"fast"`
+  tagged servers for straightforward fixes. **Never** configure spawned conversations
+  as loops — they are one-off tasks.
+
+  ## Spawn Deduplication
+
+  Existing child conversations (spawned by previous runs):
+  {{ .Children.MCPText }}
+
+  {{ template "github/shared/spawn-rules" . }}
+
+  When the cap is reached and more PRs still need attention, prioritize by
+  severity: rebase conflicts > CI failures > unresolved comments. Notify the
+  user about any remaining items that were not spawned.
+
+  ## Interaction Mode
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent mode** — a scheduled loop run; the user is not watching.
+  {{ template "_shared/silent-notify-only" . }}
+  - Act autonomously when safe (e.g., clean rebases), otherwise just notify.
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
+  - You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
+    and other interactive tools in addition to `mitto_ui_notify`.
+  - For example: ask the user whether to proceed with a risky rebase, which failing
+    PRs to investigate, or whether to spawn fix conversations.
+  {{- end }}
+
+  ## Step 1 — Identify the repository
+
+  {{ template "github/shared/identify-repository" . }}
+  {{- if .Args.Repository }}
+
+  **Local git operations** (the rebase in Step 3a) still need a local clone of
+  the target repo. If the current folder is already a checkout of
+  `{{ .Args.Repository }}`, use it; otherwise clone it on demand into a temp dir
+  (`gh repo clone {{ .Args.Repository }} "$(mktemp -d)"`) and run the git
+  commands there.
+  {{- end }}
+
+  If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
+
+  {{ template "github/shared/gh-owned-logins" . }}
+
+  Once you have the `nameWithOwner` (e.g., `some-org/some-repo`), rename this
+  conversation so it's easy to identify — but only if the current name
+  (`{{ .Session.Name }}`) doesn't already start with "Babysit my PRs":
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    name: "Babysit my PRs in <nameWithOwner>")
+  ```
+
+  ## Step 2 — List my open PRs
+
+  Only process PRs authored by one of the logins in the owned-logins set from
+  Step 1. Do **not** rebase, merge, or spawn fix conversations for other
+  people's PRs.
+
+  `--author @me` resolves to the single active `gh` account, so it misses PRs
+  authored by any other logged-in account. Instead, run one `gh pr list` per
+  login and merge the results, deduplicating by PR number:
+
+  ```bash
+  # For each LOGIN in the owned-logins set from Step 1:
+  gh pr list{{ $repoFlag }} --state open --author "$LOGIN" \
+    --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,updatedAt,isDraft,reviewDecision,author,reviewRequests,labels \
+    --limit 50
+  ```
+
+  Concatenate the JSON arrays and deduplicate by `.number` (a PR only ever has
+  one author, so no PR should appear in more than one list, but dedupe anyway
+  as a safety net).
+
+  If no open PRs, skip to the Summary (Step 4).
+
+  ## Step 3 — Process each of my PRs
+
+  For each of your open PRs (order doesn't matter), perform all applicable checks
+  below. **Before acting on any PR, verify that `author.login` is a member of the
+  owned-logins set** (obtained in Step 1). If it isn't, skip the PR entirely.
+
+  ### 3a. Merge/rebase check
+
+  {{ template "github/shared/pr-rebase-if-behind" . }}
+
+  ### 3b. CI status check
+
+  {{ template "github/shared/pr-working-copy-decision" . }}
+
+  {{ template "github/shared/pr-fix-ci" . }}
+
+  ### 3c. Ready-to-merge check
+
+  {{ template "github/shared/pr-ready-to-merge" . }}
+
+  This prompt targets `{{ if .Args.Repository }}{{ .Args.Repository }}{{ else }}the current folder's repo{{ end }}`,
+  so the `--repo` scope for `gh pr merge` is `{{ $repoFlag }}`.
+
+  ### 3d. Unresolved review comments
+
+  {{ template "github/shared/pr-fetch-review-threads" . }}
+
+  If the unresolved count is 0, this substep is done — skip to 3e.
+
+  **If there are unresolved threads:**
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
+    title: "💬 PR #<number> has unresolved comments",
+    message: "<title> — <count> unresolved review threads need attention",
+    style: "warning")
+  ```
+
+  **Dedup guard**: check the Existing children list at the top of this prompt.
+  If a child titled `Address review comments on PR #<number>` (or containing
+  that exact substring) already exists **and is still running or was updated
+  after the newest thread's `createdAt`**, skip spawning — the previous run
+  already handled it. Otherwise proceed to spawn (or in interactive mode, ask).
+
+  Reuse the working-copy decision (`WORKING_MODE`/`WORKING_PATH`) computed in
+  3b — it applies to review-comment children just as it does to CI-fix
+  children.
+
+  **If `mitto_conversation_new` is available:**
+
+  **In interactive mode**, ask whether to spawn a conversation to address the feedback:
+  ```
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
+    question: "PR #<number> (<title>) has <count> unresolved review threads. Spawn a conversation to address them?",
+    options: [
+      { label: "Yes, address review comments" },
+      { label: "No, just notify" }
+    ])
+  ```
+
+  **In scheduled mode**, spawn automatically. Pass the full `THREADS_JSON`
+  payload plus the working-copy decision so the child can address each comment
+  individually (either fix + reply, or reply-explaining-why-not — but **never**
+  silently ignore):
+
+  ```
+  {{ template "github/shared/pr-comments" . }}
+  ```
+
+  ### 3e. Stale PR detection
+
+  If a non-draft PR has not been updated in **14+ days** (based on `updatedAt`),
+  collect it. After processing all PRs, **batch stale PRs into a single
+  notification** rather than one per PR:
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
+    title: "🕸️ <count> stale PRs",
+    message: "PRs not updated in 14+ days:\n• #<N> <title> (<days> days)\n• #<M> <title> (<days> days)\n...",
+    style: "warning")
+  ```
+
+  ### 3f. Long-lived draft PRs
+
+  If a draft PR (`isDraft == true`) has not been updated in **21+ days**,
+  collect it. After processing all PRs, **batch into a single notification:**
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
+    title: "📝 <count> long-lived draft PRs",
+    message: "Drafts open 21+ days:\n• #<N> <title> (<days> days)\n• #<M> <title> (<days> days)\n...",
+    style: "info")
+  ```
+
+  ## Step 4 — Summary
+
+  After processing everything, produce a brief summary:
+
+  ```console
+  📊 PR Babysit Summary
+
+  | PR | Title | Rebase | CI | Review | Notes |
+  |----|-------|--------|----|--------|-------|
+  | #1 | Fix bug | ✅ Rebased | ✅ Passing | Approved | 🚀 Ready to merge |
+  | #2 | Add feature | — Up to date | ❌ Failing | Changes requested | 3 unresolved threads |
+  | #3 | Refactor | ⚠️ Conflicts | ✅ Passing | Pending | 🕸️ Stale (18 days) |
+
+  Next check: <if loop, mention the schedule>
+  ```
+
+  ## Guidelines
+
+  - **Target repository**:
+  {{- if .Args.Repository }}
+    operate on `{{ .Args.Repository }}`; all `gh` commands target it via
+    `--repo {{ .Args.Repository }}`. When spawning fix conversations, tell them
+    the repository is `{{ .Args.Repository }}` and to clone it if the current
+    folder is a different repo.
+  {{- else }}
+    no repository was supplied; operate on the repository of the current folder.
+  {{- end }}
+  - **Working-copy rule for spawned children** (CI-fix and review-comment
+    children): the parent (this prompt) decides `WORKING_MODE` before spawning.
+    Reuse the local checkout only when it is on the PR branch, at the PR's head
+    commit, and completely clean (no unstaged AND no staged changes); otherwise
+    the child must operate in a fresh `git worktree add` and never touch the
+    main checkout. This is a hard rule — the user may be working in that
+    checkout, so silently overwriting it is unacceptable.
+  - **Rebase step (3a) always uses a temporary worktree** regardless of the
+    above — rebases are destructive and rebasing the user's live checkout is
+    never safe.
+  - Use `--force-with-lease` when force-pushing (never `--force`).
+  - **Review comments must be addressed, never ignored** (Step 3d):
+    every unresolved review thread either gets a code fix + reply referencing
+    the fix commit, OR a substantive reply explaining why it will not be
+    fixed (out of scope, disagree with reviewer, already addressed elsewhere,
+    etc.). Silently skipping a thread is not an option. The spawned
+    `Address review comments on PR #<n>` child must report a per-thread
+    outcome (fixed vs replied-only) back to this parent.
+  - **CI failures must be fixed, not ignored** (Step 3b): failing lint or
+    tests are surfaced with a fix child. If a failure is not caused by this
+    PR (also fails on the base branch's latest commit), the child must file
+    a beads issue for the pre-existing failure instead of pretending it's
+    fine — the babysit parent then reports "CI blocked by pre-existing
+    issue mitto-XXX" in its Summary rather than a green "passing" status.
+  - If `gh` authentication fails, stop immediately and inform the user.
+  - **Interaction mode** (see "Interaction Mode" section above):
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+    - **Scheduled loop**: Use only `mitto_ui_notify`. No interactive UI. Act
+      autonomously when safe, otherwise notify. Skip the summary table — only send
+      notifications for actionable items.
+  {{- else }}
+    - **Force-triggered or non-loop**: You may use `mitto_ui_options`,
+      `mitto_ui_form`, and other interactive tools. Ask the user before risky
+      actions (merges). Show the full summary table at the end.
+  {{- end }}
+  - **Spawn deduplication** (see "Spawn Deduplication" section above):
+    Check `{{ .Children.MCPText }}` for existing child conversations before spawning.
+    Skip if a child for the same PR already exists. Max 3 spawns per run.
+  - **Spawned conversations must never be loops.** They are one-off tasks that
+    should complete and stop. Do not call `mitto_conversation_set_loop` on them.
+  - Only spawn conversations when `mitto_conversation_new` is available. If Mitto
+    MCP tools are not present, just send notifications and let the user act.
+  - **Notification batching**: batch repetitive informational items (stale PRs,
+    draft PRs) into a single notification per category to avoid spamming the
+    user — especially important in loop mode.
+  - Use `sound: true, native: true` for critical notifications (CI failures,
+    rebase conflicts) so the user notices immediately.
+  - In **scheduled mode**: do not merge PRs automatically — only notify.
+    In **interactive mode**: offer to merge with user confirmation.
+  - If a PR has draft status, still check CI and staleness but skip merge-readiness.
+  - **Only act on your own PRs** — i.e. PRs whose `author.login` is in the
+    owned-logins set enumerated from `gh auth status` in Step 1 (not just the
+    single currently-active `gh` account, which is what `--author @me` resolves
+    to). Do not rebase, merge, spawn fix conversations, or take any modifying
+    action on PRs authored by others.

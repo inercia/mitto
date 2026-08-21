@@ -1,0 +1,84 @@
+icon: magic-wand
+name: Simplify
+menus: prompts, !promptsLoop
+description: Simplify implementation while preserving functionality
+group: Code Quality
+backgroundColor: '#C8E6C9'
+prompt: |
+  {{- if .Session.HasMessages }}
+  Simplify the current implementation while preserving functionality. Read the
+  implementation thoroughly first and understand what it does and why. Check
+  callers and dependents so changes preserve external behavior.
+  {{- else }}
+  This is the first message in this conversation, so there is no "current
+  implementation" already in context. Figure out what to simplify by
+  inspecting the current repository state:
+
+  1. Run `git status` and `git diff` to see uncommitted changes — those are
+     the most likely simplification target.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to find recent work
+     that could be simplified.
+  3. If it is still unclear, ask the user which file or function they want
+     simplified before continuing.
+
+  Once the target is clear, read the implementation thoroughly, understand
+  what it does and why, and check callers and dependents so changes preserve
+  external behavior.
+  {{- end }}
+
+  ### 1. Look for Simplification Opportunities
+
+  1. **Redundant code**: Duplicate logic to consolidate
+  2. **Over-engineering**: Abstractions adding complexity without value
+  3. **Deep nesting**: Flatten with early returns or guard clauses
+  4. **Long functions**: Break into smaller, focused functions
+  5. **Complex conditionals**: Simplify boolean logic, use lookup tables
+  6. **Unnecessary state**: Remove variables computable on demand
+
+  ### 2. For Each Change
+
+  - Explain what you're simplifying and why
+  - Show before/after comparison
+  - Verify behavior preserved by running tests
+
+  ### 3. Wait for Approval
+
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...` → "Approve all / Approve selected / Investigate{{ if and (CommandExists "bd") (DirExists ".beads") }} / File as beads issue{{ end }} / Cancel"
+  **Without**: Ask in conversation. Wait for explicit approval.
+
+  {{ template "_shared/offer-file-as-bead" . }}
+
+  ### 4. Execute
+
+  Per item: simplify, verify (tests), report.
+
+  #### Delegating Significant Simplifications to Child Conversations
+
+  For simplifications spanning 3+ files, removing abstraction layers, or multiple parallelizable items, delegate to Mitto child conversations.
+
+  {{ template "_shared/delegation-context" . }}
+
+  **Choosing the right ACP server:**
+
+  1. Match server tags to task:
+     - Mechanical simplifications (consolidating duplicates, flattening conditionals) → prefer `"coding"`/`"fast"` servers
+     - Judgment-heavy simplifications (which abstractions to remove, non-obvious decompositions) → prefer `"reasoning"`/`"planning"` servers
+     - No match → server marked `(current)`, then first available
+  2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
+  3. `mitto_conversation_new(self_id: "{{ .Session.ID }}")` with full context, constraints (preserve behavior), and reporting directive
+  4. `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", task_id: "<short task description>", timeout_seconds: 600)`
+  5. Review: verify behavior preserved, code genuinely simpler (not just different)
+  6. `mitto_conversation_delete` for completed children
+
+  **Without Mitto tools**: execute directly.
+
+  ## Guidelines
+
+  - Preserve external behavior
+  - Explain what you're simplifying and why
+  - Verify with tests after each change
+  - Show before/after comparisons
+  - For significant simplifications, consider delegating to child conversations
+  - Match ACP server to task: coding agents for mechanical simplifications, reasoning agents for complex restructurings
+  - Max 4 parallel child conversations

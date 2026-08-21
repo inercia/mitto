@@ -1,0 +1,127 @@
+icon: tag
+name: 'JIRA: push issue'
+menus: beadsIssues, conversation
+description: Push local bead changes back to JIRA — transition the JIRA ticket to Done when the bead is closed locally, and mirror local beads comments as [mitto]-tagged JIRA comments
+backgroundColor: '#D1C4E9'
+group: JIRA
+tags:
+- jira
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to fix
+enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && (("jira-sync" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync")))'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'JIRA: sync tasks'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if not $target -}}
+  There is **no linked bead** for this conversation and no `IssueID` argument was provided. This prompt only pushes local changes for a specific bead back to JIRA — send one `mitto_ui_notify` explaining that a bead is required, then **stop**.
+  {{- else }}
+
+  The **target bead** is `{{ $target }}`. Push local changes on this bead back to its linked JIRA ticket — transition the JIRA ticket to a Done status if the bead is closed locally, and mirror any local beads comments back to JIRA as `[mitto]`-tagged comments. This prompt only ever **adds** to JIRA (a comment or a status transition); it never edits or deletes existing JIRA content.
+  {{- end }}
+
+  {{ template "_shared/interaction-mode" . }}
+
+  ## Access Method
+
+  {{ template "jira/shared/access-method" (dict "Note" "the transitions tools in Step 3 and the add-comment tool in Step 4") }}
+
+  ## Step 1 — Load the bead and extract the JIRA key
+
+  ```bash
+  bd show {{ $target }} --json
+  bd comments {{ $target }} --json    # or the equivalent JSON subcommand for this bd version
+  ```
+
+  From the bead capture: `status`, `external_ref`, `metadata.jira_pushed_status`, `metadata.jira_pushed_comments`, and every existing beads comment (id, author, created, body).
+
+  The JIRA key comes from `external_ref`, which must have the form `jira-<key-lower>` (this is what `JIRA: sync tasks` writes on create). Strip the `jira-` prefix and uppercase the remainder to get the JIRA key used against the API (e.g. `external_ref = "jira-abc-123"` → key `ABC-123`). If `external_ref` is empty or does not start with `jira-`, this bead is not linked to a JIRA ticket even though it carries the `jira-sync` label — send one `mitto_ui_notify` explaining that the label was likely applied manually and there is nothing to push, then **stop**.
+
+  ## Step 2 — Fetch the JIRA ticket's current status
+
+  Look up the ticket's current status name so Steps 3 and 4 can act idempotently.
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  Call **`jira_get_issue_jira`** for the key with `fields="status"` (or `fields="*all"` if the tool does not accept a subset).
+  {{- else }}
+
+  Run:
+
+  ```bash
+  jira issue list -q "key = <KEY>" --raw
+  ```
+
+  and read `fields.status.name` from the result.
+  {{- end }}
+
+  Skip Step 3 entirely if the bead is not closed locally. Skip Step 4 for any comment already listed in `metadata.jira_pushed_comments`.
+
+  ## Step 3 — Close JIRA when the bead is closed locally
+
+  {{ template "jira/shared/push-transition" . }}
+
+  In this prompt, `<bead-id>` is `{{ $target }}`.
+
+  ## Step 4 — Mirror local beads comments back to JIRA
+
+  Load the bead's comments from Step 1, then:
+
+  {{ template "jira/shared/mirror-comments-out" . }}
+
+  In this prompt, `<bead-id>` is `{{ $target }}`.
+
+  ## Step 4.5 — Reconcile inconsistencies
+
+  After Steps 3 and 4, check for a specific inconsistency: the bead is `open`, `in_progress`, or `blocked` locally but the JIRA ticket is already in a terminal status (see Guidelines "Terminal status" — the same conservative allow-list used elsewhere in this prompt).
+
+  **Interactive mode** — present a `mitto_ui_options` prompt with question `"Bead <beadId> is open locally but JIRA <KEY> is already \"<status>\". How should we reconcile?"` and these options (labels exactly as shown):
+
+  - `"Close the local bead too"` — description: `"Run 'bd close <beadId> --reason \"Closed in JIRA (<status>)\"'."`
+  - `"Reopen the JIRA ticket"` — description: `"Look up available transitions and move JIRA <KEY> to a non-terminal status (prefer 'To Do' or 'In Progress'). Falls back to a [mitto] comment if no such transition is available."`
+  - `"Leave as-is"` — description: `"Do nothing; record the inconsistency in the summary table so a human can decide later."`
+
+  Set `allow_free_text: true` with placeholder `"Type a note for the summary row"`. Apply the chosen action, then add a row to the Step 5 summary table with `↔️ reconciled: <action>` in the "Change / notes" column (or `⚠️ inconsistency (left as-is): <status>` when the user chose "Leave as-is" or entered free text).
+
+  **Silent mode** — never prompt, never write. Record the inconsistency for Step 5's table with `⚠️ Inconsistency: bead open locally but JIRA is "<status>" — deferred to next interactive run.`, and let Step 5 emit the `mitto_ui_notify` (only when the table has at least one non-trivial row).
+
+  ## Step 5 — Summary
+
+  Render a **markdown summary table** describing what was done for this bead. Use exactly these columns and formatting:
+
+  ```
+  | JIRA ticket | Beads ticket | Change / notes |
+  |---|---|---|
+  | <KEY> | {{ $target }} | <short human sentence, actions joined with `; `> |
+  ```
+
+  Column rules:
+
+  - **JIRA ticket** — the JIRA key (e.g. `ABC-123`) or `—` when unknown.
+  - **Beads ticket** — the beads id (e.g. `mitto-abc`).
+  - **Change / notes** — a short human sentence describing the row's contents (JIRA transitioned to `<status>`, `[mitto]` close-comment posted, N local comments pushed, push failures grouped by cause, etc.). Combine multiple actions with `; `. Prefix with `⚠️` when the row reports an inconsistency or an error; prefix with `↔️` when a reconciliation choice from Step 4.5 was applied.
+
+  Frame the run's outcome (JIRA transitioned, `[mitto]` close-comment posted, local comments pushed, push failures, inconsistency detected) as the **contents of the row** — do not restate them as free-form prose above or below the table.
+
+  **Interactive mode** — always render the full table, even when nothing changed (a single row saying `no change` is still emitted).
+
+  **Silent mode** (scheduled loop) — send a single `mitto_ui_notify` only when the table would have at least one non-trivial row (any change, any inconsistency, any error). The `message` field of that `mitto_ui_notify` call must contain the markdown table verbatim. Stay silent otherwise. Never truncate the table.
+
+  ## Guidelines
+
+  - **`deferred` is a local work-planning flag, orthogonal to JIRA sync.** Whether a bead syncs with JIRA is controlled by the `jira-sync` label alone. `deferred` says only "we are not working on this locally right now" — it does NOT gate pull, push, body refresh, comment mirroring, auto-close-on-JIRA-terminal, or any other sync behaviour. `deferred` never translates to a JIRA-side write (no transition to "Blocked" or similar). Push transitions fire on `bead.status == "closed"` and only on `closed`.
+  - **Idempotent**: `metadata.jira_pushed_status` skips already-transitioned beads; `metadata.jira_pushed_comments` prevents re-pushing the same beads comment. Running this prompt twice in a row must produce no spurious JIRA writes.
+  - **Loop-safe**: `[jira]`-prefixed beads comments are **never** pushed to JIRA; `[mitto]`-prefixed JIRA comments still come back through pull but are dedup-tracked by `jira_synced_comments`, so the round-trip never duplicates.
+  - **Push safety**: on any transition or comment permission/auth failure, record it in the run summary and move on — do not retry against a permission wall. Never edit or delete existing JIRA content; this prompt only **adds** (a new comment) or **transitions** (status only).
+  - **Terminal status (conservative)**: a JIRA ticket is treated as **closed** only when its status `name` is one of a small allow-list — `Done`, `Closed`, `Resolved`, `Cancelled`/`Canceled`, `Won't Do`, `Won't Fix`/`Wontfix`, `Duplicate` (case-insensitive, exact match). **Do not** rely on `statusCategory == "done"`: many workflows place deployment-pipeline statuses (`Deployed to Stage`, `Deployed`, `Released`, `Ready for Prod`, `In UAT`, `Verified`, `Awaiting Deploy`, `On Prod`, etc.) in the green category even though real work remains. The same allow-list gates transition targets in Step 3.
+  - **Scope**: this prompt is push-first — it reads JIRA state only to act idempotently (Step 2) and to detect the Step 4.5 inconsistency; on the local side it may also close the bead or reopen the JIRA ticket when the user explicitly confirms a Step 4.5 reconciliation option. It never touches the bead body, never wires dependencies (that is a bulk-sync concern), and never touches other beads. Use `JIRA: pull issue` to refresh this bead from JIRA, or `JIRA: sync tasks` for a full two-way batch sync.

@@ -6,12 +6,18 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -144,6 +150,58 @@ func TestAuthManager_SessionExpiry(t *testing.T) {
 	_, valid := am.ValidateSession(session.Token)
 	if valid {
 		t.Error("ValidateSession returned true for expired session")
+	}
+}
+
+// TestCookieSecure_ExternalListenerIgnoresLocalhostHost reproduces mitto-8c3u:
+// trusted external-listener provenance must override the caller-controlled Host.
+func TestCookieSecure_ExternalListenerIgnoresLocalhostHost(t *testing.T) {
+	auth := &AuthManager{}
+	session := &AuthSession{Token: "0123456789abcdef", ExpiresAt: time.Now().Add(time.Hour)}
+
+	writers := map[string]func(http.ResponseWriter, *http.Request){
+		"session set": func(w http.ResponseWriter, r *http.Request) {
+			auth.SetSessionCookie(w, r, session)
+		},
+		"session clear": auth.ClearSessionCookie,
+		"csrf": func(w http.ResponseWriter, r *http.Request) {
+			(&CSRFManager{}).SetCSRFCookie(w, r, "csrf-token")
+		},
+	}
+
+	requests := []struct {
+		name       string
+		host       string
+		external   bool
+		wantSecure bool
+	}{
+		{"external localhost", "localhost:8080", true, true},
+		{"external IPv4 loopback", "127.0.0.1:8080", true, true},
+		{"external IPv6 loopback", "[::1]:8080", true, true},
+		{"internal localhost", "localhost:8080", false, false},
+	}
+
+	for _, request := range requests {
+		for name, writeCookie := range writers {
+			t.Run(request.name+"/"+name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				if request.external {
+					req = makeExternalRequest(req)
+				}
+				req.Host = request.host
+				recorder := httptest.NewRecorder()
+
+				writeCookie(recorder, req)
+
+				cookies := recorder.Result().Cookies()
+				if len(cookies) != 1 {
+					t.Fatalf("cookie count = %d, want 1", len(cookies))
+				}
+				if cookies[0].Secure != request.wantSecure {
+					t.Errorf("Secure = %v, want %v for Host %q", cookies[0].Secure, request.wantSecure, request.host)
+				}
+			})
+		}
 	}
 }
 
@@ -607,6 +665,14 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 		{"login endpoint", "/mitto/api/login", true},
 		{"csrf-token endpoint", "/mitto/api/csrf-token", true},
 		{"supported-runners endpoint", "/mitto/api/supported-runners", true},
+		{"Slack OAuth callback", "/mitto/api/slack/oauth/callback", true},
+
+		// SDK asset tree (mitto-laa3): auth.js imports from ./sdk/index.js,
+		// so the whole /sdk/ tree must be public or the login page's module
+		// graph 302s to auth.html and fails to load.
+		{"sdk index", "/sdk/index.js", true},
+		{"sdk nested", "/sdk/core/config.js", true},
+		{"sdk with prefix", "/mitto/sdk/index.js", true},
 
 		// Non-public paths
 		{"sessions endpoint", "/mitto/api/sessions", false},
@@ -614,9 +680,11 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 		{"root", "/", false},
 		{"index.html", "/index.html", false},
 		{"app.js", "/app.js", false},
+		{"not sdk", "/sdkfoo.js", false},
 
 		// API paths without prefix (should not match)
 		{"login without prefix", "/api/login", false},
+		{"Slack OAuth callback without prefix", "/api/slack/oauth/callback", false},
 	}
 
 	for _, tt := range tests {
@@ -625,6 +693,111 @@ func TestAuthManager_isPublicPath(t *testing.T) {
 				t.Errorf("isPublicPath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// sdkImportFromRe matches `import ... from "./x.js"` and `export ... from
+// "./x.js"` (including multi-line `import {\n  a,\n} from "./x.js"` forms,
+// since the character class excludes quotes and therefore cannot skip over
+// an intervening bare/side-effect import's own quoted specifier).
+var sdkImportFromRe = regexp.MustCompile(`(?:import|export)\s+[^'"]*?from\s+['"]([^'"]+)['"]`)
+
+// sdkImportBareRe matches side-effect-only imports: `import "./x.js";`.
+var sdkImportBareRe = regexp.MustCompile(`(?m)^\s*import\s+['"]([^'"]+)['"]`)
+
+// relativeImportSpecifiers extracts the relative ("./x.js" / "../x.js")
+// ES-module specifiers referenced by a JS file. Bare/package specifiers and
+// absolute URLs are ignored. This is intentionally a simple regexp scan, not
+// a real JS parser (mitto-laa3).
+func relativeImportSpecifiers(t *testing.T, file string) []string {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", file, err)
+	}
+	content := string(data)
+
+	var specs []string
+	seen := map[string]bool{}
+	addIfRelative := func(spec string) {
+		if (strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../")) && !seen[spec] {
+			seen[spec] = true
+			specs = append(specs, spec)
+		}
+	}
+	for _, m := range sdkImportFromRe.FindAllStringSubmatch(content, -1) {
+		addIfRelative(m[1])
+	}
+	for _, m := range sdkImportBareRe.FindAllStringSubmatch(content, -1) {
+		addIfRelative(m[1])
+	}
+	return specs
+}
+
+// TestAuthManager_isPublicPath_AuthJSModuleGraphIsPublic is a drift guard
+// (mitto-laa3): it walks the entire relative ES-module import graph rooted
+// at web/static/auth.js and asserts every reachable file is public. auth.js
+// is a `type="module"` script loaded by the pre-auth login page; if any file
+// in its import graph becomes non-public, the browser's module loader 302s
+// to auth.html and the login form's submit listener is never attached — a
+// silent, total remote-login outage (this is exactly how the /sdk/ tree
+// broke login before this fix). The test does not special-case /sdk/ so it
+// also catches the next refactor that pulls a new pre-auth file from
+// elsewhere into the graph.
+func TestAuthManager_isPublicPath_AuthJSModuleGraphIsPublic(t *testing.T) {
+	staticRoot, err := filepath.Abs("../../../web/static")
+	if err != nil {
+		t.Fatalf("failed to resolve web/static root: %v", err)
+	}
+	entry, err := filepath.Abs(filepath.Join(staticRoot, "auth.js"))
+	if err != nil {
+		t.Fatalf("failed to resolve auth.js path: %v", err)
+	}
+	if _, statErr := os.Stat(entry); statErr != nil {
+		t.Fatalf("expected %s to exist: %v", entry, statErr)
+	}
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "admin",
+			Password: "password",
+		},
+	})
+
+	visited := map[string]bool{}
+	queue := []string{entry}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if visited[current] {
+			continue
+		}
+		visited[current] = true
+
+		rel, relErr := filepath.Rel(staticRoot, current)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			t.Fatalf("resolved import %q escapes web/static root (rel=%q)", current, rel)
+		}
+		serverPath := "/" + filepath.ToSlash(rel)
+		if !am.isPublicPath(serverPath) {
+			t.Errorf("isPublicPath(%q) = false, want true (reachable from auth.js's module graph)", serverPath)
+		}
+
+		for _, spec := range relativeImportSpecifiers(t, current) {
+			next := filepath.Clean(filepath.Join(filepath.Dir(current), spec))
+			if !visited[next] {
+				queue = append(queue, next)
+			}
+		}
+	}
+
+	// Sanity check: auth.js alone imports sdk/index.js, which fans out into
+	// dozens of files. If we only ever visited 1-2 files, the import parser
+	// is broken (or auth.js's imports were gutted) rather than the graph
+	// being genuinely small.
+	if len(visited) < 5 {
+		t.Fatalf("expected auth.js's module graph to contain more than %d file(s) — import parsing may be broken", len(visited))
 	}
 }
 
@@ -798,6 +971,66 @@ func TestAuthMiddleware_LocalhostBypass(t *testing.T) {
 	}
 	if w.Code != http.StatusOK {
 		t.Errorf("AuthMiddleware() status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestAuthMiddleware_SpoofedForwardingHeadersDoNotGrantPrivileges(t *testing.T) {
+	SetDefaultProxyChecker(NewTrustedProxyChecker([]string{"10.0.0.0/8"}))
+	t.Cleanup(func() { SetDefaultProxyChecker(nil) })
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "password"},
+		Allow:  &config.AuthAllow{IPs: []string{"127.0.0.1"}},
+	})
+	defer am.Close()
+	am.SetAPIPrefix("/mitto")
+
+	tests := []struct {
+		name       string
+		headers    map[string]string
+		isExternal bool
+	}{
+		{
+			name:       "Cf-Connecting-IP cannot spoof external allowlist",
+			headers:    map[string]string{"Cf-Connecting-IP": "127.0.0.1"},
+			isExternal: true,
+		},
+		{
+			name:       "X-Real-IP cannot spoof external allowlist",
+			headers:    map[string]string{"X-Real-IP": "127.0.0.1"},
+			isExternal: true,
+		},
+		{
+			name:    "leftmost X-Forwarded-For cannot spoof internal loopback",
+			headers: map[string]string{"X-Forwarded-For": "127.0.0.1, 198.51.100.25, 10.0.0.2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handlerCalled := false
+			handler := am.AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest("GET", "/mitto/api/sessions", nil)
+			req.RemoteAddr = "10.0.0.3:8080"
+			for name, value := range tt.headers {
+				req.Header.Set(name, value)
+			}
+			if tt.isExternal {
+				req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+			}
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if handlerCalled {
+				t.Fatal("spoofed forwarding header granted access")
+			}
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+			}
+		})
 	}
 }
 
@@ -1085,6 +1318,114 @@ func TestAuthManager_UpdateConfig(t *testing.T) {
 	}
 }
 
+func TestAuthManager_UpdateConfig_RevokesSessions(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "olduser", Password: "oldpass"},
+	}
+	am := NewAuthManager(oldConfig)
+	session, err := am.CreateSession("olduser")
+	if err != nil {
+		am.Close()
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	// Regression test for mitto-fz2w: credential rotation must revoke the
+	// session immediately and atomically clear its persisted representation.
+	newConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "newuser", Password: "newpass"},
+	}
+	am.UpdateConfig(newConfig)
+	if _, valid := am.ValidateSession(session.Token); valid {
+		t.Error("session remained valid after credential rotation")
+	}
+	am.Close()
+
+	restarted := NewAuthManager(newConfig)
+	defer restarted.Close()
+	if _, valid := restarted.ValidateSession(session.Token); valid {
+		t.Error("revoked session was restored after restart")
+	}
+}
+
+func TestAuthManager_UpdateConfig_SessionRevocationSemantics(t *testing.T) {
+	baseConfig := func() *config.WebAuth {
+		return &config.WebAuth{
+			Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
+			Cloudflare: &config.CloudflareAuth{
+				TeamDomain: "old.cloudflareaccess.com",
+				Audience:   "old-audience",
+			},
+			Allow:       &config.AuthAllow{IPs: []string{"192.0.2.1"}},
+			SharedToken: "old-token",
+		}
+	}
+
+	tests := []struct {
+		name        string
+		update      func(*config.WebAuth) *config.WebAuth
+		wantRevoked bool
+	}{
+		{"username changed", func(c *config.WebAuth) *config.WebAuth { c.Simple.Username = "newuser"; return c }, true},
+		{"password changed", func(c *config.WebAuth) *config.WebAuth { c.Simple.Password = "newpass"; return c }, true},
+		{"identity provider changed", func(c *config.WebAuth) *config.WebAuth {
+			c.Cloudflare.TeamDomain = "new.cloudflareaccess.com"
+			return c
+		}, true},
+		{"identity provider audience changed", func(c *config.WebAuth) *config.WebAuth { c.Cloudflare.Audience = "new-audience"; return c }, true},
+		{"identity provider CA changed", func(c *config.WebAuth) *config.WebAuth { c.Cloudflare.CACertFile = "new-ca.pem"; return c }, true},
+		{"shared token changed", func(c *config.WebAuth) *config.WebAuth { c.SharedToken = "new-token"; return c }, true},
+		{"authentication disabled", func(*config.WebAuth) *config.WebAuth { return nil }, true},
+		{"allowlist changed", func(c *config.WebAuth) *config.WebAuth { c.Allow.IPs = []string{"198.51.100.0/24"}; return c }, true},
+		{"unchanged auth", func(c *config.WebAuth) *config.WebAuth { return c }, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(appdir.MittoDirEnv, t.TempDir())
+			appdir.ResetCache()
+			t.Cleanup(appdir.ResetCache)
+
+			am := NewAuthManager(baseConfig())
+			defer am.Close()
+			session, err := am.CreateSession("user")
+			if err != nil {
+				t.Fatalf("CreateSession() error = %v", err)
+			}
+
+			am.UpdateConfig(tt.update(baseConfig()))
+			_, valid := am.ValidateSession(session.Token)
+			if valid == tt.wantRevoked {
+				t.Fatalf("ValidateSession() valid = %v, want %v", valid, !tt.wantRevoked)
+			}
+		})
+	}
+}
+
+func TestAuthManager_SetSharedToken_RevokesSessions(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "user", Password: "pass"},
+		SharedToken: "old-token",
+	})
+	defer am.Close()
+	session, err := am.CreateSession("user")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	am.SetSharedToken("new-token")
+	if _, valid := am.ValidateSession(session.Token); valid {
+		t.Error("session remained valid after shared token rotation")
+	}
+}
+
 func TestAuthManager_UpdateConfig_Nil(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{
@@ -1180,6 +1521,393 @@ func TestAuthManager_CleanupExpiredSessions(t *testing.T) {
 	}
 }
 
+// --- Shared bearer token tests (mitto-7gta.26) ---
+
+func TestAuthManager_HasSharedToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.WebAuth
+		want   bool
+	}{
+		{"nil config", nil, false},
+		{"no token configured", &config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}}, false},
+		{"empty token string", &config.WebAuth{SharedToken: ""}, false},
+		{"token configured", &config.WebAuth{SharedToken: "s3cr3t"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			am := NewAuthManager(tt.config)
+			defer am.Close()
+			if got := am.HasSharedToken(); got != tt.want {
+				t.Errorf("HasSharedToken() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthManager_ValidateSharedToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *config.WebAuth
+		tok    string
+		want   bool
+	}{
+		{"valid token", &config.WebAuth{SharedToken: "s3cr3t"}, "s3cr3t", true},
+		{"wrong token", &config.WebAuth{SharedToken: "s3cr3t"}, "wrong", false},
+		{"empty tok against configured token", &config.WebAuth{SharedToken: "s3cr3t"}, "", false},
+		{"no token configured", &config.WebAuth{}, "s3cr3t", false},
+		// An empty configured token must never match an empty presented token.
+		{"empty configured token, empty presented", &config.WebAuth{SharedToken: ""}, "", false},
+		{"nil config", nil, "anything", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			am := NewAuthManager(tt.config)
+			defer am.Close()
+			if got := am.ValidateSharedToken(tt.tok); got != tt.want {
+				t.Errorf("ValidateSharedToken(%q) = %v, want %v", tt.tok, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractBearerToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{"valid bearer token", "Bearer abc123", "abc123"},
+		{"lowercase scheme", "bearer abc123", "abc123"},
+		{"mixed case scheme", "BeArEr abc123", "abc123"},
+		{"no header", "", ""},
+		{"wrong scheme", "Basic abc123", ""},
+		{"bearer with no token", "Bearer ", ""},
+		{"bearer with only whitespace token", "Bearer    ", ""},
+		{"extra whitespace around token", "Bearer  abc123  ", "abc123"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			if got := extractBearerToken(req); got != tt.want {
+				t.Errorf("extractBearerToken(%q) = %q, want %q", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthManager_ValidateBearerRequest(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "s3cr3t"})
+	defer am.Close()
+
+	tests := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"valid token", "Bearer s3cr3t", true},
+		{"invalid token", "Bearer wrong", false},
+		{"no header", "", false},
+		{"wrong scheme", "Basic s3cr3t", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/test", nil)
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			if got := am.ValidateBearerRequest(req); got != tt.want {
+				t.Errorf("ValidateBearerRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// No token configured at all: ValidateBearerRequest must return false even
+	// with a well-formed header, and must not panic on a nil-Simple config.
+	amNoToken := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer amNoToken.Close()
+	req := httptest.NewRequest("POST", "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer whatever")
+	if amNoToken.ValidateBearerRequest(req) {
+		t.Error("ValidateBearerRequest() = true when no shared token is configured, want false")
+	}
+}
+
+// TestAuthMiddleware_SharedToken_ValidGrantsAccess verifies that a valid bearer
+// token is accepted by AuthMiddleware even without a session cookie, sets the
+// "token:shared" identity, and requires no CSRF/session state.
+func TestAuthMiddleware_SharedToken_ValidGrantsAccess(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	var gotUser any
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser = r.Context().Value(ContextKeyAuthUser)
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req.Header.Set("Authorization", "Bearer s3cr3t-token")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotUser != "token:shared" {
+		t.Errorf("ContextKeyAuthUser = %v, want %q", gotUser, "token:shared")
+	}
+}
+
+// TestAuthMiddleware_SharedToken_InvalidFallsThroughToUnauthorized verifies an
+// invalid bearer token does not grant access and degrades to the existing
+// session/Cloudflare checks, which reject the unauthenticated request.
+func TestAuthMiddleware_SharedToken_InvalidFallsThroughToUnauthorized(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if handlerCalled {
+		t.Error("AuthMiddleware should NOT call handler for an invalid bearer token")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_AbsentHeaderUnchangedBehaviour verifies that
+// when no Authorization header is present at all, behaviour is identical to
+// before the shared-token feature existed (zero behaviour change).
+func TestAuthMiddleware_SharedToken_AbsentHeaderUnchangedBehaviour(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_NotConfiguredIgnoresHeader verifies that when
+// no shared token is configured at all, a bearer header is simply ignored
+// (the token-only-config-must-not-enable-auth requirement).
+func TestAuthMiddleware_SharedToken_NotConfiguredIgnoresHeader(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "password"},
+		// SharedToken intentionally left empty.
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = "203.0.113.1:54321"
+	req.Header.Set("Authorization", "Bearer whatever")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if handlerCalled {
+		t.Error("AuthMiddleware should NOT call handler when no shared token is configured")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_TokenOnlyDoesNotEnableAuth verifies that a
+// configured shared token, on its own (no Simple/Cloudflare), does not flip
+// IsEnabled() -- a token alone must not arm the external listener.
+func TestAuthMiddleware_SharedToken_TokenOnlyDoesNotEnableAuth(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "s3cr3t-token"})
+	defer am.Close()
+
+	if am.IsEnabled() {
+		t.Error("IsEnabled() = true with only a shared token configured, want false")
+	}
+}
+
+// TestAuthMiddleware_SharedToken_RateLimiting verifies repeated invalid bearer
+// tokens trip the SAME per-IP rate limiter used by password login, and that a
+// valid token is rejected once the lockout engages (shared lockout, not a
+// separate counter that could be used to sidestep password lockout).
+func TestAuthMiddleware_SharedToken_RateLimiting(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: "s3cr3t-token",
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	// Shorter settings for a fast, deterministic test.
+	am.rateLimiter.Close()
+	am.rateLimiter = NewAuthRateLimiterWithConfig(3, time.Minute, 5*time.Minute)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	const ip = "203.0.113.50:12345"
+
+	// Unlike HandleLogin (which checks RecordFailure's return value and
+	// returns 429 on the very request that reaches maxFailures), the
+	// AuthMiddleware bearer-token branch gates on IsBlocked() BEFORE
+	// validating and only calls RecordFailure() afterwards without
+	// inspecting its return. So the 3 failing attempts that reach
+	// maxFailures=3 each fall through to the downstream 401, and the
+	// lockout set by the 3rd failure is only observed starting with the
+	// NEXT (4th) request. This is a real, intentional-looking asymmetry
+	// with the login path (recorded here rather than "fixed" in the Test
+	// phase); see the accompanying bd comment.
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		req.RemoteAddr = ip
+		req.Header.Set("Authorization", "Bearer wrong-token")
+		req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+		w := httptest.NewRecorder()
+		middleware.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("attempt %d: status = %d, want %d", i+1, w.Code, http.StatusUnauthorized)
+		}
+	}
+
+	// The 4th request observes the lockout set by the 3rd failure.
+	reqBlocked := httptest.NewRequest("GET", "/api/sessions", nil)
+	reqBlocked.RemoteAddr = ip
+	reqBlocked.Header.Set("Authorization", "Bearer wrong-token")
+	reqBlocked = reqBlocked.WithContext(context.WithValue(reqBlocked.Context(), ContextKeyExternalConnection, true))
+	wBlocked := httptest.NewRecorder()
+	middleware.ServeHTTP(wBlocked, reqBlocked)
+
+	if wBlocked.Code != http.StatusTooManyRequests {
+		t.Errorf("4th attempt: status = %d, want %d", wBlocked.Code, http.StatusTooManyRequests)
+	}
+	if wBlocked.Header().Get("Retry-After") == "" {
+		t.Error("missing Retry-After header on rate-limited response")
+	}
+
+	// Now even a VALID token from the same IP is rejected while locked out.
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	req.RemoteAddr = ip
+	req.Header.Set("Authorization", "Bearer s3cr3t-token")
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+	w := httptest.NewRecorder()
+	middleware.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("valid token during lockout: status = %d, want %d", w.Code, http.StatusTooManyRequests)
+	}
+
+	// A different IP is unaffected and the valid token still works.
+	req2 := httptest.NewRequest("GET", "/api/sessions", nil)
+	req2.RemoteAddr = "203.0.113.99:12345"
+	req2.Header.Set("Authorization", "Bearer s3cr3t-token")
+	req2 = req2.WithContext(context.WithValue(req2.Context(), ContextKeyExternalConnection, true))
+	w2 := httptest.NewRecorder()
+	middleware.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Errorf("different IP with valid token: status = %d, want %d", w2.Code, http.StatusOK)
+	}
+}
+
+// TestAuthMiddleware_SharedToken_NeverLogsTokenValue captures slog output
+// during valid and invalid bearer-token requests and asserts the raw token
+// value never appears in any log line, only client_ip/path/decision.
+func TestAuthMiddleware_SharedToken_NeverLogsTokenValue(t *testing.T) {
+	const secretToken = "super-secret-do-not-log-xyz789"
+
+	am := NewAuthManager(&config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "admin", Password: "password"},
+		SharedToken: secretToken,
+	})
+	defer am.Close()
+	am.SetAPIPrefix("")
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := am.AuthMiddleware(testHandler)
+
+	// logging.Auth() resolves to slog.Default() whenever logging.Initialize has
+	// not set a global logger (the case in this test binary), so redirecting
+	// the process-wide default captures everything AuthMiddleware logs.
+	var buf strings.Builder
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevDefault)
+
+	for _, hdr := range []string{"Bearer " + secretToken, "Bearer wrong-" + secretToken} {
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		req.RemoteAddr = "203.0.113.1:54321"
+		req.Header.Set("Authorization", hdr)
+		req = req.WithContext(context.WithValue(req.Context(), ContextKeyExternalConnection, true))
+		w := httptest.NewRecorder()
+		middleware.ServeHTTP(w, req)
+	}
+
+	if strings.Contains(buf.String(), secretToken) {
+		t.Errorf("log output leaked the shared token value:\n%s", buf.String())
+	}
+}
+
 func TestAuthManager_ShouldWarnSplitIP(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
@@ -1210,6 +1938,89 @@ func TestAuthManager_ShouldWarnSplitIP(t *testing.T) {
 	}
 }
 
+// TestAuthManager_HandleLogin_SplitIP_RaisesAnomalyFlag verifies that a CSRF
+// token IP fingerprint mismatch during login writes SplitIP=true into the
+// mutable *AuthAnomaly context holder for BOTH mobile and desktop user agents.
+// This is the audit-trail promotion path used by AccessLogger to suffix
+// EventType with "+split_ip"; the flag must be raised regardless of the
+// mitto.log dedup window and regardless of UA class.
+func TestAuthManager_HandleLogin_SplitIP_RaisesAnomalyFlag(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "secret"},
+	})
+	defer am.Close()
+
+	// Build a CSRF cookie whose fingerprint was embedded for a DIFFERENT
+	// network prefix than the login request's IP, so VerifyIPFromToken
+	// will report a mismatch.
+	const issuedIP = "10.20.30.40"
+	baseToken := strings.Repeat("a", csrfTokenLength*2) // 64 hex chars
+	cases := []struct {
+		name string
+		ua   string
+	}{
+		{"mobile UA (iPhone Safari)", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7) Safari/604.1"},
+		{"desktop UA (Chrome on macOS)", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cookieValue := embedFingerprint(baseToken, issuedIP, tc.ua)
+
+			req := httptest.NewRequest("POST", "/api/login",
+				strings.NewReader(`{"username":"admin","password":"wrong"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", tc.ua)
+			// Login POST arrives from a different network prefix (/24) than
+			// the one baked into the CSRF cookie.
+			req.RemoteAddr = "192.168.1.100:12345"
+			req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: cookieValue})
+
+			anomaly := &AuthAnomaly{}
+			req = req.WithContext(context.WithValue(req.Context(), ContextKeyAuthAnomaly, anomaly))
+
+			w := httptest.NewRecorder()
+			am.HandleLogin(w, req)
+
+			if !anomaly.SplitIP {
+				t.Errorf("AuthAnomaly.SplitIP = false, want true (UA class must not gate the audit flag)")
+			}
+		})
+	}
+}
+
+// TestAuthManager_HandleLogin_SplitIP_MatchingFingerprintDoesNotFlag verifies
+// the negative path: when the CSRF cookie's embedded fingerprint matches the
+// request IP+UA (the normal case), no anomaly is recorded.
+func TestAuthManager_HandleLogin_SplitIP_MatchingFingerprintDoesNotFlag(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "admin", Password: "secret"},
+	})
+	defer am.Close()
+
+	const clientIP = "192.168.1.100"
+	const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0 Safari/537.36"
+	baseToken := strings.Repeat("b", csrfTokenLength*2)
+	cookieValue := embedFingerprint(baseToken, clientIP, ua)
+
+	req := httptest.NewRequest("POST", "/api/login",
+		strings.NewReader(`{"username":"admin","password":"wrong"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", ua)
+	req.RemoteAddr = clientIP + ":12345"
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: cookieValue})
+
+	anomaly := &AuthAnomaly{}
+	req = req.WithContext(context.WithValue(req.Context(), ContextKeyAuthAnomaly, anomaly))
+
+	w := httptest.NewRecorder()
+	am.HandleLogin(w, req)
+
+	if anomaly.SplitIP {
+		t.Error("AuthAnomaly.SplitIP = true on matching fingerprint, want false")
+	}
+}
+
 func TestAuthManager_PruneSplitIPWarnSeen(t *testing.T) {
 	am := NewAuthManager(&config.WebAuth{
 		Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
@@ -1234,4 +2045,81 @@ func TestAuthManager_PruneSplitIPWarnSeen(t *testing.T) {
 	if !freshExists {
 		t.Error("fresh entry should not have been pruned")
 	}
+}
+
+// --- SetSharedToken (mitto-pscc.9 rotation) -------------------------------
+
+// TestAuthManager_SetSharedToken_SwapsAcceptedCredential verifies that
+// rotating the shared token via SetSharedToken atomically flips which token
+// value ValidateSharedToken accepts: the old value must be rejected and the
+// new value accepted immediately after the call returns.
+func TestAuthManager_SetSharedToken_SwapsAcceptedCredential(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "old-token"})
+	defer am.Close()
+
+	if !am.ValidateSharedToken("old-token") {
+		t.Fatal("old-token should be accepted before rotation")
+	}
+
+	am.SetSharedToken("new-token")
+
+	if am.ValidateSharedToken("old-token") {
+		t.Error("old-token should be rejected after rotation")
+	}
+	if !am.ValidateSharedToken("new-token") {
+		t.Error("new-token should be accepted after rotation")
+	}
+}
+
+// TestAuthManager_SetSharedToken_NilConfig verifies SetSharedToken does not
+// panic when the AuthManager was constructed with a nil config (auth
+// disabled) — it lazily allocates a config so a shared token can still be
+// installed dynamically (not exercised by any current caller, but rotate's
+// implementation must not assume a.config is always non-nil).
+func TestAuthManager_SetSharedToken_NilConfig(t *testing.T) {
+	am := NewAuthManager(nil)
+	defer am.Close()
+
+	am.SetSharedToken("tok")
+
+	if !am.HasSharedToken() {
+		t.Fatal("HasSharedToken() = false after SetSharedToken on a nil-config manager")
+	}
+	if !am.ValidateSharedToken("tok") {
+		t.Error("ValidateSharedToken(tok) = false after SetSharedToken on a nil-config manager")
+	}
+}
+
+// TestAuthManager_SharedToken_ConcurrentRotateAndValidate_Race exercises
+// SetSharedToken concurrently with HasSharedToken/ValidateSharedToken (the
+// hot read path AuthMiddleware calls on every request) to catch data races
+// under `go test -race` (mitto-pscc.9: HasSharedToken/ValidateSharedToken
+// moved from unlocked reads to a.mu.RLock specifically to make this safe).
+func TestAuthManager_SharedToken_ConcurrentRotateAndValidate_Race(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{SharedToken: "initial-token"})
+	defer am.Close()
+
+	const iterations = 200
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			am.SetSharedToken("token-" + string(rune('a'+i%26)))
+		}
+	}()
+
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				_ = am.HasSharedToken()
+				_ = am.ValidateSharedToken("token-" + string(rune('a'+i%26)))
+			}
+		}()
+	}
+
+	wg.Wait()
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -86,9 +87,13 @@ func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, sto
 
 	// Parse multipart form
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-		if strings.Contains(err.Error(), "request body too large") {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) || strings.Contains(err.Error(), "request body too large") {
 			writeErrorJSON(w, http.StatusRequestEntityTooLarge, "image_too_large", "Image exceeds 10MB limit")
 			return
+		}
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("Failed to parse image upload form", "error", err, "session_id", sessionID)
 		}
 		writeErrorJSON(w, http.StatusBadRequest, "", "Failed to parse form")
 		return
@@ -101,6 +106,14 @@ func (h *Handlers) handleUploadImage(w http.ResponseWriter, r *http.Request, sto
 		return
 	}
 	defer file.Close()
+
+	// Reject zero-byte uploads: browsers can produce header-only multipart
+	// parts when the user drops a preview shortcut (Slack, Google Images,
+	// .webloc) whose backing File has size==0.
+	if header.Size == 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "image_empty", "Uploaded image is empty (0 bytes)")
+		return
+	}
 
 	// Read file content
 	data, err := io.ReadAll(file)

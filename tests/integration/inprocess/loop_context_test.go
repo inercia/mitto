@@ -6,7 +6,7 @@ package inprocess
 import (
 	"testing"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestLoopContextSemantics verifies the three context-aware loop send cases:
@@ -23,15 +23,15 @@ func TestLoopContextSemantics(t *testing.T) {
 	// Case (a): Configure loop on a fresh session — verify GET reflects it.
 	// -------------------------------------------------------------------------
 	t.Run("new_loop_config", func(t *testing.T) {
-		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-new"})
+		sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-new"})
 		if err != nil {
 			t.Fatalf("CreateSession failed: %v", err)
 		}
 		defer ts.Client.DeleteSession(sess.SessionID)
 
-		req := client.SetLoopRequest{
+		req := api.SetLoopRequest{
 			PromptName:    "daily-standup",
-			Frequency:     client.LoopFrequency{Value: 2, Unit: "hours"},
+			Frequency:     api.LoopFrequency{Value: 2, Unit: "hours"},
 			Enabled:       true,
 			MaxIterations: 5,
 		}
@@ -76,16 +76,16 @@ func TestLoopContextSemantics(t *testing.T) {
 	// to resolve a named prompt that doesn't exist in the test workspace.
 	// -------------------------------------------------------------------------
 	t.Run("regular_to_loop_run_now", func(t *testing.T) {
-		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "regular-to-loop"})
+		sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "regular-to-loop"})
 		if err != nil {
 			t.Fatalf("CreateSession failed: %v", err)
 		}
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		// PUT loop config with raw prompt text (simulates makeLoopNow step 1).
-		req := client.SetLoopRequest{
+		req := api.SetLoopRequest{
 			Prompt:        "Perform the weekly review tasks.",
-			Frequency:     client.LoopFrequency{Value: 1, Unit: "hours"},
+			Frequency:     api.LoopFrequency{Value: 1, Unit: "hours"},
 			Enabled:       true,
 			MaxIterations: 3,
 		}
@@ -126,16 +126,16 @@ func TestLoopContextSemantics(t *testing.T) {
 	//           loop config must be UNCHANGED.
 	// -------------------------------------------------------------------------
 	t.Run("loop_one_shot_leaves_config_unchanged", func(t *testing.T) {
-		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-oneshot"})
+		sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-oneshot"})
 		if err != nil {
 			t.Fatalf("CreateSession failed: %v", err)
 		}
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		// Set up the existing loop config.
-		original := client.SetLoopRequest{
+		original := api.SetLoopRequest{
 			PromptName:    "nightly-build",
-			Frequency:     client.LoopFrequency{Value: 24, Unit: "hours"},
+			Frequency:     api.LoopFrequency{Value: 24, Unit: "hours"},
 			Enabled:       true,
 			MaxIterations: 10,
 		}

@@ -51,44 +51,44 @@ All routes are declared in `internal/web/routes.go`. Routes use Go 1.22 method-q
 
 These endpoints do **not** require a session cookie.
 
-| Path | Method(s) | Description |
-| ---- | --------- | ----------- |
-| `/api/login` | POST | Authenticate (only when auth is configured) |
-| `/api/logout` | POST | End authenticated session |
-| `/api/csrf-token` | GET | Return a CSRF token for subsequent mutations |
-| `/api/auth-info` | GET | Login-page bootstrap (auth mode, OIDC config) |
-| `/api/health` | GET | Load-balancer liveness probe — always 200 OK (external-stable) |
-| `/api/callback/` | POST | Capability-URL webhook — token in path, no cookie needed (external-stable) |
-| `/api/supported-runners` | GET | List runner types supported by the server |
+| Path                     | Method(s) | Description                                                                |
+| ------------------------ | --------- | -------------------------------------------------------------------------- |
+| `/api/login`             | POST      | Authenticate (only when auth is configured)                                |
+| `/api/logout`            | POST      | End authenticated session                                                  |
+| `/api/csrf-token`        | GET       | Return a CSRF token for subsequent mutations                               |
+| `/api/auth-info`         | GET       | Login-page bootstrap (auth mode, OIDC config)                              |
+| `/api/health`            | GET       | Load-balancer liveness probe — always 200 OK (external-stable)             |
+| `/api/callback/`         | POST      | Capability-URL webhook — token in path, no cookie needed (external-stable) |
+| `/api/supported-runners` | GET       | List runner types supported by the server                                  |
 
 ---
 
 ### Sessions
 
-| Path | Method(s) | Description |
-| ---- | --------- | ----------- |
-| `/api/sessions` | GET, POST | List all sessions (GET); create a new session (POST) |
-| `GET /api/sessions/running` | GET | List currently running (non-idle) sessions |
-| `GET /api/sessions/{id}` | GET | Get session detail |
-| `PATCH /api/sessions/{id}` | PATCH | Update session metadata (name, archived, beads_issue, …) |
-| `DELETE /api/sessions/{id}` | DELETE | Delete (archive) a session |
-| `GET /api/sessions/{id}/events` | GET | Load persisted event log for a session (REST fallback; the primary live channel is the WebSocket below) |
-| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming WebSocket — see [`docs/devel/websockets/`](websockets/) |
-| `/api/sessions/{id}/user-data` | GET, PUT | Per-session structured user-data attributes |
-| `/api/sessions/{id}/callback` | GET, POST, DELETE | Get status / generate-rotate / revoke capability-URL token |
-| `/api/sessions/{id}/settings` | GET, PUT | Per-session advanced feature flags |
-| `/api/sessions/{id}/prune` | POST | Prune old events from session log |
-| `/api/sessions/{id}/changes` | GET | Get uncommitted file changes for the session's working dir |
-| `/api/sessions/{id}/images` | GET, POST | List uploaded images (GET); upload a new image (POST, multipart) |
-| `/api/sessions/{id}/images/{imageId}` | GET, DELETE | Get or delete a specific uploaded image |
-| `/api/sessions/{id}/images/from-path` | POST | Upload image by local file-system path (native macOS app — external-stable) |
-| `/api/sessions/{id}/files` | GET, POST | List or upload attached files |
-| `/api/sessions/{id}/files/{fileId}` | GET, DELETE | Get or delete a specific attached file |
-| `/api/sessions/{id}/files/from-path` | POST | Attach file by local path (native macOS app — external-stable) |
-| `/api/sessions/{id}/queue` | GET, POST | List pending prompts in queue (GET); enqueue a prompt (POST) |
-| `/api/sessions/{id}/queue/{msgId}` | GET, DELETE | Get or cancel a specific queued prompt |
-| `/api/sessions/{id}/loop` | GET, PUT, DELETE | Get or set loop execution configuration |
-| `/api/sessions/{id}/loop/{subPath}` | varies | Loop sub-resource actions (e.g. trigger-now) |
+| Path                                  | Method(s)         | Description                                                                                             |
+| ------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------- |
+| `/api/sessions`                       | GET, POST         | List all sessions (GET); create a new session (POST)                                                    |
+| `GET /api/sessions/running`           | GET               | List currently running (non-idle) sessions                                                              |
+| `GET /api/sessions/{id}`              | GET               | Get session detail                                                                                      |
+| `PATCH /api/sessions/{id}`            | PATCH             | Update session metadata (name, archived, beads_issue, …)                                                |
+| `DELETE /api/sessions/{id}`           | DELETE            | Delete (archive) a session                                                                              |
+| `GET /api/sessions/{id}/events`       | GET               | Load persisted event log for a session (REST fallback; the primary live channel is the WebSocket below) |
+| `/api/sessions/{id}/ws`               | WebSocket         | Per-session streaming WebSocket — see [`docs/devel/websockets/`](websockets/)                           |
+| `/api/sessions/{id}/user-data`        | GET, PUT          | Per-session structured user-data attributes                                                             |
+| `/api/sessions/{id}/callback`         | GET, POST, DELETE | Get status / generate-rotate / revoke capability-URL token                                              |
+| `/api/sessions/{id}/settings`         | GET, PUT          | Per-session advanced feature flags                                                                      |
+| `/api/sessions/{id}/prune`            | POST              | Prune old events from session log                                                                       |
+| `/api/sessions/{id}/changes`          | GET               | Get uncommitted file changes for the session's working dir                                              |
+| `/api/sessions/{id}/images`           | GET, POST         | List uploaded images (GET); upload a new image (POST, multipart)                                        |
+| `/api/sessions/{id}/images/{imageId}` | GET, DELETE       | Get or delete a specific uploaded image                                                                 |
+| `/api/sessions/{id}/images/from-path` | POST              | Upload image by local file-system path (native macOS app — external-stable)                             |
+| `/api/sessions/{id}/files`            | GET, POST         | List or upload attached files                                                                           |
+| `/api/sessions/{id}/files/{fileId}`   | GET, DELETE       | Get or delete a specific attached file                                                                  |
+| `/api/sessions/{id}/files/from-path`  | POST              | Attach file by local path (native macOS app — external-stable)                                          |
+| `/api/sessions/{id}/queue`            | GET, POST         | List pending prompts in queue (GET); enqueue a prompt (POST)                                            |
+| `/api/sessions/{id}/queue/{msgId}`    | GET, DELETE       | Get or cancel a specific queued prompt                                                                  |
+| `/api/sessions/{id}/loop`             | GET, PUT, DELETE  | Get or set loop execution configuration                                                                 |
+| `/api/sessions/{id}/loop/{subPath}`   | varies            | Loop sub-resource actions (e.g. trigger-now)                                                            |
 
 ---
 
@@ -96,40 +96,40 @@ These endpoints do **not** require a session cookie.
 
 Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/workspace-*` paths are being migrated; see the mid-migration note above.
 
-| Path | Method(s) | Description |
-| ---- | --------- | ----------- |
-| `/api/workspaces` | GET, POST, DELETE | List all workspaces (GET); add (POST) or remove (DELETE, `?dir=`) a workspace |
-| `GET /api/workspaces/{uuid}/effective-runner-config` | GET | Resolve the effective runner config for a workspace |
-| `POST /api/workspaces/{uuid}/restart-acp` | POST | Restart the ACP process for a workspace |
-| `GET /api/workspaces/{uuid}/metadata` | GET | Read workspace `.mittorc` metadata (description, URL, group) |
-| `PUT /api/workspaces/{uuid}/metadata` | PUT | Save workspace `.mittorc` metadata |
-| `GET /api/workspaces/{uuid}/user-data-schema` | GET | Read per-conversation user-data field schema |
-| `PUT /api/workspaces/{uuid}/user-data-schema` | PUT | Save per-conversation user-data field schema |
-| `GET /api/workspaces/{uuid}/processors` | GET | List message processors for a workspace |
-| `PATCH /api/workspaces/{uuid}/processors/{name}` | PATCH | Enable or disable a specific processor (`{"enabled": bool}`) |
-| `GET /api/workspaces/{uuid}/mcp-tools` | GET | List MCP servers for a workspace's ACP agent (`?acp_server=` required) |
-| `POST /api/workspaces/{uuid}/mcp-tools/install` | POST | Install MCP servers via agent's `mcp-install.sh` |
-| `POST /api/workspaces/{uuid}/mcp-tools/remove` | POST | Remove an MCP server via agent's `mcp-remove.sh` |
-| `PUT /api/workspaces/{uuid}/folder-group` | PUT | Set the organizational group label for a workspace folder |
-| `GET /api/folders/pin` | GET | Read a folder's `pinned` flag (query: `working_dir`) |
-| `PUT /api/folders/pin` | PUT | Set a folder's `pinned` flag (query: `working_dir`; body: `{"pinned": bool}`) |
-| `/api/workspace-prompts` | GET, POST, DELETE | List (`?working_dir=`), create (POST body `working_dir`), or delete (`?working_dir=&name=`) workspace prompts |
-| `PATCH /api/workspace-prompts/{name}` | PATCH | Enable or disable a prompt (`?working_dir=`, body `{"enabled": bool}`) |
+| Path                                                 | Method(s)         | Description                                                                                                   |
+| ---------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------- |
+| `/api/workspaces`                                    | GET, POST, DELETE | List all workspaces (GET); add (POST) or remove (DELETE, `?dir=`) a workspace                                 |
+| `GET /api/workspaces/{uuid}/effective-runner-config` | GET               | Resolve the effective runner config for a workspace                                                           |
+| `POST /api/workspaces/{uuid}/restart-acp`            | POST              | Restart the ACP process for a workspace                                                                       |
+| `GET /api/workspaces/{uuid}/metadata`                | GET               | Read workspace `.mittorc` metadata (description, URL, group)                                                  |
+| `PUT /api/workspaces/{uuid}/metadata`                | PUT               | Save workspace `.mittorc` metadata                                                                            |
+| `GET /api/workspaces/{uuid}/user-data-schema`        | GET               | Read per-conversation user-data field schema                                                                  |
+| `PUT /api/workspaces/{uuid}/user-data-schema`        | PUT               | Save per-conversation user-data field schema                                                                  |
+| `GET /api/workspaces/{uuid}/processors`              | GET               | List message processors for a workspace                                                                       |
+| `PATCH /api/workspaces/{uuid}/processors/{name}`     | PATCH             | Enable or disable a specific processor (`{"enabled": bool}`)                                                  |
+| `GET /api/workspaces/{uuid}/mcp-tools`               | GET               | List MCP servers for a workspace's ACP agent (`?acp_server=` required)                                        |
+| `POST /api/workspaces/{uuid}/mcp-tools/install`      | POST              | Install MCP servers via agent's `mcp-install.sh`                                                              |
+| `POST /api/workspaces/{uuid}/mcp-tools/remove`       | POST              | Remove an MCP server via agent's `mcp-remove.sh`                                                              |
+| `PUT /api/workspaces/{uuid}/folder-group`            | PUT               | Set the organizational group label for a workspace folder                                                     |
+| `GET /api/folders/pin`                               | GET               | Read a folder's `pinned` flag (query: `working_dir`)                                                          |
+| `PUT /api/folders/pin`                               | PUT               | Set a folder's `pinned` flag (query: `working_dir`; body: `{"pinned": bool}`)                                 |
+| `/api/workspace-prompts`                             | GET, POST, DELETE | List (`?working_dir=`), create (POST body `working_dir`), or delete (`?working_dir=&name=`) workspace prompts |
+| `PATCH /api/workspace-prompts/{name}`                | PATCH             | Enable or disable a prompt (`?working_dir=`, body `{"enabled": bool}`)                                        |
 
 ---
 
 ### Configuration & Flags
 
-| Path | Method(s) | Description |
-| ---- | --------- | ----------- |
-| `/api/config` | GET, POST | Get full server configuration (GET); save updated configuration (POST) |
-| `/api/agents/types` | GET | List configured ACP agent types |
-| `/api/agents/scan` | GET | Scan for installed agent definitions |
-| `/api/agents/confirm` | POST | Confirm/register scanned agents |
-| `/api/supported-runners` | GET | List supported runner types (public, no auth) |
-| `/api/runner-defaults` | GET | Get default runner settings |
-| `/api/advanced-flags` | GET, POST | Get or update per-server advanced feature flags |
-| `/api/external-status` | GET | Get status of external integrations (GitHub, etc.) |
+| Path                     | Method(s) | Description                                                            |
+| ------------------------ | --------- | ---------------------------------------------------------------------- |
+| `/api/config`            | GET, POST | Get full server configuration (GET); save updated configuration (POST) |
+| `/api/agents/types`      | GET       | List configured ACP agent types                                        |
+| `/api/agents/scan`       | GET       | Scan for installed agent definitions                                   |
+| `/api/agents/confirm`    | POST      | Confirm/register scanned agents                                        |
+| `/api/supported-runners` | GET       | List supported runner types (public, no auth)                          |
+| `/api/runner-defaults`   | GET       | Get default runner settings                                            |
+| `/api/advanced-flags`    | GET, POST | Get or update per-server advanced feature flags                        |
+| `/api/external-status`   | GET       | Get status of external integrations (GitHub, etc.)                     |
 
 ---
 
@@ -138,50 +138,50 @@ Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/wo
 Issues follow the RESTful `/api/issues` convention. `working_dir` is always a
 query parameter (`?working_dir=...`); the issue id is a path segment:
 
-| Path | Method | Description |
-| ---- | ------ | ----------- |
-| `/api/issues` | GET | List issues |
-| `/api/issues/stats` | GET | Issue statistics |
-| `/api/issues/{id}` | GET | Show a single issue |
-| `/api/issues` | POST | Create an issue |
-| `/api/issues/{id}` | PATCH | Update issue fields |
-| `/api/issues/{id}` | DELETE | Delete an issue |
-| `/api/issues/{id}/status` | POST | Change issue status (close/reopen/defer/undefer) |
-| `/api/issues/{id}/comments` | POST | Add a comment |
-| `/api/issues/{id}/dependencies` | POST | Manage issue dependencies |
-| `/api/issues/cleanup` | POST | Prune closed issues |
-| `/api/issues/config` | GET, PUT, DELETE | Get, set, or unset beads configuration |
-| `/api/issues/upstream` | GET, PUT | Get or set the upstream task system |
-| `/api/issues/sync` | POST | Sync with upstream (pull/push/sync) |
+| Path                            | Method           | Description                                      |
+| ------------------------------- | ---------------- | ------------------------------------------------ |
+| `/api/issues`                   | GET              | List issues                                      |
+| `/api/issues/stats`             | GET              | Issue statistics                                 |
+| `/api/issues/{id}`              | GET              | Show a single issue                              |
+| `/api/issues`                   | POST             | Create an issue                                  |
+| `/api/issues/{id}`              | PATCH            | Update issue fields                              |
+| `/api/issues/{id}`              | DELETE           | Delete an issue                                  |
+| `/api/issues/{id}/status`       | POST             | Change issue status (close/reopen/defer/undefer) |
+| `/api/issues/{id}/comments`     | POST             | Add a comment                                    |
+| `/api/issues/{id}/dependencies` | POST             | Manage issue dependencies                        |
+| `/api/issues/cleanup`           | POST             | Prune closed issues                              |
+| `/api/issues/config`            | GET, PUT, DELETE | Get, set, or unset beads configuration           |
+| `/api/issues/upstream`          | GET, PUT         | Get or set the upstream task system              |
+| `/api/issues/sync`              | POST             | Sync with upstream (pull/push/sync)              |
 
 ---
 
 ### Auxiliary
 
-| Path | Method(s) | Description |
-| ---- | --------- | ----------- |
-| `/api/aux/improve-prompt` | POST | Rewrite a user prompt using the active agent |
-| `/api/badge-click` | POST | Handle native macOS dock-badge click action (external-stable) |
+| Path                      | Method(s) | Description                                                   |
+| ------------------------- | --------- | ------------------------------------------------------------- |
+| `/api/aux/improve-prompt` | POST      | Rewrite a user prompt using the active agent                  |
+| `/api/badge-click`        | POST      | Handle native macOS dock-badge click action (external-stable) |
 
 ---
 
 ### UI & Files
 
-| Path | Method(s) | Description |
-| ---- | --------- | ----------- |
-| `/api/ui-preferences` | GET, POST | Read or save UI display preferences |
-| `/api/files` | GET | Serve workspace files to the viewer (credentialed; external-stable) |
-| `/api/save-file-to-path` | POST | Save content to a local file path (native macOS app — external-stable) |
-| `/api/check-file-exists` | GET | Check whether a local file path exists (native macOS app — external-stable) |
+| Path                     | Method(s) | Description                                                                 |
+| ------------------------ | --------- | --------------------------------------------------------------------------- |
+| `/api/ui-preferences`    | GET, POST | Read or save UI display preferences                                         |
+| `/api/files`             | GET       | Serve workspace files to the viewer (credentialed; external-stable)         |
+| `/api/save-file-to-path` | POST      | Save content to a local file path (native macOS app — external-stable)      |
+| `/api/check-file-exists` | GET       | Check whether a local file path exists (native macOS app — external-stable) |
 
 ---
 
 ### Events & WebSocket
 
-| Path | Protocol | Description |
-| ---- | -------- | ----------- |
-| `/api/events` | WebSocket | Global session-lifecycle event stream (session created/archived/updated) — see [`docs/devel/websockets/`](websockets/) |
-| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming channel (agent chunks, tool calls, status) — see [`docs/devel/websockets/`](websockets/) |
+| Path                    | Protocol  | Description                                                                                                            |
+| ----------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `/api/events`           | WebSocket | Global session-lifecycle event stream (session created/archived/updated) — see [`docs/devel/websockets/`](websockets/) |
+| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming channel (agent chunks, tool calls, status) — see [`docs/devel/websockets/`](websockets/)         |
 
 ### Session Metadata Fields
 
@@ -198,7 +198,7 @@ The `/api/sessions` endpoint returns an array of session objects with the follow
 | `status`            | string    | Session status (active, idle, error)                                 |
 | `archived`          | boolean   | Whether session is archived                                          |
 | `parent_session_id` | string    | Parent session ID (if created via `mitto_conversation_new` MCP tool) |
-| `loop_enabled`  | boolean   | Whether loop execution is configured                             |
+| `loop_enabled`      | boolean   | Whether loop execution is configured                                 |
 
 #### Parent-Child Relationships
 
@@ -349,11 +349,32 @@ App
 │   ├── Message (tool - centered status badge)
 │   ├── Message (error - red accent)
 │   └── Message (system - centered, subtle)
-├── ChatInput (textarea + send/cancel button)
+├── ChatInput (textarea + compact LoopControlBar + send/cancel actions)
 ├── WorkspaceDialog (workspace selection for new sessions)
 ├── WorkspaceConfigDialog (view/add/remove workspaces)
-└── SessionPropertiesDialog (rename session, view workspace info)
+└── SessionPanel (Properties / Changes / conditional Loop / Advanced tabs)
 ```
+
+### Conversation Loop Surfaces
+
+Loop configuration has two deliberately separate frontend surfaces:
+
+- `LoopControlBar` is the compact operational row in `ChatInput`. It retains
+  run-now, pause/restore, and prompt-area controls; it has no expandable editor.
+  Its settings gear invokes the `onOpenLoopSettings` callback, which opens
+  `SessionPanel` directly on the **Loop** tab.
+- `LoopSettingsTab` is the full staged editor. Its four automatic/lifecycle
+  trigger cards are `schedule`, `onCompletion`, `onTasks`, and `onChild`.
+  Saving replaces the complete `triggers` list in canonical order, preserves
+  unknown future triggers, and sends `child_events` only with `onChild`.
+- `CallbackTriggerSection` renders after those cards as **External callback**.
+  It manages `callback.json` through the callback REST resource; it is not a
+  fifth loop trigger and never participates in the loop PATCH `triggers` list.
+
+`SessionPanel` registers the Loop radio tab only for configured loops and falls
+back to Properties if the loop is detached or the active conversation changes.
+Authoritative `loop_updated` events synchronize both the full tab and compact
+control bar without requiring the panel to be reopened.
 
 ## Sidebar: Unified Conversation Tree
 
@@ -467,3 +488,129 @@ Treat `webview.log` staleness during hidden periods as expected. To distinguish 
 - `.augment/rules/09-macos-app.md` — native WKWebView bridge and console capture
 - `.augment/rules/23-web-frontend-mobile.md` — visibility change handling, wake resync
 - `websockets/synchronization.md` — seq-aligned `load_events` and reconnection flow
+
+---
+
+## Profiling (opt-in, mitto-aek)
+
+Mitto ships with no profiling endpoint by default — the release binary is also
+built with `-s -w` (Makefile `LDFLAGS`), which strips Go symbols, so external
+sampling tools (`sample`, `atos`) cannot attribute CPU to Go functions either.
+To get real attribution, enable the `net/http/pprof` debug endpoints.
+
+### Enabling
+
+Precedence: CLI flag > `MITTO_PPROF` env var > `web.pprof` in `settings.json`.
+Off unless one of these is set.
+
+```bash
+mitto web --pprof              # CLI
+MITTO_PPROF=1 open Mitto.app   # macOS app (env var only, no CLI flag)
+```
+
+Or in `settings.json`:
+
+```json
+{ "web": { "pprof": true } }
+```
+
+### Security
+
+The routes (`/debug/pprof/*`) are **loopback-bound and auth-gated**, matching
+the pattern used by other localhost-only endpoints (`internal/web/handlers/save_file.go`):
+requests from the external listener or from a non-loopback client IP get a
+plain `404` (not `403`), so an external probe cannot even tell profiling is
+enabled. They are not added to the auth middleware's public-path allowlist, so
+normal session auth still applies on top of the loopback check.
+
+### Capturing a profile
+
+```bash
+# 30s CPU profile
+go tool pprof http://127.0.0.1:8080/debug/pprof/profile?seconds=30
+
+# Heap snapshot
+go tool pprof http://127.0.0.1:8080/debug/pprof/heap
+
+# Full goroutine dump (stacks for every goroutine)
+curl -s http://127.0.0.1:8080/debug/pprof/goroutine?debug=2 > goroutines.txt
+```
+
+Adjust the port to match the running instance. For symbol resolution in
+external tools (`sample`, `atos`) rather than `go tool pprof`, build with
+`make build-debug` (unstripped) instead of `make build`.
+
+### Triaging goroutine counts (mitto-am0)
+
+A steady-state count in the hundreds (600–1000 range observed across normal
+usage with several active sessions) is **not** by itself evidence of a leak —
+Mitto's goroutine population tracks workload rather than climbing
+monotonically. Three lightweight instruments answer "is this growing?"
+without needing pprof or a restart:
+
+- **Periodic gauge, per-category attribution (mitto-x3x — reach for this
+  first).** `internal/coldstart/gauge.go`'s `StartGauge` samples
+  `coldstart.Contention()` every 60s (independent of cold-start frequency)
+  and keeps the last 64 samples in a ring, each already broken into
+  `live_acp_processes`, `connected_ws_clients`, and `open_mcp_sse_streams`
+  alongside the raw `num_goroutine` total. Read it via the MCP
+  `mitto_goroutine_gauge_recent` tool, or grep `goroutine_gauge_sample` in
+  `mitto.log` (DEBUG per tick, promoted to INFO when the total moves by at
+  least 10 since the last INFO line).
+- **Live count, no restart.** `runtime.NumGoroutine()` is already exposed via
+  the MCP `mitto_get_runtime_info` tool and the internal runtime-info API
+  (`internal/mcpserver/types.go`), which also now reports the same
+  per-category attribution as the periodic gauge for the current instant.
+- **Historical series, already recorded.** `internal/coldstart/contention.go`
+  logs `num_goroutine=N` (alongside `concurrent_prompting` and
+  `live_acp_processes`) on every cold start, in `mitto.log`. Grep
+  `num_goroutine=` across log rotations to reconstruct a time series correlated
+  with concurrent load — this is normally enough to distinguish "rises and
+  falls with load" from "ratchets upward regardless of load".
+
+Only reach for `/debug/pprof/goroutine?debug=2` (stack attribution) once the
+series above suggests an actual ratchet. Because enabling pprof requires a
+restart, a pprof dump always describes a freshly-resumed instance — treat it
+as a **ratio/baseline snapshot**, not a reconciliation of a specific historical
+peak.
+
+**Empirical baseline** (measured against an isolated instance with a mock ACP
+server, zero workspaces/sessions after cold start): **~18 goroutines** fixed
+cost — HTTP server accept/timeout loops, the four middleware `cleanupLoop`s,
+`LoopRunner.Start`, `QueueTitleWorker`, `ACPProcessManager.StartGC`,
+`BeadsWatcher.Start`, `PromptsWatcher.Start` (fsnotify, 2 goroutines),
+`stats.NewAggregator`/`RetentionWorker`/`backfiller`/`BeadsSource`/
+`UptimeRecorder`, `ShutdownManager.Start`, and `database/sql.OpenDB`. This is
+restart-durable and does not scale with sessions.
+
+**Per-session marginal cost**, measured by creating one session and then
+attaching/detaching one WebSocket client:
+
+| Event                                             | Δ goroutines | Source                                                                                                                                                                                                                                            |
+| ------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session created (ACP process spawn, no WS client) | +9           | `acp-go-sdk.NewConnection` (4), `os/exec.(*Cmd).Start`, `acpproc/procstart.StartStderrMonitor`, `BackgroundSession.hsInitACPProcessDone`, `ACPProcessManager.{EnsurePrewarmed,GetOrCreateProcess}` (2, transient — settle once prewarm completes) |
+| WebSocket client connects                         | +2           | `web.(*Server).handleSessionWS` — the `readPump`/`writePump` pair (`internal/web/session_ws.go`)                                                                                                                                                  |
+| WebSocket client disconnects                      | −2           | same pump pair torn down cleanly                                                                                                                                                                                                                  |
+
+So each **connected browser tab** costs ~2 goroutines (pumps) on top of ~7
+durable per-ACP-process goroutines (the prewarm transients retire). A
+workspace with several concurrently prompting sessions plus long-lived MCP SSE
+keepalive streams (each pins a goroutine while the GET stream is open) easily
+accounts for a population in the hundreds without anything being wrong.
+For MCP specifically, compare `open_mcp_sse_streams` with protocol-session
+IDs, not ACP-process count: the expected transport ratio is approximately one
+open SSE stream per MCP protocol session, while one Auggie ACP process may hold
+many pooled protocol sessions. Its roughly five-minute GET reopen cycle is
+keepalive recycling, not stream stacking. Mitto retires a correlated protocol
+session when its final registered conversation owner stops; unknown sessions
+with an open GET remain exempt to avoid the live-call 404 regression tracked by
+mitto-txse (see `docs/devel/mcp.md`).
+**Conclusion: track the ratio (total − ~18 fixed baseline) ÷ live ACP
+processes across restarts, not the raw total** — the raw total is a poor leak
+signal on its own because it conflates fixed cost, per-session cost, and
+transport-detail cost (idle SSE) that all vary independently of any actual
+defect.
+
+The `mitto_goroutine_gauge_recent` gauge above computes the per-category
+pieces of that ratio directly, on a fixed schedule, instead of requiring a
+cold start or a manual log-grep to get a fresh sample.

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
@@ -68,6 +69,7 @@ func TestHandleFolderPin_GetDefaultsFalse(t *testing.T) {
 func TestHandleFolderPin_PutSetsTrueAndSyncs(t *testing.T) {
 	h, syncCalls := newFolderPinHandlers(t)
 
+	before := time.Now()
 	req := httptest.NewRequest(http.MethodPut, pinURL("/tmp/proj-a"),
 		bytes.NewReader([]byte(`{"pinned":true}`)))
 	w := httptest.NewRecorder()
@@ -82,6 +84,16 @@ func TestHandleFolderPin_PutSetsTrueAndSyncs(t *testing.T) {
 		t.Errorf("syncCalls after PUT true = %d, want 1", n)
 	}
 
+	// PUT true also stamps the folder's last-opened timestamp (MRU for the
+	// "Add folder" dialog).
+	stamped := config.FolderLastOpenedAt("/tmp/proj-a")
+	if stamped.IsZero() {
+		t.Errorf("FolderLastOpenedAt is zero after PUT pinned=true, want non-zero")
+	}
+	if stamped.Before(before.Add(-time.Second)) || stamped.After(time.Now().Add(time.Second)) {
+		t.Errorf("FolderLastOpenedAt = %v not within test window [%v, now]", stamped, before)
+	}
+
 	// GET reflects the persisted true.
 	req = httptest.NewRequest(http.MethodGet, pinURL("/tmp/proj-a"), nil)
 	w = httptest.NewRecorder()
@@ -90,7 +102,9 @@ func TestHandleFolderPin_PutSetsTrueAndSyncs(t *testing.T) {
 		t.Fatalf("GET after PUT true: code=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// PUT false → syncCalls == 2.
+	// PUT false → syncCalls == 2, and MUST NOT bump the MRU timestamp.
+	// Sleep briefly so a re-stamp would be observably different.
+	time.Sleep(10 * time.Millisecond)
 	req = httptest.NewRequest(http.MethodPut, pinURL("/tmp/proj-a"),
 		bytes.NewReader([]byte(`{"pinned":false}`)))
 	w = httptest.NewRecorder()
@@ -103,6 +117,10 @@ func TestHandleFolderPin_PutSetsTrueAndSyncs(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(syncCalls); n != 2 {
 		t.Errorf("syncCalls after PUT false = %d, want 2", n)
+	}
+	after := config.FolderLastOpenedAt("/tmp/proj-a")
+	if !after.Equal(stamped) {
+		t.Errorf("FolderLastOpenedAt after PUT pinned=false = %v, want unchanged %v", after, stamped)
 	}
 }
 

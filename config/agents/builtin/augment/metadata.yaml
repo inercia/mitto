@@ -13,6 +13,10 @@ install:
 mcp:
   scopes: ["user", "project", "local"]
 defaults:
+  # auggie handles /clear in ACP mode (verified against auggie 0.34.0: the agent
+  # replies "I've cleared the conversation history."), even though the docs only
+  # list it for interactive mode.
+  contextFlushCommand: "/clear"
   # Raise Node/V8 old-space heap cap for the ACP subprocess. Default (~4-6 GB)
   # is exhausted by large agent turns on big workspaces, aborting the process
   # with FATAL ERROR: Ineffective mark-compacts near heap limit and tearing

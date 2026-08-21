@@ -161,6 +161,18 @@ var inputTypeRegex = regexp.MustCompile(`(?i)<input\b[^>]*\btype\s*=\s*["']([^"'
 // untouched because those cases already break onto their own line.
 var bareOptionRegex = regexp.MustCompile(`(?i)([^>\s])(\s*)(<input\b[^>]*\btype\s*=\s*["'](?:checkbox|radio)["'][^>]*>)`)
 
+// interactiveControlRegex matches an actual (unescaped) opening tag for one of
+// the interactive form controls. A form with none of these has nothing for the
+// user to fill in.
+var interactiveControlRegex = regexp.MustCompile(`(?i)<(input|select|textarea)\b`)
+
+// escapedControlRegex matches HTML-entity-escaped opening tags for the same
+// controls (e.g. "&lt;input"). Its presence after sanitization — combined with
+// the absence of any real interactiveControlRegex match — indicates the caller
+// entity-escaped their HTML payload instead of sending raw HTML, so bluemonday
+// had no tags to strip and passed the escaped text through as inert content.
+var escapedControlRegex = regexp.MustCompile(`(?i)&lt;\s*(input|select|textarea)\b`)
+
 // sanitizeFormHTML sanitizes the provided HTML, allowing only form-related elements.
 // Returns an error if the HTML is empty or exceeds the size limit.
 func sanitizeFormHTML(html string) (string, error) {
@@ -220,6 +232,17 @@ func sanitizeFormHTML(html string) (string, error) {
 	sanitized = strings.TrimSpace(sanitized)
 	if sanitized == "" {
 		return "", fmt.Errorf("html contained no allowed form elements after sanitization")
+	}
+
+	// Require at least one interactive control. Layout-only HTML (e.g. just
+	// <p>/<div>/<strong>) sanitizes successfully but leaves the user with
+	// nothing to fill in, so it is not a usable form.
+	if !interactiveControlRegex.MatchString(sanitized) {
+		if escapedControlRegex.MatchString(sanitized) {
+			return "", fmt.Errorf("html appears to be HTML-entity-escaped (e.g. \"&lt;input&gt;\") rather than raw HTML; " +
+				"pass unescaped HTML tags, not escaped text")
+		}
+		return "", fmt.Errorf("html must contain at least one interactive control (input, select, or textarea)")
 	}
 
 	return sanitized, nil

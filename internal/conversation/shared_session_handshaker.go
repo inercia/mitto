@@ -32,6 +32,22 @@ import (
 // warm loads (which resolve well under 25s).
 const staleLoadProbeTimeout = 25 * time.Second
 
+// minColdFallbackAttemptFraction is the smallest fraction of a fresh cold
+// budget (RecommendedLoadTimeout) that the session/new fallback is guaranteed
+// after a timed-out load probe (mitto-s1rt.1). See the probeTimedOut branch in
+// resumeSharedACPSession: rather than granting a FULL fresh MCPInitTimeout on
+// top of whatever the probe already burned (the mitto-l9as ~265s field wedge,
+// staleLoadProbeTimeout 25s + MCPInitTimeout 240s), the fallback gets the
+// LARGER of (a) whatever remains of the single combined resume budget, or (b)
+// this fraction of one fresh cold budget — a floor that only matters when the
+// probe consumed virtually the entire original budget itself (e.g. a very
+// small RecommendedLoadTimeout, where staleLoadProbeTimeout no longer bounds
+// the probe below it). On realistic production values (staleLoadProbeTimeout
+// 25s vs MCPInitTimeout 240s) the probe burns a small slice of the budget, so
+// branch (a) dominates and the combined wall-clock stays within ONE cold
+// budget instead of stacking two.
+const minColdFallbackAttemptFraction = 0.4
+
 // isSessionNotFoundErr reports whether err from LoadSession/ResumeSession
 // indicates the requested acp_session_id is no longer known to the agent
 // (mitto-z70). Agents return JSON-RPC -32602 "Invalid params" for a stale
@@ -77,6 +93,13 @@ type handshakeDeps interface {
 	hsGetACPID() string
 	hsSetACPID(id string)
 
+	// ACP context virginity tracking (mitto-s9g2). hsMarkContextFresh is called
+	// only when the ACP session was created fresh (session/new) in this process;
+	// hsMarkContextUnknown is called on resume/load, where agent-side history may
+	// already exist and cannot be observed from Go.
+	hsMarkContextFresh()
+	hsMarkContextUnknown()
+
 	// Pending shared handshake state.
 	// Lock ordering: pendingSharedMu may be nested under handshakeMu (never reverse).
 	hsPendingSharedLock()
@@ -114,6 +137,14 @@ type handshakeDeps interface {
 	hsApplyAgentModels(models *SessionModelState)
 	hsApplyAgentModelConfigId(id acp.SessionConfigId)
 	hsLogAgentModels(models *SessionModelState)
+	// hsApplySynthesizedModelsIfEmpty is the shared-process branch of the
+	// mitto-886 local-profile fallback. Invoked once immediately after
+	// hsApplyAgentModels: if the agent supplied no model catalog (or the SDK
+	// dropped it) AND local config has model profiles, this synthesizes one
+	// from EffectiveModelProfiles() so bs.ConfigOptions() surfaces a
+	// Category=model entry in the WebSocket `connected` message. No-op when
+	// the agent already advertised a real catalog.
+	hsApplySynthesizedModelsIfEmpty()
 
 	// Store persistence (no-op when no store)
 	hsPersistACPSessionID()
@@ -157,6 +188,20 @@ func (c sharedSessionHandshaker) creationRPCCtx(d handshakeDeps) (context.Contex
 	// Cold-start diagnostics (mitto-3mv): carry the active trace so the acpproc
 	// RPC layer can correlate its logs via cold_start_id (WI-3).
 	return context.WithCancel(d.hsColdTraceCtx(base))
+}
+
+func (c sharedSessionHandshaker) abortCanceledHandshake(d handshakeDeps, ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		d.hsStopMcpServer()
+		if client := d.hsGetACPClient(); client != nil {
+			client.Close()
+		}
+		d.hsSetACPClient(nil)
+		d.hsSetSharedProcess(nil)
+		d.hsNilCreationCtx()
+		return err
+	}
+	return nil
 }
 
 // buildWebClientConfig delegates to the deps seam (builds from BackgroundSession fields).
@@ -242,6 +287,9 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 	})
 
 	d.hsSetACPID(handle.SessionID)
+	// Deferred session/new: this session was created fresh in this process,
+	// so it is provably empty (mitto-s9g2).
+	d.hsMarkContextFresh()
 	d.hsSetPendingSharedModes(handle.Modes)
 	d.hsSetPendingSharedModels(handle.Models)
 	d.hsSetPendingSharedModelConfigId(handle.ModelConfigId)
@@ -275,6 +323,10 @@ func (c sharedSessionHandshaker) applyPendingSharedModes(d handshakeDeps) {
 	if models != nil {
 		d.hsApplyAgentModels(models)
 	}
+	// mitto-886: local-profile fallback. No-op when the agent already
+	// advertised a real catalog (bs.agentModels non-nil) or when local config
+	// has no model profiles.
+	d.hsApplySynthesizedModelsIfEmpty()
 	if modelCfgId != "" {
 		d.hsApplyAgentModelConfigId(modelCfgId)
 	}
@@ -335,6 +387,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	}
 	mcpServers := d.hsStartMcpServer(caps)
 	d.hsSetACPClient(NewWebClient(c.buildWebClientConfig(d)))
+	handshakeCtx := d.hsCreationCtx()
+	if handshakeCtx == nil {
+		handshakeCtx = d.hsSessionCtx()
+	}
+	if err := c.abortCanceledHandshake(d, handshakeCtx); err != nil {
+		return err
+	}
 
 	// Cold-start diagnostics (mitto-3mv): if the shared process's MCP-init
 	// window is still open, this handshake will be gated on it. Mark the
@@ -374,10 +433,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		supportsLoad := caps.LoadSession
 
 		if supportsResume {
-			resumeCtx, resumeCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), 10*time.Second)
+			resumeCtx, resumeCancel := context.WithTimeout(d.hsColdTraceCtx(handshakeCtx), 10*time.Second)
 			resumeStart := time.Now()
 			handle, err = sharedProcess.ResumeSession(resumeCtx, acpSessionID, workingDir, mcpServers)
 			resumeCancel()
+			if cancelErr := c.abortCanceledHandshake(d, handshakeCtx); cancelErr != nil {
+				return cancelErr
+			}
 			if err != nil {
 				logFields := []any{"acp_session_id", acpSessionID, "error", err, "method", "resume"}
 				if resumeCtx.Err() == context.DeadlineExceeded {
@@ -391,6 +453,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 					"error", err.Error())
 			} else {
 				d.hsSetResumeMethod("resume")
+				// Resumed sessions may already hold agent-side history we cannot
+				// see from Go; virginity is not authoritative (mitto-s9g2).
+				d.hsMarkContextUnknown()
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully resumed session using UNSTABLE resume API",
 						"acp_session_id", acpSessionID, "resume_method", "resume")
@@ -418,11 +483,14 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			if loadTimeout <= 0 {
 				loadTimeout = time.Millisecond // degenerate: budget already spent
 			}
-			loadCtx, loadCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), loadTimeout)
+			loadCtx, loadCancel := context.WithTimeout(d.hsColdTraceCtx(handshakeCtx), loadTimeout)
 			loadStart := time.Now()
 			handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
 			loadCancel()
 			client.SetLoadingSession(false)
+			if cancelErr := c.abortCanceledHandshake(d, handshakeCtx); cancelErr != nil {
+				return cancelErr
+			}
 			if err != nil {
 				// Classify the failure so the fallback path emits an accurate cold
 				// phase and log: JSON-RPC -32602 from the agent means the persisted
@@ -465,6 +533,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				d.hsClearPersistedACPSessionID()
 			} else {
 				d.hsSetResumeMethod("load")
+				// Session/load replays history agent-side; virginity is not
+				// authoritative (mitto-s9g2).
+				d.hsMarkContextUnknown()
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully loaded session (with history replay)",
 						"acp_session_id", acpSessionID, "resume_method", "load")
@@ -477,6 +548,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	}
 
 	if handle == nil {
+		if cancelErr := c.abortCanceledHandshake(d, handshakeCtx); cancelErr != nil {
+			return cancelErr
+		}
 		d.hsSetResumeMethod("new")
 		rpcCtx, rpcCancel := c.creationRPCCtx(d)
 		// Cap the session/new FALLBACK by the shared resume deadline (mitto-1ut) so
@@ -487,18 +561,35 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		//
 		// EXCEPTION (mitto-1ut starvation fix): when the load probe FAILED BY DEADLINE
 		// (probeTimedOut) rather than a fast -32602, the process is proven genuinely
-		// cold. Applying the shared cap would hand NewSession only the remainder
-		// (handshakeDeadline - ~45s probe ≈ 195s) — LESS than a single MCPInitTimeout
-		// attempt (240s) — so attempt 1 is truncated and attempt 2 is aborted with
-		// "context cancelled before attempt 2: context deadline exceeded", GUARANTEEING
-		// failure on exactly the cold/contended case we need to survive. In that case
-		// release the shared cap and let NewSession derive its OWN bounded budget
-		// (coldMCPBudget → MCPInitTimeout, itself capped internally), matching the warm
-		// path. This does not reintroduce the stale-id stacking mitto-1ut fixed: a stale
-		// probe returns -32602 in ~ms (probeTimedOut=false) and keeps the shared cap.
-		if !handshakeDeadline.IsZero() && !probeTimedOut {
+		// cold. Applying the ORIGINAL shared cap would hand NewSession only the remainder
+		// (handshakeDeadline - ~probe), which can be too small for a legitimate
+		// session/new attempt on a cold/contended process.
+		//
+		// mitto-l9as attempted to fix this by granting a FRESH full cold budget from
+		// the current instant — but that STACKS on top of whatever the probe already
+		// burned, e.g. probe(25s) + freshNewSessionBudget(240s) ≈ 265s, the exact
+		// field wedge documented at 2026-07-23T08:55:24 (total_ms=199032/265009).
+		//
+		// mitto-s1rt.1 fix: give the fallback the LARGER of (a) whatever remains of
+		// the ORIGINAL single combined budget (handshakeDeadline), or (b) a minimum
+		// floor of minColdFallbackAttemptFraction of one fresh cold budget — a floor
+		// that only matters when the probe consumed virtually the whole original
+		// budget itself. On realistic production values (staleLoadProbeTimeout 25s
+		// vs MCPInitTimeout 240s) branch (a) dominates (215s remains, well above the
+		// 96s floor), so the combined wall-clock stays within ONE cold budget (~240s)
+		// instead of stacking two (~265s). Stale-id path (probeTimedOut=false) is
+		// unchanged: a -32602 probe returns in ~ms and keeps the ORIGINAL shared cap.
+		if !handshakeDeadline.IsZero() {
+			fallbackDeadline := handshakeDeadline
+			if probeTimedOut {
+				if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > 0 {
+					remaining := time.Until(handshakeDeadline)
+					minAttempt := time.Duration(float64(rec) * minColdFallbackAttemptFraction)
+					fallbackDeadline = time.Now().Add(max(remaining, minAttempt))
+				}
+			}
 			var deadlineCancel context.CancelFunc
-			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, handshakeDeadline)
+			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, fallbackDeadline)
 			defer deadlineCancel()
 		}
 		newStart := time.Now()
@@ -517,6 +608,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		d.hsColdPhase("session_new",
 			"rpc_ms", time.Since(newStart).Milliseconds(),
 			"acp_session_id", handle.SessionID)
+		// This session was created fresh in this process, so it is provably
+		// empty (mitto-s9g2).
+		d.hsMarkContextFresh()
 	}
 	// Cold-start diagnostics (mitto-3mv): if the agent reported "waiting for MCP
 	// server..." during this handshake episode, close the episode now — session
@@ -541,6 +635,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	d.hsSetAgentSupportsImages(caps.PromptCapabilities.Image)
 	d.hsApplySessionModes(handle.Modes)
 	d.hsApplyAgentModels(handle.Models)
+	// mitto-886: local-profile fallback for the resume path when the agent
+	// omits a catalog entirely. No-op when handle.Models was non-nil.
+	d.hsApplySynthesizedModelsIfEmpty()
 	if handle.ModelConfigId != "" {
 		d.hsApplyAgentModelConfigId(handle.ModelConfigId)
 	}

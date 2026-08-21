@@ -111,6 +111,32 @@ export async function readBeadsResponse(res) {
   };
 }
 
+// isBeadsSchemaSkew returns true when a flattened beads response (as produced
+// by readBeadsResponse) carries the canonical `beads_schema_skew` error code.
+// The backend returns HTTP 409 with this code whenever the .beads database is
+// behind the bd binary's schema and is remote-backed; every write handler must
+// route this branch into SchemaSkewDialog instead of a generic error toast.
+export function isBeadsSchemaSkew(data) {
+  return !!(data && data.code === "beads_schema_skew");
+}
+
+// toSchemaSkewState maps a flattened beads response into the shape the
+// SchemaSkewDialog state (`schemaSkew`) expects: { message, dbPath, hint,
+// options, allowMigrate, databaseMode }. Tolerates missing details by falling back to empty
+// strings/options and migration allowed, preserving compatibility with older
+// backends that did not send allow_migrate_from_ui.
+export function toSchemaSkewState(data) {
+  const details = (data && data.details) || {};
+  return {
+    message: (data && data.error) || "",
+    dbPath: details.db_path || "",
+    hint: details.hint || "",
+    options: Array.isArray(details.options) ? details.options : [],
+    allowMigrate: details.allow_migrate_from_ui !== false,
+    databaseMode: details.database_mode || "shared",
+  };
+}
+
 // matchesSearch returns true when `issue` matches the user's search query.
 // The query is whitespace-tokenized (case-insensitive) and every token must
 // appear as a substring of one of the searchable fields: id, title, owner,
@@ -138,6 +164,18 @@ export function matchesSearch(issue, search) {
     }
   }
   return true;
+}
+
+// Return the first configured color whose label is present on the issue. The
+// mapping is ordered and matching is exact; no color state is stored per issue.
+export function taskTitleBackground(issue, entries) {
+  const labels = Array.isArray(issue?.labels)
+    ? new Set(issue.labels)
+    : new Set();
+  for (const entry of entries || []) {
+    if (entry?.label && labels.has(entry.label)) return entry.color || "";
+  }
+  return "";
 }
 
 // Sort menu options. `field` is the persisted key; `key` is the issue property
@@ -171,4 +209,34 @@ export function cmpBySort(a, b, sort) {
   }
   if (primary !== 0) return primary * dir;
   return (a.id || "").localeCompare(b.id || "");
+}
+
+// Extend a set of "streaming" (actively-prompting) issue ids to also include
+// every transitive ancestor reached by walking `issue.parent` upward from any
+// id in the base set. Used by BeadsView to tint ancestor epic rows blue when
+// any of their descendants is currently prompting, so the active work is
+// visible even when the containing epic group is collapsed (mitto-0qn).
+//
+// The walk follows the raw `issue.parent` link — a strict superset of the
+// epic-only walk — so the helper covers both grouped and flat render modes
+// from a single source of truth. A visited set guards against cycles in
+// malformed data (same idiom as `directEpicParentOf` in BeadsView.js). The
+// incoming set is never mutated; a new Set is always returned.
+export function computeEffectiveStreamingSet(issues, streamingSet) {
+  if (!streamingSet || streamingSet.size === 0) return new Set();
+  const issueById = new Map();
+  for (const i of issues || []) {
+    if (i && i.id) issueById.set(i.id, i);
+  }
+  const result = new Set(streamingSet);
+  for (const seedId of streamingSet) {
+    let cur = issueById.get(seedId);
+    const visited = new Set();
+    while (cur && cur.parent && !visited.has(cur.parent)) {
+      visited.add(cur.parent);
+      result.add(cur.parent);
+      cur = issueById.get(cur.parent);
+    }
+  }
+  return result;
 }

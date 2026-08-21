@@ -1,0 +1,59 @@
+{{- /*
+  git/commit-scoped — start from the files this conversation actually
+  touched, then ask the user (only when unrelated uncommitted changes
+  are detected) whether to also fold those into the commit plan as
+  separate commits.
+
+  Callers should reference this fragment when the current session has
+  meaningful history (e.g. gated by `{{ if .Session.HasMessages }}`).
+  It emits a short procedure (no headers) so the caller controls the
+  surrounding section numbering.
+*/ -}}
+This conversation has been running for a while — start by focusing on the work
+**we did together**, then decide whether to also commit any unrelated changes
+already present in the working tree.
+
+1. Review the conversation so far and enumerate the files we actually touched
+   (edits, creations, deletions, renames). Prefer explicit tool traces (edits,
+   writes, deletes) over guessing. Call this set the **conversation-scoped**
+   files.
+2. Run `git status --porcelain` and split its output into two disjoint sets:
+   - **In-scope**: entries whose path is in the conversation-scoped set.
+   - **Unrelated**: entries whose path is NOT in that set (someone else's
+     uncommitted work, prior WIP, in-flight changes from a concurrent loop
+     or the user).
+3. If our conversation touched a file but `git status` shows it as clean, note
+   it (it was likely reverted or already committed) and skip it.
+4. **Decide the commit surface based on whether unrelated changes exist:**
+
+   - **If the Unrelated set is empty**, proceed with the in-scope set only —
+     do **not** ask the user anything at this step; there is nothing to
+     decide.
+   - **If the Unrelated set is non-empty**, list those paths briefly, then
+     ask the user with `mitto_ui_options` whether to fold them into the
+     commit plan:
+
+     ```
+     mitto_ui_options(self_id: "{{ .Session.ID }}",
+       question: "Working tree contains N change(s) unrelated to this conversation. Include them in the commit plan?",
+       options: [
+         {label: "No — commit only this conversation's changes", description: "Leave unrelated files untouched in the working tree"},
+         {label: "Yes — also commit unrelated changes as separate commits", description: "Include them in the plan, split by scope per the usual splitting rules"}
+       ])
+     ```
+
+     - If the user picks **No**: commit only the in-scope set. Do **not**
+       `git add`, `git stash`, or `git checkout` any unrelated paths.
+       Mention them in the plan under an "Ignoring (not part of this
+       conversation)" note so the user knows they were seen and skipped.
+     - If the user picks **Yes**: extend the commit plan to also cover the
+       unrelated paths. Keep the commit-splitting conventions from the
+       caller — do **not** lump unrelated changes into the same commit as
+       the conversation's changes; give them their own commit(s), grouped
+       by scope/component/type just like the in-scope ones. Mark those
+       commits clearly in the plan (e.g. "Unrelated: <group>") so the
+       reviewer can see which ones came from outside the conversation.
+5. Group the chosen files by scope: feature/component, type (config/docs/
+   deps), path (module/directory).
+6. Ask if the mapping between the conversation's work and the file set is
+   uncertain.

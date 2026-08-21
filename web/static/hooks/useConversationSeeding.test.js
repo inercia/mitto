@@ -2,7 +2,14 @@
  * Tests for useConversationSeeding.js
  */
 
-import { jest } from "@jest/globals";
+import {
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "../utils/testing/testGlobals.js";
 import {
   buildSeedQueueBody,
   seedConversationWithPrompt,
@@ -13,10 +20,15 @@ import {
   parseDurationToSeconds,
 } from "./useConversationSeeding.js";
 import { promptResolveAsLoop } from "../utils/prompts.js";
+import { fakeResponse } from "../sdk/testing/fake-server.js";
+import { _resetSdkClientForTests } from "../utils/sdkClient.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
+// Merge into any pre-existing window.preact rather than hard-assigning, so this file
+// does not wipe hooks stubbed by earlier test files under Bun's shared-process runner
+// (bun does not isolate globals across files the way Jest+jsdom does per-file).
 global.window = global.window || {};
-window.preact = { useCallback: (fn) => fn };
+window.preact = { ...(window.preact || {}), useCallback: (fn) => fn };
 window.mittoApiPrefix = "";
 
 // Minimal document.cookie stub for csrf.js
@@ -32,6 +44,9 @@ if (typeof document === "undefined") {
 
 afterEach(() => {
   jest.restoreAllMocks();
+  _resetSdkClientForTests();
+  delete window.mittoApiPrefix;
+  window.mittoApiPrefix = "";
 });
 
 // =============================================================================
@@ -403,9 +418,7 @@ describe("useConversationSeeding — startConversationWithPrompt loop path", () 
   }
 
   test("loop: does NOT pass initialPromptName to newSession", async () => {
-    const newSession = jest
-      .fn()
-      .mockResolvedValue({ sessionId: "sess-loop" });
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-loop" });
     const fetchImpl = makeFetch(200, {});
     const { startConversationWithPrompt } = useConversationSeeding({
       newSession,
@@ -424,9 +437,7 @@ describe("useConversationSeeding — startConversationWithPrompt loop path", () 
   });
 
   test("loop: PUTs loop config after session creation", async () => {
-    const newSession = jest
-      .fn()
-      .mockResolvedValue({ sessionId: "sess-loop" });
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-loop" });
     const fetchImpl = makeFetch(200, {});
     const { startConversationWithPrompt } = useConversationSeeding({
       newSession,
@@ -511,15 +522,15 @@ describe("decideLoopAction", () => {
   });
 
   test("returns one-shot when session is loop_enabled", () => {
-    expect(
-      decideLoopAction({ session_id: "s1", loop_enabled: true }),
-    ).toBe("one-shot");
+    expect(decideLoopAction({ session_id: "s1", loop_enabled: true })).toBe(
+      "one-shot",
+    );
   });
 
   test("returns one-shot when session is loop_configured (but not enabled)", () => {
-    expect(
-      decideLoopAction({ session_id: "s1", loop_configured: true }),
-    ).toBe("one-shot");
+    expect(decideLoopAction({ session_id: "s1", loop_configured: true })).toBe(
+      "one-shot",
+    );
   });
 
   test("returns one-shot when session has parent_session_id (child conversation)", () => {
@@ -533,9 +544,9 @@ describe("decideLoopAction", () => {
   });
 
   test("returns make-loop even when loop_enabled is false/undefined", () => {
-    expect(
-      decideLoopAction({ session_id: "s1", loop_enabled: false }),
-    ).toBe("make-loop");
+    expect(decideLoopAction({ session_id: "s1", loop_enabled: false })).toBe(
+      "make-loop",
+    );
   });
 });
 
@@ -544,9 +555,14 @@ describe("decideLoopAction", () => {
 // =============================================================================
 
 describe("makeLoopNow", () => {
+  // mitto-r6j: prompt.loop uses the new nested-per-trigger schema
+  // (schedule/onCompletion/onTasks blocks).
   const prompt = {
     name: "daily-standup",
-    loop: { value: 1, unit: "hours", maxIterations: 5 },
+    loop: {
+      schedule: { value: 1, unit: "hours" },
+      maxIterations: 5,
+    },
   };
 
   function makeFetchSequence(...responses) {
@@ -620,7 +636,10 @@ describe("makeLoopNow", () => {
   test("includes 'at' in frequency only for days unit", async () => {
     const promptWithDays = {
       name: "daily-report",
-      loop: { value: 1, unit: "days", at: "09:00", maxIterations: 0 },
+      loop: {
+        schedule: { value: 1, unit: "days", at: "09:00" },
+        maxIterations: 0,
+      },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-2", promptWithDays, { fetchImpl });
@@ -632,7 +651,7 @@ describe("makeLoopNow", () => {
   test("sends max_iterations:0 when prompt has no maxIterations", async () => {
     const noMaxPrompt = {
       name: "simple",
-      loop: { value: 2, unit: "hours" },
+      loop: { schedule: { value: 2, unit: "hours" } },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-3", noMaxPrompt, { fetchImpl });
@@ -903,7 +922,7 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
     );
   }
 
-  test("includes trigger, delay_seconds, max_duration_seconds in PUT body", async () => {
+  test("includes triggers[], delay_seconds, max_duration_seconds in PUT body", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
@@ -911,19 +930,20 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
       {
         value: 1,
         unit: "hours",
-        trigger: "onCompletion",
+        triggers: ["onCompletion"],
         delaySeconds: 10,
         maxDurationSeconds: 3600,
       },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onCompletion");
+    expect(body.triggers).toEqual(["onCompletion"]);
+    expect(body).not.toHaveProperty("trigger");
     expect(body.delay_seconds).toBe(10);
     expect(body.max_duration_seconds).toBe(3600);
   });
 
-  test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
+  test("defaults triggers to ['schedule'] and delay/maxDuration to 0 when absent", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
@@ -932,28 +952,46 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("schedule");
+    expect(body.triggers).toEqual(["schedule"]);
     expect(body.delay_seconds).toBe(0);
     expect(body.max_duration_seconds).toBe(0);
   });
 
-  test("falls back to prompt.loop.trigger when loop.trigger absent", async () => {
+  test("falls back to prompt.loop.trigger (nested) when loop.triggers absent", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onCompletion" } },
+      { name: "p", loop: { trigger: ["onCompletion"] } },
       { value: 1, unit: "hours" },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onCompletion");
+    expect(body.triggers).toEqual(["onCompletion"]);
   });
 
-  test("falls back to prompt.loop.delay for delay_seconds when absent from loop", async () => {
+  test("accepts a legacy scalar loop.trigger and wraps it into triggers[]", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { delay: 15 } },
+      { name: "p" },
+      { value: 1, unit: "hours", trigger: "onCompletion" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["onCompletion"]);
+  });
+
+  test("falls back to prompt.loop.onCompletion.delay for delay_seconds when absent from loop", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      {
+        name: "p",
+        loop: {
+          trigger: ["onCompletion"],
+          onCompletion: { delay: 15 },
+        },
+      },
       { value: 1, unit: "hours" },
       { fetchImpl },
     );
@@ -984,6 +1022,24 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.max_duration_seconds).toBe(300);
   });
+
+  test("multi-trigger loop sends triggers[] with all armed triggers", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      {
+        value: 1,
+        unit: "hours",
+        triggers: ["schedule", "onCompletion"],
+        delaySeconds: 30,
+      },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["schedule", "onCompletion"]);
+    expect(body.delay_seconds).toBe(30);
+  });
 });
 
 // =============================================================================
@@ -1001,28 +1057,40 @@ describe("configureLoopSchedule — onTasks condition field", () => {
     );
   }
 
-  test("trigger=onTasks: falls back to prompt.loop.condition when dialog result has none", async () => {
+  test("triggers=[onTasks]: falls back to prompt.loop.onTasks.condition when dialog result has none", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
-      { value: 1, unit: "hours", trigger: "onTasks" },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "size(x) > 0" },
+        },
+      },
+      { value: 1, unit: "hours", triggers: ["onTasks"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onTasks");
+    expect(body.triggers).toEqual(["onTasks"]);
     expect(body.condition).toBe("size(x) > 0");
   });
 
-  test("trigger=onTasks: dialog loop.condition overrides the prompt default", async () => {
+  test("triggers=[onTasks]: dialog loop.condition overrides the prompt default", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "prompt default" } },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "prompt default" },
+        },
+      },
       {
         value: 1,
         unit: "hours",
-        trigger: "onTasks",
+        triggers: ["onTasks"],
         condition: "dialog override",
       },
       { fetchImpl },
@@ -1035,20 +1103,26 @@ describe("configureLoopSchedule — onTasks condition field", () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
-      { value: 1, unit: "hours", trigger: "schedule" },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "size(x) > 0" },
+        },
+      },
+      { value: 1, unit: "hours", triggers: ["schedule"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("condition");
   });
 
-  test("trigger=onTasks with no condition anywhere: sends empty string", async () => {
+  test("triggers=[onTasks] with no condition anywhere: sends empty string", async () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
       { name: "p" },
-      { value: 1, unit: "hours", trigger: "onTasks" },
+      { value: 1, unit: "hours", triggers: ["onTasks"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
@@ -1059,13 +1133,37 @@ describe("configureLoopSchedule — onTasks condition field", () => {
     const fetchImpl = makeFetch(200);
     await configureLoopSchedule(
       "s1",
-      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
-      { value: 1, unit: "hours", trigger: "onTasks" },
+      {
+        name: "p",
+        loop: {
+          trigger: ["onTasks"],
+          onTasks: { condition: "size(x) > 0" },
+        },
+      },
+      { value: 1, unit: "hours", triggers: ["onTasks"] },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("condition_preset");
     expect(body).not.toHaveProperty("conditionPreset");
+  });
+
+  test("multi-trigger [schedule, onTasks]: condition is sent because onTasks is armed", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      {
+        value: 1,
+        unit: "hours",
+        triggers: ["schedule", "onTasks"],
+        condition: "size(x) > 0",
+      },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["schedule", "onTasks"]);
+    expect(body.condition).toBe("size(x) > 0");
   });
 });
 
@@ -1090,14 +1188,13 @@ describe("makeLoopNow — trigger/delay/maxDuration fields", () => {
     };
   }
 
-  test("includes trigger from prompt.loop in PUT body", async () => {
+  test("includes triggers[] from prompt.loop (nested schema) in PUT body", async () => {
     const prompt = {
       name: "p",
       loop: {
-        value: 1,
-        unit: "hours",
-        trigger: "onCompletion",
-        delay: 10,
+        trigger: ["onCompletion"],
+        schedule: { value: 1, unit: "hours" },
+        onCompletion: { delay: 10 },
         maxDuration: "1h",
       },
     };
@@ -1105,20 +1202,42 @@ describe("makeLoopNow — trigger/delay/maxDuration fields", () => {
     await makeLoopNow("sess-1", prompt, { fetchImpl });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onCompletion");
+    expect(body.triggers).toEqual(["onCompletion"]);
+    expect(body).not.toHaveProperty("trigger");
     expect(body.delay_seconds).toBe(10);
     expect(body.max_duration_seconds).toBe(3600);
   });
 
-  test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
-    const prompt = { name: "p", loop: { value: 1, unit: "hours" } };
+  test("defaults triggers to ['schedule'] and delay/maxDuration to 0 when absent", async () => {
+    const prompt = {
+      name: "p",
+      loop: { schedule: { value: 1, unit: "hours" } },
+    };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-1", prompt, { fetchImpl });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("schedule");
+    expect(body.triggers).toEqual(["schedule"]);
     expect(body.delay_seconds).toBe(0);
     expect(body.max_duration_seconds).toBe(0);
+  });
+
+  test("multi-trigger prompt: triggers list carried through to PUT body", async () => {
+    const prompt = {
+      name: "p",
+      loop: {
+        trigger: ["schedule", "onCompletion"],
+        schedule: { value: 2, unit: "hours" },
+        onCompletion: { delay: 15 },
+      },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.triggers).toEqual(["schedule", "onCompletion"]);
+    expect(body.frequency).toEqual({ value: 2, unit: "hours" });
+    expect(body.delay_seconds).toBe(15);
   });
 });
 
@@ -1143,21 +1262,20 @@ describe("makeLoopNow — onTasks condition field", () => {
     };
   }
 
-  test("trigger=onTasks: includes condition from prompt.loop.condition", async () => {
+  test("trigger=[onTasks]: includes condition from prompt.loop.onTasks.condition", async () => {
     const prompt = {
       name: "p",
       loop: {
-        value: 1,
-        unit: "hours",
-        trigger: "onTasks",
-        condition: "size(x) > 0",
+        trigger: ["onTasks"],
+        schedule: { value: 1, unit: "hours" },
+        onTasks: { condition: "size(x) > 0" },
       },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-1", prompt, { fetchImpl });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.trigger).toBe("onTasks");
+    expect(body.triggers).toEqual(["onTasks"]);
     expect(body.condition).toBe("size(x) > 0");
   });
 
@@ -1165,10 +1283,9 @@ describe("makeLoopNow — onTasks condition field", () => {
     const prompt = {
       name: "p",
       loop: {
-        value: 1,
-        unit: "hours",
-        trigger: "schedule",
-        condition: "size(x) > 0",
+        trigger: ["schedule"],
+        schedule: { value: 1, unit: "hours" },
+        onTasks: { condition: "size(x) > 0" },
       },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
@@ -1178,10 +1295,13 @@ describe("makeLoopNow — onTasks condition field", () => {
     expect(body).not.toHaveProperty("condition");
   });
 
-  test("trigger=onTasks with no prompt condition: sends empty string", async () => {
+  test("trigger=[onTasks] with no prompt condition: sends empty string", async () => {
     const prompt = {
       name: "p",
-      loop: { value: 1, unit: "hours", trigger: "onTasks" },
+      loop: {
+        trigger: ["onTasks"],
+        schedule: { value: 1, unit: "hours" },
+      },
     };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makeLoopNow("sess-1", prompt, { fetchImpl });
@@ -1371,5 +1491,332 @@ describe("useConversationSeeding — startConversationWithPrompt loop path — a
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("arguments");
+  });
+});
+
+// =============================================================================
+// configureLoopSchedule / makeLoopNow — freshContext, runOnStart,
+// coalesceDuringBusy forwarding (mitto-le4.3)
+// =============================================================================
+
+describe("configureLoopSchedule — freshContext / runOnStart / coalesceDuringBusy", () => {
+  function makeFetch(status) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve({}),
+      }),
+    );
+  }
+
+  test("T1: prompt.loop.freshContext=true with no dialog override → body has fresh_context:true", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { freshContext: true } },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({ fresh_context: true });
+  });
+
+  test("T2: dialog loop.freshContext=false overrides prompt default true (explicit wins, false preserved)", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { freshContext: true } },
+      { value: 1, unit: "hours", freshContext: false },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({ fresh_context: false });
+  });
+
+  test("T3: neither source sets freshContext → body has NO fresh_context key", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("fresh_context");
+    expect(body).not.toHaveProperty("run_on_start");
+    expect(body).not.toHaveProperty("coalesce_during_busy");
+  });
+
+  test("T4: prompt.loop.runOnStart=true and onTasks.coalesceDuringBusy=false → body has both keys with correct values", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      {
+        name: "p",
+        loop: {
+          runOnStart: true,
+          onTasks: { coalesceDuringBusy: false },
+        },
+      },
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toEqual(
+      expect.objectContaining({
+        run_on_start: true,
+        coalesce_during_busy: false,
+      }),
+    );
+  });
+});
+
+describe("makeLoopNow — freshContext / runOnStart / coalesceDuringBusy", () => {
+  function makeFetchSequence(...responses) {
+    let i = 0;
+    return jest.fn(() => {
+      const r = responses[i++] || responses[responses.length - 1];
+      return Promise.resolve(r);
+    });
+  }
+
+  function makeResp(status, data = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(data),
+    };
+  }
+
+  test("T5: prompt.loop.freshContext=true and runOnStart=true → PUT body has both fresh_context and run_on_start", async () => {
+    const prompt = {
+      name: "p",
+      loop: { value: 1, unit: "hours", freshContext: true, runOnStart: true },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toEqual(
+      expect.objectContaining({
+        fresh_context: true,
+        run_on_start: true,
+      }),
+    );
+  });
+
+  test("T6: prompt.loop with no freshContext/runOnStart → body omits both keys", async () => {
+    const prompt = {
+      name: "p",
+      loop: { value: 1, unit: "hours" },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("fresh_context");
+    expect(body).not.toHaveProperty("run_on_start");
+    expect(body).not.toHaveProperty("coalesce_during_busy");
+  });
+});
+
+// =============================================================================
+// SDK default path (mitto-7gta.17 slice S8) — makeLoopNow,
+// seedConversationWithPrompt, configureLoopSchedule WITHOUT `fetchImpl`.
+// Every other describe block above pins the `fetchImpl`-injected branch;
+// these pin the new default branch added in S8 (getSdkClient().sessions.*),
+// via global.fetch + the shared fakeResponse fixture (mirrors
+// useLinkedBeadPhase.test.js's approach for the same reason: sdk/core/
+// transport.js's decodeBody() calls response.text()/headers.get(), which a
+// hand-rolled {ok,status,json} mock does not provide).
+// =============================================================================
+
+describe("makeLoopNow — SDK default path (no fetchImpl)", () => {
+  const prompt = {
+    name: "daily-standup",
+    loop: { schedule: { value: 1, unit: "hours" }, maxIterations: 5 },
+  };
+
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    // Pre-seed a CSRF cookie so browserCookieAuth's authorize() never needs
+    // its own network round trip through the mocked fetch below (mirrors
+    // useWSQueue.test.js).
+    document.cookie = "mitto_csrf=test-token";
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  });
+
+  test("PUTs loop config then POSTs run-now via the SDK client, returns success:true", async () => {
+    const calls = [];
+    global.fetch = jest.fn((url, opts) => {
+      calls.push({ url: String(url), method: opts?.method });
+      return Promise.resolve(fakeResponse({ status: 200, body: {} }));
+    });
+
+    const result = await makeLoopNow("sess-1", prompt);
+
+    expect(result).toEqual({ success: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].url).toContain("/api/sessions/sess-1/loop");
+    expect(calls[0].method).toBe("PUT");
+    expect(calls[1].url).toContain("/api/sessions/sess-1/loop/run-now");
+    expect(calls[1].method).toBe("POST");
+  });
+
+  test("PUT failure: returns success:false with the server's error code, does not call run-now", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 500, body: { error: "server_error" } }),
+      ),
+    );
+
+    const result = await makeLoopNow("sess-2", prompt);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("run-now 409 after a successful PUT: treated as success (session already running)", async () => {
+    let call = 0;
+    global.fetch = jest.fn(() => {
+      call += 1;
+      if (call === 1)
+        return Promise.resolve(fakeResponse({ status: 200, body: {} }));
+      return Promise.resolve(
+        fakeResponse({ status: 409, body: { error: "busy" } }),
+      );
+    });
+
+    const result = await makeLoopNow("sess-3", prompt);
+
+    expect(result).toEqual({ success: true });
+  });
+
+  test("network failure on PUT: returns success:false with loop_setup_failed", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("offline")));
+
+    const result = await makeLoopNow("sess-4", prompt);
+
+    expect(result).toEqual({ success: false, error: "loop_setup_failed" });
+  });
+});
+
+describe("seedConversationWithPrompt — SDK default path (no fetchImpl)", () => {
+  const prompt = { name: "test-prompt", prompt: "FULL BODY TEXT" };
+
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    document.cookie = "mitto_csrf=test-token";
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  });
+
+  test("POSTs to the queue via the SDK client and returns the new message id", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(fakeResponse({ status: 201, body: { id: "msg-abc" } })),
+    );
+
+    const result = await seedConversationWithPrompt("sess-1", prompt);
+
+    expect(result).toEqual({ success: true, messageId: "msg-abc" });
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(String(url)).toContain("/api/sessions/sess-1/queue");
+    expect(opts.method).toBe("POST");
+    const sentBody = JSON.parse(opts.body);
+    expect(sentBody.prompt_name).toBe("test-prompt");
+    expect(sentBody).not.toHaveProperty("message");
+  });
+
+  test("non-ok response: returns success:false with the server's error code", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 400, body: { error: "bad_request" } }),
+      ),
+    );
+
+    const result = await seedConversationWithPrompt("sess-1", prompt);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("bad_request");
+  });
+
+  test("network failure: returns success:false with request_failed", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("network failure")));
+
+    const result = await seedConversationWithPrompt("sess-1", prompt);
+
+    expect(result).toEqual({ success: false, error: "request_failed" });
+  });
+});
+
+describe("configureLoopSchedule — SDK default path (no fetchImpl)", () => {
+  const prompt = { name: "daily-standup" };
+
+  let originalFetch;
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    document.cookie = "mitto_csrf=test-token";
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+  });
+
+  test("PUTs the loop config via the SDK client and returns success:true", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(fakeResponse({ status: 200, body: {} })),
+    );
+
+    const result = await configureLoopSchedule("sess-1", prompt, {
+      value: 2,
+      unit: "hours",
+    });
+
+    expect(result).toEqual({ success: true });
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(String(url)).toContain("/api/sessions/sess-1/loop");
+    expect(opts.method).toBe("PUT");
+    const body = JSON.parse(opts.body);
+    expect(body.prompt_name).toBe("daily-standup");
+    expect(body.frequency).toEqual({ value: 2, unit: "hours" });
+  });
+
+  test("non-ok response: returns success:false with loop_setup_failed", async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        fakeResponse({ status: 400, body: { error: "bad_request" } }),
+      ),
+    );
+
+    const result = await configureLoopSchedule("sess-1", prompt, {
+      value: 1,
+      unit: "hours",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  test("network failure: returns success:false with loop_setup_failed", async () => {
+    global.fetch = jest.fn(() => Promise.reject(new Error("net fail")));
+
+    const result = await configureLoopSchedule("sess-1", prompt, {
+      value: 1,
+      unit: "hours",
+    });
+
+    expect(result).toEqual({ success: false, error: "loop_setup_failed" });
   });
 });

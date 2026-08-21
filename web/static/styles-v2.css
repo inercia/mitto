@@ -439,8 +439,6 @@ a:hover {
    Light theme overrides (applied via the .light bucket class)
    ============================================================================= */
 
-
-
 /* Light theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
    utilities already resolve to the same per-theme --mitto-* vars. Only
    bg-mitto-input-box is kept: its background differs from the var (#f5f5f5 vs
@@ -463,8 +461,6 @@ a:hover {
   color: #a1a1aa !important;
 }
 
-
-
 /* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
 /* Light theme: Focus states */
@@ -479,8 +475,6 @@ a:hover {
    Dark Theme Overrides
    Applied when .dark is present
    ============================================================================= */
-
-
 
 /* Dark theme: bg-mitto-sidebar/bg/chat/input migrated away — the bg-mitto-*
    utilities already resolve to the same per-theme --mitto-* vars. Only
@@ -517,8 +511,6 @@ a:hover {
 .dark input::placeholder {
   color: #9ca3af !important;
 }
-
-
 
 /* hover:text-white migrated to hover:text-mitto-text-strong (Phase 2 Lane B). */
 
@@ -612,7 +604,6 @@ a:hover {
   color: #ffffff !important;
 }
 
-
 /* Toast colors migrated to daisyUI alert-info/success/warning/error (mitto-i1r).
    The alert-* variants carry background + content color via the --mitto-* token
    bridge, so the old .toast-enter bg-* and text-white remaps are no longer needed. */
@@ -628,7 +619,7 @@ a:hover {
 .light .beads-type-feature,
 .dark .beads-status-inprogress,
 .dark .beads-type-feature {
-  background: #1d4ed8 !important;  /* Original blue-700 */
+  background: #1d4ed8 !important; /* Original blue-700 */
 }
 
 /* Draw attention to in-progress issues: the in_progress status badge pulses
@@ -638,12 +629,12 @@ a:hover {
 @keyframes beadsInProgressPulse {
   0%,
   100% {
-    background-color: #1d4ed8;  /* blue-700 */
+    background-color: #1d4ed8; /* blue-700 */
     box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75);
     transform: scale(1);
   }
   50% {
-    background-color: #3b82f6;  /* blue-500 (brighter) */
+    background-color: #3b82f6; /* blue-500 (brighter) */
     box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.55);
     transform: scale(1.08);
   }
@@ -656,6 +647,20 @@ a:hover {
   .beads-status-inprogress {
     animation: none;
   }
+}
+
+/* Streaming row: tint the whole row background when a linked conversation is
+   actively prompting on this bead. Blue rhymes with the in_progress pulse and
+   stays out of the Mitto red reserved for hover/selection/delete. Selection
+   accent border (borderTone) remains visible for selected+streaming rows so
+   the two signals combine legibly. Hover-red still wins on non-selected
+   streaming rows via the higher-specificity `.light .hover\:bg-red-600:hover`
+   rule defined earlier in this file. */
+.light .beads-row-streaming {
+  background: rgba(59, 130, 246, 0.12) !important; /* blue-500 @ 12% */
+}
+.dark .beads-row-streaming {
+  background: rgba(59, 130, 246, 0.15) !important; /* blue-500 @ 15% */
 }
 
 .light .bg-yellow-400,
@@ -678,8 +683,6 @@ a:hover {
 .dark .text-yellow-500 {
   color: #f59e0b !important;
 }
-
-
 
 /* Buttons - light theme: ensure visible borders and backgrounds */
 .light
@@ -725,6 +728,27 @@ a:hover {
 .mitto-toolbar > button,
 .mitto-toolbar > details > summary {
   border: none !important;
+}
+
+/* Opt-in Toolbar dropdown surface rendered through ContextMenu's body portal.
+   The narrow child rule neutralizes daisyUI's dropdown-content anchoring: the
+   fixed wrapper owns measured, viewport-clamped placement instead. */
+.mitto-toolbar-portal-dropdown {
+  position: fixed;
+  width: max-content;
+  overflow-y: auto;
+  /* Match daisyUI's dropdown layer; the portal, not a larger z-index, escapes
+     the header/sidebar stacking contexts. */
+  z-index: 999;
+}
+
+.mitto-toolbar-portal-dropdown > .dropdown-content {
+  position: static;
+  inset: auto;
+  margin: 0;
+  max-width: 100%;
+  overflow-y: auto;
+  translate: none;
 }
 
 /* Thin vertical separator between toolbar groups. Stretches to the row height
@@ -843,8 +867,6 @@ a:hover {
   color: #f87171 !important;
 }
 
-
-
 /* Scrollbar - light theme */
 .light ::-webkit-scrollbar-thumb {
   background: #d4d4d8;
@@ -876,7 +898,6 @@ a:hover {
   color: #9ca3af !important;
   border: 1px solid #334155;
 }
-
 
 /* =============================================================================
  * Swipe-to-Delete V2 Theme Styles
@@ -1080,7 +1101,9 @@ a:hover {
 }
 
 /* Light theme form elements */
-.light .ui-form-content label { color: #18181b; }
+.light .ui-form-content label {
+  color: #18181b;
+}
 .light .ui-form-content input,
 .light .ui-form-content select,
 .light .ui-form-content textarea {
@@ -1088,13 +1111,23 @@ a:hover {
   border-color: #d1d5db;
   color: #18181b;
 }
-.light .ui-form-content fieldset { border-color: #d1d5db; }
-.light .ui-form-content legend { color: #18181b; }
-.light .ui-form-content small { color: #6b7280; }
-.light .ui-form-content hr { border-color: #d1d5db; }
+.light .ui-form-content fieldset {
+  border-color: #d1d5db;
+}
+.light .ui-form-content legend {
+  color: #18181b;
+}
+.light .ui-form-content small {
+  color: #6b7280;
+}
+.light .ui-form-content hr {
+  border-color: #d1d5db;
+}
 
 /* Dark theme form elements */
-.dark .ui-form-content label { color: #e5e7eb; }
+.dark .ui-form-content label {
+  color: #e5e7eb;
+}
 .dark .ui-form-content input,
 .dark .ui-form-content select,
 .dark .ui-form-content textarea {
@@ -1102,10 +1135,18 @@ a:hover {
   border-color: #475569;
   color: #e5e7eb;
 }
-.dark .ui-form-content fieldset { border-color: #475569; }
-.dark .ui-form-content legend { color: #e5e7eb; }
-.dark .ui-form-content small { color: #9ca3af; }
-.dark .ui-form-content hr { border-color: #475569; }
+.dark .ui-form-content fieldset {
+  border-color: #475569;
+}
+.dark .ui-form-content legend {
+  color: #e5e7eb;
+}
+.dark .ui-form-content small {
+  color: #9ca3af;
+}
+.dark .ui-form-content hr {
+  border-color: #475569;
+}
 
 /* =============================================================================
    Properties Panel - Light Theme Overrides
@@ -1126,9 +1167,6 @@ a:hover {
   background: var(--bg-elevated);
   color: var(--text);
 }
-
-
-
 
 /* =============================================================================
    Chat Input Box (contained composition layout)
@@ -1214,7 +1252,6 @@ a:hover {
   color: var(--border-color, #334155) !important;
 }
 
-
 /* Small screens: model selector row separator */
 @media (max-width: 640px) {
   .light .chat-input-model-selector {
@@ -1257,7 +1294,6 @@ a:hover {
   background: var(--accent-hover, #ff7070) !important;
   color: var(--accent-foreground, #fafafa) !important;
 }
-
 
 /* =============================================================================
    Settings Dialog - Normalize select/input heights

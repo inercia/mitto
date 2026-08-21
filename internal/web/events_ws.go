@@ -12,11 +12,12 @@ import (
 
 // GlobalEventsClient represents a connected client listening for global events.
 type GlobalEventsClient struct {
-	server *Server
-	wsConn *WSConn
-	done   chan struct{}
-	ctx    context.Context
-	cancel context.CancelFunc
+	server    *Server
+	wsConn    *WSConn
+	done      chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
+	releaseWS func()
 }
 
 // GlobalEventsManager manages clients subscribed to global events.
@@ -72,11 +73,18 @@ func (m *GlobalEventsManager) ClientCount() int {
 // handleGlobalEventsWS handles WebSocket connections for global events.
 func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 	clientIP := middleware.GetClientIPWithProxyCheck(r)
+	releaseWS, ok := s.acquireExternalWebSocket(w, r)
+	if !ok {
+		return
+	}
 
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)
 	conn, err := secureUpgrader.Upgrade(w, r, nil)
 	if err != nil {
+		if releaseWS != nil {
+			releaseWS()
+		}
 		if s.logger != nil {
 			s.logger.Error("Global events WebSocket upgrade failed", "error", err)
 		}
@@ -95,11 +103,12 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 	})
 
 	client := &GlobalEventsClient{
-		server: s,
-		wsConn: wsConn,
-		done:   make(chan struct{}),
-		ctx:    ctx,
-		cancel: cancel,
+		server:    s,
+		wsConn:    wsConn,
+		done:      make(chan struct{}),
+		ctx:       ctx,
+		cancel:    cancel,
+		releaseWS: releaseWS,
 	}
 
 	s.eventsManager.Register(client)
@@ -132,6 +141,9 @@ func (c *GlobalEventsClient) readPump() {
 		c.server.eventsManager.Unregister(c)
 		c.cancel()
 		c.wsConn.Close()
+		if c.releaseWS != nil {
+			c.releaseWS()
+		}
 	}()
 
 	// We don't expect any messages from clients on this WebSocket,

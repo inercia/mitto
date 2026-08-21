@@ -6,7 +6,8 @@
 const { html, useState, useEffect, useCallback } = window.preact;
 
 import { Modal } from "./Modal.js";
-import { apiUrl, secureFetch, endpoints } from "../utils/index.js";
+import { apiUrl } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 
 /**
  * AgentDiscoveryDialog - Discover and configure AI agents.
@@ -53,13 +54,7 @@ export function AgentDiscoveryDialog({
     setPhase("scanning");
     setError("");
     try {
-      const resp = await secureFetch(endpoints.agents.scan(), {
-        method: "POST",
-      });
-      if (!resp.ok) {
-        throw new Error("Scan failed: " + resp.statusText);
-      }
-      const results = await resp.json();
+      const results = await getSdkClient().agents.scan();
 
       // In settings mode, exclude agents already configured (matched by command)
       const existingCommands = new Set(
@@ -141,14 +136,7 @@ export function AgentDiscoveryDialog({
     setPhase("confirming");
     setError("");
     try {
-      const resp = await secureFetch(endpoints.agents.confirm(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agents: toAdd }),
-      });
-      if (!resp.ok) {
-        throw new Error("Confirm failed: " + resp.statusText);
-      }
+      await getSdkClient().agents.confirm(toAdd);
       onAgentsConfirmed?.();
     } catch (err) {
       setError("Failed to save agents: " + err.message);

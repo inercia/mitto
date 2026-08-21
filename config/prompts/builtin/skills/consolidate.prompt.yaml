@@ -1,0 +1,277 @@
+icon: layers
+name: 'Skill: consolidate'
+menus: prompts, !promptsLoop
+description: Review `SKILL.md` together with every file under `references/` and consolidate them into a coherent, agent-friendly documentation set
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md")'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SkillFile
+    type: filename
+    glob:
+      - "**/SKILL.md"
+    remember: folder
+    required: true
+    description: The `SKILL.md` file this consolidation pass operates against. Every file under its sibling `references/` folder participates in the audit.
+target:
+  # Shared with every other prompt under config/prompts/builtin/skills/: all
+  # `Skill: …` prompts funnel into the same non-archived conversation in this
+  # working_dir so they never run in parallel on the same skill.
+  title: 'Skill workshop'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  This run operates on the skill anchored at `{{ .Args.SkillFile }}`
+  (workspace-relative). Its sibling references folder is
+  `{{ Dir .Args.SkillFile }}/references/`. Every mention below of
+  "`SKILL.md`" means that specific file; every mention of
+  "`references/`" means that specific sibling folder — do not touch a
+  different skill's files, and do not descend into references belonging
+  to a different `SKILL.md` elsewhere in the repo.
+
+  Review `{{ .Args.SkillFile }}` together with **every** file under
+  `{{ Dir .Args.SkillFile }}/references/` (recursively) and consolidate
+  them into a single coherent, agent-friendly documentation set.
+
+  This prompt is primarily an **audit + consolidation** pass. The default
+  outcome is a written findings report followed by small, surgical edits
+  against the existing files — not a wholesale rewrite, and not a burst of
+  new files. Preserve the skill's original intent, voice, and any explicit
+  user rules throughout.
+
+  ## Step 1 — Inventory
+
+  Enumerate every file that participates in this skill:
+
+  - `{{ .Args.SkillFile }}` (the selected skill file).
+  - Every file under `{{ Dir .Args.SkillFile }}/references/`
+    (recursively — do not stop at the first level).
+  - Any other file explicitly linked from `{{ .Args.SkillFile }}` or
+    from a reference file (e.g. a sibling `NOTES.md`, a linked doc
+    under `{{ Dir .Args.SkillFile }}/docs/`).
+
+  For each file, record in this conversation:
+
+  - **Path**
+  - **Stated purpose** (from its header / first paragraph)
+  - **Scope** — what topic(s) it covers
+  - **Audience** — which agent(s) / which situations trigger it
+  - **Approximate size** (lines or KB)
+  - **Incoming links** — which other file(s) reference it, and via what
+    trigger sentence
+
+  Print the inventory as a table before proceeding. If
+  `{{ .Args.SkillFile }}` does not exist or is empty, stop with a brief
+  note — this prompt consolidates an existing skill, it does not
+  bootstrap one.
+
+  ## Step 2 — Analyze
+
+  Working from the inventory, produce a **findings report** organized
+  under the following headings. Every finding must cite the file(s) and
+  section(s) involved so the operator can verify. Do **not** edit yet.
+
+  - **Inconsistencies** — conflicting instructions, mismatched
+    terminology (same concept named differently across files), divergent
+    examples for the same task.
+  - **Duplication** — the same content repeated across files, or
+    `SKILL.md` restating reference material verbatim instead of pointing
+    into it.
+  - **Contradictions** — a rule in one file overridden or contradicted
+    by another (e.g. `SKILL.md` says "always use X"; a reference says
+    "prefer Y over X").
+  - **Gaps** — referenced-but-missing topics, dangling links (link
+    target does not exist), trigger sentences in `SKILL.md` that point
+    to reference files not present in the inventory, undocumented
+    behaviors clearly implied by other files.
+  - **Outdated / stale content** — references to removed features, old
+    APIs, deprecated tools, or paths that no longer exist. Cross-check
+    against the current workspace where feasible; if you cannot verify,
+    flag it as *"suspected stale — needs operator confirmation"* rather
+    than deleting.
+  - **Structural issues** — unclear hierarchy, poor separation between
+    overview and reference detail, critical rules buried deep in prose,
+    reference files that are actually two topics glued together, or
+    two reference files that should be one.
+
+  Group related findings so the operator can act on them as a unit
+  (e.g. a duplication + a contradiction that share a root cause should
+  be listed together).
+
+  ## Step 2.5 — Audit the `description` frontmatter
+
+  The `description:` field at the top of `{{ .Args.SkillFile }}` is
+  what a routing agent reads to decide **whether to load this skill at
+  all**. A weak description (`"Notes about X"`, `"Guide for Y"`, a
+  bare topic label) means the skill will be silently skipped when it
+  should fire, or loaded when it should not. Treat it as a first-class
+  consolidation artefact, not decorative metadata.
+
+  Read the current `description` verbatim, then evaluate it against
+  **all** of the following criteria. A good description must:
+
+  - **Open with an explicit trigger clause** — the words `"Use this
+    skill whenever …"` or a close paraphrase, so the routing agent
+    sees the activation cue on the first line.
+  - **Enumerate concrete situations that fire the skill** — a list of
+    the specific tasks, questions, or user intents that mean this
+    skill is relevant (e.g. *"about to answer an X question, prep
+    for a Y meeting, look up Z history, research W guidance"*), not
+    a single vague topic label. Prefer 3–6 concrete situations over
+    one abstract sentence.
+  - **Name the required preconditions** — any MCP connection, tool,
+    credential, workspace state, or environment the skill assumes
+    (e.g. *"whenever the user has an FJ MCP connection"*, *"in a
+    repo containing …"*, *"when the operator is on-call"*). If a
+    precondition is required, say so; if none, don't invent one.
+  - **Address the "user doesn't know to ask" case** — if this skill
+    is the right tool for a class of task even when the user hasn't
+    named the skill, say so explicitly (e.g. *"most users don't
+    know to use it or how to use it well … use it proactively"*).
+  - **Cover the negative space when non-obvious** — if there are
+    look-alike situations where the skill should **not** fire
+    (adjacent topics that a routing agent might confuse with the
+    real trigger), name one or two to prevent misfires.
+  - **Be self-contained** — a routing agent reads only the
+    description, not `SKILL.md` itself, before deciding. Do not
+    rely on outside context to make the trigger legible.
+  - **Stay operational, not marketing** — no adjectives like
+    "comprehensive", "powerful", "advanced"; every phrase must help
+    a routing agent decide *when* to load, not sell the skill.
+  - **Fit the length budget** — long enough to enumerate the
+    triggers concretely (typically 4–10 sentences / ~60–150 words),
+    short enough to fit in a routing agent's context without
+    ceremony. Prefer prose over a bulleted list because the field
+    renders as a single paragraph.
+
+  Score the current description against each criterion in a small
+  table (`criterion | pass/fail | evidence`). If **any** criterion
+  fails, draft a **replacement description** that satisfies all of
+  them, grounded in what the inventory + findings actually show this
+  skill is for — do not invent capabilities the skill does not have.
+
+  The replacement is a Step 3 change plan item like any other:
+  proposed, presented for operator approval (the operator may accept,
+  edit, or reject), and applied only in Step 4 via `mitto_ui_textbox`
+  showing `OLD:` and `NEW:` side by side so the operator can tweak
+  the wording before commit.
+
+  If the current description already passes every criterion, record
+  that in the Step 5 report and skip the replacement — do **not**
+  rewrite a description that is already doing its job.
+
+  ## Step 3 — Propose the consolidation plan
+
+  From the findings, draft a **change plan** — a bullet list, one bullet
+  per proposed edit, in the order they will be applied. Each bullet has
+  the shape:
+
+  `<file>: <what changes> — <why> — <finding it addresses>`
+
+  Rules for the plan:
+
+  - **Prefer editing existing files over creating new ones.** Only add
+    a new reference file when a finding cannot be resolved otherwise
+    (e.g. a genuinely new topic that does not fit any existing file).
+    When you do propose a new file, justify why no existing file is a
+    reasonable home.
+  - **Consider splitting or merging** when a structural finding
+    warrants it — but call it out explicitly in the plan so the
+    operator can veto before the split/merge happens.
+  - **Flag ambiguity — do not guess.** For any contradiction where
+    both sides could plausibly be the "correct" rule, do **not** pick
+    one silently. List the contradiction, both candidate resolutions,
+    and mark it `NEEDS OPERATOR DECISION`. Skip that edit in Step 4
+    and surface it in Step 5.
+  - **Never remove documented behavior without flagging.** If a rule
+    or capability looks obsolete, propose *marking it deprecated with
+    a dated note*, not deletion — unless the operator explicitly
+    approves removal.
+
+  Present the plan and pause for operator approval (via
+  `mitto_ui_options` or `mitto_ui_textbox`) before applying any edits.
+  The operator may accept the whole plan, accept a subset, or reject.
+
+  ## Step 4 — Apply the approved edits
+
+  Apply only the edits the operator approved. Rules:
+
+  - **Use file-editing tools** — never full-file rewrites, never `sed`.
+  - **De-duplicate by cross-linking, not by copy.** When two files
+    cover the same fact, keep the authoritative statement in **one**
+    file (usually the more detailed reference) and replace the other
+    with a short pointer (`See [references/<file>.md](...) for <topic>.`).
+  - **Tighten `SKILL.md` as the entry point.** It should surface:
+    - a one-paragraph purpose + scope statement near the top,
+    - explicit **when to use / when not to use** cues,
+    - a compact index of reference files with per-file trigger
+      sentences (`- Read [references/<name>](...) when <trigger>.`),
+    - the invariants / gotchas that every agent using the skill must
+      see, kept as short bullets not long prose.
+    Detail belongs in `references/`, not in `SKILL.md`.
+  - **Ensure consistent terminology, naming, and formatting** across
+    every touched file: same casing for domain terms, same heading
+    depth conventions, same code-fence language tags, same voice.
+  - **Optimize for agent search / discovery** (a primary but not sole
+    goal): descriptive keyword-rich section headings; a short
+    file-level summary at the top of every reference file; explicit
+    "when to use / when not to use" cues; predictable structure
+    across reference files (e.g. same top-level sections in the same
+    order); cross-references using stable relative paths; anchors on
+    headings the operator is likely to link to; never bury a critical
+    rule inside a paragraph — promote it to its own bullet.
+  - **Preserve original intent, voice, and explicit user rules.** Do
+    not invent new capabilities. Do not rewrite passages that are
+    already clear just because you touched the surrounding file.
+
+  ## Step 5 — Report
+
+  Notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Skill consolidated", style: "success")`
+  and print a final report:
+
+  - **Files changed** — one line per file, with a one-sentence rationale
+    tying it back to the finding it resolved.
+  - **Description outcome** — one of *"kept as-is (already passes every
+    criterion)"*, *"rewritten (operator approved)"*, *"rewrite drafted
+    but rejected by operator"*, or *"rewrite deferred"*. Include the
+    final approved wording verbatim so it is visible in the audit
+    trail.
+  - **Files created** (should be rare — each one justified).
+  - **Files split or merged** (each called out with before/after paths).
+  - **Findings deferred** — every `NEEDS OPERATOR DECISION` item from
+    Step 3, restated so the operator can act on them in a follow-up
+    (e.g. a `Skill: improve` or `Skill: update references` run).
+  - **Suspected-stale items** the operator should confirm before the
+    next run removes them.
+  - **Findings unchanged** — anything from Step 2 the operator vetoed,
+    for the audit trail.
+
+  ## Guardrails
+
+  - **Audit + consolidate, not rewrite.** Bulk rewrites of files that
+    were already coherent are forbidden. If a file has no findings
+    against it, do not touch it.
+  - **No new files without justification.** Prefer extending an
+    existing reference file over creating a new one; every new file
+    listed in the change plan must include a one-sentence justification
+    for why no existing file was a reasonable home.
+  - **Preserve existing content.** Never delete documented behavior
+    without an explicit operator decision — mark deprecated instead,
+    with a dated note.
+  - **Flag, do not guess.** Contradictions with no obvious resolution
+    become `NEEDS OPERATOR DECISION` items; the prompt does not silently
+    pick a winner.
+  - **Description quality is non-optional.** Step 2.5 must always run
+    and its verdict must appear in the Step 5 report. A vague or
+    topic-label-only description is a **finding**, not an acceptable
+    baseline — silently leaving it in place is a failure of this
+    prompt. The routing agent only sees the `description`, so an
+    unclear one means the whole skill is invisible when it matters.
+  - **No git mutations.** Do not run `git add` / `git commit` / `git
+    push` — the operator reviews and commits the diff themselves.
+  - **Do not spawn child conversations** — this is an in-place authoring
+    task.

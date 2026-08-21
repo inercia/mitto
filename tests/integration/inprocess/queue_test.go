@@ -5,7 +5,9 @@ package inprocess
 import (
 	"testing"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestQueueOperations tests basic queue operations.
@@ -15,7 +17,7 @@ func TestQueueOperations(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session first
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -53,7 +55,7 @@ func TestQueueRaceCondition(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session first
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -91,7 +93,7 @@ func TestQueueMultipleMessages(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -130,10 +132,15 @@ func TestQueueMultipleMessages(t *testing.T) {
 
 // TestQueueWithImages tests adding messages with image attachments.
 func TestQueueWithImages(t *testing.T) {
-	ts := SetupTestServer(t)
+	disabled := false
+	ts := SetupTestServer(t, func(c *web.Config) {
+		c.MittoConfig.Conversations = &config.ConversationsConfig{
+			Queue: &config.QueueConfig{Enabled: &disabled},
+		}
+	})
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -150,10 +157,11 @@ func TestQueueWithImages(t *testing.T) {
 		t.Errorf("Expected 2 image IDs, got %d", len(msg.ImageIDs))
 	}
 
-	// Verify via get
+	// Regression test for mitto-e2l4: the image-bearing message must remain
+	// addressable long enough for the queue GET contract to verify its metadata.
 	got, err := ts.Client.GetQueueMessage(session.SessionID, msg.ID)
 	if err != nil {
-		t.Fatalf("GetQueueMessage failed: %v", err)
+		t.Fatalf("mitto-e2l4: queued image message was consumed before GET: %v", err)
 	}
 	if len(got.ImageIDs) != 2 {
 		t.Errorf("GetQueueMessage: expected 2 image IDs, got %d", len(got.ImageIDs))

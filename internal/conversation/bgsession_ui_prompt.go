@@ -129,8 +129,15 @@ func (bs *BackgroundSession) upTriggerUIPromptTimeout(req UIPromptRequest) {
 	bs.onUIPromptTimeout(bs.persistedID, req, sessionName)
 }
 
+// upRecordUIPromptAnswer persists the answer using a seq reserved from the
+// same authoritative counter (getNextSeq()) that streamed events use, so it
+// cannot collide with a seq already reserved-but-not-yet-persisted for a
+// concurrently streaming event (mitto-t7xv). Called from
+// uiPromptCenter.handleUIPromptAnswer while activePromptMu is held;
+// getNextSeq() only takes seqMu, so activePromptMu -> seqMu stays a safe,
+// one-directional lock order.
 func (bs *BackgroundSession) upRecordUIPromptAnswer(requestID, optionID, label string) {
 	if bs.recorder != nil {
-		bs.recorder.RecordUIPromptAnswer(requestID, optionID, label)
+		bs.recorder.RecordUIPromptAnswerWithSeq(bs.getNextSeq(), requestID, optionID, label)
 	}
 }

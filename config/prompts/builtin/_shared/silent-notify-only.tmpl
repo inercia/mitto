@@ -1,0 +1,22 @@
+{{/*
+  silent-notify-only — the two-bullet preamble that appears in the SILENT
+  branch of ~20 Interaction Mode blocks: use only `mitto_ui_notify`, do NOT
+  use interactive/blocking UI tools.
+
+  Callers include this INSIDE their silent branch, then append any
+  prompt-specific extras (autonomy criteria, stop-iterating hooks, etc.).
+
+    {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+    **Silent mode** — a scheduled loop run; the user is not watching.
+    {{ template "_shared/silent-notify-only" . }}
+    - <prompt-specific extras here>
+    {{- else }}
+    ...
+    {{- end }}
+
+  This fragment intentionally emits only the two universal bullets so callers
+  can attach as much (or as little) prompt-specific guidance as they need.
+*/}}
+- Use **only** `mitto_ui_notify` — non-blocking notifications only.
+- Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or
+  any interactive/blocking UI tool. They will stall an unattended run.

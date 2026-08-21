@@ -1,0 +1,193 @@
+icon: file-text
+name: 'On-Call: post-incident report'
+menus: beadsIssues, prompts
+description: 'Write the post-incident report for an on-call epic — read the epic and every child bead (with all their comments), synthesise a Timeline / Impact / Root Cause / Follow-ups report, save it under `reports/on-call/`, attach the path to the epic, and confirm before closing.'
+group: On-Call
+backgroundColor: '#FFCDD2'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Type == "epic" && "on-call" in Item.Labels'
+preferredModels:
+  - modelTag: Coding
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The incident epic to write the report for. Defaults to the bead linked to this conversation.
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |-
+  {{ template "_shared/session-context" . }}
+
+  # On-Call: Post-Incident Report
+
+  You are writing the post-incident report for an on-call epic that was triaged via the **"On-Call: I have been paged"** prompt. The epic and its children already carry the raw material — ingestion summaries, investigator findings, and status updates — as bead comments. Your job is to **synthesise**, not to re-investigate: read what is there, write a clean report, save it, and (once the user approves) close the epic.
+
+  > **Warning — do not branch on `Item.*` in the prompt body.** `Item.*` is populated only at menu time for `enabledWhen` gating. At send time it is empty. Always read the live state via `bd show <id> --json`.
+
+  ## Step 1 — Identify the target epic
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header" (dict
+      "Target"   $target
+      "Noun"     "incident epic"
+      "Role"     "Your job is to write the **post-incident report** for this epic — a clean, evidence-backed write-up of what happened, based on the epic's own history and the histories of its child investigation beads."
+      "NoTarget" "There is no incident epic linked to this conversation. Ask the user which epic to write the report for via `mitto_ui_options(self_id: \"{{ .Session.ID }}\", allow_free_text: true)` — list recent `on-call,incident` epics from `bd list --labels on-call,incident --json` (most recent first) as options; if none exist, tell the user there is nothing to report on and stop."
+  ) }}
+
+  {{ if not $target -}}
+  Once the user picks (or types) an epic ID, treat it as the target for the rest of this prompt.
+  {{- end }}
+
+  {{ if $target -}}
+  Sanity-check the target before doing any writing:
+
+  ```bash
+  bd show {{ $target }} --long --json --include-comments
+  ```
+
+  If `issue_type` is not `epic` or the labels do not include `on-call`, stop and tell the user this prompt is only for on-call incident epics; suggest they run it against the parent epic instead. Otherwise continue.
+  {{- end }}
+
+  ## Step 2 — Load the full incident history
+
+  {{ if $target -}}
+  Pull everything the epic and its children carry — this is the raw material for the report; do **not** re-run the ingestion or re-open the investigation.
+
+  ```bash
+  bd show {{ $target }} --long --json --include-comments   # epic body + all comments (Fast-tier ingestion summaries live here)
+  bd show {{ $target }} --children --json                  # child investigation beads
+  bd dep tree {{ $target }}                                # full hierarchy
+  ```
+
+  For **every child** returned above (and recursively for any child that is itself an epic):
+
+  ```bash
+  bd show <child-id> --long --json --include-comments      # investigator findings live in the comments
+  ```
+
+  Also look for cross-references that may extend the record:
+
+  - Any URL in the epic body / comments that points to a file **in this repository** (runbook, past report, ADR) — open the file and note the relevant excerpt.
+  - Any commit or branch that cites the epic or a child bead:
+
+    ```bash
+    git log --oneline --all | grep -Ei "{{ $target }}|<child-id>"
+    ```
+
+  If the histories are genuinely thin (e.g. the operator never dispatched investigators, or children have no findings), say so explicitly in the report rather than inventing content — an honest "not investigated" is more useful than a fabricated finding.
+  {{- end }}
+
+  ## Step 3 — Synthesise the report
+
+  Produce a Markdown report with this exact structure. Fill each section from the evidence you loaded in Step 2; if a section has no evidence, keep the heading and write `_No information recorded._` (or the section-specific equivalent). Do not invent details.
+
+  ```
+  # Post-Incident Report — <epic title>
+
+  - **Epic**: `{{ if $target }}{{ $target }}{{ else }}<epic-id>{{ end }}`
+  - **Reported**: <epic created_at, human-readable>
+  - **Closed**: <now, from `date +%Y-%m-%d\ %H:%M\ %Z`, or "still open" if not yet closed>
+  - **Duration**: <closed − reported, or "ongoing">
+  - **Severity / Priority**: <from epic priority + any severity noted in comments>
+
+  ## Summary
+
+  Two-to-four sentences: what broke, who was affected, how it ended.
+
+  ## Timeline
+
+  Chronological, one bullet per event, `HH:MM UTC — <event>`. Draw from epic comments and child-bead comments in timestamp order. Include: page received, ingestion completed, investigators dispatched, key findings, mitigation applied, service restored.
+
+  ## Impact
+
+  What surfaces were degraded, for how long, and (if known) the blast radius (customers, requests, regions). Cite the dashboards / tickets referenced in the epic.
+
+  ## Root Cause
+
+  What actually caused it, backed by the investigator findings written to the child beads. Distinguish **trigger** (what fired the incident) from **underlying cause** (why the system was vulnerable) when the evidence supports it.
+
+  ## What worked
+
+  Detections, tools, procedures, or people that materially shortened the incident.
+
+  ## What didn't work
+
+  Detections that missed, tools that were slow / absent, procedures that were unclear, dead ends the investigators hit. Be specific — this is the highest-value section for future on-call.
+
+  ## Follow-ups
+
+  Concrete work items (each with owner if named in the history, otherwise "unassigned"). Prefer bullets like `- <title> — <one-line scope> — owner: <name or unassigned>`.
+
+  ## References
+
+  - **Beads**: `{{ if $target }}{{ $target }}{{ else }}<epic-id>{{ end }}` (epic), plus each `<child-id> — <child title>`.
+  - **Slack / tickets / dashboards**: the URLs originally supplied to the paged flow (from the epic body and its first ingestion comments).
+  - **Commits / branches** citing the incident (from Step 2), if any.
+  - **Related files** in this repository (from Step 2), if any.
+  ```
+
+  Keep prose tight, technical, and blameless. Cite bead IDs and URLs where you make a claim.
+
+  ## Step 4 — Save the report and attach the path to the epic
+
+  Get the current timestamp and save the report:
+
+  ```bash
+  mkdir -p reports/on-call
+  TS=$(date +%Y-%m-%d-%H-%M)
+  REPORT_PATH="reports/on-call/${TS}.md"
+  # write the Step-3 markdown to $REPORT_PATH (create the file exactly as authored)
+  ```
+
+  {{ if $target -}}
+  Then attach the path to the epic so the report is discoverable from `bd show`:
+
+  ```bash
+  bd comment {{ $target }} "📄 Post-incident report saved to \`${REPORT_PATH}\`."
+  ```
+  {{- end }}
+
+  Show the saved path inline in the conversation:
+
+  ```
+  📄 Report saved to: reports/on-call/YYYY-MM-DD-HH-MM.md
+  ```
+
+  ## Step 5 — Confirm before closing
+
+  {{ if $target -}}
+  The epic may still have open child beads (unfinished follow-ups) or unaddressed action items. Do **not** close automatically. Present the situation to the user with `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
+
+  - **"Close the epic"** — the incident is over and any remaining work is tracked as Follow-ups above. Only offer this option if every child bead is already closed; otherwise list the still-open child IDs in the option's description so the user sees what would be left behind.
+  - **"Create follow-up beads first"** — the report identified concrete follow-ups that are not yet tracked as beads. For each approved follow-up:
+
+    ```bash
+    bd create "<follow-up title>" -d "<scope>" -p <0-4> --label on-call
+    bd dep relate {{ $target }} <new-id>
+    ```
+
+    Then re-offer the "Close the epic" choice.
+  - **"Keep it open"** — real work still remains on the epic itself. Append an audit note recording that the report was written but the epic stayed open, so the finding is not lost:
+
+    ```bash
+    bd update {{ $target }} --append-notes "Post-incident report written to ${REPORT_PATH}; epic kept open — <one-line reason>."
+    ```
+
+  Honour the user's choice exactly. When closing, use a clear reason:
+
+  ```bash
+  bd close {{ $target }} --reason "Incident closed; post-incident report saved to ${REPORT_PATH}."
+  ```
+  {{- else }}
+  Since no target epic is linked, there is nothing to close — just confirm the report path with the user and stop.
+  {{- end }}
+
+  ## Step 6 — Final summary
+
+  Finish with a short summary: the report path, whether the epic was closed / kept open / had follow-ups filed (with their IDs), and any residual work the user should be aware of.
+
+  ## Final step — Offer to delete this conversation
+
+  {{ template "_shared/offer-delete-conversation" . }}

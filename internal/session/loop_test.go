@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -168,6 +170,24 @@ func TestLoopPrompt_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "empty prompt is valid while disabled (draft)",
+			prompt: LoopPrompt{
+				Prompt:    "",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "legacy pending placeholder is not deliverable when enabled",
+			prompt: LoopPrompt{
+				Prompt:    "(pending)",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   true,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -242,7 +262,7 @@ func TestLoopStore_SetValidation(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewLoopStore(dir)
 
-	// Empty prompt
+	// Empty prompt on an enabled loop
 	err := ps.Set(&LoopPrompt{
 		Prompt:    "",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
@@ -250,6 +270,20 @@ func TestLoopStore_SetValidation(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("Set() with empty prompt should return error")
+	}
+
+	// Legacy "(pending)" placeholder is normalized away, never persisted.
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "(pending)",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   false,
+	}); err != nil {
+		t.Fatalf("Set() with disabled placeholder draft should succeed: %v", err)
+	}
+	if got, gErr := ps.Get(); gErr != nil {
+		t.Fatalf("Get() after placeholder draft: %v", gErr)
+	} else if got.Prompt != "" {
+		t.Errorf("Stored prompt = %q, want empty (placeholder normalized)", got.Prompt)
 	}
 
 	// Invalid frequency (value must be >= 1)
@@ -317,7 +351,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(LoopUpdate{Enabled: &enabled})
 	if err != ErrLoopNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrLoopNotFound", err)
 	}
@@ -334,7 +368,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -348,7 +382,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Prompt: &newPrompt}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -359,7 +393,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Frequency: &newFreq}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -383,7 +417,7 @@ func TestLoopStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(LoopUpdate{Frequency: &invalidFreq})
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -551,7 +585,7 @@ func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ps.Update(LoopUpdate{Enabled: &enabled})
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -560,7 +594,7 @@ func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ps.Update(LoopUpdate{Enabled: &disabled})
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -775,7 +809,7 @@ func TestLoopStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 	// Update via partial update — should not touch IterationCount
 	newPrompt := "Updated"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Prompt: &newPrompt}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -828,6 +862,11 @@ func TestLoopPrompt_Validate_Trigger(t *testing.T) {
 			name:    "invalid trigger value",
 			prompt:  LoopPrompt{Prompt: "p", Frequency: validFreq, Trigger: "weekly"},
 			wantErr: ErrInvalidTrigger,
+		},
+		{
+			name:    "legacy scalar onChild alone is rejected",
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnChild},
+			wantErr: ErrOnChildAlone,
 		},
 		{
 			name:    "negative DelaySeconds",
@@ -892,6 +931,181 @@ func TestLoopPrompt_Validate_Condition(t *testing.T) {
 	if err := pEmpty.Validate(); err != nil {
 		t.Errorf("Validate() with empty condition and rejecting validator error = %v, want nil", err)
 	}
+}
+
+// ---- mitto-r6j.1: canonical Triggers list + fallback chain ----
+
+// TestLoopPrompt_EffectiveTriggers_FallbackChain pins the resolution order
+// documented on EffectiveTriggers: Triggers verbatim when non-empty, else
+// []LoopTrigger{Trigger} when the legacy singular field is set, else
+// []LoopTrigger{TriggerSchedule} when neither is set.
+func TestLoopPrompt_EffectiveTriggers_FallbackChain(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt LoopPrompt
+		want   []LoopTrigger
+	}{
+		{
+			name:   "Triggers set wins even when legacy Trigger also set",
+			prompt: LoopPrompt{Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnTasks}, Trigger: TriggerSchedule},
+			want:   []LoopTrigger{TriggerOnCompletion, TriggerOnTasks},
+		},
+		{
+			name:   "legacy Trigger used when Triggers empty",
+			prompt: LoopPrompt{Trigger: TriggerOnCompletion},
+			want:   []LoopTrigger{TriggerOnCompletion},
+		},
+		{
+			name:   "both empty falls back to schedule",
+			prompt: LoopPrompt{},
+			want:   []LoopTrigger{TriggerSchedule},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.prompt.EffectiveTriggers()
+			if len(got) != len(tt.want) {
+				t.Fatalf("EffectiveTriggers() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("EffectiveTriggers()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+			// EffectiveTrigger() always returns the first resolved entry.
+			if primary := tt.prompt.EffectiveTrigger(); primary != tt.want[0] {
+				t.Errorf("EffectiveTrigger() = %q, want %q", primary, tt.want[0])
+			}
+		})
+	}
+}
+
+// TestLoopPrompt_IsOnCompletion_IsOnTasks_MultiTrigger verifies that
+// IsOnCompletion/IsOnTasks check membership across the full resolved trigger
+// list (not just the legacy singular Trigger), so a multi-trigger config
+// with e.g. Triggers: [schedule, onCompletion] correctly reports true for
+// IsOnCompletion while still resolving EffectiveTrigger() to "schedule".
+func TestLoopPrompt_IsOnCompletion_IsOnTasks_MultiTrigger(t *testing.T) {
+	p := LoopPrompt{Triggers: []LoopTrigger{TriggerSchedule, TriggerOnCompletion, TriggerOnTasks}}
+
+	if !p.IsOnCompletion() {
+		t.Error("IsOnCompletion() = false, want true (onCompletion present in Triggers)")
+	}
+	if !p.IsOnTasks() {
+		t.Error("IsOnTasks() = false, want true (onTasks present in Triggers)")
+	}
+	if p.EffectiveTrigger() != TriggerSchedule {
+		t.Errorf("EffectiveTrigger() = %q, want %q (primary/first)", p.EffectiveTrigger(), TriggerSchedule)
+	}
+
+	// A schedule-only config reports false for both event-driven checks.
+	scheduleOnly := LoopPrompt{Triggers: []LoopTrigger{TriggerSchedule}}
+	if scheduleOnly.IsOnCompletion() {
+		t.Error("IsOnCompletion() = true, want false (schedule-only)")
+	}
+	if scheduleOnly.IsOnTasks() {
+		t.Error("IsOnTasks() = true, want false (schedule-only)")
+	}
+}
+
+// TestLoopPrompt_Validate_MultiTrigger verifies Validate()'s Triggers-list
+// checks (mitto-r6j.1): an unknown entry anywhere in the list is rejected
+// with ErrInvalidTrigger, a duplicate entry is rejected naming the
+// duplicate, and a valid multi-trigger list (e.g. schedule + onCompletion)
+// passes — including the Frequency requirement, which is only enforced when
+// the *effective* (first) trigger is schedule.
+func TestLoopPrompt_Validate_MultiTrigger(t *testing.T) {
+	validFreq := Frequency{Value: 1, Unit: FrequencyHours}
+
+	t.Run("valid multi-trigger schedule+onCompletion requires frequency (schedule is primary)", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Frequency: validFreq, Triggers: []LoopTrigger{TriggerSchedule, TriggerOnCompletion}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid multi-trigger onCompletion+onTasks does not require frequency", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnTasks}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown trigger in Triggers list is rejected", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerSchedule, "weekly"}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidTrigger) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrInvalidTrigger)
+		}
+	})
+
+	t.Run("duplicate entries in Triggers list are rejected naming the duplicate", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnCompletion, TriggerOnCompletion}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidTrigger) {
+			t.Errorf("Validate() error = %v, want wrapped %v", err, ErrInvalidTrigger)
+		}
+		if err == nil || !strings.Contains(err.Error(), string(TriggerOnCompletion)) {
+			t.Errorf("Validate() error = %v, want it to mention the duplicated trigger %q", err, TriggerOnCompletion)
+		}
+	})
+
+	t.Run("valid onChild armed alongside onTasks", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid onChild with explicit ChildEvents", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{ChildEventAnyEndResponse}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown child event is rejected", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{"bogus"}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidChildEvent) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrInvalidChildEvent)
+		}
+		if err == nil || !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("Validate() error = %v, want it to mention the offending value %q", err, "bogus")
+		}
+	})
+
+	// mitto-q6my: anyLoopStopped is a third, opt-in-only ChildEvent.
+	t.Run("valid onChild with anyLoopStopped child event", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{ChildEventAnyLoopStopped}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid onChild with all three child events combined", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnChild}, ChildEvents: []ChildEvent{ChildEventAnyEndResponse, ChildEventAnyDeleted, ChildEventAnyLoopStopped}}
+		if err := p.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("onChild alone in Triggers list is rejected", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnChild}}
+		err := p.Validate()
+		if !errors.Is(err, ErrOnChildAlone) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrOnChildAlone)
+		}
+	})
+
+	t.Run("duplicate onChild entries rejected as invalid trigger, not onChild-alone", func(t *testing.T) {
+		p := LoopPrompt{Prompt: "p", Triggers: []LoopTrigger{TriggerOnChild, TriggerOnChild}}
+		err := p.Validate()
+		if !errors.Is(err, ErrInvalidTrigger) {
+			t.Errorf("Validate() error = %v, want %v", err, ErrInvalidTrigger)
+		}
+	})
 }
 
 func TestLoopPrompt_ClampDelay(t *testing.T) {
@@ -1037,10 +1251,10 @@ func TestLoopStore_Update_NewFields(t *testing.T) {
 	}
 
 	// Update trigger, delay, and maxDuration.
-	trig := TriggerOnCompletion
+	triggers := []LoopTrigger{TriggerOnCompletion}
 	delay := 15
 	maxDur := 3600
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Triggers: &triggers, DelaySeconds: &delay, MaxDurationSeconds: &maxDur}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1059,8 +1273,8 @@ func TestLoopStore_Update_NewFields(t *testing.T) {
 		t.Errorf("Prompt = %q, want %q", got.Prompt, "Test")
 	}
 
-	// Passing nil for new fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	// Passing an empty update should leave them unchanged.
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1091,7 +1305,7 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	cond := "tasks.changed()"
 	preset := "any-change"
 	cooldown := 120
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &cond, &preset, &cooldown, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Condition: &cond, ConditionPreset: &preset, CooldownSeconds: &cooldown}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1107,7 +1321,7 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	}
 
 	// Passing nil for these fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1119,6 +1333,94 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	}
 	if got2.CooldownSeconds != cooldown {
 		t.Errorf("CooldownSeconds changed on nil update: got %d", got2.CooldownSeconds)
+	}
+}
+
+// TestLoopStore_Update_ChildEvents verifies that LoopUpdate.ChildEvents
+// round-trips through Update/Get with wholesale-replace semantics (mirroring
+// TestLoopStore_Update_OnTasksFields), and that a nil update leaves the
+// stored list unchanged.
+func TestLoopStore_Update_ChildEvents(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	p := &LoopPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnTasks,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	events := []ChildEvent{ChildEventAnyEndResponse}
+	if err := ps.Update(LoopUpdate{ChildEvents: &events}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if len(got.ChildEvents) != 1 || got.ChildEvents[0] != ChildEventAnyEndResponse {
+		t.Errorf("ChildEvents = %v, want %v", got.ChildEvents, events)
+	}
+
+	// A nil ChildEvents pointer leaves the stored list unchanged.
+	if err := ps.Update(LoopUpdate{}); err != nil {
+		t.Fatalf("Update() with all-nil error = %v", err)
+	}
+	got2, _ := ps.Get()
+	if len(got2.ChildEvents) != 1 || got2.ChildEvents[0] != ChildEventAnyEndResponse {
+		t.Errorf("ChildEvents changed on nil update: got %v", got2.ChildEvents)
+	}
+
+	// A non-nil pointer to a different slice wholesale-replaces (not merges).
+	replacement := []ChildEvent{ChildEventAnyDeleted}
+	if err := ps.Update(LoopUpdate{ChildEvents: &replacement}); err != nil {
+		t.Fatalf("Update() replacement error = %v", err)
+	}
+	got3, _ := ps.Get()
+	if len(got3.ChildEvents) != 1 || got3.ChildEvents[0] != ChildEventAnyDeleted {
+		t.Errorf("ChildEvents = %v, want wholesale replacement %v", got3.ChildEvents, replacement)
+	}
+}
+
+// TestLoopPrompt_EffectiveChildEvents_HasChildEvent verifies the
+// default-vs-explicit resolution: an empty ChildEvents falls back to
+// DefaultChildEvents() (both events), while an explicit non-empty list is
+// used verbatim.
+func TestLoopPrompt_EffectiveChildEvents_HasChildEvent(t *testing.T) {
+	defaultP := LoopPrompt{}
+	eff := defaultP.EffectiveChildEvents()
+	if len(eff) != 2 {
+		t.Fatalf("EffectiveChildEvents() with no explicit list = %v, want both defaults", eff)
+	}
+	if !defaultP.HasChildEvent(ChildEventAnyEndResponse) || !defaultP.HasChildEvent(ChildEventAnyDeleted) {
+		t.Errorf("HasChildEvent() should be true for both default events on %v", defaultP)
+	}
+
+	explicitP := LoopPrompt{ChildEvents: []ChildEvent{ChildEventAnyDeleted}}
+	if got := explicitP.EffectiveChildEvents(); len(got) != 1 || got[0] != ChildEventAnyDeleted {
+		t.Errorf("EffectiveChildEvents() with explicit list = %v, want [%q]", got, ChildEventAnyDeleted)
+	}
+	if explicitP.HasChildEvent(ChildEventAnyEndResponse) {
+		t.Error("HasChildEvent(anyEndResponse) = true, want false (explicit list omits it)")
+	}
+	if !explicitP.HasChildEvent(ChildEventAnyDeleted) {
+		t.Error("HasChildEvent(anyDeleted) = false, want true (explicit list includes it)")
+	}
+}
+
+// TestDefaultChildEvents_DoesNotIncludeAnyLoopStopped pins the mitto-q6my
+// back-compat guarantee: anyLoopStopped must be opt-in only, so existing
+// onChild loops relying on the implicit default set are unaffected.
+func TestDefaultChildEvents_DoesNotIncludeAnyLoopStopped(t *testing.T) {
+	events := DefaultChildEvents()
+	if len(events) != 2 {
+		t.Fatalf("DefaultChildEvents() = %v, want exactly 2 (anyEndResponse, anyDeleted)", events)
+	}
+	for _, e := range events {
+		if e == ChildEventAnyLoopStopped {
+			t.Errorf("DefaultChildEvents() = %v, must not include %q (opt-in only)", events, ChildEventAnyLoopStopped)
+		}
 	}
 }
 
@@ -1256,6 +1558,485 @@ func TestLoopStore_MarkStopped_NotFound(t *testing.T) {
 	}
 }
 
+// TestLoopStore_MarkStopped_NoObserverConfigured_NoPanic pins that a
+// LoopStore constructed via the public NewLoopStore (no sessionID/observer
+// wired, used directly by tests and by any caller bypassing Store.Loop) is a
+// pure no-op notification-wise: MarkStopped must not panic on a nil observer.
+func TestLoopStore_MarkStopped_NoObserverConfigured_NoPanic(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+}
+
+// --- SetLoopStoppedObserver / anyLoopStopped notification tests (mitto-q6my) ---
+
+// TestLoopStore_MarkStopped_NotifiesObserver_OnRealTransition is table-driven
+// over every StoppedReason: a LoopStore obtained via Store.Loop(sessionID)
+// (which threads in the Store's registered stopped-observer) must notify
+// exactly once, with the stopped session's own ID and the given reason, when
+// MarkStopped transitions an enabled loop to stopped.
+func TestLoopStore_MarkStopped_NotifiesObserver_OnRealTransition(t *testing.T) {
+	reasons := []StoppedReason{
+		StoppedReasonMaxDuration,
+		StoppedReasonMaxIterations,
+		StoppedReasonIterationSafeguard,
+		StoppedReasonPromptUnresolved,
+		StoppedReasonResumeFailures,
+		StoppedReasonContextWindowExceeded,
+		StoppedReasonDeliveryFailures,
+		StoppedReasonPausedByUser,
+		StoppedReasonDisabledByAgent,
+		StoppedReasonArchived,
+	}
+
+	for _, reason := range reasons {
+		t.Run(string(reason), func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			defer store.Close()
+
+			if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			type call struct {
+				sessionID string
+				reason    StoppedReason
+			}
+			var mu sync.Mutex
+			var calls []call
+			store.SetLoopStoppedObserver(func(sessionID string, r StoppedReason) {
+				mu.Lock()
+				defer mu.Unlock()
+				calls = append(calls, call{sessionID: sessionID, reason: r})
+			})
+
+			ps := store.Loop("child1")
+			if err := ps.Set(&LoopPrompt{
+				Prompt:    "iterate",
+				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+				Enabled:   true,
+			}); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+
+			if err := ps.MarkStopped(reason); err != nil {
+				t.Fatalf("MarkStopped(%q) error = %v", reason, err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != 1 {
+				t.Fatalf("observer invocation count = %d, want 1: %+v", len(calls), calls)
+			}
+			if calls[0].sessionID != "child1" || calls[0].reason != reason {
+				t.Errorf("observer call = %+v, want {child1 %q}", calls[0], reason)
+			}
+		})
+	}
+}
+
+// TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped verifies the
+// transition guard: several real call sites (loop_runner auto-stop retries,
+// a second MCP loop_enabled:false while already paused) can invoke
+// MarkStopped against a config that is already stopped and already carries a
+// StoppedReason. The observer must fire exactly once, on the real stop
+// transition only.
+func TestLoopStore_MarkStopped_NoDoubleNotifyOnAlreadyStopped(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("first MarkStopped() error = %v", err)
+	}
+	// Re-stop an already-stopped config with a different reason.
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("second MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Errorf("observer call count = %d, want 1 (no notify on re-stop of an already-stopped config)", callCount)
+	}
+}
+
+// TestLoopStore_MarkStopped_NotifiesAfterUpdateDisabled reproduces the shape
+// of the two caller-initiated disable paths — MCP
+// mitto_conversation_update(loop_enabled: false)
+// (tools_conversation_lifecycle.go) and the REST pause
+// (session_loop_write.go) — which run Update{Enabled:false} FIRST and only
+// then MarkStopped to record the reason. Enabled is therefore already false
+// when MarkStopped runs, so an enabled-only transition check would never
+// notify for the single most important acceptance case ("a child loop calling
+// mitto_conversation_update(loop_enabled:false) fires the parent's loop").
+func TestLoopStore_MarkStopped_NotifiesAfterUpdateDisabled(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotSession string
+	var gotReason StoppedReason
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+		gotSession = sessionID
+		gotReason = reason
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	disabled := false
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Fatalf("observer call count = %d, want 1 (Update{Enabled:false} then MarkStopped must still notify)", callCount)
+	}
+	if gotSession != "child1" {
+		t.Errorf("observer sessionID = %q, want %q", gotSession, "child1")
+	}
+	if gotReason != StoppedReasonDisabledByAgent {
+		t.Errorf("observer reason = %q, want %q", gotReason, StoppedReasonDisabledByAgent)
+	}
+}
+
+// TestLoopStore_MarkStopped_NoRenotifyAfterReStopViaUpdate verifies the
+// transition guard is not so loose that a disable/re-stamp sequence double
+// fires: once a StoppedReason is recorded, a further Update{Enabled:false} +
+// MarkStopped against the same stopped config must stay silent.
+func TestLoopStore_MarkStopped_NoRenotifyAfterReStopViaUpdate(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	disabled := false
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("first Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("first MarkStopped() error = %v", err)
+	}
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("second Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPausedByUser); err != nil {
+		t.Fatalf("second MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 1 {
+		t.Errorf("observer call count = %d, want 1 (a re-stop of an already-recorded stop must not re-notify)", callCount)
+	}
+}
+
+// TestLoopStore_MarkStopped_NotifiesAgainAfterReEnable verifies the guard
+// rearms: re-enabling a stopped loop clears StoppedReason (see Update), so a
+// subsequent stop is a fresh transition and must notify again. This is the
+// normal supervisor cycle — a driver is paused, resumed, and finishes.
+func TestLoopStore_MarkStopped_NotifiesAgainAfterReEnable(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	callCount := 0
+	store.SetLoopStoppedObserver(func(sessionID string, reason StoppedReason) {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+	})
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.MarkStopped(StoppedReasonPausedByUser); err != nil {
+		t.Fatalf("first MarkStopped() error = %v", err)
+	}
+	enabled := true
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
+		t.Fatalf("re-enable Update() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("second MarkStopped() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 2 {
+		t.Errorf("observer call count = %d, want 2 (re-enable clears StoppedReason, so the next stop is a fresh transition)", callCount)
+	}
+}
+
+// TestLoopStore_MarkStopped_NoObserverRegistered_NoOp verifies that a Store
+// with no observer registered (the default, pre-mitto-q6my state) leaves
+// MarkStopped a pure no-op notification-wise — no panic, no spurious calls.
+func TestLoopStore_MarkStopped_NoObserverRegistered_NoOp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(Metadata{SessionID: "child1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	ps := store.Loop("child1")
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxDuration); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+}
+
+// --- AcknowledgeStoppedReason tests ---
+
+func TestLoopStore_AcknowledgeStoppedReason_SetsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPromptUnresolved); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	got, changed, err := ps.AcknowledgeStoppedReason()
+	if err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	if !changed {
+		t.Error("AcknowledgeStoppedReason() should report changed=true on first ack")
+	}
+	if got.AcknowledgedStoppedReason != StoppedReasonPromptUnresolved {
+		t.Errorf("AcknowledgedStoppedReason = %q, want %q",
+			got.AcknowledgedStoppedReason, StoppedReasonPromptUnresolved)
+	}
+
+	// Persists across a re-read.
+	got, err = ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.AcknowledgedStoppedReason != StoppedReasonPromptUnresolved {
+		t.Errorf("AcknowledgedStoppedReason after re-read = %q, want %q",
+			got.AcknowledgedStoppedReason, StoppedReasonPromptUnresolved)
+	}
+}
+
+func TestLoopStore_AcknowledgeStoppedReason_IdempotentNoBroadcast(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonResumeFailures); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	if _, changed, err := ps.AcknowledgeStoppedReason(); err != nil || !changed {
+		t.Fatalf("first ack: changed=%v err=%v", changed, err)
+	}
+	// Second call must report changed=false so the handler does not
+	// re-broadcast.
+	if _, changed, err := ps.AcknowledgeStoppedReason(); err != nil || changed {
+		t.Errorf("second ack: changed=%v err=%v; want changed=false, err=nil", changed, err)
+	}
+}
+
+func TestLoopStore_AcknowledgeStoppedReason_NoStoppedReason(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	// No MarkStopped -> ack is a no-op.
+	got, changed, err := ps.AcknowledgeStoppedReason()
+	if err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	if changed {
+		t.Error("AcknowledgeStoppedReason() with no StoppedReason should report changed=false")
+	}
+	if got.AcknowledgedStoppedReason != "" {
+		t.Errorf("AcknowledgedStoppedReason should stay empty, got %q", got.AcknowledgedStoppedReason)
+	}
+}
+
+func TestLoopStore_MarkStopped_ClearsAckWhenReasonChanges(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPromptUnresolved); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	if _, _, err := ps.AcknowledgeStoppedReason(); err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	// A new, DIFFERENT stopped reason must invalidate the prior ack.
+	if err := ps.MarkStopped(StoppedReasonResumeFailures); err != nil {
+		t.Fatalf("MarkStopped(second) error = %v", err)
+	}
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.AcknowledgedStoppedReason != "" {
+		t.Errorf("AcknowledgedStoppedReason should be cleared, got %q", got.AcknowledgedStoppedReason)
+	}
+}
+
+func TestLoopStore_Update_EnableTrue_ClearsAck(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonPromptUnresolved); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+	if _, _, err := ps.AcknowledgeStoppedReason(); err != nil {
+		t.Fatalf("AcknowledgeStoppedReason() error = %v", err)
+	}
+	enabled := true
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
+		t.Fatalf("Update(enabled=true) error = %v", err)
+	}
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.AcknowledgedStoppedReason != "" {
+		t.Errorf("AcknowledgedStoppedReason should be cleared after re-enable, got %q",
+			got.AcknowledgedStoppedReason)
+	}
+}
+
 func TestLoopStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewLoopStore(dir)
@@ -1273,7 +2054,7 @@ func TestLoopStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 
 	// Re-enable via Update — stopped state must be cleared.
 	enabled := true
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
 		t.Fatalf("Update(enabled=true) error = %v", err)
 	}
 
@@ -1309,7 +2090,7 @@ func TestLoopStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T) {
 
 	// Update with enabled=false should not clear the stopped state.
 	enabled := false
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Enabled: &enabled}); err != nil {
 		t.Fatalf("Update(enabled=false) error = %v", err)
 	}
 
@@ -1365,7 +2146,7 @@ func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// nil arguments → no change
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update(nil args) error = %v", err)
 	}
 	got, _ := ps.Get()
@@ -1375,7 +2156,7 @@ func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 
 	// non-nil arguments → replace
 	newArgs := map[string]string{"KEY": "updated", "NEW": "value"}
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{Arguments: &newArgs}); err != nil {
 		t.Fatalf("Update(newArgs) error = %v", err)
 	}
 	got, _ = ps.Get()
@@ -1718,7 +2499,7 @@ func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
 
 	// Set to false via Update.
 	fa := false
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+	if err := ps.Update(LoopUpdate{CoalesceDuringBusy: &fa}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	got1, _ := ps.Get()
@@ -1730,7 +2511,7 @@ func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
 	}
 
 	// A nil update must leave it unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(LoopUpdate{}); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1740,11 +2521,777 @@ func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
 
 	// Flipping back to true.
 	tr := true
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &tr); err != nil {
+	if err := ps.Update(LoopUpdate{CoalesceDuringBusy: &tr}); err != nil {
 		t.Fatalf("Update() re-enable error = %v", err)
 	}
 	got3, _ := ps.Get()
 	if got3.CoalesceDuringBusy == nil || *got3.CoalesceDuringBusy != true {
 		t.Errorf("CoalesceDuringBusy = %v, want *true", got3.CoalesceDuringBusy)
+	}
+}
+
+// TestLoopStore_Update_RunOnStart verifies that RunOnStart round-trips through
+// Update/Get, that a nil update leaves it unchanged, and that ShouldRunOnStart()
+// reports the expected values.
+func TestLoopStore_Update_RunOnStart(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	p := &LoopPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnTasks,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Default (unset) should round-trip as nil, and ShouldRunOnStart() = false.
+	got0, _ := ps.Get()
+	if got0.RunOnStart != nil {
+		t.Errorf("RunOnStart = %v, want nil (default)", *got0.RunOnStart)
+	}
+	if got0.ShouldRunOnStart() {
+		t.Error("default ShouldRunOnStart() should be false")
+	}
+
+	// Set to true via Update.
+	tr := true
+	if err := ps.Update(LoopUpdate{RunOnStart: &tr}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	got1, _ := ps.Get()
+	if got1.RunOnStart == nil || *got1.RunOnStart != true {
+		t.Errorf("RunOnStart = %v, want *true", got1.RunOnStart)
+	}
+	if !got1.ShouldRunOnStart() {
+		t.Error("ShouldRunOnStart() should be true after opt-in")
+	}
+
+	// A nil update must leave it unchanged.
+	if err := ps.Update(LoopUpdate{}); err != nil {
+		t.Fatalf("Update() with all-nil error = %v", err)
+	}
+	got2, _ := ps.Get()
+	if got2.RunOnStart == nil || *got2.RunOnStart != true {
+		t.Errorf("RunOnStart changed on nil update: got %v", got2.RunOnStart)
+	}
+
+	// Flipping back to false.
+	fa := false
+	if err := ps.Update(LoopUpdate{RunOnStart: &fa}); err != nil {
+		t.Fatalf("Update() disable error = %v", err)
+	}
+	got3, _ := ps.Get()
+	if got3.RunOnStart == nil || *got3.RunOnStart != false {
+		t.Errorf("RunOnStart = %v, want *false", got3.RunOnStart)
+	}
+	if got3.ShouldRunOnStart() {
+		t.Error("ShouldRunOnStart() should be false after opt-out")
+	}
+}
+
+// --- Sticky auto-stop / resurrection guard tests (mitto-uun) ---
+
+// TestLoopStore_Set_PreservesAutoStopOnClobber verifies the D1 guard: once a
+// loop has been MarkStopped'd (Enabled=false + non-empty StoppedReason), a
+// subsequent Set() call carrying Enabled=true from a caller that did a
+// read → mutate → write cycle must NOT silently resurrect the loop. The on-disk
+// Enabled/StoppedReason/StoppedAt fields are the source of truth and win over
+// the incoming payload. This closes the write-ordering clobber path that
+// caused loop.json to diverge from the runtime auto-stop across a restart.
+func TestLoopStore_Set_PreservesAutoStopOnClobber(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() initial error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate a caller that read the (now-stopped) config, mutated a benign
+	// field, forgot to preserve the stopped-state fields, and wrote back with
+	// Enabled=true.  Before the D1 guard this silently resurrected the loop.
+	clobber := &LoopPrompt{
+		Prompt:    "iterate (edited)",
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Enabled:   true, // <-- the clobber
+	}
+	if err := ps.Set(clobber); err != nil {
+		t.Fatalf("Set() clobber error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() after clobber error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true after Set() clobber; sticky auto-stop was not preserved")
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q (must survive Set() clobber)",
+			got.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got.StoppedAt == nil {
+		t.Error("StoppedAt = nil after Set() clobber; expected preserved timestamp")
+	}
+	// The mutable/non-stopped fields (Prompt, Frequency) must still be applied.
+	if got.Prompt != "iterate (edited)" {
+		t.Errorf("Prompt = %q, want %q (mutable field must apply)", got.Prompt, "iterate (edited)")
+	}
+	if got.Frequency.Value != 2 {
+		t.Errorf("Frequency.Value = %d, want 2 (mutable field must apply)", got.Frequency.Value)
+	}
+}
+
+// TestLoopStore_Set_ActiveLoopRespectsIncomingEnabled is the regression guard
+// for the D1 guard's blast radius: on an already-running (not-stopped) config,
+// Set() must still take the incoming Enabled value verbatim. Otherwise pausing
+// a loop by round-tripping (Enabled=false, no StoppedReason) would silently
+// fail — only auto-stopped configs are sticky, not paused ones.
+func TestLoopStore_Set_ActiveLoopRespectsIncomingEnabled(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() initial error = %v", err)
+	}
+
+	// Set() with Enabled=false must land — the loop is NOT in the sticky
+	// auto-stopped state (StoppedReason is empty), so the D1 guard must not
+	// engage.
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   false,
+	}); err != nil {
+		t.Fatalf("Set() disable error = %v", err)
+	}
+	got, _ := ps.Get()
+	if got.Enabled {
+		t.Error("Enabled = true after Set(Enabled=false) on an active loop; the guard misfired")
+	}
+	if got.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty (no auto-stop yet)", got.StoppedReason)
+	}
+}
+
+// TestLoopStore_AutoStopSurvivesRestartAndClobber is the end-to-end acceptance
+// test for mitto-uun (acceptance criterion #1): after auto-stop, loop.json
+// reflects Enabled=false + terminal iteration_count, a fresh LoopStore ("process
+// restart") sees the same state, and a subsequent clobbering Set() call from
+// e.g. a restart-time config write does NOT resurrect the loop.
+func TestLoopStore_AutoStopSurvivesRestartAndClobber(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:        "iterate",
+		Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 3,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	// Bump the iteration counter a few times, then hit the cap via MarkStopped.
+	for i := 0; i < 3; i++ {
+		if err := ps.RecordSent(); err != nil {
+			t.Fatalf("RecordSent()[%d] error = %v", i, err)
+		}
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate restart: fresh LoopStore on the same session directory.
+	ps2 := NewLoopStore(dir)
+	got, err := ps2.Get()
+	if err != nil {
+		t.Fatalf("Get() on fresh store error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true after restart; auto-stop did not persist")
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q after restart",
+			got.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got.IterationCount != 3 {
+		t.Errorf("IterationCount = %d, want 3 after restart", got.IterationCount)
+	}
+
+	// Simulate a restart-time restore-config path that writes back with
+	// Enabled=true. Before the D1 guard this resurrected the loop; now the
+	// sticky auto-stop must survive.
+	if err := ps2.Set(&LoopPrompt{
+		Prompt:        "iterate",
+		Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 3,
+	}); err != nil {
+		t.Fatalf("Set() restart-clobber error = %v", err)
+	}
+	got2, _ := ps2.Get()
+	if got2.Enabled {
+		t.Error("Enabled = true after post-restart Set() clobber; sticky auto-stop bypassed")
+	}
+	if got2.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q after post-restart Set() clobber",
+			got2.StoppedReason, StoppedReasonMaxIterations)
+	}
+	if got2.IterationCount != 3 {
+		t.Errorf("IterationCount = %d, want 3 (counter preserved by Set)", got2.IterationCount)
+	}
+}
+
+// TestLoopStore_RecordSent_OnStoppedLoop_ReturnsSentinel verifies D3: when
+// RecordSent is called on a loop that is already MarkStopped'd, it returns the
+// ErrRecordSentOnStoppedLoop sentinel wrapped alongside a successful on-disk
+// write. Callers can errors.Is-check it and emit a WARN without changing
+// behavior; the resurrection-detector must not swallow the write.
+func TestLoopStore_RecordSent_OnStoppedLoop_ReturnsSentinel(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.MarkStopped(StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	err := ps.RecordSent()
+	if !errors.Is(err, ErrRecordSentOnStoppedLoop) {
+		t.Fatalf("RecordSent() on stopped loop error = %v, want ErrRecordSentOnStoppedLoop", err)
+	}
+
+	// Even though the sentinel was returned, the on-disk write must have
+	// succeeded — LastSentAt and IterationCount must reflect the delivery.
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.IterationCount != 1 {
+		t.Errorf("IterationCount = %d, want 1 (write must succeed alongside sentinel)",
+			got.IterationCount)
+	}
+	if got.LastSentAt == nil {
+		t.Error("LastSentAt = nil, want non-nil (write must succeed alongside sentinel)")
+	}
+	// The stopped-state fields must NOT be cleared by RecordSent.
+	if got.Enabled {
+		t.Error("Enabled = true after RecordSent on stopped loop; state must not be cleared")
+	}
+	if got.StoppedReason != StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q (must survive RecordSent)",
+			got.StoppedReason, StoppedReasonMaxIterations)
+	}
+}
+
+// TestLoopStore_RecordSent_OnHealthyLoop_ReturnsNil is the regression guard
+// for D3's blast radius: the resurrection sentinel must fire only on
+// already-stopped configs, never on healthy running loops.
+func TestLoopStore_RecordSent_OnHealthyLoop_ReturnsNil(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.RecordSent(); err != nil {
+		t.Errorf("RecordSent() on healthy loop error = %v, want nil", err)
+	}
+}
+
+// TestLoopStore_RecordSent_OnAgentDisabledLoop_DoesNotReturnSentinel is the
+// reproduction test for mitto-8wx: the resurrection sentinel
+// (ErrRecordSentOnStoppedLoop) is meant to flag genuine mitto-uun-class
+// resurrection bugs (a Set() clobber or a lost auto-stop write racing a
+// concurrent delivery). It must NOT fire for the ordinary, expected shutdown
+// path where a loop-driver prompt self-disables its own loop mid-turn via
+// mitto_conversation_update(loop_enabled:false) — internal/mcpserver/
+// tools_conversation_lifecycle.go calls MarkStopped(StoppedReasonDisabledByAgent)
+// for that path — and the already-in-flight OnComplete callback then calls
+// RecordSent() on what is now a deliberately-stopped loop
+// (internal/conversation/loop_runner.go:2079). That is benign self-stop, not
+// resurrection, and today it is indistinguishable from a real regression,
+// which is exactly the noise reported in production (mitto.log WARNs across
+// sessions 20260802-161041-518d4bfd, 20260802-171804-39297cda,
+// 20260803-080738-1e23182e — all "Loop fixing bug" driver runs that hit
+// Step 3d's inline loop_enabled:false).
+//
+// This currently FAILS because RecordSent's stoppedResurrection check treats
+// every non-empty StoppedReason identically, without distinguishing the
+// resumable/paused reasons (pausedByUser, disabledByAgent, archived) from
+// genuine auto-stop reasons (maxIterations, iterationSafeguard, maxDuration,
+// promptUnresolved, resumeFailures, contextWindowExceeded).
+func TestLoopStore_RecordSent_OnAgentDisabledLoop_DoesNotReturnSentinel(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Simulate the agent self-disabling its own loop mid-turn (the exact path
+	// hit by mitto_conversation_update(loop_enabled:false) in production).
+	if err := ps.MarkStopped(StoppedReasonDisabledByAgent); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Simulate the OnComplete callback (captured before the mid-turn stop)
+	// still firing RecordSent() after the turn ends.
+	if err := ps.RecordSent(); err != nil {
+		t.Errorf("RecordSent() after benign self-stop (disabledByAgent) error = %v, want nil (not a resurrection)", err)
+	}
+}
+
+// TestLoopPrompt_MultiTrigger_Membership pins the membership helpers used by the
+// multi-trigger dispatch paths (mitto-r6j.2): every listed trigger must report
+// true regardless of its position in the list, and the legacy singular field and
+// the implicit default must keep working.
+func TestLoopPrompt_MultiTrigger_Membership(t *testing.T) {
+	tests := []struct {
+		name         string
+		loop         LoopPrompt
+		schedule     bool
+		onCompletion bool
+		onTasks      bool
+		wantPrimary  LoopTrigger
+	}{
+		{
+			name:        "implicit default is schedule",
+			loop:        LoopPrompt{},
+			schedule:    true,
+			wantPrimary: TriggerSchedule,
+		},
+		{
+			name:         "legacy singular onCompletion",
+			loop:         LoopPrompt{Trigger: TriggerOnCompletion},
+			onCompletion: true,
+			wantPrimary:  TriggerOnCompletion,
+		},
+		{
+			name:         "schedule and onCompletion",
+			loop:         LoopPrompt{Triggers: []LoopTrigger{TriggerSchedule, TriggerOnCompletion}},
+			schedule:     true,
+			onCompletion: true,
+			wantPrimary:  TriggerSchedule,
+		},
+		{
+			name:        "onTasks first, schedule second",
+			loop:        LoopPrompt{Triggers: []LoopTrigger{TriggerOnTasks, TriggerSchedule}},
+			schedule:    true,
+			onTasks:     true,
+			wantPrimary: TriggerOnTasks,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.loop.IsSchedule(); got != tt.schedule {
+				t.Errorf("IsSchedule() = %v, want %v", got, tt.schedule)
+			}
+			if got := tt.loop.IsOnCompletion(); got != tt.onCompletion {
+				t.Errorf("IsOnCompletion() = %v, want %v", got, tt.onCompletion)
+			}
+			if got := tt.loop.IsOnTasks(); got != tt.onTasks {
+				t.Errorf("IsOnTasks() = %v, want %v", got, tt.onTasks)
+			}
+			if got := tt.loop.EffectiveTrigger(); got != tt.wantPrimary {
+				t.Errorf("EffectiveTrigger() = %q, want %q", got, tt.wantPrimary)
+			}
+		})
+	}
+}
+
+// TestLoopStore_ComputeNextScheduledTime_MultiTrigger verifies that a loop
+// listing schedule alongside an event-driven trigger still gets a next-run
+// anchor (mitto-r6j.2). Before the multi-trigger dispatch work the presence of
+// onTasks/onCompletion suppressed NextScheduledAt entirely, so the schedule leg
+// of such a config could never fire.
+func TestLoopStore_ComputeNextScheduledTime_MultiTrigger(t *testing.T) {
+	tests := []struct {
+		name     string
+		triggers []LoopTrigger
+		wantNext bool
+	}{
+		{"schedule only", []LoopTrigger{TriggerSchedule}, true},
+		{"schedule and onTasks", []LoopTrigger{TriggerSchedule, TriggerOnTasks}, true},
+		{"onTasks then schedule", []LoopTrigger{TriggerOnTasks, TriggerSchedule}, true},
+		{"schedule and onCompletion", []LoopTrigger{TriggerSchedule, TriggerOnCompletion}, true},
+		{"onCompletion only", []LoopTrigger{TriggerOnCompletion}, false},
+		{"onTasks only", []LoopTrigger{TriggerOnTasks}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := NewLoopStore(t.TempDir())
+			loop := &LoopPrompt{
+				Prompt:    "Test",
+				Triggers:  tt.triggers,
+				Frequency: Frequency{Value: 4, Unit: FrequencyHours},
+				Enabled:   true,
+			}
+			if err := ps.Set(loop); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if (got.NextScheduledAt != nil) != tt.wantNext {
+				t.Errorf("NextScheduledAt set = %v, want %v (triggers=%v)",
+					got.NextScheduledAt != nil, tt.wantNext, tt.triggers)
+			}
+		})
+	}
+}
+
+// TestLoopStore_DeferNextSchedule_MultiTrigger verifies the failure backoff
+// applies to a multi-trigger loop that has a schedule leg, and stays a no-op for
+// a purely event-driven one (mitto-r6j.2).
+func TestLoopStore_DeferNextSchedule_MultiTrigger(t *testing.T) {
+	tests := []struct {
+		name      string
+		triggers  []LoopTrigger
+		wantDefer bool
+	}{
+		{"schedule and onTasks", []LoopTrigger{TriggerSchedule, TriggerOnTasks}, true},
+		{"onTasks only", []LoopTrigger{TriggerOnTasks}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := NewLoopStore(t.TempDir())
+			loop := &LoopPrompt{
+				Prompt:    "Test",
+				Triggers:  tt.triggers,
+				Frequency: Frequency{Value: 4, Unit: FrequencyHours},
+				Enabled:   true,
+			}
+			if err := ps.Set(loop); err != nil {
+				t.Fatalf("Set() error = %v", err)
+			}
+			if err := ps.DeferNextSchedule(90 * time.Minute); err != nil {
+				t.Fatalf("DeferNextSchedule() error = %v", err)
+			}
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if !tt.wantDefer {
+				if got.NextScheduledAt != nil {
+					t.Errorf("NextScheduledAt = %v, want nil (no schedule leg)", got.NextScheduledAt)
+				}
+				return
+			}
+			if got.NextScheduledAt == nil {
+				t.Fatal("NextScheduledAt = nil, want the deferred time")
+			}
+			until := time.Until(*got.NextScheduledAt)
+			if until < time.Hour || until > 2*time.Hour {
+				t.Errorf("NextScheduledAt is %v out, want ~90m (defer must apply)", until)
+			}
+		})
+	}
+}
+
+// TestLoopPrompt_Validate_MultiTrigger_RequiresFrequency verifies that listing
+// schedule anywhere in the trigger list makes the frequency mandatory
+// (mitto-r6j.2) — previously only a schedule-primary config was validated.
+func TestLoopPrompt_Validate_MultiTrigger_RequiresFrequency(t *testing.T) {
+	invalid := &LoopPrompt{
+		Prompt:   "Test",
+		Triggers: []LoopTrigger{TriggerOnTasks, TriggerSchedule},
+		Enabled:  true,
+	}
+	if err := invalid.Validate(); err == nil {
+		t.Error("Validate() = nil for [onTasks, schedule] with no frequency; want a frequency error")
+	}
+
+	valid := &LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerOnTasks, TriggerSchedule},
+		Frequency: Frequency{Value: 4, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("Validate() error = %v, want nil", err)
+	}
+
+	eventOnly := &LoopPrompt{
+		Prompt:   "Test",
+		Triggers: []LoopTrigger{TriggerOnTasks, TriggerOnCompletion},
+		Enabled:  true,
+	}
+	if err := eventOnly.Validate(); err != nil {
+		t.Errorf("Validate() error = %v for event-only triggers, want nil", err)
+	}
+}
+
+// TestLoopStore_Update_TriggersReplacesWholesaleAndSyncsLegacyScalar verifies
+// that LoopUpdate.Triggers replaces the stored trigger list wholesale and
+// that Normalize() (invoked by Update) syncs the legacy scalar Trigger field
+// to the new primary (first) entry (mitto-r6j.5).
+func TestLoopStore_Update_TriggersReplacesWholesaleAndSyncsLegacyScalar(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerSchedule},
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	newTriggers := []LoopTrigger{TriggerOnTasks, TriggerOnCompletion}
+	if err := ps.Update(LoopUpdate{Triggers: &newTriggers}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(got.Triggers) != 2 || got.Triggers[0] != TriggerOnTasks || got.Triggers[1] != TriggerOnCompletion {
+		t.Errorf("Triggers = %v, want [onTasks onCompletion] (wholesale replace)", got.Triggers)
+	}
+	if got.Trigger != TriggerOnTasks {
+		t.Errorf("Trigger (legacy scalar) = %q, want %q (synced to Triggers[0])", got.Trigger, TriggerOnTasks)
+	}
+}
+
+// TestLoopStore_Update_UnrelatedFieldDoesNotClobberTriggers is the regression
+// test for the mitto-r6j.5 clobber bug: the pre-fix Update() collapsed a
+// multi-trigger config to a single trigger on ANY write that passed a
+// (then-scalar) trigger value. With LoopUpdate, an update that leaves
+// Triggers nil must leave a pre-existing two-trigger list fully intact.
+func TestLoopStore_Update_UnrelatedFieldDoesNotClobberTriggers(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerSchedule, TriggerOnCompletion},
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	disabled := false
+	if err := ps.Update(LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled after Update() = true, want false")
+	}
+	effective := got.EffectiveTriggers()
+	if len(effective) != 2 || !got.HasTrigger(TriggerSchedule) || !got.HasTrigger(TriggerOnCompletion) {
+		t.Errorf("EffectiveTriggers() after unrelated Update() = %v, want both schedule and onCompletion preserved (clobber regression)", effective)
+	}
+}
+
+// TestLoopStore_Get_LegacyOnDiskShape_FallbackViaEffectiveTriggers verifies
+// the read-side fallback path for a pre-r6j loop.json that persisted ONLY the
+// legacy scalar `trigger` field and has NO `triggers` array on disk
+// (mitto-r6j.5 acceptance: EffectiveTriggers fallback for old persisted
+// files). LoopStore.Get must return the record unchanged (no in-place
+// rewrite) and EffectiveTriggers/IsOnCompletion/IsOnTasks must resolve
+// against the legacy scalar so the runner sees the correct trigger set even
+// before any Set/Update rewrites the file.
+func TestLoopStore_Get_LegacyOnDiskShape_FallbackViaEffectiveTriggers(t *testing.T) {
+	tests := []struct {
+		name        string
+		diskJSON    string
+		wantTrigs   []LoopTrigger
+		wantPrimary LoopTrigger
+	}{
+		{
+			name: "legacy onCompletion (no triggers array)",
+			// Deliberately hand-crafted to look like a file written by pre-r6j
+			// Mitto: scalar `trigger` only, no `triggers` key. Includes the
+			// minimal fields Validate needs for an enabled loop.
+			diskJSON: `{
+  "prompt": "keep going",
+  "enabled": true,
+  "frequency": {"value": 1, "unit": "hours"},
+  "trigger": "onCompletion",
+  "delay_seconds": 30,
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerOnCompletion},
+			wantPrimary: TriggerOnCompletion,
+		},
+		{
+			name: "legacy schedule (no triggers array)",
+			diskJSON: `{
+  "prompt": "poll",
+  "enabled": true,
+  "frequency": {"value": 4, "unit": "hours"},
+  "trigger": "schedule",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerSchedule},
+			wantPrimary: TriggerSchedule,
+		},
+		{
+			name: "legacy onTasks (no triggers array)",
+			diskJSON: `{
+  "prompt": "react",
+  "enabled": true,
+  "frequency": {"value": 1, "unit": "hours"},
+  "trigger": "onTasks",
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerOnTasks},
+			wantPrimary: TriggerOnTasks,
+		},
+		{
+			name: "legacy record with NEITHER triggers NOR trigger falls back to schedule",
+			// A pre-r6j record that also predates the on-completion trigger:
+			// EffectiveTriggers must default to schedule.
+			diskJSON: `{
+  "prompt": "ancient",
+  "enabled": true,
+  "frequency": {"value": 1, "unit": "hours"},
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}`,
+			wantTrigs:   []LoopTrigger{TriggerSchedule},
+			wantPrimary: TriggerSchedule,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// Write the legacy-shape file directly — bypassing Set() so
+			// Normalize() cannot back-fill Triggers from Trigger before
+			// persisting. This is exactly the on-disk shape produced by
+			// pre-r6j versions of Mitto.
+			if err := os.WriteFile(filepath.Join(dir, loopFileName), []byte(tc.diskJSON), 0o644); err != nil {
+				t.Fatalf("write legacy loop.json: %v", err)
+			}
+
+			ps := NewLoopStore(dir)
+			got, err := ps.Get()
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+
+			// Get must NOT rewrite Triggers on read — the on-disk file is the
+			// canonical source of truth. The fallback lives purely in
+			// EffectiveTriggers.
+			if len(got.Triggers) != 0 {
+				t.Errorf("Triggers = %v after Get() on legacy file, want empty "+
+					"(read-side fallback must not mutate the returned record)", got.Triggers)
+			}
+
+			gotTrigs := got.EffectiveTriggers()
+			if len(gotTrigs) != len(tc.wantTrigs) {
+				t.Fatalf("EffectiveTriggers() = %v, want %v", gotTrigs, tc.wantTrigs)
+			}
+			for i := range gotTrigs {
+				if gotTrigs[i] != tc.wantTrigs[i] {
+					t.Errorf("EffectiveTriggers()[%d] = %q, want %q", i, gotTrigs[i], tc.wantTrigs[i])
+				}
+			}
+			if primary := got.EffectiveTrigger(); primary != tc.wantPrimary {
+				t.Errorf("EffectiveTrigger() = %q, want %q", primary, tc.wantPrimary)
+			}
+
+			// IsOnCompletion / IsOnTasks / IsSchedule must all agree with the
+			// resolved fallback list, so the loop runner (which switches on
+			// these) picks the correct arm path for a legacy record.
+			wantOnCompletion := false
+			wantOnTasks := false
+			wantSchedule := false
+			for _, tr := range tc.wantTrigs {
+				switch tr {
+				case TriggerOnCompletion:
+					wantOnCompletion = true
+				case TriggerOnTasks:
+					wantOnTasks = true
+				case TriggerSchedule:
+					wantSchedule = true
+				}
+			}
+			if got.IsOnCompletion() != wantOnCompletion {
+				t.Errorf("IsOnCompletion() = %v, want %v", got.IsOnCompletion(), wantOnCompletion)
+			}
+			if got.IsOnTasks() != wantOnTasks {
+				t.Errorf("IsOnTasks() = %v, want %v", got.IsOnTasks(), wantOnTasks)
+			}
+			if got.IsSchedule() != wantSchedule {
+				t.Errorf("IsSchedule() = %v, want %v", got.IsSchedule(), wantSchedule)
+			}
+		})
+	}
+}
+
+// TestLoopStore_SavedSlot_PreservesMultiTriggerList verifies that Detach()
+// followed by GetSaved() round-trips a two-trigger list unchanged
+// (mitto-r6j.5 acceptance: saved-slot round-trip).
+func TestLoopStore_SavedSlot_PreservesMultiTriggerList(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "Test",
+		Triggers:  []LoopTrigger{TriggerSchedule, TriggerOnTasks},
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.Detach(); err != nil {
+		t.Fatalf("Detach() error = %v", err)
+	}
+
+	saved, err := ps.GetSaved()
+	if err != nil {
+		t.Fatalf("GetSaved() error = %v", err)
+	}
+	if len(saved.Triggers) != 2 || !saved.HasTrigger(TriggerSchedule) || !saved.HasTrigger(TriggerOnTasks) {
+		t.Errorf("saved.Triggers = %v, want both schedule and onTasks preserved", saved.Triggers)
+	}
+	if saved.Trigger != TriggerSchedule {
+		t.Errorf("saved.Trigger (legacy scalar) = %q, want %q", saved.Trigger, TriggerSchedule)
 	}
 }

@@ -1,0 +1,153 @@
+icon: check
+name: Feature — test phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to test
+  - name: SubmitStrategy
+    type: text
+    group: Advanced
+    required: false
+    description: How finished work is submitted. "Commit" (default) — commit any test-related changes after this phase. "Pull Request" — same, on the bead's existing feature branch. "None" — leave changes staged for review.
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
+description: Internal phase-tier prompt — write/extend tests covering a feature's acceptance criteria and add the `tested` label. Invoked by name from the feature-implementation driver; runs on the Coding tier.
+group: Tasks
+backgroundColor: '#FFE0B2'
+preferredModels:
+  - modelTag: Coding
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Feature Implementation — Test Phase
+
+  This is the **test** stage of the label-encoded feature-implementation state machine
+  (`planned` → `implemented` → `tested` → `verified`). It is normally invoked by name
+  from the `Loop implementing feature` driver (or by a list orchestrator), which
+  selects this phase when the target bead carries `implemented` but not yet `tested`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-test is disabled." -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** — committed on the configured task/epic branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-test is enabled." }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"      $target
+      "Noun"        "target feature"
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+  ) }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  {{ template "beads-issues/shared/tier-check" (dict
+      "Target"    $target
+      "Tier"      "Coding"
+      "Phase"     "test"
+      "Confirmed" (Model "Coding")
+      "ModelName" .Session.ModelName
+      "ModelTags" .Session.ModelTags
+  ) }}
+
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels`, acceptance criteria, and prior comments (especially the
+  `Plan:` and `Implementation:` comments — they tell you the approach and what was
+  built). If `tested` is already present, this phase's work is already done —
+  `bd comment` a note that the phase re-ran redundantly and stop **without**
+  re-adding the label.
+
+  ## Step 2 — Write and run tests
+
+  This is a **scheduled, silent** phase (invoked by the driver's on-completion
+  loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
+  decide autonomously; if something is genuinely unclear or unsolvable without user
+  input, defer via **Step 4**.
+
+  Write or extend tests that cover the bead's **acceptance criteria**:
+
+  - Use the project's existing test framework and conventions (mirror nearby tests).
+  - Cover the behavior described in the plan/implementation, including realistic
+    edge cases implied by the acceptance criteria.
+
+  Run the **new** tests and the **full relevant suite** (the package(s) touched by the
+  implementation, plus anything that depends on them) and keep iterating until **both**
+  pass — do not stop at a partial pass. Capture the exact commands and passing output
+  as evidence.
+
+  ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }}
+
+  ```bash
+  bd comment {{ $target }} "Testing [tier: Coding]: <tests added/extended, command to run them, pass/fail evidence>."
+  bd update {{ $target }} --add-label tested
+  ```
+
+  Only add the label after the comment is posted and all tests are green.
+
+  {{ if $commit -}}
+  Then commit the test changes as a **single, focused commit** using the project's
+  commit conventions and reference the bead ID in the message.
+
+  {{ template "git/shared/safe-commit" (dict
+      "Type"     "test"
+      "Target"   $target
+      "Summary"  "<one-line summary>"
+      "BodyHint" (printf "<body: what was tested and why, reference %s>" $target)
+  ) }}
+
+  Do **not** push automatically — the driver / user decides when to push. Skip the
+  commit if nothing changed.
+  {{- else -}}
+  Do **not** commit. Leave the test changes staged/unstaged for the user to review;
+  the bead comment already records what changed.
+  {{- end }}
+
+  Then stop — the driver's next scheduled run will observe `tested` and dispatch the
+  review phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-feature>"
+      "Label"       "tested"
+      "Intro"       "(tests will not go green, coverage requires a decision only the user can make)"
+      "BlockedAt"   "test"
+  ) }}
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`tested`). Do not
+    self-review or close — the review phase runs next.
+  - **Green before green label.** Never add `tested` while any new or existing
+    relevant test is red.
+  - **Commit to persist across iterations.** Each phase runs in a separate loop
+    iteration; with `SubmitStrategy: "None"`, work here is only as durable as the
+    conversation's working tree.
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Testing"
+      "Tier"            "Coding"
+  ) }}

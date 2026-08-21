@@ -5,10 +5,11 @@ globs:
   - "tests/integration/**/*"
   - "tests/mocks/**/*"
   - "tests/smoke/**/*"
-  - "internal/client/**/*"
+  - "pkg/api/**/*"
   - "web/static/**/*.test.js"
   - "web/static/lib.js"
-  - "web/static/package.json"
+  - "package.json"
+  - "bunfig.toml"
   - "web/static/utils/*.test.js"
 keywords:
   - unit test
@@ -29,13 +30,23 @@ keywords:
 ```bash
 make test              # All unit tests
 make test-go           # Go unit tests only
-make test-js           # JavaScript unit tests (cd web/static && npm test)
+make test-js           # JavaScript unit tests (bun test web/static)
 make test-integration  # Integration tests
 make smoke-build       # Cross-compile binaries + build Docker image
 make smoke-test-cli    # CLI-only smoke tests inside Docker (fast, no browser)
 make smoke-test        # Full smoke tests (CLI + Playwright via Docker)
 make smoke-clean       # Clean up Docker image and .build/ artifacts
 ```
+
+## JavaScript Test Runner: Bun
+
+`bun test web/static` is the authoritative JS unit-test runner (Phase 3 of
+mitto-txpp). The `web/static` scope matches Jest's old `roots` configuration
+and keeps Bun's recursive discovery away from `tests/ui/specs/*.spec.ts`
+(Playwright specs, incompatible test runner). `bunfig.toml` preloads
+`scripts/bun-happy-dom.js` which registers happy-dom as the global DOM for
+tests that touch `window` / `document` / `DOMParser`. Jest and
+`jest-environment-jsdom` are no longer devDependencies.
 
 ## Test Isolation for Global State
 
@@ -68,7 +79,7 @@ func TestSomething(t *testing.T) {
 
 **Mock ACP**: `make build-mock-acp` always before integration tests. Scenario matching via regex in `tests/fixtures/responses/*.json`.
 
-**Setup**: `SetupTestServer(t)` in `internal/client/test_helpers.go` — isolates temp dir + resets appdir cache.
+**Setup**: `SetupTestServer(t)` in `tests/integration/inprocess/setup_test.go` — isolates temp dir + resets appdir cache.
 
 **Run**: `go test -tags integration ./tests/integration/inprocess`
 
@@ -111,3 +122,5 @@ err := cmd.Run()  // Timeout kills shell + all children
 - Timeout enforcement via context requires process group setup or subprocess escapes
 - Verify a previous turn's edits actually persisted (`git status`/`git diff`) before continuing — apparent changes can be lost across session gaps/restarts
 - When new test failures appear after a frontend/htm change, `git stash` and re-run the same tests against the base branch first — this distinguishes real regressions from pre-existing flakiness (e.g. test-isolation/state-leak failures) before spending time debugging your own code
+- **Per-session sidecar test helpers must create the session first** (mitto-32ef/mitto-e8ij): tests that obtain a `Queue` (or any per-session sidecar) via `store.NewStore(...).Queue(id)` MUST first call `store.Create(session.Metadata{SessionID: id, ACPServer: ..., WorkingDir: ...})`. Since mitto-32ef, `Queue.writeQueue` uses `fileutil.WriteJSONAtomicIfDirExists` and no longer `MkdirAll`s the session dir, so `Queue.Add` fails with `ErrParentDirMissing` if the session was never created. Convention already followed ~30× in `internal/conversation/background_session_test.go`.
+- **`.githooks/pre-commit` runs `make fmt-check` (`gofmt -l .`) over the WHOLE tree**, including gitignored sibling checkouts under `.mitto/worktrees/*` (owned by other concurrent Mitto sessions — never edit them). Consequence: after a Go upgrade whose new `gofmt` reformats previously-clean files (e.g. Go 1.27's trailing-comment alignment tweak of `internal/conversation/markdown_streaming_fixtures_test.go`), the hook will block commits until every worktree copy is also formatted — impossible for the current author. Verify your own staged files independently with `git diff --name-only --cached | grep '\.go$' | xargs gofmt -l` (empty output = safe); if clean, `--no-verify` is the correct escape and the main-tree drift should still land as its own `chore: gofmt <file> for Go <X.Y>` commit isolated from feature work. The repo also ships a custom `.go` git diff driver that renders "No syntactic changes" for cosmetic diffs — bypass with `diff -u <(git show <ref>:<path>) <path>` or `git diff --no-ext-diff` when you need raw bytes.

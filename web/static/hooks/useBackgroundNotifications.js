@@ -73,6 +73,68 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
+  // Listen for health-recycle events (GC Tier 5/6 restarted a wedged agent
+  // process that stopped completing session/new or session/load RPCs, mitto-aoo)
+  useEffect(() => {
+    const handleHealthRecycled = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      const count = data.session_count || 0;
+      const convs = count === 1 ? "conversation" : "conversations";
+      showToast({
+        style: "warning",
+        title: `Agent restarted: ${name}`,
+        message: `A stuck agent process was automatically restarted. ${count} ${convs} will resume automatically when reopened.`,
+        duration: 10000,
+      });
+    };
+    window.addEventListener("mitto:agent_recycled", handleHealthRecycled);
+    return () => {
+      window.removeEventListener("mitto:agent_recycled", handleHealthRecycled);
+    };
+  }, [showToast]);
+
+  // Listen for degraded-state events (GC Tier 5 detected — or cleared — a
+  // saturated / MCP-init-gated / MCP-init-wedged shared ACP process, fired
+  // BEFORE an eventual health recycle, mitto-13n.3). This is the pre-recycle
+  // signal: a degraded process that stays busy (or not yet idle) can go
+  // unnoticed for a long time otherwise, since the health-recycle toast only
+  // fires once the process is actually stopped.
+  useEffect(() => {
+    const handleAgentDegraded = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      if (data.degraded) {
+        showToast({
+          style: "warning",
+          title: `Agent degraded: ${name}`,
+          message:
+            "The agent process is stuck or slow to respond. Background features (titles, suggestions) are paused; it will be restarted automatically once idle.",
+          duration: 10000,
+        });
+      } else {
+        showToast({
+          style: "info",
+          title: `Agent recovered: ${name}`,
+          message: "The agent process is responding normally again.",
+          duration: 6000,
+        });
+      }
+    };
+    window.addEventListener("mitto:agent_degraded", handleAgentDegraded);
+    return () => {
+      window.removeEventListener("mitto:agent_degraded", handleAgentDegraded);
+    };
+  }, [showToast]);
+
   // Listen for MCP-init progress events (mitto-8ul.1): agent is blocked waiting
   // for MCP servers to initialize on cold start. Informational, low-priority toast.
   useEffect(() => {
@@ -110,11 +172,18 @@ export function useBackgroundNotifications({
         data.workspace_name ||
         (data.working_dir ? data.working_dir.split("/").pop() : "") ||
         "a workspace";
+      // mitto-m8nx (AC2): name the offending MCP server(s) when the agent's
+      // stderr included a per-server status line; fall back to the generic
+      // workspace-only message when it did not.
+      const servers = Array.isArray(data.mcp_servers) ? data.mcp_servers : [];
+      const message =
+        servers.length > 0
+          ? `The following MCP server(s) did not start in time: ${servers.join(", ")}. Check that they are reachable or remove them from the workspace configuration.`
+          : "The agent could not start all configured MCP servers. Check that every MCP server is reachable or remove it from the workspace configuration.";
       showToast({
         style: "error",
         title: `MCP initialization timed out: ${name}`,
-        message:
-          "The agent could not start all configured MCP servers. Check that every MCP server is reachable or remove it from the workspace configuration.",
+        message,
         duration: 30000,
       });
     };
@@ -217,18 +286,24 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
-  // Listen for hook failed events
+  // Listen for hook failed events. Transient failures (e.g. cloudflared
+  // loopback DNS refusal during bootstrap, mitto-y6i) are rendered as a
+  // quieter info-style toast rather than a red warning so users are not
+  // alarmed by normal network fluctuations — the backend already throttles
+  // the first N transient failures per window so only persistent transient
+  // failures reach the frontend.
   useEffect(() => {
     const handleHookFailed = (event) => {
       const data = event.detail;
       if (data) {
         const exitPart =
           data.exit_code !== undefined ? ` (exit code ${data.exit_code})` : "";
+        const transient = !!data.transient;
         showToast({
-          style: "warning",
-          title: `Hook Failed: ${data.name || "up"}${exitPart}`,
+          style: transient ? "info" : "warning",
+          title: `Hook ${transient ? "Blip" : "Failed"}: ${data.name || "up"}${exitPart}`,
           message: data.error || "",
-          duration: 10000,
+          duration: transient ? 5000 : 10000,
         });
       }
     };
@@ -275,14 +350,30 @@ export function useBackgroundNotifications({
         );
       }
 
-      // Show in-app toast. When the notification carries a session_id, clicking
-      // it brings that conversation into focus (leaving the beads view if open).
+      // Show in-app toast. Click precedence:
+      //  1. beads_issue → open the beads viewer for that issue (takes priority
+      //     because a bead-scoped notification is implicitly about the bead,
+      //     not the conversation). Guarded on window.mittoOpenBeadsIssue so
+      //     old/stripped frontends no-op instead of throwing.
+      //  2. session_id → focus that conversation (pre-existing behavior).
+      //  3. otherwise non-clickable.
+      let onClick = null;
+      if (data.beads_issue) {
+        const beadsIssue = data.beads_issue;
+        onClick = () => {
+          if (typeof window.mittoOpenBeadsIssue === "function") {
+            window.mittoOpenBeadsIssue(beadsIssue);
+          }
+        };
+      } else if (data.session_id) {
+        onClick = () => focusSession(data.session_id);
+      }
       showToast({
         style: data.style || "info",
         title: data.title || "Notification",
         message: data.message || "",
         duration: data.style === "error" ? 8000 : 5000,
-        onClick: data.session_id ? () => focusSession(data.session_id) : null,
+        onClick,
       });
     };
     window.addEventListener("mitto:notification", handleNotification);

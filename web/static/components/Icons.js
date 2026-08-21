@@ -378,6 +378,28 @@ export function CircleIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Palette/swatch icon (Heroicons outline) — used for the "Change color" menu
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PaletteIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M4.098 19.902a3.75 3.75 0 0 0 5.304 0l6.401-6.402M6.75 21A3.75 3.75 0 0 1 3 17.25V4.125C3 3.504 3.504 3 4.125 3h5.25c.621 0 1.125.504 1.125 1.125v4.072M6.75 21a3.75 3.75 0 0 0 3.75-3.75V8.197M6.75 21h13.125c.621 0 1.125-.504 1.125-1.125v-5.25c0-.621-.504-1.125-1.125-1.125h-4.072M10.5 8.197l2.88-2.88c.438-.439 1.15-.439 1.59 0l3.712 3.713c.44.44.44 1.152 0 1.59l-2.879 2.88M6.75 17.25h.008v.008H6.75v-.008Z"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Arrow down icon (for scroll to bottom)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
@@ -652,6 +674,28 @@ export function ErrorIcon({ className = "w-4 h-4" }) {
         stroke-linejoin="round"
         stroke-width="2"
         d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Warning triangle icon (with exclamation)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function WarningIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
       />
     </svg>
   `;
@@ -1123,6 +1167,28 @@ export function ChevronRightIcon({ className = "w-4 h-4" }) {
         stroke-linejoin="round"
         stroke-width="2"
         d="M9 5l7 7-7 7"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Chevron left icon (mirror of ChevronRightIcon)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ChevronLeftIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M15 19l-7-7 7-7"
       />
     </svg>
   `;
@@ -1725,6 +1791,7 @@ export const PROMPT_ICONS = {
   loop: LoopIcon,
   queue: QueueIcon,
   play: PlayFilledIcon,
+  clock: ClockIcon,
 };
 
 // getPromptIcon returns the icon component for a given prompt icon name, or

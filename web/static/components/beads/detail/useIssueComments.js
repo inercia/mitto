@@ -14,9 +14,8 @@
 
 const { useState, useEffect, useCallback, useRef } = window.preact;
 
-import { secureFetch } from "../../../utils/csrf.js";
-import { endpoints } from "../../../utils/endpoints.js";
-import { readBeadsResponse } from "../../../utils/beads.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
+import { errorMessage } from "../../../utils/sdkErrors.js";
 
 export function useIssueComments({
   data,
@@ -61,34 +60,22 @@ export function useIssueComments({
     }
     setSavingComment(true);
     try {
-      const res = await secureFetch(
-        endpoints.issues.comments(data.id, { working_dir: workingDir }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        },
+      await getSdkClient().issues.comments(
+        data.id,
+        { working_dir: workingDir },
+        { text },
       );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to add comment",
-          });
-      } else {
-        setCommentDraft("");
-        showToast && showToast({ style: "success", title: "Comment added" });
-        if (fetchDepsRef && fetchDepsRef.current) {
-          await fetchDepsRef.current(false);
-        }
-        onUpdated && onUpdated();
+      setCommentDraft("");
+      showToast && showToast({ style: "success", title: "Comment added" });
+      if (fetchDepsRef && fetchDepsRef.current) {
+        await fetchDepsRef.current(false);
       }
+      onUpdated && onUpdated();
     } catch (err) {
       showToast &&
         showToast({
           style: "error",
-          title: err.message || "Failed to add comment",
+          title: errorMessage(err, "Failed to add comment"),
         });
     } finally {
       setSavingComment(false);

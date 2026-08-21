@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -96,7 +97,18 @@ type rawWorkspaceRC struct {
 		Menus           string            `yaml:"menus"`
 		Enabled         *bool             `yaml:"enabled"`
 		EnabledWhen     string            `yaml:"enabledWhen"`
+		Singleton       bool              `yaml:"singleton"`
+		Target          *PromptTarget     `yaml:"target,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
+		// Loop is decoded as a raw node (not *PromptLoop) so a pre-r6j flat
+		// loop: block can be run through the mitto-r6j.3 migration registry
+		// in memory (via DecodeInlineLoop) instead of either being silently
+		// dropped (yaml.v3's behavior for an unknown/mismatched field) or
+		// hard-failing the whole .mittorc load (mitto-opoh). Deliberately a
+		// non-pointer yaml.Node: yaml.v3 does not populate a *yaml.Node
+		// struct field (Decode leaves it as an empty allocated struct), so
+		// absence must be checked via IsZero() below, not a nil check.
+		Loop yaml.Node `yaml:"loop,omitempty"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -800,6 +812,25 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
 			continue
 		}
+		// Warn (non-fatal) when menus contains an unrecognised token (mitto-rjg6).
+		// ".mittorc" is a fixed source label: no real on-disk path is threaded
+		// through this call site (workspace-level inline prompts).
+		WarnUnknownMenus(p.Name, ".mittorc", p.Menus)
+		var loop *PromptLoop
+		if !p.Loop.IsZero() {
+			decoded, migrated, err := DecodeInlineLoop(&p.Loop)
+			if err != nil {
+				slog.Warn(".mittorc inline prompt has an invalid loop: block; dropping loop config",
+					"prompt", p.Name, "error", err)
+			} else {
+				loop = decoded
+				if migrated.Changed {
+					slog.Warn(".mittorc inline prompt loop: block uses the pre-r6j flat schema; "+
+						"applied in memory only — edit .mittorc by hand onto the grouped schema",
+						"prompt", p.Name, "migrations", migrated.Fired)
+				}
+			}
+		}
 		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
@@ -810,6 +841,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			Menus:           p.Menus,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
+			Singleton:       p.Singleton,
+			Target:          p.Target,
+			Loop:            loop,
 			Parameters:      p.Parameters,
 		}
 		rc.Prompts = append(rc.Prompts, wp)

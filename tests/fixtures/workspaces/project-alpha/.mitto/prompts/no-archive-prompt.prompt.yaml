@@ -1,0 +1,6 @@
+name: No Archive Test
+description: Creates a non-archivable conversation (UI test for target.noArchive)
+target:
+  noArchive: true
+prompt: |
+  This prompt is used by the no-archive UI test.

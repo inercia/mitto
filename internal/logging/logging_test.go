@@ -353,11 +353,11 @@ func TestDefaultFileLogConfig(t *testing.T) {
 	if cfg.MaxSizeMB != 10 {
 		t.Errorf("MaxSizeMB = %d, want 10", cfg.MaxSizeMB)
 	}
-	if cfg.MaxBackups != 3 {
-		t.Errorf("MaxBackups = %d, want 3", cfg.MaxBackups)
+	if cfg.MaxBackups != 32 {
+		t.Errorf("MaxBackups = %d, want 32", cfg.MaxBackups)
 	}
-	if cfg.Compress != false {
-		t.Error("Compress should be false by default")
+	if !cfg.Compress {
+		t.Error("Compress should be true by default")
 	}
 	if cfg.Path != "" {
 		t.Errorf("Path = %q, want empty", cfg.Path)

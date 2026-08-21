@@ -1,0 +1,393 @@
+icon: loop
+name: Loop implementing feature
+menus: beadsIssues, conversation, promptsLoop
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+  - name: SubmitStrategy
+    type: text
+    group: Advanced
+    required: false
+    description: How finished work is submitted. "Commit" (default) commits each stage; "Pull Request" uses the configured task/epic branch and opens a PR in Done; "None" leaves changes uncommitted.
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions applied on top of the steps below and forwarded verbatim to every phase prompt this driver dispatches (e.g. "always run `make lint` before committing", "never touch files under vendor/"). Set by the operator, or propagated from the "Loop processing tasks" supervisor. Used for this run only; nothing is persisted.'
+description: Auto-loop — drive a feature bead through plan → implement → test → review by dispatching per-phase prompts (each on its own model tier), then self-terminate
+backgroundColor: '#C8E6C9'
+group: Tasks
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "feature" && Item.Status != "closed"'
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 30
+  mode: always
+  maxIterations: 30
+  maxDuration: "8h"
+  # Phase state (planned / implemented / tested / verified) is authoritative on
+  # the bead itself (labels + Plan:/Implementation:/Verification: comments);
+  # every re-fire already re-reads it in the phase-detection preamble. Start
+  # clean so 30 iterations don't accumulate stale reasoning, tool-call
+  # transcripts, and file reads across turns.
+  freshContext: true
+target:
+  reuse:
+    issue: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  Existing children: `{{ Default "(none)" .Children.MCPText }}`
+
+  # Beads: Iterate Implementing Feature
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+  This prompt drives a single `feature`-type bead through a **label-encoded state
+  machine** — `planned` → `implemented` → `tested` → `verified` — advancing **exactly
+  one stage per run**, then removing its own loop flag once `verified` is reached.
+
+  **Per-phase model tiering.** This driver does **not** do the plan / implement / test /
+  review work inline. It loads the bead's live labels, then **dispatches** the matching
+  phase prompt by name via `mitto_conversation_send_prompt` (a self-send). Each phase
+  prompt declares its own `preferredModels` so the ACP session transiently switches to
+  the right tier for that stage (Reasoning for plan and review, Coding for implement and
+  test) without touching this conversation's baseline model. The phase adds its label
+  and ends; the driver's `onCompletion` schedule then re-runs this prompt, which
+  observes the newly-advanced label and dispatches the next phase.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ if $target -}}
+  The **target feature** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{- else -}}
+  The **target feature** for this run is **not explicitly specified**. This prompt requires
+  one specific `feature` bead — do not guess an ID and do not scan the backlog for
+  candidates. If a user is present (see Interaction Mode below), ask which feature via
+  `mitto_ui_options`; in silent/scheduled mode, skip straight to the Blocked → Defer +
+  Handoff pattern (Step 4) using a `mitto_ui_notify` in place of a bead comment, then stop.
+  {{- end }}
+
+  {{- if .Iteration.IsUninterrupted }}
+  ## Continuation — uninterrupted scheduled run
+
+  **Silent mode.** Use **only** `mitto_ui_notify`; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. **Decide autonomously** — do not ask which
+  stage to work on or how to proceed. If a run cannot make progress autonomously, use
+  the **Blocked → Defer + Handoff** pattern (Step 4) instead of guessing.
+
+  Review the prior `bd comment` entries on `{{ $target }}` so you continue from where
+  the last run stopped instead of repeating it. Then proceed straight to Step 1.
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run** (the `maxIterations` cap is reached after this run): do **not**
+  begin a stage you cannot finish now — wrap up, log status with `bd comment`, then post a
+  closing summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- else }}
+  ## Interaction Mode — READ THIS FIRST
+
+  This prompt almost always runs **unattended on a schedule**.
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent mode — a scheduled loop run.**
+  {{ template "_shared/silent-notify-only" . }}
+  - When you cannot make progress autonomously, do **not** guess and do **not** ask — use
+    the **Blocked → Defer + Handoff** pattern (Step 4).
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present. During Plan/Design (Step 3a) only, you *may* ask clarifying questions via
+  `mitto_ui_*` tools; every other stage still decides autonomously or defers (Step 4).
+  {{- end }}
+  {{- if not .Iteration.IsFirst }}
+
+  **Continuation run.** Earlier runs of this conversation already advanced this work.
+  Before doing anything else, review the prior `bd comment` entries on `{{ $target }}` so
+  you continue from where the last run stopped instead of repeating it.
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations` cap is
+  reached after this run, so no further run will fire). Do **not** begin a stage you cannot
+  finish now — instead wrap up: log current status with `bd comment`, then post a closing
+  summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- end }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  ## Step 1 — Load LIVE state (never rely on a stale snapshot)
+
+  Labels drift between runs. Load the bead's **current** state fresh, every run:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array. **Branch on this live JSON, not on any `Item.*` template
+  field** — `Item.*` is empty at send time and only usable in `enabledWhen`.
+
+  ## Step 2 — Confirm it is still actionable
+
+  If `{{ $target }}` is already `closed`, or carries `needs-human` and is still deferred,
+  stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3e's
+  self-termination steps) without changing any label.
+
+  {{ template "beads-issues/shared/claim-entry" (dict
+      "Target"    $target
+      "SessionID" .Session.ID
+  ) }}
+
+  {{ if $pr -}}
+  Before any phase work, ensure this task is on its deterministic branch created
+  from `{{ Default "main" .Args.FromBranch }}` (never from the current HEAD):
+
+  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+      "Ctx"    .
+      "Target" $target
+      "Type"   "feat"
+  ) }}
+  {{- end }}
+
+  ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
+
+  Do **not** do the phase's work inline. Dispatch the matching phase prompt by name
+  via `mitto_conversation_send_prompt` (a self-send), then end this turn. The phase
+  prompt runs on the next turn under its own preferred model tier, does the work, adds
+  its label, and stops; the driver's `onCompletion` schedule re-fires this prompt to
+  advance to the next phase.
+
+  **Evaluate these branches in order and stop at the first match** — the terminal
+  Done branch is listed FIRST so a fully-verified bead is never re-dispatched into
+  a phase (mitto-i5k):
+
+  - `verified` present → **Step 3e: Done (handled inline).** ← early-exit; check first.
+  - `tested` present, `verified` absent → **Step 3d: dispatch Review/Verify.**
+  - `implemented` present, `tested` absent → **Step 3c: dispatch Test.**
+  - `planned` present, `implemented` absent → **Step 3b: dispatch Implement.**
+  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
+
+  If the driver itself is unable to load state or resolve the target autonomously, go
+  to **Step 4 (Blocked → Defer + Handoff)** instead of dispatching. The phase prompts
+  themselves also handle their own in-phase blockers via their Step 4.
+
+  ### Step 3a — Dispatch Plan/Design (no state label yet)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — plan phase",
+    arguments: { "IssueID": "{{ $target }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+  )
+  ```
+
+  Then end this turn. The Plan phase runs on the **Reasoning** tier, records a `Plan:`
+  comment (decomposing into sub-issues first if the work is large), adds the `planned`
+  label, and stops. The next scheduled run of this driver will observe `planned` and
+  dispatch Implement.
+
+  ### Step 3b — Dispatch Implement (`planned` present, not yet `implemented`)
+
+  **First assess parallelizability.** If the plan is a single coherent increment, do
+  **not** split; dispatch the single Implement phase below. But if the plan decomposes
+  into **two or more genuinely independent, non-conflicting parts** (distinct
+  modules/files, no shared state, no ordering dependency — e.g. the plan phase already
+  carved the feature into independent sub-issues), implement them **in parallel across
+  child conversations** instead of one inline phase — provided this conversation can spawn
+  children (it is top-level and the **Can start conversation** flag is enabled, in
+  addition to **Can Send Prompt**). See **Step 3f — Parallel fan-out**; after all parts
+  report back and verify, add the `implemented` label yourself and end the turn (a
+  deliberate, documented exception to the self-send rule, justified because the work was
+  genuinely distributed). Otherwise dispatch the single Implement phase:
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — implement phase",
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}", "FromBranch": {{ Default "main" .Args.FromBranch | printf "%q" }}, "GroupEpics": "{{ ne .Args.GroupEpics "false" }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+  )
+  ```
+
+  Then end this turn. The Implement phase runs on the **Coding** tier, writes the
+  smallest coherent increment per the plan, records an `Implementation:` comment, adds
+  the `implemented` label{{ if $commit }}, commits the increment{{ end }},
+  and stops. The next scheduled run of this driver will observe `implemented` and
+  dispatch Test.
+
+  ### Step 3c — Dispatch Test (`implemented` present, not yet `tested`)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — test phase",
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}", "FromBranch": {{ Default "main" .Args.FromBranch | printf "%q" }}, "GroupEpics": "{{ ne .Args.GroupEpics "false" }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+  )
+  ```
+
+  Then end this turn. The Test phase runs on the **Coding** tier, writes/extends tests
+  covering the acceptance criteria until the new tests and the full relevant suite
+  pass, records a `Testing:` comment, adds the `tested`
+  label{{ if $commit }}, commits the test changes{{ end }}, and stops.
+  The next scheduled run of this driver will observe `tested` and dispatch Review.
+
+  ### Step 3d — Dispatch Review/Verify (`tested` present, not yet `verified`)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — review phase",
+    arguments: { "IssueID": "{{ $target }}", "SubmitStrategy": "{{ if .Args.SubmitStrategy }}{{ .Args.SubmitStrategy }}{{ else }}Commit{{ end }}", "FromBranch": {{ Default "main" .Args.FromBranch | printf "%q" }}, "GroupEpics": "{{ ne .Args.GroupEpics "false" }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} }
+  )
+  ```
+
+  Then end this turn. The Review phase runs on the **Reasoning** tier, self-reviews
+  build/lint/docs/acceptance-criteria/downstream-impact — looping back **without**
+  advancing the label if any gap is found — and once genuinely satisfied records a
+  `Review:` comment, adds the `verified`
+  label{{ if $commit }}, commits any review fix-ups{{ end }}, optionally
+  closes the bead, and stops. The next scheduled run of this driver will observe
+  `verified` and take the Done branch (Step 3e).
+
+  ### Step 3e — Done (`verified` present) — handled inline, EVALUATE FIRST
+
+  **This branch is checked before every other Step 3 branch**, against the fresh
+  `bd show --json` from Step 1. All four phases are complete. **Unconditionally
+  disable this conversation's loop flag**, but close the bead only after the
+  child-aware guard below proves it is a leaf (or all direct children are closed).
+  There is no further phase work to dispatch (mitto-i5k: never treat
+  `loop_enabled: false` as optional here — a soft-gated Done branch lets the loop
+  re-fire past the terminal label).
+
+  {{ if $pr }}
+  Submit strategy is **Pull Request** — push the branch and open (or update) the PR
+  before closing the bead:
+
+  {{ template "beads-issues/shared/push-and-open-pr" (dict
+      "Ctx"    .
+      "Target" $target
+  ) }}
+  {{ end }}
+
+  Before closing, fail-closed on the bead hierarchy:
+
+  ```bash
+  open_children=$(bd children {{ $target }} --json 2>/dev/null \
+    | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
+  ```
+
+  If `open_children` is not exactly `0`, this bead is a terminal **parent**, not
+  a closable leaf. Keep `verified`, leave the bead open, post one comment naming
+  the non-closed child count, clear this driver's passive claim with the fragment
+  below, then jump directly to the self-termination calls below **without running
+  `bd close`**. Notify that child work remains; then do nothing further. The L1
+  `Loop processing tasks` supervisor owns the
+  eventual parent close after every child is closed. Never close a parent merely
+  because this driver's narrower scope verified successfully.
+
+  {{ template "beads-issues/shared/claim-clear" (dict
+      "Target" $target
+  ) }}
+
+  ```bash
+  bd close {{ $target }} --reason "<short summary of what was delivered>"
+  ```
+
+  Then, unconditionally, self-terminate so this conversation stops re-running:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Loop implementing feature — done", message: "<what was planned/implemented/tested/verified across runs>", style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+
+  ### Step 3f — Parallel fan-out (only when a stage is genuinely decomposable)
+
+  Reached only from a stage above (today: Implement) whose work splits into independent,
+  non-conflicting parts — typically when the plan phase already decomposed the feature
+  into independent sub-issues. **Never** split a tightly-coupled increment, work with
+  shared files, or work with interdependencies — those go through the normal single
+  self-send phase. Cap at **3–4** parallel children.
+
+  1. Define each part completely: the exact sub-scope (ideally a sub-issue ID), the
+     **disjoint** set of files/modules it owns (confirm the sets do not overlap),
+     acceptance criteria, and a definition of done. Record each part's IssueID/scope so
+     they can be passed to a **named** worker prompt below (mitto-6am: never inline-
+     compose a full free-text worker body from inside a driver — spawning
+     grand-children from an already-scheduled loop is structurally more exposed to the
+     mitto-dj9 short-circuit than the outer serial spawn).
+  2. For each part, reuse a suitable **idle** child from `{{ .Children.MCPText }}` when
+     possible, otherwise create one with `mitto_conversation_new` (prefer a
+     faster/cheaper Coding-tier agent) using a **named** worker prompt registered in
+     the workspace — for example `Feature — implement subpart` — so the body is
+     expanded server-side and cannot short-circuit to a placeholder:
+
+     ```
+     mitto_conversation_new(
+       self_id: "{{ .Session.ID }}",
+       title: "Implement subpart <part-id> of {{ $target }}",
+       beads_issue: "<part-id>",
+       prompt_name: "Feature — implement subpart",
+       arguments: { "IssueID": "<part-id>", "ParentIssueID": "{{ $target }}", "Scope": "<sub-scope>", "OwnedPaths": "<comma-separated>" }
+     )
+     ```
+
+     The worker prompt must end by reporting via `mitto_children_tasks_report`. If the
+     named worker prompt is not yet registered in this workspace, do **not** improvise
+     an inline free-text body — abandon the split and fall back to the single
+     Implement phase (Step 3b) so the work still lands, and record a bead comment
+     naming the missing worker prompt so an operator can register it.
+  3. Block on all of them:
+     `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [<child ids>], task_id: "impl-{{ $target }}", timeout_seconds: 3600)`.
+     On timeout, retry the pending children with the **same** `task_id` (omit the prompt);
+     after a second timeout treat those parts as failed and finish the remainder via a
+     single Implement phase on the next run.
+  4. **Synthesize** the reports and verify the combined increment. **Fail closed** on
+     empty or non-matching reports: every child's report must have non-empty findings
+     AND a file-diff touching the paths that child was assigned. If any child reports
+     vacuously or without matching files, abandon the split and finish via the single
+     Implement phase on the next run (this is the mitto-6am post-condition check that
+     catches placeholder short-circuits before advancing the feature's state). If all
+     reports verify and the combined increment is build/lint clean, record an
+     `Implementation:` comment summarising the distributed work, add the `implemented`
+     label{{ if $commit }} and commit only the changed files (staged by
+     path){{ end }}, archive the finished children, and end the turn. The next
+     scheduled run will observe `implemented` and dispatch Test. If any part reports a
+     conflict, abandon the split and finish via the single Implement phase on the next
+     run. If a spawn call errors because **Can start conversation** is off, fall back
+     to the single Implement phase (Step 3b).
+  {{- else }}
+  ## Step 1 — No target feature to work on
+
+  There is nothing to load or branch on without a target. Do not run any `bd` command.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff (applies at EVERY stage above)
+
+  {{ template "beads-issues/shared/blocked-defer-loop-driver" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-feature>"
+  ) }}
+
+  ## Guidelines
+
+  {{ template "beads-issues/shared/loop-driver-guidelines-parallel" (dict
+      "Chain"            "`planned` → `implemented` → `tested` → `verified`"
+      "SplitAntipattern" "a tightly-coupled increment or work that shares files"
+      "LabelList"        "`planned`/`implemented`/`tested`/`verified`"
+  ) }}
+  {{ template "beads-issues/shared/loop-driver-guidelines-common" (dict
+      "MilestoneList" "phase dispatched, verified, blocked/deferred, or final stop"
+  ) }}

@@ -14,12 +14,30 @@ import (
 // DebounceDelay is the default delay for debouncing file system events.
 const DebounceDelay = 100 * time.Millisecond
 
+// pendingChangeKinds tracks which file categories triggered a pending
+// per-directory change during the debounce window. A pure *.prompt.yaml save
+// sets prompt only; a pure *.tmpl save sets fragment only; a mixed save inside
+// the debounce window sets both.
+type pendingChangeKinds struct {
+	prompt   bool
+	fragment bool
+}
+
 // PromptsChangeEvent represents a notification that prompts have changed.
 type PromptsChangeEvent struct {
 	// ChangedDirs contains the directories that had changes.
 	ChangedDirs []string
 	// Timestamp is when the change was detected.
 	Timestamp time.Time
+	// HasPromptChanges is true when at least one *.prompt.yaml file changed
+	// during this batch. Subscribers use this flag to decide whether to
+	// invalidate the prompts cache.
+	HasPromptChanges bool
+	// HasFragmentChanges is true when at least one *.tmpl fragment file changed
+	// during this batch. Subscribers use this flag to decide whether to rebuild
+	// the fragment registry (see internal/prompts/fragments.go). Both flags may
+	// be true when a mixed edit lands inside the debounce window.
+	HasFragmentChanges bool
 }
 
 // PromptsSubscriber receives notifications when prompts change.
@@ -60,7 +78,10 @@ type PromptsWatcher struct {
 	debounceDelay time.Duration
 
 	// pendingChanges accumulates directories with pending changes during debounce.
-	pendingChanges map[string]struct{}
+	// The value records which file kinds (prompt / fragment) triggered the
+	// change so firePendingChanges can set HasPromptChanges / HasFragmentChanges
+	// on the emitted event.
+	pendingChanges map[string]pendingChangeKinds
 	debounceTimer  *time.Timer
 	debounceMu     sync.Mutex
 
@@ -88,7 +109,7 @@ func NewPromptsWatcher(logger *slog.Logger) (*PromptsWatcher, error) {
 		subscriberDirs:     make(map[PromptsSubscriber]map[string]struct{}),
 		subscribers:        make(map[PromptsSubscriber]struct{}),
 		debounceDelay:      DebounceDelay,
-		pendingChanges:     make(map[string]struct{}),
+		pendingChanges:     make(map[string]pendingChangeKinds),
 		logger:             logger,
 		done:               make(chan struct{}),
 		stopped:            make(chan struct{}),
@@ -284,21 +305,62 @@ func (pw *PromptsWatcher) eventLoop() {
 
 // handleEvent processes a single fsnotify event.
 func (pw *PromptsWatcher) handleEvent(event fsnotify.Event) {
-	// Only care about .prompt.yaml files and directory changes
+	// Only care about .prompt.yaml / .tmpl files and directory changes
 	path := event.Name
 
-	// Check if this is a relevant event
+	// Determine which file kind (if any) this event relates to, and whether
+	// it is an op we care about. Prompt files and fragment files share the
+	// same fsnotify op set (Create/Write/Remove/Rename) but are dispatched
+	// via separate flags on PromptsChangeEvent so subscribers only rebuild
+	// what actually changed.
 	isRelevant := false
+	kind := pendingChangeKinds{}
+	lower := strings.ToLower(path)
 
-	// Check for .prompt.yaml file changes
-	if strings.HasSuffix(strings.ToLower(path), ".prompt.yaml") {
-		isRelevant = event.Has(fsnotify.Create) ||
+	base := filepath.Base(path)
+	if base == DeploymentGenerationName {
+		if event.Has(fsnotify.Create) ||
 			event.Has(fsnotify.Write) ||
 			event.Has(fsnotify.Remove) ||
-			event.Has(fsnotify.Rename)
+			event.Has(fsnotify.Rename) {
+			isRelevant = true
+			// Transaction boundaries require one final fragment-first full reload.
+			kind.prompt = true
+			kind.fragment = true
+		}
+	} else if base == DeploymentMarkerName {
+		// Creation marks the start of a transaction and must NOT publish: the
+		// tree may already be changing by the time the debounce fires. Completion
+		// writes DeploymentGenerationName and then removes this marker; either end
+		// event schedules the authoritative fragment-first full reload.
+		if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+			isRelevant = true
+			kind.prompt = true
+			kind.fragment = true
+		}
+	} else if strings.HasSuffix(lower, ".prompt.yaml") {
+		if event.Has(fsnotify.Create) ||
+			event.Has(fsnotify.Write) ||
+			event.Has(fsnotify.Remove) ||
+			event.Has(fsnotify.Rename) {
+			isRelevant = true
+			kind.prompt = true
+		}
+	} else if strings.HasSuffix(lower, fragmentExt) {
+		if event.Has(fsnotify.Create) ||
+			event.Has(fsnotify.Write) ||
+			event.Has(fsnotify.Remove) ||
+			event.Has(fsnotify.Rename) {
+			isRelevant = true
+			kind.fragment = true
+		}
 	}
 
-	// Check for directory creation (might be a watched dir being created)
+	// Check for directory creation (might be a watched dir being created).
+	// A newly created watched directory is treated as a prompt-side change so
+	// existing subscribers pick it up on their normal reload path — the
+	// subsequent per-file events inside the debounce window will additionally
+	// set the fragment flag if any *.tmpl files land in it.
 	if !isRelevant && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
 			// A directory was created - check if it's one we want to watch
@@ -307,6 +369,7 @@ func (pw *PromptsWatcher) handleEvent(event fsnotify.Event) {
 				// This is a directory we're interested in - add a direct watch
 				if err := pw.watcher.Add(path); err == nil {
 					isRelevant = true
+					kind.prompt = true
 					if pw.logger != nil {
 						pw.logger.Debug("Started watching newly created directory",
 							"dir", path)
@@ -328,12 +391,19 @@ func (pw *PromptsWatcher) handleEvent(event fsnotify.Event) {
 		pw.logger.Debug("Prompts directory changed",
 			"path", path,
 			"dir", dir,
-			"op", event.Op.String())
+			"op", event.Op.String(),
+			"prompt", kind.prompt,
+			"fragment", kind.fragment)
 	}
 
-	// Add to pending changes and reset debounce timer
+	// Add to pending changes and reset debounce timer. Merge kind flags so
+	// mixed edits inside the debounce window collapse into a single event
+	// with both flags set.
 	pw.debounceMu.Lock()
-	pw.pendingChanges[dir] = struct{}{}
+	prev := pw.pendingChanges[dir]
+	prev.prompt = prev.prompt || kind.prompt
+	prev.fragment = prev.fragment || kind.fragment
+	pw.pendingChanges[dir] = prev
 
 	if pw.debounceTimer != nil {
 		pw.debounceTimer.Stop()
@@ -346,7 +416,7 @@ func (pw *PromptsWatcher) handleEvent(event fsnotify.Event) {
 func (pw *PromptsWatcher) firePendingChanges() {
 	pw.debounceMu.Lock()
 	changes := pw.pendingChanges
-	pw.pendingChanges = make(map[string]struct{})
+	pw.pendingChanges = make(map[string]pendingChangeKinds)
 	pw.debounceTimer = nil
 	pw.debounceMu.Unlock()
 
@@ -354,15 +424,22 @@ func (pw *PromptsWatcher) firePendingChanges() {
 		return
 	}
 
-	// Build list of changed directories
+	// Build list of changed directories and aggregate kind flags across the
+	// whole batch so subscribers see one authoritative HasPromptChanges /
+	// HasFragmentChanges pair per event.
 	changedDirs := make([]string, 0, len(changes))
-	for dir := range changes {
+	var hasPrompt, hasFragment bool
+	for dir, k := range changes {
 		changedDirs = append(changedDirs, dir)
+		hasPrompt = hasPrompt || k.prompt
+		hasFragment = hasFragment || k.fragment
 	}
 
 	event := PromptsChangeEvent{
-		ChangedDirs: changedDirs,
-		Timestamp:   time.Now(),
+		ChangedDirs:        changedDirs,
+		Timestamp:          time.Now(),
+		HasPromptChanges:   hasPrompt,
+		HasFragmentChanges: hasFragment,
 	}
 
 	// Get subscribers interested in these directories (deduplicated)

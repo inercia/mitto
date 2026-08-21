@@ -161,6 +161,23 @@ func NewRunner(
 		}
 	}
 
+	// Advisory: on sandbox-exec, allow_*_folders are ADDITIVE permits over the
+	// profile's permissive base — not a whitelist. Log a one-time WARN when the
+	// user has configured folder lists on sandbox-exec so it is obvious in the
+	// audit trail that unlisted paths remain accessible unless on the deny regex.
+	// See docs/config/restricted.md#semantics-additive-permits-vs-whitelist.
+	if logger != nil && resolved.Type == "sandbox-exec" && resolved.Restrictions != nil {
+		hasRead := len(resolved.Restrictions.AllowReadFolders) > 0
+		hasWrite := len(resolved.Restrictions.AllowWriteFolders) > 0
+		if hasRead || hasWrite {
+			logger.Warn("sandbox-exec allow_*_folders are additive permits over a permissive base, NOT a whitelist — see docs/config/restricted.md#semantics-additive-permits-vs-whitelist",
+				"runner_type", "sandbox-exec",
+				"has_allow_read_folders", hasRead,
+				"has_allow_write_folders", hasWrite,
+				"doc_ref", "docs/config/restricted.md#semantics-additive-permits-vs-whitelist")
+		}
+	}
+
 	if logger != nil {
 		logger.Info("created restricted runner",
 			"type", resolved.Type,

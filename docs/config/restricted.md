@@ -404,6 +404,50 @@ restricted_runners:
 - Networking: `false` (from agent)
 - Read folders: `["$MITTO_WORKING_DIR", "$HOME/.experimental", "$MITTO_WORKING_DIR/vendor"]` (merged from all levels)
 
+## Semantics: Additive Permits vs. Whitelist
+
+> **This section applies to `sandbox-exec` (macOS).** `firejail` and `docker` have their own isolation models; see their respective sections above.
+
+`go-restricted-runner` v0.2.0's `sandbox-exec` profile is `(allow default)` — a **permissive base** with a hardcoded set of regex-based **deny** rules. The `allow_read_folders` and `allow_write_folders` config keys are **additive permits over that permissive base**, not a whitelist that flips the profile to deny-by-default.
+
+**Practical implication:** any path that is _not_ on the hardcoded deny regex is readable/writable inside the sandbox even if it is not on your `allow_*_folders` list. Adding a path to the allow list only grants access to paths that would otherwise be denied — it does **not** restrict access to unlisted paths.
+
+### The actual deny set today
+
+The profile template (`sandbox_profile.tpl` in `go-restricted-runner`) denies:
+
+- **Reads and writes** under the user-data folders: `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/Movies`, `~/Music`.
+- **Writes** to system paths: `/etc`, `/bin`, `/usr/bin`, `/System`, `/Library`.
+
+Everything else (including `/var/folders/...`, `/tmp`, `~/foo/bar`, arbitrary project directories) is allowed by the base rule.
+
+### Concrete repro
+
+Configuring `allow_write_folders: [/tmp]` does **not** prevent a sandboxed process from writing to `t.TempDir()` under `/var/folders/...` — that path is not on the deny regex, so the permissive base rule wins. Similarly, setting `allow_read_folders: [/tmp]` does not prevent reads of `~/some-project/notes.txt`.
+
+If you want to verify what the sandbox actually blocks, test against a folder that is on the deny regex (e.g. `~/Downloads`), not an arbitrary `t.TempDir()`.
+
+### If you need whitelist semantics
+
+True whitelist ("only these folders may be accessed") requires **deny-by-default** support in `go-restricted-runner` itself — an upstream change that would produce `(deny default)` with only the configured `allow_*_folders` permitted.
+
+<!-- TODO(upstream): file an issue against github.com/inercia/go-restricted-runner
+     requesting a `deny_by_default: true` policy option, then link it here. -->
+
+Until then, treat `sandbox-exec` restrictions as **defense-in-depth against user-data leaks and specific system-path writes**, not as a fully sandboxed filesystem.
+
+### Runtime advisory
+
+When Mitto resolves a `sandbox-exec` runner with a non-empty `allow_read_folders` or `allow_write_folders`, it emits a one-time WARN pointing at this section, so the additive-permit semantics are visible in the audit trail:
+
+```
+WARN sandbox-exec allow_*_folders are additive permits over a permissive base,
+     NOT a whitelist — see docs/config/restricted.md#semantics-additive-permits-vs-whitelist
+     runner_type=sandbox-exec has_allow_read_folders=true has_allow_write_folders=true
+```
+
+The WARN is observational only — it does not change resolution behavior.
+
 ## Configuration Options
 
 ### Restriction Settings
@@ -496,13 +540,13 @@ merge_strategy: "replace"  # Ignore parent config
 
 Variables are resolved at runtime when the agent starts.
 
-| Variable     | Description                 | Example                               |
-| ------------ | --------------------------- | ------------------------------------- |
+| Variable             | Description                 | Example                               |
+| -------------------- | --------------------------- | ------------------------------------- |
 | `$MITTO_WORKING_DIR` | Current workspace directory | `/Users/user/project`                 |
-| `$HOME`      | User's home directory       | `/Users/user`                         |
-| `$MITTO_DIR` | Mitto data directory        | `~/Library/Application Support/Mitto` |
-| `$USER`      | Current username            | `user`                                |
-| `$TMPDIR`    | System temp directory       | `/tmp`                                |
+| `$HOME`              | User's home directory       | `/Users/user`                         |
+| `$MITTO_DIR`         | Mitto data directory        | `~/Library/Application Support/Mitto` |
+| `$USER`              | Current username            | `user`                                |
+| `$TMPDIR`            | System temp directory       | `/tmp`                                |
 
 Both `$VAR` and `${VAR}` syntax are supported.
 

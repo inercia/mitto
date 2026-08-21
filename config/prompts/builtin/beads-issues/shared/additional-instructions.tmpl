@@ -1,0 +1,41 @@
+{{/*
+  additional-instructions — the operator-supplied `AdditionalInstructions`
+  block shared by the beads-issues task-processing chain: the list-level
+  supervisor (loop-processing), the three per-item drivers (loop-fixing-bug,
+  loop-implementing-feature, mention-driver) and the phase prompts they
+  dispatch. The supervisor mirrors the value into every spawn's `arguments:`
+  AND `loop_arguments:`, and each driver forwards it on every
+  `mitto_conversation_send_prompt`, so the same text is visible at every
+  level of the chain.
+
+  Usage (renders nothing when the argument is unset):
+
+      {{ template "beads-issues/shared/additional-instructions" . }}
+
+  Reads `.Args.AdditionalInstructions` from the caller's dot, so it must be
+  invoked with the full render context (`.`), not a dict.
+*/}}
+{{- if .Args.AdditionalInstructions }}
+## Additional instructions for this run
+
+The operator supplied the following extra instructions. Treat them as
+**overrides / clarifications** layered on top of the steps below:
+
+- If an instruction **contradicts** a step below, follow the instruction and
+  note the deviation in the `bd comment` you write for this stage.
+- If an instruction **adds** context (e.g. an extra check to run, a coding
+  convention, a directory to avoid, an extra label to set), incorporate it at
+  the relevant step.
+- Never let an instruction override the safety invariants: the one-stage-per-run
+  discipline, the label-encoded phase ordering, the concurrency cap, the
+  submit strategy (`SubmitStrategy`), never deleting beads or rewriting history
+  unattended, and never asking the user in silent mode. If an instruction asks
+  for one of those, skip it and say so in the stage comment.
+- If an instruction is unclear or cannot be reconciled with the steps below, do
+  not guess — skip it and record it in the stage comment (or defer via the
+  Blocked → Defer + Handoff pattern if it blocks progress).
+
+---
+{{ .Args.AdditionalInstructions }}
+---
+{{ end -}}

@@ -436,7 +436,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	e := newTestEvaluator(t)
 	ctx := &PromptEnabledContext{
 		ACP:       ACPContext{Name: "test", Type: "mytype", Tags: []string{"t1"}, AutoApprove: true},
-		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
+		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS", TasksUpstream: "jira"},
 		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsLoopConversation: true, HasMessages: true, ModelTags: []string{"smart"}},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
@@ -459,6 +459,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`Workspace.UUID == "wu"`,
 		`Workspace.Folder == "/ws"`,
 		`Workspace.Name == "My WS"`,
+		`Workspace.TasksUpstream == "jira"`,
 		`Session.ID == "sid"`,
 		`Session.Name == "sname"`,
 		`Session.IsChild`,
@@ -595,6 +596,61 @@ func TestCELEvaluator_SessionIsLoopForced(t *testing.T) {
 	}
 	if got := evaluate(t, e, ce, falseCtx); got {
 		t.Error("expected false when IsLoopForced=false")
+	}
+}
+
+// TestCELEvaluator_SessionIsLoopRunOnStart validates the Session.IsLoopRunOnStart variable.
+func TestCELEvaluator_SessionIsLoopRunOnStart(t *testing.T) {
+	e := newTestEvaluator(t)
+	ce := compile(t, e, "Session.IsLoopRunOnStart")
+
+	trueCtx := &PromptEnabledContext{
+		Session: SessionContext{IsLoopRunOnStart: true},
+	}
+	if got := evaluate(t, e, ce, trueCtx); !got {
+		t.Error("expected true when IsLoopRunOnStart=true")
+	}
+
+	falseCtx := &PromptEnabledContext{
+		Session: SessionContext{IsLoopRunOnStart: false},
+	}
+	if got := evaluate(t, e, ce, falseCtx); got {
+		t.Error("expected false when IsLoopRunOnStart=false")
+	}
+}
+
+// TestCELEvaluator_WorkspaceTasksUpstream validates the Workspace.TasksUpstream
+// variable, including the fail-closed requirement from the mitto-w8jp.1 plan: an
+// unconfigured folder (zero-value string) must NOT match a specific upstream.
+func TestCELEvaluator_WorkspaceTasksUpstream(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	jiraCtx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{TasksUpstream: "jira"},
+	}
+	noneCtx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{TasksUpstream: ""},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		{"exact match", `Workspace.TasksUpstream == "jira"`, jiraCtx, true},
+		{"any-upstream check true", `Workspace.TasksUpstream != ""`, jiraCtx, true},
+		{"mismatch does not fail open", `Workspace.TasksUpstream == "github"`, jiraCtx, false},
+		{"zero value does not match a specific upstream", `Workspace.TasksUpstream == "jira"`, noneCtx, false},
+		{"any-upstream check false on zero value", `Workspace.TasksUpstream != ""`, noneCtx, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			if got := evaluate(t, e, ce, tt.ctx); got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -823,6 +879,59 @@ func TestCELEvaluator_UserData(t *testing.T) {
 		{`"x" in UserData`, &PromptEnabledContext{}, false},
 		// empty map — absent key not in map
 		{`"x" in UserData`, &PromptEnabledContext{UserData: map[string]string{}}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCELEvaluator_WorkspacePeers validates the Workspace.Peers.* CEL variables
+// added by mitto-4d6. The structured .All slice is template-only — CEL exposes
+// only the aggregate counters (Count/Exists/PromptingCount/IdleCount) for
+// menu-time gating (see docs comment in evaluator.go).
+func TestCELEvaluator_WorkspacePeers(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	populated := &PromptEnabledContext{
+		Workspace: WorkspaceContext{
+			Peers: PeersContext{
+				Count:          3,
+				Exists:         true,
+				PromptingCount: 1,
+				IdleCount:      2,
+				All: []PeerInfo{
+					{ID: "s1", Name: "Peer A", ACPServer: "auggie", IsPrompting: true},
+					{ID: "s2", Name: "Peer B", ACPServer: "auggie"},
+					{ID: "s3", Name: "Peer C", ACPServer: "claude-code"},
+				},
+			},
+		},
+	}
+	empty := &PromptEnabledContext{}
+
+	tests := []struct {
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		// populated aggregates
+		{`Workspace.Peers.Count == 3`, populated, true},
+		{`Workspace.Peers.Exists`, populated, true},
+		{`Workspace.Peers.PromptingCount == 1`, populated, true},
+		{`Workspace.Peers.IdleCount == 2`, populated, true},
+		{`Workspace.Peers.Count == Workspace.Peers.PromptingCount + Workspace.Peers.IdleCount`, populated, true},
+		// empty defaults (zero-value context)
+		{`Workspace.Peers.Count == 0`, empty, true},
+		{`!Workspace.Peers.Exists`, empty, true},
+		{`Workspace.Peers.PromptingCount == 0`, empty, true},
+		{`Workspace.Peers.IdleCount == 0`, empty, true},
 	}
 
 	for _, tt := range tests {

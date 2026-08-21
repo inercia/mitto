@@ -579,6 +579,18 @@ func (s *Server) createColdStartRecentHandler() mcp.ToolHandlerFor[ColdStartRece
 	}
 }
 
+// createGoroutineGaugeRecentHandler creates the handler for the
+// mitto_goroutine_gauge_recent tool (mitto-x3x). It returns the most recent
+// periodic goroutine gauge samples, newest first — each sample already
+// carries the per-category attribution (ACP processes, WS clients, open MCP
+// SSE streams) alongside the raw goroutine total. A Limit of 0 (or omitted)
+// returns all samples currently held in the ring buffer.
+func (s *Server) createGoroutineGaugeRecentHandler() mcp.ToolHandlerFor[GoroutineGaugeRecentInput, GoroutineGaugeRecent] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input GoroutineGaugeRecentInput) (*mcp.CallToolResult, GoroutineGaugeRecent, error) {
+		return nil, GoroutineGaugeRecent{Samples: coldstart.RecentGaugeSamples(input.Limit)}, nil
+	}
+}
+
 // BeadsCacheMetricsInput is the (empty) input for mitto_beads_cache_metrics.
 type BeadsCacheMetricsInput struct{}
 

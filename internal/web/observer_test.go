@@ -21,7 +21,7 @@ type mockObserver struct {
 	userPrompts   []string
 }
 
-func (m *mockObserver) OnAgentMessage(seq int64, html string) {
+func (m *mockObserver) OnAgentMessage(seq int64, html, markdown string) {
 	m.agentMessages = append(m.agentMessages, html)
 }
 
@@ -57,7 +57,7 @@ func (m *mockObserver) OnPromptComplete(eventCount int) {
 	m.promptsDone++
 }
 
-func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
 	m.userPrompts = append(m.userPrompts, message)
 }
 

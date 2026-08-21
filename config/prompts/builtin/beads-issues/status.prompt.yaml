@@ -1,0 +1,150 @@
+icon: list
+name: Show status
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+description: Fact-check this bead's implementation status against the codebase
+backgroundColor: '#F0F4C3'
+group: Tasks
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+preferredModels:
+  - modelTag: Coding
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  # Beads: Status Check — One Bead
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header" (dict
+      "Target"   $target
+      "NoTarget" "Fact-check the **current problem / topic under discussion here** against the codebase — what appears implemented vs. missing for the work being discussed. Do **not** run any `bd` commands — there is no bead to load."
+  ) }}
+
+  {{ template "_shared/session-context" . }}
+
+  {{ if $target -}}
+  ## Step 1 — Fetch full bead details
+
+  Load everything about the target bead:
+
+  {{ template "beads-issues/shared/load-context-min" $target }}
+
+  If `bd show` reports the bead as **deferred** (a `deferred` status, a future
+  `defer_until` / snooze timestamp, or a `needs-human` label), also load the
+  discussion — the deferral reason is recorded there, not in the bead body:
+
+  ```bash
+  bd comments {{ $target }}         # look for the newest [deferred: <ts>] marker
+  ```
+
+  Also run locally to gather implementation evidence:
+
+  ```bash
+  # Find commits that reference this bead ID
+  git log --oneline --all | grep -i "{{ $target }}"
+
+  # Check branches containing the bead ID
+  git branch -a | grep -i "{{ $target }}"
+  ```
+  {{- else }}
+  ## Step 1 — Gather codebase evidence for the current problem
+
+  There is no bead to load. Gather evidence about the current problem or topic under discussion by
+  inspecting the relevant codebase areas:
+
+  ```bash
+  git log --oneline -50                  # recent work that touches the area
+  ```
+
+  Locate the relevant files, symbols, or config by exploring the codebase directly so you can assess
+  the current implementation state against the work being discussed.
+  {{- end }}
+
+  ## Step 2 — Fact-check implementation status
+
+  Analyse all gathered evidence and produce a **Status Report**:
+
+  {{ if $target -}}
+  ### Bead: `{{ $target }}` — `<Title>`
+  {{- else -}}
+  ### Current problem — `<topic>`
+  {{- end }}
+
+  **Goal** (one sentence restating what this bead or current problem is supposed to deliver)
+
+  {{ if $target -}}
+  #### Deferred — Why, and What Is Needed From You
+
+  Include this section **only if the bead is deferred** (`deferred` status, a future
+  `defer_until` / snooze timestamp, or a `needs-human` label). Omit it entirely otherwise —
+  do not render an empty or "not deferred" placeholder.
+
+  When it is deferred, be explicit and concrete. Never leave the reader guessing why work
+  stopped:
+
+  - **Deferred since**: the timestamp of the newest `[deferred: <ts>]` comment (or the
+    `defer_until` value), and — if present — when it is scheduled to come back.
+  - **Why it was deferred**: the actual root cause, quoted or summarised from the `Why:`
+    line of that comment. If no `[deferred: …]` comment exists (hand-deferred, or a legacy
+    bead), say so explicitly — "no deferral reason was recorded on the bead" — and then
+    infer the most likely cause from the dependency tree, blockers, and recent comments,
+    clearly labelled as an inference rather than a recorded fact.
+  - **What is needed from you**: the ONE concrete question, decision, piece of information,
+    or external action the human must supply, taken from the `What human intervention is
+    required:` / `What I need from you:` line. If the bead does not name one, derive the
+    smallest concrete ask that would unblock it and mark it as your proposal.
+  - **Whether human intervention is actually required**: state plainly `Yes — blocked on the
+    human` or `No — waiting on time / an external event / another bead`, and name that
+    dependency when the answer is No.
+  - **How to resume**: the exact command that clears the deferral, so the user can act
+    without looking it up:
+
+    ```bash
+    bd update {{ $target }} --remove-label needs-human --defer ''
+    ```
+
+    If the recorded handoff prescribes a different resume path (e.g. "reply to this bead and
+    the orchestrator will undefer it on its next pass"), quote that path instead — it is
+    authoritative over the generic command above.
+
+  {{ end -}}
+  #### Acceptance Criteria — Status
+
+  For each acceptance criterion listed in the bead (or, when there is no bead, each requirement
+  inferred from the current discussion):
+
+  | # | Criterion | Status | Evidence |
+  |---|-----------|--------|----------|
+  | 1 | `<criterion text>` | ✅ Done / ⚠️ Partial / ❌ Not done / ❓ Unknown | `<commit, branch, or code reference>` |
+
+  #### Related Development Work
+
+  | Type | Reference | Status |
+  |------|-----------|--------|
+  | Branch | `<branch name>` | Active / Stale |
+  | Commit | `<sha> — message` | — |
+
+  #### Overall Assessment
+
+  - **Completion estimate**: `<percentage or qualitative: Not started / Early / Midway / Nearly done / Done>`
+  - **What appears to be done**: bullet list of concrete evidence of completed work
+  - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
+  - **Blockers or risks**: anything preventing completion (e.g., a failing test, an unanswered question in notes). If the bead is deferred, lead with that and point back to the "Deferred" section above.
+
+  {{ if $target -}}
+  > ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start work" prompt to continue implementation.
+  {{- else -}}
+  > ⚠️ **This report is read-only.** No code changes and no beads updates were performed.
+  {{- end }}
+
+  ## Final step — Offer to delete this conversation
+
+  {{ template "_shared/offer-delete-conversation" . }}

@@ -1,0 +1,45 @@
+{{/*
+  commit-plan — propose a commit plan, get explicit approval (optionally
+  letting the user edit each message), then execute it. Consumed by
+  git/create-commits and git/commit-and-submit.
+
+  Preconditions: the caller has already established the commit surface
+  (usually via git/shared/commit-scoped or git/shared/commit-all).
+
+  Emits `####` sub-headings so it slots under the caller's own numbered step.
+*/}}
+#### Propose commits
+
+SEQUENCE | COMMIT MESSAGE | FILES | REASON
+
+Use conventional prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
+Files can use wildcards (`*.md`, `docs/*`). Order logically.
+
+#### Wait for approval
+
+**With Mitto UI**: Use `mitto_ui_options` for the top-level decision:
+```
+mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Proposed N commits (see above). How to proceed?",
+  options: [{label: "Approve all"}, {label: "Edit commit messages"}, {label: "Modify plan"}, {label: "Cancel"}])
+```
+- If **"Edit commit messages"**: edit each message as described below.
+- If **"Approve all"**: execute the plan.
+- If **"Modify plan"**: discuss changes, update the plan, ask again.
+- If **"Cancel"**: stop.
+
+**Without**: Ask in conversation. Wait for explicit approval.
+
+#### Edit commit messages (With Mitto UI)
+
+For each commit, present the message in a textbox for editing:
+```
+mitto_ui_textbox(self_id: "{{ .Session.ID }}",
+  title: "Edit commit message (1/N)",
+  text: "<type>(<scope>): <description>\n\n<body>",
+  result: "edited_text")
+```
+Use the edited text as the final commit message. If `changed == false`, use the original.
+
+#### Execute
+
+Per commit: `git add <files>` → `git commit -m "<message>"`. Report results.

@@ -82,6 +82,13 @@ export function BeadsDetailPanelBody({
   comments,
   handlers,
   chrome,
+  // In-viewer navigation history (mitto-qluh.2). Only wired when the panel
+  // is rendered inside BeadsIssueView; the main BeadsView call site leaves
+  // onGoBack/onGoForward undefined so the bottom nav bar is skipped.
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   // Loading skeleton path (mitto-zbfq): render the same Drawer shell as the
   // loaded body so opening a beads issue from a conversation link shows a
@@ -89,6 +96,12 @@ export function BeadsDetailPanelBody({
   // fetch resolves. Kept minimal — no toolbar, no header actions, no
   // action bar — because they all depend on `data`.
   if (isLoading) {
+    // mitto-9vh: loadError may be either a string (transient error — Retry
+    // button appropriate) or {message, gone: true} (issue was 404'd —
+    // suppress Retry since retrying would just 404 again).
+    const errMsg =
+      loadError && typeof loadError === "object" ? loadError.message : loadError;
+    const errGone = !!(loadError && typeof loadError === "object" && loadError.gone);
     return html`
       <${Drawer}
         dock
@@ -134,9 +147,9 @@ export function BeadsDetailPanelBody({
                     role="alert"
                     class="alert alert-error alert-soft text-sm"
                   >
-                    <span>${loadError}</span>
+                    <span>${errMsg}</span>
                     ${
-                      onRetry
+                      onRetry && !errGone
                         ? html`<button
                             class="btn btn-ghost btn-xs"
                             onClick=${onRetry}
@@ -149,11 +162,11 @@ export function BeadsDetailPanelBody({
                 `
               : html`
                   <div
-                    class="p-4 text-center text-mitto-text-500"
+                    class="h-full flex flex-col items-center justify-center gap-2 text-mitto-text-500"
                     data-testid="beads-issue-loading"
                   >
                     <span
-                      class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"
+                      class="loading loading-spinner w-5 h-5 text-mitto-border-3"
                     ></span>
                     <p class="text-sm">Loading issue…</p>
                   </div>
@@ -363,6 +376,7 @@ export function BeadsDetailPanelBody({
                 <${PhaseTimeline}
                   issueType=${data.issue_type}
                   labels=${labels.labels}
+                  status=${data.status}
                 />
 
                 <div class="grid grid-cols-2 gap-3">
@@ -647,6 +661,10 @@ export function BeadsDetailPanelBody({
         description=${description}
         viewDirty=${viewDirty}
         savingView=${savingView}
+        canGoBack=${canGoBack}
+        canGoForward=${canGoForward}
+        onGoBack=${onGoBack}
+        onGoForward=${onGoForward}
       />
       <//>
       ${

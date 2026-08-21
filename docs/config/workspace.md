@@ -14,12 +14,12 @@ The left panel lists your workspaces grouped by folder. Each folder can have mul
 
 **Toolbar buttons** at the bottom of the left panel:
 
-| Button | Action |
-|--------|--------|
+| Button            | Action                                                         |
+| ----------------- | -------------------------------------------------------------- |
 | 📁 **Add Folder** | Create a new workspace — you'll be prompted to select a folder |
-| 🗑️ **Delete** | Remove the selected ACP server entry |
-| 📋 **Duplicate** | Clone the selected workspace with a new UUID |
-| 🖥️ **Add Server** | Add another ACP server to the currently selected folder |
+| 🗑️ **Delete**     | Remove the selected ACP server entry                           |
+| 📋 **Duplicate**  | Clone the selected workspace with a new UUID                   |
+| 🖥️ **Add Server** | Add another ACP server to the currently selected folder        |
 
 ### Editing Workspace Settings
 
@@ -29,16 +29,16 @@ Click a **folder name** (e.g., "Mitto") to access folder-level settings. Click a
 
 The right panel provides these tabs:
 
-| Tab | Screenshot | What it configures |
-|-----|------------|--------------------|
-| **General** | ![](screenshots/04-workspace-general.png) | ACP server, auxiliary model selection, runner, auto-approve |
-| **Metadata** | ![](screenshots/04-workspace-metadata.png) | Display name, description, URL, user data schema |
-| **Beads** | — | Per-folder Beads (`bd`) integration: upstream task system, `bd config` keys, and Pull/Push/Sync (see [Beads Integration](#beads-integration)) |
-| **Prompts** | ![](screenshots/04-workspace-prompts.png) | Quick-action prompts (enable/disable, add, edit) |
-| **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace) |
-| **Children** | ![](screenshots/04-workspace-children.png) | Auto-spawn child conversations |
-| **Runner** | — | Restricted execution sandbox settings |
-| **MCP** | — | MCP server configuration and installation |
+| Tab            | Screenshot                                   | What it configures                                                                                                                                                                     |
+| -------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **General**    | ![](screenshots/04-workspace-general.png)    | ACP server, auxiliary model selection, runner, auto-approve                                                                                                                            |
+| **Metadata**   | ![](screenshots/04-workspace-metadata.png)   | Display name, description, URL, user data schema                                                                                                                                       |
+| **Beads**      | —                                            | Per-folder Beads (`bd`) integration: upstream task system, `bd config` keys, and Pull/Push/Sync (see [Beads Integration](#beads-integration))                                          |
+| **Prompts**    | ![](screenshots/04-workspace-prompts.png)    | Quick-action prompts (enable/disable, add, edit)                                                                                                                                       |
+| **Processors** | ![](screenshots/04-workspace-processors.png) | Message processors (enable/disable per workspace)                                                                                                                                      |
+| **Children**   | ![](screenshots/04-workspace-children.png)   | Auto-spawn child conversations                                                                                                                                                         |
+| **Runner**     | —                                            | Restricted execution sandbox settings                                                                                                                                                  |
+| **MCP**        | —                                            | MCP server configuration and installation (see also [Cold-Start Hygiene](mcp.md#cold-start-hygiene) — trim unused servers, avoid concurrent workspace UUIDs sharing one `working_dir`) |
 
 ---
 
@@ -65,12 +65,12 @@ The file is automatically loaded when you open a workspace in Mitto and reloaded
 
 ### Supported Sections
 
-| Section           | Description                                              | Details |
-| ----------------- | -------------------------------------------------------- | ------- |
-| `prompts`         | Quick-action prompts shown in the chat interface         | [Prompts](prompts.md) |
-| `conversations`   | Inline text-mode processors                              | [Processors](processors.md#inline-processors-in-mittorc) |
-| `processors_dirs` | Additional processor directories                         | [Processors](processors.md#workspace-local-processors) |
-| `metadata`        | Display name, description, URL, user data schema         | [User Data](user-data.md) |
+| Section           | Description                                      | Details                                                  |
+| ----------------- | ------------------------------------------------ | -------------------------------------------------------- |
+| `prompts`         | Quick-action prompts shown in the chat interface | [Prompts](prompts.md)                                    |
+| `conversations`   | Inline text-mode processors                      | [Processors](processors.md#inline-processors-in-mittorc) |
+| `processors_dirs` | Additional processor directories                 | [Processors](processors.md#workspace-local-processors)   |
+| `metadata`        | Display name, description, URL, user data schema | [User Data](user-data.md)                                |
 
 > **Note**: Sections like `acp`, `web`, and `ui` are ignored in workspace files — these can only be configured globally.
 
@@ -78,15 +78,15 @@ The file is automatically loaded when you open a workspace in Mitto and reloaded
 
 The following fields are stored in `workspaces.json` and edited through the UI. The most commonly changed ones:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `acp_server` | string | Name of the ACP server for this workspace |
-| `auxiliary_model_selection` | object | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
-| `auxiliary_model_tag` | string | Selects the auxiliary-session model by capability tag (e.g. `Fast`), resolved to the first Model profile (`Config.Models`, in definition order) carrying this tag whose criteria matches an available model. Precedence is `auxiliary_model_profile` > `auxiliary_model_tag` > `auxiliary_model_selection`. |
-| `restricted_runner` | string | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker` |
-| `auto_approve` | boolean | Auto-approve all agent tool-call permission requests |
-| `is_default` | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this. |
-| `acp_command_override` | string | Custom command line for the ACP server (overrides the server's default command) |
+| Field                       | Type    | Description                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `acp_server`                | string  | Name of the ACP server for this workspace                                                                                                                                                                                                                                                                                                                                                                                           |
+| `auxiliary_model_selection` | object  | Optional model selection for auxiliary sessions (title generation, follow-up analysis, etc.). When set, auxiliary sessions start on the workspace's main ACP server and switch to the best-matching available model. When unset, the ACP server's default model is used. Object has two fields: `matchMode` (one of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`) and `pattern` (the text to match against model names). |
+| `auxiliary_model_tag`       | string  | Selects the auxiliary-session model by capability tag (e.g. `Fast`), resolved to the first Model profile (`Config.Models`, in definition order) carrying this tag whose criteria matches an available model. Precedence is `auxiliary_model_profile` > `auxiliary_model_tag` > `auxiliary_model_selection`.                                                                                                                         |
+| `restricted_runner`         | string  | Sandbox type: `exec` (default), `sandbox-exec`, `firejail`, `docker`                                                                                                                                                                                                                                                                                                                                                                |
+| `auto_approve`              | boolean | Auto-approve all agent tool-call permission requests                                                                                                                                                                                                                                                                                                                                                                                |
+| `is_default`                | boolean | Marks this workspace as the default for its folder. When several workspaces share the same directory (e.g. different ACP servers or model variants), the default is preferred when a workspace must be resolved from the folder alone (no ACP server specified). At most one workspace per folder should set this.                                                                                                                  |
+| `acp_command_override`      | string  | Custom command line for the ACP server (overrides the server's default command)                                                                                                                                                                                                                                                                                                                                                     |
 
 ### Complete `.mittorc` Example
 
@@ -143,7 +143,7 @@ Example `folders.json`:
       "color": "#ff5500",
       "group": "development",
       "pinned": true,
-      "beads": { "upstream": "github" }
+      "beads": { "databaseMode": "shared", "upstream": "github" }
     }
   }
 }
@@ -159,11 +159,16 @@ mitto web --folders config/folders.yaml
 
 ## Beads Integration
 
-The **Beads** tab (folder-level) is a UI wrapper over the Beads (`bd`) issue tracker for the folder's project. It has three parts:
+The **Beads** tab (folder-level) is a UI wrapper over the Beads (`bd`) issue tracker for the folder's project. Its folder-native settings include:
 
-- **Upstream tasks management** — a dropdown (`none`, `Jira`, `GitHub`, `GitLab`, `Linear`) that selects the external task system Beads syncs with. This is folder-native and persisted in `folders.json` under the `beads` subsection. When set, Pull/Push/Sync actions appear in the Beads view for the folder, and a list of recommended configuration keys for the selected system is shown for convenience.
-- **`bd config` keys** — an editor for the folder's Beads configuration (namespaced keys such as `jira.url`, `github.repository`, `gitlab.project`). These are stored in the folder's Beads database via `bd config`, not in `folders.json`. Operational/system keys are shown read-only (edit them via the `bd` CLI).
+- **Database mode** — `local` keeps the Dolt database isolated on this machine; `shared` permits replication through an already-configured Dolt remote. The value is persisted as `beads.databaseMode` in `folders.json` and is independent of the upstream task system. For legacy folders without a value, Mitto infers `shared` when a Dolt remote exists, otherwise `local`, then persists that result. After inference, `folders.json` remains authoritative: later remote changes do not silently change the mode, and switching to `local` preserves any configured remote for a future switch back to `shared`. The effective value is exposed to prompt and processor templates plus CEL gates as `Workspace.BeadsDatabaseMode` (`"local"` or `"shared"`), and to external command processors as `database_mode`.
+  - In `local` mode Mitto reconciles the native guards `no-push=true`, `dolt.local-only=true`, and `dolt.auto-push=false`. Mitto-created databases default to this mode. Local schema recovery runs only `bd migrate schema`; Mitto never dispatches Dolt push/pull, bootstrap, or remote publication for it.
+  - Switching to `shared` requires an existing Dolt remote. Mitto removes only those three policy guards and does not create, edit, or delete remote definitions. Shared schema recovery retains the designated-migrator `migrate + dolt push` and clone `bootstrap` paths.
+- **Upstream tasks management** — a dropdown (`none`, `Jira`, `GitHub`, `GitLab`, `Linear`) that selects the external task system Beads syncs with. This is folder-native and persisted in `folders.json` under the `beads` subsection. When set, Pull/Push/Sync actions appear in the Beads view for the folder, and a list of recommended configuration keys for the selected system is shown for convenience. This selection is visible to prompts and `enabledWhen` gates as `Workspace.TasksUpstream` (normalized lowercase, `none` → `""`) — see [Workspace Context](prompts.md#workspace-context-workspace) in the prompts reference.
+- **`bd config` keys** — an editor for the folder's Beads configuration (namespaced keys such as `jira.url`, `github.repository`, `gitlab.project`). These are stored in the folder's Beads database via `bd config`, not in `folders.json`. The database-mode guard keys are policy-owned and cannot be changed through this generic editor; use the Database mode control instead.
 - **Pull / Push / Sync** — buttons in the Beads view that map to the selected upstream's sync operations (`bd <system> sync` with pull-only / push-only / bidirectional). They appear only when an upstream is configured.
+
+The upstream task-system selection is orthogonal to Dolt database replication: a local-only Beads database may still synchronize issues with Jira/GitHub/GitLab/Linear or prompts, while its Dolt store remains unshared.
 
 ## Auto-Created Children
 

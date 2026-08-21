@@ -1,7 +1,10 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -32,6 +35,46 @@ func TestGenerateClientID(t *testing.T) {
 	if len(id1) != 16 {
 		t.Errorf("generateClientID returned ID of length %d, want 16", len(id1))
 	}
+}
+
+func TestIsLifecycleResumeCancellation(t *testing.T) {
+	if !isLifecycleResumeCancellation(fmt.Errorf("resume aborted: %w", context.Canceled)) {
+		t.Fatal("wrapped context.Canceled must be treated as a quiet lifecycle cancellation")
+	}
+	if isLifecycleResumeCancellation(errors.New("ACP start failed")) {
+		t.Fatal("ordinary ACP failures must still be broadcast")
+	}
+}
+
+// TestSessionWSClient_TitleJobSurvivesACPStop reproduces mitto-g8u0: a title
+// job scheduled before teardown must not dereference c.bgSession after
+// OnACPStopped releases the client's reference.
+func TestSessionWSClient_TitleJobSurvivesACPStop(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		server:    &Server{eventsManager: NewGlobalEventsManager()},
+		wsConn:    &WSConn{send: mockWS.send},
+		sessionID: "test-title-after-acp-stop",
+		bgSession: conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+			WorkspaceUUID: "test-workspace",
+		}),
+	}
+
+	// Capture the work while the session is live, then run it after the same
+	// lifecycle callback used by BackgroundSession.Close has detached the client.
+	workspaceUUID := client.bgSession.GetWorkspaceUUID()
+	auxiliaryManager := client.bgSession.GetAuxiliaryManager()
+	runTitleJob := func() {
+		client.generateAndSetTitle("Explain the released session race", workspaceUUID, auxiliaryManager)
+	}
+	client.OnACPStopped("test teardown")
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("scheduled title generation panicked after ACP stop: %v", recovered)
+		}
+	}()
+	runTitleJob()
 }
 
 // mockWSConn captures messages sent via SendMessage for testing.
@@ -578,10 +621,11 @@ func TestPostLoadProcessing_NoH2SyncOnSubsequentSync(t *testing.T) {
 
 	mockWS := newMockWSConn()
 	client := &SessionWSClient{
-		sessionID:       sessionID,
-		wsConn:          &WSConn{send: mockWS.send},
-		store:           store,
-		initialLoadDone: true, // observer already registered — simulates a subsequent sync
+		sessionID:          sessionID,
+		wsConn:             &WSConn{send: mockWS.send},
+		store:              store,
+		initialLoadDone:    true,
+		observerRegistered: true, // observer already registered — simulates a subsequent sync
 	}
 
 	// postLoadProcessing with a non-prepend sync result (lastSeq=2, one event beyond).
@@ -604,6 +648,149 @@ func TestPostLoadProcessing_NoH2SyncOnSubsequentSync(t *testing.T) {
 		// Any other message type (e.g. plan state) is fine.
 	case <-time.After(80 * time.Millisecond):
 		// Expected: no events_loaded from H2 path.
+	}
+}
+
+// TestAttachToBackgroundSession_RegistersAfterEmptyInitialLoad reproduces
+// mitto-mhgk: load_events completed while async ACP resume was still running,
+// but the empty history left lastSentSeq at zero. The old attach path treated
+// that as "not loaded" and never registered the client as an observer.
+func TestAttachToBackgroundSession_RegistersAfterEmptyInitialLoad(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+	const sessionID = "test-empty-load-before-resume"
+	if err := store.Create(session.Metadata{SessionID: sessionID}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: sessionID,
+		wsConn:    &WSConn{send: mockWS.send},
+		store:     store,
+	}
+
+	// Successful non-prepend load with no events while bgSession is nil.
+	client.handleLoadEventsAsync(20, 0, 0)
+	if !client.initialLoadDone {
+		t.Fatal("successful empty load was not recorded")
+	}
+	if client.observerRegistered {
+		t.Fatal("observer registered before a background session was available")
+	}
+
+	// Async resume completes later. Registration must not depend on lastSentSeq > 0.
+	bs := conversation.NewMinimalBackgroundSession(sessionID, "", "")
+	client.attachToBackgroundSession(bs)
+
+	if !client.observerRegistered {
+		t.Fatal("observer was not registered after resume following an empty load")
+	}
+	if got := bs.ObserverCount(); got != 1 {
+		t.Fatalf("ObserverCount() = %d, want 1", got)
+	}
+
+	// Repeated attachment must remain idempotent.
+	client.attachToBackgroundSession(bs)
+	if got := bs.ObserverCount(); got != 1 {
+		t.Fatalf("ObserverCount() after duplicate attach = %d, want 1", got)
+	}
+}
+
+// TestAttachToBackgroundSession_ReregistersOnInstanceChange verifies that a
+// client already marked initialLoadDone/observerRegistered against an OLD
+// BackgroundSession instance (e.g. before an ACP restart replaced it) is
+// re-registered on the NEW instance rather than being silently skipped.
+// A fresh BackgroundSession's own observer set always starts empty, so
+// observerRegistered must be scoped to "registered on the CURRENT bgSession",
+// not "registered at some point in the past" (mitto-mhgk coordination fix).
+func TestAttachToBackgroundSession_ReregistersOnInstanceChange(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID:       "test-instance-change",
+		wsConn:          &WSConn{send: mockWS.send},
+		initialLoadDone: true, // load already completed in an earlier attach
+	}
+
+	bsOld := conversation.NewMinimalBackgroundSession("test-instance-change", "", "")
+	client.attachToBackgroundSession(bsOld)
+	if !client.observerRegistered || bsOld.ObserverCount() != 1 {
+		t.Fatalf("setup: expected registration on bsOld, observerRegistered=%v count=%d",
+			client.observerRegistered, bsOld.ObserverCount())
+	}
+
+	// Simulate ACP restart: OnACPStopped clears bgSession, sessionManager
+	// later hands back a brand-new BackgroundSession instance for the same
+	// session ID.
+	bsNew := conversation.NewMinimalBackgroundSession("test-instance-change", "", "")
+	client.attachToBackgroundSession(bsNew)
+
+	if !client.observerRegistered {
+		t.Fatal("client was not re-registered on the new BackgroundSession instance")
+	}
+	if got := bsNew.ObserverCount(); got != 1 {
+		t.Fatalf("bsNew.ObserverCount() = %d, want 1", got)
+	}
+}
+
+// TestAttachAndPostLoad_ConcurrentInterleavings_RegisterExactlyOnce reproduces
+// the production race (mitto-mhgk): the async-resume goroutine's
+// attachToBackgroundSession(bs) and handleLoadEventsAsync's
+// postLoadProcessing() run concurrently and both may try to register the
+// same client as an observer of the same BackgroundSession. Both read/mutate
+// initialLoadDone/observerRegistered/bgSession only under initialLoadMu, so
+// regardless of which goroutine's critical section runs first, the client
+// must end up registered exactly once. Run with -race to also catch any
+// unsynchronized access reintroduced by a future edit.
+func TestAttachAndPostLoad_ConcurrentInterleavings_RegisterExactlyOnce(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	for i := 0; i < 50; i++ {
+		sessionID := "test-concurrent-attach"
+		if err := store.Create(session.Metadata{SessionID: sessionID}); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: sessionID,
+			wsConn:    &WSConn{send: mockWS.send},
+			store:     store,
+		}
+		bs := conversation.NewMinimalBackgroundSession(sessionID, "", "")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			client.handleLoadEventsAsync(20, 0, 0)
+		}()
+		go func() {
+			defer wg.Done()
+			client.attachToBackgroundSession(bs)
+		}()
+		wg.Wait()
+
+		if !client.initialLoadDone {
+			t.Fatalf("iteration %d: load was never recorded as completed", i)
+		}
+		if !client.observerRegistered {
+			t.Fatalf("iteration %d: observer was never registered", i)
+		}
+		if got := bs.ObserverCount(); got != 1 {
+			t.Fatalf("iteration %d: ObserverCount() = %d, want exactly 1", i, got)
+		}
+
+		if err := store.Delete(sessionID); err != nil {
+			t.Fatalf("Delete() error = %v", err)
+		}
 	}
 }
 
@@ -814,6 +1001,71 @@ func TestSessionWSClient_OnAvailableCommandsUpdated(t *testing.T) {
 	}
 }
 
+// TestSessionWSClient_OnAvailableCommandsUpdated_ContextFlushCommand verifies
+// the resolved context-flush command (mitto-1o8) is repeated in the
+// available_commands_updated payload so the frontend can un-grey the flush
+// action as soon as the agent's commands arrive, without waiting for a reload.
+func TestSessionWSClient_OnAvailableCommandsUpdated_ContextFlushCommand(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		wsConn:    &WSConn{send: mockWS.send},
+		bgSession: conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+			ContextFlushCommand: "/clear",
+		}),
+	}
+
+	client.OnAvailableCommandsUpdated([]conversation.AvailableCommand{
+		{Name: "clear"},
+	})
+
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string                 `json:"type"`
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message: %v", err)
+		}
+		if got := msg.Data["context_flush_command"]; got != "/clear" {
+			t.Errorf("Expected context_flush_command '/clear', got %v", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected available_commands_updated message but got none")
+	}
+}
+
+// TestSessionWSClient_OnAvailableCommandsUpdated_NoBgSession verifies the
+// payload omits context_flush_command entirely (rather than sending an empty
+// string) when there is no attached BackgroundSession to resolve it from.
+func TestSessionWSClient_OnAvailableCommandsUpdated_NoBgSession(t *testing.T) {
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		wsConn:    &WSConn{send: mockWS.send},
+		bgSession: nil,
+	}
+
+	client.OnAvailableCommandsUpdated([]conversation.AvailableCommand{{Name: "help"}})
+
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string                 `json:"type"`
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message: %v", err)
+		}
+		if _, present := msg.Data["context_flush_command"]; present {
+			t.Errorf("Expected context_flush_command to be absent when bgSession is nil, got %v", msg.Data["context_flush_command"])
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected available_commands_updated message but got none")
+	}
+}
+
 func TestSessionWSClient_OnAvailableCommandsUpdated_Empty(t *testing.T) {
 	mockWS := newMockWSConn()
 	client := &SessionWSClient{
@@ -941,7 +1193,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 					t.Fatalf("Start failed: %v", err)
 				}
 				for i := 0; i < tt.persistedCount; i++ {
-					rec.RecordAgentMessage("<p>test</p>")
+					rec.RecordAgentMessage("<p>test</p>", "")
 				}
 				_ = rec.End(session.SessionEndData{Reason: "test complete"})
 			}
@@ -994,7 +1246,7 @@ func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 	for i := 0; i < 25; i++ {
-		rec.RecordAgentMessage("<p>test</p>")
+		rec.RecordAgentMessage("<p>test</p>", "")
 	}
 	_ = rec.End(session.SessionEndData{Reason: "test complete"})
 
@@ -1050,7 +1302,7 @@ func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
 				wsConn:    &WSConn{send: mockWS.send},
 			}
 
-			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount)
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount, nil, nil)
 
 			// Read from the send channel (same pattern as TestSessionWSClient_OnAvailableCommandsUpdated)
 			select {
@@ -1086,6 +1338,76 @@ func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
 	}
 }
 
+// TestSessionWSClient_OnUserPrompt_Arguments verifies that the WS user_prompt
+// payload includes the "arguments" map when non-empty, and omits it when nil/empty
+// (mitto-e2h: retry replay needs the raw argument values, not just the count).
+func TestSessionWSClient_OnUserPrompt_Arguments(t *testing.T) {
+	tests := []struct {
+		name         string
+		arguments    map[string]string
+		wantHasArgs  bool
+		wantArgValue string
+	}{
+		{
+			name:         "with arguments",
+			arguments:    map[string]string{"IssueID": "mitto-123"},
+			wantHasArgs:  true,
+			wantArgValue: "mitto-123",
+		},
+		{
+			name:        "nil arguments",
+			arguments:   nil,
+			wantHasArgs: false,
+		},
+		{
+			name:        "empty arguments map",
+			arguments:   map[string]string{},
+			wantHasArgs: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockWS := newMockWSConn()
+			client := &SessionWSClient{
+				sessionID: "test-session",
+				clientID:  "client-1",
+				wsConn:    &WSConn{send: mockWS.send},
+			}
+
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "my-prompt", 1, tc.arguments, nil)
+
+			select {
+			case msgBytes := <-mockWS.send:
+				var msg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msgBytes, &msg); err != nil {
+					t.Fatalf("failed to unmarshal message: %v", err)
+				}
+				argsVal, hasArgs := msg.Data["arguments"]
+				if tc.wantHasArgs {
+					if !hasArgs {
+						t.Fatalf("expected \"arguments\" in payload, got none")
+					}
+					argsMap, ok := argsVal.(map[string]interface{})
+					if !ok {
+						t.Fatalf("arguments has type %T, want map[string]interface{}", argsVal)
+					}
+					if argsMap["IssueID"] != tc.wantArgValue {
+						t.Errorf("arguments[IssueID] = %v, want %q", argsMap["IssueID"], tc.wantArgValue)
+					}
+				} else if hasArgs {
+					t.Errorf("expected \"arguments\" absent from payload, got %v", argsVal)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Error("expected user_prompt message on send channel but got none")
+			}
+		})
+	}
+}
+
 // TestSessionWSClient_OnEventMeta_AttachedToUserPrompt verifies that meta stored via
 // OnEventMeta is attached to the subsequent user_prompt WebSocket payload, and that
 // without OnEventMeta the "meta" key is absent from the payload.
@@ -1103,7 +1425,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 
 		// Simulate the ordering guarantee: OnEventMeta fires before OnUserPrompt.
 		client.OnEventMeta(seq, metaIn)
-		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1141,7 +1463,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			wsConn:    &WSConn{send: mockWS.send},
 		}
 
-		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0)
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1171,11 +1493,11 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 		const seq = int64(10)
 		client.OnEventMeta(seq, map[string]any{"once": true})
 		// First call consumes the meta.
-		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0, nil, nil)
 		<-mockWS.send // drain first message
 
 		// Second call for same seq must NOT have meta.
-		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1204,7 +1526,7 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 
 		const seq = int64(99)
 		client.OnEventMeta(seq, map[string]any{"argument_names": []string{"ISSUE_ID", "PROJECT"}})
-		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2, nil, nil)
 
 		select {
 		case msgBytes := <-mockWS.send:
@@ -1225,6 +1547,86 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			}
 			if len(names) != 2 || names[0] != "ISSUE_ID" || names[1] != "PROJECT" {
 				t.Errorf("argument_names = %v, want [ISSUE_ID PROJECT]", names)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+}
+
+// TestSessionWSClient_OnUserPrompt_Provenance verifies mitto-rg79's WS payload
+// contract: the "provenance" key is entirely absent for ordinary prompts
+// (nil provenance) and present with the exact field values (including nested
+// Slack detail) when non-nil.
+func TestSessionWSClient_OnUserPrompt_Provenance(t *testing.T) {
+	t.Run("nil provenance omits the key entirely", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0, nil, nil)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, has := msg.Data["provenance"]; has {
+				t.Errorf("expected \"provenance\" absent, got %v", msg.Data["provenance"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("non-nil provenance with Slack detail round-trips through JSON", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		prov := &session.PromptProvenance{
+			LoopTrigger: session.TriggerOnSlack,
+			Slack: &session.PromptSlackProvenance{
+				InstallationID: "I1",
+				ChannelID:      "C1",
+				EventCount:     3,
+			},
+		}
+		client.OnUserPrompt(1, "loop-runner", "", "slack turn", nil, nil, "", 0, nil, prov)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			provOut, ok := msg.Data["provenance"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("provenance missing or wrong type: %T", msg.Data["provenance"])
+			}
+			if provOut["loop_trigger"] != "onSlack" {
+				t.Errorf("loop_trigger = %v, want onSlack", provOut["loop_trigger"])
+			}
+			slackOut, ok := provOut["slack"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("slack detail missing or wrong type: %T", provOut["slack"])
+			}
+			if slackOut["channel_id"] != "C1" || slackOut["installation_id"] != "I1" {
+				t.Errorf("unexpected slack identifiers: %v", slackOut)
+			}
+			if slackOut["event_count"] != float64(3) {
+				t.Errorf("event_count = %v, want 3", slackOut["event_count"])
 			}
 		case <-time.After(100 * time.Millisecond):
 			t.Fatal("expected user_prompt on send channel, got none")
@@ -1406,6 +1808,76 @@ func TestComputeEventStats(t *testing.T) {
 			got := computeEventStats(tt.events)
 			if got != tt.want {
 				t.Errorf("computeEventStats() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSendSessionConnected_NoArchive pins the mitto-yvel.4 WebSocket transport
+// requirement: the "connected" message always carries "no_archive" (mirroring
+// meta.NoArchive), regardless of its value, so the frontend's `??` fallback
+// chains in useWebSocket.js resolve deterministically instead of silently
+// inheriting a stale value from a prior connected message.
+func TestSendSessionConnected_NoArchive(t *testing.T) {
+	tests := []struct {
+		name          string
+		noArchive     bool
+		wantNoArchive bool
+	}{
+		{name: "protected session reports no_archive=true", noArchive: true, wantNoArchive: true},
+		{name: "unprotected session reports no_archive=false (key still present)", noArchive: false, wantNoArchive: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := session.NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer store.Close()
+
+			sessionID := "test-no-archive-" + tt.name
+			if err := store.Create(session.Metadata{
+				SessionID: sessionID,
+				ACPServer: "test-server",
+				NoArchive: tt.noArchive,
+			}); err != nil {
+				t.Fatalf("store.Create: %v", err)
+			}
+
+			mockWS := newMockWSConn()
+			server := &Server{config: Config{ACPServer: "test-server"}}
+			client := &SessionWSClient{
+				sessionID: sessionID,
+				server:    server,
+				wsConn:    &WSConn{send: mockWS.send},
+				store:     store,
+			}
+
+			client.sendSessionConnected(nil)
+
+			select {
+			case msgBytes := <-mockWS.send:
+				var msg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msgBytes, &msg); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if msg.Type != WSMsgTypeConnected {
+					t.Errorf("message type = %q, want %q", msg.Type, WSMsgTypeConnected)
+				}
+				got, present := msg.Data["no_archive"]
+				if !present {
+					t.Fatal("expected \"no_archive\" key to always be present in the connected message")
+				}
+				if got != tt.wantNoArchive {
+					t.Errorf("no_archive = %v, want %v", got, tt.wantNoArchive)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("expected connected message on send channel, got none")
 			}
 		})
 	}

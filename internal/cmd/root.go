@@ -46,8 +46,18 @@ like auggie, claude-code, and others that implement ACP.`,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip config loading for commands that don't need it
-		// (help, completion, prompts and processors management commands, and mcp proxy mode)
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents") {
+		// (help, completion, prompts and processors management commands, mcp
+		// proxy mode, and the SDK-backed conversation/auth commands).
+		//
+		// conversation/auth are skipped by parent name (not cmd.Name()) since
+		// the skip must apply to every leaf under them (e.g. "conversation
+		// get"), not just a command literally named "conversation" — see
+		// docs/devel/cli-conversation.md §3 (mitto-pscc.4). They must never
+		// touch local settings.json or the macOS Keychain: they are
+		// server-touching commands, resolved entirely via flags/env/
+		// instance.json in conversation_client.go, and must not block on a
+		// Keychain prompt when run non-interactively (e.g. from a script).
+		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents" || cmd.Parent().Name() == "conversation" || cmd.Parent().Name() == "auth") {
 			return nil
 		}
 
@@ -68,9 +78,11 @@ like auggie, claude-code, and others that implement ACP.`,
 				}
 			}
 		}
+		fileLog := logging.DefaultFileLogConfig()
+		fileLog.Path = logFile
 		if err := logging.Initialize(logging.Config{
 			Level:      effectiveLogLevel,
-			LogFile:    logFile,
+			FileLog:    &fileLog,
 			Components: components,
 		}); err != nil {
 			return fmt.Errorf("failed to initialize logging: %w", err)

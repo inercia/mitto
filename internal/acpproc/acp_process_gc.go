@@ -57,13 +57,29 @@ type GCConfig struct {
 	// is therefore stale after a long-running task. Set to a negative value to disable
 	// the grace window (default: 10m).
 	LoopSuspendGracePeriod time.Duration
-	// MemoryRecycleThreshold is the RSS threshold in bytes (summed over the agent
-	// process tree) above which an IDLE shared ACP process is recycled (stopped) to
+	// MemoryRecycleThreshold is the effective-memory threshold in bytes (summed
+	// over the agent process tree) above which an IDLE shared ACP process is recycled.
+	// On macOS the effective sample includes compressed physical footprint, not
+	// only RSS, so a hidden V8 old-space climb still crosses the threshold.
 	// reclaim memory. Recycling only happens when the process has no prompting
 	// session, no in-flight RPCs, empty queues, and no loop prompt due soon —
 	// affected conversations resume transparently on next focus. 0 means disabled
 	// (opt-in; no default is applied).
 	MemoryRecycleThreshold uint64
+}
+
+// descendantRatchetStreak is the number of consecutive Tier 4 GC cycles a
+// workspace's descendant process count must strictly increase before a WARN
+// is emitted for an unbounded climb (mitto-52mt). This check is independent
+// of MemoryRecycleThreshold: a V8 heap-OOM inside a descendant MCP process is
+// a per-process cap decoupled from tree RSS, so RSS alone cannot see it.
+const descendantRatchetStreak = 3
+
+// descendantCountEntry tracks the descendant (MCP-child) process count
+// history for a single workspace across Tier 4 GC cycles (mitto-52mt).
+type descendantCountEntry struct {
+	lastCount int
+	streak    int // consecutive cycles with a strict increase over lastCount
 }
 
 // SessionQueryFunc returns running sessions grouped by workspace UUID.
@@ -553,15 +569,9 @@ gcTier1:
 	// Re-query sessions so newly closed sessions (Tier 1) are excluded.
 	// ----------------------------------------------------------------
 	if m.gcConfig.MemoryRecycleThreshold > 0 {
-		sampler := m.rssSampler
+		sampler := m.memorySampler
 		if sampler == nil {
-			sampler = func(p *SharedACPProcess) (uint64, error) { return p.RSSBytes() }
-		}
-		breakdownSampler := m.rssBreakdownSampler
-		if breakdownSampler == nil {
-			breakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
-				return p.RSSBytesDetailed()
-			}
+			sampler = func(p *SharedACPProcess) (processMemorySample, error) { return p.memorySample() }
 		}
 
 		sessionsByWorkspace = m.sessionQuery()
@@ -642,33 +652,35 @@ gcTier1:
 				continue
 			}
 
-			// Sample memory: only recycle when over the configured threshold.
-			rss, err := sampler(p)
+			// One sample provides both the recycle metric and diagnostic breakdown.
+			sampleStart := time.Now()
+			sample, err := sampler(p)
+			sampleDuration := time.Since(sampleStart)
 			if err != nil {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping memory recycle (RSS sample failed)",
 						"workspace_uuid", workspaceUUID,
+						"memory_sample_duration", sampleDuration,
 						"error", err)
 				}
 				continue
 			}
-			// Sample the breakdown so both log lines can distinguish agent-side
-			// (parent) growth from MCP-child (descendant) growth (mitto-3gu). A
-			// breakdown-sampler error is non-fatal: log with zero fields so the
-			// recycle decision still uses the tree total from `sampler`.
-			parentRSS, descendantRSS, descendantCount, breakdownErr := breakdownSampler(p)
-			if breakdownErr != nil {
-				parentRSS, descendantRSS, descendantCount = 0, 0, 0
-			}
+			// Independent of the memory predicate below (mitto-52mt): warn once
+			// the descendant count climbs for consecutive cycles.
+			m.checkDescendantCountRatchet(workspaceUUID, sample.descendantCount)
+			rss := sample.effectiveMemory
 			if rss <= m.gcConfig.MemoryRecycleThreshold {
 				if m.logger != nil {
 					m.logger.Debug("GC: memory recycle below threshold",
 						"workspace_uuid", workspaceUUID,
+						"memory_sample_duration", sampleDuration,
 						"rss_bytes", rss,
+						"effective_memory_bytes", rss,
+						"memory_metric", "max_tree_rss_physical_footprint",
 						"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
-						"parent_rss_bytes", parentRSS,
-						"descendant_rss_bytes", descendantRSS,
-						"descendant_count", descendantCount)
+						"parent_rss_bytes", sample.parentRSS,
+						"descendant_rss_bytes", sample.descendantRSS,
+						"descendant_count", sample.descendantCount)
 				}
 				continue
 			}
@@ -677,12 +689,15 @@ gcTier1:
 			if m.logger != nil {
 				m.logger.Info("GC: recycling memory-bloated idle shared ACP process",
 					"workspace_uuid", workspaceUUID,
+					"memory_sample_duration", sampleDuration,
 					"rss_bytes", rss,
+					"effective_memory_bytes", rss,
+					"memory_metric", "max_tree_rss_physical_footprint",
 					"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
 					"session_count", len(sessions),
-					"parent_rss_bytes", parentRSS,
-					"descendant_rss_bytes", descendantRSS,
-					"descendant_count", descendantCount)
+					"parent_rss_bytes", sample.parentRSS,
+					"descendant_rss_bytes", sample.descendantRSS,
+					"descendant_count", sample.descendantCount)
 			}
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
@@ -697,6 +712,7 @@ gcTier1:
 			// Keep sessionless bookkeeping consistent.
 			m.gcMu.Lock()
 			delete(m.lastSessionSeen, workspaceUUID)
+			delete(m.descendantCountHistory, workspaceUUID)
 			m.gcMu.Unlock()
 			// Notify clients so they can surface a toast. Affected conversations
 			// resume transparently on next focus.
@@ -732,8 +748,41 @@ gcTier1:
 				continue
 			}
 
-			// Only act on degraded processes.
-			if !p.IsSaturated() {
+			// Act on degraded processes, OR a process permanently gated on a
+			// timed-out MCP-init handshake (mitto-13n). The mcp_init_gated bail
+			// in getOrCreateAuxiliarySession returns before any RPC is
+			// attempted, so it never calls recordRPCTimeout/etc and
+			// IsSaturated() stays false forever — without this second signal
+			// such a process (including the adaptive prewarm health probe
+			// itself, which uses the same bail path) would never be recycled
+			// and would survive GC indefinitely.
+			//
+			// mitto-13n.3: degradedReason is the single shared predicate (see
+			// processDegradedState) also used to fire the pre-recycle
+			// degraded-state notification below, BEFORE the idle safety gates —
+			// those gates are exactly what can hold off an actual recycle
+			// indefinitely, leaving users with no signal in the meantime.
+			degradedReason := processDegradedState(p, now)
+			m.updateDegradedState(workspaceUUID, degradedReason)
+
+			mcpInitGated := p.MCPInitTimedOut()
+			// Third signal (mitto-13n.1): a process whose MCP-init handshake
+			// started (MCPInitInProgress()) but never completed (!MCPInitDone())
+			// is ALSO invisible to the two signals above whenever the agent
+			// abandons its own wait without ever emitting the stderr line
+			// mcpInitTimedOut watches for — observed in production alongside
+			// the already-fixed mcp_init_gated case. Bounded by 2x the
+			// configured MCPInitTimeout (via mcpInitInProgressSince, stamped at
+			// the false->true edge) so a handshake that is merely slow-but-
+			// progressing is not recycled prematurely; skipped entirely when
+			// MCPInitTimeout is disabled (<=0), matching the cold-budget gating
+			// elsewhere in this package.
+			mcpInitWedged := p.config.MCPInitTimeout > 0 && p.MCPInitInProgress() && !p.MCPInitDone()
+			if mcpInitWedged {
+				since := p.MCPInitInProgressSince()
+				mcpInitWedged = !since.IsZero() && now.Sub(since) > 2*p.config.MCPInitTimeout
+			}
+			if !p.IsSaturated() && !mcpInitGated && !mcpInitWedged {
 				continue
 			}
 
@@ -787,15 +836,25 @@ gcTier1:
 				continue
 			}
 
-			// Saturated and idle — recycle to reclaim a healthy process.
+			// Saturated (or mcp-init-gated/wedged) and idle — recycle to
+			// reclaim a healthy process.
+			saturationLevel := p.SaturationLevel()
+			reason := "saturated_idle"
+			if mcpInitGated && !p.IsSaturated() {
+				reason = "mcp_init_gated"
+			} else if mcpInitWedged && !p.IsSaturated() && !mcpInitGated {
+				reason = "mcp_init_wedged"
+			}
 			if m.logger != nil {
 				m.logger.Info("GC: recycling saturated idle shared ACP process",
 					"workspace_uuid", workspaceUUID,
-					"session_count", len(sessions))
+					"session_count", len(sessions),
+					"reason", reason)
 			}
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
 			// ordering as Tier 1's loop-suspend and Tier 4's memory-recycle paths.
+			recycledCount := len(sessions)
 			for _, s := range sessions {
 				m.MarkGCSuspended(s.SessionID)
 				m.sessionClose(s.SessionID)
@@ -810,6 +869,17 @@ gcTier1:
 			// mitto-clc: proactive re-warm after recycle was inactivated — a
 			// naturally cold next NewSession is preferable to piling load onto
 			// an already-degraded workspace.
+			// Notify clients so they can surface a toast (mitto-aoo): a wedged
+			// process otherwise recycles silently and users are left reading a
+			// misleading agent-side error.
+			if m.onHealthRecycled != nil {
+				m.onHealthRecycled(workspaceUUID, reason, saturationLevel, recycledCount)
+			}
+			// mitto-13n.3: StopProcess above already dropped the
+			// degraded-state entry WITHOUT firing the recovery edge —
+			// onHealthRecycled broadcasts a dedicated "agent restarted" toast
+			// for this exact transition, so also firing the degraded-recovery
+			// toast would double-notify.
 		}
 	}
 
@@ -877,6 +947,18 @@ gcTier1:
 			// state. Note: unlike Tier 5, we deliberately do NOT gate on
 			// ActiveRPCs()/IsPrompting here — the in-flight, timing-out control RPCs
 			// (session/new, set_model) ARE the wedge, not real work.
+			//
+			// Awaiting-first-token guard (mitto-6a7p): LastStreamActivityAt alone
+			// cannot tell "prompt just dispatched, no token yet" (zero value) or
+			// "still carrying the PREVIOUS turn's value" (non-zero but stale) apart
+			// from a genuinely wedged process — both cases false-negative into
+			// "not progressing" and get the process recycled mid-turn. LastActivityAt
+			// is touched synchronously at the START of every prompt dispatch
+			// (PromptWithMeta -> TouchActivity), so unlike LastStreamActivityAt it
+			// always resets on a new turn. Treat an actively-prompting session as
+			// progressing while it is within the quiet window of its most recent
+			// prompt start, giving the first token a fair chance to arrive before
+			// Tier 6 judges the process wedged.
 			progressing := false
 			for _, s := range sessions {
 				if !s.LastStreamActivityAt.IsZero() && now.Sub(s.LastStreamActivityAt) < tier6StreamedProgressQuietWindow {
@@ -889,19 +971,31 @@ gcTier1:
 					progressing = true
 					break
 				}
+				if s.IsPrompting && !s.LastActivityAt.IsZero() && now.Sub(s.LastActivityAt) < tier6StreamedProgressQuietWindow {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (session awaiting first token)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"prompt_started_ago", now.Sub(s.LastActivityAt))
+					}
+					progressing = true
+					break
+				}
 			}
 			if progressing {
 				continue
 			}
 
 			// Confirmed-degraded, not progressing — recycle even though busy.
+			saturationLevel := p.SaturationLevel()
 			if m.logger != nil {
 				m.logger.Info("GC: recycling confirmed-degraded busy shared ACP process",
 					"workspace_uuid", workspaceUUID,
-					"saturation_level", p.SaturationLevel(),
+					"saturation_level", saturationLevel,
 					"active_rpcs", p.ActiveRPCs(),
 					"session_count", len(sessions))
 			}
+			recycledCount := len(sessions)
 			for _, s := range sessions {
 				m.MarkGCSuspended(s.SessionID)
 				m.sessionClose(s.SessionID)
@@ -911,6 +1005,13 @@ gcTier1:
 			delete(m.lastSessionSeen, workspaceUUID)
 			m.gcMu.Unlock()
 			// mitto-clc: proactive re-warm after recycle was inactivated.
+			// Notify clients so they can surface a toast (mitto-aoo).
+			if m.onHealthRecycled != nil {
+				m.onHealthRecycled(workspaceUUID, "confirmed_degraded", saturationLevel, recycledCount)
+			}
+			// mitto-13n.3: see the matching Tier 5 comment above — StopProcess
+			// already dropped the entry silently, avoiding a double
+			// notification alongside onHealthRecycled's own toast.
 		}
 	}
 
@@ -918,4 +1019,41 @@ gcTier1:
 	// Tier 3: clean up idle auxiliary sessions
 	// ----------------------------------------------------------------
 	m.CleanupStaleAuxiliarySessions(m.gcConfig.AuxIdleTimeout)
+}
+
+// checkDescendantCountRatchet updates the per-workspace descendant-count
+// history and emits a WARN once the count has strictly increased for
+// descendantRatchetStreak consecutive Tier 4 GC cycles (mitto-52mt). This is
+// Tier 4's only descendant-sprawl signal that does not depend on aggregate
+// RSS: a V8 heap-OOM inside a descendant MCP process is a per-process cap
+// decoupled from tree RSS, so a process can crash from unbounded descendant
+// growth while comfortably under MemoryRecycleThreshold. The first sample
+// observed for a workspace only seeds the baseline — there is nothing yet to
+// compare it against.
+func (m *ACPProcessManager) checkDescendantCountRatchet(workspaceUUID string, descendantCount int) {
+	m.gcMu.Lock()
+	if m.descendantCountHistory == nil {
+		m.descendantCountHistory = make(map[string]*descendantCountEntry)
+	}
+	entry, ok := m.descendantCountHistory[workspaceUUID]
+	if !ok {
+		m.descendantCountHistory[workspaceUUID] = &descendantCountEntry{lastCount: descendantCount}
+		m.gcMu.Unlock()
+		return
+	}
+	if descendantCount > entry.lastCount {
+		entry.streak++
+	} else {
+		entry.streak = 0
+	}
+	entry.lastCount = descendantCount
+	streak := entry.streak
+	m.gcMu.Unlock()
+
+	if streak >= descendantRatchetStreak && m.logger != nil {
+		m.logger.Warn("GC: descendant count climbing without bound",
+			"workspace_uuid", workspaceUUID,
+			"descendant_count", descendantCount,
+			"consecutive_increases", streak)
+	}
 }

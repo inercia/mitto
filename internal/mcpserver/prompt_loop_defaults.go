@@ -6,8 +6,79 @@
 package mcpserver
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
+
+// parseLoopTriggerList parses the flat MCP loop_trigger argument into the
+// canonical trigger list. The MCP surface stays flat for agent ergonomics
+// (operator decision, mitto-r6j.5): raw may be a single trigger ("schedule")
+// or a comma-separated list ("schedule,onCompletion"). This is the chosen
+// fallback for list-capable input — the go-sdk's jsonschema generation
+// (google/jsonschema-go, reflection-only, no custom-type hook) derives a
+// tool's input schema purely from the Go field's reflect.Kind, and every
+// mitto_conversation_new/_update tool in tool_registration.go registers with
+// an auto-generated schema (no InputSchema override), so a *string field
+// always validates as a JSON string — an array argument would fail schema
+// validation before reaching this parser. A comma-separated string keeps the
+// field flat while still letting callers arm multiple triggers.
+// Empty input returns nil (caller applies its own single-trigger default).
+func parseLoopTriggerList(raw string) ([]session.LoopTrigger, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[session.LoopTrigger]bool, len(parts))
+	triggers := make([]session.LoopTrigger, 0, len(parts))
+	for _, part := range parts {
+		t := session.LoopTrigger(strings.TrimSpace(part))
+		switch t {
+		case session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks, session.TriggerOnChild, session.TriggerOnSlack:
+			// valid
+		default:
+			return nil, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', 'onTasks', 'onChild', 'onSlack', or a comma-separated list of these (got %q)", part)
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		triggers = append(triggers, t)
+	}
+	return triggers, nil
+}
+
+// promptLoopDefaultEnabled reports whether a prompt's loop: frontmatter implies
+// the loop should start enabled, per pl.Mode/pl.Default (mitto-ydj). Mirrors the
+// frontend's promptLoopInitialState (web/static/utils/prompts.js):
+//
+//   - Mode != "optional" (i.e. "always" or absent): always enabled — Default is
+//     not applicable and, if present, is ignored (with a load-time lint warning
+//     from ValidatePromptLoop).
+//   - Mode == "optional": nil or *true => enabled (on by default); *false =>
+//     disabled. This is a deliberate reversal of a naive "Default nil => off"
+//     reading — nil/absent means "on by default, user-toggleable", matching
+//     config.PromptLoop's own doc comment and the frontend.
+func promptLoopDefaultEnabled(pl *config.PromptLoop) bool {
+	if pl == nil || pl.Mode != config.PromptLoopModeOptional {
+		return true
+	}
+	return pl.Default == nil || *pl.Default
+}
+
+func applyPromptSlackDefaults(subscriptions []session.SlackSubscription, pl *config.PromptLoop) {
+	for i := range subscriptions {
+		if subscriptions[i].EventMode == "" && pl.SlackEventMode() != "" {
+			subscriptions[i].EventMode = session.SlackEventMode(pl.SlackEventMode())
+		}
+		if subscriptions[i].ThreadPolicy == "" && pl.SlackThreadPolicy() != "" {
+			subscriptions[i].ThreadPolicy = session.SlackThreadPolicy(pl.SlackThreadPolicy())
+		}
+	}
+}
 
 // applyPromptLoopDefaultsToStartInput merges a seeded prompt's loop: frontmatter
 // into the ConversationStartInput. Only fields the caller did not set are
@@ -30,25 +101,38 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 		input.LoopPromptName = seedPromptName
 	}
 
-	// Trigger + on-completion fields
-	if input.LoopTrigger == "" && pl.Trigger != "" {
-		input.LoopTrigger = pl.Trigger
+	// Trigger list + on-completion fields. The MCP surface stays flat
+	// (operator decision), so the WHOLE declared trigger list is joined into
+	// the comma-separated loop_trigger string when the caller left it unset
+	// (mitto-r6j.5 — previously only the primary/first trigger was filled).
+	if input.LoopTrigger == "" && len(pl.Trigger) > 0 {
+		input.LoopTrigger = strings.Join(pl.Trigger, ",")
 	}
-	if input.LoopCompletionDelaySeconds == nil && pl.Delay > 0 {
-		d := pl.Delay
+	// onChild event list. Filled only when the caller left it unset; a nil
+	// slice means "unset" here, matching how LoopArguments is checked below.
+	if input.LoopChildEvents == nil && len(pl.ChildEvents()) > 0 {
+		input.LoopChildEvents = pl.ChildEvents()
+	}
+	applyPromptSlackDefaults(input.LoopSlackSubscriptions, pl)
+	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
+		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
+	}
+	if input.LoopSettleWindowSeconds == nil && pl.TasksSettleWindow() > 0 {
+		v := pl.TasksSettleWindow()
+		input.LoopSettleWindowSeconds = &v
 	}
 
 	// Frequency (only meaningful for schedule trigger, but fill unconditionally —
 	// downstream code ignores frequency for onCompletion/onTasks).
-	if input.LoopFrequencyValue == 0 && pl.Value > 0 {
-		input.LoopFrequencyValue = pl.Value
+	if input.LoopFrequencyValue == 0 && pl.FrequencyValue() > 0 {
+		input.LoopFrequencyValue = pl.FrequencyValue()
 	}
-	if input.LoopFrequencyUnit == "" && pl.Unit != "" {
-		input.LoopFrequencyUnit = pl.Unit
+	if input.LoopFrequencyUnit == "" && pl.FrequencyUnit() != "" {
+		input.LoopFrequencyUnit = pl.FrequencyUnit()
 	}
-	if input.LoopFrequencyAt == "" && pl.At != "" {
-		input.LoopFrequencyAt = pl.At
+	if input.LoopFrequencyAt == "" && pl.FrequencyAt() != "" {
+		input.LoopFrequencyAt = pl.FrequencyAt()
 	}
 
 	// Caps
@@ -63,16 +147,38 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 	}
 
 	// onTasks condition
-	if input.LoopCondition == "" && pl.Condition != "" {
-		input.LoopCondition = pl.Condition
+	if input.LoopCondition == "" && pl.TasksCondition() != "" {
+		input.LoopCondition = pl.TasksCondition()
 	}
 
 	// onTasks opt-in re-fire (mitto-dmb). Fill only when the caller did not
 	// explicitly set it. Both nil and *false are meaningful frontmatter values,
 	// so we check the pointer for presence rather than dereferencing.
-	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
-		v := *pl.CoalesceDuringBusy
+	if input.LoopCoalesceDuringBusy == nil && pl.TasksCoalesceDuringBusy() != nil {
+		v := *pl.TasksCoalesceDuringBusy()
 		input.LoopCoalesceDuringBusy = &v
+	}
+
+	// Fresh-context per run. Same pointer-presence semantics as CoalesceDuringBusy.
+	if input.LoopFreshContext == nil && pl.FreshContext != nil {
+		v := *pl.FreshContext
+		input.LoopFreshContext = &v
+	}
+
+	// Boot pulse (mitto-ystk). Same pointer-presence semantics as CoalesceDuringBusy.
+	if input.LoopRunOnStart == nil && pl.RunOnStart != nil {
+		v := *pl.RunOnStart
+		input.LoopRunOnStart = &v
+	}
+
+	// Initial enabled state (mitto-ydj). Only fills when the caller left
+	// loop_enabled unset, and only ever writes false — the "on" case is already
+	// handled by the enabled := true default at the ConversationStart call site,
+	// so this clause is strictly subtractive: it never turns a loop on that the
+	// caller/default path wouldn't have turned on anyway.
+	if input.LoopEnabled == nil && !promptLoopDefaultEnabled(pl) {
+		v := false
+		input.LoopEnabled = &v
 	}
 }
 
@@ -87,27 +193,37 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 		return
 	}
 
-	// Trigger + on-completion fields
-	if input.LoopTrigger == nil && pl.Trigger != "" {
-		t := pl.Trigger
+	// Trigger list + on-completion fields. Same whole-list-join rule as the
+	// start-input helper (mitto-r6j.5).
+	if input.LoopTrigger == nil && len(pl.Trigger) > 0 {
+		t := strings.Join(pl.Trigger, ",")
 		input.LoopTrigger = &t
 	}
-	if input.LoopCompletionDelaySeconds == nil && pl.Delay > 0 {
-		d := pl.Delay
+	// onChild event list. Same nil-means-unset rule as the start-input helper.
+	if input.LoopChildEvents == nil && len(pl.ChildEvents()) > 0 {
+		input.LoopChildEvents = pl.ChildEvents()
+	}
+	applyPromptSlackDefaults(input.LoopSlackSubscriptions, pl)
+	if input.LoopCompletionDelaySeconds == nil && pl.CompletionDelay() > 0 {
+		d := pl.CompletionDelay()
 		input.LoopCompletionDelaySeconds = &d
+	}
+	if input.LoopSettleWindowSeconds == nil && pl.TasksSettleWindow() > 0 {
+		v := pl.TasksSettleWindow()
+		input.LoopSettleWindowSeconds = &v
 	}
 
 	// Frequency
-	if input.LoopFrequencyValue == nil && pl.Value > 0 {
-		v := pl.Value
+	if input.LoopFrequencyValue == nil && pl.FrequencyValue() > 0 {
+		v := pl.FrequencyValue()
 		input.LoopFrequencyValue = &v
 	}
-	if input.LoopFrequencyUnit == nil && pl.Unit != "" {
-		u := pl.Unit
+	if input.LoopFrequencyUnit == nil && pl.FrequencyUnit() != "" {
+		u := pl.FrequencyUnit()
 		input.LoopFrequencyUnit = &u
 	}
-	if input.LoopFrequencyAt == nil && pl.At != "" {
-		a := pl.At
+	if input.LoopFrequencyAt == nil && pl.FrequencyAt() != "" {
+		a := pl.FrequencyAt()
 		input.LoopFrequencyAt = &a
 	}
 
@@ -123,14 +239,38 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	}
 
 	// onTasks condition
-	if input.LoopCondition == nil && pl.Condition != "" {
-		c := pl.Condition
+	if input.LoopCondition == nil && pl.TasksCondition() != "" {
+		c := pl.TasksCondition()
 		input.LoopCondition = &c
 	}
 
 	// onTasks opt-in re-fire (mitto-dmb). Same rules as the start-input helper.
-	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
-		v := *pl.CoalesceDuringBusy
+	if input.LoopCoalesceDuringBusy == nil && pl.TasksCoalesceDuringBusy() != nil {
+		v := *pl.TasksCoalesceDuringBusy()
 		input.LoopCoalesceDuringBusy = &v
+	}
+
+	// Fresh-context per run. Same rules as the start-input helper.
+	if input.LoopFreshContext == nil && pl.FreshContext != nil {
+		v := *pl.FreshContext
+		input.LoopFreshContext = &v
+	}
+
+	// Boot pulse (mitto-ystk). Same rules as the start-input helper.
+	if input.LoopRunOnStart == nil && pl.RunOnStart != nil {
+		v := *pl.RunOnStart
+		input.LoopRunOnStart = &v
+	}
+
+	// Initial enabled state (mitto-ydj). Same rules as the start-input helper:
+	// fills only when the caller left loop_enabled unset, and only ever writes
+	// false. Callers of this helper must capture whether loop_enabled was
+	// caller-set BEFORE calling it if they need to distinguish "caller explicitly
+	// disabled" from "frontmatter disabled" afterwards (see the call site in
+	// tools_conversation_lifecycle.go, which uses this for the
+	// StoppedReasonDisabledByAgent bookkeeping).
+	if input.LoopEnabled == nil && !promptLoopDefaultEnabled(pl) {
+		v := false
+		input.LoopEnabled = &v
 	}
 }

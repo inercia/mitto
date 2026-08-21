@@ -1,0 +1,34 @@
+{{/*
+  check-behind-base — verify the current branch is not behind its target base
+  before pushing, and STOP if it is. Consumed by prompts that push commits to
+  an existing PR (fix-ci, address-pr-comments, submit-changes) and that must
+  not rebase inline. Prevents "green locally, red in CI" surprises caused by
+  missing recent base commits.
+
+  Composes git/shared/behind-base-count (the detection) with a stop-and-defer
+  verdict. Prompts that DO rebase inline (git/commit-and-submit) consume
+  behind-base-count directly instead.
+
+  Preconditions: the caller has already resolved `<target-remote>` and
+  `<target-branch>` (usually via the git/identify-remote-branch fragment) OR
+  will infer them inline with `gh pr view --json baseRefName` when a PR pins
+  the target.
+
+  Callers should place this fragment under a numbered step heading of their
+  choice (e.g. "### 4. Check if Rebase Needed").
+*/}}
+{{ template "git/shared/behind-base-count" . }}
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+**Scheduled mode**: do not attempt to rebase inline (conflicts mid-fix are
+unsafe when unattended). Instead, `mitto_ui_notify` (`warning`, `sound: true`)
+that the branch is `<N>` commits behind `<target-remote>/<target-branch>` and
+needs a rebase before the fix can be pushed, then stop. The outer supervisor
+(e.g. `babysit-this-pr`) or a human will rebase and re-trigger this run.
+{{- else }}
+
+**Interactive mode**: inform the user that the branch is behind and defer to
+the **"Rebase changes"** prompt. Do not rebase inline from this prompt — the
+dedicated rebase workflow handles conflict resolution properly. Stop after
+notifying so the user (or a follow-up run) can rebase first.
+{{- end }}

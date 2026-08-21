@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestReconnectDuringAgentStreaming tests that a client reconnecting during
@@ -25,7 +25,7 @@ func TestReconnectDuringAgentStreaming(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestReconnectDuringAgentStreaming(t *testing.T) {
 		promptComplete  = make(chan struct{})
 	)
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			mu.Lock()
 			firstConnEvents = append(firstConnEvents, "agent_message:"+html)
@@ -84,10 +84,10 @@ func TestReconnectDuringAgentStreaming(t *testing.T) {
 	}
 
 	// Track events from second connection
-	var secondConnEvents []client.SyncEvent
+	var secondConnEvents []api.SyncEvent
 
-	callbacks2 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks2 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			secondConnEvents = append(secondConnEvents, events...)
 			mu.Unlock()
@@ -150,7 +150,7 @@ func TestStaleSeqSync(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -164,8 +164,8 @@ func TestStaleSeqSync(t *testing.T) {
 	var initialLoadDone = make(chan struct{})
 	var initialLoadOnce sync.Once
 
-	callbacks1 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks1 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			initialLoadOnce.Do(func() {
 				initialEventCount = len(events)
 				close(initialLoadDone)
@@ -193,7 +193,7 @@ func TestStaleSeqSync(t *testing.T) {
 	// Second client sends a message and waits for agent response
 	var agentMessageReceived = make(chan struct{})
 	var agentMessageOnce sync.Once
-	callbacks2 := client.SessionCallbacks{
+	callbacks2 := api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			agentMessageOnce.Do(func() {
 				close(agentMessageReceived)
@@ -222,12 +222,12 @@ func TestStaleSeqSync(t *testing.T) {
 	ws2.Close()
 
 	// First client reconnects and syncs from stale position
-	var syncedEvents []client.SyncEvent
+	var syncedEvents []api.SyncEvent
 	var syncDone = make(chan struct{})
 	var syncOnce sync.Once
 
-	callbacks3 := client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	callbacks3 := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			syncOnce.Do(func() {
 				syncedEvents = events
 				close(syncDone)
@@ -271,7 +271,7 @@ func TestStaleSeqSync(t *testing.T) {
 func TestConcurrentPromptsFromTwoClients(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestConcurrentPromptsFromTwoClients(t *testing.T) {
 		wg                   sync.WaitGroup
 	)
 
-	callbacks1 := client.SessionCallbacks{
+	callbacks1 := api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			mu.Lock()
 			client1AgentMessages++
@@ -296,7 +296,7 @@ func TestConcurrentPromptsFromTwoClients(t *testing.T) {
 		},
 	}
 
-	callbacks2 := client.SessionCallbacks{
+	callbacks2 := api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			mu.Lock()
 			client2AgentMessages++
@@ -367,7 +367,7 @@ func TestConcurrentPromptsFromTwoClients(t *testing.T) {
 func TestQueueAddDuringPrompting(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestQueueAddDuringPrompting(t *testing.T) {
 
 	var agentMessageReceived = make(chan struct{})
 	var agentMessageOnce sync.Once
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			agentMessageOnce.Do(func() {
 				close(agentMessageReceived)
@@ -455,7 +455,7 @@ func TestQueueAddDuringPrompting(t *testing.T) {
 func TestQueuedMessageAppearsInConversation(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestQueuedMessageAppearsInConversation(t *testing.T) {
 	var promptComplete = make(chan struct{})
 	var userPromptCh = make(chan struct{})
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			t.Logf("PromptComplete: eventCount=%d", eventCount)
 			// Use select to avoid closing already-closed channel
@@ -570,7 +570,7 @@ func TestQueuedMessageAppearsInConversation(t *testing.T) {
 func TestObserverAddDuringHighFrequencyEvents(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestObserverAddDuringHighFrequencyEvents(t *testing.T) {
 
 	// First client sends a prompt that generates many events
 	var promptComplete = make(chan struct{})
-	callbacks1 := client.SessionCallbacks{
+	callbacks1 := api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			close(promptComplete)
 		},
@@ -602,7 +602,7 @@ func TestObserverAddDuringHighFrequencyEvents(t *testing.T) {
 	var eventCounts atomic.Int64
 	for i := 0; i < 5; i++ {
 		go func(idx int) {
-			callbacks := client.SessionCallbacks{
+			callbacks := api.SessionCallbacks{
 				OnAgentMessage: func(html string) {
 					eventCounts.Add(1)
 				},
@@ -633,7 +633,7 @@ func TestObserverAddDuringHighFrequencyEvents(t *testing.T) {
 func TestMultipleClientsSeeSameEvents(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -651,10 +651,10 @@ func TestMultipleClientsSeeSameEvents(t *testing.T) {
 	)
 
 	// Connect multiple clients
-	var clients []*client.Session
+	var clients []*api.Session
 	for i := 0; i < numClients; i++ {
 		idx := i
-		callbacks := client.SessionCallbacks{
+		callbacks := api.SessionCallbacks{
 			OnAgentMessage: func(html string) {
 				mu.Lock()
 				eventCounts[idx]++

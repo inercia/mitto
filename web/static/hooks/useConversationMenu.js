@@ -18,8 +18,14 @@ import {
   TrashIcon,
   CopyIcon,
   BroomIcon,
+  CheckIcon,
+  PaletteIcon,
+  CircleIcon,
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
+import { CONVERSATION_COLORS } from "../constants.js";
+import { promptLoopMode } from "../utils/prompts.js";
+import { decideLoopAction } from "./useConversationSeeding.js";
 
 export function useConversationMenu({
   session,
@@ -37,8 +43,14 @@ export function useConversationMenu({
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
   onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
+  onCopyConversationName, // optional: (session) => void — adds "Copy conversation name" to the Copy submenu
+  onCopyConversationId, // optional: (session) => void — adds "Copy conversation ID" to the Copy submenu
+  onCopyLastResponse, // optional: (session) => void — adds "Copy last response as Markdown" to the Copy submenu
+  hasConversationMarkdown = true, // whether the conversation has copyable content (disables the full-Markdown submenu entry when false)
+  hasLastResponseMarkdown = true, // whether there is a copyable last agent response (disables that submenu entry when false)
   flushCommand = "", // optional: when non-empty, shows "Flush context" item
   onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
+  onSetColor, // optional: (session, hexColor) => void — shows "Change color" submenu
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -88,36 +100,121 @@ export function useConversationMenu({
   // Exposed separately so surfaces like the conversation Toolbar can render
   // these hierarchical groups inside a dedicated dropdown while promoting the
   // fixed actions (Copy, Flush, Loop, Archive, Delete) to top-level buttons.
-  const promptGroupItems = useMemo(
-    () =>
-      onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
-        ? buildPromptGroupMenuItems(
-            menuPrompts,
-            (p, opts) => onSendPromptToConversation(session, p, opts),
-            html`<${LightningIcon} />`,
-          )
-        : [],
-    [menuPrompts, onSendPromptToConversation, session],
-  );
+  const promptGroupItems = useMemo(() => {
+    if (!onSendPromptToConversation || !menuPrompts || menuPrompts.length === 0) {
+      return [];
+    }
+    // Hide loop-configuring prompts (loop.mode: "always") on conversations
+    // that are already loops (or are children) — clicking one there falls
+    // into decideLoopAction's "one-shot" branch instead of configuring/
+    // joining the loop, silently sending the prompt once (mitto-wnc8).
+    // decideLoopAction is the single existing source of truth for that
+    // classification (same field `isLoopConfigured` callers already pass in
+    // derives from), so reuse it rather than duplicating its logic here.
+    // Guard on `session` truthy so a null session (no menu prompts fetched
+    // anyway) never suppresses a populated list via decideLoopAction(null).
+    const hideLoopConfiguring =
+      !!session && decideLoopAction(session) !== "make-loop";
+    const prompts = hideLoopConfiguring
+      ? menuPrompts.filter((p) => promptLoopMode(p) !== "always")
+      : menuPrompts;
+    return buildPromptGroupMenuItems(
+      prompts,
+      (p, opts) => onSendPromptToConversation(session, p, opts),
+      html`<${LightningIcon} />`,
+    );
+  }, [menuPrompts, onSendPromptToConversation, session]);
 
   const contextMenuItems = useMemo(() => {
     return [
-      // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
+      // Submenu-bearing entries are grouped at the top: first the prompt
+      // group submenus (menus:conversation prompts), e.g. "Workflow", then
+      // "Change color". Flat actions follow below.
       ...promptGroupItems,
+      // "Change color" — only shown when caller provides the callback
+      ...(onSetColor
+        ? [
+            {
+              label: "Change color",
+              icon: html`<${PaletteIcon} />`,
+              submenu: [
+                ...CONVERSATION_COLORS.map((c) => ({
+                  label: c.name,
+                  icon: html`<span
+                    class="w-4 h-4 rounded-full block border border-mitto-border-2"
+                    style="background-color: ${c.hex}"
+                  ></span>`,
+                  trailing:
+                    (session?.background_color || "").toLowerCase() ===
+                    c.hex.toLowerCase()
+                      ? html`<${CheckIcon} />`
+                      : null,
+                  onClick: () => onSetColor(session, c.hex),
+                })),
+                {
+                  label: "No color",
+                  icon: html`<${CircleIcon} />`,
+                  trailing: !session?.background_color
+                    ? html`<${CheckIcon} />`
+                    : null,
+                  onClick: () => onSetColor(session, ""),
+                },
+              ],
+            },
+          ]
+        : []),
       {
         label: "Properties",
         icon: html`<${EditIcon} />`,
         onClick: () => onRename && onRename(session),
       },
-      // "Copy as Markdown" — only shown when caller provides the callback
+      // "Copy" — only shown when caller provides at least one copy callback.
+      // When any of the three sibling callbacks are supplied (mitto-a6v1),
+      // this becomes a "Copy" entry with a 4-action submenu (same shape as
+      // "Change color" above); otherwise it stays the original flat
+      // "Copy as Markdown" entry so existing callers (none pass siblings
+      // today) are unaffected.
       ...(onCopyConversation
-        ? [
-            {
-              label: "Copy as Markdown",
-              icon: html`<${CopyIcon} />`,
-              onClick: () => onCopyConversation(session),
-            },
-          ]
+        ? onCopyConversationName || onCopyConversationId || onCopyLastResponse
+          ? [
+              {
+                label: "Copy",
+                icon: html`<${CopyIcon} />`,
+                submenu: [
+                  {
+                    label: "Copy conversation name",
+                    disabled: !session?.name,
+                    onClick: () =>
+                      onCopyConversationName &&
+                      onCopyConversationName(session),
+                  },
+                  {
+                    label: "Copy conversation ID",
+                    disabled: !session?.session_id,
+                    onClick: () =>
+                      onCopyConversationId && onCopyConversationId(session),
+                  },
+                  {
+                    label: "Copy full contents as Markdown",
+                    disabled: !hasConversationMarkdown,
+                    onClick: () => onCopyConversation(session),
+                  },
+                  {
+                    label: "Copy last response as Markdown",
+                    disabled: !hasLastResponseMarkdown,
+                    onClick: () =>
+                      onCopyLastResponse && onCopyLastResponse(session),
+                  },
+                ],
+              },
+            ]
+          : [
+              {
+                label: "Copy as Markdown",
+                icon: html`<${CopyIcon} />`,
+                onClick: () => onCopyConversation(session),
+              },
+            ]
         : []),
       // "Flush context" — only shown when the conversation's ACP server has a
       // context-flush command configured and the caller provides the callback.
@@ -195,8 +292,14 @@ export function useConversationMenu({
     onArchive,
     onDelete,
     onCopyConversation,
+    onCopyConversationName,
+    onCopyConversationId,
+    onCopyLastResponse,
+    hasConversationMarkdown,
+    hasLastResponseMarkdown,
     flushCommand,
     onFlushContext,
+    onSetColor,
   ]);
 
   return {

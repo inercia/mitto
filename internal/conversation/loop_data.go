@@ -12,9 +12,14 @@ import (
 func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string]interface{} {
 	data := map[string]interface{}{
 		"session_id": sessionID,
+		// loop_config is the authoritative, complete editor state. Keep the
+		// top-level fields below as lightweight/backward-compatible glance data.
+		// An explicit null tells clients to clear local editor state on deletion.
+		"loop_config": nil,
 	}
 
 	if loop != nil {
+		data["loop_config"] = loop
 		// loop_configured: true means the session is in loop mode (shows loop UI)
 		data["loop_configured"] = true
 		// loop_enabled: true means loop runs are active (locked state)
@@ -36,13 +41,30 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 		if loop.StoppedReason != "" {
 			data["loop_stopped_reason"] = string(loop.StoppedReason)
 		}
+		if loop.AcknowledgedStoppedReason != "" {
+			data["loop_acknowledged_stopped_reason"] = string(loop.AcknowledgedStoppedReason)
+		}
 		// Glance fields for conversation header display (trigger resolved via EffectiveTrigger
 		// so schedule loops always report "schedule", not the empty-string default).
+		// "trigger" stays the primary/first one for back-compat; "triggers" carries
+		// the full armed set of a multi-trigger loop (mitto-r6j.2).
 		data["trigger"] = string(loop.EffectiveTrigger())
+		triggers := loop.EffectiveTriggers()
+		triggerNames := make([]string, 0, len(triggers))
+		for _, t := range triggers {
+			triggerNames = append(triggerNames, string(t))
+		}
+		data["triggers"] = triggerNames
+		effChildEvents := loop.EffectiveChildEvents()
+		childEventNames := make([]string, 0, len(effChildEvents))
+		for _, e := range effChildEvents {
+			childEventNames = append(childEventNames, string(e))
+		}
+		data["child_events"] = childEventNames
 		data["delay_seconds"] = loop.DelaySeconds
 		data["max_duration_seconds"] = loop.MaxDurationSeconds
 		// Prompt presence flag and free-text preview for the selector UI.
-		data["loop_has_prompt"] = loop.Prompt != "" || loop.PromptName != ""
+		data["loop_has_prompt"] = loop.HasPrompt()
 		if preview := loop.PromptPreview(); preview != "" {
 			data["loop_prompt_preview"] = preview
 		}

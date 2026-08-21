@@ -19,7 +19,7 @@ type fakeTitleDeps struct {
 	started      []string // records messages passed to startTitleGeneration
 }
 
-func (f *fakeTitleDeps) sessionHasNoTitle() bool { return f.noTitle }
+func (f *fakeTitleDeps) sessionNeedsTitle() bool { return f.noTitle }
 func (f *fakeTitleDeps) startTitleGeneration(m string) {
 	f.started = append(f.started, m)
 }

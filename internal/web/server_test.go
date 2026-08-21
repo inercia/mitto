@@ -3,6 +3,8 @@ package web
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +12,46 @@ import (
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
+
+func TestSlackOAuthCallbackRequestLogRedactsQuery(t *testing.T) {
+	const canary = "oauth-code-and-state-canary"
+	request := httptest.NewRequest(http.MethodGet, "/mitto/api/slack/oauth/callback?code="+canary+"&state="+canary, nil)
+	got := requestURIForLog(request)
+	if got != "/mitto/api/slack/oauth/callback?<redacted>" || strings.Contains(got, canary) {
+		t.Fatalf("requestURIForLog() = %q", got)
+	}
+	ordinary := httptest.NewRequest(http.MethodGet, "/mitto/api/health?probe=ready", nil)
+	if got := requestURIForLog(ordinary); got != ordinary.RequestURI {
+		t.Fatalf("ordinary requestURIForLog() = %q", got)
+	}
+}
+
+func TestSlackOAuthRoutesKeepMutationsCSRFProtected(t *testing.T) {
+	csrf := middleware.NewCSRFManager()
+	defer csrf.Close()
+	server := &Server{apiHandlers: handlers.New(handlers.Deps{})}
+	routes := server.apiRoutes(nil, csrf, http.NotFoundHandler())
+	want := map[string]string{
+		"/api/slack/apps/{appId}/oauth-client":                  http.MethodPut,
+		"/api/slack/apps/{appId}/oauth/start":                   http.MethodPost,
+		"/api/slack/installations/{installationId}/oauth/start": http.MethodPost,
+		"/api/slack/oauth/callback":                             http.MethodGet,
+	}
+	for _, route := range routes {
+		if method, ok := want[route.pattern]; ok {
+			if route.method != method {
+				t.Errorf("route %s method = %q, want %q", route.pattern, route.method, method)
+			}
+			delete(want, route.pattern)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing Slack OAuth routes: %#v", want)
+	}
+}
 
 func TestConfig_GetWorkspaces_WithWorkspaces(t *testing.T) {
 	cfg := &Config{
@@ -28,6 +69,39 @@ func TestConfig_GetWorkspaces_WithWorkspaces(t *testing.T) {
 
 	if workspaces[0].WorkingDir != "/workspace1" {
 		t.Errorf("workspaces[0].WorkingDir = %q, want %q", workspaces[0].WorkingDir, "/workspace1")
+	}
+}
+
+// TestServer_beadsStatsWorkspaces pins the mitto-5rm6.3 BeadsWorkspaceLister
+// wiring: empty WorkingDir is skipped, and two workspace entries sharing a
+// WorkingDir (e.g. different ACP servers) are deduped to one BeadsWorkspace,
+// mirroring getBeadsWatchDirs' dedup semantics.
+func TestServer_beadsStatsWorkspaces(t *testing.T) {
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "ws-1", WorkingDir: "/a", ACPServer: "server1"},
+		{UUID: "ws-2", WorkingDir: "/b", ACPServer: "server1"},
+		{UUID: "ws-3", WorkingDir: "/b", ACPServer: "server2"}, // dup dir -> deduped
+		{UUID: "ws-4", WorkingDir: ""},                         // empty dir -> skipped
+	})
+	s := &Server{sessionManager: sm}
+
+	got := s.beadsStatsWorkspaces()
+	if len(got) != 2 {
+		t.Fatalf("beadsStatsWorkspaces() returned %d entries, want 2: %+v", len(got), got)
+	}
+	byDir := make(map[string]string, len(got))
+	for _, ws := range got {
+		byDir[ws.Dir] = ws.UUID
+	}
+	if byDir["/a"] != "ws-1" {
+		t.Errorf("byDir[/a] = %q, want ws-1", byDir["/a"])
+	}
+	if byDir["/b"] != "ws-2" {
+		t.Errorf("byDir[/b] = %q, want ws-2 (first entry for a duplicated dir wins)", byDir["/b"])
+	}
+	if _, ok := byDir[""]; ok {
+		t.Error("beadsStatsWorkspaces() should skip empty WorkingDir")
 	}
 }
 
@@ -273,7 +347,7 @@ func TestBuildLoopUpdatedData_ScheduleLoop(t *testing.T) {
 		Prompt:             "Test",
 		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
 		Enabled:            true,
-		Trigger:            session.TriggerSchedule,
+		Triggers:           []session.LoopTrigger{session.TriggerSchedule},
 		MaxIterations:      5,
 		IterationCount:     2,
 		DelaySeconds:       0,
@@ -302,12 +376,11 @@ func TestBuildLoopUpdatedData_ScheduleLoop(t *testing.T) {
 }
 
 func TestBuildLoopUpdatedData_EmptyTriggerReportsSchedule(t *testing.T) {
-	// Trigger="" defaults to "schedule" via EffectiveTrigger().
+	// Triggers unset defaults to "schedule" via EffectiveTrigger().
 	p := &session.LoopPrompt{
 		Prompt:    "Test",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
-		Trigger:   "", // empty — must be resolved to "schedule"
 	}
 	data := conversation.BuildLoopUpdatedData("s1", p)
 	if data["trigger"] != "schedule" {
@@ -319,7 +392,7 @@ func TestBuildLoopUpdatedData_OnCompletionLoop(t *testing.T) {
 	p := &session.LoopPrompt{
 		Prompt:             "Test",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       30,
 		MaxDurationSeconds: 7200,
 	}

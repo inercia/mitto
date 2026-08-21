@@ -1,12 +1,17 @@
 package prompts
 
 import (
+	"errors"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 )
+
+// ErrDeploymentInProgress is returned only when the cache has no last-good
+// snapshot to serve while a multi-file prompts deployment is active.
+var ErrDeploymentInProgress = errors.New("prompts deployment in progress")
 
 // PromptsCache provides cached access to global prompts with on-demand reload.
 // The cache supports multiple directories with proper priority ordering:
@@ -44,6 +49,14 @@ type PromptsCache struct {
 
 	// loadErrors holds per-file load errors from the most recent reload.
 	loadErrors []PromptLoadError
+
+	// fragmentsGen is the CurrentFragmentsGeneration() value observed at the
+	// last successful reload. If the global fragment registry has advanced
+	// since then (e.g. because the bootstrap installed fragments AFTER an
+	// early Get() sampled an empty registry — mitto-9jh.1), needsReload()
+	// returns true so template precompiles are retried with the current
+	// registry instead of serving a poisoned earlier result.
+	fragmentsGen uint64
 }
 
 // NewPromptsCache creates a new prompts cache.
@@ -125,9 +138,15 @@ func (c *PromptsCache) getAllDirs() ([]string, error) {
 	return dirs, nil
 }
 
-// needsReload checks if any directory has been modified since last load.
+// needsReload checks if any directory has been modified since last load, or
+// if the global fragment registry has advanced since the last reload (which
+// invalidates any earlier PrecompileTemplateConds result — mitto-9jh.1).
 func (c *PromptsCache) needsReload(dirs []string) bool {
 	if c.prompts == nil {
+		return true
+	}
+
+	if CurrentFragmentsGeneration() != c.fragmentsGen {
 		return true
 	}
 
@@ -179,8 +198,77 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		return c.prompts, nil
 	}
 
-	// Load prompts from all directories, merging by name
-	// Later directories override earlier ones
+	deploymentBefore, deploymentActive := captureDeploymentSnapshot(dirs)
+	if deploymentActive {
+		return c.lastGoodOrDeploymentError()
+	}
+
+	// Sample the fragment generation BEFORE loading so a concurrent
+	// SetCurrentFragments landing mid-reload leaves us with the older
+	// value cached — needsReload() will then re-fire on the next Get().
+	fragmentsGen := CurrentFragmentsGeneration()
+
+	promptsByName, newModTimes, newLoadErrors := c.loadPromptsOnce(dirs)
+
+	// Retry once after refreshing fragments from disk (mitto-aczx): a load
+	// failure here may be the fragment/prompt load-order race — a deploy
+	// that writes a new *.tmpl fragment alongside its *.prompt.yaml consumer
+	// in the same burst can land in this lazy, on-demand reload path before
+	// the fs-watcher subscriber (internal/web/server.go OnPromptsChanged)
+	// has refreshed the process-wide fragment registry for its own trigger.
+	// Unlike that subscriber, this path never calls ReloadFragmentsFromDirs
+	// on its own, so it previously reloaded prompts against whatever
+	// CurrentFragments() happened to hold at that instant. Refreshing from
+	// disk ourselves and retrying once mirrors the fs-watcher's "fragments
+	// before prompts" ordering guarantee for this path too, so a prompt
+	// referencing a fragment that already exists on disk is never evicted
+	// just because this reload raced the watcher's debounce window.
+	if len(newLoadErrors) > 0 && c.refreshFragmentsFromDisk(dirs) {
+		fragmentsGen = CurrentFragmentsGeneration()
+		promptsByName, newModTimes, newLoadErrors = c.loadPromptsOnce(dirs)
+	}
+
+	// Do not publish a snapshot read while a bulk deployment was active. The
+	// marker covers ordinary long-running deploys; the generation comparison
+	// catches a fast deploy that began and ended entirely during this reload.
+	deploymentAfter, deploymentActive := captureDeploymentSnapshot(dirs)
+	if deploymentActive || !deploymentBefore.equal(deploymentAfter) {
+		return c.lastGoodOrDeploymentError()
+	}
+
+	// Convert map to slice, filtering out disabled prompts.
+	// Disabled prompts have already served their purpose of suppressing
+	// same-named prompts from lower-priority directories during merge.
+	prompts := make([]*PromptFile, 0, len(promptsByName))
+	for _, p := range promptsByName {
+		if p.IsEnabled() {
+			prompts = append(prompts, p)
+		}
+	}
+
+	c.prompts = prompts
+	c.webPrompts = PromptsToWebPrompts(prompts)
+	c.loadedAt = time.Now()
+	c.dirModTimes = newModTimes
+	c.loadErrors = newLoadErrors
+	c.fragmentsGen = fragmentsGen
+
+	return prompts, nil
+}
+
+func (c *PromptsCache) lastGoodOrDeploymentError() ([]*PromptFile, error) {
+	if c.prompts != nil {
+		return c.prompts, nil
+	}
+	return nil, ErrDeploymentInProgress
+}
+
+// loadPromptsOnce loads prompts from all directories, merging by name (later
+// directories override earlier ones), and returns the merged map alongside
+// the observed per-directory modtimes and any per-file load errors. Pure
+// helper factored out of reload() so the fragment-refresh retry (mitto-aczx)
+// can invoke it twice without duplicating the directory-walk loop.
+func (c *PromptsCache) loadPromptsOnce(dirs []string) (map[string]*PromptFile, map[string]time.Time, []PromptLoadError) {
 	promptsByName := make(map[string]*PromptFile)
 	newModTimes := make(map[string]time.Time)
 	var newLoadErrors []PromptLoadError
@@ -203,23 +291,35 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 		}
 	}
 
-	// Convert map to slice, filtering out disabled prompts.
-	// Disabled prompts have already served their purpose of suppressing
-	// same-named prompts from lower-priority directories during merge.
-	prompts := make([]*PromptFile, 0, len(promptsByName))
-	for _, p := range promptsByName {
-		if p.IsEnabled() {
-			prompts = append(prompts, p)
-		}
+	return promptsByName, newModTimes, newLoadErrors
+}
+
+// refreshFragmentsFromDisk re-scans the same directory set for *.tmpl
+// fragments and installs the merged result as the process-wide fragment
+// registry, mirroring what the fs-watcher subscriber (internal/web/server.go
+// OnPromptsChanged) does before it reloads prompts. Returns true if a new
+// registry was installed (so the caller should retry the prompt load),
+// false on a top-level walk failure (in which case the previous registry —
+// and the load errors already collected against it — are left untouched,
+// matching the fs-watcher's "keep previous registry on failure" policy).
+//
+// Fragment names are relative to each scan root. The builtin directory must be
+// scanned separately before the parent prompts directory; otherwise builtin
+// `_shared/x.tmpl` is registered only as `builtin/_shared/x`, and replacing the
+// process-wide registry drops the short `_shared/x` name used by prompts.
+func (c *PromptsCache) refreshFragmentsFromDisk(dirs []string) bool {
+	fragmentDirs := make([]string, 0, len(dirs)+1)
+	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
+		fragmentDirs = append(fragmentDirs, builtinDir)
 	}
+	fragmentDirs = append(fragmentDirs, dirs...)
 
-	c.prompts = prompts
-	c.webPrompts = PromptsToWebPrompts(prompts)
-	c.loadedAt = time.Now()
-	c.dirModTimes = newModTimes
-	c.loadErrors = newLoadErrors
-
-	return prompts, nil
+	reg, _, err := ReloadFragmentsFromDirs(fragmentDirs)
+	if err != nil {
+		return false
+	}
+	SetCurrentFragments(reg)
+	return true
 }
 
 // LoadErrors returns the per-file load errors from the most recent reload.
@@ -256,6 +356,44 @@ func (c *PromptsCache) GetWebPromptsSpecificToACP(acpServer string) ([]WebPrompt
 	// Filter prompts specific to this ACP server
 	filtered := FilterPromptsSpecificToACP(prompts, acpServer)
 	return PromptsToWebPrompts(filtered), nil
+}
+
+// PromptsSnapshot is an immutable view of the workspace prompt registry at
+// snapshot time. Populates cel.PromptsContext (Names / EnabledNames) for the
+// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }} template predicates. The
+// snapshot is the same merged/post-filter view mitto_prompt_get reads, so
+// predicates return the same answer as an MCP round-trip.
+type PromptsSnapshot struct {
+	Names        []string
+	EnabledNames []string
+}
+
+// NamesSnapshot returns a canonical-case snapshot of the currently cached
+// prompt names. Since the cache prunes disabled prompts during reload (they
+// have already served their merge-time purpose of suppressing lower-priority
+// same-named entries), Names and EnabledNames are equivalent here — both
+// reflect the enabled, resolvable set that mitto_prompt_get / mitto_prompt_list
+// see. Callers who also need workspace-level disabled overrides should merge
+// them in at the call site (see internal/web/session_api.go population sites).
+func (c *PromptsCache) NamesSnapshot() PromptsSnapshot {
+	// Ensure cache is loaded before reading.
+	_, _ = c.Get()
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	names := make([]string, 0, len(c.webPrompts))
+	enabled := make([]string, 0, len(c.webPrompts))
+	for _, p := range c.webPrompts {
+		if p.Name == "" {
+			continue
+		}
+		names = append(names, p.Name)
+		if p.Enabled == nil || *p.Enabled {
+			enabled = append(enabled, p.Name)
+		}
+	}
+	return PromptsSnapshot{Names: names, EnabledNames: enabled}
 }
 
 // ForceReload clears the cache and reloads from disk.

@@ -20,6 +20,7 @@ type WorkspaceSettings = workspaces.WorkspaceSettings
 type ShortcutButton = workspaces.ShortcutButton
 type FolderSettings = workspaces.FolderSettings
 type BeadsFolderSettings = workspaces.BeadsFolderSettings
+type BeadsDatabaseMode = workspaces.BeadsDatabaseMode
 type FoldersFile = workspaces.FoldersFile
 
 // --- Types (constraint.go) ---
@@ -31,7 +32,11 @@ type DockerRestrictions = workspaces.DockerRestrictions
 type WorkspaceRunnerConfig = workspaces.WorkspaceRunnerConfig
 
 // --- Constants ---
-const MaxAutoChildren = workspaces.MaxAutoChildren
+const (
+	MaxAutoChildren         = workspaces.MaxAutoChildren
+	BeadsDatabaseModeLocal  = workspaces.BeadsDatabaseModeLocal
+	BeadsDatabaseModeShared = workspaces.BeadsDatabaseModeShared
+)
 
 // --- Vars ---
 var ValidRunnerTypes = workspaces.ValidRunnerTypes
@@ -43,19 +48,24 @@ var (
 	LoadWorkspacesFromFile     = workspaces.LoadWorkspacesFromFile
 	SaveWorkspaces             = workspaces.SaveWorkspaces
 
-	LoadFolders                  = workspaces.LoadFolders
-	LoadFoldersFromFile          = workspaces.LoadFoldersFromFile
-	SaveFolders                  = workspaces.SaveFolders
-	ApplyFolderDefaults          = workspaces.ApplyFolderDefaults
-	SetFolderBeadsUpstream       = workspaces.SetFolderBeadsUpstream
-	SetFolderBeadsPromptUpstream = workspaces.SetFolderBeadsPromptUpstream
-	FolderBeadsUpstream          = workspaces.FolderBeadsUpstream
-	FolderBeadsPrompts           = workspaces.FolderBeadsPrompts
-	FolderBeadsPromptArgs        = workspaces.FolderBeadsPromptArgs
-	FolderShortcuts              = workspaces.FolderShortcuts
-	SetFolderShortcuts           = workspaces.SetFolderShortcuts
-	SetFolderPinned              = workspaces.SetFolderPinned
-	FolderPinned                 = workspaces.FolderPinned
+	LoadFolders                       = workspaces.LoadFolders
+	LoadFoldersFromFile               = workspaces.LoadFoldersFromFile
+	SaveFolders                       = workspaces.SaveFolders
+	ApplyFolderDefaults               = workspaces.ApplyFolderDefaults
+	SetFolderBeadsUpstream            = workspaces.SetFolderBeadsUpstream
+	SetFolderBeadsPromptUpstream      = workspaces.SetFolderBeadsPromptUpstream
+	SetFolderBeadsDatabaseMode        = workspaces.SetFolderBeadsDatabaseMode
+	ConfiguredFolderBeadsDatabaseMode = workspaces.ConfiguredFolderBeadsDatabaseMode
+	IsValidBeadsDatabaseMode          = workspaces.IsValidBeadsDatabaseMode
+	FolderBeadsUpstream               = workspaces.FolderBeadsUpstream
+	FolderBeadsPrompts                = workspaces.FolderBeadsPrompts
+	FolderBeadsPromptArgs             = workspaces.FolderBeadsPromptArgs
+	FolderShortcuts                   = workspaces.FolderShortcuts
+	SetFolderShortcuts                = workspaces.SetFolderShortcuts
+	SetFolderPinned                   = workspaces.SetFolderPinned
+	FolderPinned                      = workspaces.FolderPinned
+	SetFolderLastOpenedAt             = workspaces.SetFolderLastOpenedAt
+	FolderLastOpenedAt                = workspaces.FolderLastOpenedAt
 
 	ConstraintMatchesName = workspaces.ConstraintMatchesName
 )

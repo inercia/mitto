@@ -105,9 +105,9 @@ if [ "$RUN_TESTS" = true ]; then
   cd "$PROJECT_ROOT/tests/ui"
   
   if [ "$HEADED" = true ]; then
-    npx playwright test hierarchical-sessions --headed
+    bunx playwright test hierarchical-sessions --headed
   else
-    npx playwright test hierarchical-sessions
+    bunx playwright test hierarchical-sessions
   fi
   
   echo ""
@@ -121,12 +121,12 @@ else
   echo ""
   echo "To run the tests manually:"
   echo "  cd $PROJECT_ROOT/tests/ui"
-  echo "  npx playwright test hierarchical-sessions"
+  echo "  bunx playwright test hierarchical-sessions"
   echo ""
   echo "To run in headed mode:"
-  echo "  npx playwright test hierarchical-sessions --headed"
+  echo "  bunx playwright test hierarchical-sessions --headed"
   echo ""
   echo "To run only the advanced test:"
-  echo "  npx playwright test hierarchical-sessions --grep 'real parent-child'"
+  echo "  bunx playwright test hierarchical-sessions --grep 'real parent-child'"
 fi
 

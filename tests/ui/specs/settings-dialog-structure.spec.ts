@@ -16,10 +16,18 @@ import type { Page } from "@playwright/test";
  * Selectors are anchored on stable data-testids so they survive the restyle.
  */
 
-const NAV_IDS = ["servers", "runners", "permissions", "web", "ui"] as const;
+const NAV_IDS = [
+  "servers",
+  "runners",
+  "permissions",
+  "web",
+  "ui",
+  "dashboard",
+] as const;
 
 const dialog = (page: Page) => page.locator('[data-testid="settings-dialog"]');
-const content = (page: Page) => page.locator('[data-testid="settings-content"]');
+const content = (page: Page) =>
+  page.locator('[data-testid="settings-content"]');
 
 async function openDialog(page: Page) {
   await page.locator('button[data-testid="settings-btn"]').first().click();

@@ -1,0 +1,830 @@
+package stats
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/inercia/mitto/internal/session"
+)
+
+// -----------------------------------------------------------------------------
+// Test helpers
+// -----------------------------------------------------------------------------
+
+// fakeStore captures every UpsertDeltasWithCursor call. Safe for concurrent use.
+type fakeStore struct {
+	NoopStore
+	mu      sync.Mutex
+	calls   []fakeCall
+	failN   int   // fail the first N calls with errFakeFlush
+	failErr error // custom error if set; defaults to errFakeFlush
+}
+
+type fakeCall struct {
+	deltas []Delta
+	cursor Cursor
+}
+
+var errFakeFlush = errors.New("fake flush failure")
+
+func (f *fakeStore) UpsertDeltasWithCursor(_ context.Context, deltas []Delta, cur Cursor) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failN > 0 {
+		f.failN--
+		e := f.failErr
+		if e == nil {
+			e = errFakeFlush
+		}
+		return e
+	}
+	// Copy slice so post-call buffer mutations don't affect the recorded call.
+	cp := make([]Delta, len(deltas))
+	copy(cp, deltas)
+	f.calls = append(f.calls, fakeCall{deltas: cp, cursor: cur})
+	return nil
+}
+
+func (f *fakeStore) snapshot() []fakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fakeCall, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+// sumFor returns the total value across all recorded calls for a given
+// (metric, session) pair — bucket-agnostic. Handy for asserting counter totals
+// without caring which flush a delta ended up in.
+func (f *fakeStore) sumFor(t *testing.T, metric, sessionID string) int64 {
+	t.Helper()
+	var total int64
+	for _, c := range f.snapshot() {
+		for _, d := range c.deltas {
+			if d.Metric == metric && d.SessionID == sessionID {
+				total += d.Value
+			}
+		}
+	}
+	return total
+}
+
+// mustFlush calls Flush and fails the test if it returns an error.
+func mustFlush(t *testing.T, a Aggregator) {
+	t.Helper()
+	if err := a.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+}
+
+// evAt builds a session.Event with the given timestamp / seq / type / data.
+func evAt(seq int64, ts time.Time, typ session.EventType, data any) session.Event {
+	return session.Event{Seq: seq, Type: typ, Timestamp: ts, Data: data}
+}
+
+// sc is a tiny SessionContext factory.
+func sc(sessionID, workspace string) SessionContext {
+	return SessionContext{SessionID: sessionID, Workspace: workspace}
+}
+
+// hour returns a UTC hour-truncated timestamp for reproducible bucket keys.
+func hour(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("parse ts %q: %v", s, err)
+	}
+	return ts.UTC()
+}
+
+// -----------------------------------------------------------------------------
+// Delta math per event type
+// -----------------------------------------------------------------------------
+
+func TestAggregator_UserPrompt_CountsAndInputTokens(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	msg := "hello world" // 11 chars → (11+3)/4 = 3 tokens
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: msg}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricPrompts, "s1"); got != 1 {
+		t.Errorf("prompts = %d, want 1", got)
+	}
+	if got := fs.sumFor(t, MetricInputTokensEst, "s1"); got != 3 {
+		t.Errorf("input_tokens_est = %d, want 3", got)
+	}
+}
+
+func TestAggregator_UserPrompt_ImagesAndFilesTokens(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	data := session.UserPromptData{
+		Message: "",
+		Images:  []session.ImageRef{{ID: "i1"}, {ID: "i2"}},
+		Files:   []session.FileRef{{Name: "a.txt"}},
+	}
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, data))
+	mustFlush(t, a)
+
+	// 2 images * 64 = 128, plus file cost: len("a.txt")+16=21 → (21+3)/4=6
+	want := int64(128 + 6)
+	if got := fs.sumFor(t, MetricInputTokensEst, "s1"); got != want {
+		t.Errorf("input_tokens_est = %d, want %d", got, want)
+	}
+}
+
+func TestAggregator_AgentMessageAndThought_OutputTokens(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "abcd"}))     // 4 → 1
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeAgentThought, session.AgentThoughtData{Text: "abcdefgh"})) // 8 → 2
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricOutputTokensEst, "s1"); got != 3 {
+		t.Errorf("output_tokens_est = %d, want 3", got)
+	}
+}
+
+func TestAggregator_ToolCall_TotalAndMCP(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeToolCall, session.ToolCallData{Title: "read_file"}))              // non-MCP
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeToolCall, session.ToolCallData{Title: "mitto_conversation_new"})) // MCP via title
+	a.Ingest(sc("s1", "w1"), evAt(3, ts, session.EventTypeToolCall, session.ToolCallData{Title: "whatever", Kind: "mcp"}))  // MCP via Kind
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricToolCallsTotal, "s1"); got != 3 {
+		t.Errorf("tool_calls_total = %d, want 3", got)
+	}
+	if got := fs.sumFor(t, MetricMCPCalls, "s1"); got != 2 {
+		t.Errorf("mcp_calls = %d, want 2", got)
+	}
+}
+
+func TestAggregator_PermissionAndError(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypePermission, session.PermissionData{Title: "read?"}))
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeError, session.ErrorData{Message: "boom"}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricPermissionsPrompted, "s1"); got != 1 {
+		t.Errorf("permissions_prompted = %d, want 1", got)
+	}
+	if got := fs.sumFor(t, MetricErrors, "s1"); got != 1 {
+		t.Errorf("errors = %d, want 1", got)
+	}
+}
+
+func TestAggregator_TurnCompletion(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	// Turn 1: prompt → agent → prompt (closes turn 1)
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "a"}))
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "b"}))
+	a.Ingest(sc("s1", "w1"), evAt(3, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "c"}))
+	// A prompt without any preceding agent activity does not increment turns.
+	a.Ingest(sc("s2", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "d"}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricAgentTurnsCompleted, "s1"); got != 1 {
+		t.Errorf("s1 agent_turns_completed = %d, want 1", got)
+	}
+	if got := fs.sumFor(t, MetricAgentTurnsCompleted, "s2"); got != 0 {
+		t.Errorf("s2 agent_turns_completed = %d, want 0 (no preceding agent activity)", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Bucketing
+// -----------------------------------------------------------------------------
+
+func TestAggregator_HourBucketing_SplitAcrossHours(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	t1 := hour(t, "2026-01-01T00:30:00Z") // bucket 00:00
+	t2 := hour(t, "2026-01-01T01:15:00Z") // bucket 01:00
+	a.Ingest(sc("s1", "w1"), evAt(1, t1, session.EventTypeUserPrompt, session.UserPromptData{Message: ""}))
+	a.Ingest(sc("s1", "w1"), evAt(2, t2, session.EventTypeUserPrompt, session.UserPromptData{Message: ""}))
+	mustFlush(t, a)
+
+	// Two distinct bucket keys → two delta rows for MetricPrompts.
+	var buckets []time.Time
+	for _, c := range fs.snapshot() {
+		for _, d := range c.deltas {
+			if d.Metric == MetricPrompts {
+				buckets = append(buckets, d.TSBucket)
+			}
+		}
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("prompt buckets = %v, want 2 rows", buckets)
+	}
+	want0 := hour(t, "2026-01-01T00:00:00Z")
+	want1 := hour(t, "2026-01-01T01:00:00Z")
+	seen := map[int64]bool{buckets[0].Unix(): true, buckets[1].Unix(): true}
+	if !seen[want0.Unix()] || !seen[want1.Unix()] {
+		t.Errorf("buckets = %v, want %v and %v", buckets, want0, want1)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Batching: timer-based and count-based
+// -----------------------------------------------------------------------------
+
+func TestAggregator_MaxBatchFlush(t *testing.T) {
+	fs := &fakeStore{}
+	// MaxBatch=5 → the 5th event triggers a flush before we call Flush ourselves.
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 5})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	for i := 0; i < 5; i++ {
+		a.Ingest(sc("s1", "w1"), evAt(int64(i+1), ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	}
+	// Give the background goroutine time to observe the threshold.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fs.sumFor(t, MetricPrompts, "s1") == 5 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := fs.sumFor(t, MetricPrompts, "s1"); got != 5 {
+		t.Errorf("prompts after count-based flush = %d, want 5", got)
+	}
+}
+
+func TestAggregator_TimerFlush(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: 20 * time.Millisecond, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(fs.snapshot()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(fs.snapshot()) == 0 {
+		t.Errorf("expected timer-driven flush, got no store calls")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Idempotency (replay): double Ingest → still one row per (bucket, metric)
+// -----------------------------------------------------------------------------
+
+func TestAggregator_ReplayIdempotent_ViaSQLiteStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+	ctx := context.Background()
+
+	// First pass: aggregate & flush.
+	s1, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	a1 := NewAggregator(s1, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	for i := 0; i < 3; i++ {
+		a1.Ingest(sc("s1", "w1"), evAt(int64(i+1), ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	}
+	if err := a1.Close(); err != nil {
+		t.Fatalf("a1.Close: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("s1.Close: %v", err)
+	}
+
+	// Reopen and replay the SAME events. Because UpsertDeltasWithCursor uses
+	// an INSERT ... ON CONFLICT REPLACE, the same batch produces the same row
+	// value (3) — not doubled to 6.
+	s2, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	a2 := NewAggregator(s2, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	for i := 0; i < 3; i++ {
+		a2.Ingest(sc("s1", "w1"), evAt(int64(i+1), ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	}
+	if err := a2.Close(); err != nil {
+		t.Fatalf("a2.Close: %v", err)
+	}
+
+	pts, err := s2.Query(ctx, Query{
+		RangeFrom: ts.Add(-time.Hour), RangeTo: ts.Add(time.Hour),
+		Bucket: BucketHour, Metrics: []string{MetricPrompts},
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(pts) != 1 || pts[0].Value != 3 {
+		t.Errorf("replay produced Points=%+v, want single Point{Value=3} (idempotent)", pts)
+	}
+
+	// Cursor also advanced.
+	cur, err := s2.GetCursor(ctx, "s1")
+	if err != nil {
+		t.Fatalf("GetCursor: %v", err)
+	}
+	if cur.LastEventSeq != 3 {
+		t.Errorf("cursor.LastEventSeq = %d, want 3", cur.LastEventSeq)
+	}
+	if !cur.LastEventAt.Equal(ts) {
+		t.Errorf("cursor.LastEventAt = %v, want %v", cur.LastEventAt, ts)
+	}
+	if cur.EstimatorVersion != EstimatorVersion {
+		t.Errorf("cursor.EstimatorVersion = %d, want %d", cur.EstimatorVersion, EstimatorVersion)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Multi-session isolation
+// -----------------------------------------------------------------------------
+
+func TestAggregator_MultiSession_SeparateCursors(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("sA", "w1"), evAt(10, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "a"}))
+	a.Ingest(sc("sB", "w2"), evAt(20, ts.Add(time.Minute), session.EventTypeUserPrompt, session.UserPromptData{Message: "b"}))
+	mustFlush(t, a)
+
+	seen := map[string]Cursor{}
+	for _, c := range fs.snapshot() {
+		seen[c.cursor.SessionID] = c.cursor
+	}
+	if seen["sA"].LastEventSeq != 10 {
+		t.Errorf("sA cursor seq = %d, want 10", seen["sA"].LastEventSeq)
+	}
+	if seen["sB"].LastEventSeq != 20 {
+		t.Errorf("sB cursor seq = %d, want 20", seen["sB"].LastEventSeq)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Non-blocking ingest under a full buffer
+// -----------------------------------------------------------------------------
+
+// blockingStore blocks every UpsertDeltasWithCursor call until unblock is closed.
+// This lets us wedge the aggregator's background goroutine mid-flush so we can
+// prove that Ingest is truly non-blocking when the ingest channel fills up.
+type blockingStore struct {
+	NoopStore
+	unblock chan struct{}
+	entered atomic.Int32
+}
+
+func (b *blockingStore) UpsertDeltasWithCursor(ctx context.Context, _ []Delta, _ Cursor) error {
+	b.entered.Add(1)
+	select {
+	case <-b.unblock:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestAggregator_Ingest_NonBlocking_DropsOnFullBuffer(t *testing.T) {
+	bs := &blockingStore{unblock: make(chan struct{})}
+	// Tiny buffer + tiny MaxBatch so we can wedge the goroutine quickly.
+	a := NewAggregator(bs, AggregatorOptions{
+		FlushInterval: time.Hour,
+		MaxBatch:      1,
+		BufferSize:    2,
+		FlushTimeout:  time.Hour,
+	})
+	defer func() {
+		close(bs.unblock)
+		_ = a.Close()
+	}()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	ev := evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"})
+
+	// The first Ingest fills the buffer + trips MaxBatch; the goroutine picks
+	// it up and blocks inside the store call. Give it a moment to enter.
+	a.Ingest(sc("s1", "w1"), ev)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && bs.entered.Load() == 0 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if bs.entered.Load() == 0 {
+		t.Fatal("background goroutine never entered blocking store call")
+	}
+
+	// Now flood ingest well past the buffer capacity. All calls must return
+	// promptly without deadlocking, and Dropped() must climb.
+	const flood = 1000
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < flood; i++ {
+			a.Ingest(sc("s1", "w1"), ev)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Ingest blocked — expected non-blocking behaviour on full buffer")
+	}
+	if a.Dropped() == 0 {
+		t.Errorf("Dropped() = 0, want > 0 after flooding a full buffer")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// foldOwned gates: events with empty SessionID or zero-value data are dropped
+// -----------------------------------------------------------------------------
+
+func TestAggregator_EmptySessionID_Dropped(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	// SessionContext.SessionID = "" → foldOwned short-circuits, no bucket/cursor produced.
+	a.Ingest(sc("", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	mustFlush(t, a)
+
+	if calls := fs.snapshot(); len(calls) != 0 {
+		t.Errorf("empty-session Ingest produced %d store calls, want 0", len(calls))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Cursor semantics: EstimatorVersion + max(Seq, Timestamp) per session
+// -----------------------------------------------------------------------------
+
+func TestAggregator_Cursor_MonotonicSeqAndEstimatorVersion(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts0 := hour(t, "2026-01-01T00:00:00Z")
+	// Ingest events out of order — cursor must capture the max Seq / Timestamp.
+	a.Ingest(sc("s1", "w1"), evAt(5, ts0.Add(2*time.Minute), session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	a.Ingest(sc("s1", "w1"), evAt(3, ts0, session.EventTypeUserPrompt, session.UserPromptData{Message: "y"}))
+	a.Ingest(sc("s1", "w1"), evAt(4, ts0.Add(time.Minute), session.EventTypeUserPrompt, session.UserPromptData{Message: "z"}))
+	mustFlush(t, a)
+
+	var last Cursor
+	for _, c := range fs.snapshot() {
+		if c.cursor.SessionID == "s1" {
+			last = c.cursor
+		}
+	}
+	if last.SessionID == "" {
+		t.Fatalf("no cursor recorded for s1; calls=%+v", fs.snapshot())
+	}
+	if last.LastEventSeq != 5 {
+		t.Errorf("cursor.LastEventSeq = %d, want 5 (max of 3,4,5)", last.LastEventSeq)
+	}
+	if !last.LastEventAt.Equal(ts0.Add(2 * time.Minute)) {
+		t.Errorf("cursor.LastEventAt = %v, want %v (max timestamp)", last.LastEventAt, ts0.Add(2*time.Minute))
+	}
+	if last.EstimatorVersion != EstimatorVersion {
+		t.Errorf("cursor.EstimatorVersion = %d, want %d", last.EstimatorVersion, EstimatorVersion)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Dropped: zero baseline; increments only under real drops
+// -----------------------------------------------------------------------------
+
+func TestAggregator_Dropped_ZeroWhenBufferSufficient(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000, BufferSize: 4096})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	for i := 0; i < 50; i++ {
+		a.Ingest(sc("s1", "w1"), evAt(int64(i+1), ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	}
+	mustFlush(t, a)
+
+	if got := a.Dropped(); got != 0 {
+		t.Errorf("Dropped() = %d, want 0 (buffer had plenty of room)", got)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// MCP classifier regex coverage: known prefixes + negatives
+// -----------------------------------------------------------------------------
+
+func TestAggregator_IsMCPCall_KnownPrefixes(t *testing.T) {
+	cases := []struct {
+		title string
+		kind  string
+		want  bool
+	}{
+		{"mitto_conversation_new", "", true},
+		{"github-create-issue", "", true},
+		{"slack_post_message", "", true},
+		{"linear_issue_search", "", true},
+		{"jira_create", "", true},
+		{"fj-search", "", true},
+		{"splunk_search", "", true},
+		{"puppeteer-navigate", "", true},
+		{"read_file", "", false},
+		{"launch-process", "", false},
+		{"Github-create-issue", "", false}, // case-sensitive
+		{"", "mcp", true},                  // Kind wins even without a matching title
+		{"anything", "mcp", true},
+	}
+	for _, c := range cases {
+		if got := IsMCPCall(session.ToolCallData{Title: c.title, Kind: c.kind}); got != c.want {
+			t.Errorf("IsMCPCall({Title:%q, Kind:%q}) = %v, want %v", c.title, c.kind, got, c.want)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Close: idempotent + final flush
+// -----------------------------------------------------------------------------
+
+func TestAggregator_Close_FlushesPending(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "x"}))
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if fs.sumFor(t, MetricPrompts, "s1") != 1 {
+		t.Errorf("prompts after Close = %d, want 1", fs.sumFor(t, MetricPrompts, "s1"))
+	}
+	// Second Close is a no-op.
+	if err := a.Close(); err != nil {
+		t.Errorf("second Close: %v, want nil", err)
+	}
+	// Post-close Ingest must be silently dropped, not panic.
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "y"}))
+}
+
+// -----------------------------------------------------------------------------
+// Model dimension (mitto-1pv / parent epic mitto-5r5 phase 1)
+// -----------------------------------------------------------------------------
+
+// scWithModel is a SessionContext factory that also seeds a baseline model.
+func scWithModel(sessionID, workspace, baseline string) SessionContext {
+	return SessionContext{SessionID: sessionID, Workspace: workspace, BaselineModel: baseline}
+}
+
+// deltasBy filters recorded deltas to the given (metric, sessionID) pair and
+// returns them in stable order for readable assertions. Order across flushes
+// is deterministic here because tests use a single-hour bucket and MaxBatch
+// large enough that everything lands in one flush.
+func deltasBy(f *fakeStore, metric, sessionID string) []Delta {
+	var out []Delta
+	for _, c := range f.snapshot() {
+		for _, d := range c.deltas {
+			if d.Metric == metric && d.SessionID == sessionID {
+				out = append(out, d)
+			}
+		}
+	}
+	return out
+}
+
+// TestAggregator_TagsTokensWithCurrentModel verifies the acceptance criterion
+// for model attribution: token deltas ride the currently-active model, and a
+// mid-session session_change(kind=model) event retags every subsequent token
+// delta without disturbing prior rows. Non-token metrics stay untagged.
+func TestAggregator_TagsTokensWithCurrentModel(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scA := scWithModel("s1", "w1", "modelA")
+
+	// Session under baseline model A: prompt → agent message.
+	a.Ingest(scA, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))   // 4 chars → 1 input token
+	a.Ingest(scA, evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "abcde"})) // 5 chars → 2 output tokens
+
+	// Model switch to B (state-only; no delta of its own).
+	a.Ingest(scA, evAt(3, ts, session.EventTypeSessionChange, session.SessionChangeData{
+		Kind: sessionChangeKindModel, Value: "modelB", PreviousValue: "modelA",
+	}))
+
+	// Under model B: another prompt → agent message.
+	a.Ingest(scA, evAt(4, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "efgh"}))      // 4 chars → 1 input token
+	a.Ingest(scA, evAt(5, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "ijklmnop"})) // 8 chars → 2 output tokens
+	// Non-token metric on B — must remain untagged (Model="").
+	a.Ingest(scA, evAt(6, ts, session.EventTypeToolCall, session.ToolCallData{Title: "read_file"}))
+	mustFlush(t, a)
+
+	// Two input-token rows, one per model.
+	inputs := deltasBy(fs, MetricInputTokensEst, "s1")
+	byModel := map[string]int64{}
+	for _, d := range inputs {
+		byModel[d.Model] += d.Value
+	}
+	if len(byModel) != 2 || byModel["modelA"] == 0 || byModel["modelB"] == 0 {
+		t.Errorf("input_tokens_est per model = %v, want two non-zero rows for modelA and modelB", byModel)
+	}
+	// Two output-token rows, one per model.
+	outputs := deltasBy(fs, MetricOutputTokensEst, "s1")
+	byModel = map[string]int64{}
+	for _, d := range outputs {
+		byModel[d.Model] += d.Value
+	}
+	if len(byModel) != 2 || byModel["modelA"] == 0 || byModel["modelB"] == 0 {
+		t.Errorf("output_tokens_est per model = %v, want two non-zero rows for modelA and modelB", byModel)
+	}
+
+	// Non-token metrics stay untagged.
+	toolCalls := deltasBy(fs, MetricToolCallsTotal, "s1")
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool_calls_total rows = %d, want 1", len(toolCalls))
+	}
+	if toolCalls[0].Model != "" {
+		t.Errorf("tool_calls_total.Model = %q, want empty (non-model-attributable)", toolCalls[0].Model)
+	}
+	prompts := deltasBy(fs, MetricPrompts, "s1")
+	for _, d := range prompts {
+		if d.Model != "" {
+			t.Errorf("prompts.Model = %q, want empty (non-model-attributable)", d.Model)
+		}
+	}
+}
+
+// TestAggregator_UnknownModelWhenNoBaseline verifies that when no baseline
+// model is provided and no session_change event fires, every token delta is
+// attributed to the empty-string "unknown provenance" bucket rather than being
+// dropped.
+func TestAggregator_UnknownModelWhenNoBaseline(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	// sc() does not set BaselineModel.
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "efgh"}))
+	a.Ingest(sc("s1", "w1"), evAt(3, ts, session.EventTypeAgentThought, session.AgentThoughtData{Text: "hidden"}))
+	mustFlush(t, a)
+
+	for _, metric := range []string{MetricInputTokensEst, MetricOutputTokensEst} {
+		rows := deltasBy(fs, metric, "s1")
+		if len(rows) == 0 {
+			t.Errorf("%s: no rows recorded", metric)
+			continue
+		}
+		for _, d := range rows {
+			if d.Model != "" {
+				t.Errorf("%s row has Model=%q, want empty (no baseline, no session_change)", metric, d.Model)
+			}
+		}
+	}
+}
+
+// TestAggregator_SessionChange_NonModelKind_IsIgnored verifies that session
+// changes with a Kind other than "model" leave currentModel untouched so
+// unrelated timeline events (mode switches, prompt-argument tweaks) never
+// retag token deltas.
+func TestAggregator_SessionChange_NonModelKind_IsIgnored(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scA := scWithModel("s1", "w1", "modelA")
+
+	a.Ingest(scA, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	// Non-model kind — must NOT change currentModel.
+	a.Ingest(scA, evAt(2, ts, session.EventTypeSessionChange, session.SessionChangeData{
+		Kind: "mode", Value: "code", PreviousValue: "ask",
+	}))
+	a.Ingest(scA, evAt(3, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "efgh"}))
+	mustFlush(t, a)
+
+	rows := deltasBy(fs, MetricInputTokensEst, "s1")
+	for _, d := range rows {
+		if d.Model != "modelA" {
+			t.Errorf("input_tokens_est.Model = %q, want %q (kind=mode must not retag)", d.Model, "modelA")
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// mitto-9yl Bug 2 — Live BaselineModelGetter (fresh-session race)
+// -----------------------------------------------------------------------------
+//
+// Fresh sessions attach the live stats observer BEFORE the ACP init callback
+// seeds bs.baselineModel, so SessionContext.BaselineModel captured at attach
+// time is the empty string. The aggregator then seeds acc.currentModel = ""
+// on the first event and every subsequent token delta lands in the "Unknown"
+// bucket until a manual model switch fires.
+//
+// Fix 2 adds a live BaselineModelGetter func() string to SessionContext.
+// When non-nil the aggregator prefers it over the string snapshot at seed
+// time, so the observer's closure over bs.GetBaselineModel picks up the
+// value asynchronously written by cbInitBaselineModelIfEmpty.
+//
+// These tests reference the new field directly and therefore fail to compile
+// on the current tree — the compile failure is the reproduction.
+
+// TestAggregator_UsesLiveBaselineGetter — a fresh session attaches with
+// BaselineModel="" (the snapshot the observer captured before the ACP init
+// callback fired) but a live getter that returns the real baseline. The
+// aggregator MUST prefer the getter at first-event seed time and attribute
+// tokens to the real model, not "".
+func TestAggregator_UsesLiveBaselineGetter(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scLive := SessionContext{
+		SessionID:           "s1",
+		Workspace:           "w1",
+		BaselineModel:       "", // Snapshot at attach time — before ACP init.
+		BaselineModelGetter: func() string { return "sonnet-4.5" },
+	}
+
+	a.Ingest(scLive, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	a.Ingest(scLive, evAt(2, ts, session.EventTypeAgentMessage, session.AgentMessageData{Text: "efgh"}))
+	mustFlush(t, a)
+
+	for _, metric := range []string{MetricInputTokensEst, MetricOutputTokensEst} {
+		rows := deltasBy(fs, metric, "s1")
+		if len(rows) == 0 {
+			t.Errorf("%s: no rows recorded", metric)
+			continue
+		}
+		for _, d := range rows {
+			if d.Model != "sonnet-4.5" {
+				t.Errorf("%s row has Model=%q, want %q (getter must win over empty BaselineModel — mitto-9yl Bug 2)",
+					metric, d.Model, "sonnet-4.5")
+			}
+		}
+	}
+}
+
+// TestAggregator_LiveGetterFallsBackToBaselineWhenEmpty — when the live
+// getter returns "" (e.g. the ACP init has not yet fired at first-event
+// time) the aggregator must fall back to sc.BaselineModel so the backfill
+// path (getter=nil, string set) is unaffected by the new field.
+func TestAggregator_LiveGetterFallsBackToBaselineWhenEmpty(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scFallback := SessionContext{
+		SessionID:           "s1",
+		Workspace:           "w1",
+		BaselineModel:       "modelA",
+		BaselineModelGetter: func() string { return "" },
+	}
+
+	a.Ingest(scFallback, evAt(1, ts, session.EventTypeUserPrompt, session.UserPromptData{Message: "abcd"}))
+	mustFlush(t, a)
+
+	rows := deltasBy(fs, MetricInputTokensEst, "s1")
+	if len(rows) == 0 {
+		t.Fatalf("input_tokens_est: no rows recorded")
+	}
+	for _, d := range rows {
+		if d.Model != "modelA" {
+			t.Errorf("input_tokens_est.Model = %q, want %q (empty getter must fall back to BaselineModel)",
+				d.Model, "modelA")
+		}
+	}
+}

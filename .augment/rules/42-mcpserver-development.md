@@ -34,13 +34,27 @@ Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MC
 
 **Fix (`mitto-6hr`, P1, epic `mitto-54k`, APPLIED)**: `startSSE()` now passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` to `NewStreamableHTTPHandler` so POST responses resolve inline, independent of the SSE GET. **Not** `Stateless: true` — rejects server→client *requests*, breaking `UIPrompter` (mitto_ui_options/form). Still-valid secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm), `mitto-cgc` (stagger aux-session creation).
 
+## MCP protocol-session lifecycle (mitto-6cz6 / mitto-txse / mitto-wat)
+
+`mcpStreamableHTTPOptions()` deliberately sets `SessionTimeout: 0`. The SDK timeout is POST-only and previously deleted live sessions whose standalone SSE GET was healthy, producing rejected keepalives and real `tools/call` 404s (mitto-txse). Mitto's own reaper treats every request as activity and never idle-reaps a protocol session while its registered conversation owner remains active, even when no GET is open.
+
+HTTP-capable ACP sessions receive a random, memory-only binding header in their `session/new` / `session/load` MCP entry. The HTTP middleware binds the resulting MCP protocol session immutably to that registered conversation before tool dispatch. Never log or persist the binding value. This is the primary identity path and makes concurrent `self_id=init` calls independent of arrival order. Legacy ACP-observed correlation accepts only `requestID == sessionID`; never restore a shared `init` FIFO, because an HTTP-layer failure can leave a stale entry that cross-wires the next conversation (mitto-apvg).
+
+Mitto-wat adds ownership-aware teardown: `UnregisterSession` removes the owner and marks the transport retireable when its final owner leaves. The reaper serializes synthetic DELETE against application POSTs with a per-lease RWMutex, revalidates after acquiring the exclusive gate, and never holds `reaperMu` while serving the SDK handler. Do not synchronously DELETE from `UnregisterSession` — self-archive may still be returning its current tool response.
+
+Expected ratio: approximately **one open SSE stream per MCP protocol session**, not per ACP process. The ~5-minute reopen is client keepalive recycling. Auggie never calls `terminateSession()` (augmentcode/auggie#162), so one ACP process may retain many protocol sessions. Never-correlated live-client transports remain exempt: localhost HTTP supplies no stable process identity, and forcibly capping them can revive Auggie #149 (no reliable 404 re-initialize). Same-language control: `internal/mcpdiscovery` does send `DELETE` on `Close()`.
+
+**Log-grep gotcha**: MCP session IDs are **uppercase base32** (`YCYYTHDLWGR7QDFI2XFEAS5766`), not hex/UUID. `mcp_session_id=[a-f0-9-]+` matches nothing (once produced a fake ~16× undercount). Use `[A-Z0-9]+` with length ≥20.
+
+**Operator-facing hygiene** (residual first-token gate under Auggie, epic `mitto-ammz`, bead `mitto-agt`): see [`docs/config/mcp.md` → Cold-Start Hygiene](../../docs/config/mcp.md#cold-start-hygiene) for the operator recipe (trim unused MCP servers, `uv tool install` for `uvx`-launched servers, avoid concurrent workspace UUIDs sharing one `working_dir`, verify `working_dir` matches the git root). The upstream Auggie feature-request draft (lazy / bounded MCP init) lives at [`docs/devel/upstream/auggie-lazy-mcp-init.md`](../../docs/devel/upstream/auggie-lazy-mcp-init.md).
+
 ## Adding New Tools
 
 Handler signature (3-arg form — SDK unmarshals input automatically):
 
 ```go
 func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input FooInput) (*mcp.CallToolResult, FooOutput, error) {
-    // 1. Resolve self_id (always use resolveSelfIDWithMCP in handlers — 3-phase lookup)
+    // 1. Resolve self_id (always use resolveSelfIDWithMCP in MCP handlers)
     realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
     if realSessionID == "" {
         return nil, FooOutput{Error: fmt.Sprintf("session not found: self_id '%s' could not be resolved", input.SelfID)}, nil
@@ -50,7 +64,7 @@ func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input 
 }
 ```
 
-**Session ID resolution:** Use `resolveSelfIDWithMCP(selfID, req)` in all handlers (3-phase: direct lookup → ACP correlation → MCP session cache). Use `resolveSelfID(selfID)` only when no `*mcp.CallToolRequest` is available (rare).
+**Session ID resolution:** Use `resolveSelfIDWithMCP(selfID, req)` in all MCP handlers. It accepts only an established MCP protocol-session mapping or ACP-observed correlation; a caller-supplied registered conversation ID is not authentication. A nil request is reserved for trusted in-process invocations and tests. Use `resolveSelfID(selfID)` only when no `*mcp.CallToolRequest` is available (rare).
 
 Register with `mcp.AddTool(mcpSrv, &mcp.Tool{Name: "mitto_foo", Description: "..." + selfIDNote}, s.handleFoo)`.
 
@@ -108,7 +122,7 @@ Some dependencies (e.g. `LoopRunner`) are wired in via setter methods (`s.mcpSer
 
 ## Processor Auxiliary Session MCP Access
 
-Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
+Processor auxiliary sessions (purpose prefix `"processor:"`) get a Mitto MCP entry in their `session/new` `McpServers` list so the agent can call Mitto tools. Configured in `internal/acpproc/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Transport is capability-gated by `buildAuxProcessorMCPServers` (`internal/acpproc/aux_mcp_transport.go`, mitto-8ip): if `process.Capabilities().McpCapabilities.Http` is true, a native `McpServerHttpInline` targets the same URL user sessions already use (no subprocess, no stdio hop); otherwise the stdio `mitto mcp --proxy-to <url>` bridge is emitted as the ACP-spec mandatory-transport fallback. Never delete `--proxy-to` / `runMCPProxy` / `runMCPProxyIO` — still required for agents without `mcp_capabilities.http`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
 
 ## Input Validation in Tools
 

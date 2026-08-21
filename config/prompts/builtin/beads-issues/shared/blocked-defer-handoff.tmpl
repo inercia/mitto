@@ -1,0 +1,128 @@
+{{/*
+  blocked-defer-handoff — the visible "Step 4 — Blocked → Defer + Handoff"
+  step body shared by every beads-issues phase prompt whose "cannot make
+  progress" branch is:
+
+    1. `bd update <target> --add-label needs-human --defer <when>`
+    2. Write a structured handoff comment on the bead
+    3. Emit a concise handoff message + disable this conversation's loop
+
+  Consumers:
+    * "short" style (feature-phase-*, fix-phase-*): single-line handoff
+      comment starting with "Blocked at <BlockedAt>. What I tried:";
+      Step 3 references the "driver loop".
+    * "long" style (mention-phase-*): multi-line handoff comment starting
+      with `[deferred: <now-RFC3339>]` so the orchestrator's Step 2Z can
+      undefer on human reply; Step 3 references the "router loop".
+
+  The `## Step 4 — Blocked → Defer + Handoff` heading is NOT rendered —
+  callers keep their own heading so the extraction is a pure body swap.
+  Similarly the trailing `## Guidelines` heading stays in the caller.
+
+  Callers first resolve the target into a local `$target` (identical to
+  the target-bead-header fragments), then invoke this fragment:
+
+      {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+          "Target"      $target
+          "SessionID"   .Session.ID
+          "Placeholder" "<target-feature>"
+          "Label"       "planned"
+          "Intro"       "(something unclear, a decision only the user can give, an external action is required)"
+          "BlockedAt"   "plan"
+          "Style"       "short"
+          "LoopWord"    "driver"
+          "NotifyNote"  true
+      ) }}
+
+  Parameters:
+    Target      — the resolved bead ID (empty string when no bead is linked).
+                  Used to render `{{ if $target }}{{ $target }}{{ else }}<placeholder>{{ end }}`
+                  inside the two bd commands (matches the pre-refactor shape
+                  exactly so `$target != ""` runs still substitute the id).
+    SessionID   — the current session ID, passed through so the Step 3
+                  `mitto_conversation_update(self_id: "<id>", …)` line still
+                  renders the concrete session id at execute time (the outer
+                  template's `.Session.ID` is not visible inside a
+                  dict-invoked fragment).
+    Placeholder — the `<target-…>` literal used when Target is empty.
+                  Typically `<target-feature>`, `<target-bug>`, `<target-bead>`.
+    Label       — the state label this phase would have advanced (e.g.
+                  `planned`, `implemented`, `tested`, `verified`,
+                  `reproduced`, `researched`, `fixed`, `mention-answered`).
+                  Rendered inside "**Do not** advance the `<Label>` label."
+    Intro       — optional parenthetical clause after
+                  "cannot make progress autonomously". Pass a full
+                  "(…)" string with the parens, or empty to omit.
+    BlockedAt   — the phase name in the handoff comment ("Blocked at <X>").
+                  Typically the phase's short verb: "plan", "implement",
+                  "reproduce", "mention-answer", etc.
+    Style       — "short" (feature/fix single-line comment) or "long"
+                  (mention-* [deferred: <ts>] multi-line comment). Default
+                  is "short" when omitted.
+    LoopWord    — "driver" (default) or "router"; renders as "<X> loop".
+    NotifyNote  — bool; when true, Step 3 mentions
+                  "(interactive runs also `mitto_ui_notify`)". Only
+                  meaningful for the "short" style.
+    TheFirst    — bool; only meaningful for the "long" style. When true,
+                  the Step 2 preface reads "the FIRST line must be";
+                  when false (default) it reads "FIRST line must be".
+                  Preserves the pre-refactor wording split across mention
+                  prompts.
+
+  The fragment is self-contained (balanced `{{ if }}/{{ end }}`), so it
+  is safe to invoke directly under the caller's `## Step 4` heading.
+*/}}
+{{- $style := "short" -}}
+{{- with .Style }}{{ $style = . }}{{ end -}}
+{{- $loopWord := "driver" -}}
+{{- with .LoopWord }}{{ $loopWord = . }}{{ end -}}
+{{- if eq $style "long" -}}
+Use this whenever this phase cannot make progress autonomously{{ with .Intro }} {{ . }}{{ end }}.
+**Do not** advance the `{{ .Label }}` label. Instead:
+
+1. Defer and flag the bead so it drops out of `bd ready`:
+
+   ```bash
+   bd update {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} --add-label needs-human --defer <when>
+   ```
+
+2. Write a structured handoff comment ({{ if .TheFirst }}the {{ end }}FIRST line must be the `[deferred: <ts>]`
+   marker so the orchestrator's Step 2Z can undefer on human reply):
+
+   ```bash
+   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
+   Why: Blocked at {{ .BlockedAt }} — <root cause>.
+   What human intervention is required: <the ONE concrete question/decision/info/action>.
+   How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."
+   ```
+
+3. End with a concise handoff and disable the enclosing conversation's loop flag so
+   the {{ $loopWord }} loop does not spin on the blocker:
+
+   ```
+   mitto_conversation_update(self_id: "{{ .SessionID }}", conversation_id: "self", loop_enabled: false)
+   ```
+{{- else -}}
+Use this whenever this phase cannot make progress autonomously{{ with .Intro }} {{ . }}{{ end }}. **Do not** advance
+the `{{ .Label }}` label. Instead:
+
+1. Defer and flag the bead so it drops out of `bd ready`:
+
+   ```bash
+   bd update {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} --add-label needs-human --defer <when>
+   ```
+
+2. Write a structured handoff comment:
+
+   ```bash
+   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "Blocked at {{ .BlockedAt }}. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+   ```
+
+3. End with a concise handoff message naming the blocker and the single thing
+   needed{{ if .NotifyNote }} (interactive runs also `mitto_ui_notify`){{ end }}, and disable the enclosing conversation's loop flag so the {{ $loopWord }}
+   loop does not spin on the blocker:
+
+   ```
+   mitto_conversation_update(self_id: "{{ .SessionID }}", conversation_id: "self", loop_enabled: false)
+   ```
+{{- end }}

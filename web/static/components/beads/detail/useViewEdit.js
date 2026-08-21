@@ -26,8 +26,8 @@
 
 const { useState, useEffect, useCallback, useMemo, useRef } = window.preact;
 
-import { secureFetch, endpoints } from "../../../utils/index.js";
-import { readBeadsResponse } from "../../../utils/beads.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
+import { errorMessage } from "../../../utils/sdkErrors.js";
 import { renderMarkdown } from "../CommentBody.js";
 
 export function useViewEdit({
@@ -260,47 +260,35 @@ export function useViewEdit({
     if (Object.keys(body).length === 0) return;
     setSavingView(true);
     try {
-      const res = await secureFetch(
-        endpoints.issues.update(data.id, { working_dir: workingDir }),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
+      await getSdkClient().issues.update(
+        data.id,
+        { working_dir: workingDir },
+        body,
       );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to save changes",
-          });
-      } else {
-        if ("notes" in body) setNotes(viewDraft.notes);
-        // Record what we just persisted so viewDirty clears immediately (the
-        // normalized values mirror how the dirty check reads the draft), instead
-        // of staying dirty until the async onUpdated() refresh re-seeds `data`.
-        setSavedBaseline({
-          title: viewDraft.title.trim(),
-          type: viewDraft.type,
-          priority: viewDraft.priority,
-          description: viewDraft.description,
-          assignee: viewDraft.assignee.trim(),
-          notes: viewDraft.notes,
-        });
-        setEditingTitle(false);
-        setEditingType(false);
-        setEditingDesc(false);
-        setEditingNotes(false);
-        setEditingAssignee(false);
-        showToast && showToast({ style: "success", title: "Changes saved" });
-        onUpdated && onUpdated();
-      }
+      if ("notes" in body) setNotes(viewDraft.notes);
+      // Record what we just persisted so viewDirty clears immediately (the
+      // normalized values mirror how the dirty check reads the draft), instead
+      // of staying dirty until the async onUpdated() refresh re-seeds `data`.
+      setSavedBaseline({
+        title: viewDraft.title.trim(),
+        type: viewDraft.type,
+        priority: viewDraft.priority,
+        description: viewDraft.description,
+        assignee: viewDraft.assignee.trim(),
+        notes: viewDraft.notes,
+      });
+      setEditingTitle(false);
+      setEditingType(false);
+      setEditingDesc(false);
+      setEditingNotes(false);
+      setEditingAssignee(false);
+      showToast && showToast({ style: "success", title: "Changes saved" });
+      onUpdated && onUpdated();
     } catch (err) {
       showToast &&
         showToast({
           style: "error",
-          title: err.message || "Failed to save changes",
+          title: errorMessage(err, "Failed to save changes"),
         });
     } finally {
       setSavingView(false);

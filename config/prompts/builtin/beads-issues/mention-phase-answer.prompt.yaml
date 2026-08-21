@@ -1,0 +1,131 @@
+icon: comment
+name: Mention — answer phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID whose question-style @mitto mention is being answered
+  - name: MentionTS
+    type: text
+    required: false
+    description: RFC3339 timestamp of the @mitto mention being processed (dedup key)
+  - name: MentionBody
+    type: text
+    required: false
+    description: Verbatim body of the @mitto mention (already scoped by the router)
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
+description: Internal phase-tier prompt — answer a question-style @mitto mention (or execute a pure directive) and add the `mention-answered` label. Invoked by name from the mention driver; runs on the Reasoning tier.
+group: Tasks
+backgroundColor: '#B3E5FC'
+preferredModels:
+  - modelTag: Reasoning
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Mention — Answer Phase
+
+  This is the **answer** stage of the label-encoded @mitto-mention state machine
+  (question / pure-directive route: none → `mention-answered`). It is normally invoked
+  by name from the `Mention — driver` router, which selects this phase when the
+  mention is a question, a "how do I / what is" ask with no code change requested, or
+  a pure directive (e.g. `@mitto close this`) that the router classified as
+  answer-only.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $suffix := "" -}}
+  {{ if .Args.MentionTS }}{{ $suffix = printf "Mention timestamp (dedup key): `%s`." .Args.MentionTS }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"      $target
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+  ) }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array, description, and prior comments. If `mention-answered` is
+  already present, this phase's work is already done — `bd comment` a note that the
+  phase re-ran redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Answer the mention (or execute the pure directive)
+
+  This is a **scheduled, silent** phase (invoked by the router's on-completion loop).
+  Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` — decide
+  autonomously; if something is genuinely unclear or unsolvable without user input,
+  defer via **Step 4**.
+
+  The mention body (already scoped by the router){{ if .Args.MentionBody }}:
+
+  ```
+  {{ .Args.MentionBody }}
+  ```
+  {{ else }} is available in the bead's comment stream at the timestamp above.{{ end }}
+
+  Compose a concise, grounded answer:
+
+  - Read the bead history, related code, and any docs the mention referenced. Do not
+    speculate about code you have not opened.
+  - If the mention is a pure directive (e.g. `@mitto close this`, `@mitto
+    reopen this`, `@mitto add label X`), the smallest `bd` action IS the answer —
+    take it directly (e.g. `bd close <id>`, `bd update <id> --add-label X`).
+    Record what you did in the answer comment below.
+  - If the mention is a question, write the answer as a normal English response
+    grounded in the code / bead history you actually read.
+
+  Do NOT write the `[addressed-comment: <ts>]` back-reference here — that is the
+  router's job and it will only land after the four-condition close check.
+
+  ## Step 3 — Record the answer and advance the label
+
+  ```bash
+  bd comment {{ $target }} "Answer [tier: Reasoning]: <answer or directive receipt — scoped to the @mitto mention>."
+  bd update {{ $target }} --add-label mention-answered
+  ```
+
+  Only add the label after the comment is posted. Then stop — the router's next
+  scheduled run will observe `mention-answered` and proceed to its own
+  back-reference / close step.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-bead>"
+      "Label"       "mention-answered"
+      "Intro"       "(the question requires credentials, a decision only the user can make, external access, etc)"
+      "BlockedAt"   "mention-answer"
+      "Style"       "long"
+      "LoopWord"    "router"
+  ) }}
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`mention-answered`). Do
+    not investigate, plan, implement, or write the back-reference — those are separate
+    (or router-owned) responsibilities.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the phase; never assume labels from a prior run or from `Item.*`.
+  - **Always log to the tracker** with `bd comment` so progress is auditable.
+  - **Tier tag every comment.** Prefix answers with `Answer [tier: Reasoning]:` so the
+    tier split is observable in the bead history (mitto-91wk acceptance criteria).

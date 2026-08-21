@@ -1,0 +1,196 @@
+icon: rocket-launch
+name: 'Blog: publish'
+menus: beadsIssues, prompts
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The bead whose blog draft to publish
+  - name: Folder
+    type: text
+    default: blog/posts
+    required: false
+    description: Folder where blog post files live (repo-relative)
+description: 'Blog - publish a finalised blog/draft post: rewrite frontmatter, rename draft-slug.md -> YYYY-MM-DD-slug.md, update the bead file attachment, add published/remove draft+needs-*+ready (does NOT close the bead)'
+backgroundColor: '#C8E6C9'
+group: Blog
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft") && !BeadHasLabels(Session.BeadsIssue, "published")))'
+target:
+  reuse:
+    issue: true
+    coalesce: true
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "_shared/session-context" . }}
+
+  # Blog: Publish -- finalise a draft post
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target blog bead"
+      "Scope"    "for this publish run"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
+
+  This prompt drives the final `draft` -> `published` transition of the blog
+  suite state machine. It is a **one-shot per-bead** flow (NOT a loop): a
+  single invocation confirms the finalised metadata with the author, rewrites
+  the frontmatter in place, renames the file from `draft-<slug>.md` to
+  `YYYY-MM-DD-<slug>.md`, refreshes the bead's file attachment, runs the
+  publish checklist, and applies the `published` label. It does NOT close
+  the bead -- closure is left to the author, who decides when the downstream
+  work (e.g. `linkedin-post`) is truly done.
+
+  ## Step 1 -- Locate the post file
+
+  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+
+  After the fragment resolves `$post_abs`, verify the current basename starts
+  with `draft-` -- this prompt only makes sense on a bead that is still in
+  the draft phase. If the file is not named `draft-*`, refuse and stop:
+
+  ```bash
+  base=$(basename "$post_abs")
+  if [[ "$base" != draft-* ]]; then
+    echo "ERROR: $post_abs is not named draft-<slug>.md; refusing to publish." >&2
+    echo "The publish prompt only runs on drafts that still carry the draft- prefix." >&2
+    exit 1
+  fi
+  ```
+
+  ## Step 2 -- Load the drafting voice
+
+  Bring the standard drafting voice into context so the frontmatter rewrite
+  in Step 5 measures the final title/description against the same yardstick
+  the ideation and polish passes used:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "audience"
+             "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
+
+  ## Step 3 -- Load publish checklist and frontmatter policy
+
+  Bring project-specific publish policy into context. If the workspace has
+  not customised these, fall back to the sensible defaults below:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "publish-checklist"
+             "DefaultText" "Minimal publish sanity pass: (1) `git status` clean apart from the post itself, (2) all Markdown links resolve (no `TODO`, `FIXME`, or `xxx` placeholders in the body), (3) every code fence has a language tag, (4) no unresolved review comments remain in the file. Author confirms each item before proceeding.") }}
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "frontmatter"
+             "DefaultText" "Default frontmatter policy: `title` and `description` are set from the author-confirmed form values in Step 4; `date` is today's UTC date (YYYY-MM-DD); `tags` come from the author-confirmed list; any `publish: false` key is REMOVED so the post ships. Preserve any other project-specific keys already present in the draft frontmatter (e.g. `author`, `canonical_url`, `og_image`)." ) }}
+
+  ## Step 4 -- Confirm finalised metadata with the author
+
+  Read the current frontmatter block from `$post_abs` and extract the
+  current `title`, `description`, and `tags`:
+
+  ```bash
+  # Extract the leading YAML frontmatter block delimited by --- lines.
+  awk 'BEGIN{fm=0} /^---$/{fm++; if(fm==2){exit} next} fm==1{print}' "$post_abs" > /tmp/blog-fm.yaml
+  cur_title=$(awk -F': *' '/^title:/{sub(/^title: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
+  cur_desc=$(awk -F': *' '/^description:/{sub(/^description: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
+  cur_tags=$(awk -F': *' '/^tags:/{sub(/^tags: *\[?/,""); sub(/\]? *$/,""); print; exit}' /tmp/blog-fm.yaml)
+  echo "Current title:       $cur_title"
+  echo "Current description: $cur_desc"
+  echo "Current tags:        $cur_tags"
+  ```
+
+  Then present the values back to the author for last-minute edits using
+  `mitto_ui_form_mitto` (NOT `mitto_ui_options` -- three free-text fields):
+  labels `Title`, `Description`, `Tags (comma-separated)`, each pre-filled
+  with the extracted current value. After submission, print the confirmed
+  values back before proceeding to Step 5:
+
+  ```
+  Confirmed title:       <form.Title>
+  Confirmed description: <form.Description>
+  Confirmed tags:        <form.Tags>
+  ```
+
+  ## Step 5 -- Rewrite the frontmatter
+
+  Overwrite the frontmatter block at the top of `$post_abs` with the
+  confirmed values from Step 4, applying the frontmatter policy from Step 3
+  (populate title/description/date/tags; remove any `publish: false`;
+  preserve unrelated project-specific keys). Do this **in place** -- no
+  scratch copy in `/tmp`, no `.bak`. The git working tree is the audit
+  trail:
+
+  ```bash
+  # After writing the updated frontmatter to $post_abs:
+  git diff "$post_abs" | head -80
+  ```
+
+  ## Step 6 -- Rename the file
+
+  Rename `draft-<slug>.md` to `YYYY-MM-DD-<slug>.md` using today's UTC date
+  and `git mv` so history tracks the rename as a single operation (no
+  cp+rm, which would break `git log --follow`):
+
+  ```bash
+  today=$(date -u +%Y-%m-%d)
+  slug="${post_abs##*/draft-}"
+  slug="${slug%.md}"
+  new_name="${today}-${slug}.md"
+  new_path="$(dirname "$post_abs")/${new_name}"
+  git mv "$post_abs" "$new_path"
+  post_abs="$new_path"
+  echo "Renamed: $post_abs"
+  ```
+
+  ## Step 7 -- Update the bead's File: marker and refresh the attachment
+
+  Rewrite the `File: [path](path)` line in the bead's description so
+  `locate-post-file` continues to resolve on any future prompt run against
+  this bead:
+
+  ```bash
+  bd show {{ $target }} --json > /tmp/bead-{{ $target }}.json
+  new_rel="${new_path#$(git rev-parse --show-toplevel)/}"
+  new_desc=$(jq -r '.[0].description' /tmp/bead-{{ $target }}.json \
+    | sed -E "s|^File:[[:space:]]+\[[^]]+\]\([^)]+\)|File: [${new_rel}](${new_rel})|")
+  bd update {{ $target }} --description "$new_desc"
+  ```
+
+  Then record the renamed file as a structured attachment on the bead. It
+  replicates in shared Beads database mode and stays local in local-only mode:
+
+  {{ template "blog/shared/attach-file-to-bead"
+       (dict "IssueID" $target
+             "Path"    "$new_path") }}
+
+  ## Step 8 -- Run the publish checklist
+
+  Iterate the checklist items loaded in Step 3. If `.mitto/publish-checklist.md`
+  was absent, run only the minimal sanity pass from the default fallback text.
+  For each item, present the author a `mitto_ui_options_mitto` menu with three
+  choices: **Continue** (item passed), **Fix and continue** (author will make
+  a small edit before continuing), **Abort** (stop the publish flow entirely
+  without adding the `published` label). If Abort is chosen, record the
+  reason via `bd comment` and stop without proceeding to Step 9.
+
+  ## Step 9 -- Update labels
+
+  ```bash
+  bd update {{ $target }} --add-label published
+  bd update {{ $target }} --remove-label draft
+  bd update {{ $target }} --remove-label ready
+  for l in needs-polish needs-fact-check needs-references; do
+    bd update {{ $target }} --remove-label "$l" 2>/dev/null || true
+  done
+  ```
+
+  Do **not** run `bd close` here. Closing the bead is the author's decision
+  and is intentionally left as a manual step after any downstream work
+  (e.g. `linkedin-post`) is complete.
+
+  ## Step 10 -- Notify
+
+  Report via `mitto_ui_notify_mitto` -- title `"Blog post published"`,
+  message `"{{ $target }} - $(basename "$post_abs") (bead left open for author to close)"`.

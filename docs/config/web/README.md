@@ -14,6 +14,7 @@ This document covers web server settings, authentication, security, and deployme
 - [Predefined Prompts](#predefined-prompts)
 - [Authentication](#authentication)
 - [Security Configuration](#security-configuration)
+  - [CORS and Cross-Origin Access](#cors-and-cross-origin-access)
   - [Scanner Defense](#scanner-defense)
 - [Lifecycle Hooks](#lifecycle-hooks)
 - [Multi-Workspace Support](#multi-workspace-support)
@@ -151,6 +152,74 @@ web:
         - 192.168.0.0/24 # local network
 ```
 
+### Shared Token (Bearer) Authentication
+
+For programmatic clients (SDK, CLI) that cannot do interactive login, configure a
+shared bearer token as an **additional** accepted credential:
+
+```yaml
+web:
+  auth:
+    simple:
+      username: admin
+      password: your-secure-password
+    shared_token: your-shared-secret
+```
+
+Clients authenticate by sending `Authorization: Bearer <token>` on REST requests
+and the WebSocket handshake. Notes:
+
+- A shared token alone does **not** enable authentication — it is only consulted
+  once auth is already enabled via `simple` or `cloudflare`.
+- Successful token auth needs no session cookie or CSRF token.
+- Failed attempts share the same rate limiter as password login.
+- The token can also be set via the `MITTO_SHARED_TOKEN` environment variable
+  (takes precedence over the config value and is never persisted to disk), or
+  loaded from Mitto's secure credential vault, mirroring the external-access
+  password. The vault uses the system Keychain on macOS and an owner-only
+  `MITTO_DIR/credentials/vault.json` file on Linux.
+- Rotating the token invalidates every client immediately; there is no
+  per-client revocation or grace window.
+
+The token is a single point of compromise: it grants the same access as the
+external-access password, and there is no per-client revocation, scoping, or
+expiry. Keep it out of shell history and process arguments — pass it to clients
+through an environment file or a secret store rather than a command-line flag,
+and never place it in a URL or query string.
+
+#### Automatic token from `instance.json`
+
+If authentication is enabled but **no** token is configured explicitly (no
+`shared_token`, no `MITTO_SHARED_TOKEN`, nothing in the Keychain), Mitto adopts
+the token it already writes to its `instance.json` runtime file, so local tools
+can authenticate with zero configuration. An explicitly configured token always
+wins; the adopted value is never written to `settings.json` or the Keychain (it
+is already at rest in a `0600` file). A token alone still does not enable
+authentication — `simple` or `cloudflare` must be configured first.
+
+#### Rotating the token
+
+```bash
+mitto auth status   # resolved server, token source, token fingerprint
+mitto auth rotate   # generate a new token on the running server
+```
+
+Rotation happens **server-side** (`POST /api/auth/rotate-token`): the server
+generates the new token, rewrites `instance.json`, and only then installs it on
+its live auth manager — so a failed write leaves the previous token valid
+everywhere instead of leaving the server and the file disagreeing.
+
+- The endpoint is **localhost-only** and is rejected outright when it arrives
+  through the external listener.
+- Only an adopted `instance.json` token can be rotated this way. A token you
+  configured yourself (config file, environment, Keychain) is **refused** with a
+  409 — update it at its source instead.
+- Neither the command nor the API response ever prints the token; both report
+  only an 8-character SHA-256 fingerprint, enough to confirm two values match.
+- Every client still holding the old token — other shells, SDK clients,
+  exported `MITTO_TOKEN` values — is rejected immediately and must re-read
+  `instance.json`.
+
 ### Rate Limiting
 
 Authentication includes automatic rate limiting:
@@ -173,11 +242,20 @@ web:
       - 127.0.0.1
       - 10.0.0.0/8
       - 172.16.0.0/12
+    trusted_proxy_headers:
+      - x-forwarded-for
 ```
+
+`x-forwarded-for` is the default when `trusted_proxy_headers` is omitted. To
+use a proxy that overwrites a single-IP header, explicitly select
+`x-real-ip` or `cf-connecting-ip`. Never enable a header that the proxy passes
+through from clients; it must remove or overwrite incoming values.
 
 ### WebSocket Origin Validation
 
-Allow WebSocket connections from specific origins:
+Allow WebSocket connections from specific origins. This same list also gates
+REST CORS — see [CORS and Cross-Origin Access](#cors-and-cross-origin-access)
+below:
 
 ```yaml
 web:
@@ -186,6 +264,43 @@ web:
       - https://your-domain.com
       - https://abc123.ngrok.io
 ```
+
+### CORS and Cross-Origin Access
+
+The same `allowed_origins` list above also governs **CORS** (Cross-Origin
+Resource Sharing) for REST requests, so cross-origin browser clients (a web
+app on a different domain, an ngrok/tunnel front-end, etc.) can call the API:
+
+```yaml
+web:
+  security:
+    allowed_origins:
+      - https://your-domain.com
+      - https://abc123.ngrok.io
+```
+
+Notes:
+
+- **Empty by default.** If `allowed_origins` is unset, no CORS headers are
+  emitted at all — same-origin browsers work exactly as before, and
+  non-browser clients (curl, the Node/Bun SDK) are unaffected, since CORS is
+  a browser-only mechanism.
+- **Cookies are never sent cross-origin.** `Access-Control-Allow-Credentials`
+  is never emitted, so a cross-origin browser request can never carry the
+  session cookie. Cross-origin browser access must instead use the
+  [shared bearer token](#shared-token-bearer-authentication) — this is what
+  keeps CORS from weakening CSRF protection.
+- **`"*"` is safe here** precisely because credentials are never allowed —
+  it permits public, token-authenticated reads from any origin without
+  exposing cookie-authenticated sessions.
+- **A disallowed origin is not rejected** — the `Access-Control-Allow-Origin`
+  header is simply omitted (mirroring the WebSocket origin check above), so
+  the browser blocks the response from being read by script. Presence or
+  absence of an `Origin` header is never treated as an authentication
+  signal; requests without one pass through untouched.
+- Preflight (`OPTIONS`) requests are answered before reaching CSRF/Auth
+  (they carry neither a cookie nor a CSRF token), but still pass through
+  rate limiting and scanner defense like any other request.
 
 ### Rate Limiting
 
@@ -294,6 +409,8 @@ web:
   security:
     trusted_proxies:
       - 127.0.0.1
+    trusted_proxy_headers:
+      - x-forwarded-for
 ```
 
 ### Caddy

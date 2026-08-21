@@ -8,7 +8,11 @@ import {
   useConversationMenu,
   useLinkedBeadPhase,
 } from "../hooks/index.js";
-import { getArchiveReasonText, getGlobalWorkingDir } from "../lib.js";
+import {
+  getArchiveReasonText,
+  getGlobalWorkingDir,
+  getConversationAccentStyles,
+} from "../lib.js";
 import {
   LOOP_PROGRESS_STYLE,
   LOOP_PROGRESS_COLORS,
@@ -35,6 +39,7 @@ import {
   BeakerIcon,
   EyeIcon,
   CheckIcon,
+  WarningIcon,
 } from "./Icons.js";
 
 // Maps the `currentIconName` field from derivePhaseState() to the concrete
@@ -130,6 +135,7 @@ export function SessionItem({
   onRename,
   onDelete,
   onArchive,
+  onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -158,6 +164,12 @@ export function SessionItem({
   isExpanded = false, // If true, chevron points down (expanded state)
   onToggleExpand = null, // Callback when expand/collapse is clicked
   density = "condensed",
+  // Loop-error warning: when true, render an amber warning icon in the row
+  // to signal that the loop stopped due to an error (missing prompt, resume
+  // failures, context too large). Dismissal is managed by the parent
+  // (SessionList): focusing the session clears the flag on the next render.
+  showLoopErrorWarning = false,
+  loopErrorLabel = "",
 }) {
   // Check if session is archived
   const isArchived = session.archived || false;
@@ -202,17 +214,45 @@ export function SessionItem({
     isLightTheme,
   ]);
 
+  // Conversation accent color (mitto-8sk): a creation-time default from the
+  // originating prompt's target.backgroundColor, or set/cleared manually via
+  // PATCH /api/sessions/{id}. Rendered as a left accent stripe plus a row tint
+  // rather than a full-strength row fill so text contrast is never at risk in
+  // either theme, and it composes cleanly with the isActive / loopProgressBg
+  // layers below. The palette is made of light pastels, so the dark theme
+  // re-derives the tint from the hue instead of blending the pastel itself
+  // (which washes every hue into the same grey).
+  const accentStyles = useMemo(
+    () => getConversationAccentStyles(session.background_color, isLightTheme),
+    [session.background_color, isLightTheme],
+  );
+
+  // Protected-conversation flag (mitto-yvel.4): a session created with
+  // no_archive suppresses the archive direction only — unarchive stays
+  // available so a conversation archived before enforcement (or via a path
+  // predating the flag) remains recoverable.
+  const isProtected = !!session.no_archive;
+
   // Archive button should be disabled if:
   // 1. There are queued messages (can't archive with pending messages)
   // 2. The session is streaming (agent is responding - archiving would block for up to 5 minutes)
-  const canArchive = !hasQueuedMessages && !isSessionStreaming;
+  // 3. The conversation is protected from archiving (mitto-yvel.4)
+  // Direction-aware: an archived session can always be unarchived — the
+  // queue/streaming/protected preconditions only apply to the archive
+  // direction (mitto-a5p).
+  const canArchive =
+    isArchived || (!isProtected && !hasQueuedMessages && !isSessionStreaming);
 
-  // Get the reason why archiving is blocked (for tooltip)
-  const archiveBlockedReason = hasQueuedMessages
-    ? "Clear queue before archiving"
-    : isSessionStreaming
-      ? "Wait for response to complete"
-      : null;
+  // Get the reason why archiving is blocked (for tooltip). Only surface when
+  // NOT archived — unarchive has no blocking preconditions.
+  const archiveBlockedReason =
+    !isArchived && isProtected
+      ? "This conversation is protected from archiving"
+      : !isArchived && hasQueuedMessages
+        ? "Clear queue before archiving"
+        : !isArchived && isSessionStreaming
+          ? "Wait for response to complete"
+          : null;
 
   // Get working_dir from session, or fall back to global map
   const workingDir =
@@ -225,7 +265,15 @@ export function SessionItem({
   // "Feature · implement" pill next to the workspace pill. Fetch is shared
   // module-wide via useLinkedBeadPhase; a workspace-wide beads_changed
   // broadcast refreshes it.
-  const beadPhase = useLinkedBeadPhase(session.beads_issue, workingDir);
+  //
+  // mitto-msv: pass isArchived so the hook short-circuits without polling for
+  // archived sessions — otherwise a stale beads_issue on an archived row would
+  // drive a permanent 404 storm through every beads_changed broadcast.
+  const beadPhase = useLinkedBeadPhase(
+    session.beads_issue,
+    workingDir,
+    isArchived,
+  );
 
   // Build tooltip with session metadata
   const buildTooltip = () => {
@@ -338,7 +386,10 @@ export function SessionItem({
     onAction: handleSwipeAction,
     threshold: 0.5,
     revealWidth: 80,
-    disabled: false,
+    // Protected conversations (mitto-yvel.4) must not reveal the swipe-to-archive
+    // affordance. Swipe-to-delete (archived tab / spawned children) stays enabled —
+    // protection only suppresses the archive direction.
+    disabled: !isSwipeToDelete && isProtected,
   });
 
   // Per-conversation actions menu (shared with the chat header). Provides the
@@ -365,6 +416,7 @@ export function SessionItem({
     onMakeNonLoop,
     onFetchConversationPrompts,
     onSendPromptToConversation,
+    onSetColor,
   });
 
   // Handle click - only select if not swiping/revealed
@@ -526,7 +578,7 @@ export function SessionItem({
           class="px-2.5 ${density === "comfortable"
             ? "py-2.5"
             : "py-1"} rounded-lg cursor-pointer relative overflow-hidden ${isActive
-            ? "bg-mitto-accent text-mitto-accent-fg"
+            ? "bg-mitto-accent text-mitto-accent-fg session-item-active"
             : "bg-mitto-sidebar hover:bg-mitto-surface-3/50"} ${isSwiping
             ? ""
             : "transition-transform duration-200"} ${extraLeftPadding} ${isNew
@@ -536,6 +588,20 @@ export function SessionItem({
           data-session-id=${session.session_id}
           data-has-context-menu="true"
         >
+          ${accentStyles && !isActive
+            ? html`<${Fragment}>
+                <div
+                  class="absolute inset-0 z-0 pointer-events-none"
+                  style="background: ${accentStyles.tint};"
+                  aria-hidden="true"
+                ></div>
+                <div
+                  class="absolute left-0 top-0 bottom-0 w-1 z-0 pointer-events-none"
+                  style="background: ${accentStyles.stripe};"
+                  aria-hidden="true"
+                ></div>
+              <//>`
+            : ""}
           ${loopProgressBg
             ? html`<div
                 class="absolute inset-0 z-0 pointer-events-none"
@@ -569,7 +635,7 @@ export function SessionItem({
                             : "text-mitto-accent"}"
                         >
                           <span
-                            class="loading loading-ring loading-xs"
+                            class="loading loading-ring loading-xs sidebar-streaming-ring"
                             data-tip=${ringTitle}
                             aria-label=${ringTitle}
                             ...${tipHandlers(ringTitle)}
@@ -588,7 +654,7 @@ export function SessionItem({
                         >
                           ${showLoadingRing
                             ? html`<span
-                                class="loading loading-ring loading-xs"
+                                class="loading loading-ring loading-xs sidebar-streaming-ring"
                                 data-tip=${ringTitle}
                                 aria-label=${ringTitle}
                                 ...${tipHandlers(ringTitle)}
@@ -660,6 +726,23 @@ export function SessionItem({
                           ...${tipHandlers("Waiting for user input")}
                         >
                           <${QuestionMarkIcon} className="w-4 h-4" />
+                        </span>
+                      `
+                    : null}
+                  ${showLoopErrorWarning && !isActive
+                    ? html`
+                        <span
+                          class="shrink-0 text-amber-400"
+                          data-tip=${loopErrorLabel ||
+                          "Loop stopped: needs attention"}
+                          aria-label=${loopErrorLabel ||
+                          "Loop stopped: needs attention"}
+                          ...${tipHandlers(
+                            loopErrorLabel || "Loop stopped: needs attention",
+                          )}
+                          data-testid="session-item-loop-error-warning"
+                        >
+                          <${WarningIcon} className="w-4 h-4" />
                         </span>
                       `
                     : null}

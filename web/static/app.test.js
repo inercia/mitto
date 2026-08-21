@@ -1,0 +1,220 @@
+/**
+ * Regression tests for the mitto-yvel.4 protected-conversation archive
+ * suppression wiring in app.js (header toolbar gate + native
+ * window.mittoArchiveConversation shortcut guard).
+ *
+ * app.js cannot be imported directly under jsdom (it reads `window.preact`
+ * at module load time, same limitation documented in SessionItem.test.js /
+ * BeadsView.test.js), so these tests read the raw source and assert on the
+ * exact wiring rather than executing the component.
+ */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const appJs = readFileSync(resolve(__dirname, "app.js"), "utf8");
+
+describe("app.js: protected-conversation archive suppression (mitto-yvel.4)", () => {
+  test("window.mittoArchiveConversation guards the native Cmd+Shift+A shortcut, allowing unarchive through", () => {
+    const idx = appJs.indexOf("window.mittoArchiveConversation = ");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 1200);
+
+    // isProtected is derived before the guard and checked alongside isArchived
+    // so only the archive direction is blocked.
+    expect(snippet).toMatch(
+      /const isProtected =\s*\n\s*currentSession\.no_archive \|\| currentSession\.info\?\.no_archive;/,
+    );
+    expect(snippet).toMatch(/if \(!isArchived && isProtected\) \{/);
+    expect(snippet).toMatch(
+      /title: "This conversation is protected from archiving",/,
+    );
+
+    // The guard must return before the archiveSession toggle call, otherwise
+    // the shortcut would archive anyway after showing the toast.
+    const guardIdx = snippet.indexOf("if (!isArchived && isProtected)");
+    const toggleIdx = snippet.indexOf("await archiveSession(");
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(toggleIdx).toBeGreaterThan(guardIdx);
+  });
+
+  test("header toolbar gate: headerIsProtected suppresses archive only, unarchive stays available", () => {
+    expect(appJs).toMatch(
+      /const headerIsProtected = !!\(\s*\n\s*activeSession\?\.no_archive \|\| sessionInfo\?\.no_archive\s*\n\s*\);/,
+    );
+    expect(appJs).toMatch(
+      /const headerCanArchive =\s*\n\s*headerIsArchived \|\|\s*\n\s*\(!headerIsProtected && !headerHasQueued && !isStreaming\);/,
+    );
+  });
+
+  test("headerArchiveBlockedReason surfaces the protected reason first, only when not archived", () => {
+    const idx = appJs.indexOf("const headerArchiveBlockedReason =");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 400);
+    expect(snippet).toMatch(
+      /\? headerIsProtected\s*\n\s*\? "This conversation is protected from archiving"/,
+    );
+    // The protected check must precede the queued/streaming checks so its
+    // reason wins when a conversation is both protected and queued/streaming.
+    const protectedIdx = snippet.indexOf("headerIsProtected");
+    const queuedIdx = snippet.indexOf("headerHasQueued");
+    expect(protectedIdx).toBeGreaterThan(-1);
+    expect(queuedIdx).toBeGreaterThan(protectedIdx);
+  });
+});
+
+describe("app.js: SDK migration — session loop/flush handlers (mitto-7gta.17 slice S4)", () => {
+  test("imports getSdkClient/isNotFoundError; the session-domain handlers no longer use authFetch/secureFetch", () => {
+    expect(appJs).toMatch(
+      /import \{ getSdkClient \} from "\.\/utils\/sdkClient\.js";/,
+    );
+    expect(appJs).toMatch(
+      /import \{ errorMessage, isNotFoundError \} from "\.\/utils\/sdkErrors\.js";/,
+    );
+  });
+
+  test("handleMakeLoop: restore -> (404 falls through, other errors rethrow) -> suggestFromRecent+set draft -> blank-draft set", () => {
+    const idx = appJs.indexOf("const handleMakeLoop = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 3000);
+
+    // Step 1: restore; a 404 falls through (does not rethrow), anything else rethrows.
+    const restoreIdx = snippet.indexOf(
+      "await getSdkClient().sessions.loop.restore(sessionId);",
+    );
+    expect(restoreIdx).toBeGreaterThan(-1);
+    expect(snippet).toMatch(
+      /catch \(err\) \{\s*\n\s*if \(!isNotFoundError\(err\)\) throw err;\s*\n\s*\}/,
+    );
+
+    // Step 2: suggestFromRecent feeds set(..., { enabled: false }); any failure
+    // here falls through silently (no rethrow) to the blank-draft step.
+    const suggestIdx = snippet.indexOf(
+      "await getSdkClient().sessions.loop.suggestFromRecent(sessionId);",
+    );
+    expect(suggestIdx).toBeGreaterThan(restoreIdx);
+    const suggestSetIdx = snippet.indexOf(
+      "await getSdkClient().sessions.loop.set(sessionId, {\n            ...suggestion,\n            enabled: false,\n          });",
+    );
+    expect(suggestSetIdx).toBeGreaterThan(suggestIdx);
+    expect(snippet).toMatch(
+      /\} catch \(_\) \{\s*\n\s*\/\/ Fall through to blank-draft PUT on any suggest\/PUT failure\.\s*\n\s*\}/,
+    );
+
+    // Step 3: blank draft, enabled: false so nothing is scheduled yet.
+    const draftMatch = snippet.match(
+      /await getSdkClient\(\)\.sessions\.loop\.set\(sessionId, \{\s*\n\s*prompt: "",\s*\n\s*frequency: \{ value: 1, unit: "hours" \},\s*\n\s*enabled: false,\s*\n\s*\}\);/,
+    );
+    expect(draftMatch).not.toBeNull();
+    expect(draftMatch.index).toBeGreaterThan(suggestSetIdx);
+    expect(snippet).toMatch(/handleOpenSidePanelTab\("loop"\)/);
+  });
+
+  test("handleMakeNonLoop: getSdkClient().sessions.loop.detach(sessionId)", () => {
+    const idx = appJs.indexOf("const handleMakeNonLoop = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 400);
+    expect(snippet).toMatch(
+      /await getSdkClient\(\)\.sessions\.loop\.detach\(sessionId\);/,
+    );
+  });
+
+  test("handleFlushContext: getSdkClient().sessions.flush(sessionId), errors surfaced via errorMessage()", () => {
+    const idx = appJs.indexOf("const handleFlushContext = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 700);
+    expect(snippet).toMatch(
+      /await getSdkClient\(\)\.sessions\.flush\(sessionId\);/,
+    );
+    expect(snippet).toMatch(
+      /title: errorMessage\(err, "Failed to flush context"\),/,
+    );
+  });
+});
+
+describe("app.js: SDK migration — dashboard/misc/remainder handlers (mitto-7gta.17 slice S7)", () => {
+  test("no authFetch/secureFetch residue remains in the header-beads / badge-click / folder-group / shortcuts handlers", () => {
+    // These four handlers are the S7 call sites; none of them should read a
+    // raw fetch Response anymore (res.ok / res.json() / res.status).
+    const handlers = [
+      "getSdkClient().issues.show(issueId,",
+      "getSdkClient().misc.badgeClick({",
+      "getSdkClient().workspaces.setFolderGroup(uuid,",
+      "getSdkClient().shortcuts.getFolder({",
+      ".shortcuts.getGlobal()",
+    ];
+    for (const h of handlers) {
+      expect(appJs).toContain(h);
+    }
+  });
+
+  test("header beads-status effect: isGone() short-circuits before the network call, 404 marks gone via isNotFoundError", () => {
+    const idx = appJs.indexOf("const issueId = sessionInfo?.beads_issue;");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 1200);
+    const goneIdx = snippet.indexOf("if (isGone(workingDir, issueId))");
+    const showIdx = snippet.indexOf(
+      "await getSdkClient().issues.show(issueId, {",
+    );
+    expect(goneIdx).toBeGreaterThan(-1);
+    expect(showIdx).toBeGreaterThan(goneIdx);
+    expect(snippet).toMatch(
+      /if \(isNotFoundError\(err\)\) markGone\(workingDir, issueId\);/,
+    );
+  });
+
+  test("handleBadgeClick / handleOpenTarget: POST misc.badgeClick, a data.error field toasts without throwing, a thrown error toasts via errorMessage()", () => {
+    const idx = appJs.indexOf("const handleBadgeClick = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 1300);
+    expect(snippet).toMatch(
+      /const data = await getSdkClient\(\)\.misc\.badgeClick\(\{\s*\n\s*workspace_path: workspacePath,\s*\n\s*action: "open",\s*\n\s*target_id: "finder",\s*\n\s*\}\);/,
+    );
+    expect(snippet).toMatch(
+      /if \(!data\.success && data\.error\) \{\s*\n\s*showToast\(\{ style: "error", title: data\.error \}\);\s*\n\s*\}/,
+    );
+    expect(snippet).toMatch(
+      /title: errorMessage\(err, "Failed to open folder"\),/,
+    );
+
+    const openTargetIdx = appJs.indexOf(
+      "const handleOpenTarget = useCallback(",
+    );
+    expect(openTargetIdx).toBeGreaterThan(idx);
+    const openTargetSnippet = appJs.slice(openTargetIdx, openTargetIdx + 900);
+    expect(openTargetSnippet).toMatch(
+      /const data = await getSdkClient\(\)\.misc\.badgeClick\(\{\s*\n\s*workspace_path: workspacePath,\s*\n\s*action: "open",\s*\n\s*target_id: targetId,\s*\n\s*\}\);/,
+    );
+    expect(openTargetSnippet).toMatch(
+      /title: errorMessage\(err, "Failed to open target"\),/,
+    );
+  });
+
+  test("handleMoveFolderToGroup: PUT workspaces.setFolderGroup(uuid, group), invalidates config cache and refreshes workspaces on success", () => {
+    const idx = appJs.indexOf("const handleMoveFolderToGroup = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 900);
+    const setGroupIdx = snippet.indexOf(
+      'await getSdkClient().workspaces.setFolderGroup(uuid, group || "");',
+    );
+    expect(setGroupIdx).toBeGreaterThan(-1);
+    const invalidateIdx = snippet.indexOf("invalidateConfigCache();");
+    const refreshIdx = snippet.indexOf("refreshWorkspaces();");
+    expect(invalidateIdx).toBeGreaterThan(setGroupIdx);
+    expect(refreshIdx).toBeGreaterThan(invalidateIdx);
+    expect(snippet).toMatch(
+      /title: errorMessage\(err, "Failed to move folder to group"\),/,
+    );
+  });
+
+  test("loadConvShortcuts: folder+global shortcuts fetched in parallel, global's failure tolerated via .catch(() => ({}))", () => {
+    const idx = appJs.indexOf("const loadConvShortcuts = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 900);
+    expect(snippet).toMatch(
+      /const \[data, globalData\] = await Promise\.all\(\[\s*\n\s*getSdkClient\(\)\.shortcuts\.getFolder\(\{ working_dir: wd \}\),\s*\n\s*getSdkClient\(\)\s*\n\s*\.shortcuts\.getGlobal\(\)\s*\n\s*\.catch\(\(\) => \(\{\}\)\),\s*\n\s*\]\);/,
+    );
+  });
+});

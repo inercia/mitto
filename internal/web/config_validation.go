@@ -3,6 +3,8 @@ package web
 import (
 	"fmt"
 	"net/http"
+
+	configPkg "github.com/inercia/mitto/internal/config"
 )
 
 // configValidationError represents a validation error with HTTP status code.
@@ -138,15 +140,21 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		}
 	}
 
-	// Validate MCP server port. A nil port means "use the default (5757)"; a
-	// non-nil port must be a fixed, valid port. Port 0 (auto-assigned / random)
-	// is rejected because the full MCP address must be known in advance so ACP
-	// servers can be configured to connect to it.
-	if req.MCP != nil && req.MCP.Port != nil {
-		if p := *req.MCP.Port; p < 1 || p > 65535 {
+	if req.MCP != nil {
+		if err := configPkg.ValidateMCPHost(req.MCP.Host); err != nil {
 			return &configValidationError{
 				StatusCode: http.StatusBadRequest,
-				Message:    "MCP server port must be a fixed port between 1 and 65535 (0 / auto-assigned is not allowed; the address must be known in advance for ACP servers to connect)",
+				Message:    err.Error(),
+			}
+		}
+		// A nil port means "use the default (5757)"; a non-nil port must
+		// be fixed and valid so ACP servers know the address in advance.
+		if req.MCP.Port != nil {
+			if p := *req.MCP.Port; p < 1 || p > 65535 {
+				return &configValidationError{
+					StatusCode: http.StatusBadRequest,
+					Message:    "MCP server port must be a fixed port between 1 and 65535 (0 / auto-assigned is not allowed; the address must be known in advance for ACP servers to connect)",
+				}
 			}
 		}
 	}

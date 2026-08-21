@@ -5,11 +5,29 @@ package conversation
 // ready to use) and is unit-testable in isolation via the queueDeps seam.
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/session"
 )
+
+// queueTransientRetryDelays is the backoff schedule send() uses to retry
+// promptWithMeta failures that look like a transient template-compile-race
+// (fragment registry not yet refreshed by the fs-watcher; see mitto-omu).
+// Entry i is the sleep BEFORE attempt i+2, so total attempts is
+// 1 + len(queueTransientRetryDelays). Package-var so tests can override to
+// []time.Duration{0, 0, ...} for speed.
+var queueTransientRetryDelays = []time.Duration{
+	50 * time.Millisecond,
+	200 * time.Millisecond,
+	500 * time.Millisecond,
+}
+
+// queueTransientRetrySleep is the sleep function used between retry attempts.
+// Package-var so tests can override to a no-op recorder without waiting.
+var queueTransientRetrySleep = time.Sleep
 
 // queueDeps supplies the live, side-effecting primitives the queueDispatcher
 // orchestrates. BackgroundSession satisfies it in production; tests use a fake.
@@ -72,6 +90,17 @@ func (queueDispatcher) hasImmediateQueued(d queueDeps) bool {
 // Returns true if a queued message was popped and dispatched.
 func (qd queueDispatcher) processNext(d queueDeps) bool {
 	if !d.queueProcessingEnabled() {
+		d.restoreBaselineIfOverride()
+		return false
+	}
+	// mitto-xlwh: unlike tryProcess, processNext is reached synchronously from
+	// the prompt-completion tail (pdProcessNextQueuedMessage), which can run
+	// after the session has been closed/deleted (WaitForResponseComplete only
+	// waits on isPrompting, not on tail completion). Without this guard,
+	// queue.Pop() below destroys the message from the durable queue before
+	// the resulting "session is closed" promptWithMeta failure is observed,
+	// silently losing the queued prompt.
+	if d.queueIsClosed() {
 		d.restoreBaselineIfOverride()
 		return false
 	}
@@ -146,7 +175,15 @@ func (qd queueDispatcher) tryProcess(d queueDeps) bool {
 	return true
 }
 
-// send sends a message that was popped from the queue.
+// send sends a message that was popped from the queue. On a transient
+// template-compile-race error (isTransientPromptCompileRace) it retries the
+// promptWithMeta call with the queueTransientRetryDelays backoff schedule
+// before falling back to the durable-error path (mitto-omu). Durable errors
+// (unknown prompt, disabled prompt, other transport failures) skip retries
+// and go straight to the error path so behaviour is unchanged for non-race
+// cases. OnQueueUpdated(removed) fires exactly once before the retry loop, and
+// exactly one of OnQueueMessageSent (success) or OnError (durable / exhausted)
+// fires after the loop — no observer regression vs. the pre-retry behaviour.
 func (queueDispatcher) send(d queueDeps, queue *session.Queue, msg session.QueuedMessage) {
 	if lg := d.queueLogger(); lg != nil {
 		lg.Info("Sending queued message", "session_id", d.queueSessionID(), "message_id", msg.ID, "message", msg.Message)
@@ -162,20 +199,77 @@ func (queueDispatcher) send(d queueDeps, queue *session.Queue, msg session.Queue
 		Arguments:   msg.Arguments,
 		PromptName:  msg.PromptName,
 		QueueOrigin: msg.Origin,
+		OnComplete: func(err error) {
+			if err == nil {
+				return
+			}
+			if mittoAcp.IsContextTooLargeError(err) {
+				d.setLastQueueSendError("contextWindowExceeded")
+				return
+			}
+			d.setLastQueueSendError(err.Error())
+		},
 	}
-	if err := d.promptWithMeta(msg.Message, meta); err != nil {
+
+	// mitto-omu: bounded in-process retry for transient template-compile-race
+	// failures. maxAttempts = 1 + len(queueTransientRetryDelays). Durable
+	// errors short-circuit on the first attempt.
+	maxAttempts := 1 + len(queueTransientRetryDelays)
+	var err error
+	var lastAttempt int
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastAttempt = attempt
+		err = d.promptWithMeta(msg.Message, meta)
+		if err == nil {
+			d.notifyObservers(func(o SessionObserver) {
+				o.OnQueueMessageSent(msg.ID)
+			})
+			return
+		}
+		if !isTransientPromptCompileRace(err) {
+			break
+		}
+		if attempt >= maxAttempts {
+			break
+		}
+		delay := queueTransientRetryDelays[attempt-1]
 		if lg := d.queueLogger(); lg != nil {
+			lg.Warn("Queued message hit transient prompt compile race; retrying",
+				"error", err,
+				"message_id", msg.ID,
+				"attempt", attempt,
+				"next_delay", delay)
+		}
+		queueTransientRetrySleep(delay)
+	}
+
+	// Durable failure or retries exhausted. Preserve the historical
+	// "Failed to send queued message: <err>" prefix on OnError so no frontend
+	// regression; on exhaustion inject a distinguishing suffix so ops can
+	// separate the two classes from logs and event history.
+	exhausted := isTransientPromptCompileRace(err) && lastAttempt >= maxAttempts
+	var logMsg string
+	if exhausted {
+		logMsg = fmt.Sprintf("Failed to send queued message (retries_exhausted=true attempts=%d): %s",
+			lastAttempt, err.Error())
+	} else {
+		logMsg = "Failed to send queued message: " + err.Error()
+	}
+	if lg := d.queueLogger(); lg != nil {
+		if exhausted {
+			lg.Error("Failed to send queued message after transient-race retries",
+				"error", err,
+				"message_id", msg.ID,
+				"attempts", lastAttempt,
+				"retries_exhausted", true)
+		} else {
 			lg.Error("Failed to send queued message", "error", err, "message_id", msg.ID)
 		}
-		d.queueRecordErrorEvent("Failed to send queued message: " + err.Error())
-		d.setLastQueueSendError(err.Error())
-		d.notifyObservers(func(o SessionObserver) {
-			o.OnError("Failed to send queued message: " + err.Error())
-		})
-		return
 	}
+	d.queueRecordErrorEvent(logMsg)
+	d.setLastQueueSendError(err.Error())
 	d.notifyObservers(func(o SessionObserver) {
-		o.OnQueueMessageSent(msg.ID)
+		o.OnError(logMsg)
 	})
 }
 

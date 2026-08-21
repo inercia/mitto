@@ -1,0 +1,215 @@
+icon: search
+name: 'GitHub: review PRs requests in slack'
+menus: prompts
+parameters:
+  - name: SlackChannel
+    type: text
+    description: Link (or ID) of the Slack channel to scan for PR review requests
+  - name: CheckoutsRoot
+    type: text
+    description: Root directory that contains the local checkouts of the repositories you may review
+description: 'Scan a Slack channel for PR review requests every 30 minutes and delegate each PR to a child conversation running "GitHub: review a Pull Request"'
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- github
+- slack
+- loop
+enabledWhen: Tools.HasPattern("slack_*") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+preferredModels:
+  - modelTag: Cheap
+loop:
+  trigger: [schedule]
+  schedule:
+    value: 30
+    unit: minutes
+  mode: optional
+  default: false
+target:
+  title: 'GitHub: review PRs requests in slack'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Scan a Slack channel for **requests to review pull requests**, map each request
+  to the matching **local checkout** under a given checkouts root, and — for each
+  in-scope PR — spawn a child conversation running the **"GitHub: review a Pull
+  Request"** prompt to do the actual review.
+
+  This prompt is the **scanner / dispatcher**: it is cheap and fast (cheap-tier
+  model) and only decides *which* PRs need reviewing. The heavy lifting — reading
+  the diff, understanding intent, learning repo conventions, producing comments —
+  happens inside each spawned child, which uses its own model tier. Designed to
+  run **as a loop on a 30-minute schedule**.
+
+  {{ template "_shared/session-context" . }}
+
+  ## Arguments
+
+  - **Slack channel:** {{ if .Args.SlackChannel }}`{{ .Args.SlackChannel }}`{{ else }}_not provided_{{ end }}
+  - **Checkouts root:** {{ if .Args.CheckoutsRoot }}`{{ .Args.CheckoutsRoot }}`{{ else }}_not provided_{{ end }}
+
+  If either argument is missing: in **interactive** mode ask for it with
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", ..., allow_free_text: true)`;
+  in **silent loop** mode, post a `mitto_ui_notify` explaining what is missing
+  and stop.
+
+  ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent autonomous mode — scheduled loop run.** Nobody is watching.
+  {{ template "_shared/silent-notify-only" . }}
+  - You do **not** read diffs or post review comments yourself. Your job is to
+    scan Slack, decide which PRs are in scope, and delegate each to a child
+    conversation via `mitto_conversation_new` (Step 4). The child handles the
+    actual review.
+  {{- else }}
+
+  **Interactive mode** (a normal send, or a force-triggered loop run): a user
+  may be present. You still delegate the actual review to child conversations
+  in Step 4; you may use `mitto_ui_options`/`mitto_ui_notify` to report
+  progress or ask which PR to review first when there are many.
+  {{- end }}
+
+  ## Ground rules
+
+  - **You are the dispatcher, not the reviewer.** Do not read PR diffs, do not
+    call `gh pr diff`, do not create worktrees, do not post reviews from this
+    conversation. All of that happens inside each spawned child.
+  - **Only dispatch inside the checkouts root.** Ignore any review request whose
+    repository does not have a checkout under `{{ if .Args.CheckoutsRoot }}{{ .Args.CheckoutsRoot }}{{ else }}<checkouts-root>{{ end }}`.
+  - **Never destroy or disturb local work** in any checkout — no `git checkout`,
+    `git switch`, `git stash`, `git reset`, `git pull`. The read-only inspections
+    required for matching (Step 2) are limited to `git remote get-url origin`.
+  - Confirm `gh auth status` succeeds before using `gh`; if it fails, notify and stop.
+
+  ## Step 1 — Read review requests from the Slack channel
+
+  Resolve the channel from the argument: a Slack link looks like
+  `https://<workspace>.slack.com/archives/<CHANNEL_ID>` — the `C…`/`G…` segment is
+  the channel ID. Accept a bare ID too.
+
+  Use the available **Slack MCP tools (`slack_*`)** to read the **most recent**
+  messages from that channel (a recent window is enough — e.g. the last day or the
+  last ~50 messages; in loop mode only look at messages new since the previous
+  run is ideal, but a recent window with the Step 3 dedup is sufficient).
+
+  Identify messages that are **review requests**: typically they mention a review
+  and contain a **GitHub PR URL** like `https://github.com/<owner>/<repo>/pull/<number>`.
+  For each such message extract `<owner>`, `<repo>`, and `<number>`. Build a
+  de-duplicated list of `(owner, repo, number)` — **process each PR at most once
+  per run**, even if requested in several messages.
+
+  ## Step 2 — Map each request to a local checkout under the checkouts root
+
+  For each `(owner, repo, number)`, find the matching checkout **under the
+  checkouts root** by comparing each candidate's `origin` remote to the PR's repo:
+
+  ```bash
+  ROOT="{{ if .Args.CheckoutsRoot }}{{ .Args.CheckoutsRoot }}{{ else }}<checkouts-root>{{ end }}"
+  for d in "$ROOT"/*/; do
+    [ -d "$d/.git" ] || continue
+    url=$(git -C "$d" remote get-url origin 2>/dev/null) || continue
+    # match owner/repo against the remote URL (ssh or https form), case-insensitive,
+    # tolerating a trailing ".git"
+    echo "$url" | grep -qiE "[/:]<owner>/<repo>(\.git)?/?$" && echo "MATCH: $d"
+  done
+  ```
+
+  - If a checkout is found, record `REPO_DIR=<that directory>`.
+  - If **no** checkout under the root matches, **ignore** this request (out of
+    scope) — do not clone, and note it as skipped.
+
+  ## Step 3 — Deduplicate (skip already-reviewed / unchanged PRs)
+
+  For loop safety, **do not re-review the same PR at the same point in time.**
+  Check, statelessly against GitHub, whether **you have already reviewed this PR at
+  its current head commit**:
+
+  ```bash
+  ME=$(gh api user -q .login)
+  HEAD_SHA=$(gh pr view <number> --repo <owner>/<repo> --json headRefOid -q .headRefOid)
+  LAST=$(gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+    -q "[.[] | select(.user.login==\"$ME\")] | last | .commit_id")
+  ```
+
+  - If `LAST == HEAD_SHA`, you already reviewed this exact state → **skip** it.
+  - If there are **new commits** since your last review (or you never reviewed it),
+    proceed to review.
+  - Also skip PRs that are closed/merged or are **your own** (`author == $ME`).
+
+  ## Step 4 — Delegate each in-scope PR to a child conversation
+
+  For every `(owner, repo, number)` that survived Steps 2 and 3, spawn a child
+  conversation running the **"GitHub: review a Pull Request"** prompt. The child
+  does the actual reading, worktree work, review, and (in loop mode) comment
+  posting — this scanner just dispatches.
+
+  Before spawning, check existing children so you do **not** duplicate an
+  already-running review for the same PR. Use the render-time child list —
+  no MCP call needed:
+
+  ```
+  Existing children: {{ Default "(none)" .Children.MCPText }}
+  ```
+
+  Each entry is rendered as `id (title) [acp-server]` (with an optional
+  ` {bd-id}` suffix). If any entry's title matches `PR #<pr-ref>` for this
+  `(owner, repo, number)`, **skip** — do not spawn a second one.
+
+  Otherwise spawn:
+
+  ```
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
+    prompt_name: "GitHub: review a Pull Request",
+    arguments: {
+      "Pr":      "https://github.com/<owner>/<repo>/pull/<number>",
+      "RepoDir": "<REPO_DIR from Step 2>"
+    },
+    acp_server: <prefer a "coding" or "reasoning" tagged server>)
+  ```
+
+  Notes:
+  - **Do not pass `title:`.** The review prompt declares
+    `target.title: "PR #{{ "{{" }} .Args.Pr {{ "}}" }}"` with title reuse, so
+    Mitto derives the title itself and routes every per-PR GitHub prompt for the
+    same PR into that one conversation. A caller-supplied title is overridden
+    anyway, and guessing a different shape only makes your dedup check above miss.
+  - Always pass the **full PR URL** as `Pr` (not just the number), so the child
+    resolves it unambiguously regardless of its own working directory. Note the
+    routing key is derived from this exact string, so stay consistent across runs.
+  - Always pass `RepoDir` = the absolute `REPO_DIR` you matched in Step 2, so the
+    child scopes its `git`/`gh`/worktree commands to that checkout.
+  - **Do not wait** for children — they report their own results through their
+    own conversations and notifications. This scanner run continues to Step 5
+    while the reviews proceed in the background; the next 30-minute iteration
+    will re-scan and pick up anything new.
+  - **Cap parallelism.** Spawn at most **3 new children per run**. If more
+    in-scope PRs remain, note them as `deferred: over 3-cap` and leave them for
+    the next iteration — Step 3's dedup will pick them up naturally.
+
+  ## Step 5 — Summarise
+
+  After dispatching, post a concise `mitto_ui_notify` summary:
+  - how many review requests were found in Slack,
+  - how many PRs were dispatched to child conversations (with their new titles),
+  - how many were skipped as already-reviewed / unchanged (per Step 3),
+  - how many were ignored as out of the checkouts root (per Step 2),
+  - how many were deferred over the 3-cap.
+
+  In interactive mode you may additionally print the details in the conversation.
+
+  ## Guidelines
+
+  - **This prompt is the scanner/dispatcher only.** Never read PR diffs, never
+    call `gh pr diff`, never create worktrees, never post reviews from this
+    conversation — the spawned child does all of that.
+  - **Only** dispatch PRs whose repo has a checkout under the checkouts root;
+    ignore the rest.
+  - **Process each PR at most once per run**, and skip PRs already reviewed at
+    their current head commit (Step 3).
+  - **Do not spawn a duplicate child** for a PR that already has an active
+    review conversation.
+  - **Do not wait** for children — this scanner returns after dispatching and
+    lets the 30-minute schedule iterate.
+  - Cap new children per run at 3; defer the rest to the next iteration.

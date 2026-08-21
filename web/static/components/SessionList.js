@@ -3,8 +3,7 @@ const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } =
   window.preact;
 
 import { apiUrl } from "../utils/api.js";
-import { authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/endpoints.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 
 import {
   computeUnifiedTree,
@@ -30,6 +29,8 @@ import {
   computeAllSessions,
   getBasename,
   getGlobalWorkingDir,
+  isLoopErrorStop,
+  LOOP_STOPPED_LABELS,
 } from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
 import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
@@ -41,7 +42,6 @@ import {
   FolderOpenIcon,
   SpinnerIcon,
   PlusIcon,
-  MittoPlusIcon,
   CloseIcon,
   ArchiveIcon,
   SunIcon,
@@ -104,9 +104,7 @@ const SIDEBAR_TOOLTIP_DELAY_MS = 250;
 // Returns { files, is_git_repo, branch } or null on error.
 async function fetchGitChanges(sessionId) {
   try {
-    const response = await authFetch(endpoints.sessions.changes(sessionId));
-    if (!response.ok) return null;
-    return await response.json();
+    return await getSdkClient().sessions.changes(sessionId);
   } catch {
     return null;
   }
@@ -142,11 +140,9 @@ const BEADS_STATS_IN_FLIGHT = {};
 // blocked_issues, total_issues, ... } or null on error / empty database.
 async function fetchBeadsStats(workingDir) {
   try {
-    const response = await authFetch(
-      endpoints.issues.stats({ working_dir: workingDir }),
-    );
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await getSdkClient().issues.stats({
+      working_dir: workingDir,
+    });
     if (!data || data.error) return null;
     return data.summary || null;
   } catch {
@@ -207,6 +203,7 @@ export function SessionList({
   onRename,
   onDelete,
   onArchive,
+  onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
   onClose,
   workspaces,
   theme,
@@ -626,6 +623,108 @@ export function SessionList({
     return map;
   }, [allSessions]);
 
+  // UI-prompt (mitto_ui_*) and loop-error dismissal are backend-persisted so
+  // the ack survives page reloads and syncs across every connected browser.
+  // On focus of the active session, POST an acknowledge to the server, which
+  // broadcasts session_ui_prompt (with acked_request_id) or loop_updated
+  // (with loop_acknowledged_stopped_reason). The server clears the UI-prompt
+  // ack automatically when the prompt resolves, so a fresh prompt always
+  // re-surfaces the indicator without frontend bookkeeping. Fire-and-forget:
+  // transient network errors simply mean the indicator stays until the next
+  // successful focus (the local guards below prevent request storms).
+  const acknowledgedUIPromptRef = useRef(new Map()); // sid → true (in-flight guard)
+  const acknowledgedLoopErrorRef = useRef(new Set()); // "sid|reason" ack sent
+
+  // Reset the UI-prompt in-flight guard whenever a session's waiting state
+  // toggles or its server-side ack changes, so a fresh prompt (new RequestID)
+  // triggers a new ack POST on the next focus.
+  useEffect(() => {
+    const g = acknowledgedUIPromptRef.current;
+    for (const sid of Array.from(g.keys())) {
+      const s = allSessions.find((x) => x.session_id === sid);
+      if (!s || !s.isWaitingForUserInput || !s.acked_ui_prompt_request_id) {
+        g.delete(sid);
+      }
+    }
+  }, [allSessions]);
+
+  // Clear loop-error ack guard when the reason changes (or clears) so a new
+  // error stop after re-enable triggers a fresh ack on focus.
+  useEffect(() => {
+    const g = acknowledgedLoopErrorRef.current;
+    for (const key of Array.from(g)) {
+      const [sid, reason] = key.split("|");
+      const s = allSessions.find((x) => x.session_id === sid);
+      if (!s || s.loop_stopped_reason !== reason) {
+        g.delete(key);
+      }
+    }
+  }, [allSessions]);
+
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const active = allSessions.find((s) => s.session_id === activeSessionId);
+    if (!active) return;
+
+    // UI-prompt ack: send when the active session is currently waiting AND
+    // the server has not yet recorded an ack for the current prompt. The
+    // real RequestID comes from the per-session activeSessions state (set
+    // by the ui_prompt WebSocket message in useWebSocket.js) — the sidebar
+    // list itself does not carry it. If the RequestID is not yet available
+    // (race: the sidebar sees isWaitingForUserInput before the per-session
+    // ws delivers ui_prompt), we skip and retry on the next render.
+    const activeUIRequestId =
+      activeSessions[activeSessionId]?.activeUIPrompt?.requestId || null;
+    if (
+      active.isWaitingForUserInput &&
+      activeUIRequestId &&
+      active.acked_ui_prompt_request_id !== activeUIRequestId &&
+      acknowledgedUIPromptRef.current.get(activeSessionId) !== activeUIRequestId
+    ) {
+      acknowledgedUIPromptRef.current.set(activeSessionId, activeUIRequestId);
+      getSdkClient()
+        .sessions.acknowledgeUIPrompt(activeSessionId, activeUIRequestId)
+        .catch(() => {
+          acknowledgedUIPromptRef.current.delete(activeSessionId);
+        });
+    }
+
+    // Loop-error ack: send when the active session's loop stopped with an
+    // error-class reason that is not already server-acknowledged.
+    const reason = active.loop_stopped_reason;
+    if (
+      isLoopErrorStop(reason) &&
+      active.loop_acknowledged_stopped_reason !== reason
+    ) {
+      const key = `${activeSessionId}|${reason}`;
+      if (!acknowledgedLoopErrorRef.current.has(key)) {
+        acknowledgedLoopErrorRef.current.add(key);
+        getSdkClient()
+          .sessions.loop.acknowledgeStoppedReason(activeSessionId)
+          .catch(() => {
+            acknowledgedLoopErrorRef.current.delete(key);
+          });
+      }
+    }
+  }, [activeSessionId, allSessions, activeSessions]);
+
+  // Filtered UI-prompt map consumed by the sidebar tree renderers. Excludes
+  // the currently-active session (its UI prompt is already visible inline in
+  // the conversation view — the sidebar reminder is redundant and clears
+  // instantly on focus) and any session with a server-persisted UI-prompt
+  // acknowledgment for the current prompt.
+  const visibleUIPromptMap = useMemo(() => {
+    if (uiPromptMap.size === 0) return uiPromptMap;
+    const map = new Map();
+    for (const [sid, v] of uiPromptMap) {
+      if (sid === activeSessionId) continue;
+      const s = allSessions.find((x) => x.session_id === sid);
+      if (s && s.acked_ui_prompt_request_id) continue;
+      map.set(sid, v);
+    }
+    return map;
+  }, [uiPromptMap, activeSessionId, allSessions]);
+
   // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
   // sessions (regular + loop + archived), independent of the filter tab.
   const unifiedTree = useMemo(
@@ -902,6 +1001,20 @@ export function SessionList({
     const isSessionStreaming = session.isStreaming || false;
     // Check if this is a new session (for blink animation)
     const isNew = newSessionIds.has(session.session_id);
+    // Loop-error warning: show when the loop's stopped_reason is an
+    // error-class reason AND does not match the server-persisted
+    // acknowledged_stopped_reason. The ack survives page reloads and syncs
+    // across every connected browser (see AcknowledgedStoppedReason in
+    // internal/session/loop.go); re-enabling the loop clears it server-side.
+    const loopStoppedReason = session.loop_stopped_reason || null;
+    const loopAckedStoppedReason =
+      session.loop_acknowledged_stopped_reason || null;
+    const showLoopErrorWarning =
+      isLoopErrorStop(loopStoppedReason) &&
+      loopAckedStoppedReason !== loopStoppedReason;
+    const loopErrorLabel = showLoopErrorWarning
+      ? LOOP_STOPPED_LABELS[loopStoppedReason]?.label || "Loop stopped: error"
+      : "";
 
     return html`
       <${SessionItem}
@@ -909,10 +1022,13 @@ export function SessionList({
         session=${finalSession}
         isActive=${activeSessionId === session.session_id &&
         mainView === "conversation"}
+        showLoopErrorWarning=${showLoopErrorWarning}
+        loopErrorLabel=${loopErrorLabel}
         onSelect=${handleSelectWithCollapse}
         onRename=${onRename}
         onDelete=${onDelete}
         onArchive=${onArchive}
+        onSetColor=${onSetColor}
         workspaceColor=${workspace?.color || null}
         workspaceCode=${workspace?.code || null}
         workspaceName=${workspace?.name || null}
@@ -1031,7 +1147,9 @@ export function SessionList({
                 ...session,
                 isStreaming: streamingMap.has(session.session_id),
                 isWaitingForChildren: waitingMap.has(session.session_id),
-                isWaitingForUserInput: uiPromptMap.has(session.session_id),
+                isWaitingForUserInput: visibleUIPromptMap.has(
+                  session.session_id,
+                ),
               },
               {
                 // The folder tree already groups by workspace, so the only
@@ -1068,7 +1186,7 @@ export function SessionList({
                           isWaitingForChildren: waitingMap.has(
                             child.session_id,
                           ),
-                          isWaitingForUserInput: uiPromptMap.has(
+                          isWaitingForUserInput: visibleUIPromptMap.has(
                             child.session_id,
                           ),
                         },
@@ -1175,7 +1293,7 @@ export function SessionList({
                 ${hasFolderStreaming
                   ? html`
                       <span
-                        class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                        class="loading loading-ring loading-xs shrink-0 text-mitto-accent sidebar-streaming-ring"
                         data-tip="Agent responding in this folder"
                         aria-label="Agent responding in this folder"
                         ...${rowTipHandlers("Agent responding in this folder")}
@@ -1195,6 +1313,7 @@ export function SessionList({
                   );
                   return html`<button
                     type="button"
+                    data-testid="new-conversation-btn"
                     onClick=${(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1597,9 +1716,9 @@ export function SessionList({
                     icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
                     submenu: enabledTargets.map((t) => ({
                       label: t.label || t.id,
-                      icon: html`<${resolveOpenIcon(
-                        t.icon || t.id,
-                      )} className="w-4 h-4" />`,
+                      icon: html`<${resolveOpenIcon(t.icon || t.id)}
+                        className="w-4 h-4"
+                      />`,
                       onClick: () =>
                         onOpenTarget &&
                         onOpenTarget(groupContextMenu.workingDir, t.id),
@@ -1839,23 +1958,22 @@ export function SessionList({
         }
       </div>
       <!-- Side panel toolbar: panel-wide actions, sitting right above the
-           conversation tree. Holds, in order: new-conversation, workspaces,
-           category-filter, density, search, and settings. Workspaces and
-           settings were moved up from the footer; they are disabled (greyed)
-           rather than hidden when the configuration is read-only. -->
+           conversation tree. Holds, in order: open-folder, category-filter,
+           density, search, workspaces, and settings. Workspaces and settings
+           were moved up from the footer; they are disabled (greyed) rather
+           than hidden when the configuration is read-only. -->
       <div
         ref=${toolbarRef}
-        class="px-3 pb-8"
+        class="px-3 pb-4"
         data-testid="sidebar-toolbar"
       >
         <!-- Actions rendered via the portable Toolbar component
-             (components/Toolbar.js) as a segmented "pill". Order: new
-             conversation, workspaces, category filter, density, search,
-             settings — evenly spaced, no separators. All six data-testids are
-             preserved so existing selectors/specs keep working. Filter/Density
-             keep their controlled open state (openToolbarMenu) and custom menu
-             content; Workspaces/Settings are disabled (greyed) when the
-             configuration is read-only. -->
+             (components/Toolbar.js) as a segmented "pill". Order: open folder,
+             category filter, density, search, workspaces, settings — evenly
+             spaced, no separators. Filter/Density keep their controlled open
+             state (openToolbarMenu) and custom menu content;
+             Workspaces/Settings are disabled (greyed) when the configuration
+             is read-only. -->
         <${Toolbar}
           variant="block"
           surface="bg-mitto-surface-3"
@@ -1863,30 +1981,14 @@ export function SessionList({
           items=${[
             {
               kind: "button",
-              testId: "new-conversation-btn",
-              icon: isCreatingSession
-                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-                : html`<${MittoPlusIcon} className="w-4 h-4" />`,
-              tip: isCreatingSession
-                ? "Creating conversation\u2026"
-                : "New Conversation",
-              ariaLabel: isCreatingSession
-                ? "Creating conversation\u2026"
-                : "New Conversation",
-              disabled: isCreatingSession,
-              onClick: () => !isCreatingSession && onNewSession(null, null),
-            },
-            {
-              kind: "button",
               testId: "add-folder-btn",
               icon: html`<${FolderPlusIcon} className="w-4 h-4" />`,
               tip: configReadonly
                 ? "Add folder (read-only configuration)"
-                : "Add folder to sidebar",
-              ariaLabel: "Add folder to sidebar",
+                : "Add folder",
+              ariaLabel: "Add folder",
               disabled: configReadonly,
-              onClick: () =>
-                !configReadonly && onAddFolder && onAddFolder(),
+              onClick: () => !configReadonly && onAddFolder && onAddFolder(),
             },
             {
               kind: "dropdown",
@@ -2072,17 +2174,19 @@ export function SessionList({
                shortcuts dialog is meaningless and the button (with its
                hover-only tooltip) would just add clutter. Gated on the same
                (hover: hover) probe used elsewhere in this file. -->
-          ${SIDEBAR_SUPPORTS_HOVER &&
-          html`<button
-            onClick=${onShowKeyboardShortcuts}
-            class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
-            data-tip="Keyboard Shortcuts"
-            aria-label="Keyboard Shortcuts"
-          >
-            <${KeyboardIcon}
-              className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
-            />
-          </button>`}
+          ${
+            SIDEBAR_SUPPORTS_HOVER &&
+            html`<button
+              onClick=${onShowKeyboardShortcuts}
+              class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
+              data-tip="Keyboard Shortcuts"
+              aria-label="Keyboard Shortcuts"
+            >
+              <${KeyboardIcon}
+                className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
+              />
+            </button>`
+          }
         </div>
       </div>
     </div>

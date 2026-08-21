@@ -147,7 +147,7 @@ func (r *followUpRecorderObserver) record(s string) {
 	r.deps.mu.Unlock()
 }
 func (r *followUpRecorderObserver) OnActionButtons(b []ActionButton)              { r.record("action_buttons") }
-func (r *followUpRecorderObserver) OnAgentMessage(int64, string)                  {}
+func (r *followUpRecorderObserver) OnAgentMessage(int64, string, string)          {}
 func (r *followUpRecorderObserver) OnAgentThought(int64, string)                  {}
 func (r *followUpRecorderObserver) OnToolCall(int64, string, string, string)      {}
 func (r *followUpRecorderObserver) OnToolUpdate(int64, string, *string)           {}
@@ -162,7 +162,7 @@ func (r *followUpRecorderObserver) OnQueueUpdated(int, string, string)          
 func (r *followUpRecorderObserver) OnQueueReordered([]session.QueuedMessage)      {}
 func (r *followUpRecorderObserver) OnError(string)                                {}
 func (r *followUpRecorderObserver) OnPromptComplete(int)                          {}
-func (r *followUpRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *followUpRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string, *session.PromptProvenance) {
 }
 func (r *followUpRecorderObserver) OnACPStopped(string)              {}
 func (r *followUpRecorderObserver) OnACPStarted()                    {}

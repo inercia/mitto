@@ -1,0 +1,141 @@
+icon: search
+name: Bug fix — investigate phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to investigate
+  - name: AdditionalInstructions
+    type: text
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
+description: Internal phase-tier prompt — investigate a bug and add the `researched` label. Invoked by name from the bug-fix driver; runs on the Reasoning tier.
+group: Tasks
+backgroundColor: '#B3E5FC'
+preferredModels:
+  - modelTag: Reasoning
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Bug Fix — Investigate Phase
+
+  This is the **investigate** stage of the label-encoded bug-fix state machine
+  (`researched` → `reproduced` → `fixed`). It is normally invoked by name from the
+  `Loop fixing bug` driver (or by a list orchestrator), which selects this phase
+  because the target bead has none of `researched`/`reproduced`/`fixed` yet.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target bug"
+      "FromLink" (ne .Session.BeadsIssue "")
+  ) }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  {{ template "beads-issues/shared/tier-check" (dict
+      "Target"    $target
+      "Tier"      "Reasoning"
+      "Phase"     "investigate"
+      "Confirmed" (Model "Reasoning")
+      "ModelName" .Session.ModelName
+      "ModelTags" .Session.ModelTags
+  ) }}
+
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array and any prior comments. If `researched` is already present,
+  this phase's work is already done — `bd comment` a note that the phase re-ran
+  redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Investigate the bug
+
+  Read the relevant code, logs, and bead history to understand the bug — do not
+  speculate about code you have not opened. Interaction mode depends on how this
+  phase was invoked:
+
+  - {{- if and .Session.IsLoop (not .Session.IsLoopForced) }} **Silent mode** (scheduled continuation of the driver's loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Decide autonomously; if something is genuinely unclear/unsolvable, defer via **Step 4** rather than guess.
+    {{- else }} **Interactive mode** may apply (a user is present, e.g. first send). You *may* ask clarifying questions via `mitto_ui_options` during investigation; every other phase decides autonomously or defers.
+    {{- end }}
+
+  Gather the concrete evidence you need: root-cause hypothesis, code locations, logs,
+  reproduction preconditions.
+
+  ## Step 3 — Record findings and advance the label — MANDATORY CLOSURE
+
+  When you understand the bug well enough for the next phase to reproduce it, execute
+  the following checklist **in order**. This is not optional prose: every item must
+  complete before the turn ends, and Step 3.V verifies each item actually landed.
+  Historically this closure has been the single most common execution miss (agent
+  writes the Investigation comment, then stops without labeling), which leaves the
+  bead lying about the state of the tree — the verification step exists specifically
+  to catch that class of miss.
+
+  ### Step 3.1 — Record the investigation on the bead
+
+  ```bash
+  bd comment {{ $target }} "Investigation [tier: Reasoning]: <root cause hypothesis, code locations, evidence>."
+  ```
+
+  ### Step 3.2 — Advance the state machine
+
+  Only after Step 3.1 has posted:
+
+  ```bash
+  bd update {{ $target }} --add-label researched
+  ```
+
+  ### Step 3.V — Self-verification (MANDATORY before ending the turn)
+
+  Run each of these commands and confirm the expected result. If any check
+  fails, the corresponding step above was NOT completed — go back and finish
+  it, then re-run the failing check. Do **not** end the turn with a red check.
+
+  ```bash
+  # V.1: bead carries the `researched` label
+  bd show {{ $target }} --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; assert 'researched' in d.get('labels',[]), 'MISSING researched label'; print('OK: researched label present')"
+
+  # V.2: `Investigation [tier: Reasoning]:` comment is on the bead
+  bd show {{ $target }} --include-comments | grep -F "Investigation [tier: Reasoning]:" >/dev/null && echo "OK: Investigation comment present" || echo "MISSING Investigation [tier: Reasoning]: comment"
+  ```
+
+  Only after all checks print `OK`, stop — the driver's next scheduled run will
+  observe `researched` and dispatch the reproduce phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-bug>"
+      "Label"       "researched"
+      "Intro"       "(something unclear, a decision only the user can give, an external action is required)"
+      "BlockedAt"   "investigate"
+      "NotifyNote"  true
+  ) }}
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`researched`).
+    Do not attempt to reproduce or fix — those are separate phases.
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
+      "IncludeItemNote" true
+      "TagNoun"         "findings"
+      "TagPrefix"       "Investigation"
+      "Tier"            "Reasoning"
+  ) }}

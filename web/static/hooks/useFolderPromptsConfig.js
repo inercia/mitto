@@ -17,12 +17,8 @@
 
 const { useState, useEffect } = window.preact;
 
-import {
-  authFetch,
-  secureFetch,
-  endpoints,
-  errorMessageFromData,
-} from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 /**
  * useFolderPromptsConfig — cohesive state/handler bundle for the folder
@@ -68,13 +64,11 @@ export function useFolderPromptsConfig({
     if (!firstWs?.working_dir) return;
 
     setPromptsLoading(true);
-    authFetch(
-      endpoints.workspacePrompts.list({
+    getSdkClient()
+      .prompts.list({
         working_dir: firstWs.working_dir,
         include_global: true,
-      }),
-    )
-      .then((r) => r.json())
+      })
       .then((data) => {
         setFolderPrompts(data.prompts || []);
       })
@@ -84,13 +78,10 @@ export function useFolderPromptsConfig({
 
   // Load (reload) prompts for the selected folder
   const reloadFolderPrompts = async (workingDir) => {
-    const res = await authFetch(
-      endpoints.workspacePrompts.list({
-        working_dir: workingDir,
-        include_global: true,
-      }),
-    );
-    const data = await res.json();
+    const data = await getSdkClient().prompts.list({
+      working_dir: workingDir,
+      include_global: true,
+    });
     setFolderPrompts(data.prompts || []);
   };
 
@@ -100,22 +91,13 @@ export function useFolderPromptsConfig({
     if (!workingDir) return;
     setPromptSaving(true);
     try {
-      const res = await secureFetch(endpoints.workspacePrompts.create(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, ...promptData }),
+      await getSdkClient().prompts.create({
+        working_dir: workingDir,
+        ...promptData,
       });
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
       await reloadFolderPrompts(workingDir);
     } catch (err) {
-      setError("Failed to save prompt: " + err.message);
+      setError("Failed to save prompt: " + errorMessage(err, "request failed"));
     } finally {
       setPromptSaving(false);
     }
@@ -126,24 +108,15 @@ export function useFolderPromptsConfig({
     const workingDir = getSelectedFolderDir();
     if (!workingDir) return;
     try {
-      const res = await secureFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          name: promptName,
-        }),
-        { method: "DELETE" },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
+      await getSdkClient().prompts.remove({
+        working_dir: workingDir,
+        name: promptName,
+      });
       await reloadFolderPrompts(workingDir);
     } catch (err) {
-      setError("Failed to delete prompt: " + err.message);
+      setError(
+        "Failed to delete prompt: " + errorMessage(err, "request failed"),
+      );
     }
   };
 
@@ -155,27 +128,16 @@ export function useFolderPromptsConfig({
     if (!workingDir) return;
     const isCurrentlyEnabled = prompt.enabled !== false;
     try {
-      const res = await secureFetch(
-        endpoints.workspacePrompts.update(prompt.name, {
-          working_dir: workingDir,
-        }),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !isCurrentlyEnabled }),
-        },
+      await getSdkClient().prompts.setEnabled(
+        prompt.name,
+        workingDir,
+        !isCurrentlyEnabled,
       );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
       await reloadFolderPrompts(workingDir);
     } catch (err) {
-      setError("Failed to toggle prompt: " + err.message);
+      setError(
+        "Failed to toggle prompt: " + errorMessage(err, "request failed"),
+      );
     }
   };
 

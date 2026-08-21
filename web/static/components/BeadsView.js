@@ -6,9 +6,6 @@ const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } =
 
 import {
   apiUrl,
-  authFetch,
-  secureFetch,
-  endpoints,
   getBeadsFilters,
   setBeadsFilters,
   getBeadsGrouping,
@@ -16,10 +13,17 @@ import {
   getBeadsSort,
   setBeadsSort,
 } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 import {
-  readBeadsResponse,
+  beadsErrorFrom,
+  errorMessage,
+  isNotFoundError,
+} from "../utils/sdkErrors.js";
+import {
   matchesSearch,
   cmpBySort,
+  computeEffectiveStreamingSet,
+  taskTitleBackground,
   SORT_FIELD_OPTIONS,
   SORT_FIELD_LABELS,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
@@ -29,6 +33,8 @@ import {
   ISSUE_TYPES,
   BEADS_SUPPORTS_HOVER,
   BEADS_TOOLTIP_DELAY_MS,
+  isBeadsSchemaSkew,
+  toSchemaSkewState,
 } from "../utils/beads.js";
 // Re-export STATUS_COLORS at its original location so any external consumer
 // that had `import { STATUS_COLORS } from ".../BeadsView.js"` keeps working
@@ -188,6 +194,13 @@ export function BeadsDetailPanel({
   loadingIssueId,
   loadError,
   onRetry,
+  // In-viewer navigation history (mitto-qluh.2). Threaded through from the
+  // caller so the panel's bottom bar can render visible Back/Forward buttons
+  // wired to whichever in-component history stack the caller owns.
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   const h = useBeadsDetailPanel({
     issue,
@@ -211,6 +224,10 @@ export function BeadsDetailPanel({
     loadingIssueId,
     loadError,
     onRetry,
+    canGoBack,
+    canGoForward,
+    onGoBack,
+    onGoForward,
   });
 
   if (!h.shouldRender) return null;
@@ -252,11 +269,46 @@ export function BeadsDetailPanel({
       comments=${h.comments}
       handlers=${h.handlers}
       chrome=${h.chrome}
+      canGoBack=${h.canGoBack}
+      canGoForward=${h.canGoForward}
+      onGoBack=${h.onGoBack}
+      onGoForward=${h.onGoForward}
     />
   `;
 }
 
 // ---- Standalone single-issue viewer -----------------------------------------
+
+/**
+ * Pure decision function for the browser popstate handler (mitto-qluh.3).
+ * Given the new history state, our anchor key, the current in-viewer position
+ * and the length of the in-viewer history stack, returns what the handler
+ * should do:
+ *   - `{ kind: "close" }`     — foreign / null state (popped past our anchor)
+ *   - `{ kind: "noop" }`      — same position (no state change)
+ *   - `{ kind: "setPos", pos, delta }` — set React `pos` to `pos`
+ *
+ * Extracted for direct unit-testing: the surrounding component reads
+ * `window.preact` at module load and cannot be imported under jsdom.
+ */
+export function computePopstateAction(
+  newState,
+  ourKey,
+  currentPos,
+  historyLen,
+) {
+  if (!newState || newState.__mittoBeadsKey !== ourKey) {
+    return { kind: "close" };
+  }
+  const raw = newState.__mittoBeadsPos;
+  const numeric =
+    typeof raw === "number" && Number.isFinite(raw) ? raw : currentPos;
+  const upper = historyLen > 0 ? historyLen - 1 : 0;
+  const clamped = Math.max(0, Math.min(upper, numeric));
+  const delta = clamped - currentPos;
+  if (delta === 0) return { kind: "noop" };
+  return { kind: "setPos", pos: clamped, delta };
+}
 
 /**
  * BeadsIssueView renders a single beads issue as a docked side panel overlaid
@@ -299,18 +351,161 @@ export function BeadsIssueView({
   const [deletingIssue, setDeletingIssue] = useState(false);
   // Bumped to re-fetch the current issue after a status/defer/dep change.
   const [refreshNonce, setRefreshNonce] = useState(0);
+  // mitto-9vh: ids known to be 404 (deleted externally). Once an id lands
+  // here, the fetch effect below short-circuits it so subsequent
+  // mitto:beads_changed bumps do not re-poll a nonexistent issue (a stale
+  // drawer previously generated 589 x GET /api/issues/<id> -> 404 in 8h).
+  // A ref, not state: the guard is checked inside an effect whose deps
+  // (refreshNonce/currentIssueId) already re-run on external changes, so no
+  // re-render is needed when the set mutates. Per-component-instance and
+  // resets on unmount, which is the correct scope (each opened drawer
+  // discovers its own gone set from live 404s).
+  const goneIdsRef = useRef(new Set());
   // Full issue list for the workspace, used to compute the current issue's
   // subtasks (children). /api/issues/{id} does not return children, so without
   // the list the Subtasks section would never render here even though it does
   // in the Tasks list view (which passes its already-loaded list as allIssues).
   const [listIssues, setListIssues] = useState([]);
+  // mitto-n5mw: local SchemaSkewDialog state. The wrapper is a standalone
+  // overlay (rendered by app.js, not by BeadsView), so it cannot reach the
+  // main-view setSchemaSkew setter — it mounts its own copy of the dialog and
+  // populates it directly when any write handler receives HTTP 409 with the
+  // canonical `beads_schema_skew` code.
+  const [schemaSkew, setSchemaSkew] = useState(null);
+  const [showMigrateDialog, setShowMigrateDialog] = useState(false);
+
+  // Browser History API integration (mitto-qluh.3). While this component is
+  // mounted, each `handleSelectIssue` push also calls `window.history.pushState`
+  // with a sentinel-tagged state; the mouse back/forward side buttons (and the
+  // browser's Back/Forward controls) fire `popstate`, which is the sole updater
+  // of `pos` under this path. The visible Back/Forward buttons in the bottom
+  // bar go through `window.history.back()`/`.forward()` so both surfaces share
+  // the same code path. Popping past our anchor (state without our key) closes
+  // the overlay via `onReturnToConversation`.
+  const ourKeyRef = useRef(null);
+  const pushedCountRef = useRef(0);
+  const suppressPopstateRef = useRef(0);
+  const posRef = useRef(pos);
+  const historyLenRef = useRef(history.length);
+  const onReturnRef = useRef(onReturnToConversation);
+
+  // Keep refs mirroring the latest values so the stable popstate handler
+  // (empty-deps effect) can read them without re-subscribing on every render.
+  useEffect(() => {
+    posRef.current = pos;
+  }, [pos]);
+  useEffect(() => {
+    historyLenRef.current = history.length;
+  }, [history.length]);
+  useEffect(() => {
+    onReturnRef.current = onReturnToConversation;
+  }, [onReturnToConversation]);
+
+  // Anchor the current browser history entry once on mount, and on unmount
+  // roll back any entries we pushed so the browser stack returns to the state
+  // the surrounding app expected. jsdom / privacy modes may throw on
+  // history.go — treat as best-effort.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    ourKeyRef.current =
+      Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try {
+      window.history.replaceState(
+        {
+          ...(window.history.state || {}),
+          __mittoBeadsKey: ourKeyRef.current,
+          __mittoBeadsPos: 0,
+        },
+        "",
+      );
+    } catch (_e) {
+      /* ignore */
+    }
+    pushedCountRef.current = 0;
+    return () => {
+      if (pushedCountRef.current > 0) {
+        suppressPopstateRef.current += pushedCountRef.current;
+        try {
+          window.history.go(-pushedCountRef.current);
+        } catch (_e) {
+          /* ignore */
+        }
+        pushedCountRef.current = 0;
+      }
+    };
+  }, []);
+
+  // popstate listener: the browser's Back/Forward controls (including mouse
+  // side buttons) route through here. The pure decision helper
+  // (computePopstateAction) determines whether to update `pos`, no-op, or
+  // close the overlay when the user pops past our anchor.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onPop = (event) => {
+      if (suppressPopstateRef.current > 0) {
+        suppressPopstateRef.current -= 1;
+        return;
+      }
+      const action = computePopstateAction(
+        event.state,
+        ourKeyRef.current,
+        posRef.current,
+        historyLenRef.current,
+      );
+      if (action.kind === "close") {
+        // Popped past our anchor: the browser removed one of our entries.
+        pushedCountRef.current = Math.max(0, pushedCountRef.current - 1);
+        const cb = onReturnRef.current;
+        if (typeof cb === "function") cb();
+        return;
+      }
+      if (action.kind === "noop") return;
+      // action.kind === "setPos"
+      setPos(action.pos);
+      pushedCountRef.current = Math.max(
+        0,
+        pushedCountRef.current + action.delta,
+      );
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // Reset the in-viewer history when the externally-requested issue changes:
   // re-opening the overlay from a new link starts fresh with a single-entry
   // stack rather than continuing the previous session's back/forward chain.
+  // Also collapses any browser history entries we pushed for the previous
+  // issue chain and re-anchors the current entry.
   useEffect(() => {
     setHistory([issueId]);
     setPos(0);
+    if (typeof window === "undefined") return;
+    if (pushedCountRef.current > 0) {
+      suppressPopstateRef.current += pushedCountRef.current;
+      try {
+        window.history.go(-pushedCountRef.current);
+      } catch (_e) {
+        /* ignore */
+      }
+      pushedCountRef.current = 0;
+    }
+    // Re-tag the (now-current) entry as our new anchor. On the very first
+    // render ourKeyRef.current is still null — the mount effect handles that
+    // case; guard so we don't overwrite state with a null key.
+    if (ourKeyRef.current) {
+      try {
+        window.history.replaceState(
+          {
+            ...(window.history.state || {}),
+            __mittoBeadsKey: ourKeyRef.current,
+            __mittoBeadsPos: 0,
+          },
+          "",
+        );
+      } catch (_e) {
+        /* ignore */
+      }
+    }
   }, [issueId, selectNonce]);
 
   // Fetch the current issue from /api/issues/{id}.
@@ -319,35 +514,64 @@ export function BeadsIssueView({
     // Reset visible state so re-opening a different issue (or a retry) shows
     // the loading skeleton instead of flashing the previous issue's content.
     setIssue(null);
+    // mitto-9vh: short-circuit ids we already discovered were 404. The drawer
+    // keeps showing the "gone" notice; no fetch is issued, so subsequent
+    // mitto:beads_changed bumps become a cheap no-op for this id.
+    if (goneIdsRef.current.has(currentIssueId)) {
+      setLoadError({ message: "This issue no longer exists.", gone: true });
+      return;
+    }
     setLoadError(null);
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.show(currentIssueId, { working_dir: workingDir }),
-        );
-        const data = await readBeadsResponse(res);
+        const data = await getSdkClient().issues.show(currentIssueId, {
+          working_dir: workingDir,
+        });
         if (cancelled) return;
-        if (!res.ok || data.error) {
-          const msg = data.error || "Failed to load issue";
-          setLoadError(msg);
-          showToast && showToast({ style: "error", title: msg });
-        } else {
-          const issueObj = Array.isArray(data) ? data[0] : data;
-          setIssue(issueObj || null);
+        const issueObj = Array.isArray(data) ? data[0] : data;
+        setIssue(issueObj || null);
+      } catch (err) {
+        if (cancelled) return;
+        // mitto-9vh: distinguish 404 (issue was deleted externally) from
+        // transient errors. Mark the id gone so future refreshNonce bumps do
+        // not re-issue the same 404, and suppress the toast — external
+        // deletion by an agent / CLI / git pull is expected and should not
+        // spam every connected client.
+        if (isNotFoundError(err)) {
+          goneIdsRef.current.add(currentIssueId);
+          setLoadError({
+            message: "This issue no longer exists.",
+            gone: true,
+          });
+          return;
         }
-      } catch (_err) {
-        if (!cancelled) {
-          const msg = "Failed to load issue";
-          setLoadError(msg);
-          showToast && showToast({ style: "error", title: msg });
-        }
+        const msg = beadsErrorFrom(err, "Failed to load issue").error;
+        setLoadError(msg);
+        showToast && showToast({ style: "error", title: msg });
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [workingDir, currentIssueId, refreshNonce]);
+
+  // Auto-refresh the drawer when the backend fsnotify watcher reports external
+  // changes to .beads (agent bd close/update, sibling Mitto session, bd CLI,
+  // git pull, bd dolt pull). Mirrors the list view's listener at L1502-1511;
+  // scoped by working_dir to avoid a cross-workspace thundering refresh. Bumps
+  // refreshNonce so both the single-issue fetch above and the Subtasks list
+  // fetch below re-fire together.
+  useEffect(() => {
+    const handler = (e) => {
+      const dirs = e?.detail?.working_dirs;
+      if (!dirs || (Array.isArray(dirs) && dirs.includes(workingDir))) {
+        setRefreshNonce((n) => n + 1);
+      }
+    };
+    window.addEventListener("mitto:beads_changed", handler);
+    return () => window.removeEventListener("mitto:beads_changed", handler);
+  }, [workingDir]);
 
   // Fetch the full issue list so BeadsDetailPanel can derive subtasks for the
   // current issue. Re-fetched on refreshNonce so children stay current after a
@@ -358,12 +582,11 @@ export function BeadsIssueView({
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.list({ working_dir: workingDir }),
-        );
-        const data = await readBeadsResponse(res);
+        const data = await getSdkClient().issues.list({
+          working_dir: workingDir,
+        });
         if (cancelled) return;
-        if (res.ok && !data.error && Array.isArray(data)) {
+        if (Array.isArray(data)) {
           setListIssues(data);
         }
       } catch (_err) {
@@ -377,28 +600,64 @@ export function BeadsIssueView({
 
   const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
 
+  // mitto-n5mw: on write-triggered HTTP 409 `beads_schema_skew`, populate the
+  // local SchemaSkewDialog state and open the dialog directly. All write
+  // handlers call this from their error branch (via isBeadsSchemaSkew) so a
+  // schema-behind clone surfaces the actionable dialog instead of a truncated
+  // "nothing happened" toast.
+  const onSchemaSkew = useCallback((data) => {
+    setSchemaSkew(toSchemaSkewState(data));
+    setShowMigrateDialog(true);
+  }, []);
+
   // In-viewer navigation: clicking a related id truncates any forward entries
   // (browser-style — pending forward history is discarded when a new branch is
   // taken), pushes the new id, and advances `pos`. A click on the same id as
-  // the current entry is a no-op so it does not add a duplicate step.
+  // the current entry is a no-op so it does not add a duplicate step. Also
+  // pushes a matching entry to the browser history so mouse side-buttons and
+  // browser Back/Forward retrace the same chain (mitto-qluh.3).
   const handleSelectIssue = useCallback(
     (depObj) => {
       const id = depObj?.id;
       if (!id) return;
       if (id === history[pos]) return;
+      const newPos = pos + 1;
       setHistory((h) => [...h.slice(0, pos + 1), id]);
-      setPos((p) => p + 1);
+      setPos(newPos);
+      if (typeof window !== "undefined" && ourKeyRef.current) {
+        try {
+          window.history.pushState(
+            {
+              ...(window.history.state || {}),
+              __mittoBeadsKey: ourKeyRef.current,
+              __mittoBeadsPos: newPos,
+            },
+            "",
+          );
+          // pushState implicitly truncates the browser's forward stack, so
+          // after this call we own exactly `newPos` entries on top of anchor.
+          pushedCountRef.current = newPos;
+        } catch (_e) {
+          /* jsdom / privacy modes may throw — silently ignore */
+        }
+      }
     },
     [history, pos],
   );
 
+  // Both bottom-bar Back/Forward buttons defer to the browser: calling
+  // history.back()/forward() fires popstate, whose handler is the sole updater
+  // of React `pos`. Ref-guards use `posRef`/`historyLenRef` so these callbacks
+  // stay stable-referenced across renders.
   const goBack = useCallback(() => {
-    setPos((p) => (p > 0 ? p - 1 : p));
+    if (posRef.current <= 0) return;
+    if (typeof window !== "undefined") window.history.back();
   }, []);
 
   const goForward = useCallback(() => {
-    setPos((p) => (p < history.length - 1 ? p + 1 : p));
-  }, [history.length]);
+    if (posRef.current >= historyLenRef.current - 1) return;
+    if (typeof window !== "undefined") window.history.forward();
+  }, []);
 
   const handleToggleStatus = useCallback(
     async (iss) => {
@@ -406,41 +665,33 @@ export function BeadsIssueView({
       const action = iss.status === "closed" ? "reopen" : "close";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(iss.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          iss.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}`,
-            });
-          refresh();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}`,
           });
+        refresh();
+      } catch (err) {
+        // mitto-n5mw: HTTP 409 beads_schema_skew must open the
+        // SchemaSkewDialog instead of a generic error toast — otherwise the
+        // user sees "nothing happened" on a schema-behind clone.
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          onSchemaSkew(data);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
     },
-    [workingDir, showToast, refresh],
+    [workingDir, showToast, refresh, onSchemaSkew],
   );
 
   const handleToggleDefer = useCallback(
@@ -449,43 +700,33 @@ export function BeadsIssueView({
       const action = iss.status === "deferred" ? "undefer" : "defer";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(iss.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          iss.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "defer"
-                  ? `Deferred ${iss.id}`
-                  : `Undeferred ${iss.id}`,
-            });
-          refresh();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "defer"
+                ? `Deferred ${iss.id}`
+                : `Undeferred ${iss.id}`,
           });
+        refresh();
+      } catch (err) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          onSchemaSkew(data);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
     },
-    [workingDir, showToast, refresh],
+    [workingDir, showToast, refresh, onSchemaSkew],
   );
 
   const confirmDeleteIssue = useCallback(async () => {
@@ -493,34 +734,28 @@ export function BeadsIssueView({
     const id = deleteTarget.id;
     setDeletingIssue(true);
     try {
-      const res = await secureFetch(
-        endpoints.issues.remove(id, { working_dir: workingDir }),
-        {
-          method: "DELETE",
-        },
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: data.error || "Failed to delete issue",
-          });
-      } else {
-        showToast && showToast({ style: "success", title: `Deleted ${id}` });
-        onReturnToConversation && onReturnToConversation();
-      }
+      await getSdkClient().issues.remove(id, { working_dir: workingDir });
+      showToast && showToast({ style: "success", title: `Deleted ${id}` });
+      onReturnToConversation && onReturnToConversation();
     } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to delete issue",
-        });
+      // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+      const data = beadsErrorFrom(err, "Failed to delete issue");
+      if (isBeadsSchemaSkew(data)) {
+        onSchemaSkew(data);
+        return;
+      }
+      showToast && showToast({ style: "error", title: data.error });
     } finally {
       setDeletingIssue(false);
       setDeleteTarget(null);
     }
-  }, [deleteTarget, workingDir, showToast, onReturnToConversation]);
+  }, [
+    deleteTarget,
+    workingDir,
+    showToast,
+    onReturnToConversation,
+    onSchemaSkew,
+  ]);
 
   // mitto-zbfq: a single stable BeadsDetailPanel spans the whole load
   // lifecycle. While `issue` is null, the panel renders its own loading /
@@ -549,6 +784,10 @@ export function BeadsIssueView({
         loadingIssueId=${currentIssueId}
         loadError=${loadError}
         onRetry=${refresh}
+        canGoBack=${canGoBack}
+        canGoForward=${canGoForward}
+        onGoBack=${goBack}
+        onGoForward=${goForward}
       />
       <${ConfirmDialog}
         isOpen=${!!deleteTarget}
@@ -560,6 +799,23 @@ export function BeadsIssueView({
         isLoading=${deletingIssue}
         onConfirm=${confirmDeleteIssue}
         onCancel=${() => setDeleteTarget(null)}
+      />
+      <${SchemaSkewDialog}
+        isOpen=${showMigrateDialog && !!schemaSkew}
+        dbPath=${schemaSkew ? schemaSkew.dbPath : ""}
+        hint=${schemaSkew ? schemaSkew.hint : ""}
+        options=${schemaSkew ? schemaSkew.options : []}
+        allowMigrate=${schemaSkew ? schemaSkew.allowMigrate : true}
+        databaseMode=${schemaSkew ? schemaSkew.databaseMode : "shared"}
+        workingDir=${workingDir}
+        showToast=${showToast}
+        onSuccess=${() => {
+          showToast && showToast("Migration completed", "success");
+          setShowMigrateDialog(false);
+          setSchemaSkew(null);
+          refresh();
+        }}
+        onCancel=${() => setShowMigrateDialog(false)}
       />
     </${Fragment}>
   `;
@@ -692,6 +948,9 @@ function BeadsIssueRow({
  * @param {Array}  props.options         - Parsed options[] from the gate JSON
  *   (each `{ mode, command, description }`). May be empty; when empty the
  *   dialog defaults to `mode=migrate`.
+ * @param {boolean} props.allowMigrate   - False when remediation requires a
+ *   recovery procedure rather than `bd migrate` (for example DB v65 > bd v53).
+ * @param {string} props.databaseMode    - Effective folder mode: local/shared.
  * @param {string} props.workingDir      - Sent to the backend as working_dir.
  * @param {Function} props.onSuccess     - Called on HTTP 200 (parent refreshes).
  * @param {Function} props.onCancel      - Called when the user dismisses.
@@ -702,17 +961,32 @@ function SchemaSkewDialog({
   dbPath,
   hint,
   options,
+  allowMigrate = true,
+  databaseMode = "shared",
   workingDir,
   onSuccess,
   onCancel,
   showToast,
 }) {
-  const hasOptions = Array.isArray(options) && options.length > 0;
-  const defaultMode = hasOptions ? options[0].mode || "migrate" : "migrate";
+  const isLocalMode = databaseMode === "local";
+  // Fail closed when stale data carries remote-backed remediation into a local
+  // folder: local mode may migrate in place, but must never bootstrap/adopt.
+  const availableOptions = Array.isArray(options)
+    ? options.filter((opt) => !isLocalMode || opt.mode === "migrate")
+    : [];
+  const hasOptions = availableOptions.length > 0;
+  const defaultMode = hasOptions
+    ? availableOptions[0].mode || "migrate"
+    : "migrate";
   const [mode, setMode] = useState(defaultMode);
   const [ackChecked, setAckChecked] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  // Raw stderr captured from a failed migration request (error.details.stderr).
+  // Rendered separately from errorMsg, preserving newlines, so a multi-line
+  // bd diagnostic (e.g. a dolt-push remote/auth failure) is not discarded —
+  // see mitto-cq2n.1.
+  const [errorStderr, setErrorStderr] = useState("");
 
   // Reset transient state whenever the dialog is (re)opened so a previous
   // inline error / stale mode / checkbox does not leak across invocations.
@@ -722,144 +996,171 @@ function SchemaSkewDialog({
       setAckChecked(false);
       setIsRunning(false);
       setErrorMsg("");
+      setErrorStderr("");
     }
     // defaultMode is derived from options; safe to depend on isOpen only —
     // options is stable for the lifetime of a single skew event.
   }, [isOpen]);
 
-  // Enable the confirm button only when the "designated migrator" ack is
-  // checked for `migrate` mode. `adopt` mode is not destructive-ish and does
-  // not require the ack.
-  const canConfirm = mode === "adopt" || ackChecked;
+  // Remote-backed `migrate` requires the designated-migrator acknowledgment.
+  // Local migration and shared `adopt` do not require that remote-only consent.
+  const canConfirm =
+    allowMigrate && (isLocalMode || mode === "adopt" || ackChecked);
 
   const handleConfirm = async () => {
-    if (isRunning) return;
+    if (isRunning || !allowMigrate) return;
     setIsRunning(true);
     setErrorMsg("");
+    setErrorStderr("");
     try {
-      const res = await authFetch(endpoints.beads.migrate(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, mode }),
+      await getSdkClient().issues.migrate({
+        working_dir: workingDir,
+        mode: isLocalMode ? "migrate" : mode,
       });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        if (data.code === "migrate_from_ui_disabled") {
-          setErrorMsg(
-            "Running migrations from the UI is disabled in this instance's settings. Ask an administrator to enable `web.beads.allow_migrate_from_ui`, or run the migration from a terminal on the designated clone.",
-          );
-        } else {
-          setErrorMsg(
-            data.error || data.message || `Migration failed (HTTP ${res.status})`,
-          );
-        }
-        setIsRunning(false);
-        return;
-      }
       // Success: parent handles toast + refresh + close.
       onSuccess?.();
     } catch (err) {
-      setErrorMsg(err?.message || "Migration request failed");
+      if (err?.code === "migrate_from_ui_disabled") {
+        setErrorMsg(
+          isLocalMode
+            ? "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the local migration from a terminal."
+            : "UI-initiated beads migrations have been disabled by the administrator on this Mitto instance (web.beads.allow_migrate_from_ui: false). Run the migration from a terminal on the designated clone.",
+        );
+      } else {
+        // beadsErrorFrom() flattens both the primary message (error.message,
+        // which the backend makes actionable for a publish-stage failure —
+        // see mitto-cq2n.1) and the raw error.details.stderr. Render both:
+        // dropping stderr here previously left the user with only the bare
+        // "bd exited with non-zero status: exit status N" wrapper text.
+        const data = beadsErrorFrom(err, "Migration request failed");
+        setErrorMsg(data.error);
+        setErrorStderr(data.stderr || "");
+      }
       setIsRunning(false);
     }
   };
 
-  const message = dbPath
-    ? `Run the beads schema migration on this clone for the database at ${dbPath}?`
-    : "Run the beads schema migration on this clone?";
+  const message = allowMigrate
+    ? dbPath
+      ? `Run the ${isLocalMode ? "local-only " : ""}beads schema migration on this clone for the database at ${dbPath}?`
+      : `Run the ${isLocalMode ? "local-only " : ""}beads schema migration on this clone?`
+    : "This database cannot be migrated by the installed bd binary. Follow the recovery instructions below, then reload.";
 
   return html`
     <${ConfirmDialog}
       isOpen=${isOpen}
-      title="Run beads migration"
+      title=${allowMigrate ? "Run beads migration" : "Beads recovery required"}
       message=${message}
       confirmLabel="Yes, run migration"
-      cancelLabel="No"
+      cancelLabel=${allowMigrate ? "No" : "Close"}
       confirmVariant="primary"
       isLoading=${isRunning}
       confirmDisabled=${!canConfirm}
+      showConfirm=${allowMigrate}
       onConfirm=${handleConfirm}
       onCancel=${onCancel}
     >
       <div class="mt-3 space-y-3" data-testid="schema-skew-dialog-body">
-        ${dbPath &&
-        html`<div
-          class="text-xs font-mono break-all text-mitto-text-secondary"
-        >
-          ${dbPath}
-        </div>`}
-        ${hint &&
-        html`<div class="text-xs text-mitto-text-secondary">${hint}</div>`}
-        ${hasOptions &&
-        html`
-          <div class="space-y-2">
-            ${options.map(
-              (opt) => html`
-                <label
-                  class="flex items-start gap-3 cursor-pointer select-none"
-                >
-                  <input
-                    type="radio"
-                    name="schema-skew-mode"
-                    value=${opt.mode}
-                    checked=${mode === opt.mode}
-                    disabled=${isRunning}
-                    onChange=${() => setMode(opt.mode)}
-                    class="radio radio-sm mt-0.5"
-                  />
-                  <span class="text-sm text-mitto-text-secondary">
-                    <span class="font-medium">${opt.mode}</span>
-                    ${opt.description
-                      ? html` — ${opt.description}`
-                      : opt.command
-                        ? html` — <code class="text-xs">${opt.command}</code>`
-                        : null}
-                  </span>
-                </label>
-              `,
-            )}
-          </div>
-        `}
-        <div
-          class="text-xs text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
-        >
-          For remote-backed databases the migration must be run on exactly one
-          designated clone. Independent migrations on separate clones fork the
-          schema (upstream bug #4259).
-        </div>
-        ${mode === "migrate" &&
-        html`
-          <label class="flex items-start gap-3 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked=${ackChecked}
-              disabled=${isRunning}
-              onChange=${(e) => setAckChecked(e.target.checked)}
-              class="checkbox checkbox-sm mt-0.5"
-              data-testid="schema-skew-ack-checkbox"
-            />
-            <span class="text-sm text-mitto-text-secondary">
-              I understand this is the designated migrator clone.
-            </span>
-          </label>
-        `}
-        ${errorMsg &&
-        html`
-          <div
-            class="text-xs text-red-400 break-all"
-            data-testid="schema-skew-dialog-error"
+        ${
+          dbPath &&
+          html`<div
+            class="text-xs font-mono break-all text-mitto-text-secondary"
           >
-            ${errorMsg}
-          </div>
-        `}
-        ${!canConfirm &&
-        !errorMsg &&
-        html`
-          <div class="text-xs text-mitto-text-muted">
-            Check the acknowledgement above to enable
-            <span class="italic">Yes, run migration</span>.
-          </div>
-        `}
+            ${dbPath}
+          </div>`
+        }
+        ${
+          hint &&
+          html`<div class="text-xs text-mitto-text-secondary">${hint}</div>`
+        }
+        ${
+          allowMigrate &&
+          hasOptions &&
+          html`
+            <div class="space-y-2">
+              ${availableOptions.map(
+                (opt) => html`
+                  <label
+                    class="flex items-start gap-3 cursor-pointer select-none"
+                  >
+                    <input
+                      type="radio"
+                      name="schema-skew-mode"
+                      value=${opt.mode}
+                      checked=${mode === opt.mode}
+                      disabled=${isRunning}
+                      onChange=${() => setMode(opt.mode)}
+                      class="radio radio-sm mt-0.5"
+                    />
+                    <span class="text-sm text-mitto-text-secondary">
+                      <span class="font-medium">${opt.mode}</span>
+                      ${opt.description
+                        ? html` — ${opt.description}`
+                        : opt.command
+                          ? html` — <code class="text-xs">${opt.command}</code>`
+                          : null}
+                    </span>
+                  </label>
+                `,
+              )}
+            </div>
+          `
+        }
+        ${
+          allowMigrate &&
+          !isLocalMode &&
+          mode === "migrate" &&
+          html`
+            <label
+              class="flex items-start gap-3 cursor-pointer select-none text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
+            >
+              <input
+                type="checkbox"
+                checked=${ackChecked}
+                disabled=${isRunning}
+                onChange=${(e) => setAckChecked(e.target.checked)}
+                class="checkbox checkbox-sm mt-0.5"
+                data-testid="schema-skew-ack-checkbox"
+              />
+              <span class="text-xs">
+                I understand this is the designated migrator clone for this
+                remote-backed database. Running migrate on any other clone will
+                fork the schema (upstream bug #4259).
+              </span>
+            </label>
+          `
+        }
+        ${
+          errorMsg &&
+          html`
+            <div class="space-y-1">
+              <div
+                class="text-xs text-red-400 break-all"
+                data-testid="schema-skew-dialog-error"
+              >
+                ${errorMsg}
+              </div>
+              ${errorStderr &&
+              html`<pre
+                class="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs bg-mitto-surface-2/50 rounded p-2 text-mitto-text-secondary"
+                data-testid="schema-skew-dialog-error-stderr"
+              >
+${errorStderr}</pre
+              >`}
+            </div>
+          `
+        }
+        ${
+          allowMigrate &&
+          !canConfirm &&
+          !errorMsg &&
+          html`
+            <div class="text-xs text-mitto-text-muted">
+              Check the acknowledgement above to enable
+              <span class="italic">Yes, run migration</span>.
+            </div>
+          `
+        }
       </div>
     </${ConfirmDialog}>
   `;
@@ -896,6 +1197,16 @@ export function BeadsView({
   // When the create panel is opened via an epic's "+" button, this holds the
   // epic's id so the new issue is created as that epic's child (parent).
   const [createParent, setCreateParent] = useState(null);
+
+  // In-panel navigation stack (mitto-qluh.2, tasks-list flavor). Mirrors the
+  // BeadsIssueView stack pattern but without browser-history integration —
+  // this stack is purely in-component so users can retrace a chain of
+  // dep/subtask/parent clicks while the panel is open. `panelPos = -1` means
+  // the panel is closed or in create mode.
+  const [panelHistory, setPanelHistory] = useState([]);
+  const [panelPos, setPanelPos] = useState(-1);
+  const canGoBack = panelPos > 0;
+  const canGoForward = panelPos >= 0 && panelPos < panelHistory.length - 1;
 
   // The type and search filters are initialized from localStorage so that the
   // user's applied criteria are restored when they navigate away from the Beads
@@ -1067,6 +1378,8 @@ export function BeadsView({
   const [shortcuts, setShortcuts] = useState([]);
   // Map from prompt name → prompt object, built once shortcuts + prompts are loaded.
   const [shortcutPromptMap, setShortcutPromptMap] = useState(new Map());
+  const [taskLabelColors, setTaskLabelColors] = useState([]);
+  const taskLabelColorsRequestRef = useRef(0);
   // Ref for the issues scroll container — used by usePullToRefresh.
   const scrollContainerRef = useRef(null);
 
@@ -1077,33 +1390,20 @@ export function BeadsView({
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(
-        endpoints.issues.list({ working_dir: workingDir }),
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        if (data.code === "beads_schema_skew") {
-          setSchemaSkew({
-            message: data.error,
-            dbPath: (data.details && data.details.db_path) || "",
-            hint: (data.details && data.details.hint) || "",
-            options:
-              (data.details && Array.isArray(data.details.options)
-                ? data.details.options
-                : []) || [],
-          });
-        } else {
-          setSchemaSkew(null);
-        }
-        setError(data.error || data.message || "Failed to load issues");
-        setIssues([]);
+      const data = await getSdkClient().issues.list({
+        working_dir: workingDir,
+      });
+      setSchemaSkew(null);
+      setIssues(Array.isArray(data) ? data : []);
+    } catch (err) {
+      const data = beadsErrorFrom(err, "Failed to load issues");
+      if (isBeadsSchemaSkew(data)) {
+        setSchemaSkew(toSchemaSkewState(data));
       } else {
         setSchemaSkew(null);
-        setIssues(Array.isArray(data) ? data : []);
       }
-    } catch (err) {
-      setSchemaSkew(null);
-      setError(err.message || "Failed to load issues");
+      setError(data.error);
+      setIssues([]);
     } finally {
       setLoading(false);
     }
@@ -1134,10 +1434,9 @@ export function BeadsView({
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.upstream({ working_dir: workingDir }),
-        );
-        const data = await readBeadsResponse(res);
+        const data = await getSdkClient().issues.upstream({
+          working_dir: workingDir,
+        });
         if (!cancelled) {
           setUpstream((data && data.upstream) || "none");
           setPullPromptName((data && data.pull_prompt) || "");
@@ -1172,14 +1471,12 @@ export function BeadsView({
         // Merge global (settings.json) + folder (folders.json) shortcuts for the
         // tasksList section. Global buttons come first; folder buttons that
         // duplicate a global prompt are dropped.
-        const [folderRes, globalRes] = await Promise.all([
-          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
-          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        const [folderData, globalData] = await Promise.all([
+          getSdkClient().shortcuts.getFolder({ working_dir: workingDir }),
+          getSdkClient()
+            .shortcuts.getGlobal()
+            .catch(() => ({})),
         ]);
-        const folderData = await folderRes.json().catch(() => ({}));
-        const globalData = globalRes
-          ? await globalRes.json().catch(() => ({}))
-          : {};
         const globalList = globalData?.sections?.tasksList || [];
         const folderList = folderData?.sections?.tasksList || [];
         const globalNames = new Set(globalList.map((s) => s.prompt));
@@ -1235,6 +1532,41 @@ export function BeadsView({
     };
   }, [loadShortcuts, workingDir]);
 
+  const loadTaskLabelColors = useCallback(async (isStale) => {
+    const requestID = ++taskLabelColorsRequestRef.current;
+    try {
+      const data = await getSdkClient().taskLabelColors.getGlobal();
+      if (
+        requestID !== taskLabelColorsRequestRef.current ||
+        (isStale && isStale())
+      )
+        return;
+      setTaskLabelColors(data.entries || []);
+    } catch (_err) {
+      if (
+        requestID !== taskLabelColorsRequestRef.current ||
+        (isStale && isStale())
+      )
+        return;
+      setTaskLabelColors([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadTaskLabelColors(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadTaskLabelColors]);
+
+  useEffect(() => {
+    const handler = () => loadTaskLabelColors();
+    window.addEventListener("mitto:task_label_colors_updated", handler);
+    return () =>
+      window.removeEventListener("mitto:task_label_colors_updated", handler);
+  }, [loadTaskLabelColors]);
+
   // Auto-refresh the issue list when the backend fsnotify watcher reports
   // external changes to .beads (another agent/CLI, git pull, bd dolt pull).
   // Scope the refetch to this view's working_dir to avoid a global thundering
@@ -1257,41 +1589,29 @@ export function BeadsView({
       if (!workingDir || syncAction) return;
       setSyncAction(action);
       try {
-        const res = await secureFetch(
-          endpoints.issues.sync({ working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.sync(
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action}`,
-              message: data.stderr,
-            });
-        } else {
-          const verb =
-            action === "pull"
-              ? "Pulled"
-              : action === "push"
-                ? "Pushed"
-                : "Synced";
-          showToast &&
-            showToast({
-              style: "success",
-              title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}`,
-            });
-          fetchList();
-        }
+        const verb =
+          action === "pull"
+            ? "Pulled"
+            : action === "push"
+              ? "Pushed"
+              : "Synced";
+        showToast &&
+          showToast({
+            style: "success",
+            title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}`,
+          });
+        fetchList();
       } catch (err) {
+        const data = beadsErrorFrom(err, `Failed to ${action}`);
         showToast &&
           showToast({
             style: "error",
-            title: err.message || `Failed to ${action}`,
+            title: data.error,
+            message: data.stderr,
           });
       } finally {
         setSyncAction(null);
@@ -1303,9 +1623,21 @@ export function BeadsView({
   // The list rows already carry all rich fields (description, parent, dates,
   // assignee, owner), so the detail panel is populated directly from the row —
   // no extra /show request needed. Clicking the open row again toggles it shut.
+  // Opening from the list always resets the in-panel history stack to a single
+  // root entry; toggling closed clears it.
   const selectIssue = useCallback((issue) => {
     setIsCreating(false);
-    setSelectedIssue((prev) => (prev && prev.id === issue.id ? null : issue));
+    setSelectedIssue((prev) => {
+      const closing = prev && prev.id === issue.id;
+      if (closing) {
+        setPanelHistory([]);
+        setPanelPos(-1);
+        return null;
+      }
+      setPanelHistory([issue.id]);
+      setPanelPos(0);
+      return issue;
+    });
   }, []);
 
   // Open the side panel in "create" mode for a brand-new issue.
@@ -1313,6 +1645,8 @@ export function BeadsView({
     setCreateParent(null);
     setSelectedIssue(null);
     setIsCreating(true);
+    setPanelHistory([]);
+    setPanelPos(-1);
   }, []);
 
   // Open the create panel pre-seeded to create a child of the given epic.
@@ -1320,6 +1654,8 @@ export function BeadsView({
     setCreateParent(epicId);
     setSelectedIssue(null);
     setIsCreating(true);
+    setPanelHistory([]);
+    setPanelPos(-1);
   }, []);
 
   // Open the create panel when asked to from outside (e.g. the global "new
@@ -1361,7 +1697,48 @@ export function BeadsView({
     setSelectedIssue(null);
     setIsCreating(false);
     setCreateParent(null);
+    setPanelHistory([]);
+    setPanelPos(-1);
   }, []);
+
+  // In-panel navigation (dep/subtask/parent click): browser-style
+  // truncate-then-push, matching BeadsIssueView.handleSelectIssue. `depObj`
+  // carries at least {id} — prefer the row from the loaded list so the panel
+  // gets rich fields immediately; fall back to the stub (the panel body's
+  // useIssueDependencies effect will fetch full details from /api/issues/{id}
+  // when data.id changes).
+  const handlePanelSelectIssue = useCallback(
+    (depObj) => {
+      const id = depObj && depObj.id;
+      if (!id) return;
+      if (panelPos >= 0 && panelHistory[panelPos] === id) return;
+      setIsCreating(false);
+      const newHistory = [...panelHistory.slice(0, panelPos + 1), id];
+      setPanelHistory(newHistory);
+      setPanelPos(newHistory.length - 1);
+      const full = (issues || []).find((i) => i.id === id) || depObj;
+      setSelectedIssue(full);
+    },
+    [panelHistory, panelPos, issues],
+  );
+
+  const goBack = useCallback(() => {
+    if (panelPos <= 0) return;
+    const newPos = panelPos - 1;
+    const id = panelHistory[newPos];
+    setPanelPos(newPos);
+    const full = (issues || []).find((i) => i.id === id) || { id };
+    setSelectedIssue(full);
+  }, [panelHistory, panelPos, issues]);
+
+  const goForward = useCallback(() => {
+    if (panelPos < 0 || panelPos >= panelHistory.length - 1) return;
+    const newPos = panelPos + 1;
+    const id = panelHistory[newPos];
+    setPanelPos(newPos);
+    const full = (issues || []).find((i) => i.id === id) || { id };
+    setSelectedIssue(full);
+  }, [panelHistory, panelPos, issues]);
 
   // Open the per-issue context menu at the cursor and load the `menus: beadsIssues`
   // prompts for this workspace so the "Prompts" submenu reflects them.
@@ -1439,6 +1816,14 @@ export function BeadsView({
     }
     return counts;
   }, [issues]);
+
+  // Extend the streaming set with every ancestor of a streaming leaf, so an
+  // epic row tints blue when any of its transitive descendants is currently
+  // prompting — visible even when the group is collapsed (mitto-0qn).
+  const effectiveStreamingSet = useMemo(
+    () => computeEffectiveStreamingSet(issues, issueStreamingSet),
+    [issues, issueStreamingSet],
+  );
 
   // Grouped render model — only computed when the grouping toggle is on.
   // Produces a sorted top-level array of { type: "epic"|"orphan", ... } items.
@@ -1618,22 +2003,9 @@ export function BeadsView({
     setCleanupProgress(null);
     setShowCleanupConfirm(false);
     try {
-      const res = await secureFetch(
-        endpoints.issues.cleanup({ working_dir: workingDir }),
-        {
-          method: "POST",
-        },
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: data.error || "Failed to clean up issues",
-          });
-        setCleaningUp(false);
-        return;
-      }
+      const data = await getSdkClient().issues.cleanup({
+        working_dir: workingDir,
+      });
       if (!data.started) {
         if (data.already_running) {
           showToast &&
@@ -1662,11 +2034,15 @@ export function BeadsView({
           })
         : null;
     } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to clean up issues",
-        });
+      // mitto-n5mw: HTTP 409 beads_schema_skew must open the
+      // SchemaSkewDialog instead of a generic error toast.
+      const data = beadsErrorFrom(err, "Failed to clean up issues");
+      if (isBeadsSchemaSkew(data)) {
+        setSchemaSkew(toSchemaSkewState(data));
+        setShowMigrateDialog(true);
+      } else {
+        showToast && showToast({ style: "error", title: data.error });
+      }
       setCleaningUp(false);
     }
   }, [workingDir, showToast]);
@@ -1749,21 +2125,28 @@ export function BeadsView({
       let childDeletedCount = 0;
       let childDeleteFailed = 0;
 
+      // mitto-n5mw: schema-skew flag propagated out of the child loops so the
+      // parent branch below opens the SchemaSkewDialog instead of continuing
+      // with a partial-success toast on a schema-behind clone.
+      let schemaSkewData = null;
+
       if (childAction === "close") {
         for (const { issue: child } of deleteTargetOpenDescendants) {
           try {
-            const cres = await secureFetch(
-              endpoints.issues.status(child.id, { working_dir: workingDir }),
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ action: "close" }),
-              },
+            await getSdkClient().issues.status(
+              child.id,
+              { working_dir: workingDir },
+              { action: "close" },
             );
-            const cdata = await readBeadsResponse(cres);
-            if (!cres.ok || cdata.error) closeFailed++;
-            else closedCount++;
+            closedCount++;
           } catch (err) {
+            // mitto-n5mw: bail out of the loop on schema-skew so a long epic
+            // does not fire N identical 409s before surfacing the dialog.
+            const cdata = beadsErrorFrom(err);
+            if (isBeadsSchemaSkew(cdata)) {
+              schemaSkewData = cdata;
+              break;
+            }
             closeFailed++;
           }
         }
@@ -1774,60 +2157,67 @@ export function BeadsView({
         );
         for (const { issue: child } of ordered) {
           try {
-            const cres = await secureFetch(
-              endpoints.issues.remove(child.id, { working_dir: workingDir }),
-              {
-                method: "DELETE",
-              },
-            );
-            const cdata = await readBeadsResponse(cres);
-            if (!cres.ok || cdata.error) childDeleteFailed++;
-            else childDeletedCount++;
+            await getSdkClient().issues.remove(child.id, {
+              working_dir: workingDir,
+            });
+            childDeletedCount++;
           } catch (err) {
+            // mitto-n5mw: bail out of the loop on schema-skew (see above).
+            const cdata = beadsErrorFrom(err);
+            if (isBeadsSchemaSkew(cdata)) {
+              schemaSkewData = cdata;
+              break;
+            }
             childDeleteFailed++;
           }
         }
       }
 
-      const res = await secureFetch(
-        endpoints.issues.remove(id, { working_dir: workingDir }),
-        {
-          method: "DELETE",
-        },
-      );
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
+      // mitto-n5mw: any child loop that tripped schema-skew short-circuits the
+      // parent delete and opens the dialog directly.
+      if (schemaSkewData) {
+        setSchemaSkew(toSchemaSkewState(schemaSkewData));
+        setShowMigrateDialog(true);
+        return;
+      }
+
+      try {
+        await getSdkClient().issues.remove(id, { working_dir: workingDir });
+      } catch (err) {
+        // mitto-n5mw: schema-skew on the parent delete opens the dialog.
+        const data = beadsErrorFrom(err, "Failed to delete issue");
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
+        return;
+      }
+      let title = `Deleted ${id}`;
+      if (closedCount > 0) {
+        title += ` and closed ${closedCount} child issue${closedCount === 1 ? "" : "s"}`;
+      }
+      if (childDeletedCount > 0) {
+        title += ` and deleted ${childDeletedCount} child issue${childDeletedCount === 1 ? "" : "s"}`;
+      }
+      const failedTotal = closeFailed + childDeleteFailed;
+      if (failedTotal > 0) {
+        const verb = childAction === "delete" ? "delete" : "close";
         showToast &&
           showToast({
-            style: "error",
-            title: data.error || "Failed to delete issue",
+            style: "warning",
+            title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
           });
       } else {
-        let title = `Deleted ${id}`;
-        if (closedCount > 0) {
-          title += ` and closed ${closedCount} child issue${closedCount === 1 ? "" : "s"}`;
-        }
-        if (childDeletedCount > 0) {
-          title += ` and deleted ${childDeletedCount} child issue${childDeletedCount === 1 ? "" : "s"}`;
-        }
-        const failedTotal = closeFailed + childDeleteFailed;
-        if (failedTotal > 0) {
-          const verb = childAction === "delete" ? "delete" : "close";
-          showToast &&
-            showToast({
-              style: "warning",
-              title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
-            });
-        } else {
-          showToast && showToast({ style: "success", title });
-        }
-        fetchList();
+        showToast && showToast({ style: "success", title });
       }
+      fetchList();
     } catch (err) {
       showToast &&
         showToast({
           style: "error",
-          title: err.message || "Failed to delete issue",
+          title: errorMessage(err, "Failed to delete issue"),
         });
     } finally {
       setDeletingIssue(false);
@@ -1850,38 +2240,30 @@ export function BeadsView({
       const action = issue.status === "closed" ? "reopen" : "close";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(issue.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          issue.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "close"
-                  ? `Closed ${issue.id}`
-                  : `Reopened ${issue.id}`,
-            });
-          fetchList();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "close"
+                ? `Closed ${issue.id}`
+                : `Reopened ${issue.id}`,
           });
+        fetchList();
+      } catch (err) {
+        // mitto-n5mw: schema-skew opens the SchemaSkewDialog directly
+        // (main-view has setSchemaSkew / setShowMigrateDialog in scope).
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
@@ -1898,38 +2280,29 @@ export function BeadsView({
       const action = issue.status === "deferred" ? "undefer" : "defer";
       setStatusBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.status(issue.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action }),
-          },
+        await getSdkClient().issues.status(
+          issue.id,
+          { working_dir: workingDir },
+          { action },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || `Failed to ${action} issue`,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                action === "defer"
-                  ? `Deferred ${issue.id}`
-                  : `Undeferred ${issue.id}`,
-            });
-          fetchList();
-        }
-      } catch (err) {
         showToast &&
           showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} issue`,
+            style: "success",
+            title:
+              action === "defer"
+                ? `Deferred ${issue.id}`
+                : `Undeferred ${issue.id}`,
           });
+        fetchList();
+      } catch (err) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        const data = beadsErrorFrom(err, `Failed to ${action} issue`);
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
+        showToast && showToast({ style: "error", title: data.error });
       } finally {
         setStatusBusy(false);
       }
@@ -1948,42 +2321,33 @@ export function BeadsView({
       const id = direction === "blocks" ? other.id : issue.id;
       const dependsOn = direction === "blocks" ? issue.id : other.id;
       try {
-        const res = await secureFetch(
-          endpoints.issues.dependencies(id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              depends_on: dependsOn,
-              type: "blocks",
-              action: "add",
-            }),
-          },
+        await getSdkClient().issues.dependencies(
+          id,
+          { working_dir: workingDir },
+          { depends_on: dependsOn, type: "blocks", action: "add" },
         );
-        const data = await readBeadsResponse(res);
-        if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || "Failed to add dependency",
-              message: data.stderr,
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title:
-                direction === "blocks"
-                  ? `${issue.id} now blocks ${other.id}`
-                  : `${issue.id} now depends on ${other.id}`,
-            });
-          fetchList();
-        }
+        showToast &&
+          showToast({
+            style: "success",
+            title:
+              direction === "blocks"
+                ? `${issue.id} now blocks ${other.id}`
+                : `${issue.id} now depends on ${other.id}`,
+          });
+        fetchList();
       } catch (err) {
+        // mitto-n5mw: schema-skew branch (see handleToggleStatus above).
+        const data = beadsErrorFrom(err, "Failed to add dependency");
+        if (isBeadsSchemaSkew(data)) {
+          setSchemaSkew(toSchemaSkewState(data));
+          setShowMigrateDialog(true);
+          return;
+        }
         showToast &&
           showToast({
             style: "error",
-            title: err.message || "Failed to add dependency",
+            title: data.error,
+            message: data.stderr,
           });
       }
     },
@@ -2117,14 +2481,19 @@ export function BeadsView({
   // <details> disclosure marker is hidden via .beads-epic-summary).
   function renderIssueRow(issue, epicExpanded = null) {
     const linkedSessionId = issueSessionMap[issue.id];
-    const isStreamingIssue = issueStreamingSet.has(issue.id);
+    const isStreamingIssue = effectiveStreamingSet.has(issue.id);
     const isSelected = selectedIssue && selectedIssue.id === issue.id;
     const childCount = childCountById[issue.id] || 0;
     const isEpic = issue.issue_type === "epic" || childCount > 0;
     const showChevron = epicExpanded !== null;
+    const titleBackground = taskTitleBackground(issue, taskLabelColors);
     const bgTone = isSelected
-      ? "bg-mitto-surface-3/30"
-      : "bg-mitto-surface-3/20 hover:bg-red-600";
+      ? isStreamingIssue
+        ? "bg-mitto-surface-3/30 beads-row-streaming"
+        : "bg-mitto-surface-3/30"
+      : isStreamingIssue
+        ? "beads-row-streaming hover:bg-red-600"
+        : "bg-mitto-surface-3/20 hover:bg-red-600";
     // Each issue renders as a self-contained card with a delicate border,
     // matching the ACP Servers / Runners lists. The base border is applied
     // here as Tailwind utilities (not in CSS) so the two distinctive Mitto
@@ -2209,7 +2578,13 @@ export function BeadsView({
             : null}
         </div>
         <div class="text-sm text-mitto-text wrap-break-word">
-          ${issue.title}
+          <span
+            data-testid="beads-issue-title"
+            style=${titleBackground
+              ? { backgroundColor: titleBackground }
+              : undefined}
+            >${issue.title}</span
+          >
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0 self-center">
@@ -2809,13 +3184,14 @@ export function BeadsView({
                   <div class="text-mitto-text-secondary text-xs max-w-md">
                     ${schemaSkew.hint}
                   </div>
-                  <button
+                  ${schemaSkew.allowMigrate &&
+                  html`<button
                     onClick=${() => setShowMigrateDialog(true)}
                     class="btn btn-primary btn-sm mt-2"
                     data-testid="beads-run-migration-btn"
                   >
                     Run migration…
-                  </button>
+                  </button>`}
                 </div>
               `
             : html`
@@ -2902,8 +3278,12 @@ export function BeadsView({
       onToggleStatus=${handleToggleStatus}
       onToggleDefer=${handleToggleDefer}
       statusBusy=${statusBusy}
-      onSelectIssue=${selectIssue}
+      onSelectIssue=${handlePanelSelectIssue}
       createParentId=${createParent}
+      canGoBack=${canGoBack}
+      canGoForward=${canGoForward}
+      onGoBack=${goBack}
+      onGoForward=${goForward}
     />
     </div>
 
@@ -2935,6 +3315,8 @@ export function BeadsView({
       dbPath=${schemaSkew ? schemaSkew.dbPath : ""}
       hint=${schemaSkew ? schemaSkew.hint : ""}
       options=${schemaSkew ? schemaSkew.options : []}
+      allowMigrate=${schemaSkew ? schemaSkew.allowMigrate : true}
+      databaseMode=${schemaSkew ? schemaSkew.databaseMode : "shared"}
       workingDir=${workingDir}
       showToast=${showToast}
       onSuccess=${() => {

@@ -20,6 +20,7 @@ import (
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -165,7 +166,35 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return runPromptOnce(ctx, server, workDir, promptText, logger)
+	// Build a restricted runner from cfg globals + this server's config, mirroring
+	// SessionManager.createRunner. When no restricted_runners are configured at
+	// either level this returns (nil, nil) and NewConnection runs the ACP command
+	// directly, matching pre-runner behaviour.
+	r, err := buildPromptRunner(cfg, server, workDir, logger)
+	if err != nil {
+		return fmt.Errorf("failed to create restricted runner: %w", err)
+	}
+
+	return runPromptOnce(ctx, server, workDir, promptText, logger, r)
+}
+
+// buildPromptRunner constructs a restricted runner for the prompt command using
+// the same configuration hierarchy as SessionManager.createRunner: global
+// restricted_runners merged with the selected ACP server's restricted_runners.
+// Returns (nil, nil) when no configuration is present at either level.
+func buildPromptRunner(cfg *config.Config, server *config.ACPServer, workDir string, logger *slog.Logger) (*runner.Runner, error) {
+	var globalRunnersByType map[string]*config.WorkspaceRunnerConfig
+	if cfg != nil {
+		globalRunnersByType = cfg.RestrictedRunners
+	}
+	var agentRunnersByType map[string]*config.WorkspaceRunnerConfig
+	if server != nil {
+		agentRunnersByType = server.RestrictedRunners
+	}
+	if globalRunnersByType == nil && agentRunnersByType == nil {
+		return nil, nil
+	}
+	return runner.NewRunner(globalRunnersByType, agentRunnersByType, nil, workDir, logger)
 }
 
 // loadPromptConfig loads the configuration used by the prompt command into the
@@ -264,7 +293,7 @@ func indexColon(s string) int {
 
 // runPromptOnce performs the connect → initialize → session/new → prompt flow,
 // recording each boundary on a cold-start Trace and printing a timeline.
-func runPromptOnce(ctx context.Context, server *config.ACPServer, workDir, promptText string, logger *slog.Logger) error {
+func runPromptOnce(ctx context.Context, server *config.ACPServer, workDir, promptText string, logger *slog.Logger, r *runner.Runner) error {
 	trace := coldstart.New(logger, "cli-prompt", "")
 
 	// first-token detection: wrap the ACP output callback so we can record the
@@ -280,7 +309,7 @@ func runPromptOnce(ctx context.Context, server *config.ACPServer, workDir, promp
 	// "begin" starts the trace clock (Δ=0); subsequent phases measure the
 	// elapsed time OF the step they name.
 	trace.Phase("begin")
-	conn, err := acp.NewConnection(ctx, server.Command, server.Cwd, server.Env, true, output, logger, nil)
+	conn, err := acp.NewConnection(ctx, server.Command, server.Cwd, server.Env, true, output, logger, r)
 	if err != nil {
 		trace.Summary("spawn_failed")
 		return fmt.Errorf("failed to connect: %w", err)

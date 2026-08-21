@@ -17,6 +17,7 @@ import (
 type JSONLineFilterReader struct {
 	scanner      *bufio.Scanner
 	logger       *slog.Logger
+	filter       func([]byte) bool
 	pending      []byte // buffered data from a valid line
 	pendingIndex int    // current read position in pending
 }
@@ -25,6 +26,13 @@ type JSONLineFilterReader struct {
 // Lines that don't start with '{' are logged at DEBUG level and discarded.
 // If logger is nil, non-JSON lines are silently discarded.
 func NewJSONLineFilterReader(r io.Reader, logger *slog.Logger) *JSONLineFilterReader {
+	return NewJSONLineFilterReaderWithFilter(r, logger, nil)
+}
+
+// NewJSONLineFilterReaderWithFilter creates a filtering reader with an optional
+// predicate that can discard JSON-RPC lines before they reach the ACP SDK.
+// The predicate receives a trimmed line and returns true to discard it.
+func NewJSONLineFilterReaderWithFilter(r io.Reader, logger *slog.Logger, filter func([]byte) bool) *JSONLineFilterReader {
 	const (
 		initialBufSize = 1024 * 1024      // 1MB initial buffer (same as SDK)
 		maxBufSize     = 10 * 1024 * 1024 // 10MB max (same as SDK)
@@ -37,6 +45,7 @@ func NewJSONLineFilterReader(r io.Reader, logger *slog.Logger) *JSONLineFilterRe
 	return &JSONLineFilterReader{
 		scanner: scanner,
 		logger:  logger,
+		filter:  filter,
 	}
 }
 
@@ -66,6 +75,9 @@ func (f *JSONLineFilterReader) Read(p []byte) (n int, err error) {
 		// Check if line starts with '{' (potential JSON-RPC message)
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) > 0 && trimmed[0] == '{' {
+			if f.filter != nil && f.filter(trimmed) {
+				continue
+			}
 			// Valid JSON line - add newline and buffer it
 			f.pending = make([]byte, len(line)+1)
 			copy(f.pending, line)

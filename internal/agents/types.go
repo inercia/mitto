@@ -213,6 +213,8 @@ type MCPInstallInput struct {
 	Path string `json:"path,omitempty"`
 	// Env is an optional map of environment variables for the MCP server
 	Env map[string]string `json:"env,omitempty"`
+	// Headers is an optional map of HTTP headers for URL-based (http/sse) MCP servers.
+	Headers map[string]string `json:"headers,omitempty"`
 	// Scope is the MCP installation scope (e.g., "user", "project", "local")
 	Scope string `json:"scope,omitempty"`
 }

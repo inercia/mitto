@@ -16,8 +16,13 @@ import (
 // process with FATAL ERROR: Ineffective mark-compacts near heap limit,
 // tearing down every session sharing the process. Mitto owns the subprocess
 // env at launch so it must raise the cap by setting NODE_OPTIONS on the
-// agent's Defaults.Env (which is seeded into ACPServerSettings.Env at
-// discovery and flows through BuildACPProcessEnv to cmd.Env).
+// agent's Defaults.Env, which reaches the subprocess two ways: seeded into
+// ACPServerSettings.Env at discovery, and — since mitto-6dur — resolved live
+// by the AgentDefaultEnvResolver wired in internal/web/server.go into
+// procstart.BuildACPProcessEnv's agent-defaults layer, so installs whose
+// settings.json acp_servers[].env predates discovery-time seeding still get
+// the default at spawn time (an explicit acp_servers[].env entry still
+// overrides it).
 //
 // This test walks config/agents/builtin/* and asserts that every agent whose
 // Install.Method == "npx" declares a NODE_OPTIONS entry in Defaults.Env with

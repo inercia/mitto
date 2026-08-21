@@ -1,0 +1,53 @@
+{{/*
+  beads/bootstrap — the "`.beads/` is not initialised, `bd init` it" bootstrap
+  step. Kept as its own fragment so every prompt that creates beads shares one
+  authoritative bootstrap wording and flow.
+
+  A prompt that creates beads should NOT gate on
+  `enabledWhen: ... && DirExists(".beads")`: that hides the prompt in projects
+  where beads simply has not been initialised yet, which is precisely the case
+  this fragment exists to handle. Gate on `CommandExists("bd")` only, and call
+  this fragment at the top of the body. Prompts that operate on an *existing*
+  bead (`Item.*` / `Session.BeadsIssue` gates) may keep the `DirExists` gate —
+  there is nothing to bootstrap into.
+
+  The fragment renders NOTHING when `.beads/` already exists, so it costs no
+  tokens in the common case and needs no "skip this step" wording.
+
+  In a loop conversation it initialises unattended (no question — later
+  iterations run with nobody watching); interactively it asks first.
+
+  Usage — at the very top of the body, before any "gather data" steps:
+
+      {{ template "beads-issues/shared/bootstrap" . }}
+*/}}
+{{- if not (DirExists ".beads") }}
+## Step 0 — Bootstrap beads
+
+Beads (`bd`) is not initialised in this project yet — `.beads/` does not exist.
+{{- if .Session.IsLoopConversation }}
+Initialise it now, without asking (later iterations of this loop run unattended
+and cannot answer a question):
+
+```bash
+bd init --non-interactive
+```
+
+If `bd init` fails, report the failure and stop.
+{{- else }}
+Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "Beads is not
+initialised in this project yet. Initialise it now?" with options
+"Yes — initialise beads" and "No — cancel".
+
+- If the user declines, stop.
+- If the user agrees, initialise it non-interactively (it auto-detects a
+  sensible default issue prefix from the directory name):
+
+  ```bash
+  bd init --non-interactive
+  ```
+
+  If the user wants a specific issue ID prefix, pass it explicitly
+  (e.g. `bd init --non-interactive --prefix proj`). Then continue.
+{{- end }}
+{{- end }}

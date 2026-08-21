@@ -1,0 +1,54 @@
+icon: check
+name: Add tests
+menus: prompts, !promptsLoop
+description: Write comprehensive tests for new or modified code
+group: Testing
+backgroundColor: '#FFE0B2'
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{- if .Session.HasMessages }}
+  Write comprehensive tests for the code we created or modified in this
+  conversation. Read the modified code and the existing test files first so
+  the new tests match the project's testing conventions.
+  {{- else }}
+  This is the first message in this conversation, so there is no "code we
+  created or modified" already in context. Figure out what code needs tests
+  by inspecting the current repository state:
+
+  1. Run `git status` and `git diff` to see uncommitted changes — those are
+     the most likely test target.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to find recent code
+     worth testing.
+  3. If it is still unclear, ask the user which file or function they want
+     tested before continuing.
+
+  Read the target code and the existing test files first so the new tests
+  match the project's testing conventions.
+  {{- end }}
+
+  Test code that was actually changed. Verify real behavior, not implementation
+  details. Use general assertions, not hard-coded values.
+
+  ### Coverage:
+
+  1. Happy path
+  2. Edge cases (empty inputs, boundaries, max sizes)
+  3. Error cases (invalid inputs, missing data, permission errors)
+  4. Concurrency (race conditions, deadlocks — if applicable)
+  5. Integration with dependencies
+
+  ### Structure:
+
+  - Descriptive test names explaining the scenario
+  - Arrange-Act-Assert pattern
+  - One assertion per test when possible
+  - Parameterized tests for similar cases
+  - Mock external dependencies
+  - Follow project's existing conventions
+
+  ### After writing:
+
+  - Run tests, verify they pass
+  - Check coverage of new/modified code

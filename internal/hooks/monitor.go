@@ -320,11 +320,14 @@ func truncateString(s string, maxLen int) string {
 func (m *HealthMonitor) restartHooks(ctx context.Context) {
 	logger := logging.Hook()
 
-	// Step 1: Run the down hook
+	// Step 1: Run the down hook. Wire OnFailure so genuine down-hook errors
+	// (not signals, not timeouts) surface through the same broadcast pipeline
+	// as up-hook failures — closes the observability gap called out by AC#3
+	// (mitto-y6i).
 	logger.Info("Running down hook for restart",
 		"command", m.cfg.DownHook.Command,
 	)
-	RunDown(m.cfg.DownHook, m.cfg.Port)
+	RunDownWithOptions(m.cfg.DownHook, m.cfg.Port, m.cfg.OnFailure)
 
 	// Step 2: Wait before restarting
 	select {

@@ -13,7 +13,10 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/mcpserver"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -91,6 +94,63 @@ func TestResumeBackgroundSession_InvalidACPCommand(t *testing.T) {
 
 	if err == nil {
 		t.Error("ResumeBackgroundSession should fail with invalid ACP command")
+	}
+}
+
+// TestResumeBackgroundSession_WiresOnTurnIdle is the mitto-aqtf reproduction:
+// ResumeBackgroundSession's BackgroundSession struct literal omits the
+// onTurnIdle field that NewBackgroundSession sets at
+// background_session.go:674 ("onTurnIdle: cfg.OnTurnIdle"). Every other
+// callback (onSelfDestruct, onTitleGenerated, onStreamingStateChanged, etc.)
+// is copied in ResumeBackgroundSession's literal; onTurnIdle is the one
+// missing.
+//
+// Effect in production: pdOnTurnIdle() (bgsession_prompt.go:1288) is guarded
+// by "if bs.onTurnIdle != nil", so on every RESUMED session the end-of-turn
+// arm chain (finalizeTurn -> pdOnTurnIdle -> LoopRunner.OnConversationIdle ->
+// armCompletionTimer) silently no-ops, leaving the 1-minute poll fallback
+// (recoverStalledOnCompletion) as the only path that ever arms an
+// onCompletion loop timer — see mitto-aqtf: 48/48 arms in production logs
+// were "missed end-of-turn re-arm".
+//
+// This test resumes a session via a fake SharedProcess (so the handshake
+// succeeds without a real ACP subprocess) with a non-nil
+// BackgroundSessionConfig.OnTurnIdle, and asserts the resulting
+// BackgroundSession actually wires and invokes it. It FAILS on the current
+// code (bs.onTurnIdle is nil after resume) and will PASS once
+// ResumeBackgroundSession's struct literal copies OnTurnIdle, matching
+// NewBackgroundSession.
+func TestResumeBackgroundSession_WiresOnTurnIdle(t *testing.T) {
+	fp := newFakeSharedProcess()
+
+	var called atomic.Bool
+	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+		PersistedID:   "test-onturnidle-resume",
+		ACPServer:     "test-server",
+		WorkingDir:    "/tmp",
+		SharedProcess: fp,
+		OnTurnIdle: func(sessionID string) {
+			if sessionID != "test-onturnidle-resume" {
+				t.Errorf("onTurnIdle called with unexpected sessionID %q", sessionID)
+			}
+			called.Store(true)
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResumeBackgroundSession failed: %v", err)
+	}
+
+	if bs.onTurnIdle == nil {
+		t.Fatal("mitto-aqtf: ResumeBackgroundSession did not wire onTurnIdle from " +
+			"BackgroundSessionConfig.OnTurnIdle — resumed sessions can never arm the " +
+			"on-completion loop timer synchronously from finalizeTurn, only via the " +
+			"1-minute poll fallback")
+	}
+
+	// Simulate what pdOnTurnIdle does at the end of a clean end_turn turn.
+	bs.onTurnIdle(bs.persistedID)
+	if !called.Load() {
+		t.Fatal("onTurnIdle callback was wired but did not fire when invoked")
 	}
 }
 
@@ -360,6 +420,285 @@ func TestFlushContext_NotConfigured(t *testing.T) {
 	}
 }
 
+// TestFlushContext_BugRepro_SendsExactCommand_NotProcessorPolluted reproduces
+// mitto-ip1: FlushContext() must send the configured agent-native flush command
+// (e.g. "/clear") to the transport as the leading/only characters of a single
+// text block, exactly as flushContextInPlace does — and must NOT persist a fake
+// user turn or broadcast one to observers.
+//
+// Root cause under test (see the mitto-ip1 Investigation comment): FlushContext
+// currently calls PromptWithMeta instead of flushContextInPlace, so the command
+// travels through the full processor pipeline (prepend/append injected) and the
+// normal user-prompt persistence/broadcast path.
+//
+// The reproduction deliberately configures a Match:"all" (not "first") prepend
+// processor and leaves isFirstPrompt at its zero value (false) so the failure is
+// pinned on the unconditional processor-injection side effect described in the
+// investigation, independent of the separately-conditional <user_request>
+// wrapper (which only fires on the first message or a processor rerun).
+func TestFlushContext_BugRepro_SendsExactCommand_NotProcessorPolluted(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	procMgr := processors.NewManager("", nil)
+	procMgr.AddTextProcessors([]config.MessageProcessor{
+		{
+			When:   config.ProcessorWhenBlock{On: config.ProcessorPhaseUserPrompt, Match: config.ProcessorMatchAll},
+			Mutate: config.ProcessorMutatePrepend,
+			Text:   "[Session Context]\n---\n",
+		},
+	}, 0)
+
+	shared := newFakeSharedProcess()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		ctx:                 ctx,
+		cancel:              cancel,
+		observers:           make(map[SessionObserver]struct{}),
+		store:               store,
+		recorder:            recorder,
+		persistedID:         sessionID,
+		nextSeq:             2, // recorder.Start() already persisted session_start at seq=1
+		sharedProcess:       shared,
+		acpID:               "acp-sess-1",
+		contextFlushCommand: "/clear",
+		processorManager:    procMgr,
+		pendingConfig:       make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	obs := &mockSessionObserver{}
+	bs.AddObserver(obs)
+
+	if err := bs.FlushContext(); err != nil {
+		t.Fatalf("FlushContext() error = %v", err)
+	}
+
+	// FlushContext dispatches asynchronously (same contract as PromptWithMeta);
+	// wait for the fake transport to observe the Prompt() call.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		shared.mu.Lock()
+		n := len(shared.promptCalls)
+		shared.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for sharedProcess.Prompt to be called")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	shared.mu.Lock()
+	blocks := shared.promptCalls[0].blocks
+	shared.mu.Unlock()
+
+	// THE BUG: an agent-native flush command must be sent as-is (prefix
+	// recognition on a plain text block) — any prepended/appended text breaks
+	// it. flushContextInPlace sends exactly acp.TextBlock(cmd); FlushContext
+	// today does not.
+	var gotText string
+	if len(blocks) == 1 && blocks[0].Text != nil {
+		gotText = blocks[0].Text.Text
+	}
+	if len(blocks) != 1 || gotText != "/clear" {
+		t.Errorf("FlushContext must send exactly one text block equal to %q, got %d block(s) with text %q",
+			"/clear", len(blocks), gotText)
+	}
+
+	// THE BUG: FlushContext must not persist a fake "/clear" user turn in the
+	// transcript.
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == session.EventTypeUserPrompt {
+			t.Errorf("FlushContext must not persist a user_prompt event, got: %+v", e)
+		}
+	}
+
+	// THE BUG: FlushContext must not broadcast the flush command to observers
+	// as if it were a real user prompt.
+	if msgs := obs.getUserPromptMessages(); len(msgs) != 0 {
+		t.Errorf("FlushContext must not broadcast OnUserPrompt, got: %v", msgs)
+	}
+}
+
+// TestWireProcessorPendingDispatch_DeliversPreviouslySpooledBatch verifies
+// the mitto-q95p fix: wireProcessorPendingDispatch (called from both
+// NewBackgroundSession and ResumeBackgroundSession) wires the mitto-3421
+// pending-dispatch spool onto a LIVE session's processor manager — not just
+// the close-phase manager SessionManager.ApplyOnCloseProcessors builds
+// locally — and opportunistically flushes any batch a prior saturated
+// dispatch already spooled for this workspace (mitto-yfv8). Before the fix,
+// a live session's processorManager never had SetPendingDispatchStore or
+// FlushPendingDispatches wired at all, so a previously-spooled batch would
+// sit undelivered until the workspace happened to close.
+//
+// This seeds a batch via the same FilePendingDispatchStore production uses
+// (BaseDir resolved from $MITTO_DIR, redirected to a temp dir for the test),
+// then confirms that calling wireProcessorPendingDispatch on a minimal live
+// BackgroundSession flushes and delivers it through the wired PromptFunc.
+func TestWireProcessorPendingDispatch_DeliversPreviouslySpooledBatch(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	const workspaceUUID = "ws-uuid-live-flush"
+
+	// Seed a batch as if an earlier saturated dispatch (e.g. before this
+	// session existed) had already spooled it.
+	seedStore := &processors.FilePendingDispatchStore{}
+	if _, err := seedStore.Append(processors.PendingDispatchEntry{
+		WorkspaceUUID:  workspaceUUID,
+		Name:           "identify-user-data",
+		Prompt:         "Persist for session sess-live-flush.",
+		TimeoutSeconds: 30,
+		SavedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to seed pending-dispatch spool: %v", err)
+	}
+
+	var mu sync.Mutex
+	var delivered []string
+	procMgr := processors.NewManager("", nil)
+	procMgr.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		delivered = append(delivered, name)
+		mu.Unlock()
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:              ctx,
+		cancel:           cancel,
+		observers:        make(map[SessionObserver]struct{}),
+		processorManager: procMgr,
+		workspaceUUID:    workspaceUUID,
+		pendingConfig:    make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// This is the fix under test: production calls this once from both
+	// NewBackgroundSession and ResumeBackgroundSession.
+	bs.wireProcessorPendingDispatch()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(delivered)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for wireProcessorPendingDispatch's flush to deliver the previously-spooled " +
+				"batch — the live session's processor manager never had SetPendingDispatchStore wired / " +
+				"FlushPendingDispatches invoked (mitto-q95p)")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(delivered) != 1 || delivered[0] != "identify-user-data" {
+		t.Fatalf("delivered = %v, want [identify-user-data]", delivered)
+	}
+}
+
+// TestBackgroundSession_ContextFlushCommand pins down the resolution order
+// used by ContextFlushCommand (mitto-1o8): a statically configured command is
+// always authoritative, and runtime detection of the agent's advertised slash
+// commands is used only as a fallback when nothing is statically configured.
+func TestBackgroundSession_ContextFlushCommand(t *testing.T) {
+	t.Run("static value wins even when advertised commands differ", func(t *testing.T) {
+		bs := &BackgroundSession{contextFlushCommand: "/clear"}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "compact"},
+			{Name: "context"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected static '/clear' to win, got %q", got)
+		}
+	})
+
+	t.Run("no static value, no advertised commands returns empty", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		if got := bs.ContextFlushCommand(); got != "" {
+			t.Errorf("expected empty command, got %q", got)
+		}
+	})
+
+	t.Run("no static value falls back to advertised clear", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "compact"},
+			{Name: "clear"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected fallback '/clear', got %q", got)
+		}
+	})
+
+	t.Run("no static value and no clear falls back to compact", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "context"},
+			{Name: "compact"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/compact" {
+			t.Errorf("expected fallback '/compact', got %q", got)
+		}
+	})
+
+	t.Run("no static value and no allowlist match returns empty", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "context"},
+			{Name: "help"},
+		})
+		if got := bs.ContextFlushCommand(); got != "" {
+			t.Errorf("expected empty command when no allowlist entry matches, got %q", got)
+		}
+	})
+
+	t.Run("clear preferred over compact when both advertised", func(t *testing.T) {
+		bs := &BackgroundSession{}
+		bs.cbSetAvailableCommands([]AvailableCommand{
+			{Name: "compact"},
+			{Name: "clear"},
+		})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected 'clear' to be preferred over 'compact', got %q", got)
+		}
+	})
+
+	t.Run("whitespace-only static value falls through to detection", func(t *testing.T) {
+		bs := &BackgroundSession{contextFlushCommand: "   "}
+		bs.cbSetAvailableCommands([]AvailableCommand{{Name: "clear"}})
+		if got := bs.ContextFlushCommand(); got != "/clear" {
+			t.Errorf("expected fallback '/clear' when static value is blank, got %q", got)
+		}
+	})
+}
+
 // TestBackgroundSessionConfig_PopulatesConstraintsFromMittoConfig verifies the
 // end-to-end wiring through the constructor field: given a MittoConfig with a
 // matching ACPServer entry, the constraint-lookup logic invoked by both
@@ -447,6 +786,118 @@ func TestBackgroundSession_IsClosed(t *testing.T) {
 	if !bs.IsClosed() {
 		t.Error("BackgroundSession should be closed after setting closed flag")
 	}
+}
+
+func TestStartupConstraintFailureClearsForNewSharedProcessGeneration(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	shared := newFakeSharedProcess()
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+	bs := &BackgroundSession{
+		ctx:           context.Background(),
+		acpID:         "acp-session",
+		sharedProcess: shared,
+		agentModels: &SessionModelState{
+			CurrentModelId: "m-1",
+			AvailableModels: []ModelInfo{
+				{ModelId: "m-1", Name: "Model 1"},
+				{ModelId: "m-2", Name: "Model 2"},
+			},
+		},
+		configOptions: []SessionConfigOption{{
+			ID:           ConfigOptionCategoryModel,
+			Category:     ConfigOptionCategoryModel,
+			CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{
+				{Value: "m-1", Name: "Model 1"},
+				{Value: "m-2", Name: "Model 2"},
+			},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+	}
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+
+	shared.mu.Lock()
+	shared.generation++
+	shared.mu.Unlock()
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if !bs.startupConfigConstraintsReady() {
+		t.Fatal("successful startup constraint on a new process generation must release the queue")
+	}
+}
+
+func TestStartupConstraintFailureRecoversAfterSharedProcessReplacement(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	shared := newFakeSharedProcess()
+	shared.caps.LoadSession = true
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		acpID:         "acp-session-old",
+		sharedProcess: shared,
+		workingDir:    "/tmp/test",
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+		configOptions: []SessionConfigOption{{
+			ID: ConfigOptionCategoryModel, Category: ConfigOptionCategoryModel, CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{{Value: "m-1", Name: "Model 1"}, {Value: "m-2", Name: "Model 2"}},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+		observers: make(map[SessionObserver]struct{}),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+
+	shared.mu.Lock()
+	oldDone := shared.processDone
+	shared.generation++
+	shared.processDone = make(chan struct{})
+	shared.loadSessionHandle = &SessionHandle{
+		SessionID: "acp-session-new",
+		Models: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+	}
+	shared.mu.Unlock()
+	close(oldDone)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		shared.mu.Lock()
+		loadCalls := len(shared.loadSessionCalls)
+		shared.mu.Unlock()
+		if loadCalls > 0 && bs.startupConfigConstraintsReady() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("model-gated session did not rebind and retry after shared-process replacement")
 }
 
 // TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
@@ -559,6 +1010,7 @@ type mockSessionObserver struct {
 	queueMessagesSent    []string
 	availableCommands    []AvailableCommand
 	acpStoppedReasons    []string
+	userPromptMessages   []string // messages seen via OnUserPrompt (mitto-ip1)
 }
 
 type queueUpdate struct {
@@ -567,7 +1019,7 @@ type queueUpdate struct {
 	messageID   string
 }
 
-func (m *mockSessionObserver) OnAgentMessage(seq int64, html string) {
+func (m *mockSessionObserver) OnAgentMessage(seq int64, html, markdown string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.agentMessages = append(m.agentMessages, html)
@@ -603,8 +1055,10 @@ func (m *mockSessionObserver) OnPromptComplete(eventCount int) {
 	m.completed = true
 }
 
-func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
-	// No-op for tests
+func (m *mockSessionObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.userPromptMessages = append(m.userPromptMessages, message)
 }
 
 func (m *mockSessionObserver) OnError(message string) {
@@ -695,6 +1149,14 @@ func (m *mockSessionObserver) getQueueMessagesSending() []string {
 	defer m.mu.Unlock()
 	result := make([]string, len(m.queueMessagesSending))
 	copy(result, m.queueMessagesSending)
+	return result
+}
+
+func (m *mockSessionObserver) getUserPromptMessages() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]string, len(m.userPromptMessages))
+	copy(result, m.userPromptMessages)
 	return result
 }
 
@@ -910,6 +1372,100 @@ func TestBackgroundSession_GetEventCount(t *testing.T) {
 	count := bs.GetEventCount()
 	if count != 0 {
 		t.Errorf("GetEventCount = %d, want 0", count)
+	}
+}
+
+// --- mitto-s9g2: acpContextTurns tri-state counter helpers ---
+
+// TestBackgroundSession_MarkACPContextFresh_SetsEmpty verifies that a session
+// explicitly marked fresh (e.g. right after a genuine session/new or a
+// successful in-place flush) reports acpContextIsEmpty()==true.
+func TestBackgroundSession_MarkACPContextFresh_SetsEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.acpContextTurns.Store(contextTurnsUnknown) // simulate constructor init
+
+	bs.markACPContextFresh()
+
+	if !bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = false, want true after markACPContextFresh")
+	}
+	if got := bs.acpContextTurns.Load(); got != 0 {
+		t.Errorf("acpContextTurns = %d, want 0 after markACPContextFresh", got)
+	}
+}
+
+// TestBackgroundSession_MarkACPContextUnknown_SetsNotEmpty verifies that a
+// session explicitly marked unknown (resume/load) fails safe to "not empty",
+// even if it had previously been marked fresh.
+func TestBackgroundSession_MarkACPContextUnknown_SetsNotEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.markACPContextFresh() // start fresh, then...
+	bs.markACPContextUnknown()
+
+	if bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = true, want false after markACPContextUnknown")
+	}
+	if got := bs.acpContextTurns.Load(); got != contextTurnsUnknown {
+		t.Errorf("acpContextTurns = %d, want %d (unknown sentinel)", got, contextTurnsUnknown)
+	}
+}
+
+// TestBackgroundSession_NoteACPTurnDispatched_IncrementsFromFresh verifies
+// that dispatching a turn on a freshly-classified (0) session increments the
+// counter and the session is no longer reported as empty.
+func TestBackgroundSession_NoteACPTurnDispatched_IncrementsFromFresh(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.markACPContextFresh()
+
+	bs.noteACPTurnDispatched()
+
+	if bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = true, want false after one turn dispatched")
+	}
+	if got := bs.acpContextTurns.Load(); got != 1 {
+		t.Errorf("acpContextTurns = %d, want 1 after one dispatched turn", got)
+	}
+
+	bs.noteACPTurnDispatched()
+	if got := bs.acpContextTurns.Load(); got != 2 {
+		t.Errorf("acpContextTurns = %d, want 2 after a second dispatched turn", got)
+	}
+}
+
+// TestBackgroundSession_NoteACPTurnDispatched_DoesNotPromoteUnknownSentinel
+// pins the tri-state contract: noteACPTurnDispatched must never turn the
+// unknown sentinel (-1) into a count. Only markACPContextFresh/Unknown may
+// reclassify the session.
+func TestBackgroundSession_NoteACPTurnDispatched_DoesNotPromoteUnknownSentinel(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.markACPContextUnknown()
+
+	bs.noteACPTurnDispatched()
+
+	if got := bs.acpContextTurns.Load(); got != contextTurnsUnknown {
+		t.Errorf("acpContextTurns = %d, want unchanged %d (sentinel must not be promoted)", got, contextTurnsUnknown)
+	}
+	if bs.acpContextIsEmpty() {
+		t.Error("acpContextIsEmpty() = true, want false (still unknown)")
+	}
+}
+
+// TestBackgroundSession_ACPContextIsEmpty_ZeroValueStructIsNotEmpty documents
+// that a raw zero-value BackgroundSession (as used in many unit tests here)
+// happens to read as "empty" (Go zero value 0 == the fresh state) UNLESS the
+// constructor's fail-safe Store(contextTurnsUnknown) has run. Both real
+// constructors (NewBackgroundSession/ResumeBackgroundSession) explicitly set
+// the unknown sentinel before any handshake can run, so this is not reachable
+// in production — this test exists purely to document why unit tests that
+// construct BackgroundSession directly must call markACPContext*/Store
+// explicitly rather than relying on the zero value.
+func TestBackgroundSession_ACPContextIsEmpty_ZeroValueStructIsNotEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	// The bare zero value (atomic.Int64 defaults to 0) reads as "empty" — this
+	// is exactly why both constructors immediately Store(contextTurnsUnknown).
+	if !bs.acpContextIsEmpty() {
+		t.Error("expected zero-value acpContextTurns to read as empty (0), confirming constructors must override it")
 	}
 }
 
@@ -2104,7 +2660,7 @@ type trackingObserver struct {
 	onUIPromptDismiss func(requestID string, reason string)
 }
 
-func (o *trackingObserver) OnAgentMessage(seq int64, html string)             {}
+func (o *trackingObserver) OnAgentMessage(seq int64, html, markdown string)   {}
 func (o *trackingObserver) OnAgentThought(seq int64, text string)             {}
 func (o *trackingObserver) OnToolCall(seq int64, id, title, status string)    {}
 func (o *trackingObserver) OnToolUpdate(seq int64, id string, status *string) {}
@@ -2112,7 +2668,7 @@ func (o *trackingObserver) OnPlan(seq int64, entries []PlanEntry)             {}
 func (o *trackingObserver) OnFileWrite(seq int64, path string, size int)      {}
 func (o *trackingObserver) OnFileRead(seq int64, path string, size int)       {}
 func (o *trackingObserver) OnPromptComplete(eventCount int)                   {}
-func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
+func (o *trackingObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance) {
 }
 func (o *trackingObserver) OnError(message string)                                   {}
 func (o *trackingObserver) OnQueueUpdated(queueLength int, action, messageID string) {}
@@ -2760,7 +3316,7 @@ func TestRefreshNextSeq_AfterUserPrompt(t *testing.T) {
 	// Record events that simulate coalescing (multiple chunks with same seq)
 	// We'll record events with explicit seq numbers to simulate the scenario
 	for i := 0; i < 5; i++ {
-		if err := recorder.RecordAgentMessage("<p>chunk</p>"); err != nil {
+		if err := recorder.RecordAgentMessage("<p>chunk</p>", ""); err != nil {
 			t.Fatalf("RecordAgentMessage failed: %v", err)
 		}
 	}
@@ -2896,7 +3452,7 @@ func TestSeqUniqueness_ConcurrentStreamingAndUserPrompt(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		userSeq := bs.getNextSeq()
-		_ = recorder.RecordUserPromptCompleteWithSeq(userSeq, "hello", nil, nil, "", "", 0)
+		_ = recorder.RecordUserPromptCompleteWithSeq(userSeq, "hello", nil, nil, "", "", 0, nil)
 	}()
 
 	wg.Wait()
@@ -2913,6 +3469,260 @@ func TestSeqUniqueness_ConcurrentStreamingAndUserPrompt(t *testing.T) {
 			t.Errorf("duplicate seq %d at index %d (first seen at index %d)", e.Seq, i, prev)
 		}
 		seen[e.Seq] = i
+	}
+}
+
+// TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq verifies the mitto-c36
+// invariant end-to-end via events.jsonl: when PromptWithMeta reserves a pill seq
+// BEFORE the user-prompt seq (as it does when meta.FreshContext=true), and the
+// downstream createFreshContextSession records the "context_cleared" pill with
+// that reserved seq, the persisted transcript orders as
+//
+//	session_change(context_cleared, flush).seq < user_prompt.seq < agent_message.seq
+//
+// This matches the acceptance test in the bead's Test hooks section and pins the
+// fix so it survives future refactors of PromptWithMeta and createFreshContextSession.
+//
+// The test replays the exact seq allocation + persistence sequence used inside
+// PromptWithMeta (reserve pillSeq → reserve userPromptSeq → record via the same
+// helpers the production code goes through: cmRecordSessionChangeWithSeq +
+// RecordUserPromptCompleteWithSeq + RecordEventWithSeq) so it exercises the real
+// BackgroundSession seq counter, the real recorder, and the real events.jsonl
+// serialization — without needing an ACP mock or a full loop-runner harness.
+func TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Start bs.nextSeq at 2: the recorder's Start() already appended
+	// session_start with seq=1, and ReadEvents dedupes on seq — so bs's own
+	// allocations must skip past that.
+	bs := &BackgroundSession{
+		nextSeq:     2,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	// Mirror PromptWithMeta's FreshContext branch: reserve pillSeq FIRST, then
+	// userPromptSeq. This is the sole ordering invariant the mitto-c36 fix must
+	// preserve.
+	pillSeq := bs.getNextSeq()
+	userPromptSeq := bs.getNextSeq()
+
+	// Persist the user prompt (matches PromptWithMeta L477-L484).
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0, nil); err != nil {
+		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
+	}
+
+	// Persist the "context_cleared" pill via the seq-aware shim that
+	// createFreshContextSession → pdRecordSessionChangeWithSeq calls in the
+	// production path. This is the mitto-c36 code path under test.
+	bs.cmRecordSessionChangeWithSeq(pillSeq, "context_cleared", "flush", "")
+
+	// Simulate an agent-message chunk after the flush to complete the timeline.
+	agentSeq := bs.getNextSeq()
+	if err := recorder.RecordEventWithSeq(session.Event{
+		Seq:  agentSeq,
+		Type: session.EventTypeAgentMessage,
+		Data: session.AgentMessageData{Text: "hi"},
+	}); err != nil {
+		t.Fatalf("RecordEventWithSeq(agent_message) failed: %v", err)
+	}
+
+	// Read back events.jsonl (sorted by seq on read) and locate the three events.
+	// Note: ReadEvents unmarshals Data as map[string]any (generic JSON), so
+	// SessionChangeData discrimination is done by inspecting the map keys.
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	var (
+		gotPillSeq              int64 = -1
+		gotUserSeq              int64 = -1
+		gotAgentSeq             int64 = -1
+		pillOK, userOK, agentOK bool
+	)
+	for _, e := range events {
+		switch e.Type {
+		case session.EventTypeSessionChange:
+			m, ok := e.Data.(map[string]any)
+			if !ok {
+				continue
+			}
+			if m["kind"] == "context_cleared" && m["value"] == "flush" {
+				gotPillSeq = e.Seq
+				pillOK = true
+			}
+		case session.EventTypeUserPrompt:
+			gotUserSeq = e.Seq
+			userOK = true
+		case session.EventTypeAgentMessage:
+			gotAgentSeq = e.Seq
+			agentOK = true
+		}
+	}
+	if !pillOK {
+		t.Fatalf("did not find session_change(context_cleared, flush) in events.jsonl: %+v", events)
+	}
+	if !userOK {
+		t.Fatalf("did not find user_prompt in events.jsonl: %+v", events)
+	}
+	if !agentOK {
+		t.Fatalf("did not find agent_message in events.jsonl: %+v", events)
+	}
+
+	// mitto-c36 acceptance criterion:
+	// session_change(context_cleared, flush).seq < user_prompt.seq < agent_message.seq
+	if gotPillSeq >= gotUserSeq {
+		t.Errorf("mitto-c36 ordering violated: pill seq=%d must be < user_prompt seq=%d",
+			gotPillSeq, gotUserSeq)
+	}
+	if gotUserSeq >= gotAgentSeq {
+		t.Errorf("ordering violated: user_prompt seq=%d must be < agent_message seq=%d",
+			gotUserSeq, gotAgentSeq)
+	}
+
+	// Also pin that the reserved seq is exactly what upstream reserved (no drift
+	// through the seq-aware shim).
+	if gotPillSeq != pillSeq {
+		t.Errorf("pill persisted with wrong seq: reserved=%d persisted=%d", pillSeq, gotPillSeq)
+	}
+	if gotUserSeq != userPromptSeq {
+		t.Errorf("user prompt persisted with wrong seq: reserved=%d persisted=%d", userPromptSeq, gotUserSeq)
+	}
+}
+
+// TestFreshContextPillOrdering_NewSessionKind mirrors the flush-branch test above,
+// but for the new-session fallback branch (createFreshContextSession's
+// pdACPConnNewSession success path). Same invariant: the "context_cleared" pill
+// with Value="new_session" must persist BEFORE the user prompt.
+func TestFreshContextPillOrdering_NewSessionKind(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	bs := &BackgroundSession{
+		nextSeq:     2,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	pillSeq := bs.getNextSeq()
+	userPromptSeq := bs.getNextSeq()
+
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0, nil); err != nil {
+		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
+	}
+	bs.cmRecordSessionChangeWithSeq(pillSeq, "context_cleared", "new_session", "")
+
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+
+	var gotPillSeq, gotUserSeq int64 = -1, -1
+	for _, e := range events {
+		switch e.Type {
+		case session.EventTypeSessionChange:
+			if m, ok := e.Data.(map[string]any); ok &&
+				m["kind"] == "context_cleared" && m["value"] == "new_session" {
+				gotPillSeq = e.Seq
+			}
+		case session.EventTypeUserPrompt:
+			gotUserSeq = e.Seq
+		}
+	}
+	if gotPillSeq < 0 || gotUserSeq < 0 {
+		t.Fatalf("missing events: pill=%d user=%d events=%+v", gotPillSeq, gotUserSeq, events)
+	}
+	if gotPillSeq >= gotUserSeq {
+		t.Errorf("mitto-c36 ordering violated (new_session): pill seq=%d must be < user_prompt seq=%d",
+			gotPillSeq, gotUserSeq)
+	}
+}
+
+// TestFreshContextPillOrdering_FlushFailureLeavesSeqGap pins the mitto-c36
+// caveat decision (option (a) — "live with the gap"): when the reserved pill
+// seq is never consumed (e.g. the in-place flush RPC failed and
+// createFreshContextSession did NOT call pdRecordSessionChangeWithSeq), the
+// resulting events.jsonl simply has a seq gap — no placeholder event, and the
+// user prompt is still ordered strictly after where the pill would have been.
+// Persistence tolerates gaps, so ReadEvents must not fail.
+func TestFreshContextPillOrdering_FlushFailureLeavesSeqGap(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	bs := &BackgroundSession{
+		nextSeq:     2,
+		recorder:    recorder,
+		persistedID: sessionID,
+	}
+
+	// Reserve the pill seq but never consume it (simulates flush RPC failure).
+	pillSeq := bs.getNextSeq()
+	userPromptSeq := bs.getNextSeq()
+
+	if err := recorder.RecordUserPromptCompleteWithSeq(userPromptSeq, "hello", nil, nil, "", "", 0, nil); err != nil {
+		t.Fatalf("RecordUserPromptCompleteWithSeq failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed (persistence should tolerate seq gaps): %v", err)
+	}
+
+	// No session_change event should exist.
+	for _, e := range events {
+		if e.Type == session.EventTypeSessionChange {
+			t.Errorf("expected no session_change event on flush failure, got %+v", e)
+		}
+	}
+	// The user_prompt event must still have the seq the caller reserved.
+	var foundUser bool
+	for _, e := range events {
+		if e.Type == session.EventTypeUserPrompt {
+			if e.Seq != userPromptSeq {
+				t.Errorf("user_prompt seq drifted: reserved=%d persisted=%d", userPromptSeq, e.Seq)
+			}
+			foundUser = true
+		}
+	}
+	if !foundUser {
+		t.Fatal("user_prompt event missing")
+	}
+	// The reserved pillSeq is one lower than userPromptSeq → this is the tolerated gap.
+	if pillSeq+1 != userPromptSeq {
+		t.Errorf("expected pillSeq+1 == userPromptSeq (gap layout): pillSeq=%d userPromptSeq=%d",
+			pillSeq, userPromptSeq)
 	}
 }
 
@@ -2961,6 +3771,20 @@ func TestFormatACPError(t *testing.T) {
 			name:     "too many requests",
 			errMsg:   "too many requests",
 			contains: "Rate limit reached",
+		},
+		// --- Authentication required (mitto-r5o) ---
+		{
+			// Claude Code surfaces expired Anthropic OAuth token as JSON-RPC -32000
+			// with message "Authentication required". FormatACPError must produce an
+			// actionable hint pointing to `claude auth login` / `auggie auth login`.
+			name:     "Claude Code -32000 auth required",
+			errMsg:   `{"code":-32000,"message":"Authentication required"}`,
+			contains: "authentication has expired",
+		},
+		{
+			name:     "authentication required lowercase phrase",
+			errMsg:   "authentication required",
+			contains: "authentication has expired",
 		},
 		{
 			name:     "generic internal error with details",
@@ -3124,16 +3948,55 @@ func TestIsContextTooLargeError(t *testing.T) {
 	}{
 		{name: "nil", errMsg: "", wantTrue: false},
 		{name: "HTTP 413 status in JSON-RPC data", errMsg: `{"code":-32603,"message":"Internal error","data":{"status":413}}`, wantTrue: true},
-		{name: "bare 413 digit", errMsg: "upstream returned 413", wantTrue: true},
+		// mitto-3rs: this used to be `wantTrue: true` under the old unanchored
+		// `strings.Contains(errMsg, "413")` check. That check also matched "413"
+		// appearing incidentally anywhere in an error string (e.g. inside a
+		// request-id UUID segment), so it was replaced with status413Regex,
+		// which requires "413" to be anchored to a status/HTTP-response prefix.
+		// This synthetic phrase has no such anchor, so it now correctly returns
+		// false — the ambiguity this bead was filed to fix.
+		{name: "bare 413 digit (no status anchor, mitto-3rs)", errMsg: "upstream returned 413", wantTrue: false},
 		{name: "context too large phrase", errMsg: "context too large for model", wantTrue: true},
 		{name: "context_too_long API code", errMsg: "error: context_too_long", wantTrue: true},
 		{name: "context_length_exceeded API code", errMsg: "context_length_exceeded", wantTrue: true},
 		{name: "context window is full", errMsg: "Context window is full", wantTrue: true},
 		{name: "prompt is too long", errMsg: "prompt is too long", wantTrue: true},
 		{name: "maximum context length", errMsg: "maximum context length exceeded", wantTrue: true},
+		// mitto-k4x: Augment chat-stream returns HTTP 400 apiStatus=invalidArgument
+		// for oversized context-flush payloads (not HTTP 413). The classifier must
+		// recognize the httpStatus:400 + apiStatus:"invalidArgument" substring pair
+		// so the loop-runner's auto-pause guard fires (handleDeliveryFailure at
+		// internal/conversation/loop_runner.go:1772 gates the counter on this) —
+		// but ONLY when corroborated by a token/length overflow signal (mitto-2efc
+		// narrowed this: an uncorroborated 400/invalidArgument is a generic
+		// upstream rejection, not necessarily a too-large context).
+		{
+			name:     "HTTP 400 invalidArgument from chat-stream, corroborated by a length signal (mitto-k4x)",
+			errMsg:   `-32603 Internal error: HTTP error: 400 Bad Request {"apiStatus":"invalidArgument","httpStatus":400,"httpUrl":"https://xlb.api.augmentcode.com/chat-stream","details":"context length exceeds the maximum allowed"}`,
+			wantTrue: true,
+		},
+		// mitto-2efc: an uncorroborated 400/invalidArgument (no token/length
+		// signal in the payload) must NOT be classified as context-too-large —
+		// it is a generic upstream rejection (e.g. a deferred model-switch race)
+		// and should instead flow through the generic delivery-failure path.
+		{
+			name:     "HTTP 400 invalidArgument uncorroborated (mitto-2efc)",
+			errMsg:   `-32603 Internal error: HTTP error: 400 Bad Request {"apiStatus":"invalidArgument","httpStatus":400,"httpUrl":"https://xlb.api.augmentcode.com/chat-stream"}`,
+			wantTrue: false,
+		},
 		{name: "rate limit is not context too large", errMsg: "rate limit exceeded", wantTrue: false},
 		{name: "generic internal error", errMsg: `{"code":-32603,"message":"Internal error","data":{"details":"unknown"}}`, wantTrue: false},
 		{name: "unrelated error", errMsg: "some other error", wantTrue: false},
+		// mitto-3rs: the bare `strings.Contains(errMsg, "413")` check false-positives
+		// on a 404 model-unavailable error whose requestId UUID segment happens to
+		// contain the digits "413" (f24b-4130-...). This must NOT classify as
+		// context-too-large, or the loop runner's auto-pause guard and the prompt
+		// dispatcher's queue-stall logic misfire on an unrelated 404.
+		{
+			name:     "404 model-unavailable error with 413 inside requestId UUID (mitto-3rs)",
+			errMsg:   `-32603 Internal error: HTTP error: 404 Not Found {"message":"The selected model is not available for this session.","requestId":"80d593fb-f24b-4130-83e3-bf89b1bca239"}`,
+			wantTrue: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3736,6 +4599,42 @@ func TestStartSessionMcpServer_ReturnsEmptySlice(t *testing.T) {
 	}
 }
 
+func TestStartSessionMcpServer_InjectsAuthenticatedHTTPBinding(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-mcp-binding"
+	if err := store.Create(session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	srv, err := mcpserver.NewServer(mcpserver.Config{Port: 0}, mcpserver.Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	bs := &BackgroundSession{persistedID: sessionID, store: store, globalMcpServer: srv}
+	servers := bs.startSessionMcpServer(store, acp.AgentCapabilities{
+		McpCapabilities: acp.McpCapabilities{Http: true},
+	})
+	if len(servers) != 1 || servers[0].Http == nil {
+		t.Fatalf("HTTP-capable agent got %d MCP servers, want one HTTP entry", len(servers))
+	}
+	httpServer := servers[0].Http
+	if httpServer.Name != "mitto" || httpServer.Url == "" {
+		t.Fatalf("unexpected HTTP MCP config: name=%q url=%q", httpServer.Name, httpServer.Url)
+	}
+	if len(httpServer.Headers) != 1 || httpServer.Headers[0].Name != mcpserver.SessionBindingHeader || httpServer.Headers[0].Value == "" {
+		t.Fatal("HTTP MCP config is missing its per-session binding header")
+	}
+}
+
 // TestUIPrompt tests the UI prompt functionality
 func TestUIPrompt(t *testing.T) {
 	t.Run("basic flow", func(t *testing.T) {
@@ -3977,6 +4876,72 @@ func TestUIPrompt(t *testing.T) {
 	})
 }
 
+// TestFinalizeTurn_LeavesStaleUIPrompt_MittoNisb reproduces mitto-nisb: when a
+// turn ends WITHOUT the user answering a blocking mitto_ui_* prompt (e.g. the
+// agent crashed, or the inactivity watchdog fired), BackgroundSession.activePrompt
+// is never cleared. finalizeTurn is the single choke point PromptWithMeta calls
+// at the end of every turn — both the success and error branches
+// (bgsession_prompt.go: bs.promptDisp.finalizeTurn(bs, err, meta, sessionIdle)) —
+// so this is the narrowest place to prove the staleness bug without needing a
+// live ACP connection or a WebSocket client.
+//
+// A stale activePrompt is what causes internal/web/session_ws.go's
+// postLoadProcessing (load_events) and attach-after-unarchive paths to re-send
+// a dead prompt to a reconnecting client, resurrecting a panel the agent has
+// already given up waiting on.
+//
+// This test currently FAILS: GetActiveUIPrompt() is non-nil after finalizeTurn.
+func TestFinalizeTurn_LeavesStaleUIPrompt_MittoNisb(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: "test-session-nisb",
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	promptReceived := make(chan struct{}, 1)
+	observer := &trackingObserver{
+		onUIPrompt: func(req UIPromptRequest) { promptReceived <- struct{}{} },
+	}
+	bs.AddObserver(observer)
+
+	// Simulate an MCP tool call blocking on mitto_ui_options with a long timeout
+	// (mirrors the real 300s default in internal/mcpserver/tools_ui.go).
+	go func() {
+		req := UIPromptRequest{
+			RequestID:      "nisb-request",
+			Type:           UIPromptTypeOptions,
+			Question:       "Proceed?",
+			Options:        []UIPromptOption{{ID: "yes", Label: "Yes"}},
+			TimeoutSeconds: 300,
+		}
+		bs.UIPrompt(ctx, req) //nolint:errcheck
+	}()
+
+	select {
+	case <-promptReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UI prompt was not received by observer")
+	}
+
+	if bs.GetActiveUIPrompt() == nil {
+		t.Fatal("expected an active UI prompt before turn finalization")
+	}
+
+	// Simulate the agent's turn ending (this is exactly what PromptWithMeta does
+	// at the end of every turn, success or error) WITHOUT the user having
+	// answered the prompt.
+	bs.promptDisp.finalizeTurn(bs, nil, PromptMeta{}, true)
+
+	if ap := bs.GetActiveUIPrompt(); ap != nil {
+		t.Fatalf("mitto-nisb: expected active UI prompt to be cleared after finalizeTurn, still active: %+v", ap)
+	}
+}
+
 // TestCancel_DismissesActiveUIPrompt tests that Cancel() properly dismisses any active UI prompt.
 // This ensures that when the user presses the Stop button, any pending MCP tool UI prompts
 // (like yes/no questions or option selections) are dismissed and the UI is cleaned up.
@@ -4114,6 +5079,154 @@ func TestCancel_NoActiveUIPrompt(t *testing.T) {
 	// Verify still no active prompt
 	if bs.GetActiveUIPrompt() != nil {
 		t.Error("There should still be no active UI prompt after Cancel()")
+	}
+}
+
+// TestCancel_DrainsStrandedQueueAfterWedgedPrompt reproduces mitto-79x: stopping a
+// wedged prompt via Cancel() must drain any messages stranded in the queue.
+// Cancel()/ForceReset() are the only user-visible way to un-wedge a session, and
+// the queue dispatcher is otherwise entirely event-driven (enqueue, spawn, resume,
+// loop fire) — there is no periodic self-heal tick, so without an explicit drain
+// here the queued message stays stuck forever. No live ACP connection is needed:
+// the dispatch attempt fails fast and deterministically (session is nil), and
+// this test only cares whether the queue was drained, not the ACP outcome.
+func TestCancel_DrainsStrandedQueueAfterWedgedPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-cancel-drain"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Queue a message while the session will be marked "wedged" below.
+	queue := store.Queue(sessionID)
+	if _, err := queue.Add("stranded message", nil, nil, "client1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: sessionID,
+		store:       store,
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	observer := &mockSessionObserver{}
+	bs.AddObserver(observer)
+
+	// Simulate a wedged prompt: isPrompting=true as if a turn is stuck.
+	bs.promptMu.Lock()
+	bs.isPrompting = true
+	bs.promptMu.Unlock()
+
+	if err := bs.Cancel(); err != nil {
+		t.Fatalf("Cancel() returned unexpected error: %v", err)
+	}
+
+	// Cancel() must trigger a queue drain (mirroring every other
+	// TryProcessQueuedMessage call site in the codebase, run asynchronously
+	// since promptWithMeta re-acquires promptMu). Poll with a bound instead of
+	// asserting immediately after Cancel() returns.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if qLen, _ := queue.Len(); qLen == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	qLen, err := queue.Len()
+	if err != nil {
+		t.Fatalf("queue.Len() failed: %v", err)
+	}
+	if qLen != 0 {
+		t.Errorf("mitto-79x: queue still has %d message(s) stranded after Cancel() on a wedged prompt; "+
+			"Cancel() must drain the queue (e.g. via go bs.TryProcessQueuedMessage())", qLen)
+	}
+	if len(observer.getQueueMessagesSending()) == 0 {
+		t.Error("mitto-79x: expected OnQueueMessageSending to fire after Cancel() drains the stranded message")
+	}
+}
+
+// TestForceReset_DrainsStrandedQueueAfterWedgedPrompt is the ForceReset() sibling
+// of TestCancel_DrainsStrandedQueueAfterWedgedPrompt — see that test for the full
+// rationale (mitto-79x). ForceReset() has the identical drain gap as Cancel().
+func TestForceReset_DrainsStrandedQueueAfterWedgedPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-forcereset-drain"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	queue := store.Queue(sessionID)
+	if _, err := queue.Add("stranded message", nil, nil, "client1", nil, 0, nil, ""); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs := &BackgroundSession{
+		observers:   make(map[SessionObserver]struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
+		persistedID: sessionID,
+		store:       store,
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	observer := &mockSessionObserver{}
+	bs.AddObserver(observer)
+
+	// Simulate a wedged prompt: isPrompting=true as if a turn is stuck.
+	bs.promptMu.Lock()
+	bs.isPrompting = true
+	bs.promptMu.Unlock()
+
+	bs.ForceReset()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if qLen, _ := queue.Len(); qLen == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	qLen, err := queue.Len()
+	if err != nil {
+		t.Fatalf("queue.Len() failed: %v", err)
+	}
+	if qLen != 0 {
+		t.Errorf("mitto-79x: queue still has %d message(s) stranded after ForceReset() on a wedged prompt; "+
+			"ForceReset() must drain the queue (e.g. via go bs.TryProcessQueuedMessage())", qLen)
+	}
+	if len(observer.getQueueMessagesSending()) == 0 {
+		t.Error("mitto-79x: expected OnQueueMessageSending to fire after ForceReset() drains the stranded message")
 	}
 }
 
@@ -4482,144 +5595,6 @@ func TestApplyModelTag_NoMatchingProfile_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestBuildACPProcessEnv verifies env-layering for ACP subprocess startup.
-// Layering: os.Environ() < server-specific Env < MITTO_* vars.
-func TestBuildACPProcessEnv(t *testing.T) {
-	t.Setenv("MITTO_TEST_BASE_ENV", "from-base")
-
-	t.Run("includes os.Environ", func(t *testing.T) {
-		env := BuildACPProcessEnv(nil, nil)
-		if !envContainsKV(env, "MITTO_TEST_BASE_ENV", "from-base") {
-			t.Errorf("expected MITTO_TEST_BASE_ENV=from-base in env, got %v entries", len(env))
-		}
-	})
-
-	t.Run("appends server-specific env", func(t *testing.T) {
-		env := BuildACPProcessEnv(map[string]string{"FOO": "bar", "BAZ": "qux"}, nil)
-		if !envContainsKV(env, "FOO", "bar") {
-			t.Error("expected FOO=bar in env")
-		}
-		if !envContainsKV(env, "BAZ", "qux") {
-			t.Error("expected BAZ=qux in env")
-		}
-	})
-
-	t.Run("appends mitto env after server env (mitto wins)", func(t *testing.T) {
-		// Same key in both — later append wins by os.Exec semantics.
-		env := BuildACPProcessEnv(
-			map[string]string{"OVERLAP": "from-server"},
-			map[string]string{"OVERLAP": "from-mitto", "MITTO_SESSION_ID": "abc"},
-		)
-		// Find the LAST occurrence of OVERLAP=...
-		lastOverlap := ""
-		for _, kv := range env {
-			if strings.HasPrefix(kv, "OVERLAP=") {
-				lastOverlap = kv
-			}
-		}
-		if lastOverlap != "OVERLAP=from-mitto" {
-			t.Errorf("expected final OVERLAP=from-mitto (mitto wins), got %q", lastOverlap)
-		}
-		if !envContainsKV(env, "MITTO_SESSION_ID", "abc") {
-			t.Error("expected MITTO_SESSION_ID=abc in env")
-		}
-	})
-}
-
-func envContainsKV(env []string, key, value string) bool {
-	want := key + "=" + value
-	for _, kv := range env {
-		if kv == want {
-			return true
-		}
-	}
-	return false
-}
-
-// TestStartACPStartupWatchdog_FiresWhenNoActivity verifies the watchdog emits a WARN log
-// when neither stderr activity nor handshake completion is observed within the warn window.
-func TestStartACPStartupWatchdog_FiresWhenNoActivity(t *testing.T) {
-	// Shorten the timers for the test
-	origWarn := acpStartupWatchdogWarnDelay
-	origErr := acpStartupWatchdogErrorDelay
-	acpStartupWatchdogWarnDelay = 30 * time.Millisecond
-	acpStartupWatchdogErrorDelay = 90 * time.Millisecond
-	defer func() {
-		acpStartupWatchdogWarnDelay = origWarn
-		acpStartupWatchdogErrorDelay = origErr
-	}()
-
-	rec := newCapturingLogHandler()
-	logger := slog.New(rec)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	_ = StartACPStartupWatchdog(ctx, logger, "auggie", "Augment", 42)
-
-	// Wait long enough for both timers to fire.
-	time.Sleep(200 * time.Millisecond)
-
-	warns := rec.entriesAt(slog.LevelWarn)
-	errs := rec.entriesAt(slog.LevelError)
-
-	if len(warns) == 0 {
-		t.Fatalf("expected at least one WARN log entry, got none")
-	}
-	if !strings.Contains(warns[0].msg, "unresponsive") {
-		t.Errorf("WARN log should mention 'unresponsive', got: %q", warns[0].msg)
-	}
-	if len(errs) == 0 {
-		t.Fatalf("expected at least one ERROR log entry, got none")
-	}
-	if !strings.Contains(errs[0].msg, "unresponsive") {
-		t.Errorf("ERROR log should mention 'unresponsive', got: %q", errs[0].msg)
-	}
-}
-
-// TestStartACPStartupWatchdog_SilentWhenSignaled verifies the watchdog does NOT log when
-// signalActivity is invoked before the warn window elapses.
-func TestStartACPStartupWatchdog_SilentWhenSignaled(t *testing.T) {
-	origWarn := acpStartupWatchdogWarnDelay
-	origErr := acpStartupWatchdogErrorDelay
-	acpStartupWatchdogWarnDelay = 50 * time.Millisecond
-	acpStartupWatchdogErrorDelay = 150 * time.Millisecond
-	defer func() {
-		acpStartupWatchdogWarnDelay = origWarn
-		acpStartupWatchdogErrorDelay = origErr
-	}()
-
-	rec := newCapturingLogHandler()
-	logger := slog.New(rec)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	signalActivity := StartACPStartupWatchdog(ctx, logger, "auggie", "Augment", -1)
-
-	// Signal activity well before the warn window.
-	time.Sleep(10 * time.Millisecond)
-	signalActivity()
-
-	// Wait beyond the warn window to confirm no log fires.
-	time.Sleep(200 * time.Millisecond)
-
-	if got := len(rec.entriesAt(slog.LevelWarn)); got != 0 {
-		t.Errorf("expected 0 WARN entries when signaled early, got %d", got)
-	}
-	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
-		t.Errorf("expected 0 ERROR entries when signaled early, got %d", got)
-	}
-}
-
-// TestStartACPStartupWatchdog_NilLoggerNoop ensures the helper is a no-op when logger is nil.
-func TestStartACPStartupWatchdog_NilLoggerNoop(t *testing.T) {
-	// Should not panic, should return a callable no-op.
-	signal := StartACPStartupWatchdog(context.Background(), nil, "cmd", "svr", 1)
-	signal()
-	signal() // Idempotent
-}
-
 // TestStartPromptInactivityWatchdog_FiresWhenIdle verifies the watchdog cancels the
 // prompt and sets the fired flag when no streamed activity is observed within the
 // configured timeout, emitting both a WARN and an ERROR log along the way.
@@ -4640,19 +5615,23 @@ func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
 	defer cancel()
 	var fired atomic.Bool
 
-	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+	// Regression for mitto-pfgk: widen the scheduler window between the watchdog
+	// publishing fired and cancellation becoming observable. Wait on the context,
+	// since fired is not a completion barrier for the subsequent cancel call.
+	delayedCancel := func() {
+		time.Sleep(250 * time.Millisecond)
+		cancel()
+	}
+	bs.startPromptInactivityWatchdog(ctx, delayedCancel, &fired)
 
-	deadline := time.After(2 * time.Second)
-	for !fired.Load() {
-		select {
-		case <-deadline:
-			t.Fatal("watchdog did not fire within deadline")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchdog did not cancel prompt context within deadline")
 	}
 
-	if ctx.Err() == nil {
-		t.Error("expected prompt context to be cancelled after watchdog fired")
+	if !fired.Load() {
+		t.Error("expected watchdog fired flag after prompt context cancellation")
 	}
 	if len(rec.entriesAt(slog.LevelWarn)) == 0 {
 		t.Error("expected a WARN log before the timeout")
@@ -5012,52 +5991,6 @@ func (h *capturingLogHandler) entriesAt(level slog.Level) []capturedLogEntry {
 	return out
 }
 
-func TestBuildACPProcessEnv_ReplacesExistingKey(t *testing.T) {
-	// Ensure NODE_OPTIONS exists in os.Environ() with a different value.
-	t.Setenv("NODE_OPTIONS", "--max-old-space-size=2048")
-
-	serverEnv := map[string]string{
-		"NODE_OPTIONS": "--max-old-space-size=6144",
-	}
-	result := BuildACPProcessEnv(serverEnv, nil)
-
-	var found []string
-	for _, kv := range result {
-		if strings.HasPrefix(kv, "NODE_OPTIONS=") {
-			found = append(found, kv)
-		}
-	}
-	if len(found) != 1 {
-		t.Fatalf("expected exactly one NODE_OPTIONS entry, got %d: %v", len(found), found)
-	}
-	if found[0] != "NODE_OPTIONS=--max-old-space-size=6144" {
-		t.Errorf("expected NODE_OPTIONS=--max-old-space-size=6144, got %s", found[0])
-	}
-}
-
-func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
-	serverEnv := map[string]string{
-		"MITTO_TEST_VAR": "from-server",
-	}
-	mittoEnv := map[string]string{
-		"MITTO_TEST_VAR": "from-mitto",
-	}
-	result := BuildACPProcessEnv(serverEnv, mittoEnv)
-
-	var found []string
-	for _, kv := range result {
-		if strings.HasPrefix(kv, "MITTO_TEST_VAR=") {
-			found = append(found, kv)
-		}
-	}
-	if len(found) != 1 {
-		t.Fatalf("expected exactly one MITTO_TEST_VAR entry, got %d: %v", len(found), found)
-	}
-	if found[0] != "MITTO_TEST_VAR=from-mitto" {
-		t.Errorf("expected MITTO_TEST_VAR=from-mitto, got %s", found[0])
-	}
-}
-
 // TestTriggerTitleGenerationFromLoop verifies that the helper correctly selects
 // the source text for title generation given various combinations of inline prompt
 // and prompt_name, including the UI placeholder "(pending)".
@@ -5203,7 +6136,8 @@ func (p *alwaysFailSharedProcess) SetSessionModel(_ context.Context, _ acp.Sessi
 }
 func (p *alwaysFailSharedProcess) Done() <-chan struct{}                { return nil }
 func (p *alwaysFailSharedProcess) Capabilities() *acp.AgentCapabilities { return nil }
-func (p *alwaysFailSharedProcess) Restart() error {
+func (p *alwaysFailSharedProcess) Generation() int                      { return 0 }
+func (p *alwaysFailSharedProcess) Restart(_ int) error {
 	return fmt.Errorf("alwaysFailSharedProcess: cannot restart — no real process")
 }
 func (p *alwaysFailSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration { return 0 }
@@ -5279,5 +6213,292 @@ func TestBackgroundSession_CumulativeUsage(t *testing.T) {
 	}
 	if total != 43 {
 		t.Errorf("total = %d, want 43", total)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_NoOpWhenAgentModelsPresent verifies the
+// shared-process hook (mitto-886) leaves bs.agentModels untouched when the
+// agent already advertised a real catalog. This is the primary guard against
+// double-population that would corrupt the frontend model chip with synthesized
+// tier names on top of genuine agent-side model ids.
+func TestApplySynthesizedModelsIfEmpty_NoOpWhenAgentModelsPresent(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+
+	existing := &SessionModelState{
+		CurrentModelId: "claude-sonnet-4-6",
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+		},
+	}
+	bs.agentModels = existing
+	bs.mittoConfig = &config.Config{Models: []config.ModelProfile{{Name: "Opus"}}}
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels != existing {
+		t.Fatalf("agentModels was replaced: got %+v, want pointer identity with existing", bs.agentModels)
+	}
+	if bs.agentModels.CurrentModelId != "claude-sonnet-4-6" {
+		t.Fatalf("CurrentModelId=%q, want claude-sonnet-4-6", bs.agentModels.CurrentModelId)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_NoOpWhenNoMittoConfig documents the second
+// guard: even when agentModels is nil, we cannot synthesize without a config
+// (EffectiveModelProfiles would still return defaults on a nil receiver, but
+// the hook short-circuits before that to preserve the "no config wired" test
+// scenario).
+func TestApplySynthesizedModelsIfEmpty_NoOpWhenNoMittoConfig(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	// bs.agentModels is nil; bs.mittoConfig is nil.
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels != nil {
+		t.Fatalf("expected agentModels to remain nil when mittoConfig is nil, got %+v", bs.agentModels)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_SynthesizesWhenEmpty is the mitto-886 core
+// scenario: agent advertised no catalog via either configOptions or resp.Models
+// (shared-process branch handed us a nil), local config supplies profiles →
+// we must populate bs.agentModels with a synthetic state whose ModelId/Name
+// mirror the profile Name (so downstream tag resolvers work identically).
+func TestApplySynthesizedModelsIfEmpty_SynthesizesWhenEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	bs.mittoConfig = &config.Config{Models: []config.ModelProfile{
+		{Name: "Opus"},
+		{Name: "Sonnet"},
+	}}
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels == nil {
+		t.Fatalf("expected agentModels to be populated from local profiles")
+	}
+	// EffectiveModelProfiles merges user Models with DefaultModelProfiles, so
+	// we can't assert exact len(). But the user-configured ones must appear
+	// first (see EffectiveModelProfiles doc: user profiles before defaults).
+	if len(bs.agentModels.AvailableModels) < 2 {
+		t.Fatalf("len(AvailableModels)=%d, want >=2", len(bs.agentModels.AvailableModels))
+	}
+	if bs.agentModels.AvailableModels[0].ModelId != "Opus" {
+		t.Fatalf("AvailableModels[0].ModelId=%q, want Opus", bs.agentModels.AvailableModels[0].ModelId)
+	}
+	if bs.agentModels.AvailableModels[0].Name != "Opus" {
+		t.Fatalf("AvailableModels[0].Name=%q, want Opus (synth uses profile.Name for both)", bs.agentModels.AvailableModels[0].Name)
+	}
+	if bs.agentModels.CurrentModelId != "" {
+		t.Fatalf("CurrentModelId=%q, want empty (synth cannot know current)", bs.agentModels.CurrentModelId)
+	}
+}
+
+// TestApplySynthesizedModelsIfEmpty_UsesDefaultsWhenUserModelsEmpty verifies the
+// mitto-886 fallback still fires when the user has no Models in settings.json:
+// EffectiveModelProfiles returns DefaultModelProfiles() (the 7 canonical
+// hardcoded profiles) so a fresh install without settings.json still gets a
+// populated model selector for silent agents.
+func TestApplySynthesizedModelsIfEmpty_UsesDefaultsWhenUserModelsEmpty(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.pendingConfig = make(map[string]string)
+	bs.mittoConfig = &config.Config{} // Models: nil
+
+	bs.applySynthesizedModelsIfEmpty()
+
+	if bs.agentModels == nil {
+		t.Fatalf("expected agentModels populated from DefaultModelProfiles even with empty user Models")
+	}
+	if len(bs.agentModels.AvailableModels) == 0 {
+		t.Fatalf("expected non-empty AvailableModels from DefaultModelProfiles")
+	}
+}
+
+// ============================================================================
+// mitto-9zy1: post-close observability defects (reproduce phase)
+//
+// Three reproduction tests below pin the defects confirmed by the Investigate
+// phase (see the "Investigation [tier: Reasoning]:" bead comment). All three
+// simulate the post-close tail window identified in mitto-xlwh: the recorder
+// has stopped accepting writes (Suspend() sets started=false) and/or the
+// session is marked closed (SimulateClose()), while session-config/queue-drain
+// code paths still run synchronously from the prompt-completion tail. Each
+// test currently FAILS against the unfixed code and must pass once the
+// corresponding defect is fixed.
+// ============================================================================
+
+// TestApplyConfigOptionWithOpts_BugRepro_SwallowsRecorderErrorAndStillLogsSuccess
+// pins defect 2a: cmRecordSessionChangeWithSeq (bgsession_config.go) swallows
+// the recorder's persistence error (only logs it), so applyConfigOptionWithOpts
+// (config_manager.go) proceeds to log "Config option changed" and return a nil
+// error even though the session-change timeline event was never persisted.
+func TestApplyConfigOptionWithOpts_BugRepro_SwallowsRecorderErrorAndStillLogsSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Simulate the post-close tail window: the recorder has stopped accepting
+	// writes (mirrors what happens after Close()/End()), but session-config
+	// code still runs.
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	shared := newFakeSharedProcess()
+	bs := &BackgroundSession{
+		recorder:      recorder,
+		persistedID:   sessionID,
+		store:         store,
+		sharedProcess: shared,
+		nextSeq:       2, // recorder.Start() already persisted session_start at seq=1
+		logger:        slog.New(handler),
+		agentModels:   &SessionModelState{CurrentModelId: "m-1"},
+		configOptions: []SessionConfigOption{
+			{
+				ID:           ConfigOptionCategoryModel,
+				Category:     ConfigOptionCategoryModel,
+				CurrentValue: "m-1",
+				Options: []SessionConfigOptionValue{
+					{Value: "m-1", Name: "Model 1"},
+					{Value: "m-2", Name: "Model 2"},
+				},
+			},
+		},
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	cm := configManager{}
+	applyErr := cm.applyConfigOptionWithOpts(bs, context.Background(), ConfigOptionCategoryModel, "m-2", true)
+
+	// Desired (post-fix) behavior: a failure to persist the session-change
+	// timeline event must surface as an error from applyConfigOptionWithOpts.
+	if applyErr == nil {
+		t.Fatal("mitto-9zy1 defect 2a: expected applyConfigOptionWithOpts to return an error when the " +
+			"session-change record fails, but it returned nil (recorder error was swallowed)")
+	}
+	// Desired (post-fix) behavior: the caller must not claim success ("Config
+	// option changed") when persistence of the timeline event failed.
+	if handler.hasRecord(slog.LevelInfo, "Config option changed") {
+		t.Error("mitto-9zy1 defect 2a: must not log 'Config option changed' when the session-change " +
+			"record failed")
+	}
+}
+
+// TestFlushPendingConfig_BugRepro_AppliesConfigAfterClose pins defect 2b:
+// flushPendingConfig (config_manager.go) drains the pending-config map and
+// calls applyConfigOption directly, bypassing the only cmIsClosed() liveness
+// gate in the config path (present in setConfigOptionWithOpts but not
+// reachable from the deferred-flush call site). A deferred config change can
+// therefore still be applied to a closed/closing session.
+func TestFlushPendingConfig_BugRepro_AppliesConfigAfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	shared := newFakeSharedProcess()
+	bs := &BackgroundSession{
+		recorder:      recorder,
+		persistedID:   sessionID,
+		store:         store,
+		sharedProcess: shared,
+		nextSeq:       2,
+		agentModels:   &SessionModelState{CurrentModelId: "m-1"},
+		configOptions: []SessionConfigOption{
+			{
+				ID:           ConfigOptionCategoryModel,
+				Category:     ConfigOptionCategoryModel,
+				CurrentValue: "m-1",
+				Options: []SessionConfigOptionValue{
+					{Value: "m-1", Name: "Model 1"},
+					{Value: "m-2", Name: "Model 2"},
+				},
+			},
+		},
+		pendingConfig: map[string]string{ConfigOptionCategoryModel: "m-2"},
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	// Mark the session closed BEFORE the deferred flush runs — mirrors the
+	// prompt-completion tail racing session Close() (mitto-xlwh's window).
+	bs.SimulateClose()
+
+	bs.flushPendingConfig()
+
+	// Desired (post-fix) behavior: flushPendingConfig must no-op once the
+	// session is closed, leaving the model unchanged.
+	if bs.agentModels.CurrentModelId != "m-1" {
+		t.Fatalf("mitto-9zy1 defect 2b: expected flushPendingConfig to skip applying deferred config "+
+			"after session close, but model changed to %q", bs.agentModels.CurrentModelId)
+	}
+}
+
+// TestQueueRecordErrorEvent_BugRepro_LogsErrorOnErrorAfterClose pins defect 3:
+// queueRecordErrorEvent (bgsession_queue.go) has no queueIsClosed() guard, so
+// when the recorder has already stopped (post-close tail window), the attempt
+// to persist a "failed to send queued message" error event itself fails, and
+// a second, purely diagnostic ERROR ("Failed to persist queued send error
+// event") is logged on top of the original — pure log noise during teardown.
+func TestQueueRecordErrorEvent_BugRepro_LogsErrorOnErrorAfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test-server", tmpDir, ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	// Simulate the post-close tail window: the recorder has stopped accepting
+	// writes.
+	if err := recorder.Suspend(); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	handler := &recordingHandler{}
+	bs := &BackgroundSession{
+		recorder:    recorder,
+		persistedID: sessionID,
+		nextSeq:     2,
+		logger:      slog.New(handler),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	bs.SimulateClose()
+
+	bs.queueRecordErrorEvent("Failed to send queued message: boom")
+
+	// Desired (post-fix) behavior: once the session is closed, queueRecordErrorEvent
+	// must not attempt (and fail) to persist, so no secondary ERROR is logged.
+	if handler.hasRecord(slog.LevelError, "Failed to persist queued send error event") {
+		t.Error("mitto-9zy1 defect 3: queueRecordErrorEvent must not log a secondary ERROR " +
+			"when the session is already closed")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // ProcessorInput provides context for processor execution.
@@ -16,6 +17,11 @@ type ProcessorInput struct {
 	Message string `json:"message"`
 	// IsFirstMessage indicates if this is the first message in the conversation.
 	IsFirstMessage bool `json:"is_first_message"`
+	// HasMessages indicates whether the conversation has recorded at least one
+	// prior user prompt (derived from meta.LastUserMessageAt being non-zero).
+	// Populates Session.HasMessages in BuildCELContext for the
+	// Go-template branch and CEL enabledWhen expressions. Excluded from JSON (json:"-").
+	HasMessages bool `json:"-"`
 	// SessionID is the current session identifier.
 	SessionID string `json:"session_id"`
 	// WorkingDir is the session's working directory.
@@ -43,6 +49,12 @@ type ProcessorInput struct {
 	// ChildSessions lists direct child sessions of the current session.
 	// Each entry includes the session ID, name, and ACP server.
 	ChildSessions []ChildSession `json:"child_sessions,omitempty"`
+	// WorkspacePeers lists non-archived conversations sharing this session's
+	// workspace (same working directory and ACP server), excluding self.
+	// Feeds the {{ .Workspace.Peers.* }} template namespace / Workspace.Peers.*
+	// CEL variables and is emitted to external command processors as
+	// "workspace_peers". Each entry mirrors ChildSession semantics.
+	WorkspacePeers []PeerSession `json:"workspace_peers,omitempty"`
 	// MCPToolNames is the list of MCP tool names available in the current workspace.
 	// Used for Tools.* CEL context in enabledWhen expressions.
 	// May be empty if tools haven't been fetched yet.
@@ -54,6 +66,11 @@ type ProcessorInput struct {
 	// via "run now" (as opposed to the normal scheduled delivery).
 	// Used for @mitto:loop_forced variable substitution.
 	IsLoopForced bool `json:"is_loop_forced,omitempty"`
+	// IsLoopRunOnStart indicates whether this loop prompt was fired by the
+	// boot-pulse (mitto-ystk): the once-per-startup dispatch triggered by
+	// LoopRunner.fireOnStartPulses. Used for @mitto:loop_run_on_start variable
+	// substitution and the CEL Session.IsLoopRunOnStart signal.
+	IsLoopRunOnStart bool `json:"is_loop_run_on_start,omitempty"`
 	// IterationNumber is the 0-based index of the current loop run.
 	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON
 	// (json:"-") so raw iteration values are never sent to external command processors.
@@ -66,6 +83,16 @@ type ProcessorInput struct {
 	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from
 	// JSON (json:"-") — never sent to external command processors.
 	IterationUninterrupted bool `json:"-"`
+	// TriggerKind names the trigger that won this dispatch for a multi-trigger
+	// loop (mitto-qzqm): one of the 5 canonical values "schedule",
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty for non-loop /
+	// ad-hoc human prompts. Feeds {{ .Trigger.Kind }} via BuildCELContext
+	// (internal/processors/hook.go), which allocates ctx.Trigger for every
+	// loop dispatch (not just ones carrying structured onTasks/onSlack
+	// payloads) so scheduled and onCompletion runs can also branch on Kind.
+	// Excluded from JSON (json:"-") — same sensitivity rule as
+	// TriggerOnTasksChanges below: never sent to external command processors.
+	TriggerKind session.LoopTrigger `json:"-"`
 	// TriggerOnTasksChanges carries the beads change delta computed by the
 	// onTasks loop runner (internal/web/loop_runner_tasks.go processTasksChange).
 	// Nil for all non-onTasks dispatches (scheduled, onCompletion, manual "Run
@@ -74,6 +101,24 @@ type ProcessorInput struct {
 	// to external command processors, same sensitivity rule as the iteration
 	// fields above.
 	TriggerOnTasksChanges *config.TasksDelta `json:"-"`
+	// TriggerOnChildDetail carries the child-lifecycle detail that fired this
+	// dispatch (mitto-qvlh), populated only for onChild fires. Nil for all
+	// other dispatches. Feeds the {{ .Trigger.OnChild.* }} template namespace
+	// via BuildCELContext. Excluded from JSON (json:"-") — same sensitivity
+	// rule as TriggerOnTasksChanges above: never sent to external command
+	// processors.
+	TriggerOnChildDetail *TriggerOnChildDetail `json:"-"`
+	// TriggerSlackEvent carries the normalized Slack event that fired this
+	// dispatch (mitto-qewp PoC), populated only by the experimental Slack
+	// event source's bridge to LoopRunner.TriggerNowWithSlackEvent
+	// (internal/slackbridge). Nil for all other dispatches. Feeds the
+	// {{ .Trigger.Slack.* }} template namespace via BuildCELContext.
+	// Excluded from JSON (json:"-") — never sent to external command
+	// processors. Text is UNTRUSTED external content; never logged.
+	TriggerSlackEvent *TriggerSlackEvent `json:"-"`
+	// TriggerOnSlackEvents is the canonical bounded batch for
+	// {{ .Trigger.OnSlack.Events }}. Excluded from external processor JSON.
+	TriggerOnSlackEvents []TriggerSlackEvent `json:"-"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`
@@ -86,6 +131,16 @@ type ProcessorInput struct {
 	// HasMetadataDescription indicates whether the workspace has metadata.description set.
 	// Used for Workspace.HasMetadataDescription CEL variable.
 	HasMetadataDescription bool `json:"-"`
+	// TasksUpstream is the folder's configured beads upstream task system
+	// (normalized: lowercased, "none" mapped to ""). Used for the
+	// Workspace.TasksUpstream CEL variable and template field. Unlike the
+	// other Workspace.Has* flags above, this is emitted to external command
+	// processors (json:"tasks_upstream") since it is non-sensitive and
+	// processors currently have no other way to learn the folder's upstream.
+	TasksUpstream string `json:"tasks_upstream,omitempty"`
+	// DatabaseMode is the effective Beads database mode ("local" or "shared").
+	// It is emitted to external command processors as database_mode.
+	DatabaseMode config.BeadsDatabaseMode `json:"database_mode,omitempty"`
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
 	// Used for @mitto:user_data_schema variable substitution.
 	UserDataSchemaJSON string `json:"-"`
@@ -115,6 +170,13 @@ type ProcessorInput struct {
 	// ModelName is the display name of the session's current model (convenience for
 	// {{ .Session.ModelName }} display). Excluded from JSON (json:"-").
 	ModelName string `json:"-"`
+	// PromptsSnapshotFn, when non-nil, returns a snapshot of the workspace
+	// prompt registry (names + enabled names) for the {{ .Prompts.Exists }} /
+	// {{ .Prompts.Enabled }} template predicates. Lazy so non-templated
+	// prompts (the >99% case) do not pay the snapshot cost. Nil is safe:
+	// BuildCELContext leaves ctx.Prompts zero-valued, and the predicates
+	// fail-closed (return false) in that case. Excluded from JSON (json:"-").
+	PromptsSnapshotFn func() *config.PromptsSnapshot `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.
@@ -144,6 +206,73 @@ type ChildSession struct {
 	ChildOrigin string `json:"child_origin,omitempty"`
 	// IsPrompting indicates the child agent is currently responding.
 	IsPrompting bool `json:"is_prompting,omitempty"`
+	// BeadsIssue is the linked beads issue ID for the child session
+	// (e.g. "mitto-123"), or empty when the child has no linked bead.
+	// Excluded from the external-processor JSON payload (json:"-") — this
+	// field is consumed only by in-process template rendering and CEL context
+	// building. A structured beads_issue on MITTO_CHILD_SESSIONS is a
+	// deliberate non-goal for this pass (see bead mitto-59b).
+	BeadsIssue string `json:"-"`
+	// QueuedCount is the number of pending queued prompts on the child
+	// session. Excluded from the external-processor JSON payload (json:"-") —
+	// consumed only by in-process template rendering and CEL context building.
+	QueuedCount int `json:"-"`
+}
+
+// PeerSession describes a non-archived conversation sharing the current
+// session's workspace (same working directory and ACP server), excluding self.
+// Mirrors ChildSession's shape so orchestrator prompts can reason about
+// sibling conversations the same way they reason about children.
+type PeerSession struct {
+	// ID is the peer session identifier.
+	ID string `json:"id"`
+	// Name is the peer session title/name (may be empty if not yet set).
+	Name string `json:"name,omitempty"`
+	// ACPServer is the ACP server name used by the peer session.
+	ACPServer string `json:"acp_server,omitempty"`
+	// ParentID is the peer's parent session ID (empty when the peer is a
+	// top-level session). Lets prompts distinguish peers spawned by self from
+	// unrelated top-level siblings.
+	ParentID string `json:"parent_id,omitempty"`
+	// ChildOrigin indicates how the peer was created: "auto", "mcp", "human",
+	// or "" when the peer is a top-level session.
+	ChildOrigin string `json:"child_origin,omitempty"`
+	// IsPrompting indicates the peer agent is currently responding.
+	IsPrompting bool `json:"is_prompting,omitempty"`
+	// BeadsIssue is the linked beads issue ID for the peer session
+	// (e.g. "mitto-123"), or empty when the peer has no linked bead.
+	// Excluded from the external-processor JSON payload (json:"-") — same
+	// sensitivity rule as ChildSession.BeadsIssue.
+	BeadsIssue string `json:"-"`
+}
+
+// TriggerOnChildDetail is the processors-package view of the child-lifecycle
+// detail that fired an onChild loop dispatch (mitto-qvlh). ChildID
+// intentionally does NOT include the child's name/title — by the time an
+// anyDeleted fire reaches here, the deleted child's metadata (including its
+// name) may already be gone. StoppedReason is non-empty only for
+// "anyLoopStopped".
+type TriggerOnChildDetail struct {
+	ChildID       string
+	Event         string
+	StoppedReason string
+}
+
+// TriggerSlackEvent is the processors-package view of a single normalized
+// Slack event (mitto-qewp PoC). Mirrors conversation.PromptSlackContext;
+// kept as a separate type here so this package does not need to import
+// internal/conversation. Text is a JSON-escaped, explicitly untrusted
+// data-only prompt block.
+type TriggerSlackEvent struct {
+	InstallationID  string
+	EventID         string
+	ChannelID       string
+	Kind            string
+	AuthorID        string
+	Timestamp       string
+	ThreadTimestamp string
+	Untrusted       bool
+	Text            string
 }
 
 // ProcessorOutput contains the result of processor execution.

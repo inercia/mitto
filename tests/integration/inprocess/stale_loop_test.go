@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestStaleClient_OffByOneRecovery verifies that when a client sends load_events
@@ -33,7 +33,7 @@ import (
 func TestStaleClient_OffByOneRecovery(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -52,14 +52,14 @@ func TestStaleClient_OffByOneRecovery(t *testing.T) {
 	var (
 		mu              sync.Mutex
 		loadCallCount   int
-		eventsFromLoad1 []client.SyncEvent
-		eventsFromLoad2 []client.SyncEvent
+		eventsFromLoad1 []api.SyncEvent
+		eventsFromLoad2 []api.SyncEvent
 		load1Done       = make(chan struct{}, 1)
 		load2Done       = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			loadCallCount++
 			count := loadCallCount
@@ -115,7 +115,7 @@ func TestStaleClient_OffByOneRecovery(t *testing.T) {
 	}
 
 	mu.Lock()
-	recovered := make([]client.SyncEvent, len(eventsFromLoad2))
+	recovered := make([]api.SyncEvent, len(eventsFromLoad2))
 	copy(recovered, eventsFromLoad2)
 	mu.Unlock()
 
@@ -157,7 +157,7 @@ func TestStaleClient_OffByOneRecovery(t *testing.T) {
 func TestStaleClient_PrependAfterRecovery(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -175,15 +175,15 @@ func TestStaleClient_PrependAfterRecovery(t *testing.T) {
 	var (
 		mu          sync.Mutex
 		callCount   int
-		firstPage   []client.SyncEvent
+		firstPage   []api.SyncEvent
 		hasMorePage bool
-		prependPage []client.SyncEvent
+		prependPage []api.SyncEvent
 		page1Done   = make(chan struct{}, 1)
 		page2Done   = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			callCount++
 			count := callCount
@@ -227,7 +227,7 @@ func TestStaleClient_PrependAfterRecovery(t *testing.T) {
 	}
 
 	mu.Lock()
-	page1 := make([]client.SyncEvent, len(firstPage))
+	page1 := make([]api.SyncEvent, len(firstPage))
 	copy(page1, firstPage)
 	hasMore := hasMorePage
 	mu.Unlock()
@@ -265,7 +265,7 @@ func TestStaleClient_PrependAfterRecovery(t *testing.T) {
 	}
 
 	mu.Lock()
-	page2 := make([]client.SyncEvent, len(prependPage))
+	page2 := make([]api.SyncEvent, len(prependPage))
 	copy(page2, prependPage)
 	mu.Unlock()
 
@@ -322,7 +322,7 @@ func TestStaleClient_PrependAfterRecovery(t *testing.T) {
 func TestLoadEvents_ConcurrentRequestsDropped(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -337,14 +337,14 @@ func TestLoadEvents_ConcurrentRequestsDropped(t *testing.T) {
 
 	var (
 		mu            sync.Mutex
-		eventsLoaded  []client.SyncEvent
+		eventsLoaded  []api.SyncEvent
 		errorMessages []string
 		loadRespCount atomic.Int64
 		firstLoadDone = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			eventsLoaded = append(eventsLoaded, events...)
 			mu.Unlock()
@@ -398,7 +398,7 @@ func TestLoadEvents_ConcurrentRequestsDropped(t *testing.T) {
 	mu.Lock()
 	errors := make([]string, len(errorMessages))
 	copy(errors, errorMessages)
-	loaded := make([]client.SyncEvent, len(eventsLoaded))
+	loaded := make([]api.SyncEvent, len(eventsLoaded))
 	copy(loaded, eventsLoaded)
 	mu.Unlock()
 
@@ -435,7 +435,7 @@ func TestLoadEvents_ConcurrentRequestsDropped(t *testing.T) {
 func TestKeepalive_OffByOneStaleDetection(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -456,7 +456,7 @@ func TestKeepalive_OffByOneStaleDetection(t *testing.T) {
 		ackReceived = make(chan struct{}, 1)
 	)
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnRawMessage: func(msgType string, data []byte) {
 			if msgType == "keepalive_ack" {
 				mu.Lock()

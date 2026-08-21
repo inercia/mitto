@@ -1,0 +1,109 @@
+icon: list
+name: Implement spec
+menus: prompts, !promptsLoop
+description: Decompose a specification into complete, prioritized beads work items and epics
+group: Development
+backgroundColor: '#FFECB3'
+enabledWhen: 'CommandExists("bd") && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SpecFile
+    type: filename
+    required: false
+    remember: folder
+    glob:
+      - "**/*.md"
+      - "**/*.markdown"
+      - "**/*.txt"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "**/*.asciidoc"
+      - "**/*.pdf"
+      - "**/*.doc"
+      - "**/*.docx"
+      - "**/*.odt"
+      - "**/*.rtf"
+      - "**/*.html"
+      - "**/*.htm"
+      - "**/*.tex"
+      - "**/*.yaml"
+      - "**/*.yml"
+      - "**/*.json"
+      - "**/*.feature"
+    description: Optional workspace-relative path to a specification document; accepts common prose, office, web, structured-spec, and BDD formats, but excludes source-code files. If empty, you will be asked which document to use.
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Decompose a Specification into Beads
+
+  Turn one specification into a complete, dependency-correct set of beads that
+  can be implemented independently or under coherent epics. Do not implement the
+  specification in this conversation; the created tickets are the deliverable.
+
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  ## Step 1 — Resolve and read the specification
+
+  {{- if .Args.SpecFile }}
+  The selected specification is `{{ .Args.SpecFile }}`. Verify that this exact
+  workspace-relative path exists, then read the complete document before planning.
+  {{- else }}
+  No specification path was supplied. Before doing any analysis or creating beads,
+  use `mitto_ui_form(self_id: "{{ .Session.ID }}")` to ask for the workspace-relative
+  specification path in a required text field named `spec_file`. Validate the
+  submitted path and re-present the form if it is missing or unreadable.
+  {{- end }}
+
+  Accept only a document/specification format represented by the `SpecFile` picker.
+  Reject source-code paths such as `.go`, `.js`, `.py`, or `.java` and ask for the
+  actual specification document instead; source files are implementation context,
+  never the specification input.
+
+  Use the appropriate available reader for the document format: normal file tools
+  for text formats (`.md`, `.txt`, `.rst`, `.adoc`, and similar), and a PDF/Word or
+  local document-parsing tool for binary formats such as `.pdf` or `.docx`. Never
+  infer a binary document's contents from its filename or metadata.
+
+  Extract and retain a requirement inventory containing functional requirements,
+  non-functional requirements, acceptance criteria, constraints, exclusions,
+  migration/compatibility needs, and unresolved questions. If an ambiguity would
+  materially change the decomposition, ask one focused question with the appropriate
+  Mitto UI tool and wait for the answer rather than guessing.
+
+  ## Step 2 — Learn the implementation and tracker context
+
+  Read the relevant code and existing documentation to understand the architecture,
+  established patterns, likely affected areas, and realistic verification strategy.
+  Do not speculate about files you have not inspected.
+
+  ## Step 3 — Design the decomposition
+
+  Partition the requirements into concrete implementation slices. Each slice should
+  deliver observable value and include its own necessary tests and documentation.
+  Keep tightly coupled changes together, but split work that can be implemented,
+  reviewed, or sequenced independently.
+
+  {{ template "beads-issues/shared/planning-ticket-conventions" . }}
+
+  Assign priority using the specification's impact, urgency, and critical-path
+  position. The coverage mapping must account for every extracted requirement.
+
+  ## Step 4 — Review the proposed hierarchy
+
+  Print a compact proposal with each epic, its indented children, standalone items,
+  type, priority, labels, requirement coverage, and blockers. Then use
+  `mitto_ui_form(self_id: "{{ .Session.ID }}")` with checked-by-default checkboxes
+  for every proposed epic and work item so the user can omit unwanted entries.
+
+  An epic is approved only when its checkbox is present. If an approved epic has
+  fewer than two approved children, create those children as standalone beads
+  instead. If the user cancels or submits with every work item unchecked, create
+  nothing and stop. Incorporate requested revisions and re-present the hierarchy
+  before writing any beads.
+
+  Treat the specification's functional requirements, non-functional requirements,
+  constraints, and acceptance criteria as the source units for the shared coverage
+  matrix and retrospective.
+
+  {{ template "beads-issues/shared/planned-work-ticket-tail" . }}

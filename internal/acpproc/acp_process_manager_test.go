@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 )
@@ -247,6 +249,66 @@ func TestAuxiliaryClient_ResponseCollection(t *testing.T) {
 	got = client.getResponse()
 	if got != "" {
 		t.Errorf("After reset, getResponse() = %q, want empty string", got)
+	}
+}
+
+func TestAuxiliaryClient_RetireIgnoresLateChunks(t *testing.T) {
+	client := newAuxiliaryClient()
+	client.retire()
+	client.reset()
+
+	err := client.OnSessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{
+			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				Content: acp.ContentBlock{Text: &acp.ContentBlockText{Text: "late output"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnSessionUpdate() error = %v", err)
+	}
+	if got := client.getResponse(); got != "" {
+		t.Fatalf("retired client collected late output %q", got)
+	}
+}
+
+func TestInvalidateAuxSession_DoesNotDeleteReplacement(t *testing.T) {
+	mgr := NewACPProcessManager(context.Background(), nil)
+	defer mgr.Close()
+	key := auxSessionKey{workspaceUUID: "workspace1", purpose: "improve-prompt"}
+	stale := &auxiliarySessionState{sessionID: "stale"}
+	replacement := &auxiliarySessionState{sessionID: "replacement"}
+	mgr.auxSessions[key] = replacement
+
+	mgr.invalidateAuxSession(key.workspaceUUID, key.purpose, stale)
+
+	if got := mgr.auxSessions[key]; got != replacement {
+		t.Fatalf("replacement session was removed: got %p, want %p", got, replacement)
+	}
+}
+
+func TestRetireCancelledAuxSession_UnregistersAndInvalidates(t *testing.T) {
+	mgr := NewACPProcessManager(context.Background(), nil)
+	defer mgr.Close()
+	key := auxSessionKey{workspaceUUID: "workspace1", purpose: "improve-prompt"}
+	client := newAuxiliaryClient()
+	state := &auxiliarySessionState{sessionID: "cancelled", client: client}
+	process := &SharedACPProcess{client: NewMultiplexClient()}
+	process.RegisterSession(acp.SessionId(state.sessionID), &conversation.SessionCallbacks{
+		OnSessionUpdate: client.OnSessionUpdate,
+	})
+	mgr.auxSessions[key] = state
+
+	mgr.retireCancelledAuxSession(process, key.workspaceUUID, key.purpose, state)
+
+	if process.client.getSession(acp.SessionId(state.sessionID)) != nil {
+		t.Fatal("cancelled session callback remains registered")
+	}
+	if _, ok := mgr.auxSessions[key]; ok {
+		t.Fatal("cancelled auxiliary session remains cached")
+	}
+	if !client.retired {
+		t.Fatal("cancelled auxiliary client was not retired")
 	}
 }
 
@@ -1238,6 +1300,178 @@ func TestSetSessionModel_SaturatedFailsFast(t *testing.T) {
 	}
 }
 
+// unresponsiveACPPeer wires a *acp.ClientSideConnection to a fake in-process
+// peer that never answers any request, so every outbound RPC times out purely
+// via the caller's context deadline — exactly like a cold/wedged agent
+// subprocess, but with no external mock-acp-server binary and no live agent.
+// It drains whatever the SDK writes (so sendMessage never blocks) and never
+// writes back (so the SDK's response wait can only end via ctx.Done()),
+// reproducing the exact client-side -32603 "context deadline exceeded"
+// *acp.RequestError described in mitto-qy0j Finding 1 (toReqErr wrapping).
+func newUnresponsiveACPPeerConn() *acp.ClientSideConnection {
+	reqR, reqW := io.Pipe()
+	respR, _ := io.Pipe() // write side deliberately never used: no response ever arrives.
+	go io.Copy(io.Discard, reqR)
+	return acp.NewClientSideConnection(NewMultiplexClient(), reqW, respR)
+}
+
+// TestSetSessionModel_ColdAgentTimeout_TripsSaturation is a reproduction test
+// for mitto-qy0j: a cold/wedged agent that never answers session/set_model
+// produces the exact client-side -32603 "context deadline exceeded"
+// *acp.RequestError described in Finding 1 (manufactured by the SDK's
+// toReqErr, NOT errors.Is(err, context.DeadlineExceeded)-compatible). Finding
+// 2 is the primary defect: SetSessionModel's timeout-accounting at the
+// call site only recognises errors.Is(err, context.DeadlineExceeded), so
+// these RPC timeouts feed ZERO saturation samples and the wedged shared
+// process is never recycled — unlike NewSession/LoadSession, which already
+// classify this exact signature via isAgentInternalDeadlineErr (mitto-y1g).
+//
+// This test asserts the EXPECTED (fixed) behavior: three consecutive
+// set_model timeouts within a single call (setSessionModelMaxAttempts=3,
+// matching sessionSaturationTimeoutThreshold=3) must trip isSaturated().
+// It currently FAILS, demonstrating the bug.
+func TestSetSessionModel_ColdAgentTimeout_TripsSaturation(t *testing.T) {
+	// Shrink the attempt schedule for the duration of this test so three
+	// real per-attempt ctx timeouts complete in well under a second instead
+	// of the production 20s/15s/8s schedule. Restored via defer so no other
+	// test (e.g. TestSetModelAttemptTimeoutSchedule) observes the override.
+	origSchedule := setSessionModelAttemptTimeouts
+	setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
+		60 * time.Millisecond,
+		50 * time.Millisecond,
+		40 * time.Millisecond,
+	}
+	defer func() { setSessionModelAttemptTimeouts = origSchedule }()
+
+	p := &SharedACPProcess{
+		conn:        newUnresponsiveACPPeerConn(),
+		setModelSem: make(chan struct{}, 1),
+		// processDone left nil = process considered alive.
+	}
+
+	if p.isSaturated() {
+		t.Fatal("precondition failed: process must not be saturated before the call")
+	}
+
+	err := p.SetSessionModel(context.Background(), "session-id", "some-model")
+	if err == nil {
+		t.Fatal("expected SetSessionModel to fail against an unresponsive agent")
+	}
+
+	// Sanity: confirm this really is the client-side-manufactured -32603
+	// "context deadline exceeded" signature from Finding 1, not some other
+	// failure (e.g. a wiring mistake in the fake peer) — and confirm the
+	// falsified hypothesis that it is NOT errors.Is-compatible.
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got errors.Is(err, context.DeadlineExceeded)=true; the whole point of Finding 1 is that the "+
+			"SDK-manufactured -32603 is NOT errors.Is-compatible — got unexpected error shape: %v", err)
+	}
+	if code, ok := rpcErrorCode(err); !ok || code != -32603 {
+		t.Fatalf("expected an *acp.RequestError with code -32603 (SDK toReqErr), got code=%d ok=%v err=%v", code, ok, err)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "deadline exceeded") && !strings.Contains(msg, "context deadline") {
+		t.Fatalf("expected the -32603 payload to carry a deadline-exceeded message, got: %v", err)
+	}
+
+	// The actual bug: three such consecutive timeouts within this one call
+	// (== sessionSaturationTimeoutThreshold) must trip saturation, exactly as
+	// NewSession/LoadSession already do for the identical error signature via
+	// isAgentInternalDeadlineErr. Today SetSessionModel's `errors.Is(err,
+	// context.DeadlineExceeded)` gate never matches this error, so
+	// recordRPCTimeout() is never called and this assertion fails.
+	if !p.isSaturated() {
+		t.Error("expected isSaturated()=true after 3 consecutive cold-agent set_model timeouts " +
+			"(mitto-qy0j Finding 2: set_model timeouts feed zero saturation samples)")
+	}
+}
+
+// TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast is a
+// regression test for mitto-qy0j (requirement 3): SetSessionModel's saturation
+// check ran only BEFORE queueing on the capacity-1 setModelSem. A sibling call
+// that queued while the process was still healthy could win the semaphore
+// AFTER an earlier caller's three attempts had already tripped saturation, and
+// would still burn a full fresh attempt-1 budget against a now-confirmed-dead
+// process before the mid-flight (attempt>1) fail-fast ever got a chance to
+// apply. N sibling children requesting the same model against a wedged shared
+// process therefore each independently paid a full deadline cycle instead of
+// one failure epoch plus fast fails for the rest.
+//
+// This test drives two SetSessionModel calls against the same unresponsive
+// peer: the first exhausts all 3 attempts (tripping saturation, mirroring
+// TestSetSessionModel_ColdAgentTimeout_TripsSaturation), the second is
+// launched only once it has observably queued behind the semaphore (checked
+// via len(p.setModelSem)) and must fail almost immediately once it acquires
+// the slot — not after its own attempt-1 timeout.
+func TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast(t *testing.T) {
+	origSchedule := setSessionModelAttemptTimeouts
+	setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
+		60 * time.Millisecond,
+		50 * time.Millisecond,
+		40 * time.Millisecond,
+	}
+	defer func() { setSessionModelAttemptTimeouts = origSchedule }()
+
+	p := &SharedACPProcess{
+		conn:        newUnresponsiveACPPeerConn(),
+		setModelSem: make(chan struct{}, 1),
+		// processDone left nil = process considered alive.
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_ = p.SetSessionModel(context.Background(), "session-1", "model-a")
+	}()
+
+	// Wait until the first caller has visibly acquired the semaphore before
+	// launching the sibling, so the sibling deterministically queues behind
+	// it for the whole duration of the first caller's 3 failed attempts.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(p.setModelSem) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("first caller never acquired setModelSem")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Launch the sibling in its own goroutine too: it must block on the
+	// semaphore (held by the first caller) for the whole ~1s duration of the
+	// first caller's 3 failed attempts + backoffs. What this test actually
+	// measures is the gap between "first caller releases the semaphore" and
+	// "sibling returns" — NOT the sibling's total elapsed time from launch,
+	// which necessarily includes that unavoidable queueing wait.
+	var siblingErr error
+	siblingDone := make(chan struct{})
+	go func() {
+		defer close(siblingDone)
+		siblingErr = p.SetSessionModel(context.Background(), "session-2", "model-a")
+	}()
+
+	<-firstDone // first caller's saturation-tripping attempts have landed and released the slot
+	releasedAt := time.Now()
+
+	select {
+	case <-siblingDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sibling SetSessionModel did not return after the semaphore was released")
+	}
+	elapsedAfterRelease := time.Since(releasedAt)
+
+	if siblingErr == nil {
+		t.Fatal("expected the queued sibling SetSessionModel call to fail once saturation trips")
+	}
+	if !errors.Is(siblingErr, acperrors.ErrProcessSaturated) {
+		t.Errorf("expected sibling call to fail with ErrProcessSaturated (post-semaphore recheck), got: %v", siblingErr)
+	}
+	// The sibling must fail almost immediately once it acquires the semaphore
+	// — not after burning its own attempt-1 budget (60ms) plus retry backoff
+	// against an already-confirmed-saturated process.
+	if elapsedAfterRelease > 30*time.Millisecond {
+		t.Errorf("expected sibling call to fail fast (<30ms after semaphore release) via post-semaphore saturation recheck, took %v", elapsedAfterRelease)
+	}
+}
+
 // TestShouldFailFastCreateAttempt verifies the pure decision helper (mitto-13ck.2).
 func TestShouldFailFastCreateAttempt(t *testing.T) {
 	bigBudget := sessionCreateAttemptTimeout * 2
@@ -1299,6 +1533,21 @@ func TestSetModelFailureIsTerminal(t *testing.T) {
 				t.Errorf("setModelFailureIsTerminal(%d, %v)=%v, want %v", tc.attempt, tc.retryable, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestIsRetryableSetModelError_UpstreamUnavailableIsNotRetryable verifies
+// mitto-gbf5: an upstream connect-timeout brownout (UND_ERR_CONNECT_TIMEOUT /
+// apiStatus=unavailable) must NOT be retried by SetSessionModel's bounded
+// loop. Unlike a local slow RPC it will not resolve within the next
+// attempt's budget, so retrying only burns the full retry budget instead of
+// surfacing the real condition promptly. This is checked ahead of the
+// generic "timeout" substring fallback, which would otherwise classify it
+// retryable (the raw error text contains "Connect Timeout Error").
+func TestIsRetryableSetModelError_UpstreamUnavailableIsNotRetryable(t *testing.T) {
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: xlb.api.augmentcode.com:443, timeout: 10000ms))","data":{"apiStatus":"unavailable"}}`)
+	if isRetryableSetModelError(err) {
+		t.Errorf("isRetryableSetModelError(upstream connect-timeout) = true, want false")
 	}
 }
 
@@ -1885,6 +2134,23 @@ func TestGetOrCreateAuxiliarySession_SaturatedBails(t *testing.T) {
 	if !strings.Contains(err.Error(), "saturated") {
 		t.Errorf("expected error message to mention 'saturated', got %q", err.Error())
 	}
+	// mitto-13n.2: the reactive IsSaturated() bail is real, timeout-driven
+	// degradation and must classify as the specific ErrProcessSaturated
+	// sentinel (not the busy or MCP-gated ones), while still satisfying the
+	// umbrella ErrSharedProcessSaturated for transition-era callers. This
+	// FAILS today because ErrProcessSaturated does not exist yet.
+	if !errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("expected err to wrap acperrors.ErrProcessSaturated, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("saturation bail must NOT classify as ErrProcessBusy, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("saturation bail must NOT classify as ErrMCPInitGated, got %v", err)
+	}
 }
 
 // TestAuxiliaryModelTag_HonoursProfileOrder locks the "list order = priority"
@@ -1935,5 +2201,281 @@ func TestAuxiliaryModelTag_HonoursProfileOrder(t *testing.T) {
 	}
 	if got := resolveAuxTagConstraint([]config.ModelProfile{unmatchable}, models); got != nil {
 		t.Errorf("unmatchable profile: resolveAuxTagConstraint = %+v, want nil", got)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_HighActiveRPCsBails is the mitto-9gt
+// reproduction: during a parallel fan-out on a not-yet-saturated shared ACP
+// process, non-essential auxiliary purposes (follow-up, keepalive, mcp-check,
+// title-gen) MUST bail fast instead of paying the full auxSessionCreateBudget
+// (60s) on a NewSession RPC that will time out on the agent's internal
+// deadline. The existing IsSaturated() bail (mitto-z70) is REACTIVE — it fires
+// only after sessionSaturationTimeoutThreshold=3 consecutive timeouts or the
+// rate-window trip — so the FIRST storm always slips past it. Evidence on the
+// bead: two aux sessions (follow-up, keepalive) both burned new_session_ms=60002
+// on a process whose IsSaturated() never returned true during that window,
+// consuming the parent's 2m wait_children budget.
+//
+// The complementary guard is PROACTIVE: when process.ActiveRPCs() reports the
+// shared process is already serving N concurrent user-facing RPCs above some
+// threshold, non-essential aux purposes should bail immediately with the same
+// "process saturated / defer aux" sentinel that mitto-z70 returns. This test
+// primes activeRPCs to a busy count and asserts the bail. Currently there is
+// no such guard, so the call proceeds past the IsSaturated() check into
+// NewSession and either hangs on a nil conn or returns a non-sentinel error —
+// either way, this test FAILS until the fix phase adds the proactive bail.
+func TestGetOrCreateAuxiliarySession_HighActiveRPCsBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-busy-fanout"
+
+	// Install a bare shared process. Crucially, do NOT flag it saturated —
+	// this test isolates the FIRST-storm hole where saturation has not yet
+	// tripped (real repro: parent + fan-out of ~3-6 concurrent RPCs, no
+	// timeouts yet accumulated).
+	proc := newTestSharedProcess()
+
+	// Prime the in-flight RPC counter to simulate a busy parent + fan-out.
+	// K=6 mirrors the concurrent_prompting=6 observed on the bead at the
+	// moment the aux keepalive session/new was issued.
+	const busyRPCs = 6
+	for i := 0; i < busyRPCs; i++ {
+		proc.activeRPCs.Add(1)
+	}
+	if got := proc.ActiveRPCs(); got != busyRPCs {
+		t.Fatalf("test setup: ActiveRPCs()=%d, want %d", got, busyRPCs)
+	}
+
+	// Precondition: the process must NOT already be saturated — otherwise
+	// the existing mitto-z70 bail would fire and we would not be testing
+	// the proactive guard.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (this test isolates the pre-saturation hole)")
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	// Non-essential aux purpose (follow-up) is exactly the class the bead
+	// documents burning 60s on a busy process.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, wsUUID, "follow-up")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession on a busy process (ActiveRPCs above threshold)")
+	}
+	// Must classify as a deadline-exceeded family sentinel so callers can
+	// distinguish "agent is busy, back off" from a genuine failure — same
+	// contract mitto-z70's saturated bail obeys.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded (saturation-family sentinel), got %v", err)
+	}
+	// Error message must mention the busy/saturated condition so operators
+	// can distinguish this bail from unrelated failures in log analysis.
+	msg := err.Error()
+	if !strings.Contains(msg, "saturated") && !strings.Contains(msg, "busy") && !strings.Contains(msg, "active RPCs") {
+		t.Errorf("expected error message to mention 'saturated'/'busy'/'active RPCs', got %q", msg)
+	}
+	// Must bail well under the auxSessionCreateBudget (60s). A proactive
+	// guard is a synchronous check; anything above a few hundred ms means
+	// the call fell through into NewSession — the exact bug this test pins.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+	// mitto-13n.2: transient concurrent-RPC load-shedding is NOT the same
+	// as real degradation — it must classify as ErrProcessBusy specifically
+	// (not ErrProcessSaturated/ErrMCPInitGated), while still satisfying the
+	// umbrella sentinel for transition-era callers. FAILS today because
+	// ErrProcessBusy does not exist yet.
+	if !errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("expected err to wrap acperrors.ErrProcessBusy, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("busy bail must NOT classify as ErrProcessSaturated, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("busy bail must NOT classify as ErrMCPInitGated, got %v", err)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_SingleForegroundPromptBails reproduces
+// mitto-6cz6: even one active foreground prompt can overlap several distinct
+// auxiliary session/new calls, each triggering Auggie's asynchronous MCP init.
+// Nonessential auxiliary creation must therefore shed before joining that prompt.
+func TestGetOrCreateAuxiliarySession_SingleForegroundPromptBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-single-foreground-prompt"
+	proc := newTestSharedProcess()
+	proc.activeRPCs.Store(1)
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(context.Background(), wsUUID, "follow-up")
+	if !errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Fatalf("one active foreground RPC should shed nonessential auxiliary creation with ErrProcessBusy, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("expected immediate load shedding, got %v", elapsed)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails is the mitto-337
+// reproduction (hard case): the shared process's stderr monitor has already
+// observed the agent report "MCP initialization timed out"
+// (mcpInitTimedOut=true), yet the process is QUIESCENT — not saturated
+// (IsSaturated()=false, no accumulated recordRPCTimeout calls yet) and not
+// busy (ActiveRPCs() below auxSessionCreateBusyRPCThreshold). Neither existing
+// guard (mitto-z70 IsSaturated, mitto-9gt ActiveRPCs) fires, so today the call
+// falls through into NewSession and burns the full auxSessionCreateBudget
+// (60s) against an agent that has explicitly given up on MCP init — exactly
+// the "22:31/22:32/22:33 serialized 60s failures" log signature on the bead.
+//
+// getOrCreateAuxiliarySession should instead consult the already-tracked
+// MCPInitTimedOut() signal and bail immediately with the same
+// ErrSharedProcessSaturated + context.DeadlineExceeded sentinel the other
+// bails use. This test FAILS today because no such bail exists.
+func TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-mcp-init-timed-out"
+
+	proc := newTestSharedProcess()
+	proc.mcpInitTimedOut.Store(true)
+
+	// Preconditions: isolate this guard from the two existing ones.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (isolates the MCP-init-aware guard)")
+	}
+	if got := proc.ActiveRPCs(); got >= auxSessionCreateBusyRPCThreshold {
+		t.Fatalf("test setup: ActiveRPCs()=%d must be below threshold %d", got, auxSessionCreateBusyRPCThreshold)
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, wsUUID, "title-gen")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession while MCP init has timed out")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded (saturation-family sentinel), got %v", err)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "mcp") {
+		t.Errorf("expected error message to mention the MCP-init condition, got %q", err.Error())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+	// mitto-13n.2: a wedged/timed-out MCP handshake is neither timeout-driven
+	// process degradation nor concurrent-RPC load — it must classify as
+	// ErrMCPInitGated specifically, while still satisfying the umbrella
+	// sentinel for transition-era callers. FAILS today because
+	// ErrMCPInitGated does not exist yet.
+	if !errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("expected err to wrap acperrors.ErrMCPInitGated, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("mcp-init-timed-out bail must NOT classify as ErrProcessSaturated, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("mcp-init-timed-out bail must NOT classify as ErrProcessBusy, got %v", err)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_MCPInitInProgressBails is the mitto-337
+// reproduction (soft case): the agent has reported it is actively waiting on
+// its MCP handshake (mcpInitInProgress=true) and has never completed one
+// (mcpInitDone=false) — i.e. it is mid cold-start, not yet hard-timed-out.
+// Same gap as the hard case: neither IsSaturated() nor ActiveRPCs() fires on a
+// quiescent process, so a non-essential aux purpose (follow-up) falls through
+// into a doomed 60s NewSession call instead of bailing on the
+// already-available "agent is gated on MCP init" signal.
+//
+// This test FAILS today for the same reason as the timed-out case above.
+func TestGetOrCreateAuxiliarySession_MCPInitInProgressBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-mcp-init-in-progress"
+
+	proc := newTestSharedProcess()
+	proc.mcpInitInProgress.Store(true)
+	// mcpInitDone left false (zero value): the handshake is still running,
+	// not yet warm — this is the precondition that distinguishes the "gated"
+	// case from a normal warm per-session re-handshake (mitto-29q), which
+	// must NOT be bailed.
+
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (isolates the MCP-init-aware guard)")
+	}
+	if got := proc.ActiveRPCs(); got >= auxSessionCreateBusyRPCThreshold {
+		t.Fatalf("test setup: ActiveRPCs()=%d must be below threshold %d", got, auxSessionCreateBusyRPCThreshold)
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, wsUUID, "follow-up")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession while MCP init is in progress")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded (saturation-family sentinel), got %v", err)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "mcp") {
+		t.Errorf("expected error message to mention the MCP-init condition, got %q", err.Error())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("expected fast bail (<500ms), got %v — call fell through into NewSession", elapsed)
+	}
+	// mitto-13n.2: same classification contract as the timed-out (hard) case
+	// above — an in-progress/never-completed MCP handshake must classify as
+	// ErrMCPInitGated, not ErrProcessSaturated/ErrProcessBusy, while still
+	// satisfying the umbrella sentinel. FAILS today because ErrMCPInitGated
+	// does not exist yet.
+	if !errors.Is(err, acperrors.ErrMCPInitGated) {
+		t.Errorf("expected err to wrap acperrors.ErrMCPInitGated, got %v", err)
+	}
+	if !errors.Is(err, ErrSharedProcessSaturated) {
+		t.Errorf("expected err to still wrap the umbrella ErrSharedProcessSaturated during transition, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessSaturated) {
+		t.Errorf("mcp-init-in-progress bail must NOT classify as ErrProcessSaturated, got %v", err)
+	}
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Errorf("mcp-init-in-progress bail must NOT classify as ErrProcessBusy, got %v", err)
 	}
 }

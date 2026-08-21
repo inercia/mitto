@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -97,6 +98,10 @@ func (h *Handlers) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) 
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
 		return
 	}
+	if beads.IsPolicyConfigKey(req.Key) {
+		writeErrorJSON(w, http.StatusConflict, "", "this config key is managed by the folder's Beads database mode")
+		return
+	}
 
 	if err := h.beadsClient().ConfigSet(r.Context(), workingDir, req.Key, req.Value); err != nil {
 		h.writeBeadsError(w, r, err)
@@ -121,6 +126,10 @@ func (h *Handlers) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request
 	}
 	if !beads.IsValidConfigKey(key) {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid config key")
+		return
+	}
+	if beads.IsPolicyConfigKey(key) {
+		writeErrorJSON(w, http.StatusConflict, "", "this config key is managed by the folder's Beads database mode")
 		return
 	}
 	if !h.isKnownWorkspaceDir(workingDir) {
@@ -161,6 +170,88 @@ type beadsUpstreamResponse struct {
 	PullPromptArgs map[string]string `json:"pull_prompt_args,omitempty"`
 	PushPromptArgs map[string]string `json:"push_prompt_args,omitempty"`
 	SyncPromptArgs map[string]string `json:"sync_prompt_args,omitempty"`
+}
+
+// beadsDatabaseModeResponse is intentionally independent from beadsUpstreamResponse:
+// database replication policy and external-task synchronization are orthogonal.
+type beadsDatabaseModeResponse struct {
+	DatabaseMode config.BeadsDatabaseMode `json:"database_mode"`
+	HasRemote    bool                     `json:"has_remote"`
+}
+
+type beadsDatabaseModeRequest struct {
+	DatabaseMode config.BeadsDatabaseMode `json:"database_mode"`
+}
+
+// HandleBeadsDatabaseMode manages the effective per-folder Beads Dolt policy.
+func (h *Handlers) HandleBeadsDatabaseMode(w http.ResponseWriter, r *http.Request) {
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+
+	client := h.beadsClient()
+	switch r.Method {
+	case http.MethodGet:
+		mode, err := beads.ResolveDatabaseMode(r.Context(), client, workingDir)
+		if err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		if err := beads.ReconcileDatabaseMode(r.Context(), client, workingDir, mode); err != nil {
+			h.writeBeadsDatabaseModeError(w, r, err)
+			return
+		}
+		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
+		if err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		writeJSONOK(w, beadsDatabaseModeResponse{DatabaseMode: mode, HasRemote: hasRemote})
+	case http.MethodPut:
+		var req beadsDatabaseModeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
+			return
+		}
+		if !config.IsValidBeadsDatabaseMode(req.DatabaseMode) {
+			writeErrorJSON(w, http.StatusBadRequest, "", "database_mode must be one of: local, shared")
+			return
+		}
+		if err := beads.ReconcileDatabaseMode(r.Context(), client, workingDir, req.DatabaseMode); err != nil {
+			h.writeBeadsDatabaseModeError(w, r, err)
+			return
+		}
+		if err := config.SetFolderBeadsDatabaseMode(workingDir, req.DatabaseMode); err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		hasRemote, err := beads.DoltRemoteConfigured(r.Context(), client, workingDir)
+		if err != nil {
+			h.writeBeadsError(w, r, err)
+			return
+		}
+		writeJSONOK(w, beadsDatabaseModeResponse{DatabaseMode: req.DatabaseMode, HasRemote: hasRemote})
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (h *Handlers) writeBeadsDatabaseModeError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, beads.ErrSharedModeRequiresRemote) {
+		writeErrorJSON(w, http.StatusConflict, "", err.Error())
+		return
+	}
+	h.writeBeadsError(w, r, err)
 }
 
 // HandleBeadsUpstream manages the per-folder beads upstream task system stored

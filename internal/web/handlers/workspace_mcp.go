@@ -245,6 +245,7 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 		Args    []string          `json:"args"`
 		URL     string            `json:"url"`
 		Env     map[string]string `json:"env"`
+		Headers map[string]string `json:"headers"`
 	}
 
 	type mcpInstallRequest struct {
@@ -344,6 +345,7 @@ func (h *Handlers) HandleWorkspaceMCPInstall(w http.ResponseWriter, r *http.Requ
 			Args:    entry.Args,
 			URL:     entry.URL,
 			Env:     entry.Env,
+			Headers: entry.Headers,
 			Scope:   req.Scope,
 			Path:    workingDir,
 		}

@@ -13,8 +13,11 @@ var DefaultConfigYAML []byte
 
 // BuiltinPromptsFS contains the embedded builtin prompts directory.
 // These prompts are deployed to MITTO_DIR/prompts/builtin/ on first run.
+// Uses the `all:` prefix so nested subdirectories (e.g. topic-based groupings
+// like `beads/`, `github/`, `jira/`) are included in the binary; the flat
+// `*.prompt.yaml` glob only matched the top level (mitto-j88.1).
 //
-//go:embed prompts/builtin/*.prompt.yaml
+//go:embed all:prompts/builtin
 var BuiltinPromptsFS embed.FS
 
 // BuiltinPromptsDir is the path within the embedded filesystem where prompts are stored.

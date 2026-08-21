@@ -11,6 +11,8 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // ColdStartRecentInput is the input for the mitto_coldstart_recent tool.
@@ -28,6 +30,21 @@ type ColdStartRecentInput struct {
 type ColdStartRecent struct {
 	ColdStarts     []coldstart.Summary            `json:"cold_starts"`
 	WorkspaceStats []coldstart.WorkspaceColdStats `json:"workspace_stats,omitempty"`
+}
+
+// GoroutineGaugeRecentInput is the input for the mitto_goroutine_gauge_recent
+// tool (mitto-x3x).
+type GoroutineGaugeRecentInput struct {
+	// Limit is the maximum number of recent gauge samples to return. 0 or
+	// omitted returns all samples currently held (up to the ring capacity).
+	Limit int `json:"limit,omitempty" jsonschema:"max number of recent gauge samples to return; 0 or omitted = all (up to the ring capacity)"`
+}
+
+// GoroutineGaugeRecent is the output for the mitto_goroutine_gauge_recent
+// tool. It wraps the ring-buffer snapshot returned by
+// coldstart.RecentGaugeSamples, newest first.
+type GoroutineGaugeRecent struct {
+	Samples []coldstart.GaugeSample `json:"samples"`
 }
 
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.
@@ -185,6 +202,13 @@ type RuntimeInfo struct {
 	GoVersion    string `json:"go_version"`
 	NumGoroutine int    `json:"num_goroutine"`
 
+	// Goroutine attribution (mitto-x3x). -1 when the corresponding provider
+	// is not registered (e.g. CLI/test paths without a running web server).
+	ConcurrentPrompting int `json:"concurrent_prompting"`
+	LiveACPProcesses    int `json:"live_acp_processes"`
+	ConnectedWSClients  int `json:"connected_ws_clients"`
+	OpenMCPSSEStreams   int `json:"open_mcp_sse_streams"`
+
 	// Mitto directories
 	DataDir     string `json:"data_dir,omitempty"`
 	SessionsDir string `json:"sessions_dir,omitempty"`
@@ -204,9 +228,39 @@ type RuntimeInfo struct {
 
 // LogFilesInfo contains paths to log files.
 type LogFilesInfo struct {
-	MainLog    string `json:"main_log,omitempty"`
-	AccessLog  string `json:"access_log,omitempty"`
-	WebViewLog string `json:"webview_log,omitempty"`
+	MainLog          string            `json:"main_log,omitempty"`
+	MainLogRetention *LogRetentionInfo `json:"main_log_retention,omitempty"`
+	AccessLog        string            `json:"access_log,omitempty"`
+	WebViewLog       string            `json:"webview_log,omitempty"`
+}
+
+// LogRetentionInfo reports the live runtime log's bounded retention coverage.
+// Rotation counters reset when logging is initialized; disk inventory survives restarts.
+type LogRetentionInfo struct {
+	MaxSizeMB           int    `json:"max_size_mb"`
+	MaxBackups          int    `json:"max_backups"`
+	Compress            bool   `json:"compress"`
+	RetainedFiles       int    `json:"retained_files"`
+	RetainedBytes       int64  `json:"retained_bytes"`
+	OldestRetainedAt    string `json:"oldest_retained_at,omitempty"`
+	RetainedSpanSeconds int64  `json:"retained_span_seconds"`
+	Rotations           uint64 `json:"rotations"`
+	DroppedRotations    uint64 `json:"dropped_rotations"`
+	CounterStartedAt    string `json:"counter_started_at"`
+}
+
+func logRetentionInfo(snapshot logging.FileRetentionSnapshot) *LogRetentionInfo {
+	info := &LogRetentionInfo{
+		MaxSizeMB: snapshot.MaxSizeMB, MaxBackups: snapshot.MaxBackups, Compress: snapshot.Compress,
+		RetainedFiles: snapshot.RetainedFiles, RetainedBytes: snapshot.RetainedBytes,
+		RetainedSpanSeconds: snapshot.RetainedSpanSeconds,
+		Rotations:           snapshot.Rotations, DroppedRotations: snapshot.DroppedRotations,
+		CounterStartedAt: snapshot.CounterStartedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !snapshot.OldestRetainedAt.IsZero() {
+		info.OldestRetainedAt = snapshot.OldestRetainedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return info
 }
 
 // ConfigFilesInfo contains paths to configuration files.
@@ -218,13 +272,22 @@ type ConfigFilesInfo struct {
 
 // buildRuntimeInfo gathers runtime information about the Mitto instance.
 func buildRuntimeInfo() *RuntimeInfo {
+	// Reuse coldstart.Contention() for the goroutine-attribution fields
+	// (mitto-x3x) rather than re-reading the providers directly, so this and
+	// the periodic gauge / cold-start log always agree on the same sample
+	// shape and -1-when-unregistered convention.
+	contention := coldstart.Contention()
 	info := &RuntimeInfo{
-		OS:           runtime.GOOS,
-		Arch:         runtime.GOARCH,
-		NumCPU:       runtime.NumCPU(),
-		GoVersion:    runtime.Version(),
-		NumGoroutine: runtime.NumGoroutine(),
-		PID:          os.Getpid(),
+		OS:                  runtime.GOOS,
+		Arch:                runtime.GOARCH,
+		NumCPU:              runtime.NumCPU(),
+		GoVersion:           runtime.Version(),
+		NumGoroutine:        contention.NumGoroutine,
+		ConcurrentPrompting: contention.ConcurrentPrompting,
+		LiveACPProcesses:    contention.LiveACPProcesses,
+		ConnectedWSClients:  contention.ConnectedWSClients,
+		OpenMCPSSEStreams:   contention.OpenMCPSSEStreams,
+		PID:                 os.Getpid(),
 	}
 
 	// Hostname
@@ -256,6 +319,9 @@ func buildRuntimeInfo() *RuntimeInfo {
 		info.LogFiles.MainLog = filepath.Join(logsDir, "mitto.log")
 		info.LogFiles.AccessLog = filepath.Join(logsDir, "access.log")
 		info.LogFiles.WebViewLog = filepath.Join(logsDir, "webview.log")
+	}
+	if retention, ok := logging.CurrentFileRetention(); ok {
+		info.LogFiles.MainLogRetention = logRetentionInfo(retention)
 	}
 
 	// Configuration files
@@ -395,14 +461,33 @@ type ConversationUpdateInput struct {
 	LoopEnabled        *bool             `json:"loop_enabled,omitempty"`         // Whether the loop is active (defaults to true)
 	LoopFreshContext   *bool             `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	LoopMaxIterations  *int              `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
-	// LoopTrigger selects how the prompt fires: "schedule" (frequency-based, default),
-	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay),
-	// or "onTasks" (event-driven: fire when beads/tasks in the workspace change, optionally
-	// gated by loop_condition).
+	// LoopTrigger selects how the prompt fires. Accepts a single trigger
+	// ("schedule", "onCompletion", or "onTasks") or a comma-separated list of
+	// several ("schedule,onCompletion") to arm multiple triggers at once
+	// (mitto-r6j.5). "schedule" is frequency-based (default when unset);
+	// "onCompletion" fires after the agent stops responding + the completion
+	// delay; "onTasks" fires when beads/tasks in the workspace change,
+	// optionally gated by loop_condition.
 	LoopTrigger *string `json:"loop_trigger,omitempty"`
+	// LoopChildEvents lists the child-conversation lifecycle events that arm
+	// the onChild trigger: "anyEndResponse", "anyDeleted", and/or
+	// "anyLoopStopped" (fires once when a child's own loop transitions into
+	// the stopped state). nil means "leave unchanged"; a non-nil slice
+	// (including empty) replaces the stored list wholesale — same convention
+	// as LoopArguments above. Empty/absent (once applied) defaults to
+	// anyEndResponse + anyDeleted (anyLoopStopped is opt-in only). Only
+	// meaningful when onChild is among the armed triggers.
+	LoopChildEvents []string `json:"loop_child_events,omitempty"`
+	// LoopSlackSubscriptions is the credential-free installation/channel list
+	// for onSlack. nil means unchanged; a present empty list clears it.
+	LoopSlackSubscriptions []session.SlackSubscription `json:"loop_slack_subscriptions,omitempty"`
 	// LoopCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
 	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.
 	LoopCompletionDelaySeconds *int `json:"loop_completion_delay_seconds,omitempty"`
+	// LoopSettleWindowSeconds is an optional pre-fire debounce window (seconds)
+	// for the onTasks trigger; nil/0 = fire immediately on the first delta
+	// (default). Only meaningful when "onTasks" is among the armed triggers.
+	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
 	// LoopMaxDurationSeconds is the wall-clock cap (seconds) since iterating started (0 = unlimited).
 	LoopMaxDurationSeconds *int `json:"loop_max_duration_seconds,omitempty"`
 	// LoopCondition is a CEL expression gating onTasks firing (only meaningful when
@@ -414,6 +499,10 @@ type ConversationUpdateInput struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopRunOnStart, when *true, causes the loop to fire exactly once shortly
+	// after Mitto boots (with an anti-flap window guarding against a recent
+	// run). Nil or false = do not fire on start (default).
+	LoopRunOnStart *bool `json:"loop_run_on_start,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When loop_prompt_name resolves to a
 	// prompt carrying a loop: block, its fields fill any loop_* fields the
@@ -452,17 +541,31 @@ type ConversationUpdateOutput struct {
 	LoopIterationCount int               `json:"loop_iteration_count,omitempty"`
 	LoopNextRun        string            `json:"loop_next_run,omitempty"` // RFC3339 format
 	// On-completion trigger fields (returned when configured)
-	LoopTrigger                string `json:"loop_trigger,omitempty"`
-	LoopCompletionDelaySeconds int    `json:"loop_completion_delay_seconds,omitempty"`
-	LoopMaxDurationSeconds     int    `json:"loop_max_duration_seconds,omitempty"`
+	LoopTrigger string `json:"loop_trigger,omitempty"`
+	// LoopTriggers is the full resolved trigger list (mitto-r6j.5); LoopTrigger
+	// above remains the primary/first entry for back-compat.
+	LoopTriggers []string `json:"loop_triggers,omitempty"`
+	// LoopChildEvents is the resolved onChild event set (EffectiveChildEvents),
+	// returned when the loop is configured. Meaningless when onChild is not
+	// among LoopTriggers.
+	LoopChildEvents            []string                    `json:"loop_child_events,omitempty"`
+	LoopSlackSubscriptions     []session.SlackSubscription `json:"loop_slack_subscriptions,omitempty"`
+	LoopCompletionDelaySeconds int                         `json:"loop_completion_delay_seconds,omitempty"`
+	LoopMaxDurationSeconds     int                         `json:"loop_max_duration_seconds,omitempty"`
 	// onTasks trigger fields (returned when configured)
 	LoopCondition       string `json:"loop_condition,omitempty"`
 	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
+	// LoopSettleWindowSeconds reflects the stored onTasks pre-fire debounce
+	// window. Nil when unset (default: fire immediately on the first delta).
+	LoopSettleWindowSeconds *int `json:"loop_settle_window_seconds,omitempty"`
 	// LoopCoalesceDuringBusy reflects the stored opt-in flag. Nil when unset
 	// (default coalesce behaviour); non-nil when the caller explicitly opted in
 	// or out.
-	LoopCoalesceDuringBusy *bool  `json:"loop_coalesce_during_busy,omitempty"`
-	Error                  string `json:"error,omitempty"`
+	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
+	// LoopRunOnStart reflects the stored boot-pulse flag. Nil when unset
+	// (default: do not fire on start).
+	LoopRunOnStart *bool  `json:"loop_run_on_start,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.
@@ -500,13 +603,14 @@ type UIFormOutput struct {
 
 // UINotifyInput is the input for the mitto_ui_notify tool.
 type UINotifyInput struct {
-	SelfID  string `json:"self_id"`           // YOUR session ID (the caller)
-	Title   string `json:"title"`             // Notification title (required)
-	Message string `json:"message,omitempty"` // Optional body text
-	Style   string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
-	Sound   bool   `json:"sound,omitempty"`   // Play notification sound
-	Native  bool   `json:"native,omitempty"`  // Show native OS notification if available
-	Sticky  bool   `json:"sticky,omitempty"`  // Keep notification in Notification Center until dismissed
+	SelfID     string `json:"self_id"`               // YOUR session ID (the caller)
+	Title      string `json:"title"`                 // Notification title (required)
+	Message    string `json:"message,omitempty"`     // Optional body text
+	Style      string `json:"style,omitempty"`       // "info" (default), "success", "warning", "error"
+	Sound      bool   `json:"sound,omitempty"`       // Play notification sound
+	Native     bool   `json:"native,omitempty"`      // Show native OS notification if available
+	Sticky     bool   `json:"sticky,omitempty"`      // Keep notification in Notification Center until dismissed
+	BeadsIssue string `json:"beads_issue,omitempty"` // Optional bead ID (e.g. "mitto-abc"); makes the toast open the beads viewer on click
 }
 
 // UINotifyOutput is the output for the mitto_ui_notify tool.
@@ -522,14 +626,15 @@ type UINotifyOutput struct {
 // executing close-phase (conversationClosed) processors — can still surface
 // toasts to the user (mitto-6bn).
 type WorkspaceUINotifyInput struct {
-	SelfID        string `json:"self_id"`           // Caller session ID (for logging/audit; not required to resolve to a live session)
-	WorkspaceUUID string `json:"workspace_uuid"`    // Target workspace UUID (required)
-	Title         string `json:"title"`             // Notification title (required)
-	Message       string `json:"message,omitempty"` // Optional body text
-	Style         string `json:"style,omitempty"`   // "info" (default), "success", "warning", "error"
-	Sound         bool   `json:"sound,omitempty"`   // Play notification sound
-	Native        bool   `json:"native,omitempty"`  // Show native OS notification if available
-	Sticky        bool   `json:"sticky,omitempty"`  // Keep native notification in Notification Center until dismissed
+	SelfID        string `json:"self_id"`               // Caller session ID (for logging/audit; not required to resolve to a live session)
+	WorkspaceUUID string `json:"workspace_uuid"`        // Target workspace UUID (required)
+	Title         string `json:"title"`                 // Notification title (required)
+	Message       string `json:"message,omitempty"`     // Optional body text
+	Style         string `json:"style,omitempty"`       // "info" (default), "success", "warning", "error"
+	Sound         bool   `json:"sound,omitempty"`       // Play notification sound
+	Native        bool   `json:"native,omitempty"`      // Show native OS notification if available
+	Sticky        bool   `json:"sticky,omitempty"`      // Keep native notification in Notification Center until dismissed
+	BeadsIssue    string `json:"beads_issue,omitempty"` // Optional bead ID (e.g. "mitto-abc"); makes the toast open the beads viewer on click
 }
 
 // WorkspaceUINotifyOutput is the output for the mitto_workspace_ui_notify tool.
@@ -542,7 +647,8 @@ type WorkspaceUINotifyOutput struct {
 // =============================================================================
 
 // childReportCollector collects reports from child conversations.
-// It persists in-memory on the Server for the lifetime of the parent session.
+// Reports are persisted beside the parent session so suspension and process
+// restart cannot discard an accepted result.
 //
 // Reports are scoped by task_id. When the parent starts waiting for a new task,
 // only reports from the previous (different) task are cleared. Reports for the
@@ -552,6 +658,7 @@ type childReportCollector struct {
 	parentSessionID string
 	currentTaskID   string                  // task_id of the current/last wait cycle
 	reports         map[string]*childReport // child_id -> report (nil = pending)
+	store           *session.Store
 	mu              sync.Mutex
 
 	// Wait signaling: non-nil only while a parent is actively waiting via mitto_children_tasks_wait.
@@ -568,9 +675,11 @@ type childReportCollector struct {
 // addReport stores a child's report. Any child can report at any time.
 // If the child provides a taskID, it is stored with the report for matching.
 // If the parent is currently waiting and this report completes the wait set, signals the parent.
-func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) {
+// Returns whether the parent was actively waiting for this child when the report arrived.
+func (c *childReportCollector) addReport(childID string, taskID string, report json.RawMessage) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	wasWaiting := c.waitCh != nil && c.waitingFor[childID]
 
 	r := c.reports[childID]
 	if r == nil {
@@ -583,6 +692,20 @@ func (c *childReportCollector) addReport(childID string, taskID string, report j
 	r.TaskID = taskID
 
 	c.checkAndSignalWait()
+	return wasWaiting
+}
+
+// resetAutoCompletedForRetry returns synthetic results to pending before an
+// explicit retry prompt is sent. Genuine reports and terminal failures remain.
+func (c *childReportCollector) resetAutoCompletedForRetry(childIDs []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, childID := range childIDs {
+		if r := c.reports[childID]; r != nil && r.AutoCompleted {
+			c.reports[childID] = nil
+		}
+	}
 }
 
 // markChildAutoCompleted marks a child as auto-completed when its agent
@@ -895,9 +1018,22 @@ type ChildrenTasksReportOutput struct {
 type ConversationWaitInput struct {
 	SelfID         string `json:"self_id"`                   // YOUR session ID (the caller)
 	ConversationID string `json:"conversation_id"`           // Target conversation to wait on
-	What           string `json:"what"`                      // Condition to wait for: "agent_responded"
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min)
+	What           string `json:"what"`                      // Condition to wait for: "agent_responded" or "beads_issues_reached_state"
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"` // Optional timeout (default: 600s / 10 min for agent_responded, 4h for beads_issues_reached_state)
 	Workspace      string `json:"workspace,omitempty"`       // Optional workspace UUID for cross-workspace operations
+
+	// BeadsIssues is the list of bead IDs to observe when
+	// what = "beads_issues_reached_state". Required for that mode.
+	BeadsIssues []string `json:"beads_issues,omitempty"`
+	// BeadsTargetState is the bd status to wait for (e.g. "closed",
+	// "in_progress"). Required when what = "beads_issues_reached_state".
+	// Case-insensitive.
+	BeadsTargetState string `json:"beads_target_state,omitempty"`
+	// BeadsMatch selects the aggregation strategy for
+	// what = "beads_issues_reached_state": "all" (default) completes only
+	// when every listed bead reaches beads_target_state; "any" completes as
+	// soon as one of them does.
+	BeadsMatch string `json:"beads_match,omitempty"`
 }
 
 // ConversationWaitOutput is the output for mitto_conversation_wait tool.
@@ -908,6 +1044,27 @@ type ConversationWaitOutput struct {
 	StillPrompting bool   `json:"still_prompting,omitempty"` // True if the target agent is still responding (set on timeout)
 	Message        string `json:"message,omitempty"`         // Human-readable description of the wait outcome
 	Error          string `json:"error,omitempty"`
+
+	// ReachedIssues is the subset of BeadsIssues that satisfied the predicate
+	// when what = "beads_issues_reached_state".
+	ReachedIssues []string `json:"reached_issues,omitempty"`
+	// PendingIssues is the subset of BeadsIssues that did NOT reach the target
+	// state at return time when what = "beads_issues_reached_state" (typically
+	// populated on timeout).
+	PendingIssues []string `json:"pending_issues,omitempty"`
+	// CurrentStates is a snapshot of id -> current bd status at return time
+	// when what = "beads_issues_reached_state".
+	CurrentStates map[string]string `json:"current_states,omitempty"`
+
+	// Degraded is true when one or more bd evaluations failed shortly before
+	// the wait returned (what = "beads_issues_reached_state"), so the caller
+	// should not assume this outcome reflects a healthy read even when
+	// Success/TimedOut alone would suggest otherwise (mitto-f8zx).
+	Degraded bool `json:"degraded,omitempty"`
+	// ConsecutiveFailures is the number of consecutive bd evaluation
+	// failures observed immediately before the wait returned, when what =
+	// "beads_issues_reached_state". Zero when the wait was not degraded.
+	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
 }
 
 // =============================================================================
@@ -972,6 +1129,15 @@ type PromptInfo struct {
 	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
 	Loop            *config.PromptLoop       `json:"loop,omitempty"`       // non-nil = prompt starts a loop conversation
 	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
+	// NestedPromptSchemas advertises the inner parameter schemas addressable by
+	// each `type: prompts` picker parameter declared on this prompt (mitto-47y.6.3).
+	// Outer key = picker parameter's Name (as declared in Parameters); inner
+	// key = candidate inner-prompt name; value = that inner prompt's own
+	// Parameters slice. Clients can use this to construct typed nested
+	// arguments (v2 wire shape) instead of the legacy JSON-encoded `_Args`
+	// sibling-key string. Omitted when no picker parameters exist or none of
+	// the pickable inner prompts declare parameters.
+	NestedPromptSchemas map[string]map[string][]config.PromptParameter `json:"nested_prompt_schemas,omitempty"`
 }
 
 // PromptListOutput is the output for mitto_prompt_list tool.
@@ -1001,6 +1167,10 @@ type PromptDetail struct {
 	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
 	Loop            *config.PromptLoop       `json:"loop,omitempty"`       // non-nil = prompt starts a loop conversation
 	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
+	// NestedPromptSchemas advertises the inner parameter schemas addressable by
+	// each `type: prompts` picker parameter declared on this prompt (mitto-47y.6.3).
+	// See PromptInfo.NestedPromptSchemas for the shape and semantics.
+	NestedPromptSchemas map[string]map[string][]config.PromptParameter `json:"nested_prompt_schemas,omitempty"`
 }
 
 // PromptGetOutput is the output for mitto_prompt_get tool.

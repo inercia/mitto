@@ -54,8 +54,10 @@ test.describe("New Conversation: busy state + auto-retry", () => {
           status: 503,
           contentType: "application/json",
           body: JSON.stringify({
-            error: "session_creation_timeout",
-            message: "Agent is busy \u2014 please try again in a moment",
+            error: {
+              code: "session_creation_timeout",
+              message: "Agent is busy \u2014 please try again in a moment",
+            },
           }),
         });
       } else {
@@ -64,7 +66,9 @@ test.describe("New Conversation: busy state + auto-retry", () => {
     });
 
     // Use the stable data-testid selector so assertions work even after the
-    // button's title changes from "New Conversation" to "Creating conversation…".
+    // button's label changes from "New conversation in …" to "Creating
+    // conversation…". The sidebar button labels itself via aria-label/data-tip
+    // (its own tooltip system), not the native title attribute.
     const newButton = page.locator('[data-testid="new-conversation-btn"]');
     await expect(newButton).toBeVisible({ timeout: 5000 });
 
@@ -72,10 +76,10 @@ test.describe("New Conversation: busy state + auto-retry", () => {
     await newButton.click();
 
     // --- Acceptance criterion 1: button must show busy/spinner state ---
-    // The button becomes disabled and its title changes while a retry is pending.
+    // The button becomes disabled and its label changes while a retry is pending.
     await expect(newButton).toBeDisabled({ timeout: 5000 });
     await expect(newButton).toHaveAttribute(
-      "title",
+      "aria-label",
       /creating conversation/i,
       { timeout: 5000 },
     );
@@ -97,8 +101,8 @@ test.describe("New Conversation: busy state + auto-retry", () => {
 
     // Button must return to the normal (enabled) state after success.
     await expect(newButton).toBeEnabled({ timeout: 5000 });
-    // After success the title reverts to "New Conversation".
-    await expect(newButton).toHaveAttribute("title", /new conversation/i, {
+    // After success the label reverts to "New conversation in <folder>".
+    await expect(newButton).toHaveAttribute("aria-label", /new conversation/i, {
       timeout: 5000,
     });
 
@@ -123,8 +127,10 @@ test.describe("New Conversation: busy state + auto-retry", () => {
           status: 503,
           contentType: "application/json",
           body: JSON.stringify({
-            error: "session_creation_timeout",
-            message: "Agent is busy \u2014 please try again in a moment",
+            error: {
+              code: "session_creation_timeout",
+              message: "Agent is busy \u2014 please try again in a moment",
+            },
           }),
         });
       } else {

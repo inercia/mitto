@@ -1,0 +1,52 @@
+{{- /*
+  github/shared/pr-fetch-comments — retrieve every review comment, general PR
+  comment, and review-thread for a PR/MR, then categorize the raw set for
+  downstream triage/analysis.
+
+  `gh pr view --json reviewThreads` does NOT exist — `reviewThreads` is a
+  GraphQL-only field. This fragment fetches reviews + issue-level comments
+  via `gh pr view --json reviews,comments` (both supported) and unresolved
+  review threads via `gh api graphql` — replacing the mitto-emcc broken
+  `gh pr view --json reviews,comments,reviewThreads` form previously
+  inlined in `check-pr-comments` and `address-pr-comments`.
+
+  Callers: check-pr-comments §2, address-pr-comments §2.
+
+  Placeholders substituted by the agent from the surrounding context:
+    <owner>/<repo> — the target repository (e.g. "some-org/some-repo")
+    <number>       — the PR / MR number
+*/ -}}
+Retrieve every review comment, general PR comment, and unresolved review
+thread. **Do not** use `gh pr view --json reviewThreads` — that field is
+GraphQL-only and `gh pr view` will exit non-zero with `Unknown JSON field`.
+
+```bash
+# GitHub — reviews + issue-level PR comments (both are supported --json fields)
+gh pr view <number> --json reviews,comments
+
+# GitHub — unresolved (and not-outdated) review-thread comments (GraphQL only)
+REPO_OWNER=$(echo "<owner>/<repo>" | cut -d/ -f1)
+REPO_NAME=$(echo "<owner>/<repo>" | cut -d/ -f2)
+gh api graphql -f query='
+query($owner:String!,$name:String!,$number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100) { nodes {
+        id isResolved isOutdated
+        comments(first:20) { nodes {
+          author { login } path line originalLine body createdAt
+        } }
+      } }
+    }
+  }
+}' -F owner="$REPO_OWNER" -F name="$REPO_NAME" -F number=<number> \
+  --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+         | select(.isResolved == false and .isOutdated == false)]'
+
+# GitLab
+glab mr view <number> --comments
+```
+
+Categorize the merged set into: review comments, inline code comments,
+conversation threads, change requests, approvals-with-comments. **Ignore
+threads you authored** and threads that are already marked resolved.

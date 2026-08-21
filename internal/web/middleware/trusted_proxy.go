@@ -7,17 +7,32 @@ import (
 	"sync"
 )
 
+const (
+	TrustedProxyHeaderXForwardedFor  = "x-forwarded-for"
+	TrustedProxyHeaderXRealIP        = "x-real-ip"
+	TrustedProxyHeaderCFConnectingIP = "cf-connecting-ip"
+)
+
 // TrustedProxyChecker validates whether requests come from trusted proxies.
 // It is safe for concurrent use.
 type TrustedProxyChecker struct {
-	trustedNets []*net.IPNet
-	trustedIPs  []net.IP
+	trustedNets    []*net.IPNet
+	trustedIPs     []net.IP
+	trustedHeaders map[string]bool
 }
 
 // NewTrustedProxyChecker creates a new trusted proxy checker from a list of
-// IP addresses and CIDR ranges.
-func NewTrustedProxyChecker(trustedProxies []string) *TrustedProxyChecker {
-	tpc := &TrustedProxyChecker{}
+// IP addresses and CIDR ranges. X-Forwarded-For is the safe default; other
+// single-IP headers must be explicitly enabled.
+func NewTrustedProxyChecker(trustedProxies []string, trustedHeaders ...string) *TrustedProxyChecker {
+	tpc := &TrustedProxyChecker{trustedHeaders: make(map[string]bool)}
+	if len(trustedHeaders) == 0 {
+		tpc.trustedHeaders[TrustedProxyHeaderXForwardedFor] = true
+	} else {
+		for _, header := range trustedHeaders {
+			tpc.trustedHeaders[strings.ToLower(strings.TrimSpace(header))] = true
+		}
+	}
 
 	for _, entry := range trustedProxies {
 		entry = strings.TrimSpace(entry)
@@ -77,9 +92,8 @@ func (tpc *TrustedProxyChecker) HasTrustedProxies() bool {
 	return len(tpc.trustedNets) > 0 || len(tpc.trustedIPs) > 0
 }
 
-// GetClientIP extracts the real client IP from the request.
-// It only trusts X-Forwarded-For and X-Real-IP headers if the direct
-// connection comes from a trusted proxy.
+// GetClientIP extracts the real client IP from explicitly trusted headers when
+// the direct connection comes from a trusted proxy.
 func (tpc *TrustedProxyChecker) GetClientIP(r *http.Request) string {
 	// Get the direct connection IP
 	directIP := r.RemoteAddr
@@ -95,38 +109,60 @@ func (tpc *TrustedProxyChecker) GetClientIP(r *http.Request) string {
 		return directIP
 	}
 
-	// Connection is from a trusted proxy — check forwarded headers.
-	// Priority order: Cf-Connecting-IP (Cloudflare), X-Real-IP (nginx),
-	// X-Forwarded-For (generic). Cf-Connecting-IP is the most reliable
-	// because Cloudflare always sets it to the true client IP and it
-	// cannot be spoofed through Cloudflare's edge.
-
-	// Check Cf-Connecting-IP (set by Cloudflare edge — most reliable)
-	if cfIP := r.Header.Get("Cf-Connecting-IP"); cfIP != "" {
-		if ip := strings.TrimSpace(cfIP); net.ParseIP(ip) != nil {
-			return ip
-		}
-	}
-
-	// Check X-Real-IP (typically set by nginx)
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if ip := strings.TrimSpace(xri); net.ParseIP(ip) != nil {
-			return ip
-		}
-	}
-
-	// Check X-Forwarded-For (may contain multiple IPs — take the first)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			if ip := strings.TrimSpace(parts[0]); ip != "" && net.ParseIP(ip) != nil {
-				return ip
+	if tpc.trustedHeaders[TrustedProxyHeaderCFConnectingIP] {
+		if ip, present, valid := singleIPHeader(r, "Cf-Connecting-IP"); present {
+			if !valid {
+				return directIP
 			}
+			return ip
+		}
+	}
+
+	if tpc.trustedHeaders[TrustedProxyHeaderXRealIP] {
+		if ip, present, valid := singleIPHeader(r, "X-Real-IP"); present {
+			if !valid {
+				return directIP
+			}
+			return ip
+		}
+	}
+
+	if tpc.trustedHeaders[TrustedProxyHeaderXForwardedFor] {
+		values := r.Header.Values("X-Forwarded-For")
+		if len(values) > 0 {
+			parts := strings.Split(strings.Join(values, ","), ",")
+			leftmost := ""
+			for i := len(parts) - 1; i >= 0; i-- {
+				ip := net.ParseIP(strings.TrimSpace(parts[i]))
+				if ip == nil {
+					return directIP
+				}
+				leftmost = ip.String()
+				if !tpc.IsTrusted(leftmost) {
+					return leftmost
+				}
+			}
+			return leftmost
 		}
 	}
 
 	// Fall back to direct IP
 	return directIP
+}
+
+func singleIPHeader(r *http.Request, name string) (ip string, present, valid bool) {
+	values := r.Header.Values(name)
+	if len(values) == 0 {
+		return "", false, false
+	}
+	if len(values) != 1 || strings.Contains(values[0], ",") {
+		return "", true, false
+	}
+	parsed := net.ParseIP(strings.TrimSpace(values[0]))
+	if parsed == nil {
+		return "", true, false
+	}
+	return parsed.String(), true, true
 }
 
 // defaultProxyChecker is the global trusted proxy checker.

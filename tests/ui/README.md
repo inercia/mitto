@@ -4,14 +4,14 @@ End-to-end tests for the Mitto Web UI using Playwright with TypeScript.
 
 ## Prerequisites
 
-1. **Node.js** - Ensure Node.js 18+ is installed
+1. **Bun** - Ensure Bun 1.1+ is installed (see project root README)
 2. **Dependencies** - Install from project root:
    ```bash
-   npm install
+   bun install
    ```
 3. **Playwright Browsers** - Install Chromium:
    ```bash
-   npx playwright install chromium
+   bunx playwright install chromium
    ```
 
 ## Running Tests

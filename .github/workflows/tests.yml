@@ -28,17 +28,32 @@ jobs:
           version: latest
           args: --timeout=5m
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+      # Static validation of every builtin prompt + fragment + model-tag
+      # reference (mitto-11m). Fails the build if any builtin prompt
+      # references an unknown modelTag, any processor calls
+      # Session.HasModelTag("<tag>") with an unknown tag, or any prompt has
+      # bad YAML, an unresolved fragment reference, or an uncompilable
+      # template/CEL expression. Reproduce locally with: make check-prompts
+      - name: Validate prompts and model tags
+        run: make check-prompts
 
-      - name: Install Node.js dependencies
-        run: npm ci
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
 
       - name: Lint frontend code
         run: make lint-frontend
+
+      # Static validation of the SDK's generated .d.ts declarations
+      # (mitto-7gta.20). Fails if the committed web/static/sdk/types/ is
+      # stale relative to the JSDoc-annotated source. Reproduce locally
+      # with: make sdk-types
+      - name: Check SDK type declarations are up to date
+        run: make check-sdk-types
 
       - name: Check CodeMirror bundle is up to date
         run: |
@@ -61,11 +76,10 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
-          cache: 'npm'
+          bun-version: latest
 
       - name: Install dependencies
         run: make deps
@@ -97,11 +111,10 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
-          cache: 'npm'
+          bun-version: latest
 
       - name: Install dependencies
         run: make deps
@@ -121,9 +134,19 @@ jobs:
           MITTO_TEST_MODE: '1'
 
   smoke-tests:
-    name: Smoke Tests (Docker)
+    # mitto-3vb spike: temporary strategy.matrix.run fans this job out into
+    # 5 parallel Ubuntu runs on a single push, giving us the "5+ consecutive
+    # smoke-tests runs" signal the bead's acceptance criteria requires without
+    # waiting for 5 sequential re-triggers. Revert the strategy block (and
+    # restore the plain job name) once mitto-3vb's review phase has recorded
+    # the CI results — the setup-node removal and bunx swap stay.
+    name: Smoke Tests (Docker) (run ${{ matrix.run }})
     runs-on: ubuntu-latest
     needs: [lint, unit-tests]
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
 
@@ -133,23 +156,22 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
-          cache: 'npm'
+          bun-version: latest
 
-      - name: Install Node.js dependencies
-        run: npm ci
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ hashFiles('bun.lock') }}
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: bunx playwright install --with-deps chromium
 
       - name: Run smoke tests
         continue-on-error: true  # Smoke tests are informational while we stabilize CI timing
@@ -161,4 +183,78 @@ jobs:
         with:
           name: smoke-test-results
           path: tests/ui/test-results/
+          retention-days: 7
+
+  # Runs the restricted-runner smoke script on Linux with firejail installed so
+  # the `Linux → firejail` branch of tests/manual/restricted-runner-smoke.sh is
+  # actually exercised (mitto-6yi.4). The script's assert_runner_log_line
+  # already hard-fails on Linux if firejail was requested but the runner fell
+  # back to exec, so no assertion changes are needed here.
+  runner-smoke-linux:
+    name: Restricted-Runner Smoke (Linux/firejail)
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install firejail
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y firejail
+
+      - name: Prepare scratch dir for smoke logs
+        run: |
+          echo "SMOKE_SCRATCH_DIR=$GITHUB_WORKSPACE/smoke-scratch" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/smoke-scratch"
+
+      - name: Run restricted-runner smoke test
+        run: make test-runner-smoke
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-smoke-linux-logs
+          path: ${{ github.workspace }}/smoke-scratch/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Runs the restricted-runner smoke script on macOS so the `Darwin → sandbox-exec`
+  # branch of tests/manual/restricted-runner-smoke.sh is actually exercised on CI
+  # (mitto-6yi.5). Mirrors runner-smoke-linux minus the firejail install step
+  # (sandbox-exec is built into macOS).
+  runner-smoke-macos:
+    name: Restricted-Runner Smoke (macOS/sandbox-exec)
+    runs-on: macos-latest
+    needs: [lint, unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Prepare scratch dir for smoke logs
+        run: |
+          echo "SMOKE_SCRATCH_DIR=$GITHUB_WORKSPACE/smoke-scratch" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/smoke-scratch"
+
+      - name: Run restricted-runner smoke test
+        run: make test-runner-smoke
+
+      - name: Upload smoke logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-smoke-macos-logs
+          path: ${{ github.workspace }}/smoke-scratch/
+          if-no-files-found: warn
           retention-days: 7

@@ -78,9 +78,20 @@ prompt: |
 
   ## 3. Deduplicate against existing memories
 
-  Before adding anything, run `bd memory list` (or equivalent) to see what has already
-  been recorded. Skip any memory that is already captured, and prefer refining an
-  existing entry over adding a near-duplicate.
+  Before adding anything, run `bd memories --json` to see what has already been
+  recorded (a JSON object mapping key → full body). Skip any memory that is already
+  fully captured.
+
+  If a finding REFINES or CORRECTS an existing memory (same topic, new or corrected
+  facts) rather than being wholly new, do NOT add a near-duplicate entry. Instead,
+  update the existing entry in place using its existing key:
+
+  ```
+  bd remember --key <existing-key> "<merged-content>"
+  ```
+
+  `<merged-content>` must be the FULL merged body — the existing facts plus the new
+  refinement — not just the delta, since `bd remember --key` overwrites the entry.
 
   ## 4. Persist via `bd remember`
 
@@ -96,9 +107,28 @@ prompt: |
   - **Durable** — phrase it as a lasting fact about the project, not a task narrative.
   - **Short** — one to three sentences per memory, never more.
 
-  ## 5. Silent success
+  ## 5. Completion
 
-  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
-  post any user-visible summary — the session is already archived and there is no
-  active UI to notify. If you added no memories (nothing worth preserving, or all
-  candidates were already recorded), just exit silently.
+  This is a background clean-up processor with no attached UI — do NOT call
+  `mitto_ui_notify` (it requires a live session and will fail here). If you added no
+  memories (nothing worth preserving, or all candidates were already recorded), just
+  exit silently — do NOT call any notify tool.
+
+  If you DID call `bd remember`, surface it as a workspace-scoped toast (visible to
+  any client currently viewing this workspace) instead of a chat message. Get your
+  own session ID via `mitto_conversation_get_current` first, then:
+
+  {{ if .Workspace.UUID -}}
+  ```
+  mitto_workspace_ui_notify(
+    self_id: "<your session ID, from mitto_conversation_get_current>",
+    workspace_uuid: "{{ .Workspace.UUID }}",
+    title: "Memories recorded",
+    message: "<one line: how many memories and what they cover>",
+    style: "success"
+  )
+  ```
+  {{- else -}}
+  No workspace UUID is available for this run — skip the toast and exit silently
+  even if you added memories.
+  {{- end }}

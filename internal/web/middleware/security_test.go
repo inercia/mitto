@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSecurityHeadersMiddleware(t *testing.T) {
@@ -95,6 +98,66 @@ func TestRequestSizeLimitMiddleware(t *testing.T) {
 
 	// The handler should have received a limited body
 	// (actual behavior depends on how the handler reads the body)
+}
+
+func TestRequestSizeLimitMiddleware_MultipartExempt(t *testing.T) {
+	// Middleware cap intentionally small: multipart requests must bypass it
+	// so per-endpoint MaxBytesReader (e.g. image.go's 10 MB) governs instead.
+	const cap = 1 * 1024 * 1024
+	const bodySize = 2 * 1024 * 1024
+
+	var (
+		gotBytes int
+		readErr  error
+	)
+	handler := RequestSizeLimitMiddleware(cap)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		gotBytes = len(b)
+		readErr = err
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body := strings.Repeat("x", bodySize)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=xxx")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	var maxErr *http.MaxBytesError
+	if errors.As(readErr, &maxErr) {
+		t.Fatalf("multipart body was clamped by middleware: %v", readErr)
+	}
+	if readErr != nil {
+		t.Fatalf("unexpected read error: %v", readErr)
+	}
+	if gotBytes != bodySize {
+		t.Errorf("read %d bytes, want %d (middleware truncated multipart body)", gotBytes, bodySize)
+	}
+}
+
+func TestRequestSizeLimitMiddleware_JSONStillLimited(t *testing.T) {
+	// Non-multipart POSTs (JSON/text) must still be capped for DoS protection.
+	const cap = 1 * 1024 * 1024
+	const bodySize = 2 * 1024 * 1024
+
+	var readErr error
+	handler := RequestSizeLimitMiddleware(cap)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body := strings.Repeat("x", bodySize)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	var maxErr *http.MaxBytesError
+	if !errors.As(readErr, &maxErr) {
+		t.Fatalf("expected *http.MaxBytesError for oversized JSON body, got %v", readErr)
+	}
 }
 
 func TestHideServerInfoMiddleware(t *testing.T) {
@@ -193,4 +256,49 @@ func TestRequestTimeoutMiddleware_WebSocketExcluded(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
+}
+
+func TestRequestTimeoutMiddleware_ExemptPathBypassesTimeout(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	const sleep = 300 * time.Millisecond
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(sleep)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("done"))
+	})
+	handler := RequestTimeoutMiddleware(timeout, "/api/beads/migrate")(inner)
+
+	// Exempt path: the inner sleep exceeds the middleware timeout, but the
+	// exemption must let the handler run to completion.
+	t.Run("ExemptPath", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/beads/migrate", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if body := w.Body.String(); body != "done" {
+			t.Errorf("Body = %q, want %q", body, "done")
+		}
+		if strings.Contains(w.Body.String(), "Request timeout") {
+			t.Errorf("Body should not contain 'Request timeout', got %q", w.Body.String())
+		}
+	})
+
+	// Baseline: a non-exempt path with the same slow handler must still be
+	// preempted by TimeoutHandler (503 + "Request timeout" body).
+	t.Run("NonExemptPath", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/some-other-path", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("Status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+		}
+		if !strings.Contains(w.Body.String(), "Request timeout") {
+			t.Errorf("Body = %q, want it to contain 'Request timeout'", w.Body.String())
+		}
+	})
 }

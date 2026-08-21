@@ -99,7 +99,10 @@ type AgentWorkingObserver interface {
 type SessionObserver interface {
 	// OnAgentMessage is called when the agent sends a message chunk (HTML).
 	// seq is the sequence number for this logical message (chunks of the same message share the same seq).
-	OnAgentMessage(seq int64, html string)
+	// markdown is the raw pre-conversion markdown for this chunk, when available
+	// (mitto-pscc.3); it may be empty for chunks that did not originate from the
+	// markdown buffer.
+	OnAgentMessage(seq int64, html, markdown string)
 
 	// OnAgentThought is called when the agent sends a thought chunk (plain text).
 	// seq is the sequence number for this logical thought (chunks share the same seq).
@@ -144,7 +147,13 @@ type SessionObserver interface {
 	// promptName is the name of the workspace prompt used (empty string for ad-hoc prompts).
 	// seq is the sequence number for this user prompt event.
 	// argumentCount is the number of Go-template .Args arguments supplied (0 for ad-hoc or no-arg named prompts).
-	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int)
+	// arguments carries the raw (exactly replayable) .Args values, with sensitive-named keys
+	// already omitted by the caller; nil for ad-hoc prompts or when any argument was sensitive.
+	// provenance carries credential-free trigger-source data (mitto-rg79): which
+	// loop trigger fired this dispatch (if any), forced/startup flags, and
+	// optional Slack installation/channel/event-count detail. Nil for ordinary
+	// human-typed/ad-hoc prompts.
+	OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int, arguments map[string]string, provenance *session.PromptProvenance)
 
 	// OnError is called when an error occurs.
 	OnError(message string)

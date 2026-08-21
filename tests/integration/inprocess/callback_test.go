@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // extractCallbackToken extracts the token from a callback_url returned by the API.
@@ -32,7 +32,7 @@ func TestCallback_EnableAndGet(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "callback-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "callback-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -79,7 +79,10 @@ func TestCallback_EnableAndGet(t *testing.T) {
 		t.Fatalf("decode get result: %v", err)
 	}
 
-	// Verify get response has callback_url and created_at
+	// Verify get response reports a configured callback with its URL and timestamp.
+	if configured, ok := getResult["configured"].(bool); !ok || !configured {
+		t.Errorf("get response configured = %#v, want true", getResult["configured"])
+	}
 	if _, ok := getResult["callback_url"]; !ok {
 		t.Error("get response missing callback_url")
 	}
@@ -93,7 +96,7 @@ func TestCallback_TriggerSuccess(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "callback-trigger-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "callback-trigger-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -214,7 +217,7 @@ func TestCallback_MethodNotAllowed(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session and enable callback
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "method-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "method-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -251,7 +254,7 @@ func TestCallback_LoopDisabled(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-disabled-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-disabled-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -330,7 +333,7 @@ func TestCallback_LoopReEnabled_SameURL(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-reenabled-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "loop-reenabled-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -412,7 +415,7 @@ func TestCallback_Rotate(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "rotate-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "rotate-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -482,7 +485,7 @@ func TestCallback_Revoke(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "revoke-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "revoke-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -533,7 +536,7 @@ func TestCallback_SessionDelete_CleansIndex(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "delete-cleanup-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "delete-cleanup-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -575,7 +578,7 @@ func TestCallback_RateLimit(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "rate-limit-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "rate-limit-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -646,18 +649,62 @@ func TestCallback_RateLimit(t *testing.T) {
 	}
 }
 
-// TestCallback_GetNotFound tests GET when no callback is configured.
-func TestCallback_GetNotFound(t *testing.T) {
+// TestCallback_GetUnconfigured tests GET when no callback is configured.
+func TestCallback_GetUnconfigured(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session without enabling callback
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "get-notfound-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "get-notfound-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Try to GET callback
+	// Repeated reads model UI remount/reconnect probes. An existing session without
+	// a callback is a valid status response every time, not a missing resource.
+	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
+	for attempt := 1; attempt <= 3; attempt++ {
+		resp, err := ts.HTTPServer.Client().Get(getURL)
+		if err != nil {
+			t.Fatalf("GET callback attempt %d: %v", attempt, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("attempt %d: expected 200 for unconfigured callback, got %d: %s", attempt, resp.StatusCode, body)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			t.Fatalf("attempt %d: decode unconfigured callback result: %v", attempt, err)
+		}
+		resp.Body.Close()
+		if configured, ok := result["configured"].(bool); !ok || configured {
+			t.Errorf("attempt %d: configured = %#v, want false", attempt, result["configured"])
+		}
+		if _, ok := result["callback_url"]; ok {
+			t.Errorf("attempt %d: unconfigured response unexpectedly contains callback_url: %#v", attempt, result)
+		}
+		if _, ok := result["created_at"]; ok {
+			t.Errorf("attempt %d: unconfigured response unexpectedly contains created_at: %#v", attempt, result)
+		}
+	}
+}
+
+// TestCallback_GetDeletedSession preserves a terminal 404 after session deletion.
+func TestCallback_GetDeletedSession(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "get-deleted-test"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := ts.Client.DeleteSession(sess.SessionID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+
 	getURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
 	resp, err := ts.HTTPServer.Client().Get(getURL)
 	if err != nil {
@@ -667,7 +714,20 @@ func TestCallback_GetNotFound(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 404 for unconfigured callback, got %d: %s", resp.StatusCode, body)
+		t.Fatalf("expected 404 for missing session, got %d: %s", resp.StatusCode, body)
+	}
+
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode missing-session error: %v", err)
+	}
+	if envelope.Error.Code != "not_found" || envelope.Error.Message != "Session not found" {
+		t.Errorf("error = %#v, want not_found/Session not found", envelope.Error)
 	}
 }
 
@@ -676,7 +736,7 @@ func TestCallback_LoopNotConfigured(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "no-loop-test"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "no-loop-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

@@ -560,6 +560,95 @@ func TestAccessLogger_MiddlewareRecordsAuthIdentity(t *testing.T) {
 	}
 }
 
+// TestAccessLogger_MiddlewareSuffixesEventType_OnSplitIP verifies that when
+// the inner auth handler calls middleware.SetSplitIPFlag (indicating a CSRF
+// token IP fingerprint mismatch), the emitted LogEntry.EventType is suffixed
+// with "+split_ip" so security review can correlate the anomaly with the
+// login outcome (e.g. "login_failed+split_ip", "login_success+split_ip").
+func TestAccessLogger_MiddlewareSuffixesEventType_OnSplitIP(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		wantEvent  string
+	}{
+		{"failed login + split-IP", http.StatusUnauthorized, "login_failed+split_ip"},
+		{"successful login + split-IP", http.StatusOK, "login_success+split_ip"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			logPath := filepath.Join(tmpDir, "access.log")
+
+			logger := NewAccessLogger(AccessLogConfig{Path: logPath})
+			if logger == nil {
+				t.Fatal("Expected non-nil logger")
+			}
+			defer logger.Close()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				middleware.SetSplitIPFlag(r)
+				w.WriteHeader(tc.statusCode)
+			})
+
+			wrapped := logger.Middleware(inner)
+
+			req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			wrapped.ServeHTTP(rec, req)
+
+			logger.Close()
+
+			content, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("Failed to read log file: %v", err)
+			}
+			if !strings.Contains(string(content), tc.wantEvent) {
+				t.Errorf("Log should contain %s but got: %s", tc.wantEvent, string(content))
+			}
+		})
+	}
+}
+
+// TestAccessLogger_MiddlewareDoesNotSuffix_WithoutSplitIP guards the negative
+// path: when no anomaly flag is raised, the EventType MUST NOT carry the
+// "+split_ip" suffix — otherwise the promotion would fire on every login and
+// erode its signal value.
+func TestAccessLogger_MiddlewareDoesNotSuffix_WithoutSplitIP(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "access.log")
+
+	logger := NewAccessLogger(AccessLogConfig{Path: logPath})
+	if logger == nil {
+		t.Fatal("Expected non-nil logger")
+	}
+	defer logger.Close()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized) // login_failed, no split-IP
+	})
+	wrapped := logger.Middleware(inner)
+
+	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	wrapped.ServeHTTP(rec, req)
+
+	logger.Close()
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	if strings.Contains(string(content), "+split_ip") {
+		t.Errorf("Log should NOT contain +split_ip suffix, got: %s", string(content))
+	}
+	if !strings.Contains(string(content), "login_failed") {
+		t.Errorf("Log should contain login_failed but got: %s", string(content))
+	}
+}
+
 func TestAccessLogger_MiddlewareSkipsNonSecurityEvents(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "access.log")

@@ -1,0 +1,57 @@
+{{/*
+  rebase-onto-base — perform the rebase itself and resolve conflicts. Consumed
+  by git/rebase-changes (the dedicated workflow) and git/commit-and-submit
+  (which rebases inline before pushing).
+
+  Preconditions: the working tree is clean (all work committed), and the caller
+  has resolved `<target-remote>` and `<target-branch>` (usually via
+  git/shared/identify-remote-branch). Callers that only need to know WHETHER a
+  rebase is required should first render git/shared/behind-base-count.
+
+  Emits `####` sub-headings so it slots under the caller's own numbered step.
+*/}}
+#### Fetch and preview
+
+```bash
+git fetch <target-remote>
+git log --oneline <target-remote>/<target-branch>..HEAD
+```
+
+#### Rebase
+
+If a rebase is already in progress: check for conflicts
+(`git diff --name-only --diff-filter=U`), resolve or continue.
+
+Otherwise: `git rebase <target-remote>/<target-branch>`
+
+#### Conflict resolution
+
+Per conflicting file:
+
+1. Identify: `git diff --name-only --diff-filter=U`
+2. Examine both sides
+3. Analyze: incoming vs. ours, same logical area?
+
+**Auto-resolve** when: whitespace/formatting, non-overlapping additions, clear
+merge of both, import ordering.
+
+**Ask user** when: same logic modified differently, semantic meaning changes,
+multiple valid resolutions, complex refactoring.
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+**Scheduled mode**: never resolve an ambiguous conflict unattended. On any
+conflict that falls in the "Ask user" class, `mitto_ui_notify` (`warning`,
+`sound: true`) that the rebase needs human resolution, leave the rebase in
+progress, and stop.
+{{- else }}
+
+**With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...` →
+"Accept theirs / Accept ours / Combine both / Custom"
+**Without**: Present options in conversation.
+{{- end }}
+
+After each file: `git add <file>` → `git rebase --continue`. Iterate until
+complete.
+
+Offer to abort (`git rebase --abort`) if the rebase becomes too complex.
+Preserve commit messages and authorship.

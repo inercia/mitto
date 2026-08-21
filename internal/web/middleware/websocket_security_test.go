@@ -1,12 +1,23 @@
 package middleware
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 )
 
+func TestDefaultWebSocketSecurityConfig_MessageSizeLimits(t *testing.T) {
+	config := DefaultWebSocketSecurityConfig()
+	if config.MaxMessageSize != 64*1024 {
+		t.Fatalf("MaxMessageSize = %d, want %d", config.MaxMessageSize, 64*1024)
+	}
+	if config.LocalMaxMessageSize != 1024*1024 {
+		t.Fatalf("LocalMaxMessageSize = %d, want %d", config.LocalMaxMessageSize, 1024*1024)
+	}
+}
+
 func TestOriginChecker_SameOrigin(t *testing.T) {
-	checker := createOriginChecker(nil, nil, nil) // nil = same-origin only
+	checker := createOriginChecker(nil, nil) // nil = same-origin only
 
 	tests := []struct {
 		name      string
@@ -73,7 +84,7 @@ func TestOriginChecker_AllowList(t *testing.T) {
 		"https://trusted.com",
 		"https://also-trusted.com:8443",
 	}
-	checker := createOriginChecker(allowedOrigins, nil, nil)
+	checker := createOriginChecker(allowedOrigins, nil)
 
 	tests := []struct {
 		name      string
@@ -118,8 +129,44 @@ func TestOriginChecker_AllowList(t *testing.T) {
 	}
 }
 
+func TestOriginChecker_ExternalConnectionDoesNotBypassOriginValidation(t *testing.T) {
+	// Regression test for mitto-dikg: listener provenance and auth identity must
+	// never replace explicit allowlist or strict same-origin validation.
+	tests := []struct {
+		name           string
+		allowedOrigins []string
+		origin         string
+		authUser       string
+		wantAllow      bool
+	}{
+		{name: "external marker", origin: "https://evil.example", wantAllow: false},
+		{name: "session identity", origin: "https://evil.example", authUser: "alice", wantAllow: false},
+		{name: "IP allowlist identity", origin: "https://evil.example", authUser: "allowlist:203.0.113.1", wantAllow: false},
+		{name: "configured allowlist rejects evil", allowedOrigins: []string{"https://trusted.example"}, origin: "https://evil.example", authUser: "alice", wantAllow: false},
+		{name: "configured allowlist accepts trusted", allowedOrigins: []string{"https://trusted.example"}, origin: "https://trusted.example", authUser: "alice", wantAllow: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := createOriginChecker(tt.allowedOrigins, nil)
+			req := httptest.NewRequest("GET", "/ws", nil)
+			req.Host = "mitto.example"
+			req.Header.Set("Origin", tt.origin)
+			ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+			if tt.authUser != "" {
+				ctx = context.WithValue(ctx, ContextKeyAuthUser, tt.authUser)
+			}
+			req = req.WithContext(ctx)
+
+			if got := checker(req); got != tt.wantAllow {
+				t.Errorf("checker() = %v, want %v for origin %q", got, tt.wantAllow, tt.origin)
+			}
+		})
+	}
+}
+
 func TestOriginChecker_AllowAll(t *testing.T) {
-	checker := createOriginChecker([]string{"*"}, nil, nil)
+	checker := createOriginChecker([]string{"*"}, nil)
 
 	tests := []struct {
 		name   string

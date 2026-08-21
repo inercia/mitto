@@ -6,7 +6,8 @@ const { html, Fragment, useMemo, useState, useEffect } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
-import { buildRetryTargets, messageKey } from "../lib.js";
+import { buildRetryTargets, canReplayNamedPrompt, messageKey } from "../lib.js";
+import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 
 /**
  * @param {Array}    displayMessages   - Coalesced messages to render
@@ -22,7 +23,9 @@ import { buildRetryTargets, messageKey } from "../lib.js";
  * @param {boolean}  isUserAtBottom
  * @param {boolean}  hasNewMessages
  * @param {object}   sentinelRef       - ref forwarded to the IntersectionObserver sentinel
- * @param {Function} onRetry           - called with (text, images) for error retry
+ * @param {Function} onRetry           - called with (text, images) for a plain-text retry, or
+ *                                        ("", images, [], { promptName, arguments }) to replay a
+ *                                        named prompt exactly (matches handleSendPrompt's signature)
  * @param {string}   activeSessionId
  * @param {string}   swipeDirection    - 'left'|'right'|null
  * @param {string}   swipeArrow        - 'left'|'right'|null
@@ -30,6 +33,12 @@ import { buildRetryTargets, messageKey } from "../lib.js";
  * @param {object}   sessionInfo
  * @param {Array}    workspaces
  * @param {object}   messagesContainerRef - ref attached to the scrollable container
+ * @param {object}   mcpInitState      - Active session workspace's MCP-init state from
+ *                                        useMCPInitState ({ initializing, timedOutAt, servers })
+ *                                        or null when no MCP-init event has fired (mitto-8fm).
+ * @param {Function} clearMCPInit      - (workspaceUUID, workingDir) => void; clears mcpInitState
+ *                                        early (e.g. on first stream chunk) instead of waiting
+ *                                        for the safety-cap sweep.
  */
 export function MessageList({
   displayMessages,
@@ -52,17 +61,37 @@ export function MessageList({
   sessionInfo,
   workspaces,
   messagesContainerRef,
+  mcpInitState,
+  clearMCPInit,
 }) {
-  // Tick every second while the "agent is still working" heartbeat is visible, to
+  // Tick every 2s while the "agent is still working" heartbeat is visible, to
   // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
-  // no new heartbeat). The interval is cleared whenever streaming stops or there's
-  // no heartbeat to show, so it never runs needlessly in the background.
+  // no new heartbeat). 2s resolution is invisible to the eye at mm:ss scale and
+  // halves MessageList re-renders during long-running turns. Gated on visibility
+  // via useVisibleInterval so the tick stops when the Mitto webview is hidden
+  // (background/Cmd-H), and catches up on wake so the chip's mm:ss is never
+  // stuck at an old value.
   const [workingNow, setWorkingNow] = useState(Date.now());
+  useVisibleInterval(() => setWorkingNow(Date.now()), 2000, {
+    enabled: isStreaming && !!agentWorking,
+  });
+
+  // mitto-8fm: clear the persistent "Waiting for MCP servers…" indicator as
+  // soon as the agent starts streaming a response — belt-and-braces on top of
+  // the natural `sessionInfo.acp_ready` transition, since a stream can start
+  // before acp_ready flips in some races (e.g. it was already true when the
+  // mcp_initializing event fired for a *different* prior turn).
   useEffect(() => {
-    if (!isStreaming || !agentWorking) return undefined;
-    const interval = setInterval(() => setWorkingNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, [isStreaming, agentWorking]);
+    if (isStreaming && mcpInitState?.initializing) {
+      clearMCPInit?.(sessionInfo?.workspace_uuid, sessionInfo?.working_dir);
+    }
+  }, [
+    isStreaming,
+    mcpInitState?.initializing,
+    clearMCPInit,
+    sessionInfo?.workspace_uuid,
+    sessionInfo?.working_dir,
+  ]);
 
   const showAgentWorking =
     isStreaming && agentWorking && workingNow - agentWorking.receivedAt < 25000;
@@ -79,11 +108,11 @@ export function MessageList({
             <div
               class="text-xs text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg opacity-70"
             >
-              <span class="loading loading-spinner w-3 h-3"></span>
               <span
                 >Working${agentWorking.toolTitle
                   ? ` — ${agentWorking.toolTitle}`
-                  : ""}… (${mm}:${ss})</span
+                  : ""}…
+                (${mm}:${ss})</span
               >
             </div>
           </div>
@@ -107,8 +136,16 @@ export function MessageList({
       if (msg.role === "error") {
         const target = retryTargets.get(origIdx);
         if (target) {
-          const { text, images } = target;
-          retryHandler = () => onRetry(text, images);
+          const { text, images, promptName, arguments: args } = target;
+          // Replay the original named prompt (preserving its UI pill,
+          // modelTag/preferredModels routing, and prompt-level processing)
+          // when we have persisted argument values for ALL of its arguments.
+          // Otherwise fall back to today's full-text replay — this covers
+          // ad-hoc messages, older events with no persisted arguments, and
+          // the case where a sensitive argument was omitted at persist time.
+          retryHandler = canReplayNamedPrompt(target)
+            ? () => onRetry("", images, [], { promptName, arguments: args })
+            : () => onRetry(text, images);
         }
       }
 
@@ -154,11 +191,19 @@ export function MessageList({
           isLast=${i === 0}
           isStreaming=${isStreaming}
           onRetry=${retryHandler}
+          workspaceUUID=${sessionInfo?.workspace_uuid}
+          workspacePath=${sessionInfo?.working_dir}
         />
       `;
       return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
     });
-  }, [displayMessages, isStreaming, onRetry]);
+  }, [
+    displayMessages,
+    isStreaming,
+    onRetry,
+    sessionInfo?.workspace_uuid,
+    sessionInfo?.working_dir,
+  ]);
 
   return html`
     <${Fragment}>
@@ -269,10 +314,36 @@ export function MessageList({
                       <p
                         class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
                       >
-                        <span
-                          class="loading loading-spinner w-3 h-3 text-yellow-500"
-                        ></span>
                         Establishing ACP session...
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.archived &&
+                    mcpInitState?.initializing &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
+                      >
+                        <${SpinnerIcon} className="w-4 h-4" />
+                        Waiting for MCP servers…
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.archived &&
+                    mcpInitState?.timedOutAt &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-mitto-danger flex items-center gap-2"
+                      >
+                        MCP server(s) failed to
+                        start${mcpInitState.servers?.length
+                          ? `: ${mcpInitState.servers.join(", ")}`
+                          : ""}.
+                        Check your MCP configuration.
                       </p>
                     `}
                   </div>

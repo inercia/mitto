@@ -1,0 +1,69 @@
+{{/*
+  Canonical mutation, retrospective, and handoff tail for approved plan/spec
+  hierarchies. Call only after the consumer has built and confirmed the hierarchy.
+
+  Consumers:
+    - docs/propose-a-plan.prompt.yaml
+    - docs/implement-spec.prompt.yaml
+*/}}
+## Create beads and wire dependencies
+
+Create approved epics first, then their children and standalone items. Compose
+every description as GitHub-flavored Markdown in a temporary file and use
+`--body-file` so formatting is preserved:
+
+```bash
+bd create "<epic title>" --type epic --priority <0-4> --labels "<labels>" --body-file <epic-body-file>
+bd create "<child title>" --parent <epic-id> --type <type> --priority <0-4> --labels "<labels>" --body-file <child-body-file>
+bd create "<standalone title>" --type <type> --priority <0-4> --labels "<labels>" --body-file <item-body-file>
+```
+
+Omit `--labels` when no established label applies. Capture every returned bead ID.
+Then wire each confirmed prerequisite in the correct direction:
+
+```bash
+bd dep add <blocked-id> <blocker-id>
+bd dep cycles
+```
+
+If creation or dependency wiring fails, stop further mutations, preserve the IDs
+already created, and report the exact partial state instead of pretending the
+operation was atomic.
+
+## Retrospective coverage and coherence pass
+
+Re-read the approved planning source (the specification or informal-request plan),
+not merely your decomposition notes. Re-open every created bead and inspect the
+final hierarchy and dependency graph. Build a coverage matrix mapping each source
+requirement or approved plan step to bead IDs, then verify:
+
+- every source unit, constraint, edge case, and required cross-cutting concern is covered;
+- every ticket is coherent, independently actionable, and free of duplicated scope;
+- epic membership is meaningful and every epic has at least two children;
+- acceptance criteria and verification are sufficient to establish completion;
+- types, priorities, and labels match project conventions and actual impact;
+- dependencies point from blocked work to the real blocker, form no cycle, and do
+  not serialize work that can proceed in parallel.
+
+Correct the created set before finishing: add missing beads, update inaccurate or
+overlapping tickets, reparent misplaced children, adjust priorities/labels, and add
+or remove dependency edges as needed. Do not rewrite unrelated pre-existing beads.
+Repeat the coverage check until every source unit has one clear implementation home
+and `bd dep cycles` reports no cycle.
+
+## Final ticket handoff
+
+Print the final epic → child hierarchy, followed by standalone beads. For every
+entry include ID, title, type, priority, and direct blockers. Then report:
+
+- the complete list of bead IDs created in this run;
+- any pre-existing bead IDs reused for coverage, separately identified;
+- the source-to-bead coverage matrix;
+- confirmation that the retrospective found complete coverage, no duplicated
+  scope, and an acyclic dependency graph;
+- any failures or unresolved questions that prevent the ticket set from fully
+  representing the approved work.
+
+Do not claim full coverage while any source unit is unmapped or any creation/wiring
+failure remains unresolved. Stop after this handoff; implementation happens in the
+ticket-processing workflow, not in this planning conversation.

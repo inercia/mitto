@@ -1,0 +1,233 @@
+// Package api (import path github.com/inercia/mitto/pkg/api) provides a Go
+// client for connecting to the Mitto backend.
+//
+// By default the client is unauthenticated, which is useful for integration
+// testing and for CLI tools talking to a server with no auth configured. See
+// # Authentication below for the shared-token and interactive login modes.
+//
+// # Basic Usage
+//
+// Create a client and list sessions:
+//
+//	c := api.New("http://localhost:8080")
+//	sessions, err := c.ListSessions()
+//
+// Create a new session:
+//
+//	session, err := c.CreateSession(api.CreateSessionRequest{
+//	    Name:       "my-session",
+//	    WorkingDir: "/path/to/project",
+//	})
+//
+// # WebSocket Session
+//
+// Connect to a session for real-time interaction:
+//
+//	ctx := context.Background()
+//	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
+//	    OnConnected: func(sessionID, clientID, acpServer string) {
+//	        fmt.Printf("Connected to %s\n", sessionID)
+//	    },
+//	    OnAgentMessage: func(html string) {
+//	        fmt.Printf("Agent: %s\n", html)
+//	    },
+//	    OnPromptComplete: func(eventCount int) {
+//	        fmt.Printf("Done! %d events\n", eventCount)
+//	    },
+//	})
+//	defer sess.Close()
+//
+//	// Send a message
+//	sess.SendPrompt("Hello, world!")
+//
+// # Simplified Prompt Helper
+//
+// For simple request-response patterns, use PromptAndWait:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//
+//	result, err := c.PromptAndWait(ctx, session.SessionID, "Explain this code")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	fmt.Printf("Got %d messages, %d tool calls\n",
+//	    len(result.Messages), len(result.ToolCalls))
+//
+// # Construction and Options
+//
+// New(baseURL, ...Option) builds a Client. Options configure the client
+// once, at construction time:
+//
+//   - WithTimeout(d) sets the underlying http.Client's timeout (applies to
+//     every plain REST call; the WebSocket connection itself is governed by
+//     ctx instead, see # Context Conventions below).
+//   - WithBearerToken(token) / WithTokenSupplier(supplier) configure shared-
+//     token authentication; see # Authentication.
+//
+// Connect takes its own, session-scoped SessionOption values instead,
+// covering the resilience behavior of a single WebSocket connection
+// (WithReconnect, WithKeepalive, WithSeqStore, WithSeqDedup,
+// WithStreamBuffer); see # Resilient Realtime and # Streaming below.
+//
+// # Conversation Lifecycle
+//
+// A typical program moves through these Client/Session methods in order:
+//
+//  1. CreateSession creates a conversation (optionally seeding its queue
+//     with an initial prompt via CreateSessionRequest.InitialPromptName).
+//  2. Connect dials the conversation's WebSocket and starts its read loop,
+//     returning a *Session.
+//  3. SendPrompt (or SendPromptWithImages) sends a message; the response is
+//     delivered incrementally via SessionCallbacks and/or Events/EventsChan.
+//  4. Session.Close ends the WebSocket connection when the caller is done
+//     with it; the conversation itself is unaffected.
+//  5. ArchiveSession / DeleteSession end the conversation's lifecycle on the
+//     server once no more prompts will be sent.
+//
+// PromptAndWait/PromptAndWaitWithImages collapse steps 2-4 into a single
+// blocking call for simple request-response use (# Simplified Prompt
+// Helper above).
+//
+// # Context Conventions
+//
+// Methods that can block on network I/O beyond the http.Client timeout, or
+// that manage a long-lived connection, take a context.Context as their
+// first parameter: Login, Logout, Connect, PromptAndWait(WithImages),
+// Events, and EventsChan. Cancelling that ctx is the way to bound or abort
+// those calls. Plain REST methods (ListSessions, CreateSession, GetSession,
+// DeleteSession, ArchiveSession, and the sessions_ext.go/media.go/queue.go/
+// loop.go resource methods) do not take a ctx; they are bounded by the
+// Client's http.Client.Timeout instead (see WithTimeout above).
+//
+// # Authentication
+//
+// Three modes are supported, matching the backend's authentication options
+// (internal/web/middleware/auth.go):
+//
+//   - None (default): zero-config, used by every existing test. Do nothing.
+//
+//   - Shared token: authenticate every REST request and the WebSocket
+//     handshake with "Authorization: Bearer <token>", matching the
+//     deployment-wide shared token the operator configures on the server.
+//     Use WithBearerToken for a fixed token, or WithTokenSupplier to source
+//     it lazily (environment variable, keychain, config file) and support
+//     rotation without reconstructing the Client:
+//
+//     c := api.New(baseURL, api.WithTokenSupplier(func() (string, error) {
+//     return os.Getenv("MITTO_TOKEN"), nil
+//     }))
+//
+//   - Cookie login: for parity with the browser, call Login with a
+//     username/password to obtain a session cookie plus CSRF token, used
+//     automatically on subsequent REST requests and WebSocket connections:
+//
+//     c := api.New(baseURL)
+//     if err := c.Login(ctx, "user", "pass"); err != nil { ... }
+//     defer c.Logout(ctx)
+//
+// In every mode, the token/session credential is never logged and never
+// placed in a URL or query string.
+//
+// # Thread Safety
+//
+// The Client and Session types are safe for concurrent use from multiple
+// goroutines. However, the SessionCallbacks are invoked from a single
+// goroutine (the WebSocket read loop), so callback implementations must
+// be thread-safe if they access shared state; a slow callback blocks
+// delivery of subsequent events to that Session.
+//
+// # Resilient Realtime (opt-in)
+//
+// By default Connect behaves as shown above: one dial, one read loop, and
+// a dropped connection is reported via OnDisconnected/OnClosed without
+// being retried. Pass SessionOption values to Connect to opt into the same
+// resilience the browser client has (see
+// docs/devel/websockets/{sequence-numbers,synchronization}.md):
+//
+//	sess, err := c.Connect(ctx, sessionID, callbacks,
+//	    api.WithReconnect(api.ReconnectConfig{}),   // exp. backoff, defaults 1s/30s/30% jitter
+//	    api.WithKeepalive(api.KeepaliveConfig{}),   // zombie-connection detection, defaults 10s/2 missed
+//	    api.WithSeqDedup(true),                        // drop duplicate events by seq
+//	)
+//
+// WithReconnect redials on any non-terminal disconnect and resyncs from the
+// last-seen sequence number via load_events{after_seq}; a session_gone
+// message or an explicit Close() is always terminal and never retried.
+// WithSeqDedup drops events whose sequence number was already delivered,
+// while still allowing same-seq chunks through for streaming coalescing.
+// The reconnection watermark is held in memory by default; supply
+// WithSeqStore(store) with a SeqStore implementation to persist it across
+// process restarts. All of the above is off by default, so existing
+// deterministic tests and call sites are unaffected.
+//
+// # Streaming (channel/iterator)
+//
+// SessionCallbacks remains the only delivery mechanism; Events/EventsChan
+// are a thin adapter registered over the same read loop, not a second
+// transport, so both can be used against the same Session without racing
+// (callbacks are invoked first, then the stream, for each message).
+//
+//	for ev, err := range sess.Events(ctx) {
+//	    if err != nil {
+//	        log.Fatal(err) // ctx cancelled, disconnected, or ErrSlowConsumer
+//	    }
+//	    if ev.Kind == api.EventAgentMessage {
+//	        fmt.Print(ev.HTML)
+//	    }
+//	    if ev.Kind == api.EventPromptComplete {
+//	        break
+//	    }
+//	}
+//
+// At most one stream may be active per Session; a second concurrent call
+// returns ErrStreamActive. The internal buffer is bounded (256 by default,
+// override with WithStreamBuffer); a consumer slower than the producer
+// terminates the stream with ErrSlowConsumer instead of blocking the read
+// loop or silently dropping events. EventsChan offers the same semantics
+// for select-based callers that prefer channels over range-over-func.
+//
+// # REST Surface Coverage
+//
+// This client covers the conversation-centric REST surface: sessions (CRUD,
+// events, changes, settings, flush, user data, prune, running list), queue,
+// loop (including the multi-trigger schema), and per-session media
+// (images/files). It also covers the few server-level endpoints `mitto auth`
+// needs — GetHealth, GetAuthInfo and RotateSharedToken (auth_admin.go).
+// Workspace-, prompt-config-, issues-, global-settings-, agents-, and
+// dashboard-level endpoints are intentionally out of scope — this SDK targets
+// programmatic conversation drivers, not full admin/UI parity. The method set
+// is split across client.go (transport + session CRUD), sessions_ext.go,
+// media.go, queue.go, loop.go and auth_admin.go by resource.
+//
+// # Errors
+//
+// Non-2xx HTTP responses are returned as *APIError, which carries the
+// parsed error envelope (Status, Code, Message, Details) plus the raw
+// response Body for callers that need custom parsing. Both the canonical
+// nested envelope and the legacy flat shape used by a few external-stable
+// endpoints are handled transparently.
+//
+// Use errors.Is with the package's sentinel errors to branch on the failure
+// class without string-matching:
+//
+//	session, err := c.GetSession(id)
+//	if errors.Is(err, api.ErrNotFound) {
+//	    // handle missing session
+//	}
+//
+// Use errors.As to inspect the full error detail:
+//
+//	var apiErr *api.APIError
+//	if errors.As(err, &apiErr) {
+//	    log.Printf("status=%d code=%s details=%v", apiErr.Status, apiErr.Code, apiErr.Details)
+//	}
+//
+// The streaming API (Events/EventsChan) has its own sentinels, distinct from
+// *APIError since they describe local stream-adapter conditions rather than
+// an HTTP response: ErrStreamActive (a second stream on the same Session),
+// ErrSlowConsumer (the consumer fell behind and the bounded buffer
+// overflowed), and ErrDisconnected (the underlying WebSocket dropped and was
+// not recovered). See # Streaming above.
+package api

@@ -30,6 +30,7 @@ import {
   cleanupExpiredPrompts,
   getArchiveReasonText,
   conversationToMarkdown,
+  lastAgentMarkdown,
   copyToClipboard,
   LOOP_STOPPED_LABELS,
   formatLoopMaxDuration,
@@ -57,17 +58,13 @@ import {
   convertFileURLToViewer,
   convertHTTPFileURLToViewer,
   setCurrentWorkspace,
+  setKnownWorkspaces,
   pickImages,
   hasNativeImagePicker,
   isNativeApp,
   getLastActiveSessionId,
   setLastActiveSessionId,
-  secureFetch,
   initCSRF,
-  apiUrl,
-  authFetch,
-  endpoints,
-  errorMessageFromData,
   fixViewerURLIfNeeded,
   getGroupingMode,
   cycleGroupingMode,
@@ -83,6 +80,9 @@ import {
   getSidebarWidth,
   setSidebarWidth,
 } from "./utils/index.js";
+import { getSdkClient } from "./utils/sdkClient.js";
+import { errorMessage, isNotFoundError } from "./utils/sdkErrors.js";
+import { isGone, markGone } from "./utils/beadsGoneCache.js";
 
 // Import hooks
 import {
@@ -98,18 +98,21 @@ import {
   useAgentPlan,
   useWorkspacePrompts,
   useBeadsIntegration,
+  buildBeadsPromptToast,
   useBeadsKnownIds,
   useSessionNavigation,
   useConversationMenu,
   useConversationSeeding,
   decideLoopAction,
   makeLoopNow,
+  useMCPInitState,
 } from "./hooks/index.js";
 
 // Import components
 import { SessionItem } from "./components/SessionItem.js";
 import { SessionList } from "./components/SessionList.js";
 import { Toolbar } from "./components/Toolbar.js";
+import { HeaderChildRow } from "./components/HeaderChildRow.js";
 import { MessageList } from "./components/MessageList.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
@@ -127,7 +130,6 @@ import {
 } from "./components/AgentPlanPanel.js";
 import { SessionPanel } from "./components/SessionPanel.js";
 import { Drawer } from "./components/Drawer.js";
-import { LoopFrequencyPanel } from "./components/LoopFrequencyPanel.js";
 import { CountdownDisplay } from "./components/CountdownDisplay.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -196,10 +198,10 @@ import {
 import {
   promptMenus,
   promptMenuIncludes,
-  getMissingPromptParameters,
+  shouldOpenPromptDialog,
+  promptDialogParameters,
   autofillConversationMenuArgs,
   fetchCachedParamNames,
-  effectiveMissingParams,
   promptResolveAsLoop,
 } from "./utils/prompts.js";
 
@@ -208,6 +210,7 @@ import {
   isOverHorizontallyScrollable,
   isModalDialogOpen,
 } from "./utils/globalHandlers.js";
+import { OPEN_SETTINGS_EVENT } from "./utils/slackEvents.js";
 
 // Import extracted components
 import { WorkspaceBadge, WorkspacePill } from "./components/WorkspaceBadge.js";
@@ -254,6 +257,7 @@ function App() {
     updateSessionName,
     renameSession,
     pinSession,
+    setSessionColor,
     archiveSession,
     removeSession,
     isStreaming,
@@ -345,6 +349,16 @@ function App() {
 
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSidePanel, setShowSidePanel] = useState(false);
+  // Controlled-open state for the header "children dropdown" (mitto-7vpp). Kept
+  // controlled so the Toolbar's closeOnOutsideClick machinery can dismiss it
+  // when the user clicks outside or presses Escape, and so clicking a child
+  // entry closes the menu before switching sessions.
+  const [childrenMenuOpen, setChildrenMenuOpen] = useState(false);
+
+  // Open/close state for the conversation-header "Copy" dropdown (mitto-a6v1).
+  // Mirrors childrenMenuOpen above: driven by the Toolbar dropdown's
+  // open/onToggle + closeOnOutsideClick props.
+  const [copyMenuOpen, setCopyMenuOpen] = useState(false);
 
   // Close the mobile left sidebar when the user clicks outside of it (e.g. on the
   // conversation peek to its right). Below the md breakpoint the sidebar's
@@ -450,6 +464,7 @@ function App() {
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
     forceOpen: false,
+    initialTab: null,
   }); // Settings dialog
   const [workspacesDialog, setWorkspacesDialog] = useState({ isOpen: false }); // Workspaces management dialog
   const [addFolderDialogOpen, setAddFolderDialogOpen] = useState(false); // "Add folder to sidebar" dialog
@@ -495,6 +510,20 @@ function App() {
   const [configReadonly, setConfigReadonly] = useState(
     () => window.mittoIsExternal === true, // Start as true for external connections, or when --config flag was used or using RC file
   );
+
+  useEffect(() => {
+    const handleOpenSettings = (event) => {
+      if (configReadonly) return;
+      setSettingsDialog({
+        isOpen: true,
+        forceOpen: false,
+        initialTab: event?.detail?.tab || null,
+      });
+    };
+    window.addEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
+    return () =>
+      window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
+  }, [configReadonly]);
   const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
   const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
@@ -548,10 +577,18 @@ function App() {
     setShowSidebar,
     setShowSidePanel,
     setSidePanelTab,
+    activeSessionId,
     onOpenLoopDialog: (prompt, onSchedule) =>
       setLoopScheduleDialog({ prompt, onSchedule }),
-    onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
-      setPromptParamDialog({ prompt, parameters, onSubmit }),
+    onOpenPromptParamDialog: (prompt, parameters, onSubmit, opts = {}) =>
+      setPromptParamDialog({
+        prompt,
+        parameters,
+        onSubmit,
+        workingDir: opts.workingDir,
+        initialValues: opts.initialValues,
+        hostSessionId: opts.hostSessionId,
+      }),
   });
 
   // Ref mirror of beadsIssueOpen: the native swipe-gesture handlers are
@@ -594,15 +631,21 @@ function App() {
         return;
       }
       setMainView("conversation");
-      showToast({
-        style: "success",
-        title: result.reused
-          ? `Reusing existing "${promptName}" conversation`
-          : `Started "${promptName}"`,
-        duration: 3000,
-      });
+      showToast(
+        buildBeadsPromptToast({
+          result,
+          promptName,
+          activeSessionId,
+        }),
+      );
     },
-    [startConversationWithPrompt, beadsWorkingDir, showToast, setMainView],
+    [
+      startConversationWithPrompt,
+      beadsWorkingDir,
+      showToast,
+      setMainView,
+      activeSessionId,
+    ],
   );
 
   // Fetch and cache known beads issue IDs for the active session's workspace.
@@ -662,17 +705,19 @@ function App() {
       setHeaderBeadsStatus(null);
       return;
     }
+    // mitto-msv: short-circuit ids known to 404. Keeps beadsRefreshTick bumps
+    // (fired for any mitto:beads_changed broadcast) from re-issuing the same
+    // 404 for a stale linked bead.
+    if (isGone(workingDir, issueId)) {
+      setHeaderBeadsStatus(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          endpoints.issues.show(issueId, { working_dir: workingDir }),
-        );
-        if (!res.ok) {
-          if (!cancelled) setHeaderBeadsStatus(null);
-          return;
-        }
-        const data = await res.json();
+        const data = await getSdkClient().issues.show(issueId, {
+          working_dir: workingDir,
+        });
         if (cancelled) return;
         const issueObj = Array.isArray(data) ? data[0] : data;
         if (issueObj && !issueObj.error && issueObj.status) {
@@ -680,7 +725,8 @@ function App() {
         } else {
           setHeaderBeadsStatus(null);
         }
-      } catch (_err) {
+      } catch (err) {
+        if (isNotFoundError(err)) markGone(workingDir, issueId);
         if (!cancelled) setHeaderBeadsStatus(null);
       }
     })();
@@ -864,6 +910,19 @@ function App() {
     activeSessionId,
     activeWorkspaceUUID: sessionInfo?.workspace_uuid ?? null,
   });
+
+  // Per-workspace MCP-init lifecycle state (mitto-8fm): drives a persistent
+  // inline "Waiting for MCP servers…" indicator in MessageList, distinct from
+  // the transient toast fired by useBackgroundNotifications above. Derived
+  // for the active session's workspace only; re-evaluated whenever the
+  // underlying state map changes (getMCPInitState's identity bumps) or the
+  // active workspace changes.
+  const { getMCPInitState, clearMCPInit } = useMCPInitState();
+  const mcpInitState = useMemo(
+    () =>
+      getMCPInitState(sessionInfo?.workspace_uuid, sessionInfo?.working_dir),
+    [getMCPInitState, sessionInfo?.workspace_uuid, sessionInfo?.working_dir],
+  );
 
   // Get the current draft for the active session (null key = no session)
   const currentDraft = sessionDrafts[activeSessionId ?? "__no_session__"] || "";
@@ -1071,6 +1130,15 @@ function App() {
   // Input font size setting (web UI, default: "default")
   const [inputFontSize, setInputFontSize] = useState("default");
 
+  // Conversation font family setting (web UI, default: "system") — applied to
+  // .markdown-content only, independent of the compose/input font.
+  const [conversationFontFamily, setConversationFontFamily] =
+    useState("system");
+
+  // Conversation base font size (web UI, default: "sm") — the sidebar
+  // small-A / large-A toggle re-anchors on this value.
+  const [conversationFontSize, setConversationFontSize] = useState("sm");
+
   // Send key mode setting (web UI, default: "enter")
   // "enter" = Enter to send, Shift+Enter for new line
   // "ctrl-enter" = Ctrl/Cmd+Enter to send, Enter for new line
@@ -1148,6 +1216,14 @@ function App() {
         if (config?.ui?.web?.input_font_size) {
           setInputFontSize(config.ui.web.input_font_size);
         }
+        // Load conversation font family setting (web UI)
+        if (config?.ui?.web?.conversation_font_family) {
+          setConversationFontFamily(config.ui.web.conversation_font_family);
+        }
+        // Load conversation base font size setting (web UI)
+        if (config?.ui?.web?.conversation_font_size) {
+          setConversationFontSize(config.ui.web.conversation_font_size);
+        }
         // Load send key mode setting (web UI, default: "enter")
         if (config?.ui?.web?.send_key_mode) {
           setSendKeyMode(config.ui.web.send_key_mode);
@@ -1196,6 +1272,14 @@ function App() {
     }
   }, [sessionInfo?.working_dir, sessionInfo?.workspace_uuid]);
 
+  // Publish the known-workspaces registry so buildWorkspaceViewerURL can
+  // resolve the correct UUID for File: links in views that target a workspace
+  // other than the currently-active conversation (e.g. the beads view opened
+  // for workspace B while the active conversation is in workspace A).
+  useEffect(() => {
+    setKnownWorkspaces(workspaces || []);
+  }, [workspaces]);
+
   // Theme, font-size, and reduced-motion preferences (extracted to hooks/useTheme.js)
   const { theme, toggleTheme, fontSize, toggleFontSize } = useTheme();
 
@@ -1234,6 +1318,41 @@ function App() {
     sizeClasses.forEach((cls) => root.classList.remove(cls));
     root.classList.add(`input-fontsize-${inputFontSize}`);
   }, [inputFontSize]);
+
+  // Apply conversation font family class to <html>. Parallel to input-font-*
+  // but targets .markdown-content only via .conv-font-* rules in styles.css.
+  useEffect(() => {
+    const root = document.documentElement;
+    const convFontClasses = [
+      "conv-font-system",
+      "conv-font-sans-serif",
+      "conv-font-serif",
+      "conv-font-inter",
+      "conv-font-sf-pro",
+      "conv-font-helvetica-neue",
+      "conv-font-roboto",
+      "conv-font-georgia",
+      "conv-font-charter",
+      "conv-font-ibm-plex-sans",
+    ];
+    convFontClasses.forEach((cls) => root.classList.remove(cls));
+    root.classList.add(`conv-font-${conversationFontFamily}`);
+  }, [conversationFontFamily]);
+
+  // Apply conversation base font size as a CSS variable so the existing
+  // .font-small / .font-large rules re-anchor on it (small-A = base,
+  // large-A = base + 2px). Kept in sync with the WebUIConfig options.
+  useEffect(() => {
+    const CONV_BASE_PX = {
+      xs: "13px",
+      sm: "14px",
+      md: "15px",
+      lg: "16px",
+      xl: "18px",
+    };
+    const px = CONV_BASE_PX[conversationFontSize] || CONV_BASE_PX.sm;
+    document.documentElement.style.setProperty("--mitto-conv-base-size", px);
+  }, [conversationFontSize]);
 
   // Messages-area scroll management (extracted to hooks/useScrollManagement.js):
   // at-bottom tracking, new-message indicator, auto-scroll on new content,
@@ -1376,6 +1495,20 @@ function App() {
       // Check if already archived
       const isArchived =
         currentSession.archived || currentSession.info?.archived;
+
+      // Protected conversations (mitto-yvel.4) cannot be archived — this native
+      // shortcut bypasses every button, so it needs its own guard. Unarchive
+      // stays allowed.
+      const isProtected =
+        currentSession.no_archive || currentSession.info?.no_archive;
+      if (!isArchived && isProtected) {
+        showToast({
+          style: "warning",
+          title: "This conversation is protected from archiving",
+          duration: 4000,
+        });
+        return;
+      }
 
       // Toggle archive state
       await archiveSession(activeSessionId, !isArchived);
@@ -1763,32 +1896,18 @@ function App() {
       if (!badgeClickEnabled || !workspacePath) return;
 
       try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspace_path: workspacePath,
-            action: "open",
-            target_id: "finder",
-          }),
+        const data = await getSdkClient().misc.badgeClick({
+          workspace_path: workspacePath,
+          action: "open",
+          target_id: "finder",
         });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          showToast({
-            style: "error",
-            title: data.error?.message || data.error || "Failed to open folder",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
-          }
+        if (!data.success && data.error) {
+          showToast({ style: "error", title: data.error });
         }
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to open folder: " + err.message,
+          title: errorMessage(err, "Failed to open folder"),
         });
       }
     },
@@ -1804,32 +1923,18 @@ function App() {
       if (!workspacePath || !targetId) return;
 
       try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspace_path: workspacePath,
-            action: "open",
-            target_id: targetId,
-          }),
+        const data = await getSdkClient().misc.badgeClick({
+          workspace_path: workspacePath,
+          action: "open",
+          target_id: targetId,
         });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          showToast({
-            style: "error",
-            title: data.error?.message || data.error || "Failed to open target",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
-          }
+        if (!data.success && data.error) {
+          showToast({ style: "error", title: data.error });
         }
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to open target: " + err.message,
+          title: errorMessage(err, "Failed to open target"),
         });
       }
     },
@@ -1849,25 +1954,7 @@ function App() {
         return;
       }
       try {
-        const res = await secureFetch(
-          apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/folder-group`),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ group: group || "" }),
-          },
-        );
-        if (!res.ok) {
-          let msg = "Failed to move folder to group";
-          try {
-            const data = await res.json();
-            msg = data.error?.message || msg;
-          } catch (_) {
-            /* keep default */
-          }
-          showToast({ style: "error", title: msg });
-          return;
-        }
+        await getSdkClient().workspaces.setFolderGroup(uuid, group || "");
         invalidateConfigCache();
         refreshWorkspaces();
         const trimmed = (group || "").trim();
@@ -1878,7 +1965,7 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to move folder to group: " + err.message,
+          title: errorMessage(err, "Failed to move folder to group"),
         });
       }
     },
@@ -1893,25 +1980,10 @@ function App() {
     async (workingDir) => {
       if (!workingDir) return;
       try {
-        const res = await secureFetch(
-          endpoints.folders.pin({ working_dir: workingDir }),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pinned: false }),
-          },
+        await getSdkClient().misc.folderPin.set(
+          { working_dir: workingDir },
+          { pinned: false },
         );
-        if (!res.ok) {
-          let msg = "Failed to remove folder from sidebar";
-          try {
-            const data = await res.json();
-            msg = data.error?.message || msg;
-          } catch (_) {
-            /* keep default */
-          }
-          showToast({ style: "error", title: msg });
-          return;
-        }
         invalidateConfigCache();
         refreshWorkspaces();
         showToast({
@@ -1921,7 +1993,7 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to remove folder from sidebar: " + err.message,
+          title: errorMessage(err, "Failed to remove folder from sidebar"),
         });
       }
     },
@@ -1935,25 +2007,10 @@ function App() {
     async (workingDir) => {
       if (!workingDir) return;
       try {
-        const res = await secureFetch(
-          endpoints.folders.pin({ working_dir: workingDir }),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pinned: true }),
-          },
+        await getSdkClient().misc.folderPin.set(
+          { working_dir: workingDir },
+          { pinned: true },
         );
-        if (!res.ok) {
-          let msg = "Failed to add folder to sidebar";
-          try {
-            const data = await res.json();
-            msg = data.error?.message || msg;
-          } catch (_) {
-            /* keep default */
-          }
-          showToast({ style: "error", title: msg });
-          return;
-        }
         invalidateConfigCache();
         refreshWorkspaces();
         showToast({
@@ -1963,7 +2020,7 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to add folder to sidebar: " + err.message,
+          title: errorMessage(err, "Failed to add folder to sidebar"),
         });
       }
     },
@@ -1981,13 +2038,36 @@ function App() {
     (storedSessions || []).forEach((s) => {
       if (s && s.working_dir) visibleWorkingDirs.add(s.working_dir);
     });
-    return (workspaces || []).filter(
+    const filtered = (workspaces || []).filter(
       (ws) =>
         ws &&
         ws.working_dir &&
         ws.pinned !== true &&
         !visibleWorkingDirs.has(ws.working_dir),
     );
+    // Sort MRU-first by last_opened_at (ISO-8601 timestamp from folders.json,
+    // projected onto workspace records). Zero/absent timestamps sort last;
+    // ties fall back to alphabetical by display name, then working_dir.
+    const sorted = filtered.slice().sort((a, b) => {
+      const ta = a.last_opened_at ? Date.parse(a.last_opened_at) : 0;
+      const tb = b.last_opened_at ? Date.parse(b.last_opened_at) : 0;
+      if (ta !== tb) return tb - ta;
+      const na = (a.name || a.working_dir || "").toLowerCase();
+      const nb = (b.name || b.working_dir || "").toLowerCase();
+      return na.localeCompare(nb);
+    });
+    // Collapse duplicate working_dir entries (e.g. two workspace UUIDs sharing
+    // one folder — an interactive workspace + a loop-babysit workspace). The
+    // picker pins by working_dir, so extra rows are indistinguishable to the
+    // user. Post-sort dedup keeps the MRU-highest occurrence of each path.
+    const seen = new Set();
+    const deduped = [];
+    for (const ws of sorted) {
+      if (seen.has(ws.working_dir)) continue;
+      seen.add(ws.working_dir);
+      deduped.push(ws);
+    }
+    return deduped;
   }, [workspaces, activeSessions, storedSessions]);
 
   const handleAddFolderOpen = useCallback(
@@ -2065,6 +2145,14 @@ function App() {
     await pinSession(session.session_id, pinned);
   };
 
+  const handleSetSessionColor = useCallback(
+    (session, color) => {
+      const id = session?.session_id;
+      if (id) setSessionColor(id, color);
+    },
+    [setSessionColor],
+  );
+
   const handleArchiveSession = async (session, archived) => {
     await archiveSession(session.session_id, archived);
 
@@ -2083,20 +2171,23 @@ function App() {
   // this brings back the saved prompt/frequency/trigger and its enabled state,
   // making loop ⇄ un-loop a symmetric toggle. When there is nothing saved (404),
   // fall back to creating a blank draft config (enabled:false). Either way the
-  // loop_updated WebSocket event sets loop_configured=true (reveals the inline
-  // loop editor in ChatInput).
+  // loop_updated WebSocket event sets loop_configured=true and exposes the Loop
+  // tab in the conversation panel.
   const handleMakeLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
+      const openLoopEditor = () => {
+        focusSession(sessionId);
+        // Let a context-menu conversion finish switching conversations before
+        // selecting a tab that only exists on the target loop conversation.
+        setTimeout(() => handleOpenSidePanelTab("loop"), 0);
+      };
       try {
         // Attempt to restore previously-saved loop settings.
-        const restoreRes = await secureFetch(
-          endpoints.sessions.loopRestore(sessionId),
-          { method: "POST" },
-        );
-        if (restoreRes.ok) {
-          focusSession(sessionId);
+        try {
+          await getSdkClient().sessions.loop.restore(sessionId);
+          openLoopEditor();
           showToast({
             style: "success",
             title: "Loop settings restored",
@@ -2104,25 +2195,42 @@ function App() {
             duration: 6000,
           });
           return;
-        }
-        if (restoreRes.status !== 404) {
-          throw new Error(`HTTP ${restoreRes.status}`);
+        } catch (err) {
+          if (!isNotFoundError(err)) throw err;
         }
 
-        // Nothing saved — create a fresh draft config.
-        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          // Draft body: "(pending)" satisfies LoopPrompt.Validate() while
-          // enabled:false keeps it as DRAFT so nothing is scheduled yet.
-          body: JSON.stringify({
-            prompt: "(pending)",
-            frequency: { value: 1, unit: "hours" },
+        // Nothing saved — try to pre-fill the draft from the most recent
+        // named prompt's loop: frontmatter block (mitto-qff). On any
+        // suggest/set failure fall through to today's blank-draft PUT below.
+        try {
+          const suggestion =
+            await getSdkClient().sessions.loop.suggestFromRecent(sessionId);
+          await getSdkClient().sessions.loop.set(sessionId, {
+            ...suggestion,
             enabled: false,
-          }),
+          });
+          openLoopEditor();
+          showToast({
+            style: "success",
+            title: "Loop pre-filled from your last prompt",
+            message: "Review and enable scheduling.",
+            duration: 6000,
+          });
+          return;
+        } catch (_) {
+          // Fall through to blank-draft PUT on any suggest/PUT failure.
+        }
+
+        // Nothing saved and no suggestion — create a fresh blank draft.
+        // Draft body: an empty prompt is accepted while enabled:false keeps
+        // it as DRAFT so nothing is scheduled yet. Never write a placeholder
+        // body — the runner would deliver it literally once enabled.
+        await getSdkClient().sessions.loop.set(sessionId, {
+          prompt: "",
+          frequency: { value: 1, unit: "hours" },
+          enabled: false,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        focusSession(sessionId);
+        openLoopEditor();
         showToast({
           style: "success",
           title: "Conversation is now loop",
@@ -2137,22 +2245,19 @@ function App() {
         });
       }
     },
-    [focusSession, showToast],
+    [focusSession, handleOpenSidePanelTab, showToast],
   );
 
   // Remove the loop config from a conversation, reverting it to a regular one.
   // DELETE /api/sessions/{id}/loop broadcasts loop_updated (nil), which
-  // sets both loop_configured=false (hides the inline loop editor) and
+  // sets both loop_configured=false (hides the compact controls and Loop tab) and
   // loop_enabled=false (moves conversation back to the Conversations group).
   const handleMakeNonLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
-          method: "DELETE",
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await getSdkClient().sessions.loop.detach(sessionId);
         showToast({
           style: "success",
           title: "Loop scheduling removed",
@@ -2184,6 +2289,9 @@ function App() {
     async (session, prompt, opts) => {
       if (!prompt?.name) return;
 
+      // The menu can target any conversation, not just the active one, so the
+      // parameter dialog is scoped to that conversation's folder.
+      const targetWorkingDir = session?.working_dir || undefined;
       const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
       if (asLoop) {
         const action = decideLoopAction(session);
@@ -2191,16 +2299,20 @@ function App() {
         if (action === "make-loop") {
           // Regular conversation: configure it as loop now and fire the first run.
           const sessionId = session.session_id;
-          let missing = getMissingPromptParameters(prompt, "conversation");
-          if (missing.length > 0 && sessionId) {
-            const cached = await fetchCachedParamNames(sessionId, prompt.name);
-            missing = effectiveMissingParams(missing, cached);
-          }
-          if (missing.length > 0) {
+          const cached = sessionId
+            ? await fetchCachedParamNames(sessionId, prompt.name)
+            : undefined;
+          const shouldOpen = shouldOpenPromptDialog(
+            prompt,
+            "conversation",
+            cached,
+          );
+          if (shouldOpen) {
             setPromptParamDialog({
               prompt,
-              parameters: missing,
+              parameters: promptDialogParameters(prompt, "conversation"),
               hostSessionId: sessionId,
+              workingDir: targetWorkingDir,
               onSubmit: async (userArgs) => {
                 const result = await makeLoopNow(sessionId, prompt, {
                   arguments: userArgs,
@@ -2243,16 +2355,18 @@ function App() {
           // Already-loop or child conversation: enqueue a single run without touching config.
           const sessionId = session?.session_id;
           if (!sessionId) return;
-          let missing = getMissingPromptParameters(prompt, "conversation");
-          if (missing.length > 0 && sessionId) {
-            const cached = await fetchCachedParamNames(sessionId, prompt.name);
-            missing = effectiveMissingParams(missing, cached);
-          }
-          if (missing.length > 0) {
+          const cached = await fetchCachedParamNames(sessionId, prompt.name);
+          const shouldOpen = shouldOpenPromptDialog(
+            prompt,
+            "conversation",
+            cached,
+          );
+          if (shouldOpen) {
             setPromptParamDialog({
               prompt,
-              parameters: missing,
+              parameters: promptDialogParameters(prompt, "conversation"),
               hostSessionId: sessionId,
+              workingDir: targetWorkingDir,
               onSubmit: async (userArgs) => {
                 const result = await seedConversationWithPrompt(
                   sessionId,
@@ -2328,14 +2442,11 @@ function App() {
             },
           });
         };
-        const missingForNewLoop = getMissingPromptParameters(
-          prompt,
-          "conversation",
-        );
-        if (missingForNewLoop.length > 0) {
+        if (shouldOpenPromptDialog(prompt, "conversation")) {
           setPromptParamDialog({
             prompt,
-            parameters: missingForNewLoop,
+            parameters: promptDialogParameters(prompt, "conversation"),
+            workingDir: targetWorkingDir,
             onSubmit: (userArgs) => openScheduleDialog(userArgs),
           });
           return;
@@ -2354,18 +2465,27 @@ function App() {
         sessionId,
         allSessions,
       );
-      let missing = getMissingPromptParameters(prompt, "conversation").filter(
-        (p) => autoArgs[p.name] === undefined,
+      const knownNames = new Set(
+        Object.keys(autoArgs).filter((k) => autoArgs[k] !== undefined),
       );
-      if (missing.length > 0 && sessionId) {
-        const cached = await fetchCachedParamNames(sessionId, prompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0) {
+      const cached = await fetchCachedParamNames(sessionId, prompt.name);
+      const shouldOpen = shouldOpenPromptDialog(
+        prompt,
+        "conversation",
+        cached,
+        knownNames,
+      );
+      if (shouldOpen) {
         setPromptParamDialog({
           prompt,
-          parameters: missing,
+          parameters: promptDialogParameters(
+            prompt,
+            "conversation",
+            knownNames,
+          ),
           hostSessionId: sessionId,
+          workingDir: targetWorkingDir,
+          initialValues: autoArgs,
           onSubmit: async (userArgs) => {
             const result = await seedConversationWithPrompt(sessionId, prompt, {
               arguments: { ...autoArgs, ...userArgs },
@@ -2434,6 +2554,20 @@ function App() {
       allSessions.some((s) => s.parent_session_id === activeSessionId),
     [allSessions, activeSessionId],
   );
+  // Children of the active conversation, in the same order they appear in
+  // allSessions (which the sidebar already renders sorted). Feeds the header
+  // "children dropdown" (mitto-7vpp) so users can jump between generations of
+  // a spawned tree without navigating the sidebar. Archived children are
+  // omitted — they are not part of the active tree the user cares about.
+  const activeChildren = useMemo(
+    () =>
+      activeSessionId
+        ? allSessions.filter(
+            (s) => s.parent_session_id === activeSessionId && !s.archived,
+          )
+        : [],
+    [allSessions, activeSessionId],
+  );
   const headerIsArchived = activeSession?.archived || false;
   const headerIsLoop = activeSession?.loop_configured || false;
   const headerIsSpawned =
@@ -2472,13 +2606,24 @@ function App() {
 
   // Only the active conversation can have queued messages; streaming state comes
   // from the live socket. Both block archiving (matches SessionItem logic).
+  // Protected-conversation flag (mitto-yvel.4): suppresses the archive
+  // direction only — unarchive stays available (mitto-a5p direction-aware shape).
   const headerHasQueued = queueLength > 0;
-  const headerCanArchive = !headerHasQueued && !isStreaming;
-  const headerArchiveBlockedReason = headerHasQueued
-    ? "Clear queue before archiving"
-    : isStreaming
-      ? "Wait for response to complete"
-      : null;
+  const headerIsProtected = !!(
+    activeSession?.no_archive || sessionInfo?.no_archive
+  );
+  const headerCanArchive =
+    headerIsArchived ||
+    (!headerIsProtected && !headerHasQueued && !isStreaming);
+  const headerArchiveBlockedReason = !headerIsArchived
+    ? headerIsProtected
+      ? "This conversation is protected from archiving"
+      : headerHasQueued
+        ? "Clear queue before archiving"
+        : isStreaming
+          ? "Wait for response to complete"
+          : null
+    : null;
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 
@@ -2534,16 +2679,25 @@ function App() {
   // Loop "glance" badges shown in the subtitle for ALL loop sessions
   // (running or stopped, schedule or onCompletion).
   const headerLoopTrigger = activeSession?.loop_trigger || null;
+  // mitto-r6j: canonical armed-triggers list. Falls back to the scalar
+  // wrapped in a single-entry array for backward-compat with older sessions.
+  const headerLoopTriggers = Array.isArray(activeSession?.loop_triggers)
+    ? activeSession.loop_triggers
+    : headerLoopTrigger
+      ? [headerLoopTrigger]
+      : null;
   const headerIterationCount = activeSession?.loop_iteration_count ?? 0;
   const headerMaxIterations = activeSession?.loop_max_iterations ?? 0;
   const headerDelaySeconds = activeSession?.loop_delay_seconds ?? 0;
   const headerMaxDurationSecs = activeSession?.loop_max_duration_seconds ?? 0;
 
   // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for
-  // onCompletion, "on task changes" for onTasks (mitto-oja.4).
+  // onCompletion, "on task changes" for onTasks (mitto-oja.4). Multi-trigger
+  // loops render "<primary label> +N" where N is the extra-trigger count
+  // (mitto-r6j).
   const headerTriggerLabel = activeSession?.loop_configured
     ? computeHeaderTriggerLabel(
-        headerLoopTrigger,
+        headerLoopTriggers ?? headerLoopTrigger,
         headerDelaySeconds,
         activeSession?.loop_frequency,
       )
@@ -2579,23 +2733,67 @@ function App() {
     ? "badge-error badge-soft"
     : "badge-ghost";
 
+  // Shared "copy text, then toast the outcome" helper backing all four Copy
+  // dropdown entries (mitto-a6v1). Kept as a single useCallback so each entry
+  // handler below is a thin wrapper with its own text source + toast titles.
+  const copyWithToast = useCallback(
+    async (text, okTitle, failTitle) => {
+      const ok = await copyToClipboard(text);
+      showToast({
+        style: ok ? "success" : "error",
+        title: ok ? okTitle : failTitle,
+        duration: ok ? 3000 : 4000,
+      });
+    },
+    [showToast],
+  );
+
+  // Full-conversation Markdown, memoized so both the copy handler and the
+  // dropdown's disabled state (no copyable messages yet) share one computation.
+  const headerConversationMarkdown = useMemo(
+    () => conversationToMarkdown(messages),
+    [messages],
+  );
+
   const handleCopyConversation = useCallback(async () => {
-    const md = conversationToMarkdown(messages);
-    const ok = await copyToClipboard(md);
-    if (ok) {
-      showToast({
-        style: "success",
-        title: "Conversation copied as Markdown",
-        duration: 3000,
-      });
-    } else {
-      showToast({
-        style: "error",
-        title: "Failed to copy conversation",
-        duration: 3000,
-      });
-    }
-  }, [messages, showToast]);
+    await copyWithToast(
+      headerConversationMarkdown,
+      "Conversation copied as Markdown",
+      "Failed to copy conversation",
+    );
+  }, [headerConversationMarkdown, copyWithToast]);
+
+  const handleCopyConversationName = useCallback(async () => {
+    await copyWithToast(
+      sessionInfo?.name || "",
+      "Conversation name copied",
+      "Failed to copy conversation name",
+    );
+  }, [sessionInfo?.name, copyWithToast]);
+
+  const handleCopyConversationId = useCallback(async () => {
+    await copyWithToast(
+      activeSessionId || "",
+      "Conversation ID copied",
+      "Failed to copy conversation ID",
+    );
+  }, [activeSessionId, copyWithToast]);
+
+  // Last agent (assistant) message in the conversation, rendered to Markdown.
+  // Empty string when there is no copyable agent message yet — used to
+  // disable the "Copy last response" entry rather than hide it.
+  const headerLastAgentMarkdown = useMemo(
+    () => lastAgentMarkdown(messages),
+    [messages],
+  );
+
+  const handleCopyLastResponse = useCallback(async () => {
+    await copyWithToast(
+      headerLastAgentMarkdown,
+      "Last response copied as Markdown",
+      "Failed to copy last response",
+    );
+  }, [headerLastAgentMarkdown, copyWithToast]);
 
   // Flush the agent's conversation context by sending the configured
   // context-flush command (e.g. "/clear") to the active conversation. The
@@ -2606,25 +2804,17 @@ function App() {
       const sessionId = session?.session_id || activeSessionId;
       if (!sessionId) return;
       try {
-        const res = await authFetch(endpoints.sessions.flush(sessionId), {
-          method: "POST",
+        await getSdkClient().sessions.flush(sessionId);
+        showToast({
+          style: "success",
+          title: "Flushing conversation context\u2026",
+          duration: 3000,
         });
-        if (res.ok) {
-          showToast({
-            style: "success",
-            title: "Flushing conversation context\u2026",
-            duration: 3000,
-          });
-        } else {
-          const data = await res.json().catch(() => null);
-          const msg = errorMessageFromData(data) || "Failed to flush context";
-          showToast({ style: "error", title: msg, duration: 4000 });
-        }
       } catch (err) {
         console.error("Failed to flush context:", err);
         showToast({
           style: "error",
-          title: "Failed to flush context",
+          title: errorMessage(err, "Failed to flush context"),
           duration: 4000,
         });
       }
@@ -2652,7 +2842,17 @@ function App() {
     onMakeNonLoop: handleMakeNonLoop,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
+    onSetColor: handleSetSessionColor,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
+    onCopyConversationName: activeSessionId
+      ? handleCopyConversationName
+      : undefined,
+    onCopyConversationId: activeSessionId
+      ? handleCopyConversationId
+      : undefined,
+    onCopyLastResponse: activeSessionId ? handleCopyLastResponse : undefined,
+    hasConversationMarkdown: !!headerConversationMarkdown,
+    hasLastResponseMarkdown: !!headerLastAgentMarkdown,
     flushCommand: sessionInfo?.context_flush_command || "",
     onFlushContext: activeSessionId ? handleFlushContext : undefined,
   });
@@ -2702,14 +2902,12 @@ function App() {
       try {
         // Merge global + folder shortcuts for the conversations section. Global
         // buttons come first; folder buttons duplicating a global prompt drop out.
-        const [folderRes, globalRes] = await Promise.all([
-          authFetch(endpoints.folders.shortcuts({ working_dir: wd })),
-          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        const [data, globalData] = await Promise.all([
+          getSdkClient().shortcuts.getFolder({ working_dir: wd }),
+          getSdkClient()
+            .shortcuts.getGlobal()
+            .catch(() => ({})),
         ]);
-        const data = await folderRes.json().catch(() => ({}));
-        const globalData = globalRes
-          ? await globalRes.json().catch(() => ({}))
-          : {};
         const globalList = globalData?.sections?.conversations || [];
         const folderList = data?.sections?.conversations || [];
         const globalNames = new Set(globalList.map((s) => s.prompt));
@@ -2813,12 +3011,80 @@ function App() {
             onClick: handleHeaderMenuButtonClick,
           },
           {
-            kind: "button",
+            kind: "dropdown",
             testId: "header-copy-markdown",
             icon: html`<${CopyIcon} className="w-4 h-4" />`,
-            tip: "Copy as Markdown",
-            ariaLabel: "Copy as Markdown",
-            onClick: handleCopyConversation,
+            tip: "Copy",
+            ariaLabel: "Copy",
+            caret: true,
+            // mitto-nmiv: NOT "end" — this trigger sits close to the sidebar's
+            // right edge, so a dropdown-end (right-aligned) menu extends left
+            // past the sidebar and is clipped by the main-content column's
+            // overflow:hidden (clipping, not a z-index/paint-order issue — see
+            // the bead's Investigation comment). Default alignment extends the
+            // w-64 menu to the right instead, staying inside the column.
+            open: copyMenuOpen,
+            onToggle: setCopyMenuOpen,
+            closeOnOutsideClick: true,
+            menu: html`
+              <ul
+                class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-64 p-2 shadow border border-mitto-border-1"
+                data-testid="header-copy-markdown-menu"
+              >
+                <li class=${!sessionInfo?.name ? "menu-disabled" : ""}>
+                  <button
+                    type="button"
+                    data-testid="header-copy-name"
+                    disabled=${!sessionInfo?.name}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyConversationName();
+                    }}
+                  >
+                    <span class="flex-1">Copy conversation name</span>
+                  </button>
+                </li>
+                <li class=${!activeSessionId ? "menu-disabled" : ""}>
+                  <button
+                    type="button"
+                    data-testid="header-copy-id"
+                    disabled=${!activeSessionId}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyConversationId();
+                    }}
+                  >
+                    <span class="flex-1">Copy conversation ID</span>
+                  </button>
+                </li>
+                <li class=${!headerConversationMarkdown ? "menu-disabled" : ""}>
+                  <button
+                    type="button"
+                    data-testid="header-copy-conversation-md"
+                    disabled=${!headerConversationMarkdown}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyConversation();
+                    }}
+                  >
+                    <span class="flex-1">Copy full contents as Markdown</span>
+                  </button>
+                </li>
+                <li class=${!headerLastAgentMarkdown ? "menu-disabled" : ""}>
+                  <button
+                    type="button"
+                    data-testid="header-copy-last-response-md"
+                    disabled=${!headerLastAgentMarkdown}
+                    onClick=${() => {
+                      setCopyMenuOpen(false);
+                      handleCopyLastResponse();
+                    }}
+                  >
+                    <span class="flex-1">Copy last response as Markdown</span>
+                  </button>
+                </li>
+              </ul>
+            `,
           },
           ...(conversationHasFlush
             ? [
@@ -2900,6 +3166,58 @@ function App() {
     // associated issue. Disabled when there is no linked issue; a status badge
     // dot appears once the (possibly slow) status fetch resolves. Sits just to
     // the left of the Session-details toggle.
+    // Children dropdown (mitto-7vpp): quick jump to any child conversation of
+    // the active session. Hidden entirely on mobile (< md) and when the active
+    // conversation has no children — keeps the header uncluttered. Live-updates
+    // via allSessions (WebSocket push) without any extra subscription.
+    ...(activeSessionId && activeChildren.length > 0
+      ? [
+          {
+            kind: "dropdown",
+            testId: "header-children-dropdown",
+            // Wrap the icon in a daisyUI `indicator` so the child count sits as
+            // a small badge on the top-right corner of the LayersIcon — same
+            // visual language as unread/count badges elsewhere in the app.
+            icon: html`<span class="indicator">
+              <span
+                class="indicator-item badge badge-xs badge-primary tabular-nums"
+                data-testid="header-children-count"
+                >${activeChildren.length}</span
+              >
+              <${LayersIcon} className="w-4 h-4" />
+            </span>`,
+            tip: `Children (${activeChildren.length})`,
+            ariaLabel: `Children of this conversation (${activeChildren.length})`,
+            // Portal placement escapes the clipped header/sidebar ancestors;
+            // end is only a preference because Toolbar clamps every viewport
+            // edge after measuring the rendered menu.
+            align: "end",
+            portal: true,
+            className: "hidden md:block",
+            open: childrenMenuOpen,
+            onToggle: setChildrenMenuOpen,
+            closeOnOutsideClick: true,
+            menu: html`
+              <ul
+                class="dropdown-content menu bg-mitto-surface-2 rounded-box shadow border border-mitto-border-1 z-10 mt-1 w-64 max-h-96 overflow-y-auto p-1"
+                data-testid="header-children-dropdown-menu"
+              >
+                ${activeChildren.map(
+                  (child) =>
+                    html`<${HeaderChildRow}
+                      key=${child.session_id}
+                      child=${child}
+                      onSelect=${(sid) => {
+                        setChildrenMenuOpen(false);
+                        focusSession(sid);
+                      }}
+                    />`,
+                )}
+              </ul>
+            `,
+          },
+        ]
+      : []),
     ...(activeSessionId
       ? [
           {
@@ -3041,8 +3359,13 @@ function App() {
         <${SettingsDialog}
           isOpen=${settingsDialog.isOpen}
           forceOpen=${settingsDialog.forceOpen}
+          initialTab=${settingsDialog.initialTab}
           onClose=${() =>
-            setSettingsDialog({ isOpen: false, forceOpen: false })}
+            setSettingsDialog({
+              isOpen: false,
+              forceOpen: false,
+              initialTab: null,
+            })}
           showToast=${showToast}
           onSave=${async () => {
             // Refresh workspaces after saving
@@ -3066,6 +3389,14 @@ function App() {
                 );
                 // Reload input font size setting
                 setInputFontSize(config?.ui?.web?.input_font_size || "default");
+                // Reload conversation font family setting
+                setConversationFontFamily(
+                  config?.ui?.web?.conversation_font_family || "system",
+                );
+                // Reload conversation base font size setting
+                setConversationFontSize(
+                  config?.ui?.web?.conversation_font_size || "sm",
+                );
                 // Reload send key mode setting
                 setSendKeyMode(config?.ui?.web?.send_key_mode || "enter");
                 // Reload conversation cycling mode setting
@@ -3100,6 +3431,7 @@ function App() {
               prompt,
               parameters,
               onSubmit,
+              workingDir: opts.workingDir,
               initialValues: opts.initialValues,
               hostSessionId: opts.hostSessionId,
             })}
@@ -3139,14 +3471,17 @@ function App() {
            the ChatInput dropup) has prompt params it cannot auto-fill. The
            conversation menu sets hostSessionId to the right-clicked conversation
            so a childSessionId picker is scoped to its children; other surfaces
-           fall back to the active session. workingDir prefers the beads view's
-           working dir (when opened from a beads context) and otherwise falls back
-           to the active conversation's working dir, so the workspace-scoped
-           "prompts" picker can populate regardless of the opening surface. -->
+           fall back to the active session. workingDir prefers the dir the opener
+           passed explicitly, then the beads view's dir but only while a beads
+           surface is actually on screen (beadsWorkingDir is sticky and would
+           otherwise leak a previously-visited folder into a conversation-opened
+           dialog), and finally the active conversation's working dir. -->
         <${PromptParameterDialog}
           isOpen=${promptParamDialog !== null}
           parameters=${promptParamDialog?.parameters || []}
-          workingDir=${beadsWorkingDir || headerWorkingDir}
+          workingDir=${promptParamDialog?.workingDir ||
+          ((mainView === "beads" || beadsIssueOpen) && beadsWorkingDir) ||
+          headerWorkingDir}
           hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
           title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
           initialValues=${promptParamDialog?.initialValues || {}}
@@ -3171,129 +3506,146 @@ function App() {
               onShowSidebar=${() => setShowSidebar(true)}
             />`
           : mainView === "beads" && beadsWorkingDir
-          ? html`
-              <div
-                class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
-              >
-                <${BeadsView}
-                  workingDir=${beadsWorkingDir}
-                  onClose=${() => setMainView("conversation")}
-                  showToast=${showToast}
-                  dismissToast=${dismissToast}
-                  onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
-                  onRunBeadsPrompt=${handleRunBeadsPrompt}
-                  onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
-                  onRunBeadsListPrompt=${handleRunBeadsListPrompt}
-                  onShowSidebar=${() => setShowSidebar(true)}
-                  onOpenConfig=${window.mittoIsExternal === true
-                    ? undefined
-                    : () =>
-                        handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
-                  issueSessionMap=${beadsIssueSessionMap}
-                  issueStreamingSet=${beadsIssueStreamingSet}
-                  onOpenConversation=${handleSelectSession}
-                  onLaunchPrompt=${handleBeadsLaunchPrompt}
-                  initialCreateNonce=${beadsCreateNonce}
-                  initialRefreshNonce=${beadsRefreshNonce}
-                  initialCleanupNonce=${beadsCleanupNonce}
-                />
-              </div>
-            `
-          : html`
-              <div
-                ref=${mainContentRef}
-                class="flex-1 flex flex-col min-w-0 overflow-hidden"
-              >
-                <!-- Header -->
+            ? html`
                 <div
-                  class="relative pt-4 px-4 pb-2 bg-mitto-sidebar flex items-center gap-3 shrink-0"
+                  class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
                 >
-                  <${Tooltip}
-                    tip="Show conversations"
-                    placement="bottom"
-                    className="md:hidden"
+                  <${BeadsView}
+                    workingDir=${beadsWorkingDir}
+                    onClose=${() => setMainView("conversation")}
+                    showToast=${showToast}
+                    dismissToast=${dismissToast}
+                    onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+                    onRunBeadsPrompt=${handleRunBeadsPrompt}
+                    onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
+                    onRunBeadsListPrompt=${handleRunBeadsListPrompt}
+                    onShowSidebar=${() => setShowSidebar(true)}
+                    onOpenConfig=${window.mittoIsExternal === true
+                      ? undefined
+                      : () =>
+                          handleShowWorkspacesForFolder(
+                            beadsWorkingDir,
+                            "beads",
+                          )}
+                    issueSessionMap=${beadsIssueSessionMap}
+                    issueStreamingSet=${beadsIssueStreamingSet}
+                    onOpenConversation=${handleSelectSession}
+                    onLaunchPrompt=${handleBeadsLaunchPrompt}
+                    initialCreateNonce=${beadsCreateNonce}
+                    initialRefreshNonce=${beadsRefreshNonce}
+                    initialCleanupNonce=${beadsCleanupNonce}
+                  />
+                </div>
+              `
+            : html`
+                <div
+                  ref=${mainContentRef}
+                  class="flex-1 flex flex-col min-w-0 overflow-hidden"
+                >
+                  <!-- Header -->
+                  <div
+                    class="relative pt-4 px-4 pb-2 bg-mitto-sidebar flex items-center gap-3 shrink-0"
                   >
-                    <button
-                      class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
-                      onClick=${() => setShowSidebar(true)}
-                      aria-label="Show conversations"
+                    <${Tooltip}
+                      tip="Show conversations"
+                      placement="bottom"
+                      className="md:hidden"
                     >
-                      <${MenuIcon} className="w-6 h-6" />
-                    </button>
-                  <//>
-                  <div class="flex-1 min-w-0 flex flex-col justify-center">
-                    <h1
-                      class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
-                        ? "text-mitto-text-muted"
-                        : connected
-                          ? ""
-                          : "text-mitto-text-muted"}"
-                      data-tip=${activeSessionId
-                        ? sessionInfo?.name || "New conversation"
-                        : ""}
-                      aria-label=${activeSessionId
-                        ? sessionInfo?.name || "New conversation"
-                        : ""}
-                    >
-                      ${activeSessionId
-                        ? sessionInfo?.name || "New conversation"
-                        : "No Active Session"}
-                    </h1>
-                    ${activeSessionId &&
-                    (headerAcpServer ||
-                      headerNextScheduledAt ||
-                      headerLoopState ||
-                      activeSession?.loop_configured) &&
-                    html`<div
-                      class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
-                      data-testid="conversation-header-subtitle"
-                    >
-                      ${headerLoopState &&
-                      html`<span
-                        class="badge badge-sm ${headerLoopState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
-                        data-testid="loop-status-pill"
-                        title=${headerLoopState.state === "running"
-                          ? "Loop loop is iterating"
-                          : (activeSession?.loop_stopped_reason || "") +
-                            (activeSession?.stopped_at
-                              ? " · " +
-                                new Date(
-                                  activeSession.stopped_at,
-                                ).toLocaleString()
-                              : "")}
-                        >${headerLoopState.state === "running"
-                          ? html`<${LoopIcon} className="w-3 h-3" />`
-                          : headerLoopState.state === "stopped"
-                            ? html`<${StopIcon} className="w-3 h-3" />`
-                            : html`<${PauseFilledIcon}
-                                className="w-3 h-3"
-                              />`}<span class="badge-collapse-label"
-                          >${headerLoopState.label}</span
-                        ></span
-                      >`}
-                      ${headerAcpServer &&
-                      html`<span class="truncate min-w-0"
-                        >${headerAcpServer}</span
-                      >`}
-                      ${headerTriggerLabel &&
-                      html`<${Fragment}>
+                      <button
+                        class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                        onClick=${() => setShowSidebar(true)}
+                        aria-label="Show conversations"
+                      >
+                        <${MenuIcon} className="w-6 h-6" />
+                      </button>
+                    <//>
+                    <div class="flex-1 min-w-0 flex flex-col justify-center">
+                      <h1
+                        class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
+                          ? "text-mitto-text-muted"
+                          : connected
+                            ? ""
+                            : "text-mitto-text-muted"}"
+                        data-tip=${activeSessionId
+                          ? sessionInfo?.name || "New conversation"
+                          : ""}
+                        aria-label=${activeSessionId
+                          ? sessionInfo?.name || "New conversation"
+                          : ""}
+                      >
+                        ${activeSessionId
+                          ? sessionInfo?.name || "New conversation"
+                          : "No Active Session"}
+                      </h1>
+                      ${activeSessionId &&
+                      (headerAcpServer ||
+                        headerNextScheduledAt ||
+                        headerLoopState ||
+                        activeSession?.loop_configured) &&
+                      html`<div
+                        class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
+                        data-testid="conversation-header-subtitle"
+                      >
+                        ${headerLoopState &&
+                        html`<span
+                          class="badge badge-sm ${headerLoopState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
+                          data-testid="loop-status-pill"
+                          title=${headerLoopState.state === "running"
+                            ? "Loop loop is iterating"
+                            : (activeSession?.loop_stopped_reason || "") +
+                              (activeSession?.stopped_at
+                                ? " · " +
+                                  new Date(
+                                    activeSession.stopped_at,
+                                  ).toLocaleString()
+                                : "")}
+                          >${headerLoopState.state === "running"
+                            ? html`<${LoopIcon} className="w-3 h-3" />`
+                            : headerLoopState.state === "stopped"
+                              ? html`<${StopIcon} className="w-3 h-3" />`
+                              : html`<${PauseFilledIcon}
+                                  className="w-3 h-3"
+                                />`}<span class="badge-collapse-label"
+                            >${headerLoopState.label}</span
+                          ></span
+                        >`}
+                        ${headerAcpServer &&
+                        html`<span class="truncate min-w-0"
+                          >${headerAcpServer}</span
+                        >`}
+                        ${headerTriggerLabel &&
+                        (() => {
+                          // Icon reflects the PRIMARY (first) armed trigger;
+                          // the badge label already carries "+N" when extra
+                          // triggers are armed (mitto-r6j).
+                          const primary =
+                            (headerLoopTriggers && headerLoopTriggers[0]) ||
+                            headerLoopTrigger;
+                          const iconMarkup =
+                            primary === "onCompletion"
+                              ? html`<${CheckIcon} className="w-3 h-3" />`
+                              : primary === "onTasks"
+                                ? html`<${BeadsIcon} className="w-3 h-3" />`
+                                : html`<${ClockIcon} className="w-3 h-3" />`;
+                          const fullList =
+                            (headerLoopTriggers &&
+                              headerLoopTriggers.join(", ")) ||
+                            primary ||
+                            "";
+                          return html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
                   data-testid="loop-trigger-badge"
-                >${
-                  headerLoopTrigger === "onCompletion"
-                    ? html`<${CheckIcon} className="w-3 h-3" />`
-                    : headerLoopTrigger === "onTasks"
-                      ? html`<${BeadsIcon} className="w-3 h-3" />`
-                      : html`<${ClockIcon} className="w-3 h-3" />`
-                }<span
+                  title=${fullList}
+                >${iconMarkup}<span
                     class="badge-collapse-label"
                     >${headerTriggerLabel}</span
                   ></span>
-              </${Fragment}>`}
-                      ${headerRunCountLabel !== null &&
-                      html`<${Fragment}>
+              </${Fragment}>`;
+                        })()}
+                        ${headerRunCountLabel !== null &&
+                        html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerRunCountBadgeClass} whitespace-nowrap"
@@ -3307,8 +3659,8 @@ function App() {
                   ><span class="runcount-short">${headerRunCountLabelShort}</span
                 ></span>
               </${Fragment}>`}
-                      ${headerMaxTimeLabel &&
-                      html`<${Fragment}>
+                        ${headerMaxTimeLabel &&
+                        html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerMaxTimeBadgeClass} whitespace-nowrap"
@@ -3318,9 +3670,9 @@ function App() {
                   }
                 >${headerMaxTimeLabel}</span>
               </${Fragment}>`}
-                      ${headerLoopState?.state === "running" &&
-                      headerNextScheduledAt &&
-                      html`<${Fragment}>
+                        ${headerLoopState?.state === "running" &&
+                        headerNextScheduledAt &&
+                        html`<${Fragment}>
                 ${
                   headerAcpServer ||
                   headerTriggerLabel ||
@@ -3336,240 +3688,251 @@ function App() {
                   className="whitespace-nowrap"
                 />
               </${Fragment}>`}
-                    </div>`}
+                      </div>`}
+                    </div>
                   </div>
-                </div>
 
-                <!-- Conversation toolbar: the portable Toolbar pill, sitting
+                  <!-- Conversation toolbar: the portable Toolbar pill, sitting
                        right below the title header and vertically aligned with
                        the sidebar toolbar (both live in a px-3 wrapper directly
                        under their p-4 header). Holds the actions that used to
                        sit top-right in the header: the "…" conversation-actions
                        menu and the Session-details panel toggle. -->
-                <div
-                  class="px-3 pb-2 shrink-0"
-                  data-testid="conversation-toolbar"
-                >
-                  <${Toolbar}
-                    variant="block"
-                    surface="bg-mitto-surface-3"
-                    ariaLabel="Conversation actions"
-                    items=${conversationToolbarItems}
-                  />
-                </div>
-                ${headerMenu &&
-                html`
-                  <${ContextMenu}
-                    x=${headerMenu.x}
-                    y=${headerMenu.y}
-                    items=${headerPromptGroupItems}
-                    onClose=${closeHeaderMenu}
-                  />
-                `}
-
-                <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
-                <div class="flex-1 relative min-h-0 overflow-hidden">
-                  <!-- Agent Plan Panel (floating overlay at top) -->
-                  <${AgentPlanPanel}
-                    isOpen=${showPlanPanel}
-                    onClose=${handleClosePlanPanel}
-                    onToggle=${handleTogglePlanPanel}
-                    entries=${planEntries}
-                    userPinned=${planUserPinned}
-                  />
-                  <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
-                  ${!showPlanPanel &&
-                  planEntries.length > 0 &&
+                  <div
+                    class="px-3 pb-2 shrink-0"
+                    data-testid="conversation-toolbar"
+                  >
+                    <${Toolbar}
+                      variant="block"
+                      surface="bg-mitto-surface-3"
+                      ariaLabel="Conversation actions"
+                      items=${conversationToolbarItems}
+                    />
+                  </div>
+                  ${headerMenu &&
                   html`
-                    <div
-                      class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
-                    >
-                      <${AgentPlanIndicator}
-                        onClick=${handleTogglePlanPanel}
-                        entries=${planEntries}
-                      />
+                    <${ContextMenu}
+                      x=${headerMenu.x}
+                      y=${headerMenu.y}
+                      items=${headerPromptGroupItems}
+                      onClose=${closeHeaderMenu}
+                    />
+                  `}
+
+                  <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
+                  <div class="flex-1 relative min-h-0 overflow-hidden">
+                    <!-- Agent Plan Panel (floating overlay at top) -->
+                    <${AgentPlanPanel}
+                      isOpen=${showPlanPanel}
+                      onClose=${handleClosePlanPanel}
+                      onToggle=${handleTogglePlanPanel}
+                      entries=${planEntries}
+                      userPinned=${planUserPinned}
+                    />
+                    <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
+                    ${!showPlanPanel &&
+                    planEntries.length > 0 &&
+                    html`
+                      <div
+                        class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
+                      >
+                        <${AgentPlanIndicator}
+                          onClick=${handleTogglePlanPanel}
+                          entries=${planEntries}
+                        />
+                      </div>
+                    `}
+                    <!-- Messages list (scrollable container + scroll-to-bottom button) -->
+                    <${MessageList}
+                      displayMessages=${displayMessages}
+                      messages=${messages}
+                      hasMoreMessages=${hasMoreMessages}
+                      hasReachedLimit=${hasReachedLimit}
+                      isLoadingMore=${isLoadingMore}
+                      isStreaming=${isStreaming}
+                      agentWorking=${agentWorking}
+                      onLoadMore=${handleLoadMore}
+                      onScrollToBottom=${scrollToBottom}
+                      isUserAtBottom=${isUserAtBottom}
+                      hasNewMessages=${hasNewMessages}
+                      sentinelRef=${sentinelRef}
+                      onRetry=${handleSendPrompt}
+                      activeSessionId=${activeSessionId}
+                      swipeDirection=${swipeDirection}
+                      swipeArrow=${swipeArrow}
+                      connected=${connected}
+                      sessionInfo=${sessionInfo}
+                      workspaces=${workspaces}
+                      messagesContainerRef=${messagesContainerRef}
+                      mcpInitState=${mcpInitState}
+                      clearMCPInit=${clearMCPInit}
+                    />
+                  </div>
+                  <!-- End of messages wrapper -->
+
+                  <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
+                  ${mcpStatus &&
+                  mcpStatus.available === false &&
+                  html`
+                    <div class="flex justify-center my-2">
+                      <div
+                        role="alert"
+                        class="alert alert-warning max-w-2xl text-sm py-2"
+                      >
+                        <span>
+                          MCP server
+                          unavailable${mcpStatus.reason === "port_in_use"
+                            ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
+                            : mcpStatus.port
+                              ? ` (port ${mcpStatus.port})`
+                              : ""}.
+                          Mitto continues without MCP tools.
+                        </span>
+                      </div>
                     </div>
                   `}
-                  <!-- Messages list (scrollable container + scroll-to-bottom button) -->
-                  <${MessageList}
-                    displayMessages=${displayMessages}
-                    messages=${messages}
-                    hasMoreMessages=${hasMoreMessages}
-                    hasReachedLimit=${hasReachedLimit}
-                    isLoadingMore=${isLoadingMore}
-                    isStreaming=${isStreaming}
-                    agentWorking=${agentWorking}
-                    onLoadMore=${handleLoadMore}
-                    onScrollToBottom=${scrollToBottom}
-                    isUserAtBottom=${isUserAtBottom}
-                    hasNewMessages=${hasNewMessages}
-                    sentinelRef=${sentinelRef}
-                    onRetry=${handleSendPrompt}
-                    activeSessionId=${activeSessionId}
-                    swipeDirection=${swipeDirection}
-                    swipeArrow=${swipeArrow}
-                    connected=${connected}
-                    sessionInfo=${sessionInfo}
-                    workspaces=${workspaces}
-                    messagesContainerRef=${messagesContainerRef}
-                  />
-                </div>
-                <!-- End of messages wrapper -->
 
-                <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
-                ${mcpStatus &&
-                mcpStatus.available === false &&
-                html`
-                  <div class="flex justify-center my-2">
-                    <div
-                      role="alert"
-                      class="alert alert-warning max-w-2xl text-sm py-2"
-                    >
-                      <span>
-                        MCP server
-                        unavailable${mcpStatus.reason === "port_in_use"
-                          ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
-                          : mcpStatus.port
-                            ? ` (port ${mcpStatus.port})`
-                            : ""}.
-                        Mitto continues without MCP tools.
-                      </span>
+                  <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
+                  <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+                  <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
+                  ${connected &&
+                  activeSessionId &&
+                  sessionInfo &&
+                  !sessionInfo.acp_ready &&
+                  !sessionInfo.archived &&
+                  !sessionInfo.gc_suspended &&
+                  messages.length > 0 &&
+                  html`
+                    <div class="flex items-center justify-center py-2 text-sm">
+                      <span
+                        class="skeleton skeleton-text skeleton-text-readable"
+                        >Establishing ACP session...</span
+                      >
                     </div>
-                  </div>
-                `}
+                  `}
 
-                <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
-                <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
-                <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
-                ${connected &&
-                activeSessionId &&
-                sessionInfo &&
-                !sessionInfo.acp_ready &&
-                !sessionInfo.archived &&
-                !sessionInfo.gc_suspended &&
-                messages.length > 0 &&
-                html`
-                  <div class="flex items-center justify-center py-2 text-sm">
-                    <span class="skeleton skeleton-text skeleton-text-readable"
-                      >Establishing ACP session...</span
-                    >
-                  </div>
-                `}
-
-                <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
-                <!-- Uses the same balloon style as system messages for visual consistency -->
-                ${sessionInfo?.archived &&
-                sessionInfo?.archive_reason &&
-                html`
-                  <div class="flex justify-center mb-3">
-                    <div
-                      class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
-                    >
-                      ${getArchiveReasonText(
-                        sessionInfo.archive_reason,
-                        sessionInfo.archived_at,
-                      )}
+                  <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
+                  <!-- Uses the same balloon style as system messages for visual consistency -->
+                  ${sessionInfo?.archived &&
+                  sessionInfo?.archive_reason &&
+                  html`
+                    <div class="flex justify-center mb-3">
+                      <div
+                        class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
+                      >
+                        ${getArchiveReasonText(
+                          sessionInfo.archive_reason,
+                          sessionInfo.archived_at,
+                        )}
+                      </div>
                     </div>
-                  </div>
-                `}
+                  `}
 
-                <!-- Input Area Container (relative for QueueDropdown positioning) -->
-                <div class="relative shrink-0">
-                  <!-- Queue Dropdown (floating overlay above input) -->
-                  <${QueueDropdown}
-                    isOpen=${showQueueDropdown}
-                    onClose=${handleCloseQueueDropdown}
-                    messages=${queueMessages}
-                    onDelete=${handleDeleteQueueMessage}
-                    onMove=${handleMoveQueueMessage}
-                    isDeleting=${isDeletingQueueMessage}
-                    isMoving=${isMovingQueueMessage}
-                    queueLength=${queueLength}
-                    maxSize=${queueConfig.max_size}
-                  />
+                  <!-- Input Area Container (relative for QueueDropdown positioning) -->
+                  <div class="relative shrink-0">
+                    <!-- Queue Dropdown (floating overlay above input) -->
+                    <${QueueDropdown}
+                      isOpen=${showQueueDropdown}
+                      onClose=${handleCloseQueueDropdown}
+                      messages=${queueMessages}
+                      onDelete=${handleDeleteQueueMessage}
+                      onMove=${handleMoveQueueMessage}
+                      isDeleting=${isDeletingQueueMessage}
+                      isMoving=${isMovingQueueMessage}
+                      queueLength=${queueLength}
+                      maxSize=${queueConfig.max_size}
+                    />
 
-                  <!-- Input -->
-                  <${ChatInput}
-                    onSend=${handleSendPrompt}
-                    onCancel=${cancelPrompt}
-                    disabled=${!connected || !activeSessionId}
-                    isStreaming=${isStreaming}
-                    isRunning=${isRunning}
-                    isReadOnly=${sessionInfo?.isReadOnly}
-                    isArchived=${sessionInfo?.archived || false}
-                    predefinedPrompts=${predefinedPrompts}
-                    loopPrompts=${loopPrompts}
-                    allPrompts=${workspacePrompts}
-                    hasBeadsWorkspace=${hasBeadsWorkspace}
-                    inputRef=${chatInputRef}
-                    noSession=${!activeSessionId}
-                    sessionId=${activeSessionId}
-                    draft=${currentDraft}
-                    onDraftChange=${updateDraft}
-                    sessionDraftsRef=${sessionDraftsRef}
-                    onPromptsOpen=${handlePromptsOpen}
-                    onConfigurePrompts=${!configReadonly &&
-                    sessionInfo?.working_dir
-                      ? () =>
-                          handleShowWorkspacesForFolder(
-                            sessionInfo.working_dir,
-                            "prompts",
-                          )
-                      : undefined}
-                    queueLength=${queueLength}
-                    queueConfig=${queueConfig}
-                    onAddToQueue=${handleAddToQueue}
-                    onToggleQueue=${handleToggleQueueDropdown}
-                    showQueueDropdown=${showQueueDropdown}
-                    actionButtons=${actionButtons}
-                    availableCommands=${availableCommands}
-                    loopConfigured=${sessionInfo?.loop_configured || false}
-                    onLoopPrompt=${(prompt, opts) =>
-                      handleSendPromptToConversation(
-                        activeSession,
-                        prompt,
-                        opts,
-                      )}
-                    onOpenPromptParamDialog=${(
-                      prompt,
-                      parameters,
-                      onSubmit,
-                      opts = {},
-                    ) =>
-                      setPromptParamDialog({
+                    <!-- Input -->
+                    <${ChatInput}
+                      onSend=${handleSendPrompt}
+                      onCancel=${cancelPrompt}
+                      disabled=${!connected || !activeSessionId}
+                      isStreaming=${isStreaming}
+                      isRunning=${isRunning}
+                      isReadOnly=${sessionInfo?.isReadOnly}
+                      isArchived=${sessionInfo?.archived || false}
+                      predefinedPrompts=${predefinedPrompts}
+                      inputRef=${chatInputRef}
+                      noSession=${!activeSessionId}
+                      sessionId=${activeSessionId}
+                      draft=${currentDraft}
+                      onDraftChange=${updateDraft}
+                      sessionDraftsRef=${sessionDraftsRef}
+                      onPromptsOpen=${handlePromptsOpen}
+                      onConfigurePrompts=${!configReadonly &&
+                      sessionInfo?.working_dir
+                        ? () =>
+                            handleShowWorkspacesForFolder(
+                              sessionInfo.working_dir,
+                              "prompts",
+                            )
+                        : undefined}
+                      queueLength=${queueLength}
+                      queueConfig=${queueConfig}
+                      onAddToQueue=${handleAddToQueue}
+                      onToggleQueue=${handleToggleQueueDropdown}
+                      showQueueDropdown=${showQueueDropdown}
+                      actionButtons=${actionButtons}
+                      availableCommands=${availableCommands}
+                      loopConfigured=${sessionInfo?.loop_configured || false}
+                      onOpenLoopSettings=${() => handleOpenSidePanelTab("loop")}
+                      onLoopPrompt=${(prompt, opts) =>
+                        handleSendPromptToConversation(
+                          activeSession,
+                          prompt,
+                          opts,
+                        )}
+                      onOpenPromptParamDialog=${(
                         prompt,
                         parameters,
                         onSubmit,
-                        initialValues: opts.initialValues,
-                        hostSessionId: opts.hostSessionId,
-                      })}
-                    agentSupportsImages=${sessionInfo?.agent_supports_images ??
-                    false}
-                    acpReady=${connected && sessionInfo
-                      ? (sessionInfo.acp_ready ?? true)
-                      : true}
-                    gcSuspended=${sessionInfo?.gc_suspended || false}
-                    onResume=${() => ensureResumed(activeSessionId)}
-                    activeUIPrompt=${activeUIPrompt}
-                    onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
-                      sendUIPromptAnswer(
-                        activeSessionId,
+                        opts = {},
+                      ) =>
+                        setPromptParamDialog({
+                          prompt,
+                          parameters,
+                          onSubmit,
+                          workingDir: opts.workingDir,
+                          initialValues: opts.initialValues,
+                          hostSessionId: opts.hostSessionId,
+                        })}
+                      agentSupportsImages=${sessionInfo?.agent_supports_images ??
+                      false}
+                      acpReady=${connected && sessionInfo
+                        ? (sessionInfo.acp_ready ?? true)
+                        : true}
+                      gcSuspended=${sessionInfo?.gc_suspended || false}
+                      onResume=${() => ensureResumed(activeSessionId)}
+                      activeUIPrompt=${activeUIPrompt}
+                      onUIPromptAnswer=${(
                         requestId,
                         optionId,
                         label,
                         freeText,
-                      )}
-                    workingDir=${sessionInfo?.working_dir || ""}
-                    sendKeyMode=${sendKeyMode}
-                    configOptions=${configOptions}
-                    onSetConfigOption=${setConfigOption}
-                    modelProfiles=${modelProfiles}
-                    contextUsage=${sessionInfo?.context_usage ?? null}
-                    tokenUsage=${sessionInfo?.usage ?? null}
-                  />
+                      ) =>
+                        sendUIPromptAnswer(
+                          activeSessionId,
+                          requestId,
+                          optionId,
+                          label,
+                          freeText,
+                        )}
+                      workingDir=${sessionInfo?.working_dir || ""}
+                      sendKeyMode=${sendKeyMode}
+                      configOptions=${configOptions}
+                      onSetConfigOption=${setConfigOption}
+                      modelProfiles=${modelProfiles}
+                      contextUsage=${sessionInfo?.context_usage ?? null}
+                      tokenUsage=${sessionInfo?.usage ?? null}
+                      flushCommand=${sessionInfo?.context_flush_command || ""}
+                      onFlushContext=${activeSessionId
+                        ? () => handleFlushContext(activeSession)
+                        : undefined}
+                    />
+                  </div>
                 </div>
-              </div>
-            `}
+              `}
 
         <!-- Unified Session Panel: docks to the right edge of drawer-content as a
            confined overlay (Drawer dock mode + styles.css), so it does NOT
@@ -3589,6 +3952,19 @@ function App() {
           configOptions=${configOptions}
           onSetConfigOption=${setConfigOption}
           mcpTools=${mcpTools}
+          loopPrompts=${loopPrompts}
+          allPrompts=${workspacePrompts}
+          hasBeadsWorkspace=${hasBeadsWorkspace}
+          messages=${messages}
+          onOpenPromptParamDialog=${(prompt, parameters, onSubmit, opts = {}) =>
+            setPromptParamDialog({
+              prompt,
+              parameters,
+              onSubmit,
+              workingDir: opts.workingDir,
+              initialValues: opts.initialValues,
+              hostSessionId: opts.hostSessionId,
+            })}
           showToast=${showToast}
         />
 
@@ -3662,6 +4038,7 @@ function App() {
             onRename=${handleOpenSessionProperties}
             onDelete=${handleDeleteSession}
             onArchive=${handleArchiveSession}
+            onSetColor=${handleSetSessionColor}
             onClose=${() => setShowSidebar(false)}
             workspaces=${workspaces}
             theme=${theme}

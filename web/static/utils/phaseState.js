@@ -136,12 +136,18 @@ function phasesForType(issueType) {
  *   significant; we scan for each phase label by presence.
  * - When ALL phase labels are present the issue is "terminal": currentIndex
  *   equals phases.length, currentTier === "terminal", isTerminal === true.
+ * - When the issue's `status` is "closed", every phase is treated as done
+ *   regardless of which completion labels are present — closing an issue is
+ *   an authoritative signal that the whole plan→...→review (or investigate
+ *   →reproduce→fix) progression is finished, even if the driver never got a
+ *   chance to stamp the intermediate labels.
  *
  * @param {string} issueType
  * @param {string[]} labels
+ * @param {string} [status] issue status (e.g. "open", "in_progress", "closed")
  * @returns {object|null}
  */
-export function derivePhaseState(issueType, labels) {
+export function derivePhaseState(issueType, labels, status) {
   const phaseDefs = phasesForType(issueType);
   if (!phaseDefs) return null;
 
@@ -149,9 +155,16 @@ export function derivePhaseState(issueType, labels) {
   const kindLabel = issueType === "feature" ? "Feature" : "Bug";
 
   // First phase whose completion label is NOT yet present is the current one.
+  // A "closed" status short-circuits this to the terminal state so partially-
+  // labeled bugs/features that were manually closed still read as fully done.
   let currentIndex = phaseDefs.findIndex((p) => !labelSet.has(p.label));
-  const isTerminal = currentIndex === -1;
-  if (isTerminal) currentIndex = phaseDefs.length;
+  let isTerminal = currentIndex === -1;
+  if (status === "closed") {
+    isTerminal = true;
+    currentIndex = phaseDefs.length;
+  } else if (isTerminal) {
+    currentIndex = phaseDefs.length;
+  }
 
   const phases = phaseDefs.map((p, i) => {
     let status;

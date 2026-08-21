@@ -627,8 +627,8 @@ func (h *Handlers) HandleBeadsLabel(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleBeadsLabelsAll handles GET /api/issues/labels?working_dir=...
-// Runs "bd label list-all --json" in the workspace directory, returning the
-// list of {"label","count"} objects for every unique label in the database.
+// Returns the list of {"label","count"} objects derived from the workspace's
+// issue list. The beads client bounds this cosmetic lookup and fails open.
 // Used by the Tasks view to suggest existing labels when adding one to an issue.
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsLabelsAll(w http.ResponseWriter, r *http.Request) {

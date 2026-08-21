@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestSequenceIsolation_IndependentPerSession verifies that sequence numbers are
@@ -23,13 +23,13 @@ func TestSequenceIsolation_IndependentPerSession(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create Session A and Session B.
-	sessA, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sessA, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession A failed: %v", err)
 	}
 	defer ts.Client.DeleteSession(sessA.SessionID)
 
-	sessB, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sessB, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession B failed: %v", err)
 	}
@@ -52,11 +52,11 @@ func TestSequenceIsolation_IndependentPerSession(t *testing.T) {
 	// Connect Client A to Session A.
 	var (
 		muA     sync.Mutex
-		eventsA []client.SyncEvent
+		eventsA []api.SyncEvent
 		loadedA = make(chan struct{}, 1)
 	)
-	wsA, err := ts.Client.Connect(ctx, sessA.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	wsA, err := ts.Client.Connect(ctx, sessA.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			muA.Lock()
 			eventsA = append(eventsA, events...)
 			muA.Unlock()
@@ -74,11 +74,11 @@ func TestSequenceIsolation_IndependentPerSession(t *testing.T) {
 	// Connect Client B to Session B.
 	var (
 		muB     sync.Mutex
-		eventsB []client.SyncEvent
+		eventsB []api.SyncEvent
 		loadedB = make(chan struct{}, 1)
 	)
-	wsB, err := ts.Client.Connect(ctx, sessB.SessionID, client.SessionCallbacks{
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+	wsB, err := ts.Client.Connect(ctx, sessB.SessionID, api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			muB.Lock()
 			eventsB = append(eventsB, events...)
 			muB.Unlock()
@@ -118,12 +118,12 @@ func TestSequenceIsolation_IndependentPerSession(t *testing.T) {
 
 	// Snapshot under lock.
 	muA.Lock()
-	snapshotA := make([]client.SyncEvent, len(eventsA))
+	snapshotA := make([]api.SyncEvent, len(eventsA))
 	copy(snapshotA, eventsA)
 	muA.Unlock()
 
 	muB.Lock()
-	snapshotB := make([]client.SyncEvent, len(eventsB))
+	snapshotB := make([]api.SyncEvent, len(eventsB))
 	copy(snapshotB, eventsB)
 	muB.Unlock()
 
@@ -203,7 +203,7 @@ func TestSequenceIsolation_IndependentPerSession(t *testing.T) {
 // seqsFromEvents extracts sorted, deduplicated sequence numbers (seq > 0) from
 // a slice of SyncEvents. Events returned by LoadEvents are already in ascending
 // order, so the result preserves that order.
-func seqsFromEvents(events []client.SyncEvent) []int64 {
+func seqsFromEvents(events []api.SyncEvent) []int64 {
 	seen := make(map[int64]bool, len(events))
 	seqs := make([]int64, 0, len(events))
 	for _, e := range events {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -14,11 +15,20 @@ import (
 // the captured stderr so callers can surface both to the user. ExitCode is the
 // bd subprocess exit status when the failure was a non-zero exit (0 otherwise
 // — e.g. timeout or context cancellation, where no exit status is available).
+// Stage optionally identifies which step of a multi-step bd operation failed
+// (e.g. StagePublish for MigrateRemote's "bd dolt push" step); it is empty
+// for single-step commands. See IsPublishFailure.
 type CmdError struct {
 	Err      error
 	Stderr   string
 	ExitCode int
+	Stage    string
 }
+
+// StagePublish identifies a *CmdError produced by MigrateRemote's "bd dolt
+// push" publish step, as opposed to its "bd migrate schema" step. See
+// IsPublishFailure.
+const StagePublish = "push"
 
 // Error implements the error interface.
 func (e *CmdError) Error() string { return e.Err.Error() }
@@ -90,6 +100,23 @@ func IsNotFound(err error) bool {
 	return false
 }
 
+// IsPublishFailure reports whether err is a MigrateRemote failure at the
+// publish stage ("bd dolt push") rather than the local schema-migration
+// stage ("bd migrate schema"). When true, the local migration already
+// applied successfully — only publishing the reconciled schema to the
+// remote failed — but the overall operation is still a failure: the
+// remote-backed safety requirement (every clone must agree on the schema)
+// is not satisfied until the push succeeds. Callers use this to report the
+// partial-success nuance (see internal/web/handlers/beads_migrate.go)
+// without ever treating a failed publish as an overall success.
+func IsPublishFailure(err error) bool {
+	var ce *CmdError
+	if !errors.As(err, &ce) {
+		return false
+	}
+	return ce.Stage == StagePublish
+}
+
 // IsSchemaSkew reports whether err represents a bd schema-version skew
 // failure: bd deliberately refuses to auto-apply pending migrations to a
 // remote-backed database (only one designated clone may migrate it), so every
@@ -134,10 +161,10 @@ type SchemaSkewDetails struct {
 }
 
 // SchemaSkewInfo extracts the structured details of a schema-skew failure.
-// It first tries to locate and decode bd's remote_migrate_gate JSON blob in
-// stderr, then falls back to legacy regex parsing for the "failed to open
-// routed store at ..." message. Returns a zero-value struct when nothing can
-// be parsed; callers should still guard on IsSchemaSkew before calling.
+// It first tries to locate and decode bd's remote_migrate_gate or schema_skew
+// JSON blob, then falls back to legacy text parsing. Returns a zero-value
+// struct when nothing can be parsed; callers should still guard on
+// IsSchemaSkew before calling.
 func SchemaSkewInfo(err error) SchemaSkewDetails {
 	var out SchemaSkewDetails
 	stderr := StderrOf(err)
@@ -146,12 +173,24 @@ func SchemaSkewInfo(err error) SchemaSkewDetails {
 	}
 	if blob, ok := findJSONBlob(stderr, "remote_migrate_gate"); ok {
 		parseGateJSON(blob, &out)
+	} else if blob, ok := findJSONBlob(stderr, "schema_skew"); ok {
+		parseGateJSON(blob, &out)
 	}
 	if out.DBPath == "" {
 		out.DBPath = legacySchemaSkewDBPath(stderr)
 	}
 	if out.DBVersion == 0 || out.BinaryVersion == 0 {
 		if db, bin, ok := parseVersionsFromText(stderr); ok {
+			if out.DBVersion == 0 {
+				out.DBVersion = db
+			}
+			if out.BinaryVersion == 0 {
+				out.BinaryVersion = bin
+			}
+		}
+	}
+	if out.DBVersion == 0 || out.BinaryVersion == 0 {
+		if db, bin, ok := parseVersionsFromArrow(stderr); ok {
 			if out.DBVersion == 0 {
 				out.DBVersion = db
 			}
@@ -214,8 +253,8 @@ func findJSONBlob(text, key string) ([]byte, bool) {
 	return nil, false
 }
 
-// parseGateJSON decodes bd's remote_migrate_gate blob into the details
-// struct. The blob's exact shape is not tightly specified by bd, so parsing
+// parseGateJSON decodes bd's schema-skew blob into the details struct. The
+// blob's exact shape is not tightly specified by bd, so parsing
 // is defensive: unknown/missing fields silently leave the corresponding
 // details entries empty. Recognised shapes (all optional):
 //
@@ -223,14 +262,18 @@ func findJSONBlob(text, key string) ([]byte, bool) {
 //	 "remote_migrate_gate":{"options":[{"mode":"migrate","description":"...","command":"..."}]}}
 //
 // Some emitters put the fields at the top level; others nest them under
-// remote_migrate_gate. Both are accepted.
+// remote_migrate_gate or schema_skew. All are accepted.
 func parseGateJSON(blob []byte, out *SchemaSkewDetails) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(blob, &raw); err != nil {
 		return
 	}
 	applyGateFields(raw, out)
-	if gate, ok := raw["remote_migrate_gate"]; ok {
+	for _, key := range []string{"remote_migrate_gate", "schema_skew"} {
+		gate, ok := raw[key]
+		if !ok {
+			continue
+		}
 		var nested map[string]json.RawMessage
 		if json.Unmarshal(gate, &nested) == nil {
 			applyGateFields(nested, out)
@@ -239,8 +282,8 @@ func parseGateJSON(blob []byte, out *SchemaSkewDetails) {
 }
 
 // applyGateFields folds a decoded JSON object's known keys into out. It is
-// called for both the outer envelope and the inner remote_migrate_gate slot
-// so either layout populates the same details struct.
+// called for both the outer envelope and the inner gate slot so every layout
+// populates the same details struct.
 func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 	for k, raw := range obj {
 		switch strings.ToLower(k) {
@@ -251,14 +294,14 @@ func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 					out.DBPath = strings.TrimSpace(s)
 				}
 			}
-		case "db_version", "database_version", "from_version":
+		case "db_version", "database_version", "from_version", "current_version":
 			if out.DBVersion == 0 {
 				var n int
 				if json.Unmarshal(raw, &n) == nil {
 					out.DBVersion = n
 				}
 			}
-		case "binary_version", "to_version", "expected_version":
+		case "binary_version", "to_version", "expected_version", "latest_version", "required_version":
 			if out.BinaryVersion == 0 {
 				var n int
 				if json.Unmarshal(raw, &n) == nil {
@@ -267,27 +310,113 @@ func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
 			}
 		case "options":
 			if len(out.Options) == 0 {
-				var opts []SchemaSkewOption
-				if json.Unmarshal(raw, &opts) == nil {
-					out.Options = opts
-				}
+				out.Options = decodeSchemaSkewOptions(raw)
 			}
 		}
 	}
 }
 
-// parseVersionsFromText extracts "database is at vN, binary expects vM" from
-// legacy stderr text, returning (db, binary, true) on match.
+// schemaSkewRawOption is the union of every options[] shape bd has emitted
+// for remote_migrate_gate: the original {mode, description, command} as
+// well as bd 1.1.2's {id, when, risk, commands}. Decoding into one struct
+// that carries both shapes lets decodeSchemaSkewOptions prefer whichever
+// fields are actually populated instead of hard-failing on an unknown
+// layout (mitto-iwe1).
+type schemaSkewRawOption struct {
+	Mode        string   `json:"mode"`
+	Description string   `json:"description"`
+	Command     string   `json:"command"`
+	ID          string   `json:"id"`
+	When        string   `json:"when"`
+	Risk        string   `json:"risk"`
+	Commands    []string `json:"commands"`
+}
+
+// decodeSchemaSkewOptions decodes a raw options[] JSON array into
+// SchemaSkewOption, mapping bd 1.1.2's {id, when, risk, commands} shape onto
+// {mode, description, command} when the legacy fields are absent: id becomes
+// Mode, when/risk are joined into Description, and commands[] is joined into
+// a single Command string. Options that still resolve to an empty Mode are
+// dropped rather than returned as blank entries, since the UI renders one
+// button per option keyed on Mode.
+func decodeSchemaSkewOptions(raw json.RawMessage) []SchemaSkewOption {
+	var rawOpts []schemaSkewRawOption
+	if json.Unmarshal(raw, &rawOpts) != nil {
+		return nil
+	}
+	opts := make([]SchemaSkewOption, 0, len(rawOpts))
+	for _, r := range rawOpts {
+		opt := SchemaSkewOption{
+			Mode:        r.Mode,
+			Description: r.Description,
+			Command:     r.Command,
+		}
+		if opt.Mode == "" {
+			opt.Mode = r.ID
+		}
+		if opt.Description == "" {
+			switch {
+			case r.When != "" && r.Risk != "":
+				opt.Description = r.When + " (risk: " + r.Risk + ")"
+			case r.When != "":
+				opt.Description = r.When
+			case r.Risk != "":
+				opt.Description = r.Risk
+			}
+		}
+		if opt.Command == "" && len(r.Commands) > 0 {
+			opt.Command = strings.Join(r.Commands, " && ")
+		}
+		if opt.Mode == "" {
+			continue
+		}
+		opts = append(opts, opt)
+	}
+	return opts
+}
+
+// parseVersionsFromText extracts the database and binary versions from plain
+// stderr, including bd 1.2.2's "binary knows up to vM" wording.
 func parseVersionsFromText(stderr string) (int, int, bool) {
 	const dbMarker = "database is at v"
-	const binMarker = "binary expects v"
 	dbIdx := strings.Index(stderr, dbMarker)
+	binMarker := "binary expects v"
 	binIdx := strings.Index(stderr, binMarker)
+	if binIdx < 0 {
+		binMarker = "binary knows up to v"
+		binIdx = strings.Index(stderr, binMarker)
+	}
 	if dbIdx < 0 || binIdx < 0 {
 		return 0, 0, false
 	}
 	db := parseTrailingInt(stderr[dbIdx+len(dbMarker):])
 	bin := parseTrailingInt(stderr[binIdx+len(binMarker):])
+	if db == 0 || bin == 0 {
+		return 0, 0, false
+	}
+	return db, bin, true
+}
+
+// schemaSkewArrowVersionsRe matches bd 1.1.2's inline version shorthand, e.g.
+// "... a remote-backed database (v49 -> v53): ...", where no separate
+// "database is at vN" / "binary expects vM" text is emitted. bd 1.1.2's
+// error string is itself JSON-encoded (e.g. inside "error": "...(v49
+// -\u003e v53)..."), and Go's encoding/json HTML-escapes ">" to "\u003e" by
+// default, so the raw stderr text literally contains the six characters
+// `-\u003e` rather than `->`. The alternation below matches either form
+// (mitto-iwe1).
+var schemaSkewArrowVersionsRe = regexp.MustCompile(`\(v(\d+)\s*-(?:>|\\u003e)\s*v(\d+)\)`)
+
+// parseVersionsFromArrow extracts "(vN -> vM)" from bd 1.1.2's flat stderr
+// shape (see schemaSkewArrowVersionsRe), returning (db, binary, true) on
+// match.
+func parseVersionsFromArrow(stderr string) (int, int, bool) {
+	m := schemaSkewArrowVersionsRe.FindStringSubmatch(stderr)
+	if m == nil {
+		return 0, 0, false
+	}
+	db := parseTrailingInt(m[1])
+	bin := parseTrailingInt(m[2])
 	if db == 0 || bin == 0 {
 		return 0, 0, false
 	}
@@ -334,6 +463,10 @@ type UpdateParams struct {
 	Priority    *int
 	Assignee    *string
 	Notes       *string
+	// UnsetMetadata lists metadata keys to remove via "bd update --unset-metadata
+	// <key>" (repeatable flag; mitto-2efc). Used e.g. to release a bead claim's
+	// claimed_by/claimed_at/claim_heartbeat_at keys on loop auto-stop.
+	UnsetMetadata []string
 }
 
 // DepParams carries the fields for Client.Dep.
@@ -359,6 +492,11 @@ type Client interface {
 	Ready(ctx context.Context, dir string) ([]byte, error)
 	Status(ctx context.Context, dir string) ([]byte, error)
 	Show(ctx context.Context, dir, id string) ([]byte, error)
+	// Statuses returns a map of id -> current bd status for each of the given
+	// ids. Missing ids are simply absent from the result (not an error). It is
+	// used by mitto_conversation_wait's beads_issues_reached_state branch as a
+	// batched fast-path check that avoids one bd invocation per id.
+	Statuses(ctx context.Context, dir string, ids []string) (map[string]string, error)
 	Create(ctx context.Context, dir string, p CreateParams) ([]byte, error)
 	Delete(ctx context.Context, dir, id string) error
 	ListClosedIDs(ctx context.Context, dir string) ([]string, error)
@@ -395,7 +533,7 @@ const webUIActor = "mitto:webui"
 
 // NewClient returns a Client backed by the real bd binary. Writes it makes are
 // stamped with the mitto:webui actor for audit attribution.
-func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor}} }
+func NewClient() Client { return NewClientWithRunner(execRunner{actor: webUIActor}) }
 
 // NewExecRunner returns the default Runner that invokes the real bd binary,
 // stamping writes with the mitto:webui actor. It is exported so callers can wrap
@@ -403,8 +541,9 @@ func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor
 // production behavior of NewClient.
 func NewExecRunner() Runner { return execRunner{actor: webUIActor} }
 
-// NewClientWithRunner returns a Client backed by a custom Runner (for testing).
-func NewClientWithRunner(r Runner) Client { return &cliClient{runner: r} }
+// NewClientWithRunner returns a Client backed by a custom Runner. Every runner
+// shares the process-wide bd concurrency bound, including test doubles.
+func NewClientWithRunner(r Runner) Client { return &cliClient{runner: limitedRunner{inner: r}} }
 
 // IsValidConfigKey reports whether key is a safe bd config key: non-empty, not
 // flag-like (no leading '-'), and composed only of letters, digits, '.', '-',
@@ -422,6 +561,17 @@ func IsValidConfigKey(key string) bool {
 		}
 	}
 	return true
+}
+
+// IsPolicyConfigKey reports whether key is owned by Mitto's database-mode
+// policy and therefore must not be changed through the generic config API.
+func IsPolicyConfigKey(key string) bool {
+	for _, guard := range databaseModeGuards {
+		if strings.EqualFold(key, guard.key) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsValidUpstream reports whether u is a recognised upstream task system.

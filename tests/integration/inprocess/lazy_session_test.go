@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestLazyACPSessionCreation verifies acceptance criteria for the lazy ACP session
@@ -31,7 +31,7 @@ func TestLazyACPSessionCreation(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// ── Phase 1: Create session A and start a slow prompt ────────────────────
-	sessA, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "lazy-test-A"})
+	sessA, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "lazy-test-A"})
 	if err != nil {
 		t.Fatalf("CreateSession A failed: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestLazyACPSessionCreation(t *testing.T) {
 	aPromptComplete := false
 	aConnected := false
 
-	wsA, err := ts.Client.Connect(ctxA, sessA.SessionID, client.SessionCallbacks{
+	wsA, err := ts.Client.Connect(ctxA, sessA.SessionID, api.SessionCallbacks{
 		OnConnected: func(_, _, _ string) {
 			muA.Lock()
 			aConnected = true
@@ -84,7 +84,7 @@ func TestLazyACPSessionCreation(t *testing.T) {
 
 	// ── Phase 2: Create session B while session A's prompt is in-flight ──────
 	createStart := time.Now()
-	sessB, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "lazy-test-B"})
+	sessB, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "lazy-test-B"})
 	createDuration := time.Since(createStart)
 
 	if err != nil {
@@ -111,7 +111,7 @@ func TestLazyACPSessionCreation(t *testing.T) {
 	bErrors := []string{}
 	bConnected := false
 
-	wsB, err := ts.Client.Connect(ctxB, sessB.SessionID, client.SessionCallbacks{
+	wsB, err := ts.Client.Connect(ctxB, sessB.SessionID, api.SessionCallbacks{
 		OnConnected: func(_, _, _ string) {
 			muB.Lock()
 			bConnected = true

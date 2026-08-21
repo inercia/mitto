@@ -1,22 +1,41 @@
 package web
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
 
-func TestServer_ExternalListener(t *testing.T) {
-	// Create a minimal server for testing
-	s := &Server{
+func newExternalListenerTestServer(t *testing.T) *Server {
+	return newExternalListenerTestServerWithAuth(t, &configPkg.WebAuth{
+		Simple: &configPkg.SimpleAuth{Username: "test-user", Password: "test-password"},
+	})
+}
+
+func newExternalListenerTestServerWithAuth(t *testing.T, authConfig *configPkg.WebAuth) *Server {
+	t.Helper()
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	authManager := middleware.NewAuthManager(authConfig)
+	t.Cleanup(authManager.Close)
+	return &Server{
+		authManager: authManager,
 		httpServer: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})},
 	}
+}
+
+func TestServer_ExternalListener(t *testing.T) {
+	s := newExternalListenerTestServer(t)
 
 	// Test initial state
 	if s.IsExternalListenerRunning() {
@@ -77,13 +96,42 @@ func TestServer_ExternalListener(t *testing.T) {
 	s.StopExternalListener()
 }
 
-func TestServer_ExternalListener_PortInUse(t *testing.T) {
-	// Create a minimal server for testing
-	s := &Server{
-		httpServer: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})},
+// TestStartExternalListener_RejectsDisabledAuth reproduces mitto-aen9: an
+// external listener must never bind unless effective authentication is enabled.
+func TestStartExternalListener_RejectsDisabledAuth(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	tests := []struct {
+		name       string
+		authConfig *configPkg.WebAuth
+	}{
+		{name: "nil auth"},
+		{name: "empty simple auth", authConfig: &configPkg.WebAuth{Simple: &configPkg.SimpleAuth{}}},
+		{name: "invalid cloudflare auth", authConfig: &configPkg.WebAuth{Cloudflare: &configPkg.CloudflareAuth{TeamDomain: "example.cloudflareaccess.com"}}},
+		{name: "shared token only", authConfig: &configPkg.WebAuth{SharedToken: "test-shared-token"}},
 	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{httpServer: &http.Server{Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})}}
+			if tt.authConfig != nil {
+				s.authManager = middleware.NewAuthManager(tt.authConfig)
+				t.Cleanup(s.authManager.Close)
+			}
+
+			actualPort, err := s.StartExternalListener(0)
+			if err == nil {
+				s.StopExternalListener()
+				t.Errorf("StartExternalListener() bound port %d with disabled auth; want an error", actualPort)
+			}
+		})
+	}
+}
+
+func TestServer_ExternalListener_PortInUse(t *testing.T) {
+	s := newExternalListenerTestServer(t)
 
 	// Occupy a port
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
@@ -102,12 +150,7 @@ func TestServer_ExternalListener_PortInUse(t *testing.T) {
 }
 
 func TestServer_ExternalListener_RandomPort(t *testing.T) {
-	// Create a minimal server for testing
-	s := &Server{
-		httpServer: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})},
-	}
+	s := newExternalListenerTestServer(t)
 
 	// Start external listener with port 0 (random)
 	actualPort, err := s.StartExternalListener(0)
@@ -130,6 +173,36 @@ func TestServer_ExternalListener_RandomPort(t *testing.T) {
 
 	// Clean up
 	s.StopExternalListener()
+}
+
+func TestExternalListener_FailsClosedWhenAuthDegrades(t *testing.T) {
+	tests := []struct {
+		name       string
+		authConfig *configPkg.WebAuth
+	}{
+		{name: "simple", authConfig: &configPkg.WebAuth{Simple: &configPkg.SimpleAuth{Username: "user", Password: "pass"}}},
+		{name: "cloudflare", authConfig: &configPkg.WebAuth{Cloudflare: &configPkg.CloudflareAuth{TeamDomain: "example.cloudflareaccess.com", Audience: "test-audience"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newExternalListenerTestServerWithAuth(t, tt.authConfig)
+			actualPort, err := s.StartExternalListener(0)
+			if err != nil {
+				t.Fatalf("StartExternalListener() error = %v", err)
+			}
+			defer s.StopExternalListener()
+
+			s.authManager.UpdateConfig(nil)
+			resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", actualPort))
+			if err != nil {
+				t.Fatalf("GET degraded external listener: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+			}
+		})
+	}
 }
 
 func TestServer_SetExternalPort(t *testing.T) {

@@ -9,8 +9,19 @@
  */
 
 // Jest is not injected as a global under --experimental-vm-modules (ESM); we
-// must import it explicitly. Matches WorkspacesDialog.test.js.
-import { jest } from "@jest/globals";
+// must import it explicitly. testGlobals.js re-exports the lifecycle globals
+// and `jest` from whichever runner is active (Jest or bun:test).
+import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
+
+// mitto-7gta.17 slice S7: pins the fetchDashboard SDK-migration wiring via a
+// raw-source regex scan (same technique as app.test.js), since Dashboard.js
+// also cannot be imported under jsdom for the reasons above.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const dashboardJs = readFileSync(resolve(__dirname, "Dashboard.js"), "utf8");
 
 // =============================================================================
 // Duplicated helpers — keep in sync with web/static/components/Dashboard.js
@@ -37,19 +48,32 @@ function deriveCounts(allSessions) {
 }
 
 // Duplicated from Dashboard.js for testing (component imports window.preact
-// globals). Keep in sync. Mirrors the useMemo body at Dashboard.js ~L149-158.
-// Same `isStreaming`-vs-`is_prompting` note as deriveCounts above.
-function topPrompting(allSessions, max) {
-  return (allSessions || [])
-    .filter((s) => s && s.isStreaming)
+// globals). Keep in sync. Mirrors selectRecentConversations in Dashboard.js.
+// Builds the "Recent conversations" panel list: currently-prompting sessions
+// first (isStreaming), then most-recently-active non-prompting sessions
+// sorted by updated_at desc, with X + Y capped at `max`. Auto-created
+// children (child_origin === "auto") are excluded from both groups.
+function selectRecentConversations(allSessions, max) {
+  const list = Array.isArray(allSessions) ? allSessions : [];
+  const isEligible = (s) => s && s.child_origin !== "auto";
+  const byUpdatedDesc = (a, b) => {
+    const au = a.updated_at || "";
+    const bu = b.updated_at || "";
+    if (au === bu) return 0;
+    return au < bu ? 1 : -1;
+  };
+  const prompting = list
+    .filter((s) => isEligible(s) && s.isStreaming)
     .slice()
-    .sort((a, b) => {
-      const au = a.updated_at || "";
-      const bu = b.updated_at || "";
-      if (au === bu) return 0;
-      return au < bu ? 1 : -1;
-    })
-    .slice(0, max);
+    .sort(byUpdatedDesc);
+  if (prompting.length >= max) return prompting.slice(0, max);
+  const remaining = max - prompting.length;
+  const recent = list
+    .filter((s) => isEligible(s) && !s.isStreaming)
+    .slice()
+    .sort(byUpdatedDesc)
+    .slice(0, remaining);
+  return prompting.concat(recent);
 }
 
 // Duplicated from Dashboard.js for testing (component imports window.preact
@@ -148,23 +172,30 @@ describe("deriveCounts", () => {
   });
 });
 
-
-describe("topPrompting", () => {
+describe("selectRecentConversations", () => {
   test("empty in → empty out", () => {
-    expect(topPrompting([], 5)).toEqual([]);
+    expect(selectRecentConversations([], 5)).toEqual([]);
   });
 
-  test("filters out non-prompting sessions", () => {
+  test("null / undefined input treated as empty", () => {
+    expect(selectRecentConversations(null, 5)).toEqual([]);
+    expect(selectRecentConversations(undefined, 5)).toEqual([]);
+  });
+
+  test("null/undefined session entries are skipped", () => {
     const sessions = [
+      null,
       S({ session_id: "a", isStreaming: true }),
-      S({ session_id: "b", isStreaming: false }),
-      S({ session_id: "c", isStreaming: true }),
+      undefined,
     ];
-    const out = topPrompting(sessions, 5);
-    expect(out.map((s) => s.session_id).sort()).toEqual(["a", "c"]);
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["a"]);
   });
 
-  test("caps at max", () => {
+  // ---- prompting-only cases (X only) --------------------------------------
+
+  test("all prompting: caps at max and sorts by updated_at desc", () => {
     const sessions = Array.from({ length: 8 }, (_, i) =>
       S({
         session_id: `s${i}`,
@@ -172,50 +203,264 @@ describe("topPrompting", () => {
         updated_at: `2026-07-12T10:0${i}:00Z`,
       }),
     );
-    expect(topPrompting(sessions, 5)).toHaveLength(5);
-  });
-
-  test("sorts by updated_at descending", () => {
-    const sessions = [
-      S({ session_id: "old", isStreaming: true, updated_at: "2026-07-10T00:00:00Z" }),
-      S({ session_id: "new", isStreaming: true, updated_at: "2026-07-12T00:00:00Z" }),
-      S({ session_id: "mid", isStreaming: true, updated_at: "2026-07-11T00:00:00Z" }),
-    ];
-    expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual([
-      "new",
-      "mid",
-      "old",
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(5);
+    // Most recent first: s7, s6, s5, s4, s3.
+    expect(out.map((s) => s.session_id)).toEqual([
+      "s7",
+      "s6",
+      "s5",
+      "s4",
+      "s3",
     ]);
   });
 
-  test("equal timestamps: both present in output", () => {
+  test("prompting count == max: only prompting shown (Y = 0)", () => {
     const sessions = [
-      S({ session_id: "a", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
-      S({ session_id: "b", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
+      S({
+        session_id: "p1",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:05:00Z",
+      }),
+      S({
+        session_id: "p2",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:04:00Z",
+      }),
+      S({
+        session_id: "p3",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:03:00Z",
+      }),
+      S({
+        session_id: "p4",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:02:00Z",
+      }),
+      S({
+        session_id: "p5",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:01:00Z",
+      }),
+      // Very-recent non-prompting: must NOT appear because X already fills the panel.
+      S({
+        session_id: "r1",
+        isStreaming: false,
+        updated_at: "2026-07-12T99:59:59Z",
+      }),
     ];
-    const ids = topPrompting(sessions, 5).map((s) => s.session_id).sort();
-    expect(ids).toEqual(["a", "b"]);
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual([
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
+    ]);
   });
 
-  test("missing updated_at sorts last", () => {
+  test("prompting count > max: caps at max, non-prompting ignored", () => {
+    const sessions = Array.from({ length: 7 }, (_, i) =>
+      S({
+        session_id: `p${i}`,
+        isStreaming: true,
+        updated_at: `2026-07-12T10:0${i}:00Z`,
+      }),
+    ).concat([
+      S({
+        session_id: "r1",
+        isStreaming: false,
+        updated_at: "2026-07-12T99:00:00Z",
+      }),
+    ]);
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(5);
+    expect(out.every((s) => s.isStreaming)).toBe(true);
+  });
+
+  // ---- recent-only cases (Y only) -----------------------------------------
+
+  test("no prompting: fills entirely with most-recent non-prompting", () => {
+    const sessions = [
+      S({ session_id: "old", updated_at: "2026-07-10T00:00:00Z" }),
+      S({ session_id: "new", updated_at: "2026-07-12T00:00:00Z" }),
+      S({ session_id: "mid", updated_at: "2026-07-11T00:00:00Z" }),
+    ];
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["new", "mid", "old"]);
+  });
+
+  // ---- mixed cases (X + Y) ------------------------------------------------
+
+  test("mixed: prompting appear first, then recent, X + Y = max", () => {
+    const sessions = [
+      // 2 prompting (X = 2)
+      S({
+        session_id: "p1",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:05:00Z",
+      }),
+      S({
+        session_id: "p2",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:06:00Z",
+      }),
+      // 5 non-prompting; only the 3 most recent (Y = 3) should appear.
+      S({ session_id: "r1", updated_at: "2026-07-12T09:05:00Z" }),
+      S({ session_id: "r2", updated_at: "2026-07-12T09:06:00Z" }),
+      S({ session_id: "r3", updated_at: "2026-07-12T09:07:00Z" }),
+      S({ session_id: "r-old-1", updated_at: "2026-07-10T00:00:00Z" }),
+      S({ session_id: "r-old-2", updated_at: "2026-07-09T00:00:00Z" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(5);
+    // Prompting first (sorted desc within group), then recent (sorted desc).
+    expect(out.map((s) => s.session_id)).toEqual([
+      "p2",
+      "p1",
+      "r3",
+      "r2",
+      "r1",
+    ]);
+  });
+
+  test("mixed: even a very-recent non-prompting stays below a stale prompting one", () => {
+    const sessions = [
+      S({
+        session_id: "stale-prompt",
+        isStreaming: true,
+        updated_at: "2020-01-01T00:00:00Z",
+      }),
+      S({ session_id: "fresh-idle", updated_at: "2026-12-31T23:59:59Z" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual([
+      "stale-prompt",
+      "fresh-idle",
+    ]);
+  });
+
+  test("mixed: fewer sessions than max returns everything", () => {
+    const sessions = [
+      S({ session_id: "p1", isStreaming: true }),
+      S({ session_id: "r1" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out).toHaveLength(2);
+    expect(out.map((s) => s.session_id)).toEqual(["p1", "r1"]);
+  });
+
+  test("missing updated_at sorts last within its group", () => {
     const sessions = [
       S({ session_id: "no-ts", isStreaming: true, updated_at: undefined }),
-      S({ session_id: "with-ts", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
+      S({
+        session_id: "with-ts",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:00:00Z",
+      }),
     ];
-    expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual([
-      "with-ts",
-      "no-ts",
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["with-ts", "no-ts"]);
+  });
+
+  // ---- auto-child filtering (child_origin === "auto") ---------------------
+
+  test("auto-child sessions are excluded from both groups", () => {
+    const sessions = [
+      // Auto-child that is prompting — must be dropped.
+      S({
+        session_id: "coder-1",
+        isStreaming: true,
+        child_origin: "auto",
+        updated_at: "2026-07-12T10:10:00Z",
+      }),
+      // Auto-child that is idle-recent — must be dropped.
+      S({
+        session_id: "coder-2",
+        child_origin: "auto",
+        updated_at: "2026-07-12T10:09:00Z",
+      }),
+      // Regular top-level (no child_origin) — must appear.
+      S({
+        session_id: "top",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:05:00Z",
+      }),
+      // Recent idle top-level — must appear.
+      S({ session_id: "idle", updated_at: "2026-07-12T10:04:00Z" }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual(["top", "idle"]);
+  });
+
+  test("mcp- and human-spawned children are kept (not filtered)", () => {
+    const sessions = [
+      S({
+        session_id: "mcp-child",
+        child_origin: "mcp",
+        updated_at: "2026-07-12T10:03:00Z",
+      }),
+      S({
+        session_id: "human-child",
+        child_origin: "human",
+        updated_at: "2026-07-12T10:02:00Z",
+      }),
+      S({
+        session_id: "auto-child",
+        child_origin: "auto",
+        updated_at: "2026-07-12T10:01:00Z",
+      }),
+    ];
+    expect(
+      selectRecentConversations(sessions, 5).map((s) => s.session_id),
+    ).toEqual(["mcp-child", "human-child"]);
+  });
+
+  test("auto-child does not consume a slot when prompting exceeds max", () => {
+    // 5 real prompting + 1 auto-child prompting → panel shows only the 5 real ones.
+    const sessions = [
+      S({
+        session_id: "auto",
+        isStreaming: true,
+        child_origin: "auto",
+        updated_at: "2026-07-12T10:99:00Z",
+      }),
+      S({
+        session_id: "p1",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:05:00Z",
+      }),
+      S({
+        session_id: "p2",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:04:00Z",
+      }),
+      S({
+        session_id: "p3",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:03:00Z",
+      }),
+      S({
+        session_id: "p4",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:02:00Z",
+      }),
+      S({
+        session_id: "p5",
+        isStreaming: true,
+        updated_at: "2026-07-12T10:01:00Z",
+      }),
+    ];
+    const out = selectRecentConversations(sessions, 5);
+    expect(out.map((s) => s.session_id)).toEqual([
+      "p1",
+      "p2",
+      "p3",
+      "p4",
+      "p5",
     ]);
-  });
-
-  test("null/undefined session entries are skipped", () => {
-    const sessions = [null, S({ session_id: "a", isStreaming: true }), undefined];
-    expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual(["a"]);
-  });
-
-  test("null input treated as empty", () => {
-    expect(topPrompting(null, 5)).toEqual([]);
-    expect(topPrompting(undefined, 5)).toEqual([]);
   });
 });
 
@@ -273,5 +518,183 @@ describe("activateOnKey", () => {
     activateOnKey(cb)({ key: "Escape", preventDefault: pd });
     expect(cb).not.toHaveBeenCalled();
     expect(pd).not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
+// Loading-state row rendering (mitto-eml)
+// =============================================================================
+//
+// Regression tests for mitto-eml: when the Dashboard mounts and the first
+// /api/dashboard fetch is in flight (`data === null`), the three bd-driven
+// list panels (In-progress tasks, Ready tasks, Recently modified) must render
+// a loading indicator, NOT the "No items" empty-state row. The Recent-
+// conversations panel is client-derived from `allSessions`, so its caller
+// gates loading on `data === null && allSessions.length === 0` — mirroring
+// the existing pattern used for the loops-stats block (Dashboard.js ~L280).
+//
+// Following the file's own "duplicate helpers verbatim" convention, the row
+// helpers (`emptyRow`, `renderConversationRows`, `renderTaskRows`) are
+// duplicated verbatim from Dashboard.js below. The mock `html` template tag
+// below serializes the tag call into a raw string so a test can inspect the
+// row's `key=` attribute (which is where `emptyRow` and a future `loadingRow`
+// are distinguishable). Populated-row branches call project helpers
+// (`workspaceBadge`, `priorityPill`, etc.) not in scope for this file; those
+// branches are elided with an explanatory comment because the mitto-eml bug
+// lives entirely in the empty-vs-loading branch at the top of each helper.
+
+// Mock htm's tagged-template `html`: joins strings and interpolated values
+// into a single raw string. Interpolations are wrapped in guillemets so a
+// static template literal like `key="__empty"` remains distinguishable from
+// a dynamic key such as `key=${id}` (which serializes as `key=‹abc-1›`).
+const html = (strings, ...values) => {
+  let raw = "";
+  for (let i = 0; i < strings.length; i++) {
+    raw += strings[i];
+    if (i < values.length) raw += `\u2039${String(values[i])}\u203A`;
+  }
+  return { __html: raw };
+};
+
+// Duplicated from Dashboard.js for testing (component imports window.preact
+// globals). Keep in sync. Mirrors Dashboard.js ~L376.
+const COMPACT_ROW_STYLE = "gap: 0.5rem; padding: 0.5rem 0.75rem;";
+
+// Duplicated from Dashboard.js for testing. Keep in sync. Mirrors emptyRow.
+function emptyRow() {
+  return html`
+    <li class="list-row" style="${COMPACT_ROW_STYLE}" key="__empty">
+      <div class="list-col-grow min-w-0 flex flex-col gap-1">
+        <div class="text-xs">${"\u00A0"}</div>
+        <div class="text-center text-sm text-mitto-text-muted">No items</div>
+      </div>
+    </li>
+  `;
+}
+
+// Duplicated from Dashboard.js for testing. Keep in sync. Mirrors loadingRow.
+function loadingRow() {
+  return html`
+    <li class="list-row" style="${COMPACT_ROW_STYLE}" key="__loading">
+      <div class="list-col-grow min-w-0 flex flex-col gap-1">
+        <div class="text-xs">${"\u00A0"}</div>
+        <div
+          class="flex items-center justify-center gap-2 text-sm text-mitto-text-muted"
+        >
+          <span
+            class="loading loading-spinner loading-xs text-mitto-text-muted"
+            aria-hidden="true"
+          ></span>
+          <span>Loading…</span>
+        </div>
+      </div>
+    </li>
+  `;
+}
+
+// Duplicated from Dashboard.js for testing (component imports window.preact
+// globals). Keep in sync with renderConversationRows. Populated-row branch
+// elided — the mitto-eml bug lives entirely in the empty/loading branch at
+// the top.
+function renderConversationRows(sessions, onClick, isLoading) {
+  // Loading takes precedence over empty so the panel does not lie about the
+  // server state while the first fetch is still in flight.
+  if ((!sessions || sessions.length === 0) && isLoading) return [loadingRow()];
+  // Empty list → one visible "No items" row. Bottom-alignment padding across
+  // sibling panels is now handled by renderListPanel(padTo) so this helper
+  // returns only the real content and never over-pads a lone panel.
+  if (!sessions || sessions.length === 0) return [emptyRow()];
+  // Populated branch elided — mitto-eml regression tests below exercise the
+  // empty/loading branch only. See Dashboard.js for the full row template.
+  return sessions.map(() => null);
+}
+
+// Duplicated from Dashboard.js for testing (component imports window.preact
+// globals). Keep in sync with renderTaskRows. Populated-row branch elided —
+// the mitto-eml bug lives entirely in the empty/loading branch at the top.
+function renderTaskRows(items, onClick, isLoading) {
+  // Loading takes precedence over empty so the panel does not lie about the
+  // server state while the first fetch is still in flight.
+  if ((!items || items.length === 0) && isLoading) return [loadingRow()];
+  // See renderConversationRows: real rows only, bottom-alignment is handled
+  // page-scoped by renderListPanel(padTo).
+  if (!items || items.length === 0) return [emptyRow()];
+  // Populated branch elided — see Dashboard.js for the full row template.
+  return items.map(() => null);
+}
+
+describe("renderTaskRows loading state (mitto-eml)", () => {
+  test("data===null on first load: renders a loading row, not an empty row", () => {
+    // isLoading=true is the caller's signal that /api/dashboard has not yet
+    // resolved (data===null). Under the mitto-eml fix, the panel MUST show a
+    // loading indicator (key="__loading") instead of the "No items" empty
+    // row so the user does not perceive the panel as "server confirmed
+    // nothing" mid-fetch.
+    const rows = renderTaskRows([], null, /* isLoading */ true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].__html).toMatch(/key="__loading"/);
+    expect(rows[0].__html).not.toMatch(/key="__empty"/);
+  });
+
+  test("data resolved, list genuinely empty: still renders 'No items'", () => {
+    // After the first fetch resolves, isLoading is false; a genuinely empty
+    // list must show "No items" (key="__empty") — unchanged from today.
+    const rows = renderTaskRows([], null, /* isLoading */ false);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].__html).toMatch(/key="__empty"/);
+  });
+});
+
+describe("renderConversationRows loading state (mitto-eml)", () => {
+  test("data===null AND allSessions empty: renders a loading row", () => {
+    // Recent conversations is derived client-side from allSessions and can
+    // already be populated before /api/dashboard resolves. Callers therefore
+    // pass isLoading := (data === null && allSessions.length === 0). When
+    // that combined gate is true, the panel MUST show a loading indicator.
+    const rows = renderConversationRows([], null, /* isLoading */ true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].__html).toMatch(/key="__loading"/);
+    expect(rows[0].__html).not.toMatch(/key="__empty"/);
+  });
+
+  test("data resolved, no sessions: renders 'No items'", () => {
+    // After the first fetch resolves, isLoading is false; the panel returns
+    // to the standard empty-state copy (key="__empty").
+    const rows = renderConversationRows([], null, /* isLoading */ false);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].__html).toMatch(/key="__empty"/);
+  });
+});
+
+// =============================================================================
+// SDK migration — fetchDashboard (mitto-7gta.17 slice S7)
+// =============================================================================
+
+describe("Dashboard.js: fetchDashboard SDK migration (mitto-7gta.17 slice S7)", () => {
+  test("imports getSdkClient/errorMessage; fetches via dashboard.summary()", () => {
+    expect(dashboardJs).toMatch(
+      /import \{ getSdkClient \} from "\.\.\/utils\/sdkClient\.js";/,
+    );
+    expect(dashboardJs).toMatch(
+      /import \{ errorMessage \} from "\.\.\/utils\/sdkErrors\.js";/,
+    );
+    expect(dashboardJs).toMatch(
+      /const json = await getSdkClient\(\)\.dashboard\.summary\(\);/,
+    );
+    // No leftover raw-fetch residue from the pre-migration implementation.
+    expect(dashboardJs).not.toMatch(/authFetch\(/);
+    expect(dashboardJs).not.toMatch(/secureFetch\(/);
+  });
+
+  test("fetchDashboard: mountedRef gates both the success (setData) and error (showToast) paths", () => {
+    const idx = dashboardJs.indexOf("const fetchDashboard = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = dashboardJs.slice(idx, idx + 700);
+    expect(snippet).toMatch(
+      /const json = await getSdkClient\(\)\.dashboard\.summary\(\);\s*\n\s*if \(!mountedRef\.current\) return;\s*\n\s*setData\(json\);/,
+    );
+    expect(snippet).toMatch(
+      /\} catch \(err\) \{\s*\n\s*if \(!mountedRef\.current\) return;\s*\n\s*if \(showToast\) \{\s*\n\s*showToast\(\{\s*\n\s*style: "error",\s*\n\s*title: "Dashboard refresh failed",\s*\n\s*message: errorMessage\(err, String\(err\)\),/,
+    );
   });
 });

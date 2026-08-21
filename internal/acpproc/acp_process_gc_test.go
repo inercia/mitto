@@ -1314,6 +1314,12 @@ func TestGCTier1_LoopSuspend_DisabledWhenThresholdZero(t *testing.T) {
 // gcTier4Threshold is a convenient RSS threshold (1 GB) for Tier 4 tests.
 const gcTier4Threshold uint64 = 1 << 30
 
+func installFixedMemorySample(m *ACPProcessManager, effectiveMemory uint64) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		return processMemorySample{effectiveMemory: effectiveMemory}, nil
+	}
+}
+
 // TestGCTier4_RecyclesBloatedIdleProcess verifies that an idle but memory-bloated
 // shared process is recycled: its sessions are GC-suspended and closed, and the
 // process is stopped. Sessions have observers so Tier 1 skips them, isolating the
@@ -1345,7 +1351,7 @@ func TestGCTier4_RecyclesBloatedIdleProcess(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	var recycledCalls int
 	var gotUUID string
@@ -1422,7 +1428,7 @@ func TestGCTier4_SkipsPromptingSession(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	m.RunGCOnce()
 
@@ -1456,7 +1462,7 @@ func TestGCTier4_SkipsActiveRPCs(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	m.RunGCOnce()
 
@@ -1489,7 +1495,7 @@ func TestGCTier4_SkipsNonEmptyQueue(t *testing.T) {
 	m.mu.Unlock()
 
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold + 1, nil }
+	installFixedMemorySample(m, gcTier4Threshold+1)
 
 	m.RunGCOnce()
 
@@ -1524,9 +1530,9 @@ func TestGCTier4_DisabledWhenThresholdZero(t *testing.T) {
 
 	// Threshold left at 0 (disabled).
 	sampled := false
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
 		sampled = true
-		return gcTier4Threshold + 1, nil
+		return processMemorySample{effectiveMemory: gcTier4Threshold + 1}, nil
 	}
 
 	m.RunGCOnce()
@@ -1603,7 +1609,7 @@ func TestGCHealthTier_RecyclesSaturatedIdleProcess(t *testing.T) {
 	// Keep RSS BELOW the memory threshold so Tier 4 does NOT fire — only the
 	// health/saturation signal should drive the recycle.
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+	installFixedMemorySample(m, gcTier4Threshold/2)
 
 	m.RunGCOnce()
 
@@ -1623,6 +1629,270 @@ func TestGCHealthTier_RecyclesSaturatedIdleProcess(t *testing.T) {
 		if !m.IsGCSuspended(id) {
 			t.Errorf("expected session %s to be marked GC-suspended before close", id)
 		}
+	}
+}
+
+// TestGCHealthTier_OnHealthRecycledCallback verifies the mitto-aoo
+// notification wiring: recycling a saturated-idle process (Tier 5) invokes
+// onHealthRecycled exactly once with reason "saturated_idle" and the correct
+// workspace UUID, saturation level, and recycled session count — the signal
+// the web layer uses to broadcast the "agent_recycled" toast.
+func TestGCHealthTier_OnHealthRecycledCallback(t *testing.T) {
+	workspaceUUID := "ws-saturated-cb"
+	proc := newTestSharedProcess()
+
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	// Re-trip in case the cooldown already elapsed and opened a probe.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	wantLevel := proc.SaturationLevel()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			{SessionID: "s2", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	installFixedMemorySample(m, gcTier4Threshold/2)
+
+	var calls int
+	var gotUUID, gotReason string
+	var gotLevel, gotCount int
+	m.onHealthRecycled = func(workspaceUUID, reason string, saturationLevel, sessionCount int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotUUID = workspaceUUID
+		gotReason = reason
+		gotLevel = saturationLevel
+		gotCount = sessionCount
+	}
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotUUID != workspaceUUID {
+		t.Errorf("expected recycled workspace %q, got %q", workspaceUUID, gotUUID)
+	}
+	if gotReason != "saturated_idle" {
+		t.Errorf("expected reason %q, got %q", "saturated_idle", gotReason)
+	}
+	if gotLevel != wantLevel {
+		t.Errorf("expected saturationLevel %d, got %d", wantLevel, gotLevel)
+	}
+	if gotCount != 2 {
+		t.Errorf("expected recycled session count 2, got %d", gotCount)
+	}
+}
+
+// TestGCHealthTier_RecyclesMCPInitGatedProcess is the mitto-13n regression
+// test: a shared ACP process whose stderr monitor has observed the agent
+// report "MCP initialization timed out" (mcpInitTimedOut=true) is permanently
+// gated in getOrCreateAuxiliarySession (the "mcp_init_gated" bail in
+// acp_process_manager.go) — every auxiliary NewSession call (title-gen,
+// follow-up, keepalive, the adaptive prewarm health probe itself) bails
+// before issuing an RPC, so mcpInitTimedOut is NEVER cleared (it is only
+// cleared by beginMCPInitWindow(), called from an actual NewSession/
+// LoadSession attempt) and the gate never opens.
+//
+// Before the fix, Tier 5 (the GC's only proactive health-recycle path for an
+// idle process) gated exclusively on IsSaturated(), which reads the SEPARATE
+// saturatedUntil state set only by recordRPCTimeout/recordRPCWedgeFailure/etc
+// — none of which getOrCreateAuxiliarySession's early-return bails ever call.
+// So a process that has only ever hit the mcp_init_gated bail had
+// IsSaturated()==false and IsConfirmedDegraded()==false: Tier 5/6 never saw
+// it, even though it was fully idle (zero sessions) and permanently unable to
+// serve auxiliary work — surviving GC forever.
+//
+// Tier 5 now also treats MCPInitTimedOut()==true as a health-recycle signal
+// (independent of IsSaturated()), so this idle mcp-init-gated process is
+// recycled and this test verifies that outcome, plus the "mcp_init_gated"
+// reason surfaced via onHealthRecycled.
+func TestGCHealthTier_RecyclesMCPInitGatedProcess(t *testing.T) {
+	workspaceUUID := "ws-mcp-init-gated"
+	proc := newTestSharedProcess()
+	proc.mcpInitTimedOut.Store(true)
+
+	// Preconditions: confirm this process is invisible to the saturation
+	// signal, isolating this test from the already-covered saturation-timeout
+	// path (TestGCHealthTier_RecyclesSaturatedIdleProcess) — recycling here
+	// must be driven solely by MCPInitTimedOut().
+	if proc.IsSaturated() {
+		t.Fatal("test setup: mcp-init-timed-out process must read IsSaturated()=false (isolates the gap from the timeout-driven saturation path)")
+	}
+	if proc.IsConfirmedDegraded() {
+		t.Fatal("test setup: mcp-init-timed-out process must read IsConfirmedDegraded()=false")
+	}
+
+	// Zero sessions: this workspace is otherwise fully idle, satisfying every
+	// hard safety gate Tier 5 already checks (ActiveRPCs()==0, no prompting
+	// session, no queued work, no imminent loop). The only thing that used to
+	// keep this process alive was the missing MCPInitTimedOut() health signal.
+	sessions := map[string][]conversation.SessionInfo{}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+	// Keep this workspace out of Tier 2's idle-timeout path (which recycles
+	// purely on session absence + grace period, unrelated to health) so a
+	// pass fairly isolates the Tier 5 health-recycle path under test.
+	m.lastSessionSeen[workspaceUUID] = time.Now()
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	installFixedMemorySample(m, gcTier4Threshold/2)
+
+	var calls int
+	var gotReason string
+	m.onHealthRecycled = func(_, reason string, _, _ int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotReason = reason
+	}
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Fatal("mcp-init-gated idle process was NOT recycled by any GC health tier " +
+			"— it would survive indefinitely while every auxiliary call keeps bailing on it")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotReason != "mcp_init_gated" {
+		t.Errorf("expected reason %q, got %q", "mcp_init_gated", gotReason)
+	}
+}
+
+// TestGCHealthTier_RecyclesMCPInitInProgressWedgedProcess is the mitto-13n.1
+// reproduction test: a shared ACP process whose stderr monitor observed the
+// agent begin an MCP-init handshake (mcpInitInProgress=true) that never
+// completes (mcpInitDone=false) is invisible to EVERY existing health-recycle
+// signal, even though it is fully idle:
+//
+//   - IsSaturated()/IsConfirmedDegraded(): both read saturatedUntil, set only
+//     by recordRPCTimeout/recordRPCWedgeFailure — never called because the
+//     mcp_init_gated bail in getOrCreateAuxiliarySession returns BEFORE any
+//     RPC is attempted.
+//   - MCPInitTimedOut(): false — per the mitto-13n.1 investigation, the agent
+//     frequently gives up on its own MCP-init wait WITHOUT ever emitting the
+//     stderr line the timeout callback watches for, so this flag never
+//     latches true for the cold in-progress case (disjunct (2) in the
+//     investigation comment, distinct from the already-fixed disjunct (1)
+//     covered by TestGCHealthTier_RecyclesMCPInitGatedProcess above).
+//
+// Tier 5's predicate today (acp_process_gc.go) is
+// `!p.IsSaturated() && !p.MCPInitTimedOut() -> continue`, which has no term
+// for MCPInitInProgress()&&!MCPInitDone() at all — so this process survives
+// GC indefinitely regardless of how long it has been wedged, reproducing the
+// "waiting for GC recycle" symptom logged 30 times in production
+// (internal/processors/apply.go) for a recycle that could never occur.
+//
+// This test currently FAILS: it asserts the wedged-but-idle process IS
+// recycled, which is the intended (not yet implemented) behavior once Tier 5
+// gains the MCPInitInProgress()&&!MCPInitDone() disjunct.
+func TestGCHealthTier_RecyclesMCPInitInProgressWedgedProcess(t *testing.T) {
+	workspaceUUID := "ws-mcp-init-in-progress-wedged"
+	proc := newTestSharedProcess()
+	proc.config.MCPInitTimeout = 5 * time.Second
+	proc.mcpInitInProgress.Store(true)
+	// mcpInitInProgressSince mirrors the timestamp onMCPInitProgress stamps at
+	// the false->true edge; back-dated well past the 2x-MCPInitTimeout bound
+	// so this reproduces a handshake that has been wedged for a while, not one
+	// merely slow-but-progressing.
+	proc.mcpInitInProgressSince = time.Now().Add(-3 * proc.config.MCPInitTimeout)
+	// mcpInitDone and mcpInitTimedOut are left at their zero value (false),
+	// mirroring the observed production case: the handshake started and
+	// never finished, and the agent never logged its own timeout either.
+
+	// Preconditions: confirm this process is invisible to every
+	// currently-implemented health signal, isolating this test from the
+	// already-covered saturation and MCPInitTimedOut paths.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: mcp-init-in-progress process must read IsSaturated()=false")
+	}
+	if proc.IsConfirmedDegraded() {
+		t.Fatal("test setup: mcp-init-in-progress process must read IsConfirmedDegraded()=false")
+	}
+	if proc.MCPInitTimedOut() {
+		t.Fatal("test setup: mcp-init-in-progress process must read MCPInitTimedOut()=false")
+	}
+	if !proc.MCPInitInProgress() || proc.MCPInitDone() {
+		t.Fatal("test setup: expected MCPInitInProgress()=true, MCPInitDone()=false")
+	}
+
+	// Zero sessions: this workspace is otherwise fully idle, satisfying every
+	// hard safety gate Tier 5 already checks (ActiveRPCs()==0, no prompting
+	// session, no queued work, no imminent loop).
+	sessions := map[string][]conversation.SessionInfo{}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+	// Keep this workspace out of Tier 2's idle-timeout path so a pass fairly
+	// isolates the Tier 5 health-recycle path under test.
+	m.lastSessionSeen[workspaceUUID] = time.Now()
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	installFixedMemorySample(m, gcTier4Threshold/2)
+
+	var calls int
+	var gotReason string
+	m.onHealthRecycled = func(_, reason string, _, _ int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotReason = reason
+	}
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Fatal("mcp-init-in-progress wedged idle process was NOT recycled by any GC health tier " +
+			"— it would survive indefinitely since MCPInitTimedOut() never latches for this case (mitto-13n.1)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotReason != "mcp_init_wedged" {
+		t.Errorf("expected reason %q, got %q", "mcp_init_wedged", gotReason)
 	}
 }
 
@@ -1714,6 +1984,72 @@ func TestGCTier6_RecyclesBusyConfirmedDegradedProcess(t *testing.T) {
 	}
 }
 
+// TestGCTier6_OnHealthRecycledCallback verifies the mitto-aoo notification
+// wiring for the Tier 6 (confirmed-degraded, busy) recycle path: the
+// callback fires once with reason "confirmed_degraded" and the correct
+// workspace UUID, saturation level, and recycled session count.
+func TestGCTier6_OnHealthRecycledCallback(t *testing.T) {
+	workspaceUUID := "ws-degraded-busy-cb"
+	proc := newTestSharedProcess()
+	driveToConfirmedDegraded(t, proc)
+	proc.activeRPCs.Add(1)
+	wantLevel := proc.SaturationLevel()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:            "s1",
+				WorkspaceUUID:        workspaceUUID,
+				HasObservers:         true,
+				IsPrompting:          true,
+				LastStreamActivityAt: time.Now().Add(-time.Hour), // stale
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	var calls int
+	var gotUUID, gotReason string
+	var gotLevel, gotCount int
+	m.onHealthRecycled = func(workspaceUUID, reason string, saturationLevel, sessionCount int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotUUID = workspaceUUID
+		gotReason = reason
+		gotLevel = saturationLevel
+		gotCount = sessionCount
+	}
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected onHealthRecycled to be called once, got %d", calls)
+	}
+	if gotUUID != workspaceUUID {
+		t.Errorf("expected recycled workspace %q, got %q", workspaceUUID, gotUUID)
+	}
+	if gotReason != "confirmed_degraded" {
+		t.Errorf("expected reason %q, got %q", "confirmed_degraded", gotReason)
+	}
+	if gotLevel != wantLevel {
+		t.Errorf("expected saturationLevel %d, got %d", wantLevel, gotLevel)
+	}
+	if gotCount != 1 {
+		t.Errorf("expected recycled session count 1, got %d", gotCount)
+	}
+}
+
 // TestGCTier6_SkipsProgressingDegradedProcess verifies that a confirmed-degraded
 // process is NOT recycled by Tier 6 when a session has streamed activity within
 // the quiet window — it is legitimately slow but progressing (mitto-1h0
@@ -1751,6 +2087,62 @@ func TestGCTier6_SkipsProgressingDegradedProcess(t *testing.T) {
 	m.mu.RUnlock()
 	if !exists {
 		t.Error("progressing confirmed-degraded process should NOT have been recycled by Tier 6")
+	}
+}
+
+// TestGCTier6_DoesNotKillPromptingSessionAwaitingFirstToken reproduces
+// mitto-6a7p: Tier 6's no-streamed-progress guard is
+//
+//	!s.LastStreamActivityAt.IsZero() && now.Sub(s.LastStreamActivityAt) < tier6StreamedProgressQuietWindow
+//
+// A session that has dispatched a prompt but has not yet received its first
+// streamed token has LastStreamActivityAt == zero value, so the IsZero()
+// clause short-circuits the whole check to false — the session is classified
+// as "not progressing", the exact opposite of the truth (mode A from the
+// investigation: the handshake/set_model window before the first token
+// arrives). LastActivityAt mirrors what production always sets at the same
+// instant a prompt starts (BackgroundSession.TouchActivity, called from
+// PromptWithMeta right after promptStartTime is stamped), so it is set here
+// too to reflect a realistic prompting-session snapshot. Verifies a
+// confirmed-degraded busy process is NOT recycled while a session is in this
+// state.
+func TestGCTier6_DoesNotKillPromptingSessionAwaitingFirstToken(t *testing.T) {
+	workspaceUUID := "ws-degraded-awaiting-first-token"
+	proc := newTestSharedProcess()
+	driveToConfirmedDegraded(t, proc)
+	proc.activeRPCs.Add(1) // simulate an in-flight session/new or set_model RPC
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:     "s1",
+				WorkspaceUUID: workspaceUUID,
+				HasObservers:  true,
+				IsPrompting:   true,
+				// Never streamed: prompt just dispatched, awaiting first token.
+				LastStreamActivityAt: time.Time{},
+				// Set synchronously at prompt start in production (TouchActivity).
+				LastActivityAt: time.Now(),
+			},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("session awaiting its first token (IsPrompting=true, zero LastStreamActivityAt) " +
+			"should NOT have been recycled by Tier 6 (mitto-6a7p)")
 	}
 }
 
@@ -1831,9 +2223,9 @@ func TestGCTier4_SkipsPinnedWorkspace(t *testing.T) {
 	// Configure the memory-recycle tier so the process would otherwise be reaped.
 	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
 	sampled := false
-	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
 		sampled = true
-		return gcTier4Threshold + 1, nil
+		return processMemorySample{effectiveMemory: gcTier4Threshold + 1}, nil
 	}
 
 	m.RunGCOnce()
@@ -1914,6 +2306,40 @@ func attrValue(r *slog.Record, key string) any {
 	return out
 }
 
+// TestGCTier4_UsesSingleMemorySample_MITTO6Y69 reproduces mitto-6y69.
+// One eligible process must produce one unified sample containing both the
+// effective memory total and the diagnostic RSS breakdown. Before the fix, split
+// samplers triggered separate process-tree snapshots (three walks in production).
+func TestGCTier4_UsesSingleMemorySample_MITTO6Y69(t *testing.T) {
+	const workspaceUUID = "ws-single-memory-sample"
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true}},
+	}
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(string) {},
+	)
+	m.processes[workspaceUUID] = newTestSharedProcess()
+	m.gcConfig.MemoryRecycleThreshold = 100
+
+	sampleCalls := 0
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		sampleCalls++
+		return processMemorySample{
+			effectiveMemory: 50,
+			parentRSS:       20,
+			descendantRSS:   30,
+			descendantCount: 1,
+		}, nil
+	}
+
+	m.RunGCOnce()
+
+	if sampleCalls != 1 {
+		t.Fatalf("Tier 4 sampled one idle process %d times; want exactly 1 unified memory sample", sampleCalls)
+	}
+}
+
 // TestGCTier4_LogsRSSBreakdown_MITTO3GU is the failing reproduction for mitto-3gu.
 //
 // The bead's acceptance criterion — "Root of the 7.5 GB growth identified (agent
@@ -1967,13 +2393,7 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if total <= gcTier4Threshold {
 			t.Fatalf("test setup: synthetic total %d must exceed threshold %d", total, gcTier4Threshold)
 		}
-		// Sampler returns the tree total, exactly as today. The breakdown must
-		// flow through some other seam that the fix introduces (e.g. a
-		// detailed-sampler field on ACPProcessManager, or an extended return
-		// from rssSampler). We do NOT prescribe which seam here — we only
-		// assert on the observable log payload.
-		m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
-		installBreakdownSampler(m, parentRSS, descendantRSS, descendantCount)
+		installMemorySample(m, total, parentRSS, descendantRSS, descendantCount)
 
 		m.RunGCOnce()
 
@@ -1985,8 +2405,14 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if got := attrValue(rec, "rss_bytes"); got != total {
 			t.Errorf("rss_bytes: want %d, got %v", total, got)
 		}
+		if got := attrValue(rec, "effective_memory_bytes"); got != total {
+			t.Errorf("effective_memory_bytes: want %d, got %v", total, got)
+		}
 		if got := attrValue(rec, "threshold_bytes"); got != gcTier4Threshold {
 			t.Errorf("threshold_bytes: want %d, got %v", gcTier4Threshold, got)
+		}
+		if got := attrValue(rec, "memory_sample_duration"); got == nil {
+			t.Error("memory_sample_duration: missing")
 		}
 		// New breakdown fields the fix must add.
 		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
@@ -2032,8 +2458,7 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		if total >= gcTier4Threshold {
 			t.Fatalf("test setup: synthetic total %d must be below threshold %d", total, gcTier4Threshold)
 		}
-		m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
-		installBreakdownSampler(m, parentRSS, descendantRSS, descendantCount)
+		installMemorySample(m, total, parentRSS, descendantRSS, descendantCount)
 
 		m.RunGCOnce()
 
@@ -2043,6 +2468,12 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 		}
 		if got := attrValue(rec, "rss_bytes"); got != total {
 			t.Errorf("rss_bytes: want %d, got %v", total, got)
+		}
+		if got := attrValue(rec, "effective_memory_bytes"); got != total {
+			t.Errorf("effective_memory_bytes: want %d, got %v", total, got)
+		}
+		if got := attrValue(rec, "memory_sample_duration"); got == nil {
+			t.Error("memory_sample_duration: missing")
 		}
 		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
 			t.Errorf("parent_rss_bytes: want %d, got %v (fix must add this field)", parentRSS, got)
@@ -2056,10 +2487,132 @@ func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
 	})
 }
 
-// installBreakdownSampler wires the detailed-RSS seam so tests can inject a
-// synthetic parent/descendant split for Tier 4's log lines (mitto-3gu).
-func installBreakdownSampler(m *ACPProcessManager, parentRSS, descendantRSS uint64, descendantCount int) {
-	m.rssBreakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
-		return parentRSS, descendantRSS, descendantCount, nil
+func installMemorySample(m *ACPProcessManager, effectiveMemory, parentRSS, descendantRSS uint64, descendantCount int) {
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		return processMemorySample{
+			effectiveMemory: effectiveMemory,
+			parentRSS:       parentRSS,
+			descendantRSS:   descendantRSS,
+			descendantCount: descendantCount,
+		}, nil
+	}
+}
+
+// TestGCTier4_DescendantCountRatchet_MITTO52MT is the failing reproduction for
+// mitto-52mt: an auggie ACP process aborted with a V8 "JavaScript heap out of
+// memory" fatal error after its descendant (MCP-child) process count ratcheted
+// monotonically from 82 to 98 over ~2 hours, while combined tree RSS stayed
+// pinned at ~2.16 GB -- well under the configured 6 GB MemoryRecycleThreshold.
+//
+// Root cause (see the mitto-52mt Investigation comment): Tier 4's only recycle
+// predicate is `rss <= MemoryRecycleThreshold` (acp_process_gc.go). The
+// descendantCount returned by the breakdown sampler is sampled every cycle but
+// used ONLY as a log attribute on the Debug-level "GC: memory recycle below
+// threshold" line -- it never drives a decision. The V8 heap abort is a
+// per-process cap decoupled from tree RSS (the parent held only ~204 MB at the
+// moment of the abort), so no RSS threshold can ever see this failure mode.
+//
+// This test replays the incident's exact descendant-count ratchet (82 -> 88 ->
+// 92 -> 98) across four successive GC cycles while RSS is held fixed at the
+// incident's reported values (parent ~204 MB, descendants ~1.95 GB), all far
+// below a 6 GB threshold so Tier 4's RSS predicate never fires. It asserts a
+// WARN-level log record surfaces the unbounded climb before the fix; today no
+// such record is ever emitted, so this test FAILS. After the fix adds a
+// count-based ratchet signal to Tier 4, it must PASS.
+func TestGCTier4_DescendantCountRatchet_MITTO52MT(t *testing.T) {
+	workspaceUUID := "ws-oncall-3d1c815e"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	cap := &captureHandler{}
+	m.logger = slog.New(cap)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	// Mirrors the reported incident values: parent_rss_bytes=204390400,
+	// descendant_rss_bytes=1953677312, threshold_bytes=6442450944 (6 GiB).
+	const (
+		parentRSS     uint64 = 204390400
+		descendantRSS uint64 = 1953677312
+		threshold     uint64 = 6 * 1024 * 1024 * 1024
+	)
+	total := parentRSS + descendantRSS
+	if total >= threshold {
+		t.Fatalf("test setup: synthetic total %d must stay below threshold %d (matching the incident)", total, threshold)
+	}
+	m.gcConfig.MemoryRecycleThreshold = threshold
+	// Descendant count ratchets monotonically across successive GC cycles,
+	// exactly mirroring the incident timeline (14:23 -> 82, 15:08 -> 88,
+	// 16:11 -> 92, 17:08 -> 98), never shrinking, while RSS stays fixed and
+	// far below threshold throughout.
+	counts := []int{82, 88, 92, 98}
+	idx := 0
+	m.memorySampler = func(*SharedACPProcess) (processMemorySample, error) {
+		c := counts[idx]
+		if idx < len(counts)-1 {
+			idx++
+		}
+		return processMemorySample{
+			effectiveMemory: total,
+			parentRSS:       parentRSS,
+			descendantRSS:   descendantRSS,
+			descendantCount: c,
+		}, nil
+	}
+
+	for range counts {
+		m.RunGCOnce()
+	}
+
+	// Sanity: the process must survive every cycle -- RSS never crosses the
+	// threshold, so Tier 4's RSS-based recycle correctly never fires. If this
+	// fails, the test setup itself (not the ratchet-detection bug) is wrong.
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Fatal("test setup: process should not have been RSS-recycled (RSS stays below threshold throughout)")
+	}
+
+	// The bug: an unbounded, monotonically climbing descendant count is
+	// invisible today -- no WARN is ever emitted for it.
+	rec := cap.findRecord("GC: descendant count climbing without bound")
+	if rec == nil {
+		t.Fatalf("expected a WARN log once the descendant count ratchets %v while RSS stays below threshold (mitto-52mt), got none; captured=%d records", counts, len(cap.records))
+	}
+	if got, ok := attrInt64(rec, "descendant_count"); !ok || got != int64(counts[len(counts)-1]) {
+		t.Errorf("descendant_count: want %d, got %d (ok=%v)", counts[len(counts)-1], got, ok)
+	}
+	if got := attrValue(rec, "workspace_uuid"); got != workspaceUUID {
+		t.Errorf("workspace_uuid: want %q, got %v", workspaceUUID, got)
+	}
+}
+
+func TestEffectiveProcessTreeMemory_MITTO52MT(t *testing.T) {
+	const (
+		finalRSS         uint64 = 521 * 1024 * 1024
+		v8Footprint      uint64 = 12073 * 1024 * 1024
+		recycleThreshold uint64 = 6 * 1024 * 1024 * 1024
+	)
+
+	got := effectiveProcessTreeMemory(finalRSS, v8Footprint)
+	if got != v8Footprint {
+		t.Fatalf("effective memory = %d, want physical footprint %d", got, v8Footprint)
+	}
+	if got <= recycleThreshold {
+		t.Fatalf("effective memory %d must cross recycle threshold %d", got, recycleThreshold)
+	}
+	if got := effectiveProcessTreeMemory(v8Footprint, finalRSS); got != v8Footprint {
+		t.Fatalf("RSS fallback = %d, want larger RSS %d", got, v8Footprint)
 	}
 }

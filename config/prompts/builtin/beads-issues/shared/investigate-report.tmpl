@@ -1,0 +1,36 @@
+{{/*
+  investigate-report — the shape of the **Investigation Report** produced by
+  both investigation prompts (beads-issues/investigate and
+  beads/investigate-all-more ("Investigate ALL more")). The report is the
+  deliverable that later gets written back into the bead's description /
+  acceptance / design fields and posted as a `bd comment`, so both prompts
+  must produce the same sections.
+
+  Parameters (dict):
+    Target    — the bead ID, or the empty string for the "current problem"
+                fallback (only beads-issues/investigate uses the empty
+                case). Multi-bead callers pass the literal `<bead-id>`.
+    SubIssues — when truthy, adds the "Recommended sub-issues" bullet. Only
+                prompts that are allowed to decompose a bead set this.
+
+      {{ template "beads-issues/shared/investigate-report" (dict
+          "Target" $target "SubIssues" true) }}
+*/}}
+{{- if .Target }}
+### Bead: `{{ .Target }}` — `<Title>`
+{{- else }}
+### Current problem — `<Topic>`
+{{- end }}
+
+- **Clarified problem & scope**: a tightened statement of what this bead or current problem covers,
+  and — just as important — what is **out of scope**.
+- **Findings & code locations**: key files/symbols and current behaviour, with evidence.
+- **Approach**: the recommended step-by-step plan, in order, with the concrete call sites to touch.
+- **Refined acceptance criteria**: specific, testable conditions for "done".
+- **Design notes**: trade-offs and constraints behind the approach (if applicable).
+- **Edge cases & risks**: what could break or is easy to miss — callers, tests, migrations, config.
+- **Resolved questions**: the answers settled while investigating.
+{{- if .SubIssues }}
+- **Recommended sub-issues** (only if the complexity assessment says split): for each, a **title**,
+  one-line scope, type/priority, and any dependency on a sibling.
+{{- end }}

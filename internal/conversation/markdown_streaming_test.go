@@ -44,7 +44,7 @@ func runStreamingTest(t *testing.T, tc StreamingTestCase) {
 	seqCounter := int64(0)
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			htmlOutputs = append(htmlOutputs, html)
 			mu.Unlock()
@@ -523,7 +523,7 @@ func TestMarkdownBuffer_SequenceOrdering(t *testing.T) {
 			seqCounter := int64(0)
 			client := NewWebClient(WebClientConfig{
 				SeqProvider: &testSeqProvider{counter: &seqCounter},
-				OnAgentMessage: func(seq int64, html string) {
+				OnAgentMessage: func(seq int64, html, markdown string) {
 					mu.Lock()
 					seqs = append(seqs, seq)
 					mu.Unlock()
@@ -597,7 +597,7 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 		var flushCount int
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			flushCount++
 			mu.Unlock()
@@ -620,7 +620,7 @@ func TestMarkdownBuffer_LargeContent(t *testing.T) {
 		var flushCount int
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			flushCount++
 			mu.Unlock()
@@ -656,7 +656,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
@@ -693,7 +693,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
@@ -727,7 +727,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
@@ -761,7 +761,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
@@ -807,7 +807,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 		var outputs []string
 		var mu sync.Mutex
 
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			mu.Lock()
 			outputs = append(outputs, html)
 			mu.Unlock()
@@ -836,7 +836,7 @@ func TestMarkdownBuffer_InactivityTimeout(t *testing.T) {
 func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 	t.Run("empty_input", func(t *testing.T) {
 		var flushCount int
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			flushCount++
 		})
 
@@ -850,7 +850,7 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("only_newlines", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			outputs = append(outputs, html)
 		})
 
@@ -866,7 +866,7 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("unclosed_code_block", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			outputs = append(outputs, html)
 		})
 
@@ -881,7 +881,7 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("list_at_end_of_input", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			outputs = append(outputs, html)
 		})
 
@@ -901,7 +901,7 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("table_at_end_of_input", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			outputs = append(outputs, html)
 		})
 
@@ -919,7 +919,7 @@ func TestMarkdownBuffer_EdgeCases(t *testing.T) {
 
 	t.Run("mixed_list_markers", func(t *testing.T) {
 		var outputs []string
-		buffer := NewMarkdownBuffer(func(html string) {
+		buffer := NewMarkdownBuffer(func(html, markdown string) {
 			outputs = append(outputs, html)
 		})
 

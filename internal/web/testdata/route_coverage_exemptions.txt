@@ -1,0 +1,13 @@
+# Route-coverage gate exemptions (mitto-7gta.24, internal/web/route_coverage_test.go).
+#
+# One normalized route per line. Every line MUST carry a "# <rationale>"
+# comment — a bare route with no justification fails the gate loudly (see
+# loadExemptions). Format is either "/path" or "METHOD /path"; path
+# parameters must already be collapsed to "{}" (see normalizePattern).
+#
+# Do not bulk-add entries here: each one is a deliberate decision that this
+# route is legitimately unreachable through either SDK.
+
+/api/logout  # cookie-login logout is Go-SDK-only (pkg/api.Client.Logout); the JS SDK never implements interactive password login (browserCookieAuth reads an existing server-set cookie, it does not perform the login/logout POST dance) — see doc.go's Authentication section.
+/api/callback/  # public webhook trigger endpoint (prefix route, token in path segment); invoked by external callers via a generated URL, not through either client SDK.
+GET /api/slack/oauth/callback  # Slack invokes this public one-time-state callback after authorization; clients start and poll the flow but never call the provider redirect endpoint directly.

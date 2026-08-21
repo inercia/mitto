@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // migrateRequestTimeout bounds the whole POST /api/beads/migrate request.
 // It sits ABOVE the individual bd migrate/bootstrap subprocess timeouts (see
-// beads/migrate.go) so the handler can surface a clean 503 before the outer
-// http.TimeoutHandler emits its opaque one. Keep it below the 60s middleware
-// cap only if bd migrate is quick enough on typical DBs; we intentionally
-// let it exceed that cap here because migrate can legitimately take minutes
-// and we want the user's explicit "yes, run it" click to see it through.
+// beads/migrate.go) so the handler can surface a clean 503. This endpoint is
+// exempted from the default request-timeout middleware via a server.go
+// allowlist, so this constant is the only budget governing the request.
 var migrateRequestTimeout = 6 * time.Minute
 
 // migrateRequest is the POST /api/beads/migrate body. Mode selects which
@@ -40,9 +40,11 @@ type migrateResponse struct {
 // HandleBeadsMigrate handles POST /api/beads/migrate. It runs a bd schema
 // migration or bootstrap on behalf of the user when the Beads panel surfaces
 // a beads_schema_skew error, so the user does not have to leave Mitto for
-// the fix. Guarded by the web.beads.allow_migrate_from_ui config flag (off
-// by default) — running migrate on the wrong clone of a remote-backed DB
-// forks the schema, so opting in is intentionally explicit.
+// the fix. Enabled by default; the SchemaSkewDialog collects informed
+// consent (mode radio + ack checkbox) before this endpoint is called. Admins
+// can set web.beads.allow_migrate_from_ui: false as a kill-switch to
+// forbid UI-initiated migrations (e.g. shared clones of a remote-backed DB
+// where forking the schema is unacceptable). See mitto-erry.
 func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -50,8 +52,12 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.beadsMigrationAllowed() {
-		writeErrorJSON(w, http.StatusForbidden, errCodeForbidden,
-			"Beads migration from the UI is disabled. Enable web.beads.allow_migrate_from_ui in settings to opt in.")
+		// Emit code=migrate_from_ui_disabled (not the generic errCodeForbidden)
+		// so the SchemaSkewDialog can render the tailored kill-switch copy
+		// (BeadsView.js handleConfirm branches on this exact code). See
+		// mitto-erry — the kill-switch UX is dead-code without this mapping.
+		writeErrorJSON(w, http.StatusForbidden, "migrate_from_ui_disabled",
+			"Beads migration from the UI has been disabled by the administrator (web.beads.allow_migrate_from_ui=false). Run the migration from a terminal on the designated clone.")
 		return
 	}
 
@@ -90,10 +96,25 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 		err error
 	)
 	client := h.beadsClient()
-	switch mode {
-	case "migrate":
+	databaseMode, err := beads.ResolveDatabaseMode(ctx, client, req.WorkingDir)
+	if err != nil {
+		h.writeBeadsError(w, r, fmt.Errorf("resolve beads database mode before migration: %w", err))
+		return
+	}
+	if err := beads.ReconcileDatabaseMode(ctx, client, req.WorkingDir, databaseMode); err != nil {
+		h.writeBeadsDatabaseModeError(w, r, err)
+		return
+	}
+	if databaseMode == workspaces.BeadsDatabaseModeLocal && mode == "adopt" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "adopt is unavailable for a local-only Beads database; run a local migration instead")
+		return
+	}
+	switch {
+	case databaseMode == workspaces.BeadsDatabaseModeLocal:
+		out, err = beads.MigrateLocal(ctx, client, req.WorkingDir)
+	case mode == "migrate":
 		out, err = client.MigrateRemote(ctx, req.WorkingDir)
-	case "adopt":
+	case mode == "adopt":
 		out, err = client.Bootstrap(ctx, req.WorkingDir)
 	}
 	if err != nil {
@@ -101,26 +122,55 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 			writeRetryableUnavailable(w, "Beads migration timed out. Try running it manually from a terminal.", 0)
 			return
 		}
+
+		// A publish-stage failure (mode=migrate only: the local "bd migrate
+		// schema" step succeeded but "bd dolt push" failed) is distinguished
+		// from every other failure so the API can tell the caller the local
+		// migration DID apply — it just is not published yet — without ever
+		// claiming overall success. See beads.IsPublishFailure.
+		publishFailure := databaseMode == workspaces.BeadsDatabaseModeShared && mode == "migrate" && beads.IsPublishFailure(err)
+
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("beads migration failed",
-				"mode", mode, "working_dir", req.WorkingDir,
+				"mode", mode, "database_mode", databaseMode, "working_dir", req.WorkingDir,
 				"error", err, "stderr", beads.StderrOf(err),
-				"exit_code", beads.ExitCodeOf(err))
+				"exit_code", beads.ExitCodeOf(err),
+				"publish_failure", publishFailure)
 		}
-		details := map[string]any{"mode": mode, "working_dir": req.WorkingDir}
+
+		code := errCodeServerError
+		message := err.Error()
+		details := map[string]any{"mode": mode, "database_mode": databaseMode, "working_dir": req.WorkingDir}
 		if s := beads.StderrOf(err); s != "" {
 			details["stderr"] = s
 		}
+		if publishFailure {
+			code = errCodeBeadsMigratePublishFailed
+			details["stage"] = "push"
+			details["local_migration_applied"] = true
+			message = fmt.Sprintf(
+				"The local beads schema migration succeeded, but publishing it to the remote (bd dolt push) failed: %s",
+				err.Error(),
+			)
+			// out carries step 1's stdout (bd migrate --json), which
+			// MigrateRemote still returns on a step-2 (push) failure — surface
+			// it so the caller can show exactly what the local migration
+			// applied even though it was not published.
+			if len(out) > 0 && json.Valid(out) {
+				details["local_migration_output"] = json.RawMessage(out)
+			}
+		}
+
 		writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: errorBody{
-			Code:    errCodeServerError,
-			Message: err.Error(),
+			Code:    code,
+			Message: message,
 			Details: details,
 		}})
 		return
 	}
 
 	if h.deps.Logger != nil {
-		h.deps.Logger.Info("beads migration succeeded", "mode", mode, "working_dir", req.WorkingDir)
+		h.deps.Logger.Info("beads migration succeeded", "mode", mode, "database_mode", databaseMode, "working_dir", req.WorkingDir)
 	}
 
 	resp := migrateResponse{Ok: true, Mode: mode}
@@ -131,14 +181,18 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 }
 
 // beadsMigrationAllowed reports whether the UI-initiated migration path is
-// enabled via config. Nil-guards every step so a partially-configured Mitto
-// (no MittoConfig, no Web.Beads block) safely reports "disabled".
+// enabled via config. Tri-state: nil MittoConfig / nil Web.Beads / nil
+// AllowMigrateFromUI all mean "allowed" (default on); only an explicit
+// *false acts as an admin kill-switch. See mitto-erry.
 func (h *Handlers) beadsMigrationAllowed() bool {
 	if h.deps.MittoConfig == nil {
-		return false
+		return true
 	}
 	if h.deps.MittoConfig.Web.Beads == nil {
-		return false
+		return true
 	}
-	return h.deps.MittoConfig.Web.Beads.AllowMigrateFromUI
+	if h.deps.MittoConfig.Web.Beads.AllowMigrateFromUI == nil {
+		return true
+	}
+	return *h.deps.MittoConfig.Web.Beads.AllowMigrateFromUI
 }

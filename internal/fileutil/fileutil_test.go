@@ -1,6 +1,7 @@
 package fileutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -173,5 +174,102 @@ func TestWriteJSONAtomic_MissingParentDir(t *testing.T) {
 	}
 	if readData.Name != data.Name || readData.Value != data.Value {
 		t.Errorf("read data = %+v, want %+v", readData, data)
+	}
+}
+
+// TestWriteJSONAtomicIfDirExists_DirExists pins the happy path: when the
+// parent directory already exists, WriteJSONAtomicIfDirExists behaves
+// exactly like WriteJSONAtomic (writes succeed, no temp file left behind,
+// content round-trips).
+func TestWriteJSONAtomicIfDirExists_DirExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "sidecar.json")
+
+	data := testData{Name: "sidecar", Value: 7}
+	if err := WriteJSONAtomicIfDirExists(path, &data, 0644); err != nil {
+		t.Fatalf("WriteJSONAtomicIfDirExists failed: %v", err)
+	}
+
+	// No stray temp files left behind.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "sidecar.json" {
+		t.Errorf("tmpDir entries = %v, want exactly [sidecar.json]", entries)
+	}
+
+	var readData testData
+	if err := ReadJSON(path, &readData); err != nil {
+		t.Fatalf("failed to read back: %v", err)
+	}
+	if readData.Name != data.Name || readData.Value != data.Value {
+		t.Errorf("read data = %+v, want %+v", readData, data)
+	}
+}
+
+// TestWriteJSONAtomicIfDirExists_DirMissing pins the core mitto-32ef fix:
+// unlike WriteJSONAtomic, this must NOT create the parent directory. It
+// returns ErrParentDirMissing and leaves no trace on disk — this is what
+// stops a sidecar writer from resurrecting a session directory that was
+// concurrently deleted.
+func TestWriteJSONAtomicIfDirExists_DirMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	missingDir := filepath.Join(tmpDir, "deleted-session")
+	path := filepath.Join(missingDir, "sidecar.json")
+
+	data := testData{Name: "orphan", Value: 1}
+	err := WriteJSONAtomicIfDirExists(path, &data, 0644)
+	if !errors.Is(err, ErrParentDirMissing) {
+		t.Fatalf("err = %v, want ErrParentDirMissing", err)
+	}
+
+	// The critical assertion: the directory must NOT have been created.
+	if _, statErr := os.Stat(missingDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected %q to remain absent, but it exists (stat err: %v)", missingDir, statErr)
+	}
+
+	// And no file was written anywhere under tmpDir.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("tmpDir should be empty, got entries: %v", entries)
+	}
+}
+
+// TestWriteJSONAtomicIfDirExists_ParentIsFile covers the non-ENOENT stat
+// error path: if the "directory" component is actually a regular file,
+// os.Stat succeeds but the entry is not a dir; the write attempt should
+// fail (not silently succeed), and the error must not be ErrParentDirMissing
+// (that sentinel is reserved for "does not exist").
+func TestWriteJSONAtomicIfDirExists_ParentIsFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	notADir := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	path := filepath.Join(notADir, "sidecar.json")
+
+	err := WriteJSONAtomicIfDirExists(path, &testData{Name: "x"}, 0644)
+	if err == nil {
+		t.Fatal("expected error when parent path is a regular file, got nil")
+	}
+	if errors.Is(err, ErrParentDirMissing) {
+		t.Errorf("err should not be ErrParentDirMissing when parent exists as a file, got: %v", err)
+	}
+}
+
+// TestWriteJSONAtomicIfDirExists_InvalidData mirrors
+// TestWriteJSONAtomic_InvalidData: marshal failures still propagate.
+func TestWriteJSONAtomicIfDirExists_InvalidData(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "atomic.json")
+
+	data := make(chan int)
+	err := WriteJSONAtomicIfDirExists(path, data, 0644)
+	if err == nil {
+		t.Error("expected error for unmarshalable data, got nil")
 	}
 }

@@ -43,19 +43,17 @@ type WebSocketSecurityConfig struct {
 // DefaultWebSocketSecurityConfig returns sensible defaults.
 func DefaultWebSocketSecurityConfig() WebSocketSecurityConfig {
 	return WebSocketSecurityConfig{
-		AllowedOrigins: nil,       // Same-origin only by default
-		MaxMessageSize: 64 * 1024, // 64KB
-		PongWait:       60 * time.Second,
-		PingPeriod:     54 * time.Second,
-		WriteWait:      10 * time.Second,
+		AllowedOrigins:      nil,         // Same-origin only by default
+		MaxMessageSize:      64 * 1024,   // 64KB
+		LocalMaxMessageSize: 1024 * 1024, // 1MB
+		PongWait:            60 * time.Second,
+		PingPeriod:          54 * time.Second,
+		WriteWait:           10 * time.Second,
 	}
 }
 
 // OriginCheckLogger is a function that logs origin check details.
 type OriginCheckLogger func(origin, host string, allowed bool, reason string)
-
-// ExternalConnectionChecker is a function that checks if a request is from an authenticated external connection.
-type ExternalConnectionChecker func(r *http.Request) bool
 
 // WebSocket buffer sizes.
 // External connections use larger buffers to reduce syscalls over higher-latency networks.
@@ -71,7 +69,7 @@ const (
 // enableCompression should be true for external connections (Tailscale, etc.) where
 // bandwidth is limited and latency is high. For local connections, compression adds
 // CPU overhead without network benefit.
-func CreateSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogger, externalChecker ExternalConnectionChecker, enableCompression bool) websocket.Upgrader {
+func CreateSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogger, enableCompression bool) websocket.Upgrader {
 	bufferSize := wsBufferSizeInternal
 	if enableCompression {
 		bufferSize = wsBufferSizeExternal
@@ -80,7 +78,7 @@ func CreateSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogg
 	return websocket.Upgrader{
 		ReadBufferSize:  bufferSize,
 		WriteBufferSize: bufferSize,
-		CheckOrigin:     createOriginChecker(config.AllowedOrigins, logger, externalChecker),
+		CheckOrigin:     createOriginChecker(config.AllowedOrigins, logger),
 		// EnableCompression enables per-message compression (RFC 7692).
 		// Only enabled for external connections where bandwidth savings outweigh CPU cost.
 		// For localhost connections, compression adds ~1-5% CPU overhead with no benefit.
@@ -88,18 +86,25 @@ func CreateSecureUpgrader(config WebSocketSecurityConfig, logger OriginCheckLogg
 	}
 }
 
-// createOriginChecker returns a function that validates WebSocket origins.
-func createOriginChecker(allowedOrigins []string, logger OriginCheckLogger, externalChecker ExternalConnectionChecker) func(*http.Request) bool {
-	// Build a set of allowed origins for fast lookup
-	allowedSet := make(map[string]bool)
-	allowAll := false
+// buildOriginAllowlist parses a WebSecurity.AllowedOrigins list into a
+// lowercase lookup set plus an "allow all" flag. Shared by the WebSocket
+// origin checker (createOriginChecker) and the REST CORS middleware
+// (CORSMiddleware, cors.go) so both interpret the same configuration
+// identically. A "*" entry short-circuits to allowAll=true.
+func buildOriginAllowlist(allowedOrigins []string) (set map[string]bool, allowAll bool) {
+	set = make(map[string]bool)
 	for _, origin := range allowedOrigins {
 		if origin == "*" {
-			allowAll = true
-			break
+			return set, true
 		}
-		allowedSet[strings.ToLower(origin)] = true
+		set[strings.ToLower(origin)] = true
 	}
+	return set, false
+}
+
+// createOriginChecker returns a function that validates WebSocket origins.
+func createOriginChecker(allowedOrigins []string, logger OriginCheckLogger) func(*http.Request) bool {
+	allowedSet, allowAll := buildOriginAllowlist(allowedOrigins)
 
 	return func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
@@ -121,12 +126,6 @@ func createOriginChecker(allowedOrigins []string, logger OriginCheckLogger, exte
 		// Allow all origins if configured (not recommended)
 		if allowAll {
 			return logResult(true, "allow all origins configured")
-		}
-
-		// Allow authenticated external connections (e.g., Tailscale funnel)
-		// These have already been authenticated by the auth middleware
-		if externalChecker != nil && externalChecker(r) {
-			return logResult(true, "authenticated external connection")
 		}
 
 		// Parse the origin URL

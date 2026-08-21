@@ -187,7 +187,9 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.ParentID = input.ParentSessionID
 	ctx.Session.IsLoop = input.IsLoop
 	ctx.Session.IsLoopForced = input.IsLoopForced
+	ctx.Session.IsLoopRunOnStart = input.IsLoopRunOnStart
 	ctx.Session.BeadsIssue = input.BeadsIssue
+	ctx.Session.HasMessages = input.HasMessages
 
 	// Iteration context for the {{ .Iteration.* }} template namespace.
 	ctx.Iteration.Number = input.IterationNumber
@@ -198,15 +200,20 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Iteration.IsUninterrupted = input.IterationUninterrupted
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
-	// Trigger context for the {{ .Trigger.* }} template namespace. Populated only
-	// when this dispatch carries structured trigger data — currently only the
-	// onTasks trigger. Template guards must nest — the outer .Trigger pointer
-	// may itself be nil:
+	// Trigger context for the {{ .Trigger.* }} template namespace. Populated
+	// for every loop dispatch AND for any dispatch carrying a structured
+	// onTasks/onChild/onSlack payload (mitto-qzqm, mitto-qvlh); nil for
+	// ordinary non-loop prompts. Template guards must still nest — the outer
+	// .Trigger pointer may itself be nil for non-loop prompts:
 	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
-	// (nil when scheduled, onCompletion, manual "Run Now", or non-loop).
-	if input.TriggerOnTasksChanges != nil {
+	if input.IsLoop || input.TriggerKind != "" || input.TriggerOnTasksChanges != nil || input.TriggerOnChildDetail != nil || input.TriggerSlackEvent != nil || len(input.TriggerOnSlackEvents) > 0 {
 		ctx.Trigger = &config.TriggerContext{
-			OnTasks: &config.TriggerOnTasksContext{
+			Kind:         string(input.TriggerKind),
+			IsManual:     input.IsLoopForced,
+			IsRunOnStart: input.IsLoopRunOnStart,
+		}
+		if input.TriggerOnTasksChanges != nil {
+			ctx.Trigger.OnTasks = &config.TriggerOnTasksContext{
 				Changes: config.TasksChangesView{
 					Added:      input.TriggerOnTasksChanges.Added,
 					Updated:    input.TriggerOnTasksChanges.Updated,
@@ -216,7 +223,42 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 					LabelAdded: input.TriggerOnTasksChanges.LabelAdded,
 					Touched:    input.TriggerOnTasksChanges.Touched,
 				},
-			},
+			}
+		}
+		if input.TriggerOnChildDetail != nil {
+			ctx.Trigger.OnChild = &config.TriggerOnChildContext{
+				ChildID:       input.TriggerOnChildDetail.ChildID,
+				Event:         input.TriggerOnChildDetail.Event,
+				StoppedReason: input.TriggerOnChildDetail.StoppedReason,
+			}
+		}
+		if input.TriggerSlackEvent != nil {
+			ctx.Trigger.Slack = &config.TriggerSlackContext{
+				InstallationID:  input.TriggerSlackEvent.InstallationID,
+				EventID:         input.TriggerSlackEvent.EventID,
+				ChannelID:       input.TriggerSlackEvent.ChannelID,
+				Kind:            input.TriggerSlackEvent.Kind,
+				AuthorID:        input.TriggerSlackEvent.AuthorID,
+				Timestamp:       input.TriggerSlackEvent.Timestamp,
+				ThreadTimestamp: input.TriggerSlackEvent.ThreadTimestamp,
+				Untrusted:       input.TriggerSlackEvent.Untrusted,
+				Text:            input.TriggerSlackEvent.Text,
+			}
+		}
+		if len(input.TriggerOnSlackEvents) > 0 {
+			events := make([]config.TriggerSlackContext, len(input.TriggerOnSlackEvents))
+			for i, event := range input.TriggerOnSlackEvents {
+				events[i] = config.TriggerSlackContext{
+					InstallationID: event.InstallationID,
+					EventID:        event.EventID, ChannelID: event.ChannelID, Kind: event.Kind,
+					AuthorID: event.AuthorID, Timestamp: event.Timestamp,
+					ThreadTimestamp: event.ThreadTimestamp, Untrusted: event.Untrusted, Text: event.Text,
+				}
+			}
+			ctx.Trigger.OnSlack = &config.TriggerOnSlackContext{Events: events}
+			if ctx.Trigger.Slack == nil {
+				ctx.Trigger.Slack = &ctx.Trigger.OnSlack.Events[0]
+			}
 		}
 	}
 
@@ -250,6 +292,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.HasUserDataSchema = input.HasUserDataSchema
 	ctx.Workspace.HasMittoRC = input.HasMittoRC
 	ctx.Workspace.HasMetadataDescription = input.HasMetadataDescription
+	ctx.Workspace.TasksUpstream = input.TasksUpstream
+	ctx.Workspace.BeadsDatabaseMode = string(input.DatabaseMode)
 	ctx.Workspace.UserDataSchemaJSON = input.UserDataSchemaJSON
 
 	// Parent context
@@ -278,6 +322,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 			ACPServer:   child.ACPServer,
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
+			BeadsIssue:  child.BeadsIssue,
+			QueuedCount: child.QueuedCount,
 		}
 		ctx.Children.All = append(ctx.Children.All, childInfo)
 		if child.ChildOrigin == "mcp" {
@@ -301,6 +347,18 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// name-based matching (fail-closed) rather than the per-server warm-up
 	// fail-open grace used by the prompt menus (mitto-sys.1).
 	ctx.Tools = config.NewProcessorToolsContext(input.MCPToolNames)
+
+	// Prompts context — lazy snapshot of the workspace prompt registry for
+	// {{ .Prompts.Exists }} / {{ .Prompts.Enabled }}. Nil fn or nil snapshot
+	// leaves ctx.Prompts zero-valued (predicates fail-closed).
+	if input.PromptsSnapshotFn != nil {
+		if snap := input.PromptsSnapshotFn(); snap != nil {
+			ctx.Prompts = config.PromptsContext{
+				Names:        snap.Names,
+				EnabledNames: snap.EnabledNames,
+			}
+		}
+	}
 
 	// Permissions context - resolve flags with defaults
 	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(input.AdvancedSettings, session.FlagCanDoIntrospection)

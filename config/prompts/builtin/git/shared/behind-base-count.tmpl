@@ -1,0 +1,27 @@
+{{/*
+  behind-base-count — detect whether the current branch is behind its target
+  base, WITHOUT prescribing what to do about it. Detection only.
+
+  Two callers with opposite verdicts consume this:
+    - git/shared/check-behind-base — appends a "stop and defer to the Rebase
+      changes prompt" verdict (for prompts that must not rebase inline).
+    - git/commit-and-submit — rebases inline via git/shared/rebase-onto-base.
+
+  Preconditions: the caller has already resolved `<target-remote>` and
+  `<target-branch>` (usually via git/shared/identify-remote-branch) OR will
+  infer them inline with `gh pr view --json baseRefName` when a PR pins the
+  target.
+
+  Heading-less — callers place it under their own numbered step.
+*/}}
+Fetch the target and count how many commits the current branch is behind:
+
+```bash
+git fetch <target-remote> <target-branch>
+git rev-list --count HEAD..<target-remote>/<target-branch>
+```
+
+- **Result `0`**: branch is up-to-date — continue.
+- **Result > `0`**: branch is behind. Do **not** push on top of a stale base —
+  the missing base commits may re-break what you just fixed, and CI will fail
+  on the exact issue you thought you fixed.

@@ -11,6 +11,7 @@
 const { html } = window.preact;
 
 import { statusBadge } from "../Badges.js";
+import { ChevronLeftIcon, ChevronRightIcon } from "../../Icons.js";
 
 export function SubtasksList({ subtasks, onSelectIssue }) {
   if (!subtasks || subtasks.length === 0) return null;
@@ -49,33 +50,66 @@ export function DetailActionBar({
   description,
   viewDirty,
   savingView,
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
 }) {
   if (!creating && !data) return null;
+  const showNav = !creating && (onGoBack || onGoForward);
   return html`<div
-    class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0"
+    class="flex items-center justify-between gap-3 p-3 border-t border-mitto-border shrink-0"
   >
-    <button
-      type="button"
-      onClick=${handleClose}
-      disabled=${creating ? submitting : false}
-      class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top"
-      data-tip="Close"
-    >
-      Close
-    </button>
-    <button
-      type="button"
-      onClick=${creating ? handleSave : handleViewSave}
-      disabled=${creating
-        ? !description.trim() || submitting
-        : !viewDirty || savingView}
-      class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
-      data-tip="Save changes"
-    >
-      ${(creating ? submitting : savingView)
-        ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-        : null}
-      Save
-    </button>
+    ${showNav
+      ? html`<div class="flex items-center gap-1">
+          <button
+            type="button"
+            onClick=${onGoBack}
+            disabled=${!canGoBack}
+            class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
+            data-tip="Back"
+            aria-label="Back"
+            data-testid="beads-nav-back"
+          >
+            <${ChevronLeftIcon} className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            onClick=${onGoForward}
+            disabled=${!canGoForward}
+            class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
+            data-tip="Forward"
+            aria-label="Forward"
+            data-testid="beads-nav-forward"
+          >
+            <${ChevronRightIcon} className="w-5 h-5" />
+          </button>
+        </div>`
+      : html`<div></div>`}
+    <div class="flex items-center gap-3">
+      <button
+        type="button"
+        onClick=${handleClose}
+        disabled=${creating ? submitting : false}
+        class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top"
+        data-tip="Close"
+      >
+        Close
+      </button>
+      <button
+        type="button"
+        onClick=${creating ? handleSave : handleViewSave}
+        disabled=${creating
+          ? !description.trim() || submitting
+          : !viewDirty || savingView}
+        class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
+        data-tip="Save changes"
+      >
+        ${(creating ? submitting : savingView)
+          ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+          : null}
+        Save
+      </button>
+    </div>
   </div>`;
 }

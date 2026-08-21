@@ -16,9 +16,21 @@ type LoopPromptRequest struct {
 	Enabled       bool              `json:"enabled"`
 	FreshContext  bool              `json:"fresh_context,omitempty"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
-	// Trigger selects how the prompt fires: "" or "schedule" (frequency-based, default)
-	// vs "onCompletion" (event-driven, after the agent stops + DelaySeconds).
-	Trigger session.LoopTrigger `json:"trigger,omitempty"`
+	// Triggers is the list of triggers that arm this loop: any of "schedule",
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty
+	// defaults to ["schedule"]. Replaces the legacy scalar "trigger" key, which
+	// is no longer accepted on this request DTO (mitto-r6j.5) — the response
+	// still emits both "trigger" (primary/first, back-compat) and "triggers".
+	Triggers []session.LoopTrigger `json:"triggers,omitempty"`
+	// ChildEvents lists the child-conversation lifecycle events that arm the
+	// onChild trigger: "anyEndResponse", "anyDeleted", and/or "anyLoopStopped"
+	// (fires once when a child's own loop transitions into the stopped
+	// state). Empty defaults to anyEndResponse + anyDeleted (anyLoopStopped
+	// is opt-in only). Only meaningful when "onChild" is among Triggers.
+	ChildEvents []session.ChildEvent `json:"child_events,omitempty"`
+	// SlackSubscriptions contains credential-free installation/channel refs for
+	// onSlack. PUT replaces the complete canonicalized list.
+	SlackSubscriptions []session.SlackSubscription `json:"slack_subscriptions,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
 	// Clamped to the global floor on write.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -28,7 +40,7 @@ type LoopPromptRequest struct {
 	// when PromptName is set. Ignored for free-text prompts.
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// Condition is a CEL expression gating onTasks firing. Empty means fire on
-	// ANY beads/task change. Only meaningful when Trigger is "onTasks".
+	// ANY beads/task change. Only meaningful when onTasks is armed.
 	Condition *string `json:"condition,omitempty"`
 	// ConditionPreset is an optional UI preset id that was compiled into Condition.
 	ConditionPreset *string `json:"condition_preset,omitempty"`
@@ -39,6 +51,20 @@ type LoopPromptRequest struct {
 	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
 	// (default). False = fire once more with the accumulated delta after quiescence.
 	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+	// RunOnStart, when *true, causes the loop to fire exactly once shortly after
+	// Mitto boots (after the interactive-resume startup delay, with an anti-flap
+	// window suppressing the pulse when the loop already ran very recently).
+	// Nil or false = do not fire on start (default).
+	RunOnStart *bool `json:"run_on_start,omitempty"`
+	// SettleWindowSeconds is an optional pre-fire debounce window (seconds) for
+	// the onTasks trigger; 0/nil = fire immediately on the first delta (default).
+	// Only meaningful when "onTasks" is among Triggers.
+	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
+	// LoopApplyPromptDefaults, when non-nil and *false, disables auto-merging of
+	// the resolved prompt's loop: frontmatter defaults into empty request fields.
+	// Defaults to enabled (nil or *true). Mirrors the MCP tool argument of the
+	// same name (see mcpserver.applyPromptLoopDefaultsToStartInput).
+	LoopApplyPromptDefaults *bool `json:"loop_apply_prompt_defaults,omitempty"`
 }
 
 // LoopPromptPatchRequest is the request body for partial updates.
@@ -49,10 +75,21 @@ type LoopPromptPatchRequest struct {
 	Enabled       *bool              `json:"enabled,omitempty"`
 	FreshContext  *bool              `json:"fresh_context,omitempty"`
 	MaxIterations *int               `json:"max_iterations,omitempty"`
-	// Trigger, DelaySeconds, MaxDurationSeconds are partial updates for the on-completion fields.
-	Trigger            *session.LoopTrigger `json:"trigger,omitempty"`
-	DelaySeconds       *int                 `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds *int                 `json:"max_duration_seconds,omitempty"`
+	// Triggers, DelaySeconds, MaxDurationSeconds are partial updates for the
+	// trigger list and on-completion fields. Triggers, when non-nil, REPLACES
+	// the stored trigger list wholesale (nil = leave unchanged). Replaces the
+	// legacy scalar "trigger" key, which is no longer accepted on this DTO
+	// (mitto-r6j.5).
+	Triggers *[]session.LoopTrigger `json:"triggers,omitempty"`
+	// ChildEvents is a partial update for the onChild event list; nil = leave
+	// unchanged, non-nil REPLACES the stored list wholesale (same semantics as
+	// Triggers).
+	ChildEvents *[]session.ChildEvent `json:"child_events,omitempty"`
+	// SlackSubscriptions is nil to leave unchanged; a present slice replaces the
+	// whole list, including an empty slice to clear it.
+	SlackSubscriptions *[]session.SlackSubscription `json:"slack_subscriptions,omitempty"`
+	DelaySeconds       *int                         `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                         `json:"max_duration_seconds,omitempty"`
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`
@@ -61,6 +98,11 @@ type LoopPromptPatchRequest struct {
 	ConditionPreset    *string `json:"condition_preset,omitempty"`
 	CooldownSeconds    *int    `json:"cooldown_seconds,omitempty"`
 	CoalesceDuringBusy *bool   `json:"coalesce_during_busy,omitempty"`
+	// RunOnStart is a partial update for the boot-pulse toggle. Nil = unchanged.
+	RunOnStart *bool `json:"run_on_start,omitempty"`
+	// SettleWindowSeconds is a partial update for the onTasks pre-fire debounce
+	// window (seconds). Nil = unchanged.
+	SettleWindowSeconds *int `json:"settle_window_seconds,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
 	// the loop looks never-sent. Used when restoring a conversation that auto-stopped
@@ -126,6 +168,22 @@ func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 
+	// Handle acknowledge-stopped-reason sub-path — records the user's
+	// dismissal of the current StoppedReason so the sidebar warning icon
+	// disappears in every connected browser and survives page reloads.
+	if subPath == "acknowledge-stopped-reason" {
+		h.handleAcknowledgeLoopStoppedReason(w, r, sessionID, loopStore)
+		return
+	}
+
+	// Handle suggest-from-recent sub-path — read-only lookup that returns a
+	// LoopPrompt draft pre-filled from the most recent named prompt's loop:
+	// frontmatter block (mitto-qff). Never writes session state.
+	if subPath == "suggest-from-recent" {
+		h.handleSuggestLoopFromRecent(w, r, sessionID)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		h.handleGetLoop(w, loopStore)
@@ -173,4 +231,34 @@ func (h *Handlers) broadcastLoop(sessionID string, updated *session.LoopPrompt) 
 	if h.deps.BroadcastLoopUpdated != nil {
 		h.deps.BroadcastLoopUpdated(sessionID, updated)
 	}
+}
+
+// handleAcknowledgeLoopStoppedReason handles POST /api/sessions/{id}/loop/acknowledge-stopped-reason.
+// Records the user's dismissal of the current StoppedReason so the sidebar
+// warning icon disappears in every connected browser and survives page reloads.
+// No-op (200 OK, no broadcast) when the loop has no StoppedReason or the
+// current reason is already acknowledged.
+func (h *Handlers) handleAcknowledgeLoopStoppedReason(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.LoopStore) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	updated, changed, err := ps.AcknowledgeStoppedReason()
+	if err != nil {
+		if err == session.ErrLoopNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
+			return
+		}
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to acknowledge loop stopped reason", "error", err, "session_id", sessionID)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to acknowledge loop stopped reason")
+		return
+	}
+
+	if changed {
+		h.broadcastLoop(sessionID, updated)
+	}
+	writeJSONOK(w, updated)
 }

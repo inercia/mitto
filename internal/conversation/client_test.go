@@ -15,7 +15,7 @@ import (
 func TestNewWebClient(t *testing.T) {
 	client := NewWebClient(WebClientConfig{
 		AutoApprove: true,
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			// callback for testing
 		},
 	})
@@ -41,7 +41,7 @@ func TestWebClient_SessionUpdate_AgentMessageChunk(t *testing.T) {
 	var mu sync.Mutex
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			messages = append(messages, html)
 			mu.Unlock()
@@ -137,6 +137,28 @@ func TestWebClient_SessionUpdate_ToolCall(t *testing.T) {
 	}
 	if toolStatus != string(acp.ToolCallStatusInProgress) {
 		t.Errorf("toolStatus = %q, want %q", toolStatus, string(acp.ToolCallStatusInProgress))
+	}
+}
+
+func TestWebClient_MittoToolCallWithoutRawInputUsesSafeFallback(t *testing.T) {
+	var correlationID string
+	client := NewWebClient(WebClientConfig{
+		OnMittoToolCall: func(id string) { correlationID = id },
+	})
+	defer client.Close()
+
+	err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+		Update: acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+			ToolCallId: "tool-mitto",
+			Title:      "mitto_conversation_get_current",
+			Status:     acp.ToolCallStatusInProgress,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SessionUpdate failed: %v", err)
+	}
+	if correlationID != "" {
+		t.Fatalf("RawInput-less tool call used ambiguous correlation %q, want callback-owned fallback", correlationID)
 	}
 }
 
@@ -471,7 +493,7 @@ func TestWebClient_FlushMarkdown(t *testing.T) {
 	var mu sync.Mutex
 
 	client := NewWebClient(WebClientConfig{
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			messages = append(messages, html)
 			mu.Unlock()
@@ -562,7 +584,7 @@ func TestWebClient_ToolCallFlushesBufferedMessage(t *testing.T) {
 	seqCounter := int64(0)
 	client := NewWebClient(WebClientConfig{
 		SeqProvider: &testSeqProvider{counter: &seqCounter},
-		OnAgentMessage: func(seq int64, html string) {
+		OnAgentMessage: func(seq int64, html, markdown string) {
 			mu.Lock()
 			events = append(events, "message:"+html)
 			seqs = append(seqs, seq)

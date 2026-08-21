@@ -3,9 +3,12 @@ package beads
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // fakeClient is a test double implementing beads.Client. It counts calls per
@@ -34,10 +37,60 @@ type fakeClient struct {
 	configUnsetCalls       int
 	syncCalls              int
 	ensureInitializedCalls int
+	migrateLocalCalls      int
+	reconcileModeCalls     int
 
 	// If non-nil, List blocks on this channel before returning; used to
 	// exercise singleflight coalescing.
 	blockList chan struct{}
+
+	// If non-nil, Show blocks on this channel before returning; used to
+	// simulate a slow-leader bd show call (mitto-kij reproduction).
+	blockShow chan struct{}
+}
+
+type slowShowClient struct {
+	*fakeClient
+	started chan string
+	done    chan string
+	release chan struct{}
+}
+
+func (f *slowShowClient) Show(ctx context.Context, _ string, id string) ([]byte, error) {
+	f.started <- id
+	select {
+	case <-ctx.Done():
+		f.done <- id
+		return nil, ctx.Err()
+	case <-f.release:
+		f.done <- id
+		return nil, errors.New("test cleanup released unbounded leader")
+	}
+}
+
+type staleShowClient struct {
+	*fakeClient
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (f *staleShowClient) Show(ctx context.Context, _ string, id string) ([]byte, error) {
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	f.mu.Unlock()
+	if call == 1 {
+		close(f.started)
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []byte(`{"id":"` + id + `","value":"old"}`), nil
+	}
+	return []byte(`{"id":"` + id + `","value":"new"}`), nil
 }
 
 func (f *fakeClient) List(_ context.Context, _ string) ([]byte, error) {
@@ -65,6 +118,9 @@ func (f *fakeClient) Status(_ context.Context, _ string) ([]byte, error) {
 }
 
 func (f *fakeClient) Show(_ context.Context, _, id string) ([]byte, error) {
+	if f.blockShow != nil {
+		<-f.blockShow
+	}
 	f.mu.Lock()
 	f.showCalls++
 	f.mu.Unlock()
@@ -89,6 +145,10 @@ func (f *fakeClient) ListClosedIDs(_ context.Context, _ string) ([]string, error
 	f.mu.Lock()
 	f.listClosedIDsCalls++
 	f.mu.Unlock()
+	return nil, nil
+}
+
+func (f *fakeClient) Statuses(_ context.Context, _ string, _ []string) (map[string]string, error) {
 	return nil, nil
 }
 
@@ -164,6 +224,18 @@ func (f *fakeClient) EnsureInitialized(_ context.Context, _ string) error {
 	f.mu.Unlock()
 	return nil
 }
+func (f *fakeClient) ReconcileDatabaseMode(_ context.Context, _ string, _ workspaces.BeadsDatabaseMode) error {
+	f.mu.Lock()
+	f.reconcileModeCalls++
+	f.mu.Unlock()
+	return nil
+}
+func (f *fakeClient) MigrateLocal(_ context.Context, _ string) ([]byte, error) {
+	f.mu.Lock()
+	f.migrateLocalCalls++
+	f.mu.Unlock()
+	return []byte(`{}`), nil
+}
 func (f *fakeClient) MigrateRemote(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`{}`), nil
 }
@@ -176,6 +248,20 @@ var _ Client = (*fakeClient)(nil)
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+func TestCachingClient_LocalPolicyCapabilitiesDelegate(t *testing.T) {
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+	if _, err := c.MigrateLocal(context.Background(), "/dir"); err != nil {
+		t.Fatalf("MigrateLocal() error = %v", err)
+	}
+	if err := c.ReconcileDatabaseMode(context.Background(), "/dir", workspaces.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("ReconcileDatabaseMode() error = %v", err)
+	}
+	if fake.migrateLocalCalls != 1 || fake.reconcileModeCalls != 1 {
+		t.Errorf("inner calls migrate/reconcile = %d/%d, want 1/1", fake.migrateLocalCalls, fake.reconcileModeCalls)
+	}
+}
 
 func TestCachingClient_ListHit(t *testing.T) {
 	dir := initializedDir(t)
@@ -544,6 +630,42 @@ func TestCachingClient_MetricsTTLInvalidation(t *testing.T) {
 	}
 }
 
+// TestNewCachingClientWithTTL_UsesSuppliedTTL verifies that a client constructed
+// via the ttl-aware constructor honors the supplied TTL for eviction (mitto-9ni).
+func TestNewCachingClientWithTTL_UsesSuppliedTTL(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClientWithTTL(fake, 20*time.Millisecond)
+
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #1: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #2: %v", err)
+	}
+	if fake.listCalls != 2 {
+		t.Errorf("listCalls = %d, want 2 (supplied TTL should force re-fetch)", fake.listCalls)
+	}
+	m := c.Metrics()
+	if m.InvalidationsTTL != 1 {
+		t.Errorf("InvalidationsTTL = %d, want 1", m.InvalidationsTTL)
+	}
+}
+
+// TestNewCachingClientWithTTL_FallsBackOnNonPositive verifies that zero and
+// negative durations fall back to DefaultCacheTTL (mitto-9ni).
+func TestNewCachingClientWithTTL_FallsBackOnNonPositive(t *testing.T) {
+	fake := &fakeClient{}
+	for _, ttl := range []time.Duration{0, -1 * time.Second, -1 * time.Hour} {
+		c := NewCachingClientWithTTL(fake, ttl)
+		if c.ttl != DefaultCacheTTL {
+			t.Errorf("NewCachingClientWithTTL(%v).ttl = %v, want DefaultCacheTTL (%v)",
+				ttl, c.ttl, DefaultCacheTTL)
+		}
+	}
+}
+
 func TestCachingClient_MetricsSingleflightShared(t *testing.T) {
 	dir := initializedDir(t)
 	fake := &fakeClient{blockList: make(chan struct{})}
@@ -683,4 +805,166 @@ func TestCachingClient_ShowKeyedPerID(t *testing.T) {
 	if string(outB1) != string(outB2) || string(outB1) != `{"id":"mitto-B"}` {
 		t.Errorf("B payloads mismatched: %q vs %q", outB1, outB2)
 	}
+}
+
+// TestCachingClient_Show_DistinctLeadersHaveBoundedContexts reproduces
+// mitto-b4zs: unlike same-key followers, two different Show keys each become a
+// leader. Their shared fetches must be detached from either caller but still
+// carry an explicit total deadline below the HTTP request budget.
+func TestCachingClient_Show_DistinctLeadersHaveBoundedContexts(t *testing.T) {
+	dir := initializedDir(t)
+	inner := &slowShowClient{
+		fakeClient: &fakeClient{},
+		started:    make(chan string, 2),
+		done:       make(chan string, 2),
+		release:    make(chan struct{}),
+	}
+	defer close(inner.release)
+	c := NewCachingClient(inner)
+	c.fillTimeout = 20 * time.Millisecond
+
+	type result struct {
+		id      string
+		err     error
+		elapsed time.Duration
+	}
+	results := make(chan result, 2)
+	for _, id := range []string{"mitto-mhgk", "mitto-s1rt"} {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := c.Show(ctx, dir, id)
+			results <- result{id: id, err: err, elapsed: time.Since(start)}
+		}()
+	}
+
+	for range 2 {
+		<-inner.started
+	}
+	for range 2 {
+		got := <-results
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Errorf("Show(%q) error = %v, want context deadline exceeded", got.id, got.err)
+		}
+		if got.elapsed >= 100*time.Millisecond {
+			t.Errorf("Show(%q) elapsed = %v, want bounded leader error before caller deadline", got.id, got.elapsed)
+		}
+	}
+	for range 2 {
+		select {
+		case <-inner.done:
+		case <-time.After(50 * time.Millisecond):
+			t.Error("cache leader remained blocked after its total budget expired")
+		}
+	}
+}
+
+func TestCachingClient_Show_InvalidationRejectsLateLeaderStore(t *testing.T) {
+	dir := initializedDir(t)
+	inner := &staleShowClient{
+		fakeClient: &fakeClient{},
+		started:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	c := NewCachingClient(inner)
+
+	firstResult := make(chan []byte, 1)
+	go func() {
+		out, _ := c.Show(context.Background(), dir, "mitto-b4zs")
+		firstResult <- out
+	}()
+	<-inner.started
+	c.InvalidateFromWatcher(dir)
+	close(inner.release)
+	if out := <-firstResult; !strings.Contains(string(out), `"value":"old"`) {
+		t.Fatalf("first Show = %s, want pre-invalidation payload", out)
+	}
+
+	out, err := c.Show(context.Background(), dir, "mitto-b4zs")
+	if err != nil {
+		t.Fatalf("second Show: %v", err)
+	}
+	if !strings.Contains(string(out), `"value":"new"`) {
+		t.Fatalf("second Show = %s, want fresh payload after invalidation", out)
+	}
+}
+
+// TestCachingClient_Show_FollowerContextIsHonored is a REPRODUCTION test for
+// mitto-kij (API 503 storm: 3x GET /mitto/api/issues/<id> stalled 60s at
+// handler deadline).
+//
+// Root cause under test: doJSON in cache.go uses singleflight.Group.Do, which
+// blocks followers on a WaitGroup and does NOT observe their per-caller
+// context. When a leader's `bd show` stalls, all followers sharing the same
+// (dir, id) key block past their own request deadlines until the outer
+// http.TimeoutHandler fires the canned 60s "Request timeout" 503.
+//
+// Expected behavior: a follower whose context expires while the leader is
+// still fetching MUST return promptly with ctx.Err() (DeadlineExceeded), not
+// block on the leader.
+//
+// This test is expected to FAIL on the current sf.Do implementation and to
+// PASS once doJSON is switched to sf.DoChan + select on ctx.Done().
+func TestCachingClient_Show_FollowerContextIsHonored(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{blockShow: make(chan struct{})}
+	c := NewCachingClient(fake)
+
+	const id = "mitto-kij"
+
+	// Leader: blocks inside fakeClient.Show until we close blockShow.
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, _ = c.Show(context.Background(), dir, id)
+	}()
+
+	// Give the leader a moment to enter sf.Do and start the fetch.
+	time.Sleep(20 * time.Millisecond)
+
+	// Follower: same (dir, id), tight per-request deadline. On the buggy
+	// implementation this call blocks on sf.Do's WaitGroup and only returns
+	// when the leader finishes — long past ctx expiry.
+	const followerDeadline = 50 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), followerDeadline)
+	defer cancel()
+
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		_, err := c.Show(ctx, dir, id)
+		resCh <- result{err: err, elapsed: time.Since(start)}
+	}()
+
+	// Bound the assertion: give the follower at most 10x its own deadline to
+	// return. On the buggy impl the follower will still be blocked here and
+	// we surface a clear failure rather than hanging the test binary.
+	const assertWindow = 10 * followerDeadline
+	select {
+	case r := <-resCh:
+		if !errors.Is(r.err, context.DeadlineExceeded) {
+			t.Fatalf("follower err = %v, want context.DeadlineExceeded "+
+				"(singleflight is not honoring per-caller ctx)", r.err)
+		}
+		// Sanity: it returned somewhere near its own deadline, not way past it.
+		if r.elapsed > assertWindow {
+			t.Fatalf("follower returned after %v, want ~%v "+
+				"(singleflight blocked follower past its ctx deadline)",
+				r.elapsed, followerDeadline)
+		}
+	case <-time.After(assertWindow):
+		t.Fatalf("follower did not return within %v of its %v ctx deadline "+
+			"(singleflight is blocking followers on the leader's WaitGroup, "+
+			"ignoring caller ctx — mitto-kij)", assertWindow, followerDeadline)
+	}
+
+	// Cleanup: unblock the leader so the goroutine can exit and the test
+	// process does not leak a goroutine into subsequent tests.
+	close(fake.blockShow)
+	<-leaderDone
 }

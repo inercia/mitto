@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -10,6 +12,12 @@ import (
 	"strings"
 	"time"
 )
+
+// StatusClientClosedRequest mirrors nginx's non-standard 499 status: the
+// client closed the connection before the server produced a response. Used
+// by RequestTimeoutMiddleware to distinguish a client cancellation from a
+// genuine server-side timeout (which remains 503). See mitto-axsg.
+const StatusClientClosedRequest = 499
 
 // SecurityConfig holds security-related configuration.
 type SecurityConfig struct {
@@ -97,7 +105,13 @@ func RequestSizeLimitMiddleware(maxBytes int64) func(http.Handler) http.Handler 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Only limit POST, PUT, PATCH requests
 			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+				// Multipart uploads (images, files, save-file) enforce their own
+				// per-endpoint MaxBytesReader; the generic cap would silently
+				// clamp legitimate uploads well below what handlers advertise.
+				ct := r.Header.Get("Content-Type")
+				if !strings.HasPrefix(strings.ToLower(ct), "multipart/") {
+					r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+				}
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -165,10 +179,30 @@ const DefaultRequestTimeout = 60 * time.Second
 
 // RequestTimeoutMiddleware adds a timeout to HTTP requests.
 // WebSocket upgrade requests are excluded from the timeout.
+// Callers may also pass exemptPaths (exact-match on r.URL.Path) to opt
+// specific handlers out of both the timeout and the TimeoutHandler panic
+// recovery. Intended for handlers that run long subprocesses with their own
+// timeout budget, e.g. bd migrate — where the outer 60s cap would otherwise
+// preempt the handler's minutes-long budget with an opaque "Request timeout".
 // This middleware includes panic recovery to handle the known issue where
 // http.TimeoutHandler can cause nil pointer dereferences when the underlying
 // handler writes to the ResponseWriter after a timeout has occurred.
-func RequestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
+//
+// It also rewrites the bodyless 503 that http.TimeoutHandler emits when the
+// request context is canceled by the client (see mitto-axsg): Go's stdlib
+// TimeoutHandler conflates context.Canceled (client disconnect) and
+// context.DeadlineExceeded (server-side timeout), writing 503 for both — with
+// no body on the Canceled path. That produces "503 body_bytes=0" entries in
+// access.log for what were legitimate client-initiated cancellations. Here,
+// on client cancellation, the 503 is rewritten to 499 (nginx's
+// StatusClientClosedRequest) so real server timeouts remain distinguishable
+// from client aborts in the access log.
+func RequestTimeoutMiddleware(timeout time.Duration, exemptPaths ...string) func(http.Handler) http.Handler {
+	// Build the exempt set once at middleware construction, not per-request.
+	exempt := make(map[string]struct{}, len(exemptPaths))
+	for _, p := range exemptPaths {
+		exempt[p] = struct{}{}
+	}
 	return func(next http.Handler) http.Handler {
 		// Create the timeout handler once during middleware setup, not per-request.
 		// This avoids potential race conditions and is more efficient.
@@ -177,6 +211,13 @@ func RequestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip timeout for WebSocket upgrade requests
 			if r.Header.Get("Upgrade") == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Skip timeout and the TimeoutHandler panic-recovery wrapper for
+			// exempted paths; those handlers own their timeout budget.
+			if _, ok := exempt[r.URL.Path]; ok {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -221,8 +262,60 @@ func RequestTimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Han
 				}
 			}()
 
-			// Apply timeout
-			timeoutHandler.ServeHTTP(w, r)
+			// Wrap the outer ResponseWriter so a 503 emitted by
+			// http.TimeoutHandler on client cancellation gets rewritten to 499
+			// (see mitto-axsg). A real deadline-exceeded timeout is left as
+			// 503 because on that path the request context error is
+			// context.DeadlineExceeded, not context.Canceled.
+			cw := &clientCancelResponseWriter{ResponseWriter: w, req: r}
+			timeoutHandler.ServeHTTP(cw, r)
 		})
 	}
+}
+
+// clientCancelResponseWriter intercepts WriteHeader to distinguish a 503
+// written by http.TimeoutHandler on client cancellation (context.Canceled)
+// from a 503 written on genuine server-side timeout (context.DeadlineExceeded).
+// The former is rewritten to StatusClientClosedRequest so access.log records
+// the client abort separately from real server-side unavailability.
+type clientCancelResponseWriter struct {
+	http.ResponseWriter
+	req         *http.Request
+	wroteHeader bool
+}
+
+func (w *clientCancelResponseWriter) WriteHeader(statusCode int) {
+	if !w.wroteHeader && statusCode == http.StatusServiceUnavailable {
+		if err := w.req.Context().Err(); errors.Is(err, context.Canceled) {
+			statusCode = StatusClientClosedRequest
+		}
+	}
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *clientCancelResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Hijack, Flush, Unwrap forwarders keep the wrapper transparent to WebSocket
+// upgrades, streaming responses, and downstream middleware chains.
+func (w *clientCancelResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+func (w *clientCancelResponseWriter) Flush() {
+	if fl, ok := w.ResponseWriter.(http.Flusher); ok {
+		fl.Flush()
+	}
+}
+
+func (w *clientCancelResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }

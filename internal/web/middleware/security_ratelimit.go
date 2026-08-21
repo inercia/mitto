@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -113,6 +114,17 @@ func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 		// where attackers set fake X-Forwarded-For headers to bypass rate limiting.
 		clientIP := GetClientIPWithProxyCheck(r)
 
+		// Skip rate limiting for loopback clients (127.0.0.0/8, ::1). The local
+		// UI drives broadcast-fan-out bursts (e.g. mitto:beads_changed causes
+		// many components to refetch shortcuts + bead statuses simultaneously)
+		// that easily exceed the shared per-IP burst budget. Loopback is the
+		// local user's own browser talking to their own mitto server, so it
+		// isn't a rate-limiting attack surface. See mitto-jgz4.
+		if isLoopbackAddr(clientIP) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if !rl.Allow(clientIP) {
 			w.Header().Set("Retry-After", "1")
 			writeErrorJSON(w, http.StatusTooManyRequests, "", "Too Many Requests")
@@ -121,6 +133,18 @@ func (rl *GeneralRateLimiter) Middleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isLoopbackAddr reports whether addr (as produced by GetClientIPWithProxyCheck,
+// which may be a "host:port" pair or a bare IP) refers to a loopback client.
+// Both IPv4 (127.0.0.0/8) and IPv6 (::1) loopback ranges qualify.
+func isLoopbackAddr(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // rateLimitedStaticPaths contains static paths that should NOT be exempt from

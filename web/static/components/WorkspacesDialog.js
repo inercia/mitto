@@ -2,7 +2,7 @@
 const { useState, useEffect, useMemo, useCallback, useRef, html } =
   window.preact;
 
-import { authFetch, endpoints } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
 
 import { getBasename } from "../lib.js";
 
@@ -245,16 +245,36 @@ export function WorkspacesDialog({
   // three tab-scoped effects (load/reset), and all API mutators. Kept out of
   // the shell so the shell only forwards the grouped {beads, beadsSetters,
   // beadsHandlers} objects to WorkspaceFolderEditor.
+  const getSelectedFolderDir = () => {
+    const folderGroup = groupedWorkspaces.find(
+      (g) => g.displayName === selectedFolder,
+    );
+    return folderGroup?.workspaces[0]?.working_dir || null;
+  };
+
   const { beads, beadsSetters, beadsHandlers } = useBeadsFolderConfig({
     selectedFolder,
     activeTab,
-    getSelectedFolderDir: () => {
-      const folderGroup = groupedWorkspaces.find(
-        (g) => g.displayName === selectedFolder,
-      );
-      return folderGroup?.workspaces[0]?.working_dir || null;
-    },
+    isOpen,
+    getSelectedFolderDir,
   });
+
+  // Scope the parameter dialog to the folder being edited: this dialog is not
+  // tied to the active conversation, so without an explicit working dir the
+  // dialog would resolve file/dir pickers and remembered args against whatever
+  // conversation happens to be open behind it.
+  const openPromptParamDialogForFolder = (
+    prompt,
+    parameters,
+    onSubmit,
+    opts = {},
+  ) => {
+    if (!onOpenPromptParamDialog) return;
+    onOpenPromptParamDialog(prompt, parameters, onSubmit, {
+      ...opts,
+      workingDir: opts.workingDir || getSelectedFolderDir() || undefined,
+    });
+  };
 
   // Folder Prompts tab state + handlers. Owns the 13 prompt state pairs, the
   // tab-open load effect, and the four CRUD handlers (reload/save/delete/toggle).
@@ -352,6 +372,16 @@ export function WorkspacesDialog({
       const next = !(prev[displayName] !== false);
       setEditorFolderExpansion(displayName, next);
       return { ...prev, [displayName]: next };
+    });
+  }, []);
+
+  // Idempotent expand — used when clicking a folder header so it always ends
+  // expanded (unlike toggleFolder, which the chevron uses to flip state).
+  const expandFolder = useCallback((displayName) => {
+    setExpandedFolders((prev) => {
+      if (prev[displayName] !== false && displayName in prev) return prev;
+      setEditorFolderExpansion(displayName, true);
+      return { ...prev, [displayName]: true };
     });
   }, []);
 
@@ -542,10 +572,8 @@ export function WorkspacesDialog({
     setEffectiveConfig(null);
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
-      authFetch(
-        endpoints.workspaces.effectiveRunnerConfig(selectedWorkspace.uuid),
-      )
-        .then((r) => (r.ok ? r.json() : null))
+      getSdkClient()
+        .workspaces.getEffectiveRunnerConfig(selectedWorkspace.uuid)
         .then((data) => setEffectiveConfig(data))
         .catch(() => {});
     }
@@ -731,6 +759,7 @@ export function WorkspacesDialog({
           setSelectedWorkspaceKey=${setSelectedWorkspaceKey}
           guardNewFolder=${guardNewFolder}
           toggleFolder=${toggleFolder}
+          expandFolder=${expandFolder}
           getWorkspaceKey=${getWorkspaceKey}
           addWorkspace=${addWorkspace}
           removeWorkspace=${removeWorkspace}
@@ -777,6 +806,7 @@ export function WorkspacesDialog({
                 processorsHandlers=${processorsHandlers}
                 shortcuts=${shortcuts}
                 shortcutsHandlers=${shortcutsHandlers}
+                onOpenPromptParamDialog=${openPromptParamDialogForFolder}
               />`
             : !selectedWorkspace
               ? html`<div

@@ -1,0 +1,254 @@
+icon: link
+name: 'Skill: update references'
+menus: prompts, !promptsLoop
+description: Keep a skill's `SKILL.md` in sync with the contents of its sibling `references/` folder
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md")'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SkillFile
+    type: filename
+    glob:
+      - "**/SKILL.md"
+    remember: folder
+    required: true
+    description: The `SKILL.md` file this reconciliation run operates against. The prompt reconciles it with its sibling `references/` folder (verified in Step 0).
+target:
+  # Shared with every other prompt under config/prompts/builtin/skills/: all
+  # `Skill: …` prompts funnel into the same non-archived conversation in this
+  # working_dir so they never run in parallel on the same skill.
+  title: 'Skill workshop'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  This run operates on the skill anchored at `{{ .Args.SkillFile }}`
+  (workspace-relative). Its sibling references folder is
+  `{{ Dir .Args.SkillFile }}/references/`. Every path below is
+  workspace-relative and rooted at that folder — do not enumerate,
+  edit, or link into a different skill's references elsewhere in the
+  repo.
+
+  Reconcile `{{ .Args.SkillFile }}` with the contents of its sibling
+  `{{ Dir .Args.SkillFile }}/references/` directory: add links for new
+  reference files, remove links to files that no longer exist, and
+  annotate any linked file whose surrounding text does not explain
+  *when* the agent should read it.
+
+  ## Step 0 — Check preconditions
+
+  Verify **both** exist:
+
+  - `{{ .Args.SkillFile }}` is readable and non-empty.
+  - `{{ Dir .Args.SkillFile }}/references/` exists and is a directory.
+
+  If either is missing, **stop immediately** and print a one-line
+  message such as `"references/ not found next to
+  {{ .Args.SkillFile }} — nothing to reconcile"`. Do not create
+  anything. (The `enabledWhen` gate only checks that *some* `SKILL.md`
+  exists in the workspace — the sibling-`references/` check happens
+  here, per-run, because it depends on which skill file the operator
+  selected.)
+
+  ## Step 1 — Enumerate the references folder
+
+  Recursively list every file under
+  `{{ Dir .Args.SkillFile }}/references/`. Record each path
+  **relative to the workspace root** (e.g.
+  `{{ Dir .Args.SkillFile }}/references/api-errors.md`,
+  `{{ Dir .Args.SkillFile }}/references/subdir/schema.yaml`). Ignore
+  `.DS_Store` and other OS junk; do not descend into VCS directories.
+
+  ## Step 2 — Extract existing references from the skill file
+
+  Parse `{{ .Args.SkillFile }}` and collect every link, code-span, or
+  inline mention that points into its sibling `references/` folder.
+  Cover at least:
+
+  - Markdown links: `[text](references/…)` — resolve relative to
+    `{{ Dir .Args.SkillFile }}/`.
+  - Bare backtick paths: `` `references/…` ``.
+  - Plain-text mentions of `references/<something>` in prose.
+
+  For each hit, record the referenced path (normalized to workspace-
+  relative form as in Step 1) and the section heading it lives under
+  (nearest `#`/`##`/`###` ancestor) plus the surrounding sentence.
+
+  ## Step 3 — Compute the raw candidate sets
+
+  - **Missing (candidate)**: files present under
+    `{{ Dir .Args.SkillFile }}/references/` on disk but **not** linked
+    from `{{ .Args.SkillFile }}`.
+  - **Stale (candidate)**: paths linked from `{{ .Args.SkillFile }}`
+    that no longer exist on disk.
+  - **Under-documented**: linked files whose surrounding text does not
+    explain *when* the agent should load them (e.g. no "read this
+    when …", "if …", "for …" phrasing tying the reference to a
+    trigger condition).
+
+  These are **candidates**, not the final plan — Step 3.5 filters renames out
+  before anything is proposed to the user.
+
+  ## Step 3.5 — Detect renames (do NOT confuse them with add + remove)
+
+  A file that was renamed on disk will naïvely appear as both a **Missing**
+  entry (its new path) and a **Stale** entry (its old path). Propose neither
+  in that case — propose a single **Rename** relink instead. Only entries that
+  survive this filter are treated as true additions or removals.
+
+  For every candidate `(old_path ∈ Stale, new_path ∈ Missing)` pair, decide
+  whether they are the same file, using this evidence in order (stop at the
+  first that clearly succeeds):
+
+  1. **Git history** — if the enclosing directory is inside a git checkout,
+     run (from that directory) `git log --diff-filter=R --follow --name-status
+     -M -- <new_path>` and inspect the `R###` lines. A rename score ≥ 90 with
+     the recorded `old_path` matching a candidate Stale entry is a strong
+     rename signal. Fall back to `git log --all --diff-filter=R -M --
+     <new_path>` when `--follow` returns nothing.
+  2. **Filename similarity** — case-insensitive comparison of the basename
+     (ignoring extension), or a substring match in either direction. Examples
+     that qualify: `api-errors.md` ↔ `api_errors.md`, `schema.yaml` ↔
+     `schemas/schema.yaml`, `retries.md` ↔ `retry-policy.md`.
+  3. **Content similarity** — read both files (cap at ~4 KB each) and compare.
+     Treat them as the same file when either the first non-blank heading
+     matches, the first ~10 non-blank lines overlap by ≥ 70 %, or the overall
+     text has clearly-shared distinctive phrases (not just boilerplate).
+
+  When evidence is thin (only one weak signal, or ambiguous many-to-one
+  matches), do NOT auto-pair. Instead ask the operator via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Is \`<new_path>\` a rename of \`<old_path>\`?", options: [{"label": "Yes — treat as rename (relink)"}, {"label": "No — they are unrelated (add new + remove old)"}, {"label": "Skip both for now"}])`.
+
+  Build a **Renames** set from every confirmed pair, then:
+
+  - Remove the `new_path` from **Missing**.
+  - Remove the `old_path` from **Stale**.
+
+  What remains in **Missing** is a real new file; what remains in **Stale**
+  is a real deletion.
+
+  Print a compact table of the four finalized sets (**Renames**, **Missing**,
+  **Stale**, **Under-documented**) in this conversation before touching the
+  file. If all four are empty, notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "SKILL.md already in sync", style: "success")`
+  and stop.
+
+  ## Step 4 — Reconcile, one change at a time (user approval required)
+
+  Process the sets in this order: **Renames → Missing → Stale →
+  Under-documented**. **Never** modify `{{ .Args.SkillFile }}` without
+  explicit per-change approval from the user. Use file-editing tools —
+  never shell `sed`. Preserve the existing heading levels, list style,
+  and link syntax already used in `{{ .Args.SkillFile }}`.
+
+  ### 4a — Renames (propose relinks)
+
+  For each `(old_path, new_path)` pair in **Renames**:
+
+  1. Locate every mention of `old_path` in `{{ .Args.SkillFile }}`
+     (as a Markdown link target, in a backtick code span, or in prose).
+  2. Draft the rewritten line(s) with `old_path` replaced by `new_path` — do
+     **not** add new bullets, do **not** rewrite the surrounding sentence, do
+     **not** re-order the section. Preserve link text, indentation, and any
+     inline annotation the operator already wrote.
+  3. Present the proposal via
+     `mitto_ui_textbox(self_id: "{{ .Session.ID }}", title: "Relink: <old_path> → <new_path>", text: "<before>\n\n---\n\n<after>", result: "relink")`
+     so the operator can approve or tweak the rewrite before it lands.
+  4. Apply the (possibly edited) replacement. If the operator returns an
+     empty string, treat it as **skip** and leave the old link in place.
+
+  ### 4b — Missing references (propose insertions)
+
+  For each missing file **that survived Step 3.5** (genuinely new):
+
+  1. Read the reference file's opening lines (title, first paragraph) to
+     infer its topic.
+  2. Choose the most appropriate insertion point in
+     `{{ .Args.SkillFile }}`: match the reference's filename/content
+     against existing section headings and neighbouring links; only
+     add a new heading if no reasonable home exists.
+  3. Draft a short entry in the file's existing style, e.g.
+     `- Read [\`references/<name>\`](references/<name>) when <trigger>.`
+  4. Present the proposal via `mitto_ui_textbox(self_id: "{{ .Session.ID }}", title: "Insert reference: <name>", text: "<draft line(s)>\n\n# Will be inserted after: <anchor line>", result: "insertion")`
+     so the operator can approve or edit the wording before it lands.
+  5. Insert the (possibly edited) text at the chosen location. If the operator
+     returns an empty string, treat it as **skip**.
+
+  ### 4c — Stale references (propose removals)
+
+  For each stale link **that survived Step 3.5** (genuinely gone):
+
+  1. Gather every line of `{{ .Args.SkillFile }}` that mentions the
+     stale path (there may be more than one).
+  2. Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Remove stale link to \`<path>\`?", options: [{"label": "Remove the link(s) only"}, {"label": "Remove the link(s) and their surrounding sentence"}, {"label": "Show full context first"}, {"label": "Skip"}])`.
+     If the operator picks "Show full context first", follow up with a
+     `mitto_ui_textbox` showing the affected block for review.
+  3. Apply the confirmed removal, preserving list/paragraph structure so no
+     orphaned bullets or double blank lines remain.
+
+  ### 4d — Under-documented references (propose annotations)
+
+  For each linked file lacking a *when* trigger:
+
+  1. Draft a short inline annotation (`— read this when <trigger>` or a full
+     replacement sentence) inferred from the reference's content.
+  2. Present the current line and the proposed rewrite via
+     `mitto_ui_textbox(self_id: "{{ .Session.ID }}", title: "Annotate: <path>", text: "<proposed replacement line>", result: "annotation")`.
+  3. Replace the original line with the operator's returned text (empty →
+     skip).
+
+  ## Step 4.5 — Re-evaluate the `description` frontmatter
+
+  After the reconciliation loop, decide whether the skill's `description`
+  still accurately reflects **what the skill does** and **when it should be
+  triggered**, given the references that were added, removed, or clarified in
+  this run.
+
+  1. Re-read the current `description` from the frontmatter/header of
+     `{{ .Args.SkillFile }}` verbatim.
+  2. Compare it against the finalized reference set and any annotations
+     landed in Step 4. Look for drift such as: coverage areas that have
+     appeared or disappeared, trigger conditions that have widened or
+     narrowed, or vague wording that would cause misses or false positives
+     now that the skill's scope has shifted.
+  3. Reach one of two verdicts:
+
+     - **Still accurate** — print a single line
+       `Description unchanged: "<current description>"` and move on to Step 5.
+       Do not touch the frontmatter.
+     - **Stale** — draft a replacement that follows the same style as
+       existing skill descriptions in this repo: concise (one sentence, no
+       trailing period), trigger-oriented, describing *when* to use the
+       skill rather than restating its name. Present the change via
+       `mitto_ui_textbox(self_id: "{{ .Session.ID }}", title: "Update SKILL.md description", text: "OLD: <current description>\n\n---\n\nNEW: <proposed description>", result: "description")`
+       and replace the frontmatter value with the operator's returned text
+       (empty → skip and leave the current description in place). Count an
+       applied change under the `Annotated` tally in Step 5.
+
+  ## Step 5 — Summary
+
+  After the loop, notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "SKILL.md references reconciled", style: "success")`
+  and print a one-block summary:
+
+  - `Renamed:   <N>` — references relinked to their new path
+  - `Added:     <N>` — genuinely new references inserted
+  - `Removed:   <N>` — genuinely stale references deleted
+  - `Annotated: <N>` — under-documented references clarified (plus a
+    `description` update if one landed in Step 4.5)
+  - `Skipped:   <N>` — proposals declined by the operator
+
+  ## Guardrails
+
+  - **Non-destructive by default.** No edit lands without explicit approval
+    for that specific change.
+  - **No fabrication.** If a reference file's purpose is unclear, mark the
+    trigger as `TODO(operator)` in the proposal rather than inventing one.
+  - **Preserve style.** Match the surrounding link syntax, bullet style, and
+    heading levels already used in `SKILL.md`.
+  - **No git mutations.** Read-only `git log` inspection for rename detection
+    is fine; do not run `git add` / `git commit` / `git mv` — the operator
+    reviews and commits the diff themselves.
+  - **Do not spawn child conversations** — this is an in-place authoring task.

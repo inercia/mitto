@@ -17,12 +17,8 @@
 
 const { useState, useEffect } = window.preact;
 
-import {
-  authFetch,
-  secureFetch,
-  endpoints,
-  errorMessageFromData,
-} from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 /**
  * useFolderProcessorsConfig — cohesive state/handler bundle for the folder
@@ -61,8 +57,8 @@ export function useFolderProcessorsConfig({
     if (!firstWs?.uuid) return;
 
     setProcessorsLoading(true);
-    authFetch(endpoints.workspaces.processors(firstWs.uuid))
-      .then((r) => r.json())
+    getSdkClient()
+      .processors.list(firstWs.uuid)
       .then((data) => {
         setFolderProcessors(data.processors || []);
       })
@@ -72,8 +68,7 @@ export function useFolderProcessorsConfig({
 
   // Reload processors for the selected folder
   const reloadFolderProcessors = async (uuid) => {
-    const res = await authFetch(endpoints.workspaces.processors(uuid));
-    const data = await res.json();
+    const data = await getSdkClient().processors.list(uuid);
     setFolderProcessors(data.processors || []);
   };
 
@@ -82,25 +77,16 @@ export function useFolderProcessorsConfig({
     const uuid = getSelectedFolderUuid();
     if (!uuid) return;
     try {
-      const res = await secureFetch(
-        endpoints.workspaces.processor(uuid, processor.name),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !processor.enabled }),
-        },
+      await getSdkClient().processors.setEnabled(
+        uuid,
+        processor.name,
+        !processor.enabled,
       );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
       await reloadFolderProcessors(uuid);
     } catch (err) {
-      setError("Failed to toggle processor: " + err.message);
+      setError(
+        "Failed to toggle processor: " + errorMessage(err, "request failed"),
+      );
     }
   };
 
@@ -118,22 +104,7 @@ export function useFolderProcessorsConfig({
         procEdits[p.name] !== undefined ? procEdits[p.name] : p.value;
     }
     try {
-      const res = await secureFetch(
-        endpoints.workspaces.processorArguments(uuid, proc.name),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ arguments: args }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
+      await getSdkClient().processors.setArguments(uuid, proc.name, args);
       await reloadFolderProcessors(uuid);
       // Clear local edits so inputs re-seed from the freshly-loaded effective values.
       setProcessorArgEdits((prev) => {
@@ -142,7 +113,10 @@ export function useFolderProcessorsConfig({
         return n;
       });
     } catch (err) {
-      setError("Failed to save processor arguments: " + err.message);
+      setError(
+        "Failed to save processor arguments: " +
+          errorMessage(err, "request failed"),
+      );
     }
   };
 

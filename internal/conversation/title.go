@@ -2,12 +2,15 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -108,8 +111,44 @@ type TitleGenerationConfig struct {
 	OnTitleGenerated func(sessionID, title string)
 }
 
-// SessionNeedsTitle returns true if the session has no title yet and needs auto-title generation.
-// Returns false if the session already has a title (either auto-generated or user-set).
+type titleJobKey struct {
+	store     *session.Store
+	sessionID string
+}
+
+var titleJobs = struct {
+	sync.Mutex
+	active map[titleJobKey]struct{}
+}{active: make(map[titleJobKey]struct{})}
+
+// claimTitleJob coalesces title generation per persisted session. A job encountering
+// proactive process-busy load shedding remains claimed until quiescence or until the
+// session no longer needs a title. Sessions without a stable store key keep the
+// bounded legacy behavior because they cannot persist a generated title.
+func claimTitleJob(store *session.Store, sessionID string) (release func(), ok bool) {
+	if store == nil || sessionID == "" {
+		return func() {}, true
+	}
+	key := titleJobKey{store: store, sessionID: sessionID}
+	titleJobs.Lock()
+	if _, exists := titleJobs.active[key]; exists {
+		titleJobs.Unlock()
+		return nil, false
+	}
+	titleJobs.active[key] = struct{}{}
+	titleJobs.Unlock()
+	return func() {
+		titleJobs.Lock()
+		delete(titleJobs.active, key)
+		titleJobs.Unlock()
+	}, true
+}
+
+// SessionNeedsTitle returns true if the session needs an initial or upgraded auto-title.
+// Returns false if the session already has a final (LLM-generated or user-set) title.
+// A quick fallback title populated by GenerateAndSetTitle (marked via meta.NameIsFallback)
+// is treated as still needing generation so titleCoordinator.retryIfNeeded can upgrade
+// it to the real LLM-generated title on the next prompt_complete quiescence (mitto-ee3).
 func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	if store == nil || sessionID == "" {
 		return false
@@ -118,14 +157,33 @@ func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	if err != nil {
 		return false
 	}
-	return meta.Name == ""
+	return meta.Name == "" || meta.NameIsFallback
+}
+
+// titleMaxRetries is the maximum number of retry attempts for title generation.
+// var (not const) so tests can override the cadence to exercise the retry loop
+// in unit time. See internal/conversation/title_wedge_repro_test.go (mitto-ammz.1).
+var titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
+
+// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
+// var (not const) so tests can override the cadence. See titleMaxRetries.
+var titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
+
+func titleRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+	maxAttempt := titleMaxRetries
+	if maxAttempt < 1 {
+		maxAttempt = 1
+	}
+	if attempt > maxAttempt {
+		attempt = maxAttempt
+	}
+	return titleRetryBaseDelay * time.Duration(1<<(attempt-1))
 }
 
 const (
-	// titleMaxRetries is the maximum number of retry attempts for title generation.
-	titleMaxRetries = 3 // 4 total attempts: delays 30s, 60s, 120s
-	// titleRetryBaseDelay is the initial delay between retry attempts (exponential backoff).
-	titleRetryBaseDelay = 30 * time.Second // delays: 30s, 60s, 120s
 	// titleSessionCreateTimeout is the timeout for a single title generation attempt.
 	// This covers the full round-trip: auxiliary session creation + the title prompt itself.
 	// 20 minutes per attempt is generous. With titleMaxRetries=3 the total worst-case
@@ -136,6 +194,8 @@ const (
 // GenerateAndSetTitle generates a title for a session using the workspace-scoped auxiliary session.
 // This runs asynchronously and doesn't block the caller.
 // It retries up to titleMaxRetries times with exponential backoff on transient failures.
+// Proactive ErrProcessBusy load shedding keeps one coalesced persisted job pending at
+// the maximum backoff until the shared process becomes quiescent.
 // The OnTitleGenerated callback is called when the title is successfully generated and saved.
 //
 // Before launching the async goroutine, it synchronously sets a quick fallback title extracted
@@ -146,11 +206,14 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 	// auxiliary session.
 	quickTitle := GenerateQuickTitle(cfg.Message)
 	if quickTitle != "" && cfg.Store != nil {
+		fallbackSet := false
 		if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
 			if m.Name == "" { // Only set if no title yet
 				m.Name = quickTitle
+				m.NameIsFallback = true // mitto-ee3: mark so retryIfNeeded can upgrade later
+				fallbackSet = true
 			}
-		}); err == nil {
+		}); err == nil && fallbackSet {
 			if cfg.Logger != nil {
 				cfg.Logger.Debug("Set quick fallback title", "session_id", cfg.SessionID, "title", quickTitle)
 			}
@@ -161,7 +224,16 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		}
 	}
 
+	releaseJob, claimed := claimTitleJob(cfg.Store, cfg.SessionID)
+	if !claimed {
+		if cfg.Logger != nil {
+			cfg.Logger.Debug("Coalescing duplicate title generation job", "session_id", cfg.SessionID)
+		}
+		return
+	}
+
 	go func() {
+		defer releaseJob()
 		if cfg.WorkspaceUUID == "" {
 			if cfg.Logger != nil {
 				cfg.Logger.Warn("Cannot generate title: session has no workspace",
@@ -180,19 +252,49 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 
 		var title string
 		var lastErr error
-		for attempt := 0; attempt <= titleMaxRetries; attempt++ {
+		waitForQuiescence := false
+		for attempt := 0; ; attempt++ {
+			pendingRecovery := attempt > titleMaxRetries
+			if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+				return
+			}
 			if attempt > 0 {
 				// A quick title may already be set, but we still try auxiliary to get a
-				// better (more descriptive) title. Only the retry delay applies here.
-				delay := titleRetryBaseDelay * time.Duration(1<<(attempt-1)) // exponential: 30s, 60s, 120s
+				// better (more descriptive) title. After the bounded retry schedule,
+				// process-busy recovery stays capped at its maximum delay.
+				delay := titleRetryDelay(attempt)
 				if cfg.Logger != nil {
-					cfg.Logger.Info("Retrying title generation",
-						"session_id", cfg.SessionID,
-						"attempt", attempt+1,
-						"delay", delay)
+					if pendingRecovery {
+						cfg.Logger.Debug("Polling pending title generation after process busy",
+							"session_id", cfg.SessionID,
+							"delay", delay)
+					} else {
+						cfg.Logger.Info("Retrying title generation",
+							"session_id", cfg.SessionID,
+							"attempt", attempt+1,
+							"delay", delay)
+					}
 				}
-				time.Sleep(delay)
+				if waitForQuiescence {
+					waitStart := time.Now()
+					waitCtx, waitCancel := context.WithTimeout(context.Background(), delay)
+					observed := cfg.AuxiliaryManager.WaitForProcessQuiescence(waitCtx, cfg.WorkspaceUUID)
+					waitCancel()
+					if observed && cfg.Logger != nil {
+						cfg.Logger.Debug("Observed process quiescence for pending title generation",
+							"session_id", cfg.SessionID)
+					}
+					if remaining := delay - time.Since(waitStart); !observed && remaining > 0 {
+						time.Sleep(remaining)
+					}
+				} else {
+					time.Sleep(delay)
+				}
+				if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+					return
+				}
 			}
+			waitForQuiescence = false
 
 			// The 20-minute budget covers auxiliary session setup and the prompt itself.
 			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
@@ -203,11 +305,67 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				break
 			}
 			if lastErr != nil && cfg.Logger != nil {
-				cfg.Logger.Warn("Title generation attempt failed",
-					"error", lastErr,
-					"session_id", cfg.SessionID,
-					"attempt", attempt+1,
-					"max_attempts", titleMaxRetries+1)
+				if pendingRecovery && errors.Is(lastErr, acperrors.ErrProcessBusy) {
+					cfg.Logger.Debug("Pending title generation still waiting for process quiescence",
+						"session_id", cfg.SessionID)
+				} else {
+					cfg.Logger.Warn("Title generation attempt failed",
+						"error", lastErr,
+						"session_id", cfg.SessionID,
+						"attempt", attempt+1,
+						"max_attempts", titleMaxRetries+1)
+				}
+			}
+
+			// mitto-juzb: proactive load shedding is transient. Retain this one
+			// coalesced job and use the bounded backoff so it can observe quiescence
+			// without requiring another prompt-completion edge.
+			if errors.Is(lastErr, acperrors.ErrProcessBusy) {
+				if cfg.Store != nil && cfg.SessionID != "" {
+					waitForQuiescence = true
+					if attempt == titleMaxRetries && cfg.Logger != nil {
+						cfg.Logger.Info("Retaining pending title generation until process quiescence",
+							"session_id", cfg.SessionID,
+							"delay", titleRetryDelay(attempt+1))
+					}
+					continue
+				}
+				waitForQuiescence = false
+				if attempt >= titleMaxRetries {
+					break
+				}
+				continue
+			}
+
+			// mitto-ammz.1: classify-and-abandon on wedge/saturation signals.
+			// The retry cadence (30s / 60s / 120s) is failure-agnostic, and
+			// each attempt burns the full 60s extended-MCP budget on a wedged
+			// or saturated shared process with near-zero chance of success.
+			// The next natural quiescence will re-attempt via the normal
+			// auto-title path; do not amplify the storm here.
+			if lastErr != nil && (acperrors.IsAgentInternalDeadlineErr(lastErr) ||
+				acperrors.IsAgentQueryClosedErr(lastErr) ||
+				errors.Is(lastErr, acperrors.ErrSharedProcessSaturated)) {
+				if cfg.Logger != nil {
+					reason := "agent_internal_deadline"
+					switch {
+					case errors.Is(lastErr, acperrors.ErrSharedProcessSaturated):
+						reason = "shared_process_saturated"
+					case acperrors.IsAgentQueryClosedErr(lastErr):
+						reason = "agent_query_closed"
+					}
+					cfg.Logger.Info("Abandoning title generation retries on wedge signal",
+						"session_id", cfg.SessionID,
+						"workspace_uuid", cfg.WorkspaceUUID,
+						"attempt", attempt+1,
+						"reason", reason,
+						"error", lastErr)
+				}
+				return
+			}
+
+			if attempt >= titleMaxRetries {
+				break
 			}
 		}
 
@@ -230,6 +388,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		if cfg.Store != nil {
 			if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
 				m.Name = title
+				m.NameIsFallback = false // mitto-ee3: real title replaces the quick fallback
 			}); err != nil {
 				if cfg.Logger != nil {
 					cfg.Logger.Error("Failed to update session name", "error", err, "session_id", cfg.SessionID)

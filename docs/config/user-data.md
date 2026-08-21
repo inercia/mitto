@@ -48,19 +48,19 @@ metadata:
 
 ### Field Properties
 
-| Property      | Required | Description                                                       |
-| ------------- | -------- | ----------------------------------------------------------------- |
-| `name`        | Yes      | The display name of the attribute                                 |
-| `description` | No       | Human-readable description (shown as tooltip/placeholder in UI)   |
-| `type`        | No       | The attribute type (defaults to `string`)                         |
+| Property      | Required | Description                                                     |
+| ------------- | -------- | --------------------------------------------------------------- |
+| `name`        | Yes      | The display name of the attribute                               |
+| `description` | No       | Human-readable description (shown as tooltip/placeholder in UI) |
+| `type`        | No       | The attribute type (defaults to `string`)                       |
 
 ### Supported Types
 
-| Type       | Description                    | Validation                                                      |
-| ---------- | ------------------------------ | --------------------------------------------------------------- |
-| `string`   | Plain text (default)           | Any value accepted                                              |
-| `url`      | A URL                          | Must be a valid URL with scheme                                 |
-| `filename` | A workspace-relative file path | Must point to an existing, readable file (not a directory)      |
+| Type       | Description                    | Validation                                                 |
+| ---------- | ------------------------------ | ---------------------------------------------------------- |
+| `string`   | Plain text (default)           | Any value accepted                                         |
+| `url`      | A URL                          | Must be a valid URL with scheme                            |
+| `filename` | A workspace-relative file path | Must point to an existing, readable file (not a directory) |
 
 `filename` values are rendered as clickable links in the UI. Clicking opens the file in Mitto's internal viewer.
 

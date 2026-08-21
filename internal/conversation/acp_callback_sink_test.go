@@ -197,7 +197,7 @@ func (r *callbackRecorderObserver) record(s string) {
 	r.deps.mu.Unlock()
 }
 
-func (r *callbackRecorderObserver) OnAgentMessage(seq int64, _ string) {
+func (r *callbackRecorderObserver) OnAgentMessage(seq int64, _, _ string) {
 	r.record("agent_message:" + strconv.FormatInt(seq, 10))
 }
 func (r *callbackRecorderObserver) OnAgentThought(seq int64, _ string) {
@@ -231,7 +231,7 @@ func (r *callbackRecorderObserver) OnQueueReordered([]session.QueuedMessage) {}
 func (r *callbackRecorderObserver) OnError(string)                           {}
 func (r *callbackRecorderObserver) OnPromptComplete(int)                     {}
 func (r *callbackRecorderObserver) OnActionButtons([]ActionButton)           {}
-func (r *callbackRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int) {
+func (r *callbackRecorderObserver) OnUserPrompt(int64, string, string, string, []string, []string, string, int, map[string]string, *session.PromptProvenance) {
 }
 func (r *callbackRecorderObserver) OnACPStopped(string)              {}
 func (r *callbackRecorderObserver) OnACPStarted()                    {}
@@ -245,7 +245,7 @@ func TestCallbackSink_ClosedShortCircuits(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{closed: true}
 
-	s.onAgentMessage(d, 1, "x")
+	s.onAgentMessage(d, 1, "x", "x")
 	s.onAgentThought(d, 1, "x")
 	s.onToolCall(d, 1, "i", "t", "s")
 	s.onToolUpdate(d, 1, "i", nil)
@@ -269,7 +269,7 @@ func TestCallbackSink_StreamCallbacksRecordAndNotify(t *testing.T) {
 	d := &fakeCallbackDeps{}
 
 	status := "ok"
-	s.onAgentMessage(d, 1, "<p>hi</p>")
+	s.onAgentMessage(d, 1, "<p>hi</p>", "hi")
 	s.onAgentThought(d, 2, "thinking")
 	s.onToolCall(d, 3, "tc1", "title", "running")
 	s.onToolUpdate(d, 4, "tc1", &status)
@@ -325,6 +325,15 @@ func TestCallbackSink_MittoToolCall_WithMCPServer(t *testing.T) {
 	s.onMittoToolCall(d, "req-2")
 	if len(d.mcpRequests) != 1 || d.mcpRequests[0] != "req-2" {
 		t.Fatalf("expected register attempt, got %v", d.mcpRequests)
+	}
+}
+
+func TestCallbackSink_MittoToolCall_EmptyKeyUsesSessionID(t *testing.T) {
+	s := acpCallbackSink{}
+	d := &fakeCallbackDeps{mcpAvailable: true, sessionID: "conversation-one"}
+	s.onMittoToolCall(d, "")
+	if !reflect.DeepEqual(d.mcpRequests, []string{"conversation-one"}) {
+		t.Fatalf("empty correlation key was not replaced with session ID: %v", d.mcpRequests)
 	}
 }
 
@@ -589,7 +598,7 @@ func TestACPCallbackSink_SuppressionShortCircuits_StreamingCallbacks(t *testing.
 
 	status := "running"
 	s.onContextUsageUpdate(d, 1000, 500)
-	s.onAgentMessage(d, 1, "<p>hi</p>")
+	s.onAgentMessage(d, 1, "<p>hi</p>", "hi")
 	s.onAgentThought(d, 2, "thinking")
 	s.onToolCall(d, 3, "tc1", "title", "running")
 	s.onToolUpdate(d, 4, "tc1", &status)

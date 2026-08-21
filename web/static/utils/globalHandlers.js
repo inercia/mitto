@@ -201,12 +201,19 @@ document.addEventListener("mousemove", (e) => {
  * horizontally scrollable container (overflow-x: auto/scroll with actual
  * overflow). Used to suppress swipe-navigation when the user is scrolling
  * a table left/right with a two-finger trackpad gesture.
+ *
+ * Elements marked with data-mitto-no-swipe always opt out, even when they are
+ * not currently overflowing (e.g. the follow-up suggestion carousel with only
+ * a couple of buttons).
  */
 export function isOverHorizontallyScrollable() {
   const el = document.elementFromPoint(lastMouseX, lastMouseY);
   if (!el) return false;
   let node = el;
   while (node) {
+    if (node.hasAttribute && node.hasAttribute("data-mitto-no-swipe")) {
+      return true;
+    }
     const style = window.getComputedStyle(node);
     const overflowX = style.overflowX;
     if (

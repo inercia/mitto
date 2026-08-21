@@ -1,0 +1,72 @@
+{{/*
+  _shared/loop/bead-progress-tracking — the "## Tracking progress" section
+  shared by the generic loop drivers (loop/fixing, loop/implementing).
+
+  Progress across iterations lives in a beads issue, never in a local
+  state file. Callers pass the work Verb and the linked bead (if any):
+
+      {{ template "_shared/loop/bead-progress-tracking" (dict
+          "Verb"       "fix"
+          "Noun"       "problem"
+          "BeadsIssue" .Session.BeadsIssue
+          "SessionID"  .Session.ID
+      ) }}
+
+  Parameters:
+    Verb       — the caller's work verb ("fix", "implement", …).
+    Noun       — what is being tracked ("problem", "feature", …).
+    BeadsIssue — .Session.BeadsIssue: the bead already linked to this
+                 conversation, or empty when none is linked yet.
+    SessionID  — the caller's .Session.ID, spliced into the
+                 mitto_conversation_update example.
+
+  The fragment emits its own `## Tracking progress` heading — do NOT add
+  one at the call site.
+*/}}
+## Tracking progress
+
+Progress across iterations is tracked in a **beads issue**, not in a local state
+file. Never create or update a `*.md` progress/state file for this loop.
+{{- if .BeadsIssue }}
+
+This conversation is linked to beads issue `{{ .BeadsIssue }}` — that bead is the
+tracking issue for this loop. Read it before doing anything else:
+
+```bash
+bd show {{ .BeadsIssue }} --long --json --include-comments
+```
+{{- else }}
+
+No beads issue is linked to this conversation yet. On your **first** iteration:
+
+1. Look for an existing bead that already covers this {{ .Noun }}
+   (`bd list --status open --json`, `bd show <id>`); reuse it if you find one.
+2. Otherwise create one describing the {{ .Noun }} you are about to {{ .Verb }}:
+
+   ```bash
+   bd create "<short title>" -t task -p 1 --body-file <path>
+   ```
+
+   (`bd` has **no** `@file` expansion for `-d/--description` — use
+   `--body-file` or `--stdin` for anything longer than one line.)
+3. Link it to this conversation so later iterations find it:
+   `mitto_conversation_update(self_id: "{{ .SessionID }}", conversation_id: "self", beads_issue: "<bead id>")`.
+
+On every later iteration, re-read that bead first
+(`bd show <id> --long --json --include-comments`) instead of re-deriving state.
+{{- end }}
+
+Each iteration, record the increment on the tracking bead:
+
+```bash
+bd comment <bead id> "<what was {{ .Verb }}ed this iteration, what was verified, what remains>"
+```
+
+Use the bead's comments as the "Progress" log and its description /
+acceptance criteria as the "Issues remaining" list — update the description with
+`bd update <bead id> --body-file <path>` when the remaining work changes
+materially. When the {{ .Noun }} is fully resolved and verified, close it with
+`bd close <bead id>`.
+
+If a requirement is genuinely ill-defined, record it as a comment on the tracking
+bead, report it, and stop — never guess.

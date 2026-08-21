@@ -9,8 +9,8 @@ import (
 )
 
 func init() {
-	// Initialize the package-level store with KeychainStore on macOS
-	store = &KeychainStore{}
+	legacy := &KeychainStore{}
+	setPlatformStores(legacy, newSecretStoreBlobBackend(legacy))
 }
 
 // KeychainStore implements SecretStore using the macOS Keychain.
@@ -43,10 +43,8 @@ func (k *KeychainStore) Get(service, account string) (string, error) {
 // Set stores a password in the macOS Keychain.
 // If the credential already exists, it is updated.
 func (k *KeychainStore) Set(service, account, password string) error {
-	// First, try to delete any existing item
-	_ = k.Delete(service, account) // Ignore ErrNotFound
-
-	// Create a new keychain item
+	// Add first so a transient failure cannot erase an existing credential.
+	// A duplicate is updated in place below.
 	item := keychain.NewItem()
 	item.SetSecClass(keychain.SecClassGenericPassword)
 	item.SetService(service)
@@ -58,7 +56,6 @@ func (k *KeychainStore) Set(service, account, password string) error {
 
 	err := keychain.AddItem(item)
 	if errors.Is(err, keychain.ErrorDuplicateItem) {
-		// Item already exists, try to update it using UpdateItem
 		return k.updateItem(service, account, password)
 	}
 	return err

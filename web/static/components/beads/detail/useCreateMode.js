@@ -23,9 +23,8 @@
 
 const { useState, useEffect, useCallback, useRef } = window.preact;
 
-import { secureFetch } from "../../../utils/csrf.js";
-import { endpoints } from "../../../utils/endpoints.js";
-import { readBeadsResponse } from "../../../utils/beads.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
+import { errorMessage } from "../../../utils/sdkErrors.js";
 
 export function useCreateMode({
   isCreating,
@@ -80,31 +79,15 @@ export function useCreateMode({
           id: d.id,
           type: d.type || "blocks",
         }));
-      const res = await secureFetch(
-        endpoints.issues.create({ working_dir: workingDir }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to create issue",
-          });
-      } else {
-        showToast && showToast({ style: "success", title: "Issue created" });
-        onCreated && onCreated();
-        onClose && onClose();
-      }
+      await getSdkClient().issues.create({ working_dir: workingDir }, body);
+      showToast && showToast({ style: "success", title: "Issue created" });
+      onCreated && onCreated();
+      onClose && onClose();
     } catch (err) {
       showToast &&
         showToast({
           style: "error",
-          title: err.message || "Failed to create issue",
+          title: errorMessage(err, "Failed to create issue"),
         });
     } finally {
       setSubmitting(false);

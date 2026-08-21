@@ -5,11 +5,34 @@ This project uses **bd** (beads) for issue tracking. Run `bd prime` for full wor
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
+bd ready --exclude-label in-flight   # Find available work (skip beads a driver is holding)
+bd show <id>                         # View issue details
+bd update <id> --claim               # Claim work atomically
+bd close <id>                        # Complete work
+bd dolt push                         # Shared database mode only
+```
+
+### Beads database replication policy
+
+Mitto injects the folder's effective Beads database mode into agent guidance.
+When it says **local-only**, skip every generic `bd dolt push`, `bd dolt pull`,
+or bootstrap/publication instruction below, even where the auto-managed block
+calls that step mandatory. Local-only Beads data must stay on this machine.
+This override does not restrict normal source-code Git operations. In **shared**
+mode, follow the repository's configured Beads replication workflow.
+
+### Automated-driver `in-flight` label
+
+Automated drivers (the L1 orchestrator and its feature/fix phase drivers — see
+`mitto-ial`) tag every bead they are actively working on with the `in-flight`
+label plus `claimed_by` / `claim_heartbeat_at` metadata, and clear both when
+they close the bead. The label is **automated-driver-only** and is meant to be
+**excluded from human queries** so a person running `bd ready` does not race a
+driver on the same bead. Always pass `--exclude-label in-flight` when scanning
+for work to pick up:
+
+```bash
+bd ready --exclude-label in-flight
 ```
 
 ## Non-Interactive Shell Commands

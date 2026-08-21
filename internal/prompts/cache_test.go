@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,69 @@ prompt: |
 	}
 	if len(prompts2) != 1 {
 		t.Errorf("Second call: len(prompts) = %d, want 1", len(prompts2))
+	}
+}
+
+// TestPromptsCache_NamesSnapshot verifies that NamesSnapshot returns the same
+// canonical-case names Web layer / mitto_prompt_get see (mitto-s1w). Since the
+// cache filters disabled prompts out during reload, Names and EnabledNames are
+// equivalent — both reflect the enabled, resolvable set.
+func TestPromptsCache_NamesSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("mkdir prompts: %v", err)
+	}
+
+	entries := map[string]string{
+		"alpha.prompt.yaml": `name: "Alpha"
+prompt: |
+  a
+`,
+		"beta.prompt.yaml": `name: "Beta"
+prompt: |
+  b
+`,
+		"disabled.prompt.yaml": `name: "Disabled Prompt"
+enabled: false
+prompt: |
+  x
+`,
+	}
+	for f, content := range entries {
+		if err := os.WriteFile(filepath.Join(promptsDir, f), []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+
+	cache := NewPromptsCache()
+	snap := cache.NamesSnapshot()
+
+	// Disabled prompt is filtered out during reload — it does not appear in
+	// either Names or EnabledNames (same view mitto_prompt_get sees).
+	nameSet := make(map[string]bool, len(snap.Names))
+	for _, n := range snap.Names {
+		nameSet[n] = true
+	}
+	if !nameSet["Alpha"] || !nameSet["Beta"] {
+		t.Errorf("expected Alpha and Beta in Names, got %v", snap.Names)
+	}
+	if nameSet["Disabled Prompt"] {
+		t.Errorf("disabled prompt should NOT appear in Names; got %v", snap.Names)
+	}
+	enabledSet := make(map[string]bool, len(snap.EnabledNames))
+	for _, n := range snap.EnabledNames {
+		enabledSet[n] = true
+	}
+	if !enabledSet["Alpha"] || !enabledSet["Beta"] {
+		t.Errorf("expected Alpha and Beta in EnabledNames, got %v", snap.EnabledNames)
+	}
+	if enabledSet["Disabled Prompt"] {
+		t.Errorf("disabled prompt should NOT appear in EnabledNames; got %v", snap.EnabledNames)
 	}
 }
 
@@ -585,5 +649,219 @@ prompt: |
 	}
 	if loadErrors[0].Err == nil {
 		t.Error("LoadErrors()[0].Err = nil, want non-nil")
+	}
+}
+
+// TestPromptsCache_LegacyTargetReuseKey_EvictsWholeFile is the reproduction
+// test for mitto-a4yg (defect 1: "blast radius"). A prompt file whose ONLY
+// problem is a single lint-class field — here, the pre-mitto-6b3 flat
+// target.reuseTitle key, which rejectLegacyTargetReuseKeys (prompts.go) hard-
+// rejects and which the mitto-r6j.3 migration registry does NOT rewrite —
+// causes the entire file (body, enabledWhen, everything) to disappear from
+// PromptsCache instead of just the offending field being dropped/lint-warned.
+//
+// This mirrors the incident on mitto-a4yg's bead: a schema-validation error
+// in one loop/target attribute evicted 28-29 builtin prompt files for ~9
+// minutes, which in turn starved 4 loop conversations of their named prompt
+// and tripped the (separately reproduced, see loop_runner_test.go)
+// non-self-healing promptUnresolved auto-pause.
+//
+// This test currently FAILS: prompts is len 0 (the prompt disappears) and
+// LoadErrors() reports the legacy-key rejection. Once defect 1 is fixed
+// (e.g. downgrading this class of file-level rejection to a per-field WARN,
+// as the r6j.3 migration precedent established for loop.*), the prompt must
+// still resolve by name.
+func TestPromptsCache_LegacyTargetReuseKey_EvictsWholeFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create prompts dir: %v", err)
+	}
+
+	// Only defect: target.reuseTitle is the pre-mitto-6b3 flat key (removed in
+	// favor of target.reuse.title). Everything else about the prompt is valid.
+	legacyPrompt := `name: "Legacy Target Reuse"
+target:
+  title: "Legacy Target Reuse"
+  reuseTitle: true
+prompt: |
+  Body that should still be resolvable by name.
+`
+	promptPath := filepath.Join(promptsDir, "legacy-target-reuse.prompt.yaml")
+	if err := os.WriteFile(promptPath, []byte(legacyPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write legacy-target-reuse.prompt.yaml: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get() returned top-level error: %v", err)
+	}
+
+	// BUG (mitto-a4yg, defect 1): a single lint-class field error must not
+	// take the whole prompt out of the registry. The prompt should still be
+	// resolvable by name even while the legacy key is flagged.
+	found := false
+	for _, p := range prompts {
+		if p.Name == "Legacy Target Reuse" {
+			found = true
+		}
+	}
+	if !found {
+		loadErrs := cache.LoadErrors()
+		t.Errorf("prompt %q not found in cache after a single-field legacy-key error "+
+			"(blast radius bug, mitto-a4yg): len(prompts)=%d, LoadErrors=%+v",
+			"Legacy Target Reuse", len(prompts), loadErrs)
+	}
+}
+
+// TestFragmentsNotInWebPromptDTO (mitto-g61.6 test #4) verifies the UI-facing
+// contract: fragments co-located with prompts never appear in the WebPrompt
+// list returned to the frontend, nor do they inflate the cache load-error
+// count. This is the structural-isolation guarantee at the DTO boundary.
+func TestFragmentsNotInWebPromptDTO(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// One real prompt.
+	if err := os.WriteFile(filepath.Join(promptsDir, "visible.prompt.yaml"),
+		[]byte("name: Visible\nprompt: |\n  body\n"), 0644); err != nil {
+		t.Fatalf("write visible.prompt.yaml: %v", err)
+	}
+	// Two co-located fragments (one at root, one nested).
+	if err := os.WriteFile(filepath.Join(promptsDir, "hidden.tmpl"),
+		[]byte("hidden body"), 0644); err != nil {
+		t.Fatalf("write hidden.tmpl: %v", err)
+	}
+	nestedDir := filepath.Join(promptsDir, "topic")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatalf("MkdirAll nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "helper.tmpl"),
+		[]byte("helper body"), 0644); err != nil {
+		t.Fatalf("write helper.tmpl: %v", err)
+	}
+
+	cache := NewPromptsCache()
+
+	// PromptFile-level: only the .prompt.yaml is visible.
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "Visible" {
+		t.Errorf("prompts = %+v, want exactly one 'Visible'", prompts)
+	}
+
+	// WebPrompt DTO: fragment names must not leak into the UI-facing slice.
+	webPrompts, err := cache.GetWebPrompts()
+	if err != nil {
+		t.Fatalf("GetWebPrompts: %v", err)
+	}
+	if len(webPrompts) != 1 || webPrompts[0].Name != "Visible" {
+		t.Errorf("webPrompts = %+v, want exactly one 'Visible'", webPrompts)
+	}
+	for _, wp := range webPrompts {
+		if strings.HasSuffix(wp.Name, ".tmpl") ||
+			wp.Name == "hidden" || wp.Name == "topic/helper" {
+			t.Errorf("fragment leaked into WebPrompt DTO: %q", wp.Name)
+		}
+	}
+
+	// Load errors: fragments must not inflate PromptLoadError count.
+	if lerrs := cache.LoadErrors(); len(lerrs) != 0 {
+		t.Errorf("LoadErrors = %+v, want none (fragments must not inflate)", lerrs)
+	}
+}
+
+// TestPromptsCache_TmplFilesDoNotInflateCache (mitto-g61.6 sanity check)
+// locks the loader isolation at the cache boundary against the fragment-file
+// class: mixing .prompt.yaml and .tmpl files under an additional dir must
+// yield exactly one PromptFile entry (the prompt), with fragments invisible
+// to Count().
+func TestPromptsCache_TmplFilesDoNotInflateCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	additionalDir := filepath.Join(tmpDir, "extra")
+	if err := os.MkdirAll(filepath.Join(additionalDir, "sub"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(additionalDir, "p.prompt.yaml"),
+		[]byte("name: P\nprompt: |\n  body\n"), 0644); err != nil {
+		t.Fatalf("write p.prompt.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(additionalDir, "f1.tmpl"),
+		[]byte("frag1"), 0644); err != nil {
+		t.Fatalf("write f1.tmpl: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(additionalDir, "sub", "f2.tmpl"),
+		[]byte("frag2"), 0644); err != nil {
+		t.Fatalf("write sub/f2.tmpl: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	cache.SetAdditionalDirs([]string{additionalDir})
+	if _, err := cache.Get(); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := cache.Count(); got != 1 {
+		t.Errorf("Count() = %d, want 1 (fragments must not inflate PromptFile count)", got)
+	}
+}
+
+// TestPromptsCache_ReloadOnFragmentEdit_UnaffectedByTmpl (mitto-g61.6 sanity
+// check) confirms that editing only .tmpl files does not add spurious
+// PromptFile entries to the cache. The fragment/cache invalidation split is
+// handled separately by the fs-watcher (see watcher_test.go); this asserts
+// the PromptsCache-side invariant only.
+func TestPromptsCache_ReloadOnFragmentEdit_UnaffectedByTmpl(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	additionalDir := filepath.Join(tmpDir, "extra")
+	if err := os.MkdirAll(additionalDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	tmplPath := filepath.Join(additionalDir, "only.tmpl")
+	if err := os.WriteFile(tmplPath, []byte("v1"), 0644); err != nil {
+		t.Fatalf("write only.tmpl: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	cache.SetAdditionalDirs([]string{additionalDir})
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get (initial): %v", err)
+	}
+	if len(prompts) != 0 {
+		t.Errorf("initial Get: len = %d, want 0 (fragment-only dir)", len(prompts))
+	}
+
+	// Bump mtime by editing the .tmpl.
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(tmplPath, []byte("v2-edited"), 0644); err != nil {
+		t.Fatalf("write only.tmpl edit: %v", err)
+	}
+	prompts2, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get (after edit): %v", err)
+	}
+	if len(prompts2) != 0 {
+		t.Errorf("post-edit Get: len = %d, want 0 (fragment edits must not add PromptFiles)", len(prompts2))
 	}
 }

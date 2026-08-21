@@ -31,9 +31,12 @@ function hasSkipAncestor(node, rootEl) {
  * @param {Element} rootEl
  * @param {Set<string>} ids - Lowercased known IDs.
  * @param {Map<string, {title: string, status: string}>} meta
+ * @returns {string[]} Array of lowercased IDs that were newly wrapped in this
+ *   call (dedup'd). Empty on early-exit paths and when no matches are found.
+ *   Consumers can use this to warm downstream caches (see beadsPreload.js).
  */
 export function linkifyBeadsRefs(rootEl, ids, meta) {
-  if (!rootEl || !ids || ids.size === 0) return;
+  if (!rootEl || !ids || ids.size === 0) return [];
 
   const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
   const textNodes = [];
@@ -44,6 +47,7 @@ export function linkifyBeadsRefs(rootEl, ids, meta) {
     }
   }
 
+  const linkified = new Set();
   for (const textNode of textNodes) {
     const text = textNode.nodeValue;
     if (!text) continue;
@@ -75,8 +79,10 @@ export function linkifyBeadsRefs(rootEl, ids, meta) {
         a.title = m ? `${m.title || part.id} (${m.status || ""})` : part.id;
         a.textContent = part.value;
         frag.appendChild(a);
+        linkified.add(part.id);
       }
     }
     textNode.parentNode.replaceChild(frag, textNode);
   }
+  return Array.from(linkified);
 }

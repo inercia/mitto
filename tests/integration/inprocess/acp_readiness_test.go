@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestACPReadiness_ConnectedMessage tests that the connected WebSocket message
@@ -19,7 +19,7 @@ import (
 func TestACPReadiness_ConnectedMessage(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestACPReadiness_ConnectedMessage(t *testing.T) {
 	var connectedData map[string]interface{}
 	var mu sync.Mutex
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnConnectedFull: func(data map[string]interface{}) {
 			mu.Lock()
 			connectedData = data
@@ -66,7 +66,7 @@ func TestACPReadiness_ConnectedMessage(t *testing.T) {
 func TestACPReadiness_SendPromptWhenReady(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestACPReadiness_SendPromptWhenReady(t *testing.T) {
 	var promptComplete bool
 	var mu sync.Mutex
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			mu.Lock()
 			promptComplete = true
@@ -113,7 +113,7 @@ func TestACPReadiness_SendPromptWhenReady(t *testing.T) {
 func TestACPReadiness_ACPStartedCallback(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestACPReadiness_ACPStartedCallback(t *testing.T) {
 	var acpStartedCount int
 	var mu sync.Mutex
 
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnACPStarted: func() {
 			mu.Lock()
 			acpStartedCount++

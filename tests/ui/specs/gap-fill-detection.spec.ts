@@ -40,15 +40,15 @@ test.describe("Real-Time Gap Fill Detection", () => {
       if (msg.text().includes("[gap-fill]")) gapFillLogs.push(msg.text());
     });
 
-    // 4. Manipulate both lastKnownSeq and clientMaxSeq to simulate the client
-    //    having missed all events (clientMaxSeq=0 → any max_seq > 0 triggers gap fill).
-    //    _setLastKnownSeq lowers the ref; _setClientMaxSeq overrides the combined
-    //    clientMaxSeq computation (which includes React state) so the gap is detected.
+    // 4. Manipulate the client watermark to simulate the client having missed
+    //    all events (clientMaxSeq=0 → any max_seq > 0 triggers gap fill).
+    //    _setLastKnownSeq write-throughs to both the composer ref AND the
+    //    localStorage watermark that SessionStream's gap-fill/stale detection
+    //    reads via lastSeenSeq() (mitto-7gta.30).
     await page.evaluate(
       ({ sid }) => {
         const debug = (window as any).__debug;
         if (debug?._setLastKnownSeq) debug._setLastKnownSeq(sid, 0);
-        if (debug?._setClientMaxSeq) debug._setClientMaxSeq(sid, 0);
       },
       { sid: sessionId }
     );

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,6 +56,26 @@ web:
 
 	if len(cfg.Prompts) != 1 {
 		t.Errorf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+}
+
+func TestParse_TrustedProxyHeaders(t *testing.T) {
+	yaml := `
+web:
+  security:
+    trusted_proxies: [127.0.0.1]
+    trusted_proxy_headers: [x-forwarded-for, cf-connecting-ip]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Web.Security == nil {
+		t.Fatal("Web.Security is nil")
+	}
+	want := []string{"x-forwarded-for", "cf-connecting-ip"}
+	if got := cfg.Web.Security.TrustedProxyHeaders; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("TrustedProxyHeaders = %v, want %v", got, want)
 	}
 }
 
@@ -420,6 +442,162 @@ web:
 	// Check global prompts are still parsed
 	if len(cfg.Prompts) != 1 {
 		t.Errorf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+}
+
+// TestParse_InlineMenus_WarnsOnUnknownTokenOnEveryPath pins mitto-rjg6 across
+// all THREE inline-prompt sources Parse handles: the top-level prompts: block
+// and the per-ACP-server prompts: block (the latter was initially missed —
+// only the top-level and .mittorc paths were wired). Each must emit a WARN
+// naming the prompt and the offending token while still loading the prompt.
+func TestParse_InlineMenus_WarnsOnUnknownTokenOnEveryPath(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Per Server Typo"
+          prompt: "body"
+          menus: "prompts, conversations"
+        - name: "Per Server Valid"
+          prompt: "body"
+          menus: "internal"
+prompts:
+  - name: "Top Level Typo"
+    prompt: "body"
+    menus: "prompts, beadsIssue"
+  - name: "Top Level Valid"
+    prompt: "body"
+    menus: "prompts, !promptsLoop"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	// Non-fatal: every prompt still loads, typo or not.
+	if got := len(cfg.ACPServers[0].Prompts); got != 2 {
+		t.Errorf("per-server prompts count = %d, want 2 (warning must not drop prompts)", got)
+	}
+	if got := len(cfg.Prompts); got != 2 {
+		t.Errorf("top-level prompts count = %d, want 2 (warning must not drop prompts)", got)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"Per Server Typo", "conversations", "Top Level Typo", "beadsIssue"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Parse did not warn as expected; missing %q in log: %s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"Per Server Valid", "Top Level Valid"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("Parse warned for a valid menus value (%s); log: %s", unwanted, out)
+		}
+	}
+}
+
+// TestParse_InlineLoop_FlatSchemaMigratedInMemory pins mitto-opoh: prior to
+// the fix, a global or per-server inline prompt's pre-r6j flat loop: block
+// decoded straight into *PromptLoop and hit PromptLoop.UnmarshalYAML's
+// strict rejection, hard-failing the ENTIRE settings.yaml Parse call. It
+// must now migrate in memory (via DecodeInlineLoop) instead.
+func TestParse_InlineLoop_FlatSchemaMigratedInMemory(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Server Loop"
+          prompt: "do something"
+          loop:
+            trigger: onCompletion
+            delay: 20
+prompts:
+  - name: "Global Loop"
+    prompt: "do something else"
+    loop:
+      trigger: onCompletion
+      delay: 30
+      maxIterations: 10
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1", len(cfg.Prompts))
+	}
+	loop := cfg.Prompts[0].Loop
+	if loop == nil {
+		t.Fatal("global prompt Loop = nil, want migrated PromptLoop")
+	}
+	if len(loop.Trigger) != 1 || loop.Trigger[0] != "onCompletion" {
+		t.Errorf("global Trigger = %v, want [onCompletion]", loop.Trigger)
+	}
+	if loop.OnCompletion == nil || loop.OnCompletion.Delay != 30 {
+		t.Errorf("global OnCompletion = %+v, want Delay=30", loop.OnCompletion)
+	}
+	if loop.MaxIterations != 10 {
+		t.Errorf("global MaxIterations = %d, want 10", loop.MaxIterations)
+	}
+
+	if len(cfg.ACPServers) != 1 || len(cfg.ACPServers[0].Prompts) != 1 {
+		t.Fatalf("ACPServers = %+v, want 1 server with 1 prompt", cfg.ACPServers)
+	}
+	serverLoop := cfg.ACPServers[0].Prompts[0].Loop
+	if serverLoop == nil {
+		t.Fatal("server prompt Loop = nil, want migrated PromptLoop")
+	}
+	if serverLoop.OnCompletion == nil || serverLoop.OnCompletion.Delay != 20 {
+		t.Errorf("server OnCompletion = %+v, want Delay=20", serverLoop.OnCompletion)
+	}
+}
+
+// TestParse_InlineLoop_InvalidDropsLoopKeepsPrompt pins mitto-opoh's other
+// settings.yaml/ACP-server graceful-degradation guarantee: an inline loop:
+// block that still fails validation after migration (e.g. an unknown mode)
+// must only drop that prompt's loop config, not the prompt itself, and must
+// not fail the whole Parse call — for both the global prompts: list and a
+// per-ACP-server prompts: list.
+func TestParse_InlineLoop_InvalidDropsLoopKeepsPrompt(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Bad Server Loop"
+          prompt: "do something"
+          loop:
+            mode: bogus
+prompts:
+  - name: "Bad Global Loop"
+    prompt: "do something else"
+    loop:
+      mode: bogus
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Prompts) != 1 {
+		t.Fatalf("Prompts count = %d, want 1 (prompt kept despite bad loop)", len(cfg.Prompts))
+	}
+	if cfg.Prompts[0].Loop != nil {
+		t.Errorf("global Loop = %+v, want nil for invalid mode", cfg.Prompts[0].Loop)
+	}
+
+	if len(cfg.ACPServers) != 1 || len(cfg.ACPServers[0].Prompts) != 1 {
+		t.Fatalf("ACPServers = %+v, want 1 server with 1 prompt kept despite bad loop", cfg.ACPServers)
+	}
+	if cfg.ACPServers[0].Prompts[0].Loop != nil {
+		t.Errorf("server Loop = %+v, want nil for invalid mode", cfg.ACPServers[0].Prompts[0].Loop)
 	}
 }
 
@@ -2349,10 +2527,12 @@ func TestEffectiveMaxLoopIterations(t *testing.T) {
 			want:      50,
 		},
 		{
-			name:      "config cap wins when prompt is zero",
+			// mitto-48x: promptMax=0 is an explicit author opt-out; configMax
+			// (even when positive) does NOT bind — only the backstop applies.
+			name:      "prompt zero opts out even when config is set",
 			promptMax: 0,
 			configMax: 200,
-			want:      200,
+			want:      GlobalMaxLoopIterations,
 		},
 		{
 			name:      "prompt cap wins when config is zero",
@@ -2370,6 +2550,24 @@ func TestEffectiveMaxLoopIterations(t *testing.T) {
 			name:      "prompt at backstop, config zero → backstop",
 			promptMax: GlobalMaxLoopIterations,
 			configMax: 0,
+			want:      GlobalMaxLoopIterations,
+		},
+		// mitto-48x: prompt-declared maxIterations=0 means the author explicitly opted
+		// out of any per-prompt cap ("standing supervisor, unlimited"). The config
+		// default must NOT silently downgrade that to itself — only the hardcoded
+		// GlobalMaxLoopIterations backstop applies. This test pins that contract and
+		// is expected to fail against the current symmetric "smallest positive wins"
+		// implementation, which returns configMax (100) here.
+		{
+			name:      "mitto-48x: prompt zero honored as unlimited (author opt-out, config default ignored)",
+			promptMax: 0,
+			configMax: 100,
+			want:      GlobalMaxLoopIterations,
+		},
+		{
+			name:      "mitto-48x: prompt zero honored as unlimited even when config is tiny",
+			promptMax: 0,
+			configMax: 5,
 			want:      GlobalMaxLoopIterations,
 		},
 	}
@@ -2719,13 +2917,17 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 
 	wantProfiles := map[string][]string{
 		"Claude":          {"Anthropic"},
+		"Claude Mythos":   {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
 		"Claude Opus":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
 		"Claude Sonnet 5": {"Smart", "Coding"},
 		"Claude Sonnet 4": {"Smart", "Coding"},
 		"Claude Haiku":    {"Fast", "Cheap"},
 		"GPT-5":           {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
 		"GPT-4":           {"Smart", "Coding"},
+		"OpenAI GPT":      {"OpenAI"},
 		"Gemini":          {"Smart", "LongContext"},
+		"GLM":             {"Smart", "Coding", "OpenWeight", "SelfHostable"},
+		"DeepSeek":        {"Smart", "Coding", "OpenWeight", "SelfHostable"},
 	}
 
 	if len(cfg.Models) != len(wantProfiles) {
@@ -2840,7 +3042,7 @@ func TestDefaultModelProfiles_MatchesEmbeddedYAML(t *testing.T) {
 // TestCanonicalModelTags pins the canonical capability-tag set (sorted, de-duplicated)
 // derived from DefaultModelProfiles.
 func TestCanonicalModelTags(t *testing.T) {
-	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "Reasoning", "Slow", "Smart", "Smartest", "Thinking"}
+	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "OpenAI", "OpenWeight", "Reasoning", "SelfHostable", "Slow", "Smart", "Smartest", "Thinking"}
 	got := CanonicalModelTags()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("CanonicalModelTags() = %v, want %v", got, want)
@@ -2903,39 +3105,260 @@ func TestBuiltinPrompts_ModelTagsAreCanonical(t *testing.T) {
 		canonical[strings.ToLower(tag)] = struct{}{}
 	}
 
-	entries, err := fs.ReadDir(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir)
-	if err != nil {
-		t.Fatalf("read embedded builtin prompts: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Fatal("no embedded builtin prompts found")
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "name" . }}` refs at parse-time precompile (mitto-g61.4).
+	// Restored on cleanup so nil-baseline tests remain unaffected.
+	builtinDiskDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	if _, err := os.Stat(builtinDiskDir); err == nil {
+		prev := CurrentFragments()
+		t.Cleanup(func() { SetCurrentFragments(prev) })
+		reg, loadErrs, ferr := LoadFragmentsFromDir(builtinDiskDir)
+		if ferr != nil {
+			t.Fatalf("LoadFragmentsFromDir(builtin): %v", ferr)
+		}
+		if len(loadErrs) != 0 {
+			t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+		}
+		SetCurrentFragments(reg)
 	}
 
+	// Walk the embedded builtin prompts recursively so nested subgroups
+	// (Phase B of mitto-j88) are validated too, not just the flat top level.
 	var unknown []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := fs.ReadFile(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir+"/"+e.Name())
+	var walked int
+	walkErr := fs.WalkDir(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
+			return err
 		}
-		pf, err := ParsePromptFile(e.Name(), data, time.Time{})
+		if d.IsDir() || !strings.HasSuffix(path, ".prompt.yaml") {
+			return nil
+		}
+		walked++
+		data, err := fs.ReadFile(defaultConfig.BuiltinPromptsFS, path)
 		if err != nil {
-			t.Fatalf("parse %s: %v", e.Name(), err)
+			t.Fatalf("read %s: %v", path, err)
+		}
+		pf, err := ParsePromptFile(path, data, time.Time{})
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
 		}
 		for _, pm := range pf.PreferredModels {
 			if pm.ModelTag == "" {
 				continue
 			}
 			if _, ok := canonical[strings.ToLower(pm.ModelTag)]; !ok {
-				unknown = append(unknown, e.Name()+": "+pm.ModelTag)
+				unknown = append(unknown, path+": "+pm.ModelTag)
 			}
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk embedded builtin prompts: %v", walkErr)
+	}
+	if walked == 0 {
+		t.Fatal("no embedded builtin prompts found")
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
 		t.Fatalf("builtin prompts reference unknown modelTag(s) not in CanonicalModelTags():\n  %s",
 			strings.Join(unknown, "\n  "))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// StatsConfig YAML wiring (mitto-a86b.9)
+// -----------------------------------------------------------------------------
+
+func TestLoad_StatsRetentionHours_YAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, ".mittorc")
+
+	// Overrides stats.retention_hours = 24 → the acceptance-criterion #2
+	// wiring for the retention worker. Explicit 0 must survive as
+	// "disable pruning" (distinct from unset → default 90 d).
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+stats:
+  retention_hours: 24
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Stats == nil {
+		t.Fatal("cfg.Stats is nil, want populated StatsConfig")
+	}
+	if cfg.Stats.GetRetentionHours() != 24 {
+		t.Errorf("GetRetentionHours() = %d, want 24 (from stats.retention_hours override)",
+			cfg.Stats.GetRetentionHours())
+	}
+	if got := cfg.Stats.GetRetention(); got != 24*time.Hour {
+		t.Errorf("GetRetention() = %v, want %v", got, 24*time.Hour)
+	}
+}
+
+func TestLoad_StatsRetentionHours_UnsetGivesDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, ".mittorc")
+
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// cfg.Stats may be nil when the yaml omits the section entirely; the
+	// nil-safe getter still returns the default (90 d).
+	if got := cfg.Stats.GetRetentionHours(); got != DefaultStatsRetentionHours {
+		t.Errorf("unset stats.GetRetentionHours() = %d, want %d",
+			got, DefaultStatsRetentionHours)
+	}
+}
+
+func TestLoad_StatsRetentionHours_ExplicitZeroDisables(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, ".mittorc")
+
+	yaml := `
+acp:
+  - test:
+      command: "test-cmd"
+stats:
+  retention_hours: 0
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Stats == nil || cfg.Stats.RetentionHours == nil {
+		t.Fatal("explicit stats.retention_hours=0 was not preserved (must be distinct from unset)")
+	}
+	if got := cfg.Stats.GetRetentionHours(); got != 0 {
+		t.Errorf("explicit 0 got %d, want 0 (disable pruning)", got)
+	}
+	if got := cfg.Stats.GetRetention(); got != 0 {
+		t.Errorf("explicit 0 GetRetention() = %v, want 0", got)
+	}
+}
+
+// TestParse_ConversationFont covers the mitto-9tl "Conversation font settings
+// group" additions to WebUIConfig: two new keys must round-trip through the
+// YAML load path (raw struct + populate block) alongside the sibling input-font
+// keys and must remain empty strings (not defaulted here) when the caller
+// omits them — matching how input_font_family / input_font_size behave.
+func TestParse_ConversationFont_Set(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  web:
+    conversation_font_family: "inter"
+    conversation_font_size: "lg"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Web == nil {
+		t.Fatal("UI.Web is nil, want populated struct")
+	}
+
+	if got, want := cfg.UI.Web.ConversationFontFamily, "inter"; got != want {
+		t.Errorf("ConversationFontFamily = %q, want %q", got, want)
+	}
+	if got, want := cfg.UI.Web.ConversationFontSize, "lg"; got != want {
+		t.Errorf("ConversationFontSize = %q, want %q", got, want)
+	}
+}
+
+// TestParse_ConversationFont_Empty asserts that when the caller does not
+// provide the two conversation-font keys, they remain empty strings (the
+// frontend applies the "system" / "sm" defaults). This matches the behavior
+// of the sibling InputFontFamily/InputFontSize fields.
+func TestParse_ConversationFont_Empty(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  web:
+    input_font_family: "system"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Web == nil {
+		t.Fatal("UI.Web is nil, want populated struct (input_font_family is set)")
+	}
+	if got := cfg.UI.Web.ConversationFontFamily; got != "" {
+		t.Errorf("ConversationFontFamily = %q, want empty string (no config-side default)", got)
+	}
+	if got := cfg.UI.Web.ConversationFontSize; got != "" {
+		t.Errorf("ConversationFontSize = %q, want empty string (no config-side default)", got)
+	}
+}
+
+// TestParse_ConversationFont_PreservedAlongsideInputFont exercises the raw
+// YAML struct + populate block together: all four web font keys must survive
+// the load cycle in the same call. This is the regression test that would
+// have caught forgetting to add the new fields to either the raw block
+// (silently dropped) or the populate block (parsed but not copied).
+func TestParse_ConversationFont_PreservedAlongsideInputFont(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  web:
+    input_font_family: "menlo"
+    input_font_size: "large"
+    conversation_font_family: "georgia"
+    conversation_font_size: "md"
+    conversation_cycling_mode: "all"
+    single_expanded_group: true
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Web == nil {
+		t.Fatal("UI.Web is nil")
+	}
+
+	checks := []struct {
+		field, got, want string
+	}{
+		{"InputFontFamily", cfg.UI.Web.InputFontFamily, "menlo"},
+		{"InputFontSize", cfg.UI.Web.InputFontSize, "large"},
+		{"ConversationFontFamily", cfg.UI.Web.ConversationFontFamily, "georgia"},
+		{"ConversationFontSize", cfg.UI.Web.ConversationFontSize, "md"},
+		{"ConversationCyclingMode", cfg.UI.Web.ConversationCyclingMode, "all"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.field, c.got, c.want)
+		}
+	}
+	if !cfg.UI.Web.SingleExpandedGroup {
+		t.Errorf("SingleExpandedGroup = false, want true")
 	}
 }

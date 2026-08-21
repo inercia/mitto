@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession is an end-to-end
@@ -66,7 +66,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	}
 
 	// Active conversation lives in the configured workspace, which has no .beads.
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "Active elsewhere"})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{Name: "Active elsewhere"})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

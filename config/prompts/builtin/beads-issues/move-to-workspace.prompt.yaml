@@ -1,0 +1,185 @@
+icon: folder-open
+name: Move issue to another folder
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    description: The beads issue to move
+  - name: TargetFolder
+    type: workspaceFolder
+    description: The workspace folder whose beads database should receive the issue
+  - name: DeleteFromSource
+    type: boolean
+    group: Advanced
+    default: "true"
+    description: When true (default), the issue is deleted from this folder's database after it has been verified in the target. Set to false to copy instead of move.
+description: Move this bead (with its labels, comments and descendants) into another workspace folder's beads database
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Move an Issue to Another Workspace Folder
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+  Each workspace folder has its **own** beads database under `<folder>/.beads`, with its own
+  ID prefix — so moving a bead means **export → import → rename → delete**, not a file copy.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $dest := .Args.TargetFolder -}}
+  {{ $delete := ne .Args.DeleteFromSource "false" -}}
+  {{ $suffix := "" -}}
+  {{ if $dest }}{{ $suffix = printf "The **destination folder** is `%s`." $dest }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"      $target
+      "Noun"        "bead to move"
+      "Scope"       "for this move"
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+      "FailStop"    "then stop without changing anything."
+  ) }}
+
+  {{ if not $dest -}}
+  No destination folder was supplied (`TargetFolder` is empty). Do not guess. Post a
+  `mitto_ui_notify` explaining the missing destination, then stop without changing anything.
+  {{- else if $target -}}
+  {{ if $delete }}This is a **move**: the bead is deleted from this folder once verified in the destination.{{ else }}This is a **copy** (`DeleteFromSource` is false): the bead stays in this folder as well.{{ end }}
+
+  ## Step 1 — Inspect both databases
+
+  ```bash
+  bd where                                  # source: path + ID prefix
+  bd where -C "{{ $dest }}"                 # destination: path + ID prefix
+  bd show {{ $target }} --long --json       # what is being moved
+  bd children {{ $target }} --json          # descendants, if this is a parent/epic
+  bd dep list {{ $target }}                 # edges that will NOT survive the move
+  ```
+
+  Stop and report via `mitto_ui_notify` if the destination has **no** beads database
+  (`bd where -C "{{ $dest }}"` fails) — offer `bd init` there as a separate, explicit step
+  rather than initialising it yourself. Also stop if source and destination resolve to the
+  **same** database (nothing to do).
+
+  Note both **ID prefixes**: the exported rows carry source IDs (e.g. `{{ $target }}`), so
+  after the import they must be renamed into the destination's prefix.
+
+  ## Step 2 — Determine the full move set
+
+  A bead cannot be imported without its **ancestors** (the importer reconciles child
+  counters and fails with a foreign-key error otherwise), and leaving descendants behind
+  orphans them. The move set is therefore:
+
+  - `{{ $target }}` itself,
+  - every **descendant** (hierarchical child IDs are dotted suffixes, e.g. `{{ $target }}.1`),
+  - every **ancestor** of `{{ $target }}` (strip trailing `.N` segments from its ID), if any.
+
+  If ancestors must come along, say so explicitly and confirm in Step 4 — the user may
+  prefer to move the whole epic knowingly, or to abort.
+
+  ## Step 3 — Export the move set
+
+  `bd export` has no per-ID filter, so export everything and select the move set:
+
+  ```bash
+  bd export > /tmp/bd-move-src.jsonl
+  jq -c 'select(.id == "{{ $target }}" or (.id | startswith("{{ $target }}.")))' \
+    /tmp/bd-move-src.jsonl > /tmp/bd-move-set.jsonl
+  wc -l /tmp/bd-move-set.jsonl
+  ```
+
+  Extend the `jq` filter with any ancestor IDs from Step 2. If `jq` is unavailable, use
+  `python3` to do the same line-wise selection. Verify the line count matches the move set;
+  if a bead is missing from the export, stop and report it (infrastructure beads and
+  memories are excluded by `bd export` on purpose).
+
+  The exported rows carry description, design, notes, acceptance criteria, labels, comments,
+  metadata and timestamps. **Dependency edges to beads outside the move set cannot follow** —
+  the importer reports them as `skipped_dependencies`. Collect that list; you will report it.
+
+  ## Step 4 — Confirm before writing
+
+  Nothing has changed yet. Present a short plan and confirm via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
+
+  - **beads moved** (IDs + titles), including any ancestors/descendants pulled in,
+  - **destination** `{{ $dest }}` and its ID prefix,
+  - **dependency edges that will be lost**,
+  - whether the source copy is **deleted** ({{ if $delete }}yes{{ else }}no{{ end }}).
+
+  Options: **"Move it"** / **"Copy it, keep the source"** / **"Cancel"**. Honour the choice
+  exactly — "Cancel" means skip Steps 5–6 entirely.
+
+  ## Step 5 — Import into the destination, then renumber
+
+  ```bash
+  bd import -C "{{ $dest }}" --json /tmp/bd-move-set.jsonl
+  ```
+
+  Read the JSON result: `created`, `ids`, `skipped`, `skipped_dependencies`. A non-empty
+  `error` means nothing was written — report it and stop (a foreign-key error on
+  `child_counters` means an ancestor is missing from the move set; go back to Step 2).
+
+  Then rename each imported bead into the destination prefix, **parents before children**:
+
+  ```bash
+  bd rename -C "{{ $dest }}" {{ $target }} <dest-prefix>-<suffix>
+  ```
+
+  Keep the suffix of the source ID (e.g. `mitto-aeb` → `tgt-aeb`) so references in commit
+  messages and comments stay recognisable. Verify:
+
+  ```bash
+  bd show -C "{{ $dest }}" <new-id> --long
+  bd comments -C "{{ $dest }}" <new-id>
+  ```
+
+  Confirm the title, status, labels and comment count match the source before going further.
+
+  {{ if $delete -}}
+  ## Step 6 — Delete from this folder
+
+  Only after Step 5 has been verified. Preview first, then delete:
+
+  ```bash
+  bd delete {{ $target }} <descendant-ids...> --dry-run
+  bd delete {{ $target }} <descendant-ids...> --force
+  ```
+
+  `bd delete` fails when a bead has dependents outside the deletion set — do **not** reach
+  for `--cascade` (it would delete unrelated beads). Instead, leave the bead in place, report
+  the blocking dependents, and let the user decide.
+
+  Record the move on the destination bead so the trail is not lost:
+
+  ```bash
+  bd update -C "{{ $dest }}" <new-id> --append-notes "Moved from <source-folder> (was {{ $target }}). Dependency edges not carried over: <list, or 'none'>."
+  ```
+  {{- else -}}
+  ## Step 6 — Leave the source untouched
+
+  `DeleteFromSource` is false, so `{{ $target }}` stays in this folder. Append a note to
+  **both** copies stating that the bead now exists in two databases, and which one is
+  authoritative:
+
+  ```bash
+  bd update {{ $target }} --append-notes "Copied to <dest-folder> as <new-id>."
+  bd update -C "{{ $dest }}" <new-id> --append-notes "Copied from <source-folder> (was {{ $target }})."
+  ```
+  {{- end }}
+
+  ## Step 7 — Final summary
+
+  Report: the new ID(s) in `{{ $dest }}`, whether the source copy was {{ if $delete }}deleted{{ else }}kept{{ end }},
+  every dependency edge that did not survive, and any command that failed and why. If edges
+  were lost, suggest re-creating the relevant ones with `bd dep` in the destination.
+  {{- end }}
+
+  ## Final step — Offer to delete this conversation
+
+  {{ template "_shared/offer-delete-conversation" . }}

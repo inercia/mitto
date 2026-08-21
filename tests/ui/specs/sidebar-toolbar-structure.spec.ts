@@ -23,7 +23,6 @@ import type { Page } from "@playwright/test";
  */
 
 const ITEM_IDS = [
-  "new-conversation-btn",
   "add-folder-btn",
   "category-filter-btn",
   "density-btn",

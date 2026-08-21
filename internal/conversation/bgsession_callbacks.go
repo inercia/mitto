@@ -6,12 +6,17 @@ package conversation
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -27,8 +32,8 @@ func (bs *BackgroundSession) onContextUsageUpdate(size, used int) {
 	bs.callbackSink.onContextUsageUpdate(bs, size, used)
 }
 
-func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
-	bs.callbackSink.onAgentMessage(bs, seq, html)
+func (bs *BackgroundSession) onAgentMessage(seq int64, html, markdown string) {
+	bs.callbackSink.onAgentMessage(bs, seq, html, markdown)
 }
 
 func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
@@ -125,12 +130,121 @@ func (bs *BackgroundSession) cbRecordEventWithSeq(event session.Event, kind stri
 	recordEventWithSeqHelper(bs.recorder, bs.logger, event, kind)
 }
 
-// cbRecordPermission records a permission decision via the recorder.
+// wireProcessorRunRecorder installs a processors.RunRecorder on this session's
+// processorManager (if any) that appends each processor invocation as a
+// session.EventTypeProcessorRun event (mitto-fm89 Stats tab). No-op if there
+// is no processor manager. Safe to call multiple times (idempotent overwrite);
+// callers invoke it once per BackgroundSession construction/resume, after the
+// recorder is set up, so seq assignment and persistence are both available.
+func (bs *BackgroundSession) wireProcessorRunRecorder() {
+	if bs.processorManager == nil {
+		return
+	}
+	bs.processorManager.SetRunRecorder(bs.recordProcessorRun)
+}
+
+// recordProcessorRun persists one processor marker. If an after-phase pipeline
+// loses a write because session teardown completed first, it counts the expected
+// omission for one summary after ApplyAfter instead of warning per processor.
+func (bs *BackgroundSession) recordProcessorRun(run processors.ProcessorRun) {
+	if bs == nil {
+		return
+	}
+
+	seq := bs.getNextSeq()
+	if bs.recorder == nil {
+		return
+	}
+	err := bs.recorder.RecordEventWithSeq(session.Event{
+		Seq:       seq,
+		Type:      session.EventTypeProcessorRun,
+		Timestamp: time.Now(),
+		Data: session.ProcessorRunData{
+			Name:       run.Name,
+			Phase:      run.Phase,
+			Outcome:    run.Outcome,
+			DurationMs: run.Duration.Milliseconds(),
+			Error:      run.Error,
+		},
+	})
+	if err == nil {
+		return
+	}
+	if run.Phase == "after" && bs.IsClosed() &&
+		(errors.Is(err, session.ErrSessionNotStarted) || errors.Is(err, session.ErrSessionNotFound)) {
+		bs.afterProcessorRunOmissions.Add(1)
+		return
+	}
+	logPersistFailure(bs.logger, "processor run", err, "seq", seq)
+}
+
+// logAfterProcessorRunOmissions drains the pipeline-scoped lifecycle count.
+func (bs *BackgroundSession) logAfterProcessorRunOmissions() {
+	if bs == nil {
+		return
+	}
+	logProcessorRunPersistenceSkipped(
+		bs.logger, "after", bs.persistedID, "session_closed",
+		bs.afterProcessorRunOmissions.Swap(0),
+	)
+}
+
+// wireProcessorPendingDispatch installs the mitto-3421 durable pending-dispatch
+// spool plus the mitto-exr/mitto-yfv8 notify seams on this session's
+// processorManager (if any), mirroring the wiring
+// SessionManager.ApplyOnCloseProcessors already does for the close-phase
+// manager it builds locally. Without this, a LIVE session's after-phase
+// (agentResponded/agentIdle) prompt-mode processor — driven by ApplyAfter,
+// see fuApplyAfterProcessors — has nowhere to persist an undelivered batch
+// once dispatchWithRetry exhausts its saturation retry budget: the batch is
+// neither spooled for later retry nor surfaced to the user, it is simply
+// gone (mitto-q95p). No-op if there is no processor manager. Safe to call
+// multiple times (idempotent overwrite); callers invoke it once per
+// BackgroundSession construction/resume, alongside wireProcessorRunRecorder.
+//
+// Also opportunistically flushes any batches spooled by an earlier saturated
+// dispatch for this session's workspace (mitto-yfv8), fire-and-forget, so
+// work stranded before this session existed (or during a prior saturation
+// window on this same session) is retried as soon as a live session is
+// available again instead of waiting for the workspace to close.
+func (bs *BackgroundSession) wireProcessorPendingDispatch() {
+	if bs.processorManager == nil {
+		return
+	}
+	bs.processorManager.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
+	bs.processorManager.SetNotifyFunc(func(_, name string, lastErr error) {
+		_ = bs.UINotify(UINotifyRequest{
+			Title:   "After-phase processor failed",
+			Message: fmt.Sprintf("%q could not be dispatched after retries: %v", name, lastErr),
+			Style:   "warning",
+		})
+	})
+	bs.processorManager.SetLateDeliveryFunc(func(_ string, names []string) {
+		_ = bs.UINotify(UINotifyRequest{
+			Title:   "Deferred processor work delivered",
+			Message: fmt.Sprintf("%d previously undelivered batch(es) were dispatched: %s", len(names), strings.Join(names, ", ")),
+			Style:   "info",
+		})
+	})
+
+	if bs.workspaceUUID != "" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			bs.processorManager.FlushPendingDispatches(ctx, bs.workspaceUUID)
+		}()
+	}
+}
+
+// cbRecordPermission records a permission decision via the recorder, using a
+// seq reserved from the same authoritative counter (getNextSeq()) that
+// streamed events use so it cannot collide with a seq reserved-but-not-yet-
+// persisted for a concurrently streaming event (mitto-t7xv).
 func (bs *BackgroundSession) cbRecordPermission(title, selectedOption, outcome string) {
 	if bs.recorder == nil {
 		return
 	}
-	bs.recorder.RecordPermission(title, selectedOption, outcome)
+	bs.recorder.RecordPermissionWithSeq(bs.getNextSeq(), title, selectedOption, outcome)
 }
 
 // cbSetContextUsage stores the latest context window usage atomically.
@@ -166,8 +280,7 @@ func (bs *BackgroundSession) cbRegisterPendingMCPRequest(requestID string) bool 
 	if bs.globalMcpServer == nil {
 		return false
 	}
-	bs.globalMcpServer.RegisterPendingRequest(requestID, bs.persistedID)
-	return true
+	return bs.globalMcpServer.RegisterPendingRequest(requestID, bs.persistedID)
 }
 
 // cbNotifyPlanStateChanged invokes the SessionManager plan-state cache callback
@@ -260,26 +373,149 @@ func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfi
 }
 
 // cbInitBaselineModelIfEmpty initialises baselineModel if it is still empty,
-// preferring persisted metadata over the supplied default.
+// preferring persisted metadata over the supplied default. When the baseline
+// is seeded from defaultModel (no persisted value), it is also written back
+// to session metadata so backfill and resume see the same value (mitto-9yl).
 func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 	bs.modelMu.Lock()
-	defer bs.modelMu.Unlock()
 	if bs.baselineModel != "" {
+		bs.modelMu.Unlock()
 		return
 	}
 	baseline := defaultModel
+	fromPersisted := false
 	if bs.store != nil && bs.persistedID != "" {
 		if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil && meta.BaselineModel != "" {
 			baseline = meta.BaselineModel
+			fromPersisted = true
 		}
 	}
 	bs.baselineModel = baseline
+	bs.modelMu.Unlock()
+
+	// Persist only when we seeded from the agent's currently-active model
+	// (no prior persisted value) and it is non-empty. cmPersistBaselineModel
+	// takes the store's own lock, so it must be called without holding modelMu.
+	if !fromPersisted && baseline != "" {
+		bs.cmPersistBaselineModel(baseline)
+	}
 }
 
 // cbApplyConfigConstraintsAsync kicks off the async constraint-application
 // goroutine for a category.
 func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
-	go bs.applyConfigConstraints(category)
+	bs.startupConstraintPending.Add(1)
+	bs.signalResponseStateChanged()
+	generation, generationAware := bs.beginStartupConstraintAttempt()
+	bs.startupConstraintWG.Add(1)
+	go func() {
+		defer bs.startupConstraintWG.Done()
+		err := bs.applyConfigConstraints(category)
+		bs.finishStartupConstraintAttempt(generation, generationAware, err)
+		if err != nil {
+			bs.beginStartupConstraintRecovery(category, generation, generationAware)
+		}
+		bs.startupConstraintPending.Add(-1)
+		bs.signalResponseStateChanged()
+	}()
+}
+
+func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, generation int, generationAware bool) {
+	if category != ConfigOptionCategoryModel || !generationAware || bs.sharedProcess == nil ||
+		!bs.startupConstraintRecovery.CompareAndSwap(false, true) {
+		return
+	}
+	failedProcessDone := bs.sharedProcess.ProcessDone()
+	if failedProcessDone == nil {
+		bs.startupConstraintRecovery.Store(false)
+		return
+	}
+	bs.signalResponseStateChanged()
+	go bs.recoverStartupConstraintAfterRestart(generation, failedProcessDone)
+}
+
+// recoverStartupConstraintAfterRestart keeps a model-gated queued turn alive
+// across a shared-process replacement, then rebinds this session. Resuming the
+// session advertises models again, which reapplies the startup constraint.
+//
+// Scope limitation (mitto-qy0j): this only helps when THIS BackgroundSession
+// object survives the process replacement — e.g. a spontaneous crash/restart
+// that does not touch the session layer. It does NOT help when the shared
+// process is recycled by GC Tier 5/6 (acp_process_gc.go): those tiers call
+// sessionClose (BackgroundSession.Close, which cancels bs.ctx) for every
+// session sharing the degraded process BEFORE stopping the process itself, so
+// this goroutine observes bs.ctx.Done() and returns before ever seeing
+// failedProcessDone fire. That GC-close case is instead handled durably at
+// the mitto_children_tasks_wait layer (internal/mcpserver/tools_children.go,
+// classifyStoppedChild + the post-resume retry in the poll loop), which
+// re-resumes the child via the SessionManager — a fresh BackgroundSession
+// re-applies startup constraints from scratch against the replacement
+// process — rather than depending on this disposable goroutine surviving.
+func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}) {
+	defer func() {
+		bs.startupConstraintRecovery.Store(false)
+		bs.signalResponseStateChanged()
+	}()
+
+	for {
+		select {
+		case <-failedProcessDone:
+		case <-bs.ctx.Done():
+			return
+		}
+
+		if err := bs.restartACPProcessFromGeneration(mittoAcp.RestartReasonResumeFailure, failedGeneration); err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("Startup model recovery failed to rebind after ACP replacement",
+					"session_id", bs.persistedID, "generation", failedGeneration, "error", err)
+			}
+			return
+		}
+
+		bs.waitForStartupConfigConstraints()
+		if bs.startupConfigConstraintsReady() {
+			bs.TryProcessQueuedMessage()
+			return
+		}
+
+		failedGeneration = bs.sharedProcess.Generation()
+		failedProcessDone = bs.sharedProcess.ProcessDone()
+		if failedProcessDone == nil {
+			return
+		}
+	}
+}
+
+// beginStartupConstraintAttempt opens a fresh failure epoch when a restarted
+// shared ACP process advertises a newer generation. Failures remain sticky
+// within one generation so a later successful callback cannot release queued
+// turns past another unmet startup constraint (mitto-qori).
+func (bs *BackgroundSession) beginStartupConstraintAttempt() (int, bool) {
+	if bs.sharedProcess == nil {
+		return 0, false
+	}
+	generation := bs.sharedProcess.Generation()
+	bs.startupConstraintMu.Lock()
+	if !bs.startupConstraintGenSet || generation > bs.startupConstraintGen {
+		bs.startupConstraintGen = generation
+		bs.startupConstraintGenSet = true
+		bs.startupConstraintFailed.Store(false)
+	}
+	bs.startupConstraintMu.Unlock()
+	return generation, true
+}
+
+func (bs *BackgroundSession) finishStartupConstraintAttempt(generation int, generationAware bool, err error) {
+	if err == nil {
+		return
+	}
+	bs.startupConstraintMu.Lock()
+	defer bs.startupConstraintMu.Unlock()
+	// Ignore a late failure from the replaced process after a newer generation
+	// has already begun applying its own startup constraint.
+	if !generationAware || generation == bs.startupConstraintGen {
+		bs.startupConstraintFailed.Store(true)
+	}
 }
 
 // initialModelApplyBudget bounds the SetSessionModel RPC issued to apply the

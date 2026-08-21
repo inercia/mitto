@@ -1,13 +1,15 @@
 import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
-import { timeouts, apiUrl, selectors } from "../utils/selectors";
+import { apiUrl } from "../utils/selectors";
 
 /**
  * Loop "edit arguments" button tests (mitto-2eu).
  *
- * Covers the SlidersIcon button rendered next to the LoopPromptSelector:
+ * Covers the SlidersIcon button rendered next to the LoopPromptSelector in the
+ * conversation side panel's Loop tab:
  *   - Enabled when the selected loop prompt declares parameters; clicking
  *     opens the shared PromptParameterDialog.
- *   - Submitting the dialog PATCHes /api/sessions/:id/loop with { arguments }.
+ *   - Submitting the dialog stages arguments; the Loop tab Save action PATCHes
+ *     /api/sessions/:id/loop with { arguments }.
  *   - Reopening the dialog pre-seeds the previously-saved value (initialValues).
  *   - Disabled when the selected prompt declares no parameters.
  *
@@ -27,23 +29,11 @@ const EDIT_ARGS_BTN = '[data-testid="loop-edit-args-button"]';
 const DIALOG = '[data-testid="prompt-param-dialog"]';
 
 async function apiCreateSession(
-  page: import("@playwright/test").Page,
   request: import("@playwright/test").APIRequestContext,
 ): Promise<string> {
   const resp = await request.post(apiUrl("/api/sessions"), { data: {} });
   expect(resp.ok(), `POST /api/sessions failed: ${resp.status()}`).toBe(true);
-  const id: string = (await resp.json()).session_id;
-  await page.evaluate((sid) => {
-    localStorage.setItem("mitto_last_session_id", sid);
-    localStorage.removeItem("mitto_conversation_filter_tab");
-  }, id);
-  await page.reload();
-  await expect(page.locator(selectors.chatInput)).toHaveAttribute(
-    "placeholder",
-    /Type your message/,
-    { timeout: timeouts.agentResponse },
-  );
-  return id;
+  return (await resp.json()).session_id;
 }
 
 async function enableLoop(
@@ -52,9 +42,31 @@ async function enableLoop(
   promptName: string,
 ): Promise<void> {
   const resp = await request.put(apiUrl(`/api/sessions/${sessionId}/loop`), {
-    data: { prompt_name: promptName, frequency: { value: 1, unit: "hours" }, enabled: true },
+    data: {
+      prompt_name: promptName,
+      frequency: { value: 1, unit: "hours" },
+      enabled: true,
+      max_iterations: 10,
+      triggers: ["schedule"],
+    },
   });
-  expect(resp.ok(), `PUT loop failed: ${resp.status()} ${await resp.text()}`).toBe(true);
+  expect(
+    resp.ok(),
+    `PUT loop failed: ${resp.status()} ${await resp.text()}`,
+  ).toBe(true);
+}
+
+async function openLoopSettings(
+  page: import("@playwright/test").Page,
+  timeout: number,
+): Promise<void> {
+  await expect(page.locator('[data-testid="loop-control-bar"]')).toBeVisible({
+    timeout,
+  });
+  await page.locator('[data-testid="loop-open-settings"]').click();
+  await expect(page.locator('[data-testid="loop-settings-tab"]')).toBeVisible({
+    timeout,
+  });
 }
 
 test.describe("Loop edit-arguments button", () => {
@@ -66,14 +78,14 @@ test.describe("Loop edit-arguments button", () => {
   test("opens dialog, saves arguments, and re-seeds them on reopen", async ({
     page,
     request,
+    helpers,
     timeouts: t,
   }) => {
-    const sessionId = await apiCreateSession(page, request);
+    const sessionId = await apiCreateSession(request);
+    await helpers.navigateAndWait(page);
+    await helpers.navigateToSession(page, sessionId);
     await enableLoop(request, sessionId, PARAM_PROMPT);
-
-    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
-      timeout: t.agentResponse,
-    });
+    await openLoopSettings(page, t.agentResponse);
 
     // Button is present and enabled (selected prompt declares a parameter)
     const editBtn = page.locator(EDIT_ARGS_BTN);
@@ -91,7 +103,21 @@ test.describe("Loop edit-arguments button", () => {
     await expect(taskField).toHaveValue("");
     await taskField.fill("nightly cleanup");
 
-    // Submitting PATCHes the loop config with the arguments map
+    // Dialog submission stages the argument inside the Loop editor.
+    await page.locator('[data-testid="prompt-param-save-btn"]').click();
+    await expect(page.locator(DIALOG)).not.toBeVisible({
+      timeout: t.shortAction,
+    });
+
+    // Reopening before the Loop save pre-seeds the staged value.
+    await editBtn.click();
+    await expect(page.locator(DIALOG)).toBeVisible({ timeout: t.shortAction });
+    await expect(page.locator(`${DIALOG} textarea`)).toHaveValue(
+      "nightly cleanup",
+    );
+    await page.locator('[data-testid="prompt-param-save-btn"]').click();
+
+    // The Loop tab Save action persists the staged arguments map.
     const [patchReq] = await Promise.all([
       page.waitForRequest(
         (req) =>
@@ -99,31 +125,23 @@ test.describe("Loop edit-arguments button", () => {
           req.method() === "PATCH",
         { timeout: t.appReady },
       ),
-      page.locator('[data-testid="prompt-param-save-btn"]').click(),
+      page.locator('[data-testid="loop-save-button"]').click(),
     ]);
     const body = JSON.parse(patchReq.postData() || "{}");
     expect(body.arguments?.TASK).toBe("nightly cleanup");
-
-    // Dialog closes after submit
-    await expect(page.locator(DIALOG)).not.toBeVisible({ timeout: t.shortAction });
-
-    // Reopening the dialog pre-seeds the previously-saved value (initialValues)
-    await editBtn.click();
-    await expect(page.locator(DIALOG)).toBeVisible({ timeout: t.shortAction });
-    await expect(page.locator(`${DIALOG} textarea`)).toHaveValue("nightly cleanup");
   });
 
   test("button is disabled when the selected prompt has no parameters", async ({
     page,
     request,
+    helpers,
     timeouts: t,
   }) => {
-    const sessionId = await apiCreateSession(page, request);
+    const sessionId = await apiCreateSession(request);
+    await helpers.navigateAndWait(page);
+    await helpers.navigateToSession(page, sessionId);
     await enableLoop(request, sessionId, NO_PARAM_PROMPT);
-
-    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
-      timeout: t.agentResponse,
-    });
+    await openLoopSettings(page, t.agentResponse);
 
     // The button renders but is disabled (Hello Greeting declares no params)
     const editBtn = page.locator(EDIT_ARGS_BTN);

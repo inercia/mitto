@@ -31,6 +31,7 @@ import {
   MAX_PASSWORD_LENGTH,
   computeAllSessions,
   convertEventsToMessages,
+  canReplayNamedPrompt,
   coalesceAgentMessages,
   COALESCE_DEFAULTS,
   getMaxSeq,
@@ -64,7 +65,9 @@ import {
   htmlToMarkdown,
   messageToMarkdown,
   conversationToMarkdown,
+  lastAgentMarkdown,
   LOOP_STOPPED_LABELS,
+  isLoopErrorStop,
   formatLoopMaxDuration,
   buildRetryTargets,
   messageKey,
@@ -548,6 +551,40 @@ describe("convertEventsToMessages", () => {
     expect(result).toHaveLength(1);
     expect(result[0].argumentCount).toBe(3);
     expect(result[0].promptName).toBe("my-prompt");
+  });
+
+  test("converts user_prompt with provenance (mitto-rg79)", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "loop turn",
+          prompt_name: "my-loop-prompt",
+          provenance: {
+            loop_trigger: "onSlack",
+            slack: { installation_id: "I1", channel_id: "C1", event_count: 2 },
+          },
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result[0].provenance).toEqual({
+      loop_trigger: "onSlack",
+      slack: { installation_id: "I1", channel_id: "C1", event_count: 2 },
+    });
+  });
+
+  test("user_prompt without provenance has undefined provenance", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "plain" },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result[0].provenance).toBeUndefined();
   });
 
   test("user_prompt without argument_count has undefined argumentCount", () => {
@@ -5673,6 +5710,61 @@ describe("conversationToMarkdown", () => {
 });
 
 // =============================================================================
+// lastAgentMarkdown Tests
+// =============================================================================
+
+describe("lastAgentMarkdown", () => {
+  test("returns empty string for empty/null input", () => {
+    expect(lastAgentMarkdown([])).toBe("");
+    expect(lastAgentMarkdown(null)).toBe("");
+  });
+
+  test("returns empty string when there is no agent message", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Hello" },
+      { role: ROLE_USER, text: "Anyone there?" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("");
+  });
+
+  test("agent message followed by a user message still returns the agent one", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Question" },
+      { role: ROLE_AGENT, html: "<p>Answer</p>" },
+      { role: ROLE_USER, text: "Thanks" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("Answer");
+  });
+
+  test("streaming agent message with partial html is returned, not excluded", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "Question" },
+      { role: ROLE_AGENT, html: "<p>Partial resp" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("Partial resp");
+  });
+
+  test("agent message with empty html falls back to the previous non-empty agent message", () => {
+    const msgs = [
+      { role: ROLE_AGENT, html: "<p>First answer</p>" },
+      { role: ROLE_USER, text: "Follow-up" },
+      { role: ROLE_AGENT, html: "" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("First answer");
+  });
+
+  test("non-agent roles (thought, tool, error) are skipped", () => {
+    const msgs = [
+      { role: ROLE_AGENT, html: "<p>Earlier answer</p>" },
+      { role: ROLE_THOUGHT, text: "thinking..." },
+      { role: ROLE_TOOL, title: "Edit file.js" },
+      { role: ROLE_ERROR, text: "oops" },
+    ];
+    expect(lastAgentMarkdown(msgs)).toBe("Earlier answer");
+  });
+});
+
+// =============================================================================
 // LOOP_STOPPED_LABELS Tests
 // =============================================================================
 
@@ -5693,14 +5785,17 @@ describe("LOOP_STOPPED_LABELS", () => {
     expect(LOOP_STOPPED_LABELS.promptUnresolved).toEqual({
       label: "Stopped: prompt missing",
       kind: "stopped",
+      isError: true,
     });
     expect(LOOP_STOPPED_LABELS.resumeFailures).toEqual({
       label: "Stopped: resume errors",
       kind: "stopped",
+      isError: true,
     });
     expect(LOOP_STOPPED_LABELS.contextWindowExceeded).toEqual({
       label: "Stopped: context too large",
       kind: "stopped",
+      isError: true,
     });
     expect(LOOP_STOPPED_LABELS.pausedByUser).toEqual({
       label: "Paused by you",
@@ -5741,6 +5836,57 @@ describe("LOOP_STOPPED_LABELS", () => {
     for (const reason of pausedReasons) {
       expect(LOOP_STOPPED_LABELS[reason].kind).toBe("paused");
     }
+  });
+
+  test("only the three attention-required reasons carry isError=true", () => {
+    const errorReasons = [
+      "promptUnresolved",
+      "resumeFailures",
+      "contextWindowExceeded",
+    ];
+    const nonErrorReasons = [
+      "maxDuration",
+      "maxIterations",
+      "iterationSafeguard",
+      "pausedByUser",
+      "disabledByAgent",
+    ];
+    for (const reason of errorReasons) {
+      expect(LOOP_STOPPED_LABELS[reason].isError).toBe(true);
+    }
+    for (const reason of nonErrorReasons) {
+      expect(LOOP_STOPPED_LABELS[reason].isError).toBeUndefined();
+    }
+  });
+});
+
+// =============================================================================
+// isLoopErrorStop Tests
+// =============================================================================
+
+describe("isLoopErrorStop", () => {
+  test("returns true for missing-prompt / resume-failure / context-window reasons", () => {
+    expect(isLoopErrorStop("promptUnresolved")).toBe(true);
+    expect(isLoopErrorStop("resumeFailures")).toBe(true);
+    expect(isLoopErrorStop("contextWindowExceeded")).toBe(true);
+  });
+
+  test("returns false for natural terminations (maxDuration, maxIterations, iterationSafeguard)", () => {
+    expect(isLoopErrorStop("maxDuration")).toBe(false);
+    expect(isLoopErrorStop("maxIterations")).toBe(false);
+    expect(isLoopErrorStop("iterationSafeguard")).toBe(false);
+  });
+
+  test("returns false for intentional pauses (pausedByUser, disabledByAgent)", () => {
+    expect(isLoopErrorStop("pausedByUser")).toBe(false);
+    expect(isLoopErrorStop("disabledByAgent")).toBe(false);
+  });
+
+  test("returns false for empty / null / undefined / unknown reasons", () => {
+    expect(isLoopErrorStop("")).toBe(false);
+    expect(isLoopErrorStop(null)).toBe(false);
+    expect(isLoopErrorStop(undefined)).toBe(false);
+    expect(isLoopErrorStop("someFutureReason")).toBe(false);
   });
 
   // headerLoopState derivation logic
@@ -6071,6 +6217,71 @@ describe("computeHeaderTriggerLabel", () => {
       computeHeaderTriggerLabel("onTasks", 30, { value: 1, unit: "hours" }),
     ).toBe("on task changes");
   });
+
+  // mitto-r6j: multi-trigger loops pass an array. A single-entry array must
+  // behave identically to the scalar form; multi-entry arrays render the
+  // first trigger's label with a compact " +N" suffix indicating how many
+  // additional triggers are armed.
+  describe("array (mitto-r6j) inputs", () => {
+    test("single-entry array behaves identically to the scalar", () => {
+      expect(
+        computeHeaderTriggerLabel(["schedule"], 0, {
+          value: 2,
+          unit: "hours",
+        }),
+      ).toBe("every 2h");
+      expect(computeHeaderTriggerLabel(["onCompletion"], 30, null)).toBe(
+        "after agent finishes · +30s",
+      );
+      expect(computeHeaderTriggerLabel(["onTasks"], 0, null)).toBe(
+        "on task changes",
+      );
+    });
+
+    test("empty array or empty scalar falls back to schedule", () => {
+      expect(
+        computeHeaderTriggerLabel([], 0, { value: 5, unit: "minutes" }),
+      ).toBe("every 5min");
+      expect(computeHeaderTriggerLabel([], 0, null)).toBeNull();
+      expect(
+        computeHeaderTriggerLabel(null, 0, { value: 1, unit: "hours" }),
+      ).toBe("every 1h");
+      expect(
+        computeHeaderTriggerLabel(undefined, 0, { value: 1, unit: "hours" }),
+      ).toBe("every 1h");
+    });
+
+    test("two triggers append ' +1' to the primary label", () => {
+      expect(
+        computeHeaderTriggerLabel(["schedule", "onCompletion"], 30, {
+          value: 1,
+          unit: "hours",
+        }),
+      ).toBe("every 1h +1");
+      expect(
+        computeHeaderTriggerLabel(["onCompletion", "onTasks"], 30, null),
+      ).toBe("after agent finishes · +30s +1");
+    });
+
+    test("three triggers append ' +2' to the primary label", () => {
+      expect(
+        computeHeaderTriggerLabel(
+          ["onTasks", "schedule", "onCompletion"],
+          15,
+          { value: 2, unit: "hours" },
+        ),
+      ).toBe("on task changes +2");
+    });
+
+    test("null/undefined entries in array are ignored", () => {
+      expect(
+        computeHeaderTriggerLabel(["schedule", null, "onTasks"], 0, {
+          value: 1,
+          unit: "hours",
+        }),
+      ).toBe("every 1h +1");
+    });
+  });
 });
 
 // =============================================================================
@@ -6285,6 +6496,81 @@ describe("buildRetryTargets", () => {
       { role: ROLE_TOOL, text: "tool" },
     ];
     expect(buildRetryTargets(msgs).size).toBe(0);
+  });
+
+  test("carries promptName, argumentCount, and arguments from the user message", () => {
+    const msgs = [
+      {
+        role: ROLE_USER,
+        text: "run it",
+        promptName: "deploy-prompt",
+        argumentCount: 2,
+        arguments: { ISSUE_ID: "mitto-123", ENV: "prod" },
+      },
+      { role: ROLE_ERROR, text: "failed" },
+    ];
+    const target = buildRetryTargets(msgs).get(1);
+    expect(target.promptName).toBe("deploy-prompt");
+    expect(target.argumentCount).toBe(2);
+    expect(target.arguments).toEqual({ ISSUE_ID: "mitto-123", ENV: "prod" });
+  });
+
+  test("promptName/argumentCount/arguments are undefined for ad-hoc messages", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hello" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const target = buildRetryTargets(msgs).get(1);
+    expect(target.promptName).toBeUndefined();
+    expect(target.argumentCount).toBeUndefined();
+    expect(target.arguments).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// canReplayNamedPrompt Tests
+// =============================================================================
+
+describe("canReplayNamedPrompt", () => {
+  test("false for missing/null target", () => {
+    expect(canReplayNamedPrompt(null)).toBe(false);
+    expect(canReplayNamedPrompt(undefined)).toBe(false);
+  });
+
+  test("false when promptName is absent (ad-hoc message)", () => {
+    expect(canReplayNamedPrompt({ text: "hi" })).toBe(false);
+  });
+
+  test("true for a named prompt with no arguments", () => {
+    expect(
+      canReplayNamedPrompt({ promptName: "plain-prompt", argumentCount: 0 }),
+    ).toBe(true);
+  });
+
+  test("true when the persisted arguments map has all argumentCount entries", () => {
+    expect(
+      canReplayNamedPrompt({
+        promptName: "deploy-prompt",
+        argumentCount: 2,
+        arguments: { A: "1", B: "2" },
+      }),
+    ).toBe(true);
+  });
+
+  test("false when arguments map is missing (older event, no persisted args)", () => {
+    expect(
+      canReplayNamedPrompt({ promptName: "deploy-prompt", argumentCount: 2 }),
+    ).toBe(false);
+  });
+
+  test("false when arguments map has fewer entries than argumentCount (sensitive arg omitted)", () => {
+    expect(
+      canReplayNamedPrompt({
+        promptName: "deploy-prompt",
+        argumentCount: 2,
+        arguments: { A: "1" },
+      }),
+    ).toBe(false);
   });
 });
 

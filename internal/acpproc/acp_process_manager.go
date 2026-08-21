@@ -2,16 +2,17 @@ package acpproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -66,7 +67,18 @@ type ACPProcessManager struct {
 	// the ACP server → agent metadata → StderrPatterns → CompileStderrPatterns.
 	// May be nil (all processes then use only the hardcoded baseline). Nil result
 	// from the resolver is also valid (agent has no per-agent patterns).
-	StderrPatternsResolver func(acpServer string) *conversation.CompiledStderrPatterns
+	StderrPatternsResolver func(acpServer string) *procstart.CompiledStderrPatterns
+
+	// AgentDefaultEnvResolver returns per-agent default environment variables
+	// (metadata.yaml defaults.env, e.g. NODE_OPTIONS=--max-old-space-size=N)
+	// for a given ACP server name (mitto-6dur). The web layer wires this to
+	// resolve the ACP server → agent metadata → Defaults.Env, mirroring
+	// StderrPatternsResolver above. May be nil (processes then get no
+	// agent-authored defaults). Nil result from the resolver is also valid
+	// (agent has no declared defaults). Kept separate from acpEnv/Env (rather
+	// than merged) so it does NOT affect sharedProcessConfigMatchesWorkspace's
+	// process-reuse comparison.
+	AgentDefaultEnvResolver func(acpServer string) map[string]string
 
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
@@ -76,6 +88,9 @@ type ACPProcessManager struct {
 	// same-key callers serialize, eliminating the need to hold auxMu across
 	// slow NewSession and SetSessionModel RPCs. (mitto-w19)
 	auxCreateMu map[auxSessionKey]*sync.Mutex
+	// auxQuiescenceWaits coalesces deferred title-session admission per workspace.
+	auxQuiescenceMu    sync.Mutex
+	auxQuiescenceWaits map[string]*processQuiescenceWait
 
 	// Global context for all managed processes.
 	ctx context.Context
@@ -100,25 +115,56 @@ type ACPProcessManager struct {
 	lastSessionSeen map[string]time.Time // per workspace UUID, when sessions were last present
 	sessionQuery    SessionQueryFunc
 	sessionClose    SessionCloseFunc
-	gcMu            sync.Mutex // protects lastSessionSeen and gc lifecycle fields
+	gcMu            sync.Mutex // protects lastSessionSeen, descendantCountHistory, and gc lifecycle fields
+	// descendantCountHistory tracks, per workspace UUID, the descendant
+	// (MCP-child) process count observed on the previous Tier 4 GC cycle and
+	// how many consecutive cycles it has strictly increased. Used to detect
+	// an unbounded climb (mitto-52mt) that the RSS-based Tier 4 predicate
+	// cannot see: a V8 heap-OOM inside a descendant is a per-process cap
+	// decoupled from tree RSS, so a process can crash from descendant
+	// sprawl while comfortably under MemoryRecycleThreshold.
+	descendantCountHistory map[string]*descendantCountEntry
 
-	// rssSampler samples the RSS (in bytes) of a shared process tree for the GC's
-	// memory-recycle tier. It defaults to (*SharedACPProcess).RSSBytes; tests
-	// override it to exercise the tier without launching a real subprocess.
-	rssSampler func(p *SharedACPProcess) (uint64, error)
-
-	// rssBreakdownSampler samples the RSS breakdown of a shared process tree for
-	// the GC's memory-recycle log lines: the parent (agent) RSS, the descendants
-	// (MCP children) RSS, and the descendant count. It defaults to
-	// (*SharedACPProcess).RSSBytesDetailed; tests override it to inject a
-	// synthetic split. When nil, Tier 4 falls back to a best-effort breakdown of
-	// (parent=rss, descendants=0, count=0) so log parsing stays uniform (mitto-3gu).
-	rssBreakdownSampler func(p *SharedACPProcess) (parent uint64, descendants uint64, count int, err error)
+	// memorySampler returns effective memory plus the diagnostic RSS breakdown
+	// from one process-tree topology snapshot. Tests override this seam.
+	memorySampler func(p *SharedACPProcess) (processMemorySample, error)
 
 	// onMemoryRecycled, if set, is called by the GC's Tier 4 memory-recycle path
 	// when a memory-bloated idle shared ACP process is recycled. Used to broadcast
 	// a toast notification to connected clients. Set after construction (see NewServer).
 	onMemoryRecycled func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)
+
+	// onHealthRecycled, if set, is called by the GC's Tier 5 (saturated + idle)
+	// and Tier 6 (confirmed-degraded, even busy) recycle paths (mitto-aoo) when a
+	// shared ACP process is stopped because it stopped completing session/new or
+	// session/load RPCs. Used to broadcast a toast notification to connected
+	// clients so a silently-wedged process (e.g. the "query closed before
+	// response received" signature, which produced 38 consecutive failures over
+	// 9h with no other user-visible signal) is surfaced instead of leaving users
+	// to read a misleading agent error. reason is "saturated_idle" (Tier 5) or
+	// "confirmed_degraded" (Tier 6). Set after construction (see NewServer).
+	onHealthRecycled func(workspaceUUID, reason string, saturationLevel, sessionCount int)
+
+	// degradedMu guards degradedState. Written from the single-threaded GC
+	// loop (Tier 5, once per tick per workspace); a mutex is used anyway so
+	// any future concurrent reader is safe.
+	degradedMu sync.Mutex
+	// degradedState tracks, per workspace UUID, the current non-empty reason
+	// string from processDegradedState (mitto-13n.3), or is absent when the
+	// workspace's process is healthy. Used to detect transition edges so
+	// onDegraded fires exactly once per edge instead of once per GC tick.
+	degradedState map[string]string
+	// onDegraded, if set, is called on each healthy<->degraded transition
+	// edge for a workspace's shared ACP process (mitto-13n.3): once when
+	// processDegradedState first returns a non-empty reason (degraded=true,
+	// state=reason), and once when it returns to "" (degraded=false,
+	// state=""). Fired from GC Tier 5, BEFORE the idle safety gates that can
+	// hold off an actual health recycle indefinitely — this is the signal
+	// that closes the invisible pre-recycle window. Not fired on the
+	// recycle-driven recovery edge (see dropDegradedStateSilently), since
+	// onHealthRecycled already broadcasts a dedicated toast for that case.
+	// Set after construction (see NewServer).
+	onDegraded func(workspaceUUID, state string, degraded bool)
 
 	// gcSuspendedSessions tracks session IDs that were intentionally suspended
 	// by the GC's loop-suspend heuristic. When a loop session's next run
@@ -148,11 +194,13 @@ type ACPProcessManager struct {
 
 	// onMCPInitializing, if set, is called (at most once per process) from the
 	// stderr-monitor goroutine when the agent reports it is blocked waiting for
-	// MCP servers to initialize. onMCPInitTimeout is called (at most once per
-	// process) when the agent reports its internal MCP-init wait budget elapsed.
-	// Used by the web layer to broadcast UI notifications (mitto-8ul.1).
+	// MCP servers to initialize. onMCPInitTimedOut is called (at most once per
+	// process) when the agent reports its internal MCP-init wait budget elapsed;
+	// the servers argument carries the per-server names extracted from the same
+	// stderr chunk, or nil if none were present (mitto-m8nx AC2). Used by the web
+	// layer to broadcast UI notifications (mitto-8ul.1).
 	onMCPInitializing func(workspaceUUID string)
-	onMCPInitTimedOut func(workspaceUUID string)
+	onMCPInitTimedOut func(workspaceUUID string, servers []string)
 
 	// Adaptive pre-warming pin state (mitto-mw0). One entry per pinned
 	// workspace. Guarded by pinMu. A pinned workspace exempts its
@@ -215,6 +263,11 @@ type auxiliarySessionState struct {
 	sessionID string
 	client    *auxiliaryClient // Collects responses
 	lastUsed  time.Time
+}
+
+type processQuiescenceWait struct {
+	done     chan struct{}
+	observed bool
 }
 
 // sharedProcessConfigMatchesWorkspace returns true if the running process config
@@ -292,12 +345,13 @@ func diffEnvKeys(a, b map[string]string) (added, removed, changed []string) {
 // at server startup if orphan cleanup is desired.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
 	m := &ACPProcessManager{
-		processes:   make(map[string]*SharedACPProcess),
-		auxSessions: make(map[auxSessionKey]*auxiliarySessionState),
-		auxCreateMu: make(map[auxSessionKey]*sync.Mutex),
-		pinState:    make(map[string]*pinInfo),
-		ctx:         ctx,
-		logger:      logger,
+		processes:          make(map[string]*SharedACPProcess),
+		auxSessions:        make(map[auxSessionKey]*auxiliarySessionState),
+		auxCreateMu:        make(map[auxSessionKey]*sync.Mutex),
+		auxQuiescenceWaits: make(map[string]*processQuiescenceWait),
+		pinState:           make(map[string]*pinInfo),
+		ctx:                ctx,
+		logger:             logger,
 	}
 	// Diagnostic: expose the live shared-ACP-process count to the coldstart
 	// sampler (mitto-3mv). Latest manager wins; benign in tests.
@@ -320,6 +374,21 @@ func (m *ACPProcessManager) CleanupOrphanedProcesses() {
 // path when a memory-bloated idle shared ACP process is recycled.
 func (m *ACPProcessManager) SetOnMemoryRecycled(fn func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)) {
 	m.onMemoryRecycled = fn
+}
+
+// SetOnHealthRecycled sets the callback invoked by the GC's Tier 5 (saturated
+// + idle) and Tier 6 (confirmed-degraded) recycle paths when a wedged shared
+// ACP process is recycled (mitto-aoo).
+func (m *ACPProcessManager) SetOnHealthRecycled(fn func(workspaceUUID, reason string, saturationLevel, sessionCount int)) {
+	m.onHealthRecycled = fn
+}
+
+// SetOnDegraded sets the callback invoked on each healthy<->degraded
+// transition edge for a workspace's shared ACP process, fired by GC Tier 5
+// before its idle safety gates (mitto-13n.3). See the onDegraded field doc
+// for the exact semantics.
+func (m *ACPProcessManager) SetOnDegraded(fn func(workspaceUUID, state string, degraded bool)) {
+	m.onDegraded = fn
 }
 
 // UpdateMCPInitTimeout sets the extended MCP-init budget passed to every new
@@ -350,8 +419,10 @@ func (m *ACPProcessManager) SetOnMCPInitializing(fn func(workspaceUUID string)) 
 }
 
 // SetOnMCPInitTimedOut registers the callback invoked (at most once per process)
-// when the agent reports its MCP-init wait has timed out (mitto-8ul.1).
-func (m *ACPProcessManager) SetOnMCPInitTimedOut(fn func(workspaceUUID string)) {
+// when the agent reports its MCP-init wait has timed out (mitto-8ul.1). The
+// servers argument carries the per-server names extracted from the stderr chunk,
+// or nil if none were present (mitto-m8nx AC2).
+func (m *ACPProcessManager) SetOnMCPInitTimedOut(fn func(workspaceUUID string, servers []string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMCPInitTimedOut = fn
@@ -554,8 +625,11 @@ func (m *ACPProcessManager) FirePrewarmPinAlert(workspaceUUID string) {
 	}
 }
 
-// Ensure ACPProcessManager implements auxiliary.ProcessProvider
-var _ auxiliary.ProcessProvider = (*ACPProcessManager)(nil)
+// Ensure ACPProcessManager implements the auxiliary provider capabilities.
+var (
+	_ auxiliary.ProcessProvider           = (*ACPProcessManager)(nil)
+	_ auxiliary.ProcessQuiescenceProvider = (*ACPProcessManager)(nil)
+)
 
 // GetOrCreateProcess returns the shared ACP process for the given workspace,
 // creating one if it doesn't exist yet. If prewarm is true and a new process is
@@ -659,16 +733,23 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	if initCb != nil {
 		onMCPInitProgress = func() { initCb(wsUUID) }
 	}
-	var onMCPInitTimeout func()
+	var onMCPInitTimeout func(servers []string)
 	if timeoutCb != nil {
-		onMCPInitTimeout = func() { timeoutCb(wsUUID) }
+		onMCPInitTimeout = func(servers []string) { timeoutCb(wsUUID, servers) }
 	}
 
 	// Resolve per-agent stderr patterns for this ACP server (mitto-k6h). Nil is
 	// a safe no-op — the process falls back to the hardcoded baseline.
-	var stderrPatterns *conversation.CompiledStderrPatterns
+	var stderrPatterns *procstart.CompiledStderrPatterns
 	if m.StderrPatternsResolver != nil {
 		stderrPatterns = m.StderrPatternsResolver(workspace.ACPServer)
+	}
+
+	// Resolve per-agent default env for this ACP server (mitto-6dur). Nil is a
+	// safe no-op — the process gets no agent-authored defaults.
+	var agentDefaultEnv map[string]string
+	if m.AgentDefaultEnvResolver != nil {
+		agentDefaultEnv = m.AgentDefaultEnvResolver(workspace.ACPServer)
 	}
 
 	createStart := time.Now()
@@ -687,6 +768,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		OnMCPInitProgress: onMCPInitProgress,
 		OnMCPInitTimeout:  onMCPInitTimeout,
 		StderrPatterns:    stderrPatterns,
+		AgentDefaultEnv:   agentDefaultEnv,
 	})
 	createDuration := time.Since(createStart)
 
@@ -816,6 +898,15 @@ func (m *ACPProcessManager) StopProcess(workspaceUUID string) {
 	}
 	m.mu.Unlock()
 
+	// mitto-13n.3: the process is gone, so any tracked degraded state for it
+	// is stale — drop it here (the single choke point for every stop path:
+	// GC Tiers 1/4/5/6 and manual stops) so a later workspace with the same
+	// UUID starts from a clean edge. Dropped silently: every stop path that
+	// the user should hear about already broadcasts its own dedicated toast
+	// (onMemoryRecycled / onHealthRecycled), and an idle-timeout stop is not
+	// a recovery worth notifying.
+	m.dropDegradedStateSilently(workspaceUUID)
+
 	if ok && p != nil {
 		if m.logger != nil {
 			m.logger.Info("Stopping shared ACP process",
@@ -836,7 +927,9 @@ func (m *ACPProcessManager) RestartProcess(workspaceUUID string) error {
 		return fmt.Errorf("no shared process for workspace %s", workspaceUUID)
 	}
 
-	return p.Restart()
+	// Manual/forced restart (e.g. the "Restart ACP" UI action): not reacting to
+	// a specific observed death, so bypass the generation dedup (mitto-x611).
+	return p.Restart(conversation.RestartAnyGeneration)
 }
 
 // Close stops all managed processes.
@@ -925,6 +1018,11 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	// Send prompt to the auxiliary session
 	_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
 	if err != nil {
+		if ctx.Err() != nil {
+			m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
+			auxState.mu.Unlock()
+			return "", fmt.Errorf("auxiliary prompt cancelled: %w", err)
+		}
 		// Always release the lock before returning or retrying.
 		auxState.mu.Unlock()
 
@@ -940,7 +1038,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 				"purpose", purpose,
 				"error", err)
 		}
-		m.invalidateAuxSession(workspaceUUID, purpose)
+		m.invalidateAuxSession(workspaceUUID, purpose, auxState)
 
 		// Wait 1 second for the process to auto-restart, honouring context cancellation.
 		select {
@@ -970,6 +1068,11 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		auxState.client.reset()
 		_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
 		if err != nil {
+			if ctx.Err() != nil {
+				m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
+				auxState.mu.Unlock()
+				return "", fmt.Errorf("auxiliary prompt cancelled on retry: %w", err)
+			}
 			auxState.mu.Unlock()
 			if m.logger != nil {
 				m.logger.Error("Auxiliary prompt failed after retry",
@@ -1054,6 +1157,98 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 	return nil
 }
 
+// auxSessionCreateBusyRPCThreshold is the number of in-flight user-facing RPCs on
+// the shared process at which non-essential auxiliary session/new attempts bail
+// proactively (mitto-9gt, mitto-6cz6). A healthy workspace at rest has 0 active
+// RPCs. Even one foreground prompt can overlap several distinct auxiliary creators,
+// and each session/new starts an asynchronous MCP handshake in Auggie. Threshold 1
+// therefore protects the normal foreground-prompt case from background amplification.
+// The IsSaturated() bail
+// above is REACTIVE (fires only after sessionSaturationTimeoutThreshold=3
+// consecutive timeouts); this proactive check closes the first-storm hole where
+// saturation has not yet tripped and NewSession would otherwise burn the full
+// auxSessionCreateBudget (60s) hitting the agent's internal deadline.
+const auxSessionCreateBusyRPCThreshold = int32(1)
+
+// deferredAuxQuiescenceWindow gives queued foreground work a brief opportunity
+// to claim the process before deferred title-session creation is admitted.
+const deferredAuxQuiescenceWindow = 100 * time.Millisecond
+
+// WaitForProcessQuiescence waits for a stable zero-RPC edge. Concurrent title jobs
+// in one workspace share a single underlying wait; same-purpose createMu then
+// coalesces their eventual auxiliary session creation.
+func (m *ACPProcessManager) WaitForProcessQuiescence(ctx context.Context, workspaceUUID string) bool {
+	m.auxQuiescenceMu.Lock()
+	wait, ok := m.auxQuiescenceWaits[workspaceUUID]
+	if !ok {
+		wait = &processQuiescenceWait{done: make(chan struct{})}
+		m.auxQuiescenceWaits[workspaceUUID] = wait
+		go m.runProcessQuiescenceWait(workspaceUUID, wait)
+	}
+	m.auxQuiescenceMu.Unlock()
+
+	select {
+	case <-wait.done:
+		return wait.observed
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (m *ACPProcessManager) runProcessQuiescenceWait(workspaceUUID string, wait *processQuiescenceWait) {
+	observed := false
+	process := m.GetProcess(workspaceUUID)
+	if process != nil {
+		waitCtx := m.ctx
+		if waitCtx == nil {
+			waitCtx = context.Background()
+		}
+		for process.WaitForQuiescence(waitCtx) {
+			timer := time.NewTimer(deferredAuxQuiescenceWindow)
+			select {
+			case <-timer.C:
+				if m.GetProcess(workspaceUUID) == process && process.ActiveRPCs() == 0 {
+					observed = true
+				}
+			case <-waitCtx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}
+			if observed || waitCtx.Err() != nil {
+				break
+			}
+		}
+	}
+
+	m.auxQuiescenceMu.Lock()
+	if m.auxQuiescenceWaits[workspaceUUID] == wait {
+		delete(m.auxQuiescenceWaits, workspaceUUID)
+	}
+	wait.observed = observed
+	close(wait.done)
+	m.auxQuiescenceMu.Unlock()
+}
+
+// isProactiveBailPurpose reports whether an auxiliary purpose is subject to the
+// proactive ActiveRPCs()-based load-shed (mitto-9gt). Background pre-warming and
+// analysis purposes (title-gen, follow-up, keepalive, mcp-check, mcp-tools,
+// queue-title) return true: no user is actively waiting on their result, so
+// bailing costs nothing except a deferred retry. User-triggered purposes where a
+// human clicked "improve prompt" and is watching (improve-prompt) return false —
+// they must proceed through the normal NewSession path even under load.
+func isProactiveBailPurpose(purpose string) bool {
+	switch purpose {
+	case auxiliary.PurposeImprovePrompt:
+		return false
+	default:
+		return true
+	}
+}
+
 // getOrCreateAuxiliarySession returns an existing auxiliary session or creates a new one.
 //
 // Locking design (mitto-w19): auxMu is held ONLY briefly around map reads/writes, never
@@ -1117,30 +1312,33 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		auxCwd = "."
 	}
 
-	// Build MCP servers list. Processor auxiliary sessions get a stdio MCP proxy
-	// so the agent can call Mitto tools (e.g., mitto_ui_notify for notifications).
-	// The command MUST be the mitto CLI binary, not mitto-app: on the macOS app
-	// os.Executable() points at Mitto.app/Contents/MacOS/mitto-app, which is not
-	// a cobra CLI and would spawn a whole second Mitto app (webview + up-hook /
-	// cloudflared) instead of the intended stdio proxy. resolveMittoCLIBinary
-	// rewrites to the sibling `mitto` binary in that case.
-	mcpServers := []acp.McpServer{} // Must be empty array, not nil — ACP validates this
-	if strings.HasPrefix(purpose, auxiliary.PurposeProcessorPrefix) && m.MCPServerURL != "" {
-		if exe, err := resolveMittoCLIBinary(); err == nil {
-			mcpServers = []acp.McpServer{{
-				Stdio: &acp.McpServerStdio{
-					Name:    "mitto",
-					Command: exe,
-					Args:    []string{"mcp", "--proxy-to", m.MCPServerURL},
-					Env:     []acp.EnvVariable{}, // Must be empty array, not nil — ACP validates this
-				},
-			}}
-			if m.logger != nil {
-				m.logger.Debug("Auxiliary processor session will use MCP proxy",
-					"purpose", purpose,
-					"mcp_url", m.MCPServerURL,
-					"proxy_command", exe)
-			}
+	// Build MCP servers list. Processor auxiliary sessions need a way for the
+	// agent to call Mitto tools (e.g., mitto_ui_notify for notifications).
+	// Transport selection (mitto-8ip): if the agent advertises
+	// mcp_capabilities.http (e.g. Auggie), use a native HTTP McpServer entry
+	// pointing at the same MCP endpoint user sessions already use — no
+	// subprocess, no stdio hop. Otherwise fall back to the stdio proxy, which
+	// is the ACP-spec mandatory transport all agents MUST support.
+	//
+	// For the stdio fallback the command MUST be the mitto CLI binary, not
+	// mitto-app: on the macOS app os.Executable() points at
+	// Mitto.app/Contents/MacOS/mitto-app, which is not a cobra CLI and would
+	// spawn a whole second Mitto app (webview + up-hook / cloudflared) instead
+	// of the intended stdio proxy. resolveMittoCLIBinary rewrites to the
+	// sibling `mitto` binary in that case.
+	mcpServers, transportChoice, chosenExe := buildAuxProcessorMCPServers(
+		purpose, m.MCPServerURL, process.Capabilities(), resolveMittoCLIBinary)
+	if m.logger != nil {
+		switch transportChoice {
+		case auxMCPTransportHTTP:
+			m.logger.Debug("Auxiliary processor session will use MCP HTTP",
+				"purpose", purpose,
+				"mcp_url", m.MCPServerURL)
+		case auxMCPTransportStdio:
+			m.logger.Debug("Auxiliary processor session will use MCP proxy",
+				"purpose", purpose,
+				"mcp_url", m.MCPServerURL,
+				"proxy_command", chosenExe)
 		}
 	}
 
@@ -1161,12 +1359,98 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// can back off and retry once the process has recovered.
 	if process.IsSaturated() {
 		if m.logger != nil {
-			m.logger.Info("Skipping auxiliary NewSession: shared process is saturated",
+			// mitto-13n.3: demoted from Info to Debug. This bail fires on every
+			// aux-session attempt while a process is saturated — dozens of times
+			// per incident (58 occurrences observed on 2026-08-05) — and is now
+			// redundant with the once-per-transition WARN the GC's degraded-state
+			// tracker emits (see updateDegradedState / acp_process_degraded.go).
+			m.logger.Debug("Skipping auxiliary NewSession: shared process is saturated",
 				"workspace_uuid", workspaceUUID,
 				"purpose", purpose,
 				"reason", "process_saturated")
 		}
-		return nil, fmt.Errorf("shared ACP process is saturated; skipping auxiliary session creation for purpose %q: %w", purpose, context.DeadlineExceeded)
+		// Wrap ErrProcessSaturated (mitto-13n.2: the specific reactive
+		// sentinel, which itself wraps the umbrella ErrSharedProcessSaturated
+		// for transition-era callers with their own retry loops — e.g.
+		// title-gen, mitto-ammz.1) AND context.DeadlineExceeded (preserved
+		// for pre-existing callers that only checked DeadlineExceeded).
+		return nil, fmt.Errorf("%w; skipping auxiliary session creation for purpose %q: %w", ErrProcessSaturated, purpose, context.DeadlineExceeded)
+	}
+
+	// Proactive load-based bail (mitto-9gt): the IsSaturated() guard above is
+	// REACTIVE — it fires only after sessionSaturationTimeoutThreshold=3
+	// consecutive timeouts or the rate-window trip. During the FIRST storm of a
+	// parallel fan-out (parent + several concurrent user-facing RPCs), saturation
+	// has not yet tripped, so a background aux session/new would slip past the
+	// guard and burn the full auxSessionCreateBudget (60s) hitting the agent's
+	// internal deadline — the exact log signature the bead documents
+	// (new_session_ms=60002 for follow-up and keepalive fired during
+	// concurrent_prompting=6).
+	//
+	// Complementary check: when process.ActiveRPCs() reports the shared process
+	// is already serving N concurrent user-facing RPCs above a threshold, bail
+	// non-essential aux purposes immediately with the same "process saturated /
+	// defer aux" sentinel mitto-z70 returns. User-triggered purposes where a
+	// human is actively waiting (improve-prompt) are exempt — they are not
+	// background pre-warming and should not be sacrificed for load-shedding.
+	if isProactiveBailPurpose(purpose) {
+		if active := process.ActiveRPCs(); active >= auxSessionCreateBusyRPCThreshold {
+			if m.logger != nil {
+				// mitto-13n.3: demoted from Info to Debug (61 occurrences observed
+				// on 2026-08-05) — deliberately NOT surfaced by the degraded-state
+				// tracker either, since process_busy is momentary load, not a
+				// degraded process (see processDegradedState doc).
+				m.logger.Debug("Skipping auxiliary NewSession: shared process is busy",
+					"workspace_uuid", workspaceUUID,
+					"purpose", purpose,
+					"active_rpcs", active,
+					"threshold", auxSessionCreateBusyRPCThreshold,
+					"reason", "process_busy")
+			}
+			// Wrap ErrProcessBusy (mitto-13n.2: the specific proactive
+			// load-shedding sentinel, which itself wraps the umbrella
+			// ErrSharedProcessSaturated so caller-side retry loops
+			// (mitto-ammz.1) can still classify and abandon), while keeping
+			// the DeadlineExceeded chain for pre-existing callers.
+			return nil, fmt.Errorf("%w: shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", ErrProcessBusy, active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
+		}
+	}
+
+	// MCP-init-aware bail (mitto-337): the two guards above are keyed on
+	// saturation history / concurrent RPC load, so neither fires against a
+	// QUIESCENT process that the agent has already reported is gated on its
+	// MCP handshake. A serialized cold-start (first-user-session in flight)
+	// leaves ActiveRPCs()==1 and IsSaturated()==false while an aux create
+	// waits behind createMu, then proceeds straight into a NewSession RPC
+	// doomed to burn the full auxSessionCreateBudget (60s) — the observed
+	// "22:31/22:32/22:33 serialized 60s failures" log signature. Bail
+	// immediately when either positive signal is present:
+	//   - MCPInitTimedOut(): the agent has explicitly given up on MCP init;
+	//     any session/new is certain to fail the same way.
+	//   - MCPInitInProgress() && !MCPInitDone(): a cold-start handshake is
+	//     actively running and has never completed. Deliberately NOT gating
+	//     on !MCPInitDone() alone (would deadlock the very first aux session
+	//     that could otherwise warm the process) and NOT on
+	//     MCPInitInProgress() alone (would also bail the normal per-session
+	//     warm re-handshake agents like Auggie run on every session/new,
+	//     mitto-29q).
+	if process.MCPInitTimedOut() || (process.MCPInitInProgress() && !process.MCPInitDone()) {
+		if m.logger != nil {
+			// mitto-13n.3: demoted from Info to Debug, same rationale as the
+			// process_saturated bail above.
+			m.logger.Debug("Skipping auxiliary NewSession: shared process is MCP-init gated",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"mcp_init_timed_out", process.MCPInitTimedOut(),
+				"mcp_init_in_progress", process.MCPInitInProgress(),
+				"mcp_init_done", process.MCPInitDone(),
+				"reason", "mcp_init_gated")
+		}
+		// Wrap ErrMCPInitGated (mitto-13n.2: the specific MCP-handshake
+		// sentinel, which itself wraps the umbrella ErrSharedProcessSaturated
+		// for transition-era callers), while keeping the DeadlineExceeded
+		// chain for pre-existing callers.
+		return nil, fmt.Errorf("%w: shared ACP process is mcp-init gated; skipping auxiliary session creation for purpose %q: %w", ErrMCPInitGated, purpose, context.DeadlineExceeded)
 	}
 
 	// Instrument auxiliary session creation so cold-start / prewarm timing is
@@ -1463,12 +1747,13 @@ func (m *ACPProcessManager) invalidateAuxiliarySessions(workspaceUUID string) {
 // invalidateAuxSession removes a single cached auxiliary session entry,
 // forcing a new session to be created on the next PromptAuxiliary call.
 // This is more surgical than invalidateAuxiliarySessions which removes all sessions for a workspace.
+// The expected-state check prevents a delayed cleanup from deleting a replacement.
 // Must be called WITHOUT holding auxMu.
-func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string) {
+func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string, expected *auxiliarySessionState) {
 	key := auxSessionKey{workspaceUUID: workspaceUUID, purpose: purpose}
 	m.auxMu.Lock()
 	defer m.auxMu.Unlock()
-	if _, ok := m.auxSessions[key]; ok {
+	if current, ok := m.auxSessions[key]; ok && current == expected {
 		delete(m.auxSessions, key)
 		if m.logger != nil {
 			m.logger.Info("Invalidated stale auxiliary session for retry",
@@ -1476,6 +1761,26 @@ func (m *ACPProcessManager) invalidateAuxSession(workspaceUUID, purpose string) 
 				"purpose", purpose)
 		}
 	}
+}
+
+const auxiliaryCancelTimeout = 2 * time.Second
+
+// retireCancelledAuxSession isolates a timed-out turn before the per-session
+// lock is released. Retiring the callback first also rejects notifications
+// already queued inside the ACP client before UnregisterSession takes effect.
+func (m *ACPProcessManager) retireCancelledAuxSession(process *SharedACPProcess, workspaceUUID, purpose string, state *auxiliarySessionState) {
+	state.client.retire()
+	cancelCtx, cancel := context.WithTimeout(context.Background(), auxiliaryCancelTimeout)
+	defer cancel()
+	if err := process.Cancel(cancelCtx, acp.SessionId(state.sessionID)); err != nil && m.logger != nil {
+		m.logger.Warn("Failed to cancel timed-out auxiliary prompt",
+			"workspace_uuid", workspaceUUID,
+			"purpose", purpose,
+			"session_id", state.sessionID,
+			"error", err)
+	}
+	process.UnregisterSession(acp.SessionId(state.sessionID))
+	m.invalidateAuxSession(workspaceUUID, purpose, state)
 }
 
 // acquireAuxLock acquires the auxiliary session mutex with context cancellation support.
@@ -1728,6 +2033,16 @@ func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slo
 
 	reason := ""
 	switch {
+	case err != nil && errors.Is(err, ErrSharedProcessSaturated):
+		// mitto-xetv: getOrCreateAuxiliarySession's saturation-family bails
+		// (ErrProcessSaturated / ErrProcessBusy / ErrMCPInitGated, all
+		// wrapping the umbrella ErrSharedProcessSaturated) return WITHOUT
+		// attempting the session/new RPC — the probe measured nothing about
+		// the process's steady-state health. Collapsing this into
+		// "session_new_failed" pinned an already-drowning process, which
+		// only adds re-probe load to it and occupies a max_pinned slot that
+		// a genuine mcp_timeout/slow_session_new pin could have used.
+		reason = "probe_shed"
 	case err != nil:
 		reason = "session_new_failed"
 	case mcpTimedOut:
@@ -1756,6 +2071,14 @@ func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slo
 		// hysteresis (unpins after N consecutive healthy probes; no-op if
 		// not pinned) and return without pinning.
 		m.RecordPrewarmProbeResult(workspaceUUID, true, pc.GetHealthyProbesToUnpin())
+		return
+	}
+
+	if reason == "probe_shed" {
+		// mitto-xetv: a shed probe measured nothing, so it must feed
+		// neither the pin path nor the unpin hysteresis (a shed is not a
+		// "bad health" signal that should reset progress toward unpinning
+		// an otherwise slow-but-alive workspace).
 		return
 	}
 

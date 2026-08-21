@@ -59,6 +59,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/sessions/{id}/queue/{msgId}/{subAction}", handler: http.HandlerFunc(s.apiHandlers.HandleSessionQueueRoute)},
 		apiRoute{pattern: "/api/sessions/{id}/loop", handler: http.HandlerFunc(s.apiHandlers.HandleSessionLoopRoute)},
 		apiRoute{pattern: "/api/sessions/{id}/loop/{subPath}", handler: http.HandlerFunc(s.apiHandlers.HandleSessionLoopRoute)},
+		apiRoute{method: "POST", pattern: "/api/sessions/{id}/ui-prompt/acknowledge", handler: http.HandlerFunc(s.apiHandlers.HandleSessionUIPromptAcknowledgeRoute)},
 		apiRoute{method: "GET", pattern: "/api/sessions/{id}/prompt-arg-cache", handler: http.HandlerFunc(s.apiHandlers.HandleSessionPromptArgCacheRoute)},
 	)
 
@@ -80,7 +81,18 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "POST", pattern: "/api/workspaces/{uuid}/mcp-tools/remove", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMCPRemove)},
 		apiRoute{method: "PUT", pattern: "/api/workspaces/{uuid}/folder-group", handler: http.HandlerFunc(s.apiHandlers.HandleFolderGroup)},
 		apiRoute{pattern: "/api/workspace-prompts", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsRoute)},
+		// Remembered per-argument values for prompt dialogs (mitto-x8v):
+		// registered BEFORE the /{name} pattern so the mux doesn't route
+		// "remembered-args" as a prompt name.
+		apiRoute{method: "GET", pattern: "/api/workspace-prompts/remembered-args", handler: http.HandlerFunc(s.apiHandlers.HandleRememberedArgsGET)},
 		apiRoute{method: "PATCH", pattern: "/api/workspace-prompts/{name}", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspacePromptsToggleEnabled)},
+		// Workspace file listing — feeds the "filename" prompt parameter type's
+		// dropdown. Non-recursive; containment-checked. See mitto-vlg.
+		apiRoute{method: "GET", pattern: "/api/workspace-files", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceFiles)},
+		// Workspace directory listing — feeds the "dirname" prompt parameter
+		// type's dropdown. Non-recursive; containment-checked; hidden dirs
+		// excluded by default. See mitto-2hw.
+		apiRoute{method: "GET", pattern: "/api/workspace-dirs", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceDirs)},
 	)
 
 	// Config and discovery endpoints.
@@ -96,6 +108,39 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/runner-defaults", handler: http.HandlerFunc(s.apiHandlers.HandleRunnerDefaults)},
 		apiRoute{pattern: "/api/advanced-flags", handler: http.HandlerFunc(s.apiHandlers.HandleAdvancedFlags)},
 		apiRoute{pattern: "/api/external-status", handler: http.HandlerFunc(s.apiHandlers.HandleExternalStatus)},
+	)
+
+	// Process-global Slack integration catalog. These paths are intentionally
+	// absent from publicAPIPaths; mutation methods are protected by the global
+	// authentication and CSRF middleware.
+	routes = append(routes,
+		apiRoute{method: "GET", pattern: "/api/slack/environment-import", handler: http.HandlerFunc(s.apiHandlers.HandleSlackEnvironmentStatus)},
+		apiRoute{method: "POST", pattern: "/api/slack/environment-import", handler: http.HandlerFunc(s.apiHandlers.HandleSlackEnvironmentImport)},
+		apiRoute{method: "GET", pattern: "/api/slack/apps", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppsList)},
+		apiRoute{method: "POST", pattern: "/api/slack/apps", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppCreate)},
+		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppGet)},
+		apiRoute{method: "PATCH", pattern: "/api/slack/apps/{appId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppPatch)},
+		apiRoute{method: "DELETE", pattern: "/api/slack/apps/{appId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppDelete)},
+		apiRoute{method: "POST", pattern: "/api/slack/apps/{appId}/validate", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppValidate)},
+		apiRoute{method: "PUT", pattern: "/api/slack/apps/{appId}/token", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppToken)},
+		apiRoute{method: "PUT", pattern: "/api/slack/apps/{appId}/oauth-client", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthClient)},
+		apiRoute{method: "POST", pattern: "/api/slack/apps/{appId}/oauth/start", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthCreateStart)},
+		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}/prepare-delete", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppPrepareDelete)},
+		apiRoute{method: "DELETE", pattern: "/api/slack/apps/{appId}/references", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppReferencesDelete)},
+		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}/installations", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationsList)},
+		apiRoute{method: "POST", pattern: "/api/slack/apps/{appId}/installations", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationCreate)},
+		apiRoute{method: "GET", pattern: "/api/slack/installations/{installationId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationGet)},
+		apiRoute{method: "PATCH", pattern: "/api/slack/installations/{installationId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationPatch)},
+		apiRoute{method: "DELETE", pattern: "/api/slack/installations/{installationId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationDelete)},
+		apiRoute{method: "POST", pattern: "/api/slack/installations/{installationId}/validate", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationValidate)},
+		apiRoute{method: "PUT", pattern: "/api/slack/installations/{installationId}/token", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationToken)},
+		apiRoute{method: "POST", pattern: "/api/slack/installations/{installationId}/oauth/start", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthReplaceStart)},
+		apiRoute{method: "GET", pattern: "/api/slack/installations/{installationId}/prepare-delete", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationPrepareDelete)},
+		apiRoute{method: "DELETE", pattern: "/api/slack/installations/{installationId}/references", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationReferencesDelete)},
+		apiRoute{method: "GET", pattern: "/api/slack/installations/{installationId}/channels", handler: http.HandlerFunc(s.apiHandlers.HandleSlackInstallationChannels)},
+		apiRoute{method: "GET", pattern: "/api/slack/oauth/config", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthConfig)},
+		apiRoute{method: "GET", pattern: "/api/slack/oauth/flows/{flowId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthStatus)},
+		apiRoute{method: "GET", pattern: "/api/slack/oauth/callback", handler: http.HandlerFunc(s.apiHandlers.HandleSlackOAuthCallback)},
 	)
 
 	// Auxiliary and notification endpoints.
@@ -124,6 +169,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
 		apiRoute{method: "GET", pattern: "/api/issues/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
 		apiRoute{method: "PUT", pattern: "/api/issues/upstream", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsUpstream)},
+		apiRoute{method: "GET", pattern: "/api/issues/database-mode", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDatabaseMode)},
+		apiRoute{method: "PUT", pattern: "/api/issues/database-mode", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDatabaseMode)},
 		// Folder shortcut buttons (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
@@ -133,16 +180,21 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		// Global shortcut buttons (stored in settings.json, merged with folder shortcuts at render time).
 		apiRoute{method: "GET", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
+		apiRoute{method: "GET", pattern: "/api/global/task-label-colors", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalTaskLabelColors)},
+		apiRoute{method: "PUT", pattern: "/api/global/task-label-colors", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalTaskLabelColors)},
 		apiRoute{method: "POST", pattern: "/api/issues/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{method: "POST", pattern: "/api/issues/sync", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsSync)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},
-		// Schema migration (guarded by web.beads.allow_migrate_from_ui). See mitto-ukl.
+		// Schema migration — enabled by default; kill-switch via
+		// web.beads.allow_migrate_from_ui: false. See mitto-ukl, mitto-erry.
 		apiRoute{method: "POST", pattern: "/api/beads/migrate", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsMigrate)},
 	)
 
 	// Global dashboard aggregation (epic mitto-aqo).
 	routes = append(routes,
 		apiRoute{method: "GET", pattern: "/api/dashboard", handler: http.HandlerFunc(s.apiHandlers.HandleDashboard)},
+		// Dashboard time-series (epic mitto-a86b, ticket stats.7).
+		apiRoute{method: "GET", pattern: "/api/dashboard/timeseries", handler: http.HandlerFunc(s.apiHandlers.HandleDashboardTimeseries)},
 	)
 
 	// UI preferences.
@@ -159,6 +211,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	// Auth info endpoint (public, used by login page to adapt its UI).
 	routes = append(routes,
 		apiRoute{pattern: "/api/auth-info", handler: http.HandlerFunc(s.apiHandlers.HandleAuthInfo)},
+	)
+
+	// Shared-token rotation (mitto-pscc.9) — restricted to localhost only,
+	// like the file-save endpoints above; surfaced via `mitto auth rotate`.
+	routes = append(routes,
+		apiRoute{method: "POST", pattern: "/api/auth/rotate-token", handler: http.HandlerFunc(s.apiHandlers.HandleRotateSharedToken)},
 	)
 
 	// Health check endpoint — intentionally NOT behind auth.

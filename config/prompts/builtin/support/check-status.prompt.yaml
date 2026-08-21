@@ -1,0 +1,173 @@
+name: 'Support: check status'
+description: 'Refresh a tracked support question from Slack, update its bead, and propose closing if resolved. Never posts to Slack.'
+group: Support
+backgroundColor: '#E1BEE7'
+icon: sync
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
+tags:
+- support
+target:
+  reuse:
+    issue: true
+    coalesce: true
+parameters:
+  - name: IssueID
+    description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
+    required: false
+    type: beadsId
+  - name: SlackChannelID
+    type: text
+    required: false
+    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
+preferredModels:
+  - modelTag: Cheap
+  - modelTag: Coding
+prompt: |-
+  {{- $bead := .Session.BeadsIssue -}}
+  {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
+  {{- $channel := Arg "SlackChannelID" "" -}}
+  {{- if eq $channel "" -}}
+  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
+  {{- end -}}
+  # Support — Check Status
+
+  {{ template "_shared/session-context" . }}
+
+  {{ template "support/shared/playbook-files-policy" . }}
+
+  ## Description
+
+  Bring a tracked support question up to date. This prompt re-fetches the Slack thread, records any
+  new messages on the bead, updates the state to reflect whose turn it is, presents a summary of
+  where the conversation stands, and — if the customer looks satisfied and there is no open question
+  — proposes to **close** the bead.
+
+  > **Applicable state:** any open bead (no gate).
+
+  ## CRITICAL: User Interaction Rules
+
+  {{ template "_shared/no-text-ui" . }}
+  >
+  > ⚠️ This prompt presents its summary **in the conversation**, not in Slack. It must **NEVER** post
+  > to the Slack channel.
+
+  ## Bead writing conventions (descriptions & comments)
+
+  {{ template "beads-issues/shared/markdown-convention" . }}
+  - This prompt only reconciles thread **history** onto the bead; it never authors a customer reply. If
+    you ever record one of our own outbound messages, keep the message text **enclosed in a
+    `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (the shared convention the drafting/reply
+    prompts use) so the customer-facing text stays identifiable.
+
+  {{ template "support/shared/message-comment-key" . }}
+
+  ## Slack tools (names vary by MCP server)
+
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`)." "NoPosting" true "ReadMetadata" false) }}
+
+  ## Step 1: Identify the target bead
+
+  {{ template "support/shared/target-bead-picker" (dict "Ctx" . "Filter" "" "EmptyMessage" "") }}
+
+  ## Step 2: Load the bead history
+
+  - Load `bd show <id>` and `bd comments <id>` so you know what is already captured and what the last
+    recorded state and message were.
+  - Note the current `state:*` label, the stored `slack_thread_ts` / `slack_channel` / `slack_url`
+    metadata, and the timestamp/author of the most recent comment.
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "keep your status summary consistent with the channel's voice (this prompt never posts to Slack; the playbook is context only here)" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "judge whether an open question is in scope for this channel when summarising status" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+
+  ## Step 3: Refresh the Slack thread
+
+  - Re-fetch the full thread (read-thread-replies tool) using the stored `slack_thread_ts` and
+    `slack_channel` from the bead metadata / `# Links`.
+  - Build the chronological list of thread messages with author + UTC time **and Slack `ts`**.
+    Identify which messages are **new** — i.e. whose `ts` is not already present in `bd comments <id>`
+    (see the `ts:` dedup rule).
+  - Note any reactions on our answers (a positive reaction = helpful, a negative one = not helpful).
+
+  ## Step 4: Reconcile new messages onto the bead
+
+  - For **each** new thread message, add a markdown comment (preserve layout with `$'...'` or
+    `printf '%s' "$c" | bd comment <id> --stdin`):
+    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+    - Team / other participants → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC · ts:<slack_ts>]**`
+  - Do **not** duplicate comments that are already on the bead — decide solely by `ts`, never by how
+    similar the text looks.
+
+  ## Step 5: Update the state to reflect reality
+
+  Update the `state:*` label in place (same issue — never `bd set-state`), based on who spoke last
+  and what they said:
+
+  - **The customer's last message just acknowledges / closes the thread** — e.g. "thanks", "that
+    worked", "got it", "sorted", "no worries", or a positive reaction on our answer with no new
+    question — and we already replied (the bead is `awaiting-customer`, `drafting` already posted, or
+    otherwise answered) → **the thread is resolved**. Swap to `state:resolved` and `bd close <id> -r
+    "resolved: customer confirmed"`. Do **NOT** flip it to `awaiting-us` — an acknowledgment is not a
+    new question, and doing so would re-open an answered ticket for another (unneeded) reply. Only skip
+    resolving if the acknowledgment is bundled with a genuine follow-up question.
+  - The **last message is from the customer** and it asks something / provides info we must act on
+    (a real follow-up, not a mere acknowledgment) → `state:awaiting-us`.
+  - **`state:need-info` + the customer just replied** (they answered our outstanding clarifying
+    question, or otherwise spoke last) → `state:awaiting-us`. Treat `need-info` exactly like
+    `awaiting-customer` here: once the customer responds, the ball is back in our court. Do **not**
+    leave it stranded in `need-info`.
+  - The **last message is ours** and we are waiting on the customer → `state:awaiting-customer`.
+  - Do **not** override `state:drafting` if the situation has not changed (it reflects a pending
+    action of ours — a draft awaiting your review). Only change the label when the thread clearly
+    moved on. Likewise keep `state:need-info` **only while the customer has not yet replied**; the
+    moment they do, apply the `need-info → awaiting-us` rule above.
+
+  Apply with: `bd update <id> --remove-label state:<previous> --add-label state:<new>`, and add a
+  short `**[STATE · <time>]** <prev> → <new>` comment noting why.
+
+  ## Step 6: Present the current-status summary (in the conversation)
+
+  - Present a concise, chronological summary **to the user in this conversation** (not to Slack):
+
+    ```markdown
+    ## Status — <id> ([thread](<slack_url>))
+
+    **Topic:** <brief topic>
+    **State:** <state:* label> (updated from <previous> if changed)
+
+    ### Thread history
+    1. [@user] (2d ago): <summary>
+    2. [OUR REPLY] (1d ago): <summary>
+    3. [@user] (2h ago): <summary>  ← new
+
+    ### Where it stands
+    <what is open / who owes the next move / any helpful/not-helpful reactions>
+    ```
+
+  ## Step 7: Propose closing if resolved
+
+  - Judge whether the question is **resolved**. Signals: a positive reaction on our answer; the
+    customer's last message is a "thanks / that worked / got it"; the thread concluded with no
+    outstanding question.
+  - **If resolved**, use `mitto_ui_options`:
+    - **Question**: "This looks resolved. Close the bead?"
+    - **Options**: `[{label: "Close it"}, {label: "Keep open"}]`, timeout 300.
+    - On **"Close it"**: `bd update <id> --remove-label state:<previous> --add-label state:resolved`
+      then `bd close <id> -r "resolved: customer satisfied / question answered"`.
+    - On **"Keep open"**: leave as-is and acknowledge.
+  - **If not resolved**, `mitto_ui_notify` (info) with the next suggested action, e.g. run
+    **"Support: reply to user"** (if we can answer) or **"Support: gather more information"** (if we
+    still need details), then stop.
+
+  ## Set priority by intervention urgency (final step)
+
+  After updating the state (Step 5) — and unless you closed the bead in Step 7 — set its priority to
+  match how urgently *you* (the human) must act. In general:
+
+  {{ template "support/shared/priority-rubric" . }}
+
+  ## Notes
+
+  - This prompt is **read-and-record** on Slack — it never posts a reply to the channel.
+  - Keep the bead the single source of truth: log every new thread message and every state change.
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "check-status" "When" "the status summary has been presented and the close decision made (Steps 6–7)" "ChannelStep" " (Step 2)") }}

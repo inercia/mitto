@@ -97,7 +97,13 @@ Download the latest release from the [releases page](https://github.com/inercia/
 
 #### Build from Source
 
-Requires Go 1.24+ and (for the macOS app) Xcode Command Line Tools.
+Requires Go 1.24+, [Bun](https://bun.sh/) 1.2+ (frontend package manager) and (for the macOS app) Xcode Command Line Tools.
+
+Install Bun with:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
 
 ```bash
 # CLI only
@@ -124,6 +130,8 @@ open Mitto.app
   - 🍎 [macOS App](docs/config/mac/README.md): Hotkeys, notifications
 - 🔧 [Development](docs/development.md): Building, testing
 - 🏗️ [Architecture](docs/devel/README.md): Design internals
+- 📚 [JavaScript SDK](docs/api/README.md): Client library for the Mitto REST API and WebSocket protocol
+- 🐹 [Go SDK](docs/api/go-sdk.md): Go client library for the Mitto REST API and WebSocket protocol
 
 ## Requirements
 

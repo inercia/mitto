@@ -2,7 +2,9 @@ package processors
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,7 +18,10 @@ import (
 	"github.com/google/cel-go/common/types"
 
 	rootconfig "github.com/inercia/mitto/config"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/session"
 )
 
 func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
@@ -43,6 +48,25 @@ func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_IsLoopRunOnStart verifies that BuildCELContext propagates
+// the boot-pulse signal (mitto-ystk) from ProcessorInput into
+// ctx.Session.IsLoopRunOnStart so prompts can gate on {{ .Session.IsLoopRunOnStart }}.
+func TestBuildCELContext_IsLoopRunOnStart(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID:        "sess-1",
+		IsLoopRunOnStart: true,
+	}
+	ctx := BuildCELContext(input)
+	if !ctx.Session.IsLoopRunOnStart {
+		t.Error("expected ctx.Session.IsLoopRunOnStart=true")
+	}
+
+	empty := BuildCELContext(&ProcessorInput{SessionID: "sess-2"})
+	if empty.Session.IsLoopRunOnStart {
+		t.Error("expected IsLoopRunOnStart=false by default")
+	}
+}
+
 // TestBuildCELContext_NewFields asserts that BuildCELContext populates the new
 // fields added in mitto-jkpn: ACP.Available, Children.All, Children.MCP,
 // Session.UserDataJSON, and Workspace.UserDataSchemaJSON.
@@ -55,7 +79,7 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 			{Name: "claude", Type: "claude-code", Tags: []string{"fast"}, Current: false},
 		},
 		ChildSessions: []ChildSession{
-			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true},
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true, BeadsIssue: "mitto-59b", QueuedCount: 2},
 			{ID: "c2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto", IsPrompting: false},
 		},
 		UserDataJSON:       `[{"name":"env","value":"prod"}]`,
@@ -94,6 +118,34 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 		t.Errorf("Children.MCP[0]: got %+v", ctx.Children.MCP[0])
 	}
 
+	// BeadsIssue is propagated onto ChildInfo (mitto-59b): the child that carries
+	// a linked bead surfaces it in both Children.All and Children.MCP; children
+	// without one keep an empty string. This is what backs the trailing " {bd-id}"
+	// suffix in {{ .Children.AllText }} / {{ .Children.MCPText }}.
+	if ctx.Children.All[0].BeadsIssue != "mitto-59b" {
+		t.Errorf("Children.All[0].BeadsIssue = %q, want %q", ctx.Children.All[0].BeadsIssue, "mitto-59b")
+	}
+	if ctx.Children.All[1].BeadsIssue != "" {
+		t.Errorf("Children.All[1].BeadsIssue = %q, want empty", ctx.Children.All[1].BeadsIssue)
+	}
+	if ctx.Children.MCP[0].BeadsIssue != "mitto-59b" {
+		t.Errorf("Children.MCP[0].BeadsIssue = %q, want %q", ctx.Children.MCP[0].BeadsIssue, "mitto-59b")
+	}
+
+	// QueuedCount is propagated onto ChildInfo (mitto-p9r): the child with pending
+	// queued prompts surfaces it in both Children.All and Children.MCP so cleanup
+	// prompts can identify busy children without a per-child mitto_conversation_get
+	// fan-out. Children with no queued work keep the zero value.
+	if ctx.Children.All[0].QueuedCount != 2 {
+		t.Errorf("Children.All[0].QueuedCount = %d, want 2", ctx.Children.All[0].QueuedCount)
+	}
+	if ctx.Children.All[1].QueuedCount != 0 {
+		t.Errorf("Children.All[1].QueuedCount = %d, want 0", ctx.Children.All[1].QueuedCount)
+	}
+	if ctx.Children.MCP[0].QueuedCount != 2 {
+		t.Errorf("Children.MCP[0].QueuedCount = %d, want 2", ctx.Children.MCP[0].QueuedCount)
+	}
+
 	// Session.UserDataJSON
 	if ctx.Session.UserDataJSON != input.UserDataJSON {
 		t.Errorf("Session.UserDataJSON = %q, want %q", ctx.Session.UserDataJSON, input.UserDataJSON)
@@ -102,6 +154,215 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 	// Workspace.UserDataSchemaJSON
 	if ctx.Workspace.UserDataSchemaJSON != input.UserDataSchemaJSON {
 		t.Errorf("Workspace.UserDataSchemaJSON = %q, want %q", ctx.Workspace.UserDataSchemaJSON, input.UserDataSchemaJSON)
+	}
+}
+
+// TestBuildCELContext_HasMessages asserts that BuildCELContext copies
+// input.HasMessages onto ctx.Session.HasMessages (feeds the .Session.HasMessages
+// Go-template branch and CEL enabledWhen expressions), and that the zero value
+// yields false.
+func TestBuildCELContext_HasMessages(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s", HasMessages: true})
+	if !ctx.Session.HasMessages {
+		t.Error("expected ctx.Session.HasMessages=true when input.HasMessages=true")
+	}
+
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.Session.HasMessages {
+		t.Error("expected ctx.Session.HasMessages=false by default")
+	}
+}
+
+// TestBuildCELContext_TriggerKind verifies that BuildCELContext copies
+// input.TriggerKind onto ctx.Trigger.Kind for each of the 5 canonical loop
+// trigger values (mitto-qzqm), and that no structured sub-fields
+// (OnTasks/OnSlack/Slack) are populated when only Kind is set.
+func TestBuildCELContext_TriggerKind(t *testing.T) {
+	kinds := []session.LoopTrigger{
+		session.TriggerSchedule,
+		session.TriggerOnCompletion,
+		session.TriggerOnTasks,
+		session.TriggerOnChild,
+		session.TriggerOnSlack,
+	}
+	for _, kind := range kinds {
+		t.Run(string(kind), func(t *testing.T) {
+			input := &ProcessorInput{SessionID: "s", IsLoop: true, TriggerKind: kind}
+			ctx := BuildCELContext(input)
+			if ctx.Trigger == nil {
+				t.Fatal("expected ctx.Trigger non-nil for a loop dispatch")
+			}
+			if ctx.Trigger.Kind != string(kind) {
+				t.Errorf("ctx.Trigger.Kind = %q, want %q", ctx.Trigger.Kind, string(kind))
+			}
+			if ctx.Trigger.OnTasks != nil {
+				t.Errorf("expected ctx.Trigger.OnTasks=nil, got %#v", ctx.Trigger.OnTasks)
+			}
+			if ctx.Trigger.OnSlack != nil {
+				t.Errorf("expected ctx.Trigger.OnSlack=nil, got %#v", ctx.Trigger.OnSlack)
+			}
+			if ctx.Trigger.Slack != nil {
+				t.Errorf("expected ctx.Trigger.Slack=nil, got %#v", ctx.Trigger.Slack)
+			}
+		})
+	}
+}
+
+// TestBuildCELContext_TriggerManualAndRunOnStart verifies that
+// ctx.Trigger.IsManual / IsRunOnStart mirror input.IsLoopForced /
+// IsLoopRunOnStart (mitto-qzqm).
+func TestBuildCELContext_TriggerManualAndRunOnStart(t *testing.T) {
+	cases := []struct {
+		name             string
+		isLoopForced     bool
+		isLoopRunOnStart bool
+	}{
+		{name: "neither", isLoopForced: false, isLoopRunOnStart: false},
+		{name: "manual-only", isLoopForced: true, isLoopRunOnStart: false},
+		{name: "run-on-start-only", isLoopForced: false, isLoopRunOnStart: true},
+		{name: "both", isLoopForced: true, isLoopRunOnStart: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &ProcessorInput{
+				SessionID:        "s",
+				IsLoop:           true,
+				IsLoopForced:     tc.isLoopForced,
+				IsLoopRunOnStart: tc.isLoopRunOnStart,
+			}
+			ctx := BuildCELContext(input)
+			if ctx.Trigger == nil {
+				t.Fatal("expected ctx.Trigger non-nil for a loop dispatch")
+			}
+			if ctx.Trigger.IsManual != tc.isLoopForced {
+				t.Errorf("ctx.Trigger.IsManual = %v, want %v", ctx.Trigger.IsManual, tc.isLoopForced)
+			}
+			if ctx.Trigger.IsRunOnStart != tc.isLoopRunOnStart {
+				t.Errorf("ctx.Trigger.IsRunOnStart = %v, want %v", ctx.Trigger.IsRunOnStart, tc.isLoopRunOnStart)
+			}
+		})
+	}
+}
+
+// TestBuildCELContext_NonLoopKeepsTriggerNil is a regression test: a plain,
+// non-loop ProcessorInput (IsLoop=false, TriggerKind="") must still yield
+// ctx.Trigger == nil, preserving the documented nil-safe behaviour for
+// ordinary human-typed/ad-hoc prompts (mitto-qzqm).
+func TestBuildCELContext_NonLoopKeepsTriggerNil(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if ctx.Trigger != nil {
+		t.Errorf("expected ctx.Trigger=nil for a non-loop dispatch, got %#v", ctx.Trigger)
+	}
+}
+
+// TestProcessorInput_TriggerKindExcludedFromJSON pins the json:"-" tag on
+// ProcessorInput.TriggerKind (mitto-qzqm): the external-processor JSON
+// payload must never carry the trigger kind under any key spelling.
+func TestProcessorInput_TriggerKindExcludedFromJSON(t *testing.T) {
+	input := &ProcessorInput{TriggerKind: session.TriggerOnChild, IsLoop: true, SessionID: "s"}
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	got := string(data)
+	for _, forbidden := range []string{"trigger_kind", "TriggerKind", "triggerKind"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("external-processor JSON must not contain %q, got: %s", forbidden, got)
+		}
+	}
+}
+
+// TestBuildCELContext_TriggerOnChild verifies that BuildCELContext populates
+// ctx.Trigger.OnChild.{ChildID,Event,StoppedReason} from
+// input.TriggerOnChildDetail for onChild fires (mitto-qvlh), and that no
+// other structured Trigger sub-fields (OnTasks/OnSlack/Slack) are populated
+// as a side effect.
+func TestBuildCELContext_TriggerOnChild(t *testing.T) {
+	cases := []struct {
+		name          string
+		event         string
+		stoppedReason string
+	}{
+		{name: "anyEndResponse", event: "anyEndResponse", stoppedReason: ""},
+		{name: "anyDeleted", event: "anyDeleted", stoppedReason: ""},
+		{name: "anyLoopStopped", event: "anyLoopStopped", stoppedReason: "maxDuration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &ProcessorInput{
+				SessionID:   "s",
+				IsLoop:      true,
+				TriggerKind: session.TriggerOnChild,
+				TriggerOnChildDetail: &TriggerOnChildDetail{
+					ChildID:       "abc",
+					Event:         tc.event,
+					StoppedReason: tc.stoppedReason,
+				},
+			}
+			ctx := BuildCELContext(input)
+			if ctx.Trigger == nil {
+				t.Fatal("expected ctx.Trigger non-nil for an onChild dispatch")
+			}
+			if ctx.Trigger.OnChild == nil {
+				t.Fatal("expected ctx.Trigger.OnChild non-nil for an onChild dispatch")
+			}
+			if ctx.Trigger.OnChild.ChildID != "abc" {
+				t.Errorf("ChildID = %q, want %q", ctx.Trigger.OnChild.ChildID, "abc")
+			}
+			if ctx.Trigger.OnChild.Event != tc.event {
+				t.Errorf("Event = %q, want %q", ctx.Trigger.OnChild.Event, tc.event)
+			}
+			if ctx.Trigger.OnChild.StoppedReason != tc.stoppedReason {
+				t.Errorf("StoppedReason = %q, want %q", ctx.Trigger.OnChild.StoppedReason, tc.stoppedReason)
+			}
+			if ctx.Trigger.OnTasks != nil {
+				t.Errorf("expected ctx.Trigger.OnTasks=nil, got %#v", ctx.Trigger.OnTasks)
+			}
+			if ctx.Trigger.OnSlack != nil {
+				t.Errorf("expected ctx.Trigger.OnSlack=nil, got %#v", ctx.Trigger.OnSlack)
+			}
+			if ctx.Trigger.Slack != nil {
+				t.Errorf("expected ctx.Trigger.Slack=nil, got %#v", ctx.Trigger.Slack)
+			}
+		})
+	}
+}
+
+// TestProcessorInput_TriggerOnChildDetailExcludedFromJSON pins the json:"-"
+// tag on ProcessorInput.TriggerOnChildDetail (mitto-qvlh): the external-
+// processor JSON payload must never carry onChild detail under any key
+// spelling.
+func TestProcessorInput_TriggerOnChildDetailExcludedFromJSON(t *testing.T) {
+	input := &ProcessorInput{
+		TriggerKind:          session.TriggerOnChild,
+		TriggerOnChildDetail: &TriggerOnChildDetail{ChildID: "c", Event: "anyDeleted"},
+		IsLoop:               true,
+		SessionID:            "s",
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	got := string(data)
+	for _, forbidden := range []string{"trigger_on_child_detail", "TriggerOnChildDetail", "triggerOnChildDetail", "on_child"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("external-processor JSON must not contain %q, got: %s", forbidden, got)
+		}
+	}
+}
+
+// TestBuildCELContext_TasksUpstream asserts that BuildCELContext copies
+// input.TasksUpstream onto ctx.Workspace.TasksUpstream (mitto-w8jp.1), and that
+// the zero value yields an empty string (fail-closed: no upstream configured).
+func TestBuildCELContext_TasksUpstream(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s", TasksUpstream: "jira"})
+	if ctx.Workspace.TasksUpstream != "jira" {
+		t.Errorf("Workspace.TasksUpstream = %q, want %q", ctx.Workspace.TasksUpstream, "jira")
+	}
+
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.Workspace.TasksUpstream != "" {
+		t.Errorf("expected empty Workspace.TasksUpstream by default, got %q", emptyCtx.Workspace.TasksUpstream)
 	}
 }
 
@@ -130,6 +391,65 @@ func TestBuildCELContext_ModelTags(t *testing.T) {
 	}
 	if len(emptyCtx.Session.ModelTags) != 0 {
 		t.Errorf("empty Session.ModelTags = %v, want []", emptyCtx.Session.ModelTags)
+	}
+}
+
+// TestBuildCELContext_Prompts asserts that BuildCELContext populates ctx.Prompts
+// from ProcessorInput.PromptsSnapshotFn (mitto-s1w), and that both the nil-fn and
+// nil-snapshot-return branches leave the context zero-valued so the .Prompts.Exists /
+// .Prompts.Enabled predicates fail-closed on cold-start / unwired callers.
+func TestBuildCELContext_Prompts(t *testing.T) {
+	// Branch A: fn returns a real snapshot — Names and EnabledNames are copied
+	// onto ctx.Prompts and the case-insensitive predicates work end-to-end.
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		PromptsSnapshotFn: func() *config.PromptsSnapshot {
+			return &config.PromptsSnapshot{
+				Names:        []string{"Loop fixing bug", "Loop implementing feature"},
+				EnabledNames: []string{"Loop fixing bug", "Loop implementing feature"},
+			}
+		},
+	}
+	ctx := BuildCELContext(input)
+	if len(ctx.Prompts.Names) != 2 {
+		t.Errorf("ctx.Prompts.Names len = %d, want 2 (%v)", len(ctx.Prompts.Names), ctx.Prompts.Names)
+	}
+	if !ctx.Prompts.Enabled("loop fixing bug") { // case-insensitive
+		t.Error("ctx.Prompts.Enabled(\"loop fixing bug\") = false, want true")
+	}
+	if !ctx.Prompts.Exists("Loop implementing feature") {
+		t.Error("ctx.Prompts.Exists(\"Loop implementing feature\") = false, want true")
+	}
+	if ctx.Prompts.Enabled("Nonexistent") {
+		t.Error("ctx.Prompts.Enabled(\"Nonexistent\") = true, want false")
+	}
+
+	// Branch B: fn nil — ctx.Prompts stays zero-valued and predicates fail-closed.
+	nilFnCtx := BuildCELContext(&ProcessorInput{SessionID: "sess-2"})
+	if len(nilFnCtx.Prompts.Names) != 0 || len(nilFnCtx.Prompts.EnabledNames) != 0 {
+		t.Errorf("nil PromptsSnapshotFn: expected zero-valued Prompts, got Names=%v EnabledNames=%v",
+			nilFnCtx.Prompts.Names, nilFnCtx.Prompts.EnabledNames)
+	}
+	if nilFnCtx.Prompts.Enabled("Loop fixing bug") {
+		t.Error("nil PromptsSnapshotFn: Enabled(...) should fail-closed (false)")
+	}
+	if nilFnCtx.Prompts.Exists("Loop fixing bug") {
+		t.Error("nil PromptsSnapshotFn: Exists(...) should fail-closed (false)")
+	}
+
+	// Branch C: fn returns nil snapshot — ctx.Prompts stays zero-valued (same as
+	// branch B); guards against a lazy snapshotter that briefly returns nil on
+	// cold start or under a transient cache miss.
+	nilSnapCtx := BuildCELContext(&ProcessorInput{
+		SessionID:         "sess-3",
+		PromptsSnapshotFn: func() *config.PromptsSnapshot { return nil },
+	})
+	if len(nilSnapCtx.Prompts.Names) != 0 || len(nilSnapCtx.Prompts.EnabledNames) != 0 {
+		t.Errorf("nil snapshot return: expected zero-valued Prompts, got Names=%v EnabledNames=%v",
+			nilSnapCtx.Prompts.Names, nilSnapCtx.Prompts.EnabledNames)
+	}
+	if nilSnapCtx.Prompts.Enabled("Loop fixing bug") {
+		t.Error("nil snapshot: Enabled(...) should fail-closed (false)")
 	}
 }
 
@@ -1481,7 +1801,7 @@ func TestApplyProcessorsEmpty(t *testing.T) {
 	ctx := context.Background()
 	input := &ProcessorInput{Message: "original"}
 
-	result, err := ApplyProcessors(ctx, nil, input, "", nil)
+	result, err := ApplyProcessors(ctx, nil, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1525,12 +1845,57 @@ echo '{"message": "transformed message"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
 	if result.Message != "transformed message" {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, "transformed message")
+	}
+}
+
+// TestApplyProcessorsEmitsTasksUpstream is the mitto-w8jp.1 regression test for
+// the review-phase gap: ApplyProcessors rebuilds a reduced per-iteration
+// ProcessorInput for command-mode execution, so a field added to ProcessorInput
+// is silently dropped unless it is copied there too. The script echoes back the
+// tasks_upstream value it received on stdin, proving the json:"tasks_upstream"
+// tag actually reaches external command processors as documented.
+func TestApplyProcessorsEmitsTasksUpstream(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	scriptPath := filepath.Join(tmpDir, "echo-upstream.sh")
+	scriptContent := `#!/bin/sh
+upstream=$(sed -n 's/.*"tasks_upstream":"\([^"]*\)".*/\1/p')
+echo "{\"message\": \"upstream=${upstream}\"}"
+`
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("Failed to write script: %v", err)
+	}
+
+	procs := []*Processor{
+		{
+			Name:    "echo-upstream",
+			Command: scriptPath,
+			When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Output:  OutputTransform,
+			Input:   InputConversation,
+			HookDir: tmpDir,
+		},
+	}
+
+	input := &ProcessorInput{
+		Message:       "original message",
+		SessionID:     "test-session",
+		WorkingDir:    tmpDir,
+		TasksUpstream: "jira",
+	}
+
+	result, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+	if result.Message != "upstream=jira" {
+		t.Errorf("ApplyProcessors() = %q, want %q (tasks_upstream must reach the command processor)", result.Message, "upstream=jira")
 	}
 }
 
@@ -1563,7 +1928,7 @@ echo '{"text": "PREFIX: "}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1602,7 +1967,7 @@ echo '{"text": " :SUFFIX"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1642,7 +2007,7 @@ echo '{"message": "this should be ignored"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1681,7 +2046,7 @@ echo '{"message": "first message only"}'
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1721,7 +2086,7 @@ exit 1
 		WorkingDir:     tmpDir,
 	}
 
-	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	result, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() should not error with ErrorSkip, got: %v", err)
 	}
@@ -1760,7 +2125,7 @@ exit 1
 		WorkingDir:     tmpDir,
 	}
 
-	_, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil)
+	_, err := ApplyProcessors(ctx, hooks, input, tmpDir, nil, nil)
 	if err == nil {
 		t.Fatal("ApplyProcessors() should error with ErrorFail")
 	}
@@ -1782,7 +2147,7 @@ func TestApplyProcessorsTextModePrepend(t *testing.T) {
 		IsFirstMessage: true,
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1807,7 +2172,7 @@ func TestApplyProcessorsTextModeAppend(t *testing.T) {
 		IsFirstMessage: true,
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1839,7 +2204,7 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 		IsFirstMessage: true,
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1863,7 +2228,7 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 
 	// First message — should apply
 	input := &ProcessorInput{Message: "msg", IsFirstMessage: true}
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1873,7 +2238,7 @@ func TestApplyProcessorsTextModeFirstOnly(t *testing.T) {
 
 	// Subsequent message — should NOT apply
 	input2 := &ProcessorInput{Message: "msg", IsFirstMessage: false}
-	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
+	result2, err := ApplyProcessors(ctx, procs, input2, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1913,7 +2278,7 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 
 	// First message: user request should be delimited.
 	input := &ProcessorInput{Message: msg, IsFirstMessage: true}
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -1949,7 +2314,7 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 
 	// Negative case: non-first message must NOT be wrapped with either tag.
 	input2 := &ProcessorInput{Message: msg, IsFirstMessage: false}
-	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
+	result2, err := ApplyProcessors(ctx, procs, input2, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() (non-first) error = %v", err)
 	}
@@ -1990,7 +2355,7 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 	}
 
 	// Step 1: Apply processors (text-mode prepend/append)
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2055,7 +2420,7 @@ func TestApplyProcessors_TextModeTemplateRendering(t *testing.T) {
 		},
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2078,6 +2443,68 @@ func TestApplyProcessors_TextModeTemplateRendering(t *testing.T) {
 	}
 }
 
+// TestApplyProcessors_ChildrenQueuedCountTemplateAccessor verifies that the new
+// mitto-p9r field `.QueuedCount` is reachable from a text-mode processor body via
+// `{{ range .Children.All }}` (the accessor cleanup.prompt.yaml relies on to
+// replace its per-child mitto_conversation_get fan-out). The test also asserts
+// that .QueuedCount is available inside the {{ range .Children.MCP }} view.
+func TestApplyProcessors_ChildrenQueuedCountTemplateAccessor(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name: "children-queued-count",
+			Text: "[Children Status]\n" +
+				"{{- range .Children.All }}\n" +
+				"- {{ .ID }}: origin={{ .Origin }} prompting={{ .IsPrompting }} queued={{ .QueuedCount }}\n" +
+				"{{- end }}\n" +
+				"[MCP-only Queued]\n" +
+				"{{- range .Children.MCP }}\n" +
+				"- {{ .ID }}={{ .QueuedCount }}\n" +
+				"{{- end }}\n---\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:        "unused",
+		IsFirstMessage: false,
+		SessionID:      "sess-1",
+		ACPServer:      "auggie",
+		ChildSessions: []ChildSession{
+			{ID: "c-mcp", Name: "MCP Child", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: false, QueuedCount: 3},
+			{ID: "c-auto", Name: "Auto Child", ACPServer: "auggie", ChildOrigin: "auto", IsPrompting: true, QueuedCount: 0},
+			{ID: "c-human", Name: "Human Child", ACPServer: "auggie", ChildOrigin: "human", IsPrompting: false, QueuedCount: 1},
+		},
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"c-mcp: origin=mcp prompting=false queued=3",
+		"c-auto: origin=auto prompting=true queued=0",
+		"c-human: origin=human prompting=false queued=1",
+		// MCP-only section — only the mcp-origin child appears
+		"c-mcp=3",
+	} {
+		if !strings.Contains(result.Message, want) {
+			t.Errorf("expected rendered message to contain %q, got:\n%s", want, result.Message)
+		}
+	}
+	// The auto/human children must NOT appear in the MCP-only section.
+	for _, unwanted := range []string{"c-auto=", "c-human="} {
+		if strings.Contains(result.Message, unwanted) {
+			t.Errorf("MCP-only section leaked non-mcp child %q, got:\n%s", unwanted, result.Message)
+		}
+	}
+	if strings.Contains(result.Message, "{{") {
+		t.Errorf("expected all templates rendered (no literal {{), got %q", result.Message)
+	}
+}
+
 // TestApplyProcessorsVariablesInUserMessage tests that @mitto: variables
 // in the user's own message text are also substituted.
 func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {
@@ -2090,7 +2517,7 @@ func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {
 		ParentSessionID: "parent-session",
 	}
 
-	result, err := ApplyProcessors(ctx, nil, input, "", nil)
+	result, err := ApplyProcessors(ctx, nil, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2124,7 +2551,7 @@ func TestApplyProcessorsVariablesEmptyValues(t *testing.T) {
 		ParentSessionID: "", // No parent
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -2161,7 +2588,7 @@ func TestApplyProcessorsVariablesWithAvailableServers(t *testing.T) {
 		},
 	}
 
-	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	result, err := ApplyProcessors(ctx, procs, input, "", nil, nil)
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
@@ -5314,6 +5741,681 @@ func TestApplyOnClose_PromptMode_Dispatched(t *testing.T) {
 	}
 }
 
+// TestApplyOnClose_PromptMode_SkipsForParentDeletedReason reproduces mitto-ce3b:
+// cascade delete runs the close-phase memory processors twice. When a parent
+// session is deleted, HandleDeleteSession (internal/web/handlers/session_delete.go)
+// calls SessionManager.ApplyOnCloseProcessors once for the parent (archive_reason
+// "deleted") and once more for EVERY cascaded child (archive_reason
+// "parent_deleted"). Because the conversationClosed memory processors analyze
+// the whole conversation tree, the parent-level run already covers the
+// descendants — the per-child runs are pure duplicate LLM work.
+//
+// ApplyOnClose has no awareness of the cascade: it treats "parent_deleted" like
+// any other archive reason and dispatches the full prompt-mode batch again. This
+// test simulates the cascade at the Manager level — one ApplyOnClose call per
+// session sharing the same promptFunc spy, mirroring what
+// SessionManager.ApplyOnCloseProcessors does per-session in the real cascade —
+// and asserts that a "parent_deleted" close must NOT trigger a second
+// prompt-mode dispatch once a "deleted" close has already fired for the tree.
+// Today this fails: both calls dispatch, so dispatched ends up 2, not 1.
+func TestApplyOnClose_PromptMode_SkipsForParentDeletedReason(t *testing.T) {
+	var mu sync.Mutex
+	var dispatched []string
+
+	proc := &Processor{
+		Name:   "close-memoriser",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dispatched = append(dispatched, prompt)
+		return nil
+	})
+
+	// Parent close: dispatches the batch for the whole tree.
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "parent-1",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "deleted",
+	})
+
+	// Cascaded child close: should NOT re-dispatch the same memory processor
+	// batch, since the parent-level run already covers this subtree.
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "child-1",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "parent_deleted",
+	})
+
+	// Both dispatches are fire-and-forget goroutines; wait for at least one to
+	// land, then allow a brief extra window for a duplicate to land too (if the
+	// bug is present) before asserting the final count.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(dispatched)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 1 {
+		t.Fatalf("expected exactly 1 prompt-mode dispatch across the parent+child cascade close "+
+			"(archive_reason=parent_deleted should suppress the duplicate batch), got %d dispatch(es): %v — "+
+			"cascade delete runs close-phase memory processors twice (mitto-ce3b)", len(dispatched), dispatched)
+	}
+}
+
+// TestApplyOnClose_PromptMode_RetriesOnTransientFailure reproduces mitto-exr:
+// close-phase prompt-mode dispatch failures are silent (no toast, no retry,
+// work lost). A transient promptFunc error (e.g. "shared ACP process is
+// saturated" from acperrors.ErrSharedProcessSaturated, or an aux-session lock
+// context-cancellation) should be retried with a bounded backoff instead of
+// being dropped after a single attempt — the 15-minute workspace pin taken by
+// SessionManager.ApplyOnCloseProcessors around the close pipeline (see
+// internal/conversation/session_manager.go) exists specifically to make such a
+// retry window safe.
+//
+// Today dispatchPromptBatch (apply.go) calls promptFunc exactly once and only
+// logs on error, so this test currently fails: promptFunc is invoked once and
+// never retried even though the injected error is transient and eventually
+// succeeds.
+func TestApplyOnClose_PromptMode_RetriesOnTransientFailure(t *testing.T) {
+	// Test-seam: shrink the retry cadence so the test doesn't race the
+	// production 2s base delay against its own polling window. Mirrors the
+	// titleRetryBaseDelay override pattern in title_wedge_repro_test.go.
+	// The injected error below is saturation-shaped (mitto-7q2), so it is
+	// retried on dispatchSaturationRetryInterval rather than
+	// dispatchPromptRetryBaseDelay — shrink both so this stays fast.
+	origDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origDelay })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	var mu sync.Mutex
+	var attempts int
+
+	proc := &Processor{
+		Name:   "close-memoriser-flaky",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < 2 {
+			// Transient failure: mirrors acperrors.ErrSharedProcessSaturated /
+			// "shared ACP process is saturated" surfaced by
+			// getOrCreateAuxiliarySession — NOT the non-retryable "no shared
+			// process for workspace" sentinel.
+			return fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated")
+		}
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-flaky",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "manual",
+	})
+
+	// Dispatch is fire-and-forget; poll for the retry to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := attempts
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts < 2 {
+		t.Fatalf("expected dispatchPromptBatch to retry a transient failure (attempts >= 2), got attempts=%d — "+
+			"a single-attempt dispatch silently drops close-phase work on transient errors (mitto-exr)", attempts)
+	}
+}
+
+// TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation reproduces
+// mitto-7q2: dispatchWithRetry used to apply a fixed, failure-agnostic
+// budget (dispatchPromptMaxRetries=2 => 3 total attempts,
+// dispatchPromptRetryBaseDelay exponential backoff) to ALL transient
+// errors, including acperrors.ErrSharedProcessSaturated. In production the
+// only event that clears saturation is GC Tier 5's saturated-idle recycle
+// (internal/acpproc/acp_process_gc.go), which runs on a 30s ticker — far
+// longer than the ~6s the 3-attempt/2s-base-exponential-backoff budget
+// could span. So any close-phase dispatch that hit sustained saturation was
+// structurally guaranteed to be abandoned — and its work permanently lost,
+// since the source conversation is already archived by the time this fires
+// — no matter how soon the process would actually recover.
+//
+// Fixed by giving isSaturationDispatchErr errors their own bounded long-wait
+// policy (dispatchSaturationMaxWait/dispatchSaturationRetryInterval)
+// instead of counting against the normal fixed attempt budget.
+//
+// This test simulates a saturation window that outlasts the old 3-attempt
+// budget but clears well within the new bounded ~120s wait (the 15-min
+// close-pipeline workspace pin taken by SessionManager.ApplyOnCloseProcessors
+// makes such a wait safe, and does not block the Tier 5 recycle). promptFunc
+// fails with a "shared ACP process is saturated" error (mirroring
+// acperrors.ErrSharedProcessSaturated as surfaced by
+// getOrCreateAuxiliarySession) for the first 4 calls and succeeds on the
+// 5th; the dispatch now succeeds instead of giving up after 3 attempts.
+func TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation(t *testing.T) {
+	// Test-seam: shrink the retry cadence so the test doesn't have to wait
+	// out the production delays. Mirrors the override pattern used by
+	// TestApplyOnClose_PromptMode_RetriesOnTransientFailure above.
+	origDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origDelay })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	var mu sync.Mutex
+	var attempts int
+	var notified bool
+	var notifiedErr error
+
+	const attemptsNeededToClearSaturation = 5 // > dispatchPromptMaxRetries+1 (3)
+
+	proc := &Processor{
+		Name:   "close-memoriser-saturated",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < attemptsNeededToClearSaturation {
+			// Mirrors the pre-RPC saturation bail in
+			// getOrCreateAuxiliarySession (acp_process_manager.go), which
+			// wraps acperrors.ErrSharedProcessSaturated.
+			return fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated")
+		}
+		return nil
+	})
+	m.SetNotifyFunc(func(_, _ string, lastErr error) {
+		mu.Lock()
+		notified = true
+		notifiedErr = lastErr
+		mu.Unlock()
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-saturated",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "manual",
+	})
+
+	// Dispatch is fire-and-forget; poll for either the success attempt or
+	// the give-up notification to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n, gaveUp := attempts, notified
+		mu.Unlock()
+		if n >= attemptsNeededToClearSaturation || gaveUp {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts < attemptsNeededToClearSaturation {
+		t.Fatalf("dispatchWithRetry gave up after %d attempt(s) while the shared process was still saturated "+
+			"(notified=%v, lastErr=%v) — a fixed failure-agnostic retry budget cannot span a sustained "+
+			"saturation window, permanently losing close-phase work (mitto-7q2)", attempts, notified, notifiedErr)
+	}
+}
+
+// TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp
+// reproduces mitto-3421: when a shared ACP process stays saturated for the
+// entire dispatchSaturationMaxWait budget, dispatchWithRetry gives up and
+// silently discards the combined close-phase prompt — no spool, no retry.
+//
+// This is a DIFFERENT defect than mitto-7q2 (which only widened the budget)
+// and a different error than mitto-xhsj's acperrors.ErrProcessBusy (already
+// excluded from the saturation branch by a5abdc54). Here promptFunc fails
+// with the genuine acperrors.ErrProcessSaturated sentinel — the REACTIVE
+// bail in getOrCreateAuxiliarySession — for the WHOLE window, mirroring
+// production: a workspace with several concurrently-prompting sessions can
+// never satisfy GC Tier 5's idle gate (ActiveRPCs()==0, no session
+// IsPrompting, empty queues — internal/acpproc/acp_process_gc.go:774-821),
+// so the awaited recycle event structurally cannot occur and the 120s
+// budget always expires (see the mitto-3421 Investigation comment).
+//
+// Because the archived session's source events are gone by the time this
+// fires (ArchiveReason "deleted"), losing the combined prompt here is
+// PERMANENT data loss — exactly the incident logged on the bead (three
+// simultaneously-closed conversations, all five close-phase memory
+// processors dropped). The fix persists the undelivered batch to a
+// workspace-scoped spool (FilePendingDispatchStore) so it survives the
+// give-up and can be retried once the workspace becomes dispatchable again.
+//
+// NOTE on spool location (discovered during the fix, correcting the
+// reproduce-phase assumption below): input.SessionDir is NOT durable for
+// ArchiveReason "deleted" — internal/web/handlers/session_delete.go fires
+// ApplyOnCloseProcessors (which only starts this fire-and-forget goroutine)
+// and then calls store.Delete synchronously right after, which os.RemoveAll
+// the session directory within milliseconds. dispatchWithRetry's give-up can
+// take up to dispatchSaturationMaxWait (minutes in production) to fire, by
+// which point SessionDir is long gone. The persisted spool must therefore be
+// keyed by workspace, independent of any single session's own directory.
+func TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp(t *testing.T) {
+	// Test-seam: shrink the saturation budget/cadence so the test does not
+	// have to wait out the production 120s/5s values. Mirrors the override
+	// pattern used by TestApplyOnClose_PromptMode_GivesUpDuringSustainedSaturation.
+	origMaxWait := dispatchSaturationMaxWait
+	dispatchSaturationMaxWait = 50 * time.Millisecond
+	t.Cleanup(func() { dispatchSaturationMaxWait = origMaxWait })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	// SessionDir still simulates the (short-lived, in production) session
+	// directory — kept to exercise the real CloseProcessorInput shape — but
+	// the assertion below checks the durable workspace spool, not this dir.
+	sessionDir := t.TempDir()
+	spoolDir := t.TempDir()
+
+	var mu sync.Mutex
+	var notified bool
+	var notifiedErr error
+
+	const workspaceUUID = "ws-uuid-stuck"
+
+	proc := &Processor{
+		Name:   "close-memoriser-stuck",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPendingDispatchStore(&FilePendingDispatchStore{BaseDir: spoolDir})
+	// Always saturated — mirrors the genuine reactive bail
+	// (acp_process_manager.go:1250-1268), NOT the proactive ErrProcessBusy
+	// bail that mitto-xhsj already excluded from this retry branch.
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessSaturated)
+	})
+	m.SetNotifyFunc(func(_, _ string, lastErr error) {
+		mu.Lock()
+		notified = true
+		notifiedErr = lastErr
+		mu.Unlock()
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-stuck",
+		SessionDir:    sessionDir,
+		WorkspaceUUID: workspaceUUID,
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "deleted",
+	})
+
+	// Dispatch is fire-and-forget; poll for the give-up notification to fire
+	// once the (shrunk) saturation budget is exhausted.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		gaveUp := notified
+		mu.Unlock()
+		if gaveUp {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	gaveUp := notified
+	lastErr := notifiedErr
+	mu.Unlock()
+	if !gaveUp {
+		t.Fatalf("expected dispatchWithRetry to give up and notify once the saturation budget (%s) was exhausted",
+			dispatchSaturationMaxWait)
+	}
+
+	// The whole point of mitto-3421: once the workspace cannot idle within
+	// the budget, the undelivered batch prompt must survive the give-up in a
+	// durable, workspace-scoped spool — instead of being silently discarded,
+	// which permanently loses the archived conversation's close-phase work.
+	spoolPath := filepath.Join(spoolDir, workspaceUUID+".json")
+	data, readErr := os.ReadFile(spoolPath)
+	if readErr != nil {
+		t.Fatalf("dispatchWithRetry gave up (error=%v) without persisting the undelivered close-phase batch "+
+			"to the workspace spool %s — the archived session's source events are already gone, so processor %q's "+
+			"work is permanently lost (mitto-3421): %v", lastErr, spoolPath, proc.Name, readErr)
+	}
+	var entries []PendingDispatchEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("failed to parse persisted spool %s: %v", spoolPath, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool %s: got %d entries, want 1: %+v", spoolPath, len(entries), entries)
+	}
+	got := entries[0]
+	if got.WorkspaceUUID != workspaceUUID {
+		t.Errorf("persisted entry workspace = %q, want %q", got.WorkspaceUUID, workspaceUUID)
+	}
+	if got.Name != proc.Name {
+		t.Errorf("persisted entry name = %q, want %q", got.Name, proc.Name)
+	}
+	if !strings.Contains(got.Prompt, "sess-close-stuck") {
+		t.Errorf("persisted entry prompt missing @mitto:session_id substitution: %q", got.Prompt)
+	}
+}
+
+// TestApplyAfter_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp covers
+// mitto-q95p: the mitto-3421 pending-dispatch spool (plus the mitto-exr
+// failure-notify seam) used to be wired only in
+// SessionManager.ApplyOnCloseProcessors, on a manager it builds locally for
+// the close path. The manager handed to a live BackgroundSession — which is
+// what ApplyAfter (agentResponded/agentIdle) runs on — never got
+// SetPendingDispatchStore or SetNotifyFunc called on it (only SetPromptFunc
+// and SetRunRecorder were wired), so when an after-phase prompt-mode
+// processor's dispatch exhausted the saturation retry budget,
+// dispatchWithRetry's give-up branch found m.pendingDispatchStore == nil and
+// m.notifyFunc == nil: the batch was neither spooled for later retry nor
+// surfaced to the user — it was simply gone, with only an ERROR log line as
+// a trace.
+//
+// The fix hoists this wiring into internal/conversation
+// (BackgroundSession.wireProcessorPendingDispatch, called from both
+// NewBackgroundSession and ResumeBackgroundSession) so every live session's
+// processor manager gets the same SetPendingDispatchStore/SetNotifyFunc/
+// SetLateDeliveryFunc wiring the close-phase manager already had. This test
+// mirrors TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp
+// exactly, but drives ApplyAfter instead of ApplyOnClose and wires the
+// manager the way wireProcessorPendingDispatch now does, proving the shared
+// dispatchWithRetry give-up mechanics persist the batch correctly for the
+// after-phase too, not just for ApplyOnClose.
+func TestApplyAfter_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp(t *testing.T) {
+	// Test-seam: shrink the saturation budget/cadence so the test does not
+	// have to wait out the production 120s/5s values.
+	origMaxWait := dispatchSaturationMaxWait
+	dispatchSaturationMaxWait = 50 * time.Millisecond
+	t.Cleanup(func() { dispatchSaturationMaxWait = origMaxWait })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	spoolDir := t.TempDir()
+	const workspaceUUID = "ws-uuid-after-stuck"
+
+	proc := &Processor{
+		Name:   "identify-user-data",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: "Persist for session @mitto:session_id.",
+	}
+
+	m := makeAfterManager([]*Processor{proc})
+	// Post-fix live-session wiring (internal/conversation/bgsession_callbacks.go
+	// wireProcessorPendingDispatch): SetPromptFunc, SetPendingDispatchStore and
+	// SetNotifyFunc are all wired on the per-session processor manager now.
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		// Always saturated — mirrors the genuine reactive bail
+		// (acp_process_manager.go), same as the close-phase test above.
+		return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessSaturated)
+	})
+	m.SetPendingDispatchStore(&FilePendingDispatchStore{BaseDir: spoolDir})
+
+	input := makeAfterInput("user", "end_turn")
+	input.WorkspaceUUID = workspaceUUID
+	m.ApplyAfter(context.Background(), input)
+
+	// Dispatch is fire-and-forget; give dispatchWithRetry's shrunk saturation
+	// budget time to expire and give up.
+	time.Sleep(300 * time.Millisecond)
+
+	// The whole point of mitto-3421 (and mitto-q95p extending it to the after
+	// phase): once the workspace cannot idle within the budget, the
+	// undelivered batch prompt must survive the give-up in a durable,
+	// workspace-scoped spool — instead of being silently discarded.
+	spoolPath := filepath.Join(spoolDir, workspaceUUID+".json")
+	data, readErr := os.ReadFile(spoolPath)
+	if readErr != nil {
+		t.Fatalf("after-phase prompt-mode processor %q gave up on a saturated dispatch without persisting the "+
+			"undelivered batch to the workspace spool %s (mitto-q95p): %v", proc.Name, spoolPath, readErr)
+	}
+	var entries []PendingDispatchEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		t.Fatalf("failed to parse persisted spool %s: %v", spoolPath, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spool %s: got %d entries, want 1: %+v", spoolPath, len(entries), entries)
+	}
+	if entries[0].Name != proc.Name {
+		t.Errorf("persisted entry name = %q, want %q", entries[0].Name, proc.Name)
+	}
+}
+
+// TestIsSaturationDispatchErr_MisroutesProcessBusy reproduces mitto-xhsj:
+// isSaturationDispatchErr (apply.go) classifies a purely-transient
+// acperrors.ErrProcessBusy (the proactive concurrency-cap load-shedding bail
+// in getOrCreateAuxiliarySession, cleared as soon as concurrent RPC load
+// drops — no GC recycle involved) as saturation-shaped, because
+// ErrProcessBusy wraps the umbrella acperrors.ErrSharedProcessSaturated (for
+// transition-era string-matching callers) and isSaturationDispatchErr
+// string-matches on that umbrella's literal text ("shared ACP process is
+// saturated") rather than distinguishing the granular sentinel.
+//
+// Consequence (confirmed against production logs): a close-phase processor
+// dispatch that fails with ErrProcessBusy is routed into
+// dispatchWithRetry's saturation branch — a fixed dispatchSaturationRetryInterval
+// (5s) poll for up to dispatchSaturationMaxWait (120s), waiting for GC Tier 5's
+// saturated-idle recycle. But GC Tier 5 (acp_process_gc.go) only recycles a
+// process that is BOTH saturated/gated AND has ActiveRPCs()==0 — the very
+// condition that produced ErrProcessBusy (ActiveRPCs >= threshold) fails that
+// second gate by construction, so the awaited recycle event cannot occur for
+// this class of error. The correct behavior is for a busy (not saturated)
+// process to use a fast, bounded retry — not the long saturation wait.
+//
+// This test currently fails: isSaturationDispatchErr(ErrProcessBusy) returns
+// true, when it should return false so ErrProcessBusy gets its own
+// (separately dispatched) fast-retry treatment instead of the GC-recycle wait.
+func TestIsSaturationDispatchErr_MisroutesProcessBusy(t *testing.T) {
+	// Mirrors the exact wrap chain produced by
+	// internal/acpproc/acp_process_manager.go's proactive busy bail:
+	// getOrCreateAuxiliarySession wraps acperrors.ErrProcessBusy, and the
+	// caller wraps that again with "failed to get auxiliary session: %w".
+	err := fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessBusy)
+
+	if isSaturationDispatchErr(err) {
+		t.Fatalf("isSaturationDispatchErr(%v) = true, want false — a transient "+
+			"acperrors.ErrProcessBusy (concurrent RPC load-shedding, clears as soon as "+
+			"load drops) was misclassified as saturation-shaped and will be routed into "+
+			"dispatchWithRetry's 120s GC-recycle wait policy, an event that cannot occur "+
+			"while ActiveRPCs is still >= threshold (mitto-xhsj)", err)
+	}
+}
+
+// capturedLogRecord is a minimal snapshot of an slog.Record used by
+// recordingLogHandler below to assert on log level/message/attribute shape
+// without depending on any particular slog output format.
+type capturedLogRecord struct {
+	Level   slog.Level
+	Message string
+	Attrs   map[string]any
+}
+
+// recordingLogHandler is a minimal slog.Handler that captures every record
+// passed to it (at any level, since Enabled always returns true) into an
+// in-memory, mutex-protected slice. Used by the saturation-logging tests
+// below (mitto-nnte) to assert on WARN-vs-DEBUG log volume and attributes
+// without parsing text/JSON log output.
+type recordingLogHandler struct {
+	mu      sync.Mutex
+	records []capturedLogRecord
+}
+
+func (h *recordingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	h.records = append(h.records, capturedLogRecord{Level: r.Level, Message: r.Message, Attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recordingLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingLogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingLogHandler) snapshot() []capturedLogRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]capturedLogRecord, len(h.records))
+	copy(out, h.records)
+	return out
+}
+
+// TestRunDispatchRetryLoop_SaturationLogging_FirstWarnThenDebug covers the
+// mitto-nnte fix: a sustained saturation window used to log a WARN on every
+// single poll — up to dispatchSaturationMaxWait/dispatchSaturationRetryInterval
+// (~24 near-duplicate lines per occurrence in production). Only the FIRST
+// saturation observation should log at WARN (carrying max_wait/deadline
+// attributes for triage); every subsequent poll while still waiting on the
+// same GC recycle window should log at DEBUG, with identical message text.
+func TestRunDispatchRetryLoop_SaturationLogging_FirstWarnThenDebug(t *testing.T) {
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	const attemptsNeededToClearSaturation = 5 // 4 saturated polls, then success
+	const saturationMsg = "prompt-mode processor dispatch attempt failed; shared process saturated, waiting for GC recycle"
+
+	handler := &recordingLogHandler{}
+	m := NewManager("", slog.New(handler))
+
+	var attempts int
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		attempts++
+		if attempts < attemptsNeededToClearSaturation {
+			return fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated")
+		}
+		return nil
+	})
+
+	totalAttempts, _, err := m.runDispatchRetryLoop("ws-uuid", "proc", "prompt", time.Second, "skip")
+	if err != nil {
+		t.Fatalf("runDispatchRetryLoop returned error %v, want nil (should succeed on attempt %d)", err, attemptsNeededToClearSaturation)
+	}
+	if totalAttempts != attemptsNeededToClearSaturation {
+		t.Fatalf("totalAttempts = %d, want %d", totalAttempts, attemptsNeededToClearSaturation)
+	}
+
+	var warns, debugs []capturedLogRecord
+	for _, rec := range handler.snapshot() {
+		if rec.Message != saturationMsg {
+			continue
+		}
+		switch rec.Level {
+		case slog.LevelWarn:
+			warns = append(warns, rec)
+		case slog.LevelDebug:
+			debugs = append(debugs, rec)
+		default:
+			t.Errorf("unexpected level %v for saturation-wait log: %+v", rec.Level, rec)
+		}
+	}
+
+	if len(warns) != 1 {
+		t.Fatalf("got %d WARN saturation-wait log(s), want exactly 1 (attempts=%d): %+v", len(warns), attempts, warns)
+	}
+	wantDebugs := attemptsNeededToClearSaturation - 2 // saturated polls minus the first (WARN)
+	if len(debugs) != wantDebugs {
+		t.Fatalf("got %d DEBUG saturation-wait log(s), want %d (attempts=%d): %+v", len(debugs), wantDebugs, attempts, debugs)
+	}
+
+	if _, ok := warns[0].Attrs["max_wait"]; !ok {
+		t.Errorf("first (WARN) saturation-wait log missing \"max_wait\" attribute: %+v", warns[0].Attrs)
+	}
+	if _, ok := warns[0].Attrs["deadline"]; !ok {
+		t.Errorf("first (WARN) saturation-wait log missing \"deadline\" attribute: %+v", warns[0].Attrs)
+	}
+}
+
+// TestDispatchWithRetry_GiveUp_LogsWaitedDuration covers the mitto-nnte
+// addition of a "waited" (total wall-clock time spent retrying) attribute on
+// dispatchWithRetry's terminal ERROR log when the saturation retry budget is
+// exhausted — previously only "attempts" was logged, with no indication of
+// how long the caller had actually waited before giving up.
+func TestDispatchWithRetry_GiveUp_LogsWaitedDuration(t *testing.T) {
+	origMaxWait := dispatchSaturationMaxWait
+	dispatchSaturationMaxWait = 30 * time.Millisecond
+	t.Cleanup(func() { dispatchSaturationMaxWait = origMaxWait })
+	origSaturationInterval := dispatchSaturationRetryInterval
+	dispatchSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { dispatchSaturationRetryInterval = origSaturationInterval })
+
+	handler := &recordingLogHandler{}
+	m := NewManager("", slog.New(handler))
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		// Always saturated — mirrors the genuine reactive bail, same as
+		// TestApplyOnClose_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp.
+		return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessSaturated)
+	})
+
+	// No pendingDispatchStore/workspaceUUID wired, so this exercises the
+	// "batch not persisted, work is lost" terminal ERROR branch.
+	m.dispatchWithRetry("", "proc", "prompt", time.Second, "skip", "give up")
+
+	var errRecs []capturedLogRecord
+	for _, rec := range handler.snapshot() {
+		if rec.Level == slog.LevelError {
+			errRecs = append(errRecs, rec)
+		}
+	}
+	if len(errRecs) != 1 {
+		t.Fatalf("got %d ERROR log(s) on give-up, want exactly 1: %+v", len(errRecs), errRecs)
+	}
+
+	waited, ok := errRecs[0].Attrs["waited"].(time.Duration)
+	if !ok {
+		t.Fatalf("terminal ERROR log missing a time.Duration \"waited\" attribute: %+v", errRecs[0].Attrs)
+	}
+	if waited < dispatchSaturationMaxWait {
+		t.Errorf("waited = %v, want >= dispatchSaturationMaxWait (%v) since the saturation budget was fully exhausted",
+			waited, dispatchSaturationMaxWait)
+	}
+}
+
 // TestApplyOnClose_SkipsOtherPhases ensures processors from other phases are ignored.
 func TestApplyOnClose_SkipsOtherPhases(t *testing.T) {
 	var dispatched int
@@ -5468,5 +6570,1747 @@ func TestBuildCELContext_TriggerOnTasks(t *testing.T) {
 		if delta.Added[0]["title"] != "Mutated" {
 			t.Errorf("expected ctx.Trigger.OnTasks.Changes.Added to alias input.TriggerOnTasksChanges.Added (no defensive copy)")
 		}
+	}
+}
+
+// TestBuildCELContext_TriggerSlack verifies that BuildCELContext populates
+// ctx.Trigger.Slack.* from input.TriggerSlackEvent when the dispatch was
+// fired by the experimental Slack event source (mitto-qewp PoC), leaves
+// ctx.Trigger nil when it was not, and that both OnTasks and Slack can be
+// set independently on the same ctx.Trigger without clobbering each other.
+func TestBuildCELContext_TriggerSlack(t *testing.T) {
+	// (1) nil input.TriggerSlackEvent → ctx.Trigger stays nil.
+	nilCtx := BuildCELContext(&ProcessorInput{SessionID: "sess-nil"})
+	if nilCtx.Trigger != nil {
+		t.Errorf("expected ctx.Trigger=nil when input.TriggerSlackEvent is nil, got %#v", nilCtx.Trigger)
+	}
+
+	// (2) populated Slack event → ctx.Trigger.Slack.* mirrors the input.
+	evt := &TriggerSlackEvent{
+		EventID:         "Ev123",
+		ChannelID:       "C123",
+		AuthorID:        "U123",
+		Timestamp:       "1700000000.000100",
+		ThreadTimestamp: "1699999999.000100",
+		Text:            "hello <@BOT> please look at this",
+	}
+	input := &ProcessorInput{
+		SessionID:         "sess-slack",
+		IsLoop:            true,
+		TriggerSlackEvent: evt,
+	}
+	ctx := BuildCELContext(input)
+	if ctx.Trigger == nil {
+		t.Fatal("expected ctx.Trigger non-nil when input.TriggerSlackEvent is set")
+	}
+	if ctx.Trigger.Slack == nil {
+		t.Fatal("expected ctx.Trigger.Slack non-nil for Slack fires")
+	}
+	got := ctx.Trigger.Slack
+	if got.EventID != evt.EventID || got.ChannelID != evt.ChannelID || got.AuthorID != evt.AuthorID ||
+		got.Timestamp != evt.Timestamp || got.ThreadTimestamp != evt.ThreadTimestamp || got.Text != evt.Text {
+		t.Errorf("ctx.Trigger.Slack = %#v, want fields copied from %#v", got, evt)
+	}
+
+	// (3) Both OnTasks and Slack can coexist on ctx.Trigger without one
+	// clobbering the other's presence.
+	combined := &ProcessorInput{
+		SessionID:             "sess-both",
+		TriggerOnTasksChanges: &config.TasksDelta{Added: []map[string]any{{"id": "mitto-a"}}},
+		TriggerSlackEvent:     evt,
+	}
+	combinedCtx := BuildCELContext(combined)
+	if combinedCtx.Trigger == nil || combinedCtx.Trigger.OnTasks == nil || combinedCtx.Trigger.Slack == nil {
+		t.Fatalf("expected both Trigger.OnTasks and Trigger.Slack to be set, got %#v", combinedCtx.Trigger)
+	}
+}
+
+// TestApplyAfter_TemplateExposesWorkspaceUUID verifies mitto-nhr: the after-phase
+// (agentResponded) prompt-render context populates .Workspace.UUID from
+// AfterProcessorInput.WorkspaceUUID, mirroring what hook.go already does for
+// enabledWhen. Regression guard for internal/processors/apply.go's
+// `tctx.Workspace.UUID = input.WorkspaceUUID` assignment in ApplyAfter.
+func TestApplyAfter_TemplateExposesWorkspaceUUID(t *testing.T) {
+	proc := &Processor{
+		Name:   "after-uuid-probe",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: `{{ if .Workspace.UUID }}ws={{ .Workspace.UUID }}{{ else }}no-ws{{ end }}`,
+	}
+
+	t.Run("non-empty WorkspaceUUID reaches the template", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn") // WorkspaceUUID: "test-workspace"
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		if want := "ws=test-workspace"; dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+
+	t.Run("empty WorkspaceUUID renders the else-branch", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.WorkspaceUUID = ""
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		if want := "no-ws"; dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+}
+
+// TestApplyOnClose_TemplateExposesWorkspaceUUID verifies mitto-nhr: the
+// close-phase (conversationClosed) prompt-render context populates
+// .Workspace.UUID from CloseProcessorInput.WorkspaceUUID. Regression guard for
+// internal/processors/apply.go's `tctx.Workspace.UUID = input.WorkspaceUUID`
+// assignment in ApplyOnClose — this is the render site the five close-phase
+// builtins (auggie-update-rules, claude-update-memory, memorize-preferences,
+// extract-memories-on-close, curate-memories-on-close) rely on to guard their
+// mitto_workspace_ui_notify instruction.
+func TestApplyOnClose_TemplateExposesWorkspaceUUID(t *testing.T) {
+	proc := &Processor{
+		Name:   "close-uuid-probe",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: `{{ if .Workspace.UUID }}ws={{ .Workspace.UUID }}{{ else }}no-ws{{ end }}`,
+	}
+
+	waitForDispatch := func(t *testing.T, mu *sync.Mutex, dispatched *[]string) string {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			n := len(*dispatched)
+			mu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(*dispatched) != 1 {
+			t.Fatalf("expected 1 dispatch, got %d", len(*dispatched))
+		}
+		return (*dispatched)[0]
+	}
+
+	t.Run("non-empty WorkspaceUUID reaches the template", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := NewManager("", nil)
+		m.processors = []*Processor{proc}
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyOnClose(context.Background(), CloseProcessorInput{
+			SessionID:     "sess-close-uuid",
+			WorkspaceUUID: "ws-close-uuid",
+			WorkingDir:    "/tmp/wd",
+			ArchiveReason: "manual",
+		})
+
+		if got, want := waitForDispatch(t, &mu, &dispatched), "ws=ws-close-uuid"; got != want {
+			t.Errorf("prompt = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty WorkspaceUUID renders the else-branch", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := NewManager("", nil)
+		m.processors = []*Processor{proc}
+		m.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyOnClose(context.Background(), CloseProcessorInput{
+			SessionID:     "sess-close-no-uuid",
+			WorkspaceUUID: "",
+			WorkingDir:    "/tmp/wd",
+			ArchiveReason: "manual",
+		})
+
+		if got, want := waitForDispatch(t, &mu, &dispatched), "no-ws"; got != want {
+			t.Errorf("prompt = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestBuiltinCloseProcessors_WorkspaceUINotify verifies mitto-nhr's acceptance
+// criteria against the real embedded builtin processors: the five close-phase
+// (conversationClosed) processors that write files — auggie-update-rules,
+// claude-update-memory, memorize-preferences, extract-memories-on-close,
+// curate-memories-on-close — must render a mitto_workspace_ui_notify
+// instruction carrying the live workspace UUID when one is available, and must
+// omit it (falling back to a silent-exit instruction) when the UUID is empty,
+// so a background aux session never calls the tool with a blank
+// workspace_uuid (which the tool hard-rejects).
+func TestBuiltinCloseProcessors_WorkspaceUINotify(t *testing.T) {
+	names := []string{
+		"auggie-update-rules",
+		"claude-update-memory",
+		"memorize-preferences",
+		"extract-memories-on-close",
+		"curate-memories-on-close",
+	}
+
+	dir := t.TempDir()
+	for _, name := range names {
+		srcPath := rootconfig.BuiltinProcessorsDir + "/" + name + ".yaml"
+		content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".yaml"), content, 0644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	procs, err := NewLoader(dir, nil).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	byName := make(map[string]*Processor, len(procs))
+	for _, p := range procs {
+		byName[p.Name] = p
+	}
+	for _, name := range names {
+		if byName[name] == nil {
+			t.Fatalf("builtin processor %q not found among loaded processors", name)
+		}
+	}
+
+	render := func(t *testing.T, proc *Processor, uuid string) string {
+		t.Helper()
+		ctx := &config.PromptEnabledContext{
+			Args: map[string]string{"PreferencesFile": "90-local.md"}, // needed for memorize-preferences to resolve $file
+		}
+		ctx.Session.ID = "sess-1"
+		ctx.Workspace.UUID = uuid
+		ctx.Workspace.Folder = t.TempDir()
+		funcs := config.BuildTemplateFuncMap(ctx)
+		out, rerr := config.RenderPromptTemplate(proc.Name, proc.Prompt, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("render(%s, uuid=%q) error = %v", proc.Name, uuid, rerr)
+		}
+		return out
+	}
+
+	for _, name := range names {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			proc := byName[name]
+
+			withUUID := render(t, proc, "ws-1234")
+			if !strings.Contains(withUUID, "mitto_workspace_ui_notify") {
+				t.Errorf("%s: expected mitto_workspace_ui_notify instruction when Workspace.UUID is set, got:\n%s", name, withUUID)
+			}
+			if !strings.Contains(withUUID, `workspace_uuid: "ws-1234"`) {
+				t.Errorf("%s: expected the live UUID substituted into workspace_uuid, got:\n%s", name, withUUID)
+			}
+			if strings.Contains(withUUID, "active UI to notify") {
+				t.Errorf("%s: old 'Silent completion' gag clause text still present", name)
+			}
+
+			withoutUUID := render(t, proc, "")
+			if strings.Contains(withoutUUID, "mitto_workspace_ui_notify") {
+				t.Errorf("%s: mitto_workspace_ui_notify must NOT render when Workspace.UUID is empty, got:\n%s", name, withoutUUID)
+			}
+			if !strings.Contains(withoutUUID, "skip the toast and exit silently") {
+				t.Errorf("%s: expected the fail-silent instruction when Workspace.UUID is empty, got:\n%s", name, withoutUUID)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunRecorder seam (mitto-fm89 Stats tab)
+//
+// These tests cover the processors.RunRecorder callback contract added to
+// Manager/ApplyProcessors/applyWithRerun/ApplyAfter/ApplyOnClose: every
+// processor invocation across the three pipelines ("before"/"after"/"close")
+// must produce exactly one ProcessorRun with the correct Name/Phase/Outcome,
+// and the callback must be nil-safe and propagated by every CloneWith*
+// constructor. The BackgroundSession-side wiring (wireProcessorRunRecorder)
+// is a thin, directly-inspectable adapter exercised indirectly by the full
+// internal/conversation suite; this package owns the seam's core behavior.
+// ---------------------------------------------------------------------------
+
+// recordingRecorder is a test double for processors.RunRecorder that captures
+// every ProcessorRun it receives, safe for concurrent use (ApplyOnClose and
+// ApplyAfter's prompt-mode paths may dispatch from goroutines in production,
+// though recordRun itself is always called synchronously from the pipeline
+// goroutine in these tests).
+type recordingRecorder struct {
+	mu   sync.Mutex
+	runs []ProcessorRun
+}
+
+func (r *recordingRecorder) record(run ProcessorRun) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runs = append(r.runs, run)
+}
+
+func (r *recordingRecorder) snapshot() []ProcessorRun {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ProcessorRun, len(r.runs))
+	copy(out, r.runs)
+	return out
+}
+
+// byName returns the first captured run for the given processor name, or nil.
+func (r *recordingRecorder) byName(name string) *ProcessorRun {
+	for _, run := range r.snapshot() {
+		if run.Name == name {
+			run := run
+			return &run
+		}
+	}
+	return nil
+}
+
+// TestRecordRun_NilManagerSafe verifies that calling recordRun on a nil
+// *Manager never panics (defensive nil receiver check).
+func TestRecordRun_NilManagerSafe(t *testing.T) {
+	var m *Manager
+	m.recordRun(ProcessorRun{Name: "x", Phase: "before", Outcome: "ok"})
+}
+
+// TestRecordRun_NoRecorderConfiguredSafe verifies recordRun is a no-op when
+// no RunRecorder has been installed (default Manager state).
+func TestRecordRun_NoRecorderConfiguredSafe(t *testing.T) {
+	m := NewManager("", nil)
+	m.recordRun(ProcessorRun{Name: "x", Phase: "before", Outcome: "ok"})
+}
+
+// TestRecordRun_UnnamedProcessorSkipped verifies that a ProcessorRun with an
+// empty Name never reaches the recorder — anonymous/unnamed processors (e.g.
+// text-mode processors synthesized without a Name) must not pollute the
+// Stats tab.
+func TestRecordRun_UnnamedProcessorSkipped(t *testing.T) {
+	rec := &recordingRecorder{}
+	m := NewManager("", nil)
+	m.SetRunRecorder(rec.record)
+
+	m.recordRun(ProcessorRun{Name: "", Phase: "before", Outcome: "ok"})
+
+	if got := len(rec.snapshot()); got != 0 {
+		t.Errorf("expected 0 recorded runs for unnamed processor, got %d", got)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_CommandOk verifies a successful command-mode
+// processor is recorded with Phase="before", Outcome="ok", and a positive
+// Duration (a real subprocess exec always takes measurable wall-clock time).
+func TestApplyProcessors_RunRecorder_CommandOk(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "ok.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\": \"done\"}'\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-ok",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("cmd-ok")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-ok")
+	}
+	if run.Phase != "before" {
+		t.Errorf("Phase = %q, want %q", run.Phase, "before")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+	if run.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0 for an executed command", run.Duration)
+	}
+	if run.Error != "" {
+		t.Errorf("Error = %q, want empty", run.Error)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_Skipped verifies a non-applicable processor
+// (match:first, not the first message) is recorded as skipped with zero
+// duration and no error, and its command is never executed.
+func TestApplyProcessors_RunRecorder_Skipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "never-run.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "skip-me",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
+		Output:  OutputDiscard,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", IsFirstMessage: false, WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("skip-me")
+	if run == nil {
+		t.Fatal("expected a recorded run for skip-me")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+	if run.Duration != 0 {
+		t.Errorf("Duration = %v, want 0 for a skipped processor", run.Duration)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_ErrorSkip verifies a failing command-mode
+// processor with onError:skip is recorded as an error (with a non-empty
+// Error message and positive Duration), and the pipeline continues.
+func TestApplyProcessors_RunRecorder_ErrorSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "fail.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-fail",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		OnError: ErrorSkip,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("cmd-fail")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-fail")
+	}
+	if run.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "error")
+	}
+	if run.Error == "" {
+		t.Error("expected a non-empty Error message")
+	}
+	if run.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0 for an executed (failing) command", run.Duration)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_ErrorFail verifies that a failing processor
+// with onError:fail is still recorded as an error before ApplyProcessors
+// returns the error that aborts the pipeline.
+func TestApplyProcessors_RunRecorder_ErrorFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "fail.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-fail-hard",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		OnError: ErrorFail,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err == nil {
+		t.Fatal("expected ApplyProcessors() to return an error with onError:fail")
+	}
+
+	run := rec.byName("cmd-fail-hard")
+	if run == nil {
+		t.Fatal("expected a recorded run even though the pipeline aborted")
+	}
+	if run.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "error")
+	}
+}
+
+// TestApplyProcessors_RunRecorder_TextMode verifies a text-mode processor is
+// recorded as ok with zero duration (no external command runs).
+func TestApplyProcessors_RunRecorder_TextMode(t *testing.T) {
+	procs := []*Processor{{
+		Name:   "text-mode",
+		Text:   "PREFIX: ",
+		Mutate: config.ProcessorMutatePrepend,
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+	}}
+	input := &ProcessorInput{Message: "original"}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, "", nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("text-mode")
+	if run == nil {
+		t.Fatal("expected a recorded run for text-mode")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+	if run.Duration != 0 {
+		t.Errorf("Duration = %v, want 0 for a text-mode processor", run.Duration)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_PromptModeAlwaysSkipped verifies that the
+// free ApplyProcessors function (which has no PromptFunc) always records
+// prompt-mode processors as skipped — only Manager.Apply's applyWithRerun
+// path can actually dispatch prompt-mode processors.
+func TestApplyProcessors_RunRecorder_PromptModeAlwaysSkipped(t *testing.T) {
+	procs := []*Processor{{
+		Name:   "prompt-mode",
+		Prompt: "do something",
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+	}}
+	input := &ProcessorInput{Message: "original"}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, "", nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("prompt-mode")
+	if run == nil {
+		t.Fatal("expected a recorded run for prompt-mode")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+}
+
+// TestApplyProcessors_RunRecorder_NilRecorderSafe verifies passing a nil
+// RunRecorder never panics across skip/ok/error branches.
+func TestApplyProcessors_RunRecorder_NilRecorderSafe(t *testing.T) {
+	tmpDir := t.TempDir()
+	okScript := filepath.Join(tmpDir, "ok.sh")
+	failScript := filepath.Join(tmpDir, "fail.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho '{\"message\":\"ok\"}'\n"), 0755)
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	procs := []*Processor{
+		{Name: "ok", Command: okScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, HookDir: tmpDir},
+		{Name: "fail", Command: failScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, OnError: ErrorSkip, HookDir: tmpDir},
+		{Name: "skip", Command: okScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst}, Output: OutputTransform, HookDir: tmpDir},
+	}
+	input := &ProcessorInput{Message: "original", IsFirstMessage: false, WorkingDir: tmpDir}
+
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, nil); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+}
+
+// TestManagerApply_RunRecorder_NonRerunPath verifies that Manager.Apply's
+// default (non-rerun, no prompt-mode) path wires m.recordRun into
+// ApplyProcessors so processor runs are captured end-to-end via SetRunRecorder.
+func TestManagerApply_RunRecorder_NonRerunPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "ok.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\":\"done\"}'\n"), 0755)
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{{
+		Name:    "via-manager",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputTransform,
+		HookDir: tmpDir,
+	}}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("via-manager")
+	if run == nil {
+		t.Fatal("expected Manager.Apply to record a run via SetRunRecorder")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+}
+
+// TestApplyWithRerun_RunRecorder covers the applyWithRerun path (triggered by
+// the presence of a prompt-mode processor), asserting one ProcessorRun per
+// processor across text-mode/ok, prompt-mode/ok (dispatched), prompt-mode/
+// skipped (no PromptFunc), and command-mode/ok.
+func TestApplyWithRerun_RunRecorder(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "ok.sh")
+	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\":\"done\"}'\n"), 0755)
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{
+		{Name: "text", Text: "PREFIX: ", Mutate: config.ProcessorMutatePrepend, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "prompt-dispatched", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "cmd", Command: scriptPath, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, HookDir: tmpDir},
+	}
+	var dispatchedMu sync.Mutex
+	var dispatched int
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		dispatchedMu.Lock()
+		dispatched++
+		dispatchedMu.Unlock()
+		return nil
+	})
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", WorkingDir: tmpDir, IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if run := rec.byName("text"); run == nil || run.Outcome != "ok" {
+		t.Errorf("text: got %+v, want Outcome=ok", run)
+	}
+	if run := rec.byName("prompt-dispatched"); run == nil || run.Outcome != "ok" {
+		t.Errorf("prompt-dispatched: got %+v, want Outcome=ok", run)
+	}
+	if run := rec.byName("cmd"); run == nil || run.Outcome != "ok" || run.Duration <= 0 {
+		t.Errorf("cmd: got %+v, want Outcome=ok with Duration > 0", run)
+	}
+	for _, run := range rec.snapshot() {
+		if run.Phase != "before" {
+			t.Errorf("run %+v: Phase = %q, want %q", run, run.Phase, "before")
+		}
+	}
+}
+
+// TestApplyWithRerun_RunRecorder_PromptModeNoPromptFunc verifies a prompt-mode
+// processor is recorded as skipped when no PromptFunc is configured (forces
+// the applyWithRerun path via hasPromptModeProcessors, then hits the
+// no-PromptFunc branch).
+func TestApplyWithRerun_RunRecorder_PromptModeNoPromptFunc(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "prompt-orphan", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("prompt-orphan")
+	if run == nil {
+		t.Fatal("expected a recorded run for prompt-orphan")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+}
+
+// TestApplyWithRerun_RunRecorder_CommandError verifies a failing command-mode
+// processor inside applyWithRerun (forced onto that path by a sibling
+// prompt-mode processor) is recorded as an error with a positive duration.
+func TestApplyWithRerun_RunRecorder_CommandError(t *testing.T) {
+	tmpDir := t.TempDir()
+	failScript := filepath.Join(tmpDir, "fail.sh")
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{
+		{Name: "prompt-sibling", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "cmd-fail", Command: failScript, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Output: OutputTransform, OnError: ErrorSkip, HookDir: tmpDir},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", WorkingDir: tmpDir, IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("cmd-fail")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-fail")
+	}
+	if run.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "error")
+	}
+	if run.Error == "" {
+		t.Error("expected a non-empty Error message")
+	}
+	if run.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0", run.Duration)
+	}
+}
+
+// TestApplyAfter_RunRecorder covers ApplyAfter's recorder wiring across ok
+// (command executes successfully), skipped (stopReason mismatch), and error
+// (failing command) outcomes, all tagged Phase="after".
+func TestApplyAfter_RunRecorder(t *testing.T) {
+	dir := t.TempDir()
+	okScript := filepath.Join(dir, "ok.sh")
+	failScript := filepath.Join(dir, "fail.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho done\n"), 0755)
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	procs := []*Processor{
+		{Name: "after-ok", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}}, Command: okScript, Output: OutputDiscard},
+		{Name: "after-skip", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"max_tokens"}}, Command: okScript, Output: OutputDiscard},
+		{Name: "after-fail", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}}, Command: failScript, Output: OutputDiscard},
+	}
+	m := makeAfterManager(procs)
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	if run := rec.byName("after-ok"); run == nil || run.Outcome != "ok" || run.Phase != "after" || run.Duration <= 0 {
+		t.Errorf("after-ok: got %+v, want Phase=after Outcome=ok Duration>0", run)
+	}
+	if run := rec.byName("after-skip"); run == nil || run.Outcome != "skipped" || run.Phase != "after" {
+		t.Errorf("after-skip: got %+v, want Phase=after Outcome=skipped", run)
+	}
+	if run := rec.byName("after-fail"); run == nil || run.Outcome != "error" || run.Phase != "after" || run.Error == "" {
+		t.Errorf("after-fail: got %+v, want Phase=after Outcome=error with non-empty Error", run)
+	}
+}
+
+// TestApplyAfter_RunRecorder_DisabledSkipped verifies a disabled after-phase
+// processor is recorded as skipped without executing its command.
+func TestApplyAfter_RunRecorder_DisabledSkipped(t *testing.T) {
+	disabled := false
+	proc := &Processor{
+		Name:    "after-disabled",
+		Enabled: &disabled,
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll},
+		Command: "/bin/echo",
+		Output:  OutputDiscard,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	run := rec.byName("after-disabled")
+	if run == nil || run.Outcome != "skipped" {
+		t.Errorf("after-disabled: got %+v, want Outcome=skipped", run)
+	}
+}
+
+// TestApplyOnClose_RunRecorder covers ApplyOnClose's recorder wiring across ok
+// (command executes successfully), skipped (disabled), and error (failing
+// command) outcomes, all tagged Phase="close".
+func TestApplyOnClose_RunRecorder(t *testing.T) {
+	dir := t.TempDir()
+	okScript := filepath.Join(dir, "ok.sh")
+	failScript := filepath.Join(dir, "fail.sh")
+	os.WriteFile(okScript, []byte("#!/bin/sh\necho done\n"), 0755)
+	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+	disabled := false
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "close-ok", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Command: okScript, Output: OutputDiscard},
+		{Name: "close-disabled", Enabled: &disabled, When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Command: okScript, Output: OutputDiscard},
+		{Name: "close-fail", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Command: failScript, Output: OutputDiscard},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+
+	if run := rec.byName("close-ok"); run == nil || run.Outcome != "ok" || run.Phase != "close" || run.Duration <= 0 {
+		t.Errorf("close-ok: got %+v, want Phase=close Outcome=ok Duration>0", run)
+	}
+	if run := rec.byName("close-disabled"); run == nil || run.Outcome != "skipped" || run.Phase != "close" {
+		t.Errorf("close-disabled: got %+v, want Phase=close Outcome=skipped", run)
+	}
+	if run := rec.byName("close-fail"); run == nil || run.Outcome != "error" || run.Phase != "close" || run.Error == "" {
+		t.Errorf("close-fail: got %+v, want Phase=close Outcome=error with non-empty Error", run)
+	}
+}
+
+// TestApplyOnClose_RunRecorder_PromptModeDispatched verifies a dispatched
+// prompt-mode close-phase processor is recorded as ok, Phase="close".
+func TestApplyOnClose_RunRecorder_PromptModeDispatched(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "close-prompt", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Prompt: "cleanup"},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+
+	run := rec.byName("close-prompt")
+	if run == nil || run.Outcome != "ok" || run.Phase != "close" {
+		t.Errorf("close-prompt: got %+v, want Phase=close Outcome=ok", run)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CloneWith* RunRecorder propagation
+// ---------------------------------------------------------------------------
+
+// TestCloneWithTextProcessors_PropagatesRunRecorder verifies the runRecorder
+// installed on the original Manager survives CloneWithTextProcessors and
+// fires for processors run through the clone.
+func TestCloneWithTextProcessors_PropagatesRunRecorder(t *testing.T) {
+	m := NewManager("", nil)
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	clone := m.CloneWithTextProcessors([]config.MessageProcessor{
+		{When: config.ProcessorWhenBlock{On: config.ProcessorPhaseUserPrompt, Match: "all"}, Mutate: config.ProcessorMutatePrepend, Text: "P: "},
+	}, 0)
+
+	if _, err := clone.Apply(context.Background(), &ProcessorInput{Message: "x"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if got := len(rec.snapshot()); got == 0 {
+		t.Fatal("expected the cloned Manager to still invoke the original runRecorder")
+	}
+}
+
+// TestCloneWithDirProcessors_PropagatesRunRecorder verifies runRecorder
+// survives CloneWithDirProcessors.
+func TestCloneWithDirProcessors_PropagatesRunRecorder(t *testing.T) {
+	wsDir := t.TempDir()
+	writeYAML(t, wsDir, "ws.yaml", `
+name: ws-proc
+enabled: true
+when:
+  on: userPrompt
+  match: all
+mutate: prepend
+text: "workspace"
+`)
+
+	m := NewManager(t.TempDir(), nil)
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	clone := m.CloneWithDirProcessors([]string{wsDir}, nil)
+	if _, err := clone.Apply(context.Background(), &ProcessorInput{Message: "x"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("ws-proc")
+	if run == nil {
+		t.Fatal("expected the cloned Manager to still invoke the original runRecorder for ws-proc")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+}
+
+// TestCloneWithEnabledOverrides_PropagatesRunRecorder verifies runRecorder
+// survives CloneWithEnabledOverrides.
+func TestCloneWithEnabledOverrides_PropagatesRunRecorder(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "overridden", Text: "P: ", Mutate: config.ProcessorMutatePrepend, When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	enabled := true
+	clone := m.CloneWithEnabledOverrides([]config.ProcessorOverride{{Name: "overridden", Enabled: &enabled}})
+	if _, err := clone.Apply(context.Background(), &ProcessorInput{Message: "x"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("overridden")
+	if run == nil {
+		t.Fatal("expected the cloned Manager to still invoke the original runRecorder for overridden")
+	}
+	if run.Outcome != "ok" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "ok")
+	}
+}
+
+// --- mitto-yfv8: FlushPendingDispatches / PendingDispatchStore age cap ---
+
+// TestFilePendingDispatchStore_Load_DropsStaleEntries verifies the
+// pendingDispatchMaxAge cutoff (mitto-yfv8): an entry older than the cap is
+// silently excluded from Load's result, while a fresh entry in the same
+// spool file is kept.
+func TestFilePendingDispatchStore_Load_DropsStaleEntries(t *testing.T) {
+	dir := t.TempDir()
+	store := &FilePendingDispatchStore{BaseDir: dir}
+	const wsUUID = "ws-age-test"
+
+	stale := PendingDispatchEntry{WorkspaceUUID: wsUUID, Name: "stale", Prompt: "p-stale", SavedAt: time.Now().Add(-48 * time.Hour)}
+	fresh := PendingDispatchEntry{WorkspaceUUID: wsUUID, Name: "fresh", Prompt: "p-fresh", SavedAt: time.Now()}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{stale, fresh}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	got, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "fresh" {
+		t.Fatalf("Load() = %+v, want only the fresh entry (stale entry older than pendingDispatchMaxAge must be dropped)", got)
+	}
+
+	// The pruned set must be persisted, not just filtered in memory.
+	var onDisk []PendingDispatchEntry
+	if readErr := fileutil.ReadJSON(filepath.Join(dir, wsUUID+".json"), &onDisk); readErr != nil {
+		t.Fatalf("ReadJSON() error = %v", readErr)
+	}
+	if len(onDisk) != 1 || onDisk[0].Name != "fresh" {
+		t.Fatalf("on-disk spool = %+v, want the stale entry pruned and written back", onDisk)
+	}
+}
+
+// TestFilePendingDispatchStore_Load_RemovesAllStaleSpool verifies that a
+// spool whose entries have all aged out is reclaimed from disk by Load
+// rather than lingering forever: FlushPendingDispatches never sees an empty
+// result set, so nothing else would ever delete the file.
+func TestFilePendingDispatchStore_Load_RemovesAllStaleSpool(t *testing.T) {
+	dir := t.TempDir()
+	store := &FilePendingDispatchStore{BaseDir: dir}
+	const wsUUID = "ws-all-stale"
+
+	stale := PendingDispatchEntry{WorkspaceUUID: wsUUID, Name: "stale", Prompt: "p", SavedAt: time.Now().Add(-48 * time.Hour)}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{stale}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	got, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Load() = %+v, want no entries", got)
+	}
+
+	spoolPath := filepath.Join(dir, wsUUID+".json")
+	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected the fully-stale spool file to be removed, stat err = %v", statErr)
+	}
+}
+
+// TestFlushPendingDispatches_DeliversEntriesAndClearsSpool verifies the core
+// consumer behavior (mitto-yfv8): entries spooled by an earlier saturated
+// dispatchWithRetry give-up (mitto-3421) are re-dispatched via
+// FlushPendingDispatches once the workspace is dispatchable again, and the
+// spool file is removed once every entry has been delivered.
+func TestFlushPendingDispatches_DeliversEntriesAndClearsSpool(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-deliver"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "batch-a", Prompt: "prompt-a", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+		{WorkspaceUUID: wsUUID, Name: "batch-b", Prompt: "prompt-b", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var dispatched []string
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		dispatched = append(dispatched, name)
+		mu.Unlock()
+		return nil
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), dispatched...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "batch-a" || got[1] != "batch-b" {
+		t.Fatalf("dispatched = %v, want [batch-a batch-b] delivered sequentially in spool order", got)
+	}
+
+	spoolPath := filepath.Join(spoolDir, wsUUID+".json")
+	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected spool file %s to be removed after full delivery, stat err = %v", spoolPath, statErr)
+	}
+}
+
+// TestFlushPendingDispatches_FailingEntryDoesNotBlockFollowingEntry verifies
+// the sequential-flush design goal (mitto-yfv8 plan point 3/4): a batch that
+// keeps failing must not prevent a later, healthy batch in the same flush
+// from being delivered. The failing entry is requeued with an incremented
+// Attempts (still under the cap) instead of being dropped or notified.
+func TestFlushPendingDispatches_FailingEntryDoesNotBlockFollowingEntry(t *testing.T) {
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0 // single RPC attempt per entry, for a fast test
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+	origBaseDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origBaseDelay })
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-partial-fail"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "bad-batch", Prompt: "p-bad", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+		{WorkspaceUUID: wsUUID, Name: "good-batch", Prompt: "p-good", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var delivered []string
+	var notifiedCount int
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		if name == "bad-batch" {
+			return fmt.Errorf("permanent failure dispatching %s", name)
+		}
+		mu.Lock()
+		delivered = append(delivered, name)
+		mu.Unlock()
+		return nil
+	})
+	m.SetNotifyFunc(func(_, _ string, _ error) {
+		mu.Lock()
+		notifiedCount++
+		mu.Unlock()
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), delivered...)
+	nCount := notifiedCount
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "good-batch" {
+		t.Fatalf("delivered = %v, want [good-batch] — a failing entry must not block a later good entry in the same flush", got)
+	}
+	if nCount != 0 {
+		t.Errorf("notifyFunc called %d times, want 0 (bad-batch has not exceeded pendingDispatchMaxAttempts yet)", nCount)
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Name != "bad-batch" {
+		t.Fatalf("remaining spool = %+v, want exactly the requeued bad-batch entry", remaining)
+	}
+	if remaining[0].Attempts != 2 {
+		t.Errorf("requeued Attempts = %d, want 2 (started at 1, incremented once on re-failure)", remaining[0].Attempts)
+	}
+}
+
+// TestFlushPendingDispatches_DropsEntryAtMaxAttempts verifies the poison-entry
+// protection (mitto-yfv8 plan point 4): an entry that has already reached
+// pendingDispatchMaxAttempts is dropped up front — without even attempting a
+// dispatch — so it cannot block the rest of the spool.
+func TestFlushPendingDispatches_DropsEntryAtMaxAttempts(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-poison"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "poison-batch", Prompt: "p-poison", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: pendingDispatchMaxAttempts},
+		{WorkspaceUUID: wsUUID, Name: "good-batch", Prompt: "p-good", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var dispatchedNames []string
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		dispatchedNames = append(dispatchedNames, name)
+		mu.Unlock()
+		return nil
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), dispatchedNames...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "good-batch" {
+		t.Fatalf("promptFunc invoked for %v, want only [good-batch] — an entry already at the max-attempts cap must be dropped without retrying", got)
+	}
+
+	spoolPath := filepath.Join(spoolDir, wsUUID+".json")
+	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected spool file to be removed (poison entry dropped, good entry delivered), stat err = %v", statErr)
+	}
+}
+
+// TestFlushPendingDispatches_ErrProcessBusyConsumesPoisonBudget reproduces
+// mitto-rcro: FlushPendingDispatches treats acperrors.ErrProcessBusy — a
+// pure, transient host-load signal with no bearing on whether THIS entry is
+// ever deliverable — as an ordinary per-entry failure, incrementing
+// entry.Attempts and eventually dropping the entry at
+// pendingDispatchMaxAttempts even though the process was never saturated in
+// the GC-recycle sense. mitto-xhsj already excludes ErrProcessBusy from
+// dispatchWithRetry's long saturation wait (isSaturationDispatchErr); this
+// test shows the SAME exclusion is missing from the flush's attempt-
+// counting path (only isNonRetryableDispatchErr is excluded there today).
+//
+// Repro: an entry starts already once-spooled (Attempts: 1, mirroring
+// dispatchWithRetry's own initial give-up when a batch is first persisted).
+// Flush is invoked repeatedly while promptFunc fails with a wrapped
+// acperrors.ErrProcessBusy each time, mirroring the exact wrap chain
+// produced by the proactive busy bail in getOrCreateAuxiliarySession
+// (internal/acpproc/acp_process_manager.go). Busy failures must NOT count
+// against the entry's attempt budget, so it must still be present
+// afterward with Attempts UNCHANGED. A final flush with a healthy
+// promptFunc must then deliver it and fire lateDeliveryFunc.
+//
+// Today, entry.Attempts increments on every busy failure and the entry is
+// dropped (notifyFunc fires) after only two more failed flushes — well
+// before the process ever recovers — permanently losing the batch. This
+// matches the production incident described on the bead: 8.5 minutes of
+// intermittent ErrProcessBusy spread across three flush attempts was
+// enough to discard a close-phase memory-extraction batch for good.
+func TestFlushPendingDispatches_ErrProcessBusyConsumesPoisonBudget(t *testing.T) {
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0 // single RPC attempt per flush call, for a fast test
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+	origBaseDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origBaseDelay })
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-busy-poison"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "busy-batch", Prompt: "p-busy", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	busy := true
+	var delivered []string
+	var lateDelivered []string
+	var notifiedCount int
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, name, _ string) error {
+		mu.Lock()
+		stillBusy := busy
+		mu.Unlock()
+		if stillBusy {
+			return fmt.Errorf("failed to get auxiliary session: %w", acperrors.ErrProcessBusy)
+		}
+		mu.Lock()
+		delivered = append(delivered, name)
+		mu.Unlock()
+		return nil
+	})
+	m.SetNotifyFunc(func(_, _ string, _ error) {
+		mu.Lock()
+		notifiedCount++
+		mu.Unlock()
+	})
+	m.SetLateDeliveryFunc(func(_ string, names []string) {
+		mu.Lock()
+		lateDelivered = append(lateDelivered, names...)
+		mu.Unlock()
+	})
+
+	// Flush repeatedly while busy — more than enough cycles to exceed
+	// pendingDispatchMaxAttempts under the current (buggy) attempt counting,
+	// which drops the entry after only two failed flushes (Attempts: 1 -> 2 -> 3).
+	for i := 0; i < pendingDispatchMaxAttempts+1; i++ {
+		m.FlushPendingDispatches(context.Background(), wsUUID)
+	}
+
+	mu.Lock()
+	nCount := notifiedCount
+	mu.Unlock()
+	if nCount != 0 {
+		t.Fatalf("notifyFunc called %d times while the process was merely busy (not saturated), want 0 — "+
+			"acperrors.ErrProcessBusy is a pure host-load signal, not a poison-entry failure, and must not "+
+			"consume pendingDispatchMaxAttempts (mitto-rcro)", nCount)
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Name != "busy-batch" {
+		t.Fatalf("remaining spool = %+v, want exactly the still-pending busy-batch entry "+
+			"(must survive repeated ErrProcessBusy failures, mitto-rcro)", remaining)
+	}
+	if remaining[0].Attempts != 1 {
+		t.Errorf("Attempts after %d busy flushes = %d, want 1 (unchanged) — busy failures must not "+
+			"count against the poison-entry budget (mitto-rcro)", pendingDispatchMaxAttempts+1, remaining[0].Attempts)
+	}
+
+	// The process recovers: the next flush must deliver the batch.
+	mu.Lock()
+	busy = false
+	mu.Unlock()
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	got := append([]string(nil), delivered...)
+	late := append([]string(nil), lateDelivered...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "busy-batch" {
+		t.Fatalf("delivered = %v, want [busy-batch] once the shared process is no longer busy", got)
+	}
+	if len(late) != 1 || late[0] != "busy-batch" {
+		t.Errorf("lateDeliveryFunc delivered names = %v, want [busy-batch]", late)
+	}
+}
+
+// TestFlushPendingDispatches_LateDeliveryFuncFiresOnceWithAllDelivered
+// verifies the late-delivery notification seam (mitto-yfv8 plan point 6):
+// when a flush delivers one or more previously-spooled batches,
+// lateDeliveryFunc fires exactly once, listing every delivered name.
+func TestFlushPendingDispatches_LateDeliveryFuncFiresOnceWithAllDelivered(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-late-delivery"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "batch-a", Prompt: "p-a", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+		{WorkspaceUUID: wsUUID, Name: "batch-b", Prompt: "p-b", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+
+	var mu sync.Mutex
+	var calls int
+	var gotWorkspace string
+	var gotNames []string
+	m.SetLateDeliveryFunc(func(wsUUID string, names []string) {
+		mu.Lock()
+		calls++
+		gotWorkspace = wsUUID
+		gotNames = append([]string(nil), names...)
+		mu.Unlock()
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	nCalls := calls
+	ws := gotWorkspace
+	names := gotNames
+	mu.Unlock()
+	if nCalls != 1 {
+		t.Fatalf("lateDeliveryFunc called %d times, want exactly 1", nCalls)
+	}
+	if ws != wsUUID {
+		t.Errorf("lateDeliveryFunc workspace = %q, want %q", ws, wsUUID)
+	}
+	if len(names) != 2 || names[0] != "batch-a" || names[1] != "batch-b" {
+		t.Errorf("lateDeliveryFunc names = %v, want [batch-a batch-b]", names)
+	}
+}
+
+// TestFlushPendingDispatches_LateDeliveryFuncNotCalledWhenNothingDelivered
+// verifies lateDeliveryFunc is not invoked when a flush delivers zero
+// entries (the sole entry fails and is requeued instead).
+func TestFlushPendingDispatches_LateDeliveryFuncNotCalledWhenNothingDelivered(t *testing.T) {
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+	origBaseDelay := dispatchPromptRetryBaseDelay
+	dispatchPromptRetryBaseDelay = time.Millisecond
+	t.Cleanup(func() { dispatchPromptRetryBaseDelay = origBaseDelay })
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-flush-no-delivery"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entries := []PendingDispatchEntry{
+		{WorkspaceUUID: wsUUID, Name: "bad-batch", Prompt: "p-bad", TimeoutSeconds: 1, SavedAt: time.Now(), Attempts: 1},
+	}
+	if err := store.Replace(wsUUID, entries); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		return fmt.Errorf("still failing")
+	})
+
+	var mu sync.Mutex
+	var calls int
+	m.SetLateDeliveryFunc(func(string, []string) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	m.FlushPendingDispatches(context.Background(), wsUUID)
+
+	mu.Lock()
+	nCalls := calls
+	mu.Unlock()
+	if nCalls != 0 {
+		t.Errorf("lateDeliveryFunc called %d times, want 0 (nothing was delivered)", nCalls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mitto-telc: beads-prime index-only injection + extract/curate memory
+// commands and curation policy rework.
+// ---------------------------------------------------------------------------
+
+// loadBuiltinProcessorForTest reads the named embedded builtin processor YAML,
+// loads it via the real Loader (full validation path, same as
+// TestBuiltinProcessorsValidity), and returns the single resulting
+// *Processor. Fails the test if the file can't be read/loaded or doesn't
+// yield exactly one processor.
+func loadBuiltinProcessorForTest(t *testing.T, name string) *Processor {
+	t.Helper()
+	srcPath := rootconfig.BuiltinProcessorsDir + "/" + name + ".yaml"
+	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), content, 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	procs, err := NewLoader(dir, nil).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected exactly 1 processor from %s.yaml, got %d", name, len(procs))
+	}
+	return procs[0]
+}
+
+// TestBeadsPrimeProcessor_UsesShellIndexCommand pins the mitto-telc rework of
+// beads-prime: it must reduce `bd --readonly prime --memories-only` to headings through an
+// explicit `sh -c` wrapper — command-mode
+// processors exec their Command directly with no shell, so a piped command
+// needs this wrapper (mirrors internal/web/handlers/badge_click.go) — gate on
+// CommandExists("sh") in addition to the pre-existing bd/.beads gates, and
+// rerun only on token budget (time/message-count reruns removed to avoid
+// repeatedly re-injecting the same index during a long conversation).
+func TestBeadsPrimeProcessor_UsesShellIndexCommand(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	if proc.Command != "sh" {
+		t.Errorf("Command = %q, want %q", proc.Command, "sh")
+	}
+	if len(proc.Args) != 2 || proc.Args[0] != "-c" {
+		t.Fatalf("Args = %#v, want [-c, <script>]", proc.Args)
+	}
+	script := proc.Args[1]
+	if !strings.Contains(script, "out=$(bd --readonly prime --memories-only)") {
+		t.Errorf("script does not invoke read-only bd 1.2.2-compatible `bd --readonly prime --memories-only`:\n%s", script)
+	}
+	for _, retiredFlag := range []string{"--max-memories", "--max-memory-chars"} {
+		if strings.Contains(script, retiredFlag) {
+			t.Errorf("script still contains retired bd flag %q:\n%s", retiredFlag, script)
+		}
+	}
+	if !strings.Contains(script, "n != expected") {
+		t.Errorf("script does not fail safely on a memory heading/count mismatch:\n%s", script)
+	}
+
+	if !strings.Contains(proc.EnabledWhen, `CommandExists("sh")`) || !strings.Contains(proc.EnabledWhen, `CommandExists("awk")`) {
+		t.Errorf("enabledWhen = %q, want it to gate on CommandExists(\"sh\") and CommandExists(\"awk\")", proc.EnabledWhen)
+	}
+	if !strings.Contains(proc.EnabledWhen, `CommandExists("bd")`) || !strings.Contains(proc.EnabledWhen, `DirExists(".beads")`) {
+		t.Errorf("enabledWhen = %q, want the pre-existing bd/.beads gates preserved", proc.EnabledWhen)
+	}
+
+	rerun := proc.GetRerun()
+	if rerun == nil {
+		t.Fatal("expected a non-nil rerun config")
+	}
+	if rerun.AfterTokens != 80000 {
+		t.Errorf("AfterTokens = %d, want 80000", rerun.AfterTokens)
+	}
+	if rerun.AfterTime != "" {
+		t.Errorf("AfterTime = %q, want empty (time-based rerun removed)", rerun.AfterTime)
+	}
+	if rerun.AfterSentMsgs != 0 {
+		t.Errorf("AfterSentMsgs = %d, want 0 (message-count rerun removed)", rerun.AfterSentMsgs)
+	}
+
+	if proc.GetOutputFormat() != OutputFormatRaw {
+		t.Errorf("OutputFormat = %q, want raw", proc.GetOutputFormat())
+	}
+	if proc.GetOutput() != OutputPrepend {
+		t.Errorf("Output = %q, want prepend", proc.GetOutput())
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptSmoke is the YAML command smoke check:
+// it actually executes the beads-prime shell script through the real
+// Executor (exactly as production does) against a fake `bd` on PATH, and
+// asserts (a) every memory KEY appears in the injected index, (b) no memory
+// BODY text leaks into it — the whole point of the mitto-telc rework — and
+// (c) the on-demand `bd memories <keyword>` / `bd recall <key>` lookup
+// instructions are present.
+func TestBeadsPrimeProcessor_ShellScriptSmoke(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"if [ \"$1\" = \"--readonly\" ] && [ \"$2\" = \"prime\" ] && [ \"$3\" = \"--memories-only\" ]; then\n" +
+		"  cat <<'JSON'\n" +
+		"## Persistent Memories (2)\n\n" +
+		"### sample-key-one\n" +
+		"Body text with a SECRET_TOKEN_MARKER that must never leak into the index.\n\n" +
+		"### sample-key-two\n" +
+		"Another body.\n" +
+		"JSON\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 9\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	executor := NewExecutor(tmpDir, nil)
+	input := &ProcessorInput{WorkingDir: tmpDir}
+
+	output, err := executor.Execute(context.Background(), proc, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if !strings.Contains(output.Text, "sample-key-one") {
+		t.Errorf("index missing key sample-key-one:\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "sample-key-two") {
+		t.Errorf("index missing key sample-key-two:\n%s", output.Text)
+	}
+	if strings.Contains(output.Text, "SECRET_TOKEN_MARKER") {
+		t.Errorf("memory BODY text leaked into the index (should be keys-only):\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "bd memories <keyword>") {
+		t.Errorf("index missing `bd memories <keyword>` lookup instruction:\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "bd recall <key>") {
+		t.Errorf("index missing `bd recall <key>` lookup instruction:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_Bd122CompatibleInvocation reproduces mitto-e3ut.3:
+// bd 1.2.2 accepts the global `--readonly` flag plus `prime --memories-only`
+// but rejects the retired memory-cap flags. No other arguments may be passed.
+func TestBeadsPrimeProcessor_Bd122CompatibleInvocation(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"if [ \"$#\" -ne 3 ] || [ \"$1\" != \"--readonly\" ] || [ \"$2\" != \"prime\" ] || [ \"$3\" != \"--memories-only\" ]; then\n" +
+		"  printf 'Error: unexpected bd invocation\\n' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"printf '## Persistent Memories (1)\\n\\n### bd-122-key\\nbody omitted\\n'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() should use bd 1.2.2-compatible syntax: %v", err)
+	}
+	if !strings.Contains(output.Text, "bd-122-key") {
+		t.Errorf("index missing bd-122-key:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptAcceptsZeroMemories reproduces mitto-e3ut.2:
+// bd 1.2.1 emits this valid alternate document when no memories exist, without
+// the counted "## Persistent Memories (N)" heading used by non-empty output.
+func TestBeadsPrimeProcessor_ShellScriptAcceptsZeroMemories(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"cat <<'EOF'\n" +
+		"[bd prime] If this output is truncated, read the full persisted output.\n\n" +
+		"# Beads Persistent Memories\n\n" +
+		"No memories stored. Use bd remember to add one.\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() rejected valid zero-memory output: %v", err)
+	}
+	if !strings.Contains(output.Text, "## Beads Memory Index") ||
+		!strings.Contains(output.Text, "No persistent memories recorded yet.") {
+		t.Errorf("unexpected zero-memory index:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch covers the
+// mitto-e3ut.2 retry path: a concurrent memory update can make one snapshot
+// inconsistent, while an immediate fresh read is valid.
+func TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	counterPath := filepath.Join(binDir, "calls")
+	fakeBd := fmt.Sprintf("#!/bin/sh\n"+
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n"+
+		"count=0\n"+
+		"if [ -f %q ]; then count=$(cat %q); fi\n"+
+		"count=$((count + 1))\n"+
+		"printf '%%s\\n' \"$count\" > %q\n"+
+		"if [ \"$count\" -eq 1 ]; then\n"+
+		"  printf '## Persistent Memories (1)\\n'\n"+
+		"else\n"+
+		"  printf '## Persistent Memories (1)\\n\\n### recovered-key\\nbody\\n'\n"+
+		"fi\n", counterPath, counterPath, counterPath)
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() did not recover after transient mismatch: %v", err)
+	}
+	if !strings.Contains(output.Text, "recovered-key") {
+		t.Errorf("retried index missing recovered-key:\n%s", output.Text)
+	}
+	calls, err := os.ReadFile(counterPath)
+	if err != nil {
+		t.Fatalf("ReadFile(counter) error = %v", err)
+	}
+	if got := strings.TrimSpace(string(calls)); got != "2" {
+		t.Errorf("bd call count = %q, want 2", got)
+	}
+}
+
+// TestBeadsPrimeProcessor_ShellScriptRejectsBadSource pins the mitto-telc
+// requirement that either a bd failure or a heading/count mismatch surfaces as
+// a processor error instead of silently producing an empty or partial index.
+func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{name: "bd failure", script: "exit 7\n"},
+		{name: "heading count mismatch", script: "printf '## Persistent Memories (2)\\n\\n### only-one-key\\nbody\\n'\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			fakeBd := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" + tt.script
+			if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+				t.Fatalf("WriteFile(fake bd) error = %v", err)
+			}
+			t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+			tmpDir := t.TempDir()
+			physicalDir, err := filepath.EvalSymlinks(tmpDir)
+			if err != nil {
+				t.Fatalf("EvalSymlinks(tmpDir) error = %v", err)
+			}
+			_, err = NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+			if err == nil {
+				t.Fatal("Execute() error = nil, want source validation error")
+			}
+			if tt.name == "heading count mismatch" {
+				for _, want := range []string{"workspace=" + physicalDir, "expected=2", "actual=1"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("Execute() error = %q, want sanitized diagnostic %q", err, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestExtractMemoriesOnCloseProcessor_UsesBdMemoriesJSON pins mitto-telc
+// requirement (1): the dedup step must invoke the exact `bd memories --json`
+// command (the stale `bd memory list` no longer appears anywhere), and
+// refining an existing memory must go through `bd remember --key
+// <existing-key>` rather than adding a near-duplicate entry.
+func TestExtractMemoriesOnCloseProcessor_UsesBdMemoriesJSON(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "extract-memories-on-close")
+
+	if !strings.Contains(proc.Prompt, "bd memories --json") {
+		t.Errorf("prompt does not mention `bd memories --json`:\n%s", proc.Prompt)
+	}
+	if strings.Contains(proc.Prompt, "bd memory list") {
+		t.Error("prompt still references the stale `bd memory list` command")
+	}
+	if !strings.Contains(proc.Prompt, "bd remember --key <existing-key>") {
+		t.Error("prompt does not teach refining an existing entry via `bd remember --key <existing-key>`")
+	}
+}
+
+// TestCurateMemoriesOnCloseProcessor_MergeIsPrimaryAction pins mitto-telc
+// requirement (2): the curator's primary action is merging overlapping
+// memories into a canonical survivor via `bd remember --key`, verified with
+// `bd recall`.
+func TestCurateMemoriesOnCloseProcessor_MergeIsPrimaryAction(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	if !strings.Contains(proc.Prompt, "bd remember --key <survivor-key>") {
+		t.Error("prompt does not merge into a survivor via `bd remember --key <survivor-key>`")
+	}
+	if !strings.Contains(proc.Prompt, "bd recall <survivor-key>") {
+		t.Error("prompt does not verify the merged survivor via `bd recall <survivor-key>`")
+	}
+	if !strings.Contains(proc.Prompt, "<full-original-body>") {
+		t.Error("prompt does not preserve each superseded memory body for later survivor verification")
+	}
+	if strings.Contains(proc.Prompt, "bd memory list") {
+		t.Error("prompt references the stale `bd memory list` command")
+	}
+}
+
+// TestCurateMemoriesOnCloseProcessor_ForgetOnlyOnExplicitSelfDeclaration pins
+// mitto-telc requirement (3): `bd forget` fires only for a candidate whose
+// OWN body already declares OBSOLETE/SUPERSEDED AND names a survivor key,
+// guarded by the pre-existing age (7 days) and cap (3/run) rules, with the
+// contradictory "do not forget any memory you consulted" guard removed.
+func TestCurateMemoriesOnCloseProcessor_ForgetOnlyOnExplicitSelfDeclaration(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	if !strings.Contains(proc.Prompt, "AND NAMES the") {
+		t.Errorf("prompt no longer requires the forget candidate to name a survivor key:\n%s", proc.Prompt)
+	}
+	if !strings.Contains(proc.Prompt, "Do not forget memories younger than 7 days") {
+		t.Error("prompt dropped the 7-day age guardrail")
+	}
+	if !strings.Contains(proc.Prompt, "on <YYYY-MM-DD UTC>") || !strings.Contains(proc.Prompt, "per-memory timestamps") {
+		t.Error("prompt does not enforce the age guardrail through an explicit marker date")
+	}
+	if !strings.Contains(proc.Prompt, "Cap forgets at 3 this run") {
+		t.Error("prompt dropped the max-3-forgets-per-run cap")
+	}
+	if strings.Contains(proc.Prompt, "Do not forget any memory you consulted this run") {
+		t.Error("prompt still contains the removed contradictory consulted-memory guard")
+	}
+	if !strings.Contains(proc.Prompt, "bd forget <key>") {
+		t.Error("prompt no longer performs `bd forget <key>`")
+	}
+}
+
+// TestCurateMemoriesOnCloseProcessor_SingleDedupedReviewBead pins mitto-telc
+// requirement (4): uncertain candidates are batched into AT MOST ONE review
+// bead, deduplicated first via an exact stable-title search across
+// open/in_progress/blocked/deferred issues, with a description carrying only
+// keys and one-line reasons — never memory bodies or secrets.
+func TestCurateMemoriesOnCloseProcessor_SingleDedupedReviewBead(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	const stableTitle = "Review possibly-stale beads memories"
+	if got := strings.Count(proc.Prompt, stableTitle); got < 2 {
+		t.Errorf("stable title %q should appear at least twice (search query + bd create --title), got %d", stableTitle, got)
+	}
+	if !strings.Contains(proc.Prompt, "bd query") {
+		t.Error("prompt does not search existing issues via `bd query` before creating a review bead")
+	}
+	if !strings.Contains(proc.Prompt, "status=open OR status=in_progress OR status=blocked OR status=deferred") {
+		t.Error("prompt does not scope the dedup search to open/in_progress/blocked/deferred statuses")
+	}
+	if !strings.Contains(proc.Prompt, "bd show <id> --json") {
+		t.Error("prompt does not load the existing review bead before deduplicating candidate keys")
+	}
+	if !strings.Contains(proc.Prompt, "AT MOST ONE") {
+		t.Error("prompt does not enforce filing at most one review bead")
+	}
+	if strings.Contains(proc.Prompt, "Review possibly-stale memory: <key>") {
+		t.Error("prompt still creates one review issue PER candidate (old per-key title template)")
+	}
+	if !strings.Contains(proc.Prompt, "never memory bodies, and never secrets") {
+		t.Error("prompt does not guard the review bead description against bodies/secrets")
 	}
 }

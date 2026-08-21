@@ -1,7 +1,6 @@
 // Mitto Web Interface - Prompt Menu Utilities
 
-import { authFetch } from "./csrf.js";
-import { endpoints } from "./endpoints.js";
+import { getSdkClient } from "./sdkClient.js";
 
 /**
  * Returns the list of UI menus a prompt opts INTO (positive tokens only).
@@ -59,8 +58,7 @@ export function promptMenuExcludes(prompt) {
  */
 export function promptMenuIncludes(prompt, menu) {
   return (
-    promptMenus(prompt).includes(menu) &&
-    !promptMenuExcludes(prompt).has(menu)
+    promptMenus(prompt).includes(menu) && !promptMenuExcludes(prompt).has(menu)
   );
 }
 
@@ -119,7 +117,7 @@ export function promptResolveAsLoop(prompt, override) {
 
 /**
  * Frontend mirror of the backend parameter-type registry.
- * Canonical source of truth: internal/config/prompt_param_types.go
+ * Canonical source of truth: internal/prompts/param_types.go
  * These two lists MUST be kept in sync — do not add types here without also
  * adding them to the Go registry, and vice versa.
  *
@@ -129,7 +127,11 @@ export function promptResolveAsLoop(prompt, override) {
  *   sessionId      — a Mitto conversation/session UUID
  *   childSessionId — a child conversation/session UUID (relative to the host conversation)
  *   workspaceId    — a Mitto workspace UUID
- *   workspaceFolder — an absolute path to the workspace root directory
+ *   workspaceFolder — an absolute path to the workspace root directory,
+ *                    rendered as a dropdown of the known workspace folders
+ *                    (labelled by display name, valued by absolute path).
+ *                    Interactive, dialog-collected (like boolean/prompts): no
+ *                    menu auto-supplies it and it never gates menu visibility.
  *   acpServer      — an ACP server (agent) name
  *   text           — generic free-form text (catch-all)
  *   boolean        — a yes/no flag, rendered as a checkbox; supplied as the
@@ -139,6 +141,20 @@ export function promptResolveAsLoop(prompt, override) {
  *                    boolean): no menu auto-supplies it and it never gates menu
  *                    visibility. Feeds the {{ PromptText .Args.NAME }} template
  *                    action. multiLine is not supported.
+ *   filename       — a workspace-relative file path, rendered as a dropdown of
+ *                    files under an optional `dir` (workspace-relative,
+ *                    non-recursive), optionally filtered by a `glob`
+ *                    (filepath.Match). Interactive, dialog-collected (like
+ *                    boolean/prompts): no menu auto-supplies it and it never
+ *                    gates menu visibility. Feeds the {{ ReadFile .Args.NAME }}
+ *                    template action.
+ *   dirname        — a workspace-relative directory path, rendered as a
+ *                    dropdown of immediate sub-directories under an optional
+ *                    `dir` (workspace-relative, non-recursive), optionally
+ *                    filtered by a `glob` (filepath.Match on the base name).
+ *                    Interactive, dialog-collected (like filename): no menu
+ *                    auto-supplies it and it never gates menu visibility.
+ *                    Hidden directories (leading ".") are excluded by default.
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
@@ -151,6 +167,8 @@ export const KNOWN_PARAM_TYPES = [
   "text",
   "boolean",
   "prompts",
+  "filename",
+  "dirname",
 ];
 
 /**
@@ -158,34 +176,83 @@ export const KNOWN_PARAM_TYPES = [
  *
  * Boolean parameters are special: a checkbox always has a definite answer
  * (checked/unchecked), so they never gate menu visibility (menuSatisfies) and
- * they are always collected via the dialog (getMissingPromptParameters),
- * regardless of the menu's auto-supplied types or the `required` flag.
+ * they always force the dialog open (shouldOpenPromptDialog), regardless of
+ * the menu's auto-supplied types or the `required` flag.
  */
 export function isBooleanParam(p) {
   return p?.type === "boolean";
 }
 
 /**
+ * Returns true if the parameter is a `type: text` parameter that declares a
+ * non-empty `options` array — i.e. it renders as a dropdown picker
+ * (PromptParameterDialog) rather than a free-text input, even though its
+ * declared `type` is "text". Exported (not inlined) so every call site that
+ * needs to distinguish "text as picker" from "text as free-text input" uses
+ * the identical test — a duplicated inline check across files is exactly how
+ * this class of bug (mitto-cwz.1) arose.
+ */
+export function isOptionsPickerParam(p) {
+  return p?.type === "text" && Array.isArray(p.options) && p.options.length > 0;
+}
+
+/**
  * Returns true if the parameter is an *interactive picker* type — i.e. one that
  * no menu can auto-supply and that must always be collected via the parameter
- * dialog. Currently: `boolean` (checkbox) and `prompts` (workspace-prompt
- * picker).
+ * dialog. Currently: `boolean` (checkbox), `prompts` (workspace-prompt picker),
+ * `filename` (workspace-file dropdown), `dirname` (workspace-directory
+ * dropdown), `workspaceFolder` (workspace-folder dropdown), and `text` with a
+ * declared `options` array (dropdown picker — see isOptionsPickerParam).
  *
- * Rationale: `prompts` parameters carry the NAME of another workspace prompt.
- * No menu context has such a name in scope, so they behave like `boolean` for
- * gating purposes — never gating visibility (menuSatisfies) and always
- * included in getMissingPromptParameters regardless of `required` or the
- * menu's auto-supplied types. The dialog offers the picker unconditionally.
+ * Rationale: these parameters carry values that no menu context has in scope
+ * (a workspace-prompt name, a checkbox answer, a workspace-relative
+ * file/directory path, a workspace folder, or a value from a fixed option
+ * list). They behave like `boolean` for gating purposes — never gating menu
+ * visibility (menuSatisfies) and always forcing the dialog open
+ * (shouldOpenPromptDialog) regardless of `required` or the menu's
+ * auto-supplied types. The dialog offers the picker unconditionally.
  */
 export function isInteractivePickerParam(p) {
-  return p?.type === "boolean" || p?.type === "prompts";
+  return (
+    p?.type === "boolean" ||
+    p?.type === "prompts" ||
+    p?.type === "filename" ||
+    p?.type === "dirname" ||
+    p?.type === "workspaceFolder" ||
+    isOptionsPickerParam(p)
+  );
+}
+
+/**
+ * Returns true if the parameter declares `show: always` — i.e. its presence
+ * forces the parameter dialog open even for an otherwise-satisfied prompt,
+ * and it is rendered editable once the dialog is open (even for a
+ * menu-supplied param, which would otherwise render read-only — see
+ * promptDialogParameters). It stays non-blocking when the parameter is
+ * optional: `show: always` never gates menu visibility.
+ */
+export function isAlwaysShownParam(p) {
+  return p?.show === "always";
+}
+
+/**
+ * Returns true if the parameter declares `show: never` — i.e. it is never
+ * rendered in the parameter dialog and never contributes to the open
+ * decision. Its value must come from a menu, a declared default, or a
+ * cached value.
+ */
+export function isNeverShownParam(p) {
+  return p?.show === "never";
 }
 
 /**
  * Returns the structured parameters array for a prompt, or [] if absent/empty.
- * Each entry is { name, type, description?, required?, multiLine? }. multiLine is
- * only meaningful for type "text": when true the dialog renders a resizable
- * multi-line textarea instead of a single-line input (see PromptParameterDialog).
+ * Each entry is { name, type, description?, required?, multiLine?, options? }.
+ * multiLine is only meaningful for type "text": when true the dialog renders a
+ * resizable multi-line textarea instead of a single-line input. options is also
+ * only meaningful for type "text": when non-empty the dialog renders a dropdown
+ * of those values instead of a free-text input (mutually exclusive with
+ * multiLine — see PromptParameterDialog).
  */
 export function promptParameters(prompt) {
   const params = prompt?.parameters;
@@ -220,16 +287,19 @@ export const MENU_PARAM_TYPES = {
  * declares an optional `beadsId` param appears in BOTH `beadsIssues` AND
  * `conversation` menus even though `conversation` cannot auto-supply it. When
  * the menu can supply the type, the value is auto-filled; when it cannot, the
- * param is silently omitted (no blocking form shown — see getMissingPromptParameters).
+ * param does not force the dialog open (see shouldOpenPromptDialog), though it
+ * still renders (read-only or editable) once the dialog opens for another
+ * reason (see promptDialogParameters).
  *
  * Unset (`required` absent/null) or `required: true` keeps the current gating
  * behaviour, preserving all existing prompts unchanged.
  *
- * Interactive picker parameters (boolean, prompts) never gate: a checkbox
- * always has a definite answer, and a workspace-prompt picker is always
- * offered by the dialog, so both behave like an optional param for visibility
- * purposes (they are collected via the dialog rather than auto-supplied by
- * a menu). See isInteractivePickerParam.
+ * Interactive picker parameters (boolean, prompts, text+options, ...) never
+ * gate: a checkbox always has a definite answer, a workspace-prompt picker is
+ * always offered by the dialog, and a text+options dropdown always has a
+ * fixed value list, so all of them behave like an optional param for
+ * visibility purposes (they are collected via the dialog rather than
+ * auto-supplied by a menu). See isInteractivePickerParam.
  */
 export function menuSatisfies(prompt, menu) {
   const params = promptParameters(prompt);
@@ -244,38 +314,180 @@ export function menuSatisfies(prompt, menu) {
 }
 
 /**
- * Returns the ordered list of declared parameters whose `type` is NOT
- * auto-supplied by the given menu AND that are required (i.e. must be
- * collected via the parameter dialog before the prompt can run).
- *
- * A parameter with `required === false` is considered optional: it is never
- * included in the missing list, so no blocking form is shown for it even when
- * the menu cannot auto-supply it. Its value will simply be absent from the
- * arguments map.
+ * Returns true if a declared parameter's type is auto-suppliable by `menu`
+ * (i.e. the menu's context already has a value for it in scope).
+ */
+function isMenuSupplied(p, menu) {
+  const provided = MENU_PARAM_TYPES[menu] || [];
+  return provided.includes(p.type);
+}
+
+/**
+ * Returns the ordered list of declared parameters to RENDER in the parameter
+ * dialog once it is open — the render axis. This is deliberately independent
+ * of whether the dialog itself should be open (see shouldOpenPromptDialog):
+ * it answers "what fields appear in the form", not "does the form appear".
  *
  * Rules:
- *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
- *   - A prompt with no parameters always returns [].
- *   - An interactive picker parameter (boolean, prompts) is ALWAYS included
- *     (it is rendered as a checkbox or a workspace-prompt picker and collected
- *     via the dialog; no menu can auto-supply it). See isInteractivePickerParam.
- *   - A parameter whose type IS in the menu's provided-types list is excluded.
- *   - A parameter with `required === false` is excluded (optional, no form shown).
- *   - Declared order is preserved.
+ *   - `show: never` is excluded — never rendered, regardless of type/required/menu.
+ *   - Every other declared parameter IS included, in declared order — this is
+ *     the fix for the historical bug where an optional free-text parameter was
+ *     silently dropped even when the dialog was already open for other
+ *     parameters (mitto-9rff): `show: auto` (the default) now renders
+ *     unconditionally once the dialog opens for any reason.
+ *   - A parameter whose type IS auto-suppliable by `menu`, OR whose name is in
+ *     `knownNames` (e.g. a childSessionId auto-filled from the host
+ *     conversation's context — see autofillConversationMenuArgs), is still
+ *     included, but marked `readOnly: true` (unless it declares `show:
+ *     always`, which promotes it to editable) so the dialog shows the value
+ *     without letting the user override context already resolved elsewhere.
  *
  * @param {Object} prompt - Prompt object with optional `parameters` array
  * @param {string} menu   - Menu key (e.g. "beadsIssues", "prompts")
- * @returns {Array}       - Subset of prompt parameters not auto-filled by menu
+ * @param {Set|Array} [knownNames] - names already resolved outside the menu
+ *   (e.g. host-conversation autofill); rendered read-only like menu-supplied
+ * @returns {Array}       - Parameters to render, each possibly annotated with `readOnly: true`
  */
-export function getMissingPromptParameters(prompt, menu) {
+export function promptDialogParameters(prompt, menu, knownNames) {
   const params = promptParameters(prompt);
   if (params.length === 0) return [];
-  const provided = MENU_PARAM_TYPES[menu] || [];
-  return params.filter(
-    (p) =>
+  const known =
+    knownNames instanceof Set ? knownNames : new Set(knownNames || []);
+  return params
+    .filter((p) => !isNeverShownParam(p))
+    .map((p) => {
+      const readOnly =
+        (isMenuSupplied(p, menu) || known.has(p.name)) &&
+        !isAlwaysShownParam(p);
+      return readOnly ? { ...p, readOnly: true } : p;
+    });
+}
+
+/**
+ * Splits a parameter dialog's rendered parameters (see promptDialogParameters)
+ * into tab groups. Purely presentational — never touches parameter values.
+ *
+ * Gate: `tabbed` is true when AT LEAST ONE parameter declares a non-empty
+ * (post-trim) `group`. Deliberately `parameters.some(p => p.group?.trim())`,
+ * NOT `distinctGroups.length > 1` — the two differ when every parameter
+ * shares a single explicit group name (e.g. all params in "Changes
+ * Submission"): in that case a single named tab must still be shown, because
+ * the author explicitly asked for one (see mitto-boio requester clarification).
+ *
+ * When `!tabbed`, returns a single unnamed group holding every parameter in
+ * original order — the caller uses this to render today's flat markup
+ * byte-identical to before (no tab bar, no "General" header, no wrapper).
+ *
+ * When `tabbed`, ungrouped parameters (empty/whitespace-only `group`) are
+ * collected into a "General" group placed FIRST, followed by one group per
+ * distinct trimmed `group` value in first-appearance order. "General" is not
+ * a reserved name: an explicit `group: General` merges into the same group
+ * as the ungrouped parameters.
+ *
+ * @param {Array} parameters - dialog-rendered parameters (each may have `group`)
+ * @returns {{tabbed: boolean, groups: Array<{name: string, params: Array}>}}
+ */
+export function groupDialogParameters(parameters) {
+  const params = Array.isArray(parameters) ? parameters : [];
+  const tabbed = params.some((p) => p?.group && p.group.trim() !== "");
+  if (!tabbed) {
+    return { tabbed: false, groups: [{ name: "", params }] };
+  }
+  const general = [];
+  const named = []; // [{ name, params }], first-appearance order
+  const namedIndex = new Map(); // trimmed name -> index into named
+  for (const p of params) {
+    const raw = p?.group ? p.group.trim() : "";
+    // "General" is not a reserved name: an explicit `group: General` merges
+    // into the same tab as ungrouped parameters (see doc comment above).
+    if (raw === "" || raw === "General") {
+      general.push(p);
+      continue;
+    }
+    if (namedIndex.has(raw)) {
+      named[namedIndex.get(raw)].params.push(p);
+    } else {
+      namedIndex.set(raw, named.length);
+      named.push({ name: raw, params: [p] });
+    }
+  }
+  const groups = [];
+  if (general.length > 0) groups.push({ name: "General", params: general });
+  groups.push(...named);
+  return { tabbed: true, groups };
+}
+
+/**
+ * Returns the Set of group names (as produced by groupDialogParameters) that
+ * currently hold at least one unmet required parameter — i.e. a required,
+ * non-boolean, non-readOnly parameter whose trimmed value is empty. Mirrors
+ * the predicate PromptParameterDialog's canSave already applies to the flat
+ * parameter list (kept in one place conceptually), used here only to flag
+ * which TAB to visually mark so a required field hidden on an inactive tab
+ * is discoverable as the reason Save is disabled. Never gates Save itself.
+ *
+ * @param {Array<{name: string, params: Array}>} groups - from groupDialogParameters
+ * @param {Object} values - current { [paramName]: value } map
+ * @returns {Set<string>} group names with at least one unmet required field
+ */
+export function unmetRequiredByGroup(groups, values) {
+  const result = new Set();
+  const vals = values || {};
+  for (const g of groups || []) {
+    for (const p of g.params || []) {
+      if (!p || !p.required || p.readOnly || isBooleanParam(p)) continue;
+      const v = vals[p.name];
+      if (typeof v !== "string" || v.trim() === "") {
+        result.add(g.name);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns true if the parameter dialog should OPEN for `prompt` under `menu`
+ * — the open axis, independent of what gets rendered (see
+ * promptDialogParameters). `cachedNames` (a Set or array of parameter names
+ * already cached for this conversation, from fetchCachedParamNames) removes
+ * their contribution to the open decision so caching keeps saving clicks;
+ * cached params still RENDER (prefilled and editable) once the dialog opens
+ * for another reason. `knownNames` behaves the same for the open decision
+ * (excluded) but renders read-only, like a menu-supplied param — see
+ * promptDialogParameters.
+ *
+ * The dialog opens when any declared parameter is, after excluding cached
+ * and known ones:
+ *   - an interactive picker (boolean, prompts, text+options, filename,
+ *     dirname, workspaceFolder — see isInteractivePickerParam), or
+ *   - required (`required !== false`) AND not auto-suppliable by `menu`, or
+ *   - declared `show: always`.
+ * `show: never` parameters never contribute to the open decision.
+ *
+ * @param {Object} prompt - Prompt object with optional `parameters` array
+ * @param {string} menu   - Menu key (e.g. "beadsIssues", "prompts")
+ * @param {Set|Array} [cachedNames] - names already cached for this conversation
+ * @param {Set|Array} [knownNames] - names already resolved outside the menu
+ * @returns {boolean}
+ */
+export function shouldOpenPromptDialog(prompt, menu, cachedNames, knownNames) {
+  const params = promptParameters(prompt);
+  if (params.length === 0) return false;
+  const cached =
+    cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
+  const known =
+    knownNames instanceof Set ? knownNames : new Set(knownNames || []);
+  return params.some((p) => {
+    if (isNeverShownParam(p)) return false;
+    if (isCacheableParam(p) && cached.has(p.name)) return false;
+    if (known.has(p.name)) return false;
+    return (
       isInteractivePickerParam(p) ||
-      (p.required !== false && !provided.includes(p.type)),
-  );
+      (p.required !== false && !isMenuSupplied(p, menu)) ||
+      isAlwaysShownParam(p)
+    );
+  });
 }
 
 /**
@@ -289,7 +501,8 @@ export function isCacheableParam(p) {
  * Fetch the set of parameter names currently cached (fresh) for a prompt in a
  * conversation. Names only — never values. Tolerant of errors: on any failure
  * (network, non-2xx, unknown session) returns an EMPTY Set so callers fall back
- * to today's behavior (ask). `fetchImpl` is injectable for tests (defaults to authFetch).
+ * to today's behavior (ask). `fetchImpl` is injectable for tests (defaults to
+ * the SDK client, mitto-7gta.17 S8).
  * @returns {Promise<Set<string>>}
  */
 export async function fetchCachedParamNames(
@@ -298,30 +511,24 @@ export async function fetchCachedParamNames(
   { fetchImpl } = {},
 ) {
   if (!sessionId || !promptName) return new Set();
-  const fetch_ = fetchImpl || authFetch;
   try {
-    const resp = await fetch_(
-      endpoints.sessions.promptArgCache(sessionId, promptName),
-    );
-    if (!resp || !resp.ok) return new Set();
-    const data = await resp.json();
+    let data;
+    if (fetchImpl) {
+      const resp = await fetchImpl(
+        getSdkClient().endpoints.sessions.promptArgCache(sessionId, promptName),
+      );
+      if (!resp || !resp.ok) return new Set();
+      data = await resp.json();
+    } else {
+      data = await getSdkClient().sessions.promptArgCache(
+        sessionId,
+        promptName,
+      );
+    }
     return new Set(Array.isArray(data && data.cached) ? data.cached : []);
   } catch (_err) {
     return new Set();
   }
-}
-
-/**
- * Remove from `missing` any parameter that is cacheable AND whose name is in
- * `cachedNames`. Non-cacheable params and cacheable-but-not-cached params are kept.
- * `cachedNames` may be a Set or an array.
- */
-export function effectiveMissingParams(missing, cachedNames) {
-  const cached =
-    cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
-  return (missing || []).filter(
-    (p) => !(isCacheableParam(p) && cached.has(p.name)),
-  );
 }
 
 /**
@@ -560,7 +767,9 @@ function resolveProfileModel(profile, modelOption) {
       matched = opt;
     }
   }
-  return matched ? { value: matched.value, name: matched.name || matched.value } : null;
+  return matched
+    ? { value: matched.value, name: matched.name || matched.value }
+    : null;
 }
 
 /**
@@ -645,7 +854,9 @@ export function resolvePromptModelOverride(
       // ANY tagged profile's criteria, keep the current model (no override).
       if (
         currentName &&
-        taggedProfiles.some((p) => constraintMatchesName(p.criteria, currentName))
+        taggedProfiles.some((p) =>
+          constraintMatchesName(p.criteria, currentName),
+        )
       ) {
         return null;
       }

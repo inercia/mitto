@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 	"github.com/inercia/mitto/tests/mocks/testutil"
 )
 
@@ -109,10 +109,10 @@ func stopTestServer() {
 
 // TestConnect_Success verifies basic connection to the mock ACP server
 func TestConnect_Success(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
 	// Create a session
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "connect-test",
 		WorkingDir: testWorkspace,
 	})
@@ -128,7 +128,7 @@ func TestConnect_Success(t *testing.T) {
 	var connected bool
 	var connectedSessionID, connectedClientID string
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			connected = true
 			connectedSessionID = sessionID
@@ -156,9 +156,9 @@ func TestConnect_Success(t *testing.T) {
 
 // TestSendPrompt_SimpleMessage verifies sending a message and receiving a response
 func TestSendPrompt_SimpleMessage(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "prompt-test",
 		WorkingDir: testWorkspace,
 	})
@@ -194,9 +194,9 @@ func TestSendPrompt_SimpleMessage(t *testing.T) {
 
 // TestSendPrompt_StreamingEvents verifies streaming events are received in order
 func TestSendPrompt_StreamingEvents(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "streaming-test",
 		WorkingDir: testWorkspace,
 	})
@@ -213,7 +213,7 @@ func TestSendPrompt_StreamingEvents(t *testing.T) {
 	var events []string
 	done := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			mu.Lock()
 			events = append(events, "connected")
@@ -298,9 +298,9 @@ func TestSendPrompt_StreamingEvents(t *testing.T) {
 
 // TestDisconnect_MidSession verifies cleanup when disconnecting mid-session
 func TestDisconnect_MidSession(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "disconnect-test",
 		WorkingDir: testWorkspace,
 	})
@@ -315,7 +315,7 @@ func TestDisconnect_MidSession(t *testing.T) {
 	var disconnected bool
 	var disconnectErr error
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnDisconnected: func(err error) {
 			disconnected = true
 			disconnectErr = err
@@ -350,9 +350,9 @@ func TestDisconnect_MidSession(t *testing.T) {
 
 // TestReconnect_ExistingSession verifies reconnecting to an existing session
 func TestReconnect_ExistingSession(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "reconnect-test",
 		WorkingDir: testWorkspace,
 	})
@@ -388,9 +388,9 @@ func TestReconnect_ExistingSession(t *testing.T) {
 
 // TestReconnect_EventReplayOrder verifies events are replayed in correct order on reconnection
 func TestReconnect_EventReplayOrder(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "replay-order-test",
 		WorkingDir: testWorkspace,
 	})
@@ -407,7 +407,7 @@ func TestReconnect_EventReplayOrder(t *testing.T) {
 	var firstEvents []string
 	done1 := make(chan struct{})
 
-	sess1, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			mu.Lock()
 			firstEvents = append(firstEvents, fmt.Sprintf("msg:%s", html))
@@ -474,9 +474,9 @@ func TestReconnect_EventReplayOrder(t *testing.T) {
 
 // TestEventOrder_InterleavedToolCalls verifies tool calls and messages are interleaved correctly
 func TestEventOrder_InterleavedToolCalls(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "interleaved-test",
 		WorkingDir: testWorkspace,
 	})
@@ -493,7 +493,7 @@ func TestEventOrder_InterleavedToolCalls(t *testing.T) {
 	var eventOrder []string
 	done := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnAgentThought: func(text string) {
 			mu.Lock()
 			eventOrder = append(eventOrder, "thought")
@@ -593,9 +593,9 @@ func TestEventOrder_InterleavedToolCalls(t *testing.T) {
 // Expected order from mock: thought → tool_call:read → tool_update:read → MESSAGE → tool_call:edit → tool_update:edit → MESSAGE
 // The test fails if all messages appear at the end (which happens if MarkdownBuffer isn't flushed before tool calls).
 func TestEventOrder_MessageBeforeSecondToolCall(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "order-verification-test",
 		WorkingDir: testWorkspace,
 	})
@@ -612,7 +612,7 @@ func TestEventOrder_MessageBeforeSecondToolCall(t *testing.T) {
 	var eventOrder []string
 	done := make(chan struct{})
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnAgentThought: func(text string) {
 			mu.Lock()
 			eventOrder = append(eventOrder, "thought")
@@ -714,9 +714,9 @@ func TestEventOrder_MessageBeforeSecondToolCall(t *testing.T) {
 
 // TestEventCompleteness_AllEventTypes verifies all expected event types are received
 func TestEventCompleteness_AllEventTypes(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "completeness-test",
 		WorkingDir: testWorkspace,
 	})
@@ -766,9 +766,9 @@ func TestEventCompleteness_AllEventTypes(t *testing.T) {
 
 // TestMultipleTurns_EventOrdering verifies event ordering across multiple turns
 func TestMultipleTurns_EventOrdering(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "multi-turn-test",
 		WorkingDir: testWorkspace,
 	})
@@ -785,7 +785,7 @@ func TestMultipleTurns_EventOrdering(t *testing.T) {
 	var allEvents []string
 	turnCount := 0
 
-	sess, err := c.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess, err := c.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnAgentMessage: func(html string) {
 			mu.Lock()
 			allEvents = append(allEvents, fmt.Sprintf("turn%d:message", turnCount))
@@ -871,7 +871,7 @@ func TestMultipleTurns_EventOrdering(t *testing.T) {
 
 // TestConnect_InvalidSession verifies error handling for invalid session ID
 func TestConnect_InvalidSession(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -879,7 +879,7 @@ func TestConnect_InvalidSession(t *testing.T) {
 	var gotError bool
 	var errorMsg string
 
-	sess, err := c.Connect(ctx, "nonexistent-session-id", client.SessionCallbacks{
+	sess, err := c.Connect(ctx, "nonexistent-session-id", api.SessionCallbacks{
 		OnError: func(message string) {
 			gotError = true
 			errorMsg = message
@@ -906,12 +906,12 @@ func TestConnect_InvalidSession(t *testing.T) {
 // TestConnect_ServerDown verifies error handling when server is unreachable
 func TestConnect_ServerDown(t *testing.T) {
 	// Use a port that's definitely not running
-	c := client.New("http://127.0.0.1:59999")
+	c := api.New("http://127.0.0.1:59999")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := c.Connect(ctx, "any-session", client.SessionCallbacks{})
+	_, err := c.Connect(ctx, "any-session", api.SessionCallbacks{})
 	if err == nil {
 		t.Error("Expected error when connecting to unreachable server")
 	} else {
@@ -921,7 +921,7 @@ func TestConnect_ServerDown(t *testing.T) {
 
 // TestListSessions_Empty verifies listing sessions works
 func TestListSessions_Empty(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
 	sessions, err := c.ListSessions()
 	if err != nil {
@@ -934,10 +934,10 @@ func TestListSessions_Empty(t *testing.T) {
 
 // TestCreateDeleteSession verifies session lifecycle
 func TestCreateDeleteSession(t *testing.T) {
-	c := client.New(testServerURL)
+	c := api.New(testServerURL)
 
 	// Create
-	session, err := c.CreateSession(client.CreateSessionRequest{
+	session, err := c.CreateSession(api.CreateSessionRequest{
 		Name:       "lifecycle-test",
 		WorkingDir: testWorkspace,
 	})

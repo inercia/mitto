@@ -257,6 +257,32 @@ func FormatClassifiedError(classified *ACPClassifiedError) string {
 // ready. Matched tolerantly so we don't couple to the exact suffix (mitto-8ul.1).
 var MCPInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out`)
 
+// mcpTimedOutServerLinePattern matches a per-server status line the agent emits
+// on the same stderr chunk as the generic MCP-init-timeout message, e.g.
+// "   ⏳ yahoo-finance (timed out)". Captures the server name (mitto-m8nx AC2).
+var mcpTimedOutServerLinePattern = regexp.MustCompile(`⏳\s*(\S+)\s*\(timed out\)`)
+
+// ExtractMCPTimedOutServers scans a stderr chunk for per-server "⏳ <name> (timed
+// out)" lines and returns the names of every server that failed to initialize in
+// time, in the order they appear. Returns nil if no such line is present — this is
+// the common case for older agents (or a stderr read-buffer boundary split) that
+// only emit the generic "MCP initialization timed out" tail matched by
+// MCPInitTimeoutPattern; callers must fall back to a workspace-only message in
+// that case (mitto-m8nx AC2).
+func ExtractMCPTimedOutServers(chunk string) []string {
+	matches := mcpTimedOutServerLinePattern.FindAllStringSubmatch(chunk, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	servers := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			servers = append(servers, m[1])
+		}
+	}
+	return servers
+}
+
 // IsMCPInitTimeout reports whether err (possibly wrapped in *ACPClassifiedError)
 // carries the agent's "MCP initialization timed out" signal. This is TRANSIENT
 // on a cold shared ACP process — once the process warms (mitto-54k.3 warm-once
@@ -322,6 +348,18 @@ func BackoffDelay(attempt int, baseDelay, maxDelay time.Duration, jitterRatio fl
 // It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
 var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
 
+// status413Regex matches a 413 status code anchored to a recognizable status
+// keyword or HTTP-response prefix (mitto-3rs). Unlike a bare `strings.Contains(s,
+// "413")`, this does not false-positive on the digits "413" appearing incidentally
+// elsewhere in the error string (e.g. inside a request-id UUID segment such as
+// "f24b-4130-..."). It deliberately does NOT use a plain `\b413\b` word-boundary
+// match either: this codebase's error strings routinely carry duration-style
+// fields (e.g. "duration_ms=413", "elapsed_ms=413") that would reintroduce the
+// same class of false positive. Kept separate from httpStatusRegex (which is
+// shared with extractHTTPStatus and feeds unrelated -32603 message formatting)
+// so this fix does not alter other call sites.
+var status413Regex = regexp.MustCompile(`(?i)(?:HTTP error:\s*|"?(?:http)?status"?\s*:\s*|HTTP/[12](?:\.[01])?\s+)413\b`)
+
 // IsContextTooLargeError returns true if the error indicates the AI model
 // rejected the prompt because the conversation context is too large (HTTP 413
 // or an equivalent model-specific error phrase).
@@ -332,20 +370,48 @@ var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|
 // inlining them in FormatACPError) so that the prompt dispatcher's queue-advancement
 // logic and the loop runner's auto-pause guard (via internal/web) can reuse the
 // same predicate without duplicating strings.
+//
+// mitto-k4x: Augment's chat-stream endpoint returns HTTP 400 with
+// apiStatus="invalidArgument" for oversized/malformed context-flush payloads
+// (not HTTP 413). Both substrings are required so unrelated 400s do not match.
+//
+// mitto-2efc: that pair-match alone is too broad — ANY upstream 400
+// invalidArgument (e.g. a deferred model-switch race, or any other
+// malformed-request 400 unrelated to context size) was being classified as
+// context-too-large. The 400/invalidArgument pair must now ALSO be
+// corroborated by an actual token/length overflow signal somewhere in the
+// payload before it is treated as context-too-large; otherwise the error is
+// reported verbatim (via the generic delivery-failure path) instead of
+// masquerading as contextWindowExceeded.
 func IsContextTooLargeError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errMsg := err.Error()
 	errMsgLower := strings.ToLower(errMsg)
-	return strings.Contains(errMsg, "413") ||
+	if status413Regex.MatchString(errMsg) ||
 		strings.Contains(errMsgLower, "context too large") ||
 		strings.Contains(errMsgLower, "context_too_long") ||
 		strings.Contains(errMsgLower, "context_length_exceeded") ||
 		strings.Contains(errMsgLower, "context window is full") ||
 		strings.Contains(errMsgLower, "prompt is too long") ||
 		strings.Contains(errMsgLower, "maximum context length") ||
-		strings.Contains(errMsgLower, "context too large for model")
+		strings.Contains(errMsgLower, "context too large for model") {
+		return true
+	}
+	if strings.Contains(errMsgLower, `"httpstatus":400`) &&
+		strings.Contains(errMsgLower, `"apistatus":"invalidargument"`) {
+		// Require corroborating evidence of a token/length overflow before
+		// treating a generic 400/invalidArgument as context-too-large
+		// (mitto-2efc).
+		return strings.Contains(errMsgLower, "token") ||
+			strings.Contains(errMsgLower, "too long") ||
+			strings.Contains(errMsgLower, "maximum length") ||
+			strings.Contains(errMsgLower, "length exceeds") ||
+			strings.Contains(errMsgLower, "too large") ||
+			strings.Contains(errMsgLower, "context")
+	}
+	return false
 }
 
 // isAgentBusyError reports whether err is a saturated/overloaded shared ACP
@@ -369,9 +435,118 @@ func IsRateLimitError(err error) bool {
 	return strings.Contains(errMsgLower, "rate limit") || strings.Contains(errMsgLower, "too many requests")
 }
 
+// IsAuthError returns true if the error indicates the upstream CLI's
+// authentication has expired or the user is not logged in. Claude Code
+// surfaces this as JSON-RPC `-32000 "Authentication required"` when its
+// Anthropic OAuth token has expired mid-conversation; the ACP process is
+// still alive, so a restart won't help — the user must re-authenticate the
+// CLI. Callers (handlePromptError) use this to stop queue advancement so
+// every queued message doesn't cascade the same failure (mitto-r5o).
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "authentication required")
+}
+
+// IsHandshakeQueryClosedError reports whether err is the agent's "query closed
+// before response received" wedge signature on a session/new handshake — JSON-RPC
+// -32603 ("Internal error") whose data carries "query closed before response
+// received" (case-insensitive). This is NOT necessarily an auth failure
+// (mitto-biu, correcting the mitto-bov assumption): the SDK's async iterator is
+// torn down before writing a response both on cold-start auth failure AND on a
+// long-lived shared process whose internal query loop has wedged (mitto-aoo,
+// which now auto-recycles this exact signature via
+// internal/acpproc.isAgentQueryClosedErr -> recordRPCWedgeFailure -> saturation
+// -> GC Tier 5/6 recycle).
+//
+// internal/acp cannot import internal/acpproc/acperrors here (acperrors imports
+// this package, an import cycle), so this is a string-based twin of the
+// structured classifier acperrors.IsAgentQueryClosedErr /
+// internal/acpproc/shared_acp_process.go:isAgentQueryClosedErr — keep the three
+// implementations in sync.
+func IsHandshakeQueryClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "-32603") &&
+		strings.Contains(strings.ToLower(errMsg), "query closed before response received")
+}
+
+// ProcessHistory is a tri-state signal describing whether the shared ACP
+// process that produced an error had previously completed at least one
+// successful session RPC (session/new or session/load) before this failure.
+// Kept tri-state (rather than a plain bool) so FormatACPError's existing
+// unhedged behavior is preserved by default: only a caller that explicitly
+// passes ProcessHistoryWarm gets the auth-free wording (mitto-azk).
+type ProcessHistory int
+
+const (
+	// ProcessHistoryUnknown is the zero value: the caller has no corroborating
+	// signal about the process's prior health. Formatting falls back to the
+	// original cause-neutral-but-hedged wording (mitto-biu).
+	ProcessHistoryUnknown ProcessHistory = iota
+	// ProcessHistoryCold indicates this is a first-contact failure: the shared
+	// process has never completed a session RPC. Auth is a plausible cause, so
+	// the secondary "check the CLI is authenticated" hint is retained.
+	ProcessHistoryCold
+	// ProcessHistoryWarm indicates the shared process previously completed at
+	// least one session/new or session/load successfully. Auth cannot be the
+	// cause of a later handshake failure on the same process, so the message
+	// drops the authentication hint entirely (mitto-azk).
+	ProcessHistoryWarm
+)
+
+// IsUpstreamUnavailableError reports whether err indicates the agent's
+// upstream API (e.g. xlb.api.augmentcode.com) was unreachable at the network
+// level — a connect-timeout brownout — rather than an application-level
+// error. Node's undici HTTP client surfaces this as
+// `UND_ERR_CONNECT_TIMEOUT` / "Connect Timeout Error" wrapped in a "fetch
+// failed" JSON-RPC -32603 envelope whose `data.apiStatus` is "unavailable".
+// The envelope carries no HTTP status code, so extractHTTPStatus finds
+// nothing and the generic -32603 branch would otherwise misreport this as an
+// opaque "internal error" (mitto-gbf5).
+func IsUpstreamUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsgLower := strings.ToLower(err.Error())
+	if strings.Contains(errMsgLower, "und_err_connect_timeout") ||
+		strings.Contains(errMsgLower, "connect timeout error") {
+		return true
+	}
+	return strings.Contains(errMsgLower, "fetch failed") &&
+		strings.Contains(errMsgLower, `"apistatus":"unavailable"`)
+}
+
+// FormatErrorHints carries optional corroborating context that lets
+// FormatACPErrorWithContext refine its message beyond what the raw error
+// string alone can tell. Zero value means "no additional context" and
+// FormatACPErrorWithContext(err, FormatErrorHints{}) is byte-identical to
+// FormatACPError(err). Designed so future hints can be added as new fields
+// without another functions signature change (mitto-azk).
+type FormatErrorHints struct {
+	// ProcessHistory corroborates a handshake failure's likely cause using the
+	// shared process's prior session-RPC history. See ProcessHistory.
+	ProcessHistory ProcessHistory
+}
+
 // FormatACPError transforms ACP errors into user-friendly messages.
 // It detects common error patterns and provides actionable guidance.
+// This is a convenience wrapper around FormatACPErrorWithContext with no
+// additional hints (ProcessHistoryUnknown) — see that function for the
+// context-aware variant.
 func FormatACPError(err error) string {
+	return FormatACPErrorWithContext(err, FormatErrorHints{})
+}
+
+// FormatACPErrorWithContext transforms ACP errors into user-friendly messages,
+// optionally refining the wording using corroborating hints the caller already
+// has (e.g. whether the shared process had previously completed a session RPC).
+// With the zero-value FormatErrorHints{}, behavior is identical to
+// FormatACPError.
+func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 	if err == nil {
 		return ""
 	}
@@ -416,6 +591,17 @@ func FormatACPError(err error) string {
 		return "The agent is busy — please try again in a moment."
 	}
 
+	// Upstream API unreachable (network-level connect-timeout brownout, e.g.
+	// UND_ERR_CONNECT_TIMEOUT to xlb.api.augmentcode.com). Checked before the
+	// generic context-cancelled and -32603 branches so this is named for the
+	// user instead of surfacing as an opaque "internal error" or "request was
+	// cancelled" (mitto-gbf5).
+	if IsUpstreamUnavailableError(err) {
+		return "The AI agent's API is unreachable right now (upstream connection " +
+			"timed out). This is usually a transient outage — please try again in " +
+			"a moment."
+	}
+
 	// Context cancelled (user cancelled or session closed)
 	if strings.Contains(errMsg, "context canceled") ||
 		strings.Contains(errMsg, "context deadline exceeded") {
@@ -425,6 +611,45 @@ func FormatACPError(err error) string {
 	// Rate limiting
 	if IsRateLimitError(err) {
 		return "Rate limit reached. Please wait a moment before sending another message."
+	}
+
+	// Authentication required (mitto-r5o) — upstream CLI's session token has
+	// expired or the user is not logged in. The ACP agent process is still
+	// alive; restarting won't help. User needs to re-authenticate the CLI.
+	if IsAuthError(err) {
+		return "🔐 The AI agent's authentication has expired. " +
+			"Please re-authenticate the CLI in a terminal (e.g. `claude auth login` " +
+			"for Claude Code, or `auggie auth login` for Auggie), then send your message again."
+	}
+
+	// Handshake "query closed before response received" (mitto-biu, correcting
+	// mitto-bov). The SDK's session/new async iterator is torn down before
+	// writing a response and surfaces as JSON-RPC -32603 with data.details
+	// "Query closed before response received" — a different code path from the
+	// -32000 case above. mitto-bov assumed this always means expired CLI auth;
+	// it does not — it's also the symptom of a wedged shared process whose
+	// internal query loop has torn down (mitto-aoo), which Mitto now detects
+	// and recycles automatically. The message is therefore cause-neutral and
+	// remedy-first: Restart ACP (with a note that Mitto also auto-recycles this
+	// case) leads, and re-authenticating is only a hedged secondary hint.
+	// Placed before the generic -32603 catch-all so this friendly message wins
+	// over "AI service returned an error". Match is case-insensitive on the
+	// details substring in case the SDK wording drifts.
+	if IsHandshakeQueryClosedError(err) {
+		if hints.ProcessHistory == ProcessHistoryWarm {
+			// The shared process previously completed at least one session RPC
+			// successfully, so an auth problem cannot explain this failure —
+			// omit the hint entirely (mitto-azk).
+			return "The agent process could not start a new session (handshake failed). " +
+				"The agent had been working normally and its internal query loop has " +
+				"since wedged. Click Restart ACP for this workspace — Mitto also " +
+				"recycles a wedged agent process automatically."
+		}
+		return "The agent process could not start a new session (handshake failed). " +
+			"Click Restart ACP for this workspace — Mitto also recycles a wedged agent " +
+			"process automatically. If it keeps happening, check that the CLI is " +
+			"authenticated (e.g. `claude auth login` for Claude Code, or `auggie auth login` " +
+			"for Auggie)."
 	}
 
 	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.

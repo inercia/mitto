@@ -26,6 +26,39 @@ func TestDecodeEventData(t *testing.T) {
 	}
 }
 
+func TestDecodeEventData_ProcessorRun(t *testing.T) {
+	event := Event{
+		Type:      EventTypeProcessorRun,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"name":        "my-processor",
+			"phase":       "before",
+			"outcome":     "error",
+			"duration_ms": float64(42),
+			"error":       "boom",
+		},
+	}
+
+	decoded, err := DecodeEventData(event)
+	if err != nil {
+		t.Fatalf("DecodeEventData failed: %v", err)
+	}
+
+	data, ok := decoded.(ProcessorRunData)
+	if !ok {
+		t.Fatalf("Expected ProcessorRunData, got %T", decoded)
+	}
+	if data.Name != "my-processor" || data.Phase != "before" || data.Outcome != "error" {
+		t.Errorf("unexpected fields: %+v", data)
+	}
+	if data.DurationMs != 42 {
+		t.Errorf("DurationMs = %d, want 42", data.DurationMs)
+	}
+	if data.Error != "boom" {
+		t.Errorf("Error = %q, want %q", data.Error, "boom")
+	}
+}
+
 func TestBuildConversationHistory(t *testing.T) {
 	// Create test events
 	events := []Event{

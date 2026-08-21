@@ -1,0 +1,61 @@
+icon: save
+name: Commit changes
+menus: prompts, conversation, !promptsLoop
+description: Stage and commit changes with descriptive messages
+group: Submission of changes
+backgroundColor: '#B2DFDB'
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'Submission of changes'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Create Git commits for changes in this repository with proper organization and messages.
+
+  ### 0. Prerequisites
+
+  **Formatting:** Run project formatters. Report any files modified and include in commit analysis.
+
+  **Tests:**
+
+  - If not run recently: warn user, ask to proceed or run tests first
+  - If failing: warn user, ask to fix or proceed
+
+  ### 1. Ensure Feature Branch
+
+  {{ template "git/shared/ensure-feature-branch" . }}
+
+  If on a feature branch: fetch and rebase on target branch (usually "main").
+
+  ### 2. Analyze Changes
+
+  {{ if .Session.HasMessages -}}
+  {{ template "git/shared/commit-scoped" . }}
+  {{- else -}}
+  {{ template "git/shared/commit-all" . }}
+  {{- end }}
+
+  ### 3. Plan, Approve and Commit
+
+  {{ template "git/shared/commit-plan" . }}
+
+  {{ if .Session.BeadsIssue -}}
+  ### 4. Close Linked Beads Issue
+
+  {{ template "git/shared/close-linked-bead" . }}
+
+  ### 5. Update Agent Rules (Optional)
+  {{- else }}
+  ### 4. Update Agent Rules (Optional)
+  {{- end }}
+
+  {{ template "git/shared/update-agent-rules" . }}
+
+  ## Guidelines
+
+  - Respect `.gitignore`
+  - Skip empty commits
+  - Handle binary/large files appropriately

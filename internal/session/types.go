@@ -91,6 +91,7 @@ const (
 	EventTypeSessionEnd     EventType = "session_end"
 	EventTypeUIPromptAnswer EventType = "ui_prompt_answer"
 	EventTypeSessionChange  EventType = "session_change"
+	EventTypeProcessorRun   EventType = "processor_run"
 )
 
 // SessionStatus represents the status of a session.
@@ -141,12 +142,72 @@ type Event struct {
 
 // UserPromptData contains data for a user prompt event.
 type UserPromptData struct {
-	Message       string     `json:"message"`
-	Images        []ImageRef `json:"images,omitempty"`
-	Files         []FileRef  `json:"files,omitempty"`
-	PromptID      string     `json:"prompt_id,omitempty"`      // Client-generated ID for delivery confirmation
-	PromptName    string     `json:"prompt_name,omitempty"`    // Name of the workspace prompt used (for UI rendering)
-	ArgumentCount int        `json:"argument_count,omitempty"` // Number of Go-template .Args supplied (>0 only for named prompts with args)
+	Message       string            `json:"message"`
+	Images        []ImageRef        `json:"images,omitempty"`
+	Files         []FileRef         `json:"files,omitempty"`
+	PromptID      string            `json:"prompt_id,omitempty"`      // Client-generated ID for delivery confirmation
+	PromptName    string            `json:"prompt_name,omitempty"`    // Name of the workspace prompt used (for UI rendering)
+	ArgumentCount int               `json:"argument_count,omitempty"` // Number of Go-template .Args supplied (>0 only for named prompts with args)
+	Arguments     map[string]string `json:"arguments,omitempty"`      // Raw .Args values, exactly replayable; sensitive-named keys are omitted entirely (never redacted/truncated)
+	// Provenance records which trigger actually delivered this prompt (mitto-rg79).
+	// Nil for ordinary human-typed/ad-hoc prompts; non-nil for loop-delivered
+	// prompts (schedule, onCompletion, onTasks, onChild, onSlack) and manual
+	// "Run now" / startup-pulse deliveries. Backward compatible: omitempty means
+	// old events (no provenance) need no migration and old readers ignore it.
+	Provenance *PromptProvenance `json:"provenance,omitempty"`
+}
+
+// PromptProvenance is a typed, credential-free record of which trigger
+// delivered a loop prompt (mitto-rg79). It is derived from
+// conversation.PromptMeta at dispatch time and is safe to persist and
+// broadcast: no prompt text, no Slack message bodies, no secrets.
+type PromptProvenance struct {
+	// LoopTrigger names the trigger that fired this dispatch: "schedule",
+	// "onCompletion", "onTasks", "onChild", or "onSlack". Empty for non-loop
+	// prompts (ad-hoc/human-typed).
+	LoopTrigger LoopTrigger `json:"loop_trigger,omitempty"`
+	// IsLoopForced is true when the loop prompt was triggered manually via
+	// "Run now" rather than by its configured trigger.
+	IsLoopForced bool `json:"is_loop_forced,omitempty"`
+	// IsLoopRunOnStart is true when this loop prompt was fired by the
+	// boot-pulse shortly after Mitto started (mitto-ystk).
+	IsLoopRunOnStart bool `json:"is_loop_run_on_start,omitempty"`
+	// Slack carries optional, credential-free detail about the onSlack event
+	// batch that caused this dispatch. Nil unless LoopTrigger == TriggerOnSlack.
+	// Never carries event text/bodies or secrets — see PromptSlackProvenance.
+	Slack *PromptSlackProvenance `json:"slack,omitempty"`
+	// OnChild carries optional, credential-free detail about the child-lifecycle
+	// event that caused this dispatch. Nil unless LoopTrigger == TriggerOnChild
+	// (mitto-qvlh). Never carries the child's title/name — ChildID is a bounded
+	// session identifier only, and by the time an anyDeleted fire reaches here
+	// the deleted child's metadata (including its name) may already be gone.
+	OnChild *PromptOnChildProvenance `json:"on_child,omitempty"`
+}
+
+// PromptOnChildProvenance is a typed, credential-free record of the
+// child-lifecycle event that fired an onChild loop dispatch (mitto-qvlh).
+// ChildID is a bounded session identifier (never a title/name — deleted-child
+// metadata may already be gone by the time anyDeleted fires). Event is one of
+// "anyEndResponse", "anyDeleted", or "anyLoopStopped". StoppedReason is
+// non-empty only for anyLoopStopped; every session.StoppedReason value is
+// acceptable here — this type does not gate on which reasons are meaningful.
+type PromptOnChildProvenance struct {
+	ChildID       string `json:"child_id,omitempty"`
+	Event         string `json:"event,omitempty"`
+	StoppedReason string `json:"stopped_reason,omitempty"`
+}
+
+// PromptSlackProvenance is the credential-free, text-free Slack detail
+// attached to PromptProvenance for onSlack dispatches. Derived from the first
+// event of the bounded batch that fired the loop, plus the batch size.
+type PromptSlackProvenance struct {
+	// InstallationID identifies the Slack workspace installation (not a secret).
+	InstallationID string `json:"installation_id,omitempty"`
+	// ChannelID identifies the Slack channel (not a secret).
+	ChannelID string `json:"channel_id,omitempty"`
+	// EventCount is the number of Slack events in the batch that fired this
+	// dispatch (one batch consumes one loop iteration).
+	EventCount int `json:"event_count,omitempty"`
 }
 
 // AgentMessageData contains data for an agent message event.
@@ -154,7 +215,8 @@ type UserPromptData struct {
 // HTML (converted from markdown by the web layer's MarkdownBuffer).
 // The JSON field name "html" is used for consistency with frontend expectations.
 type AgentMessageData struct {
-	Text string `json:"html"` // Contains HTML content (despite field name)
+	Text     string `json:"html"`           // Contains HTML content (despite field name)
+	Markdown string `json:"text,omitempty"` // Raw pre-conversion markdown, when available (mitto-pscc.3). Absent on events persisted before this field existed.
 }
 
 // AgentThoughtData contains data for an agent thought event.
@@ -170,6 +232,30 @@ type ToolCallData struct {
 	Kind       string `json:"kind,omitempty"`
 	RawInput   any    `json:"raw_input,omitempty"`
 	RawOutput  any    `json:"raw_output,omitempty"`
+}
+
+// ProcessorRunData contains data for a single processor invocation, recorded
+// once per (processor, phase) run so the Stats tab (mitto-fm89) can compute
+// exact run/error/skip counts and p50/p95 durations by scanning events.jsonl.
+// A summed stats-DB counter cannot represent a percentile, so this is
+// deliberately an event-log entry rather than an internal/stats metric.
+type ProcessorRunData struct {
+	// Name is the processor's Name field (internal/processors.Processor.Name).
+	Name string `json:"name"`
+	// Phase identifies which pipeline ran the processor: "before" (userPrompt,
+	// Manager.Apply), "after" (agentResponded/agentIdle, Manager.ApplyAfter),
+	// or "close" (conversationClosed, Manager.ApplyOnClose).
+	Phase string `json:"phase"`
+	// Outcome is "ok", "error", or "skipped".
+	Outcome string `json:"outcome"`
+	// DurationMs is the wall-clock execution time in milliseconds. Zero for
+	// skipped runs and for text-mode/prompt-mode processors (no external
+	// command is executed, so there is no duration to record).
+	DurationMs int64 `json:"duration_ms,omitempty"`
+	// Error is the short failure message (ProcessorError.Error) when
+	// Outcome=="error". Never includes stdout/stderr or argument values —
+	// see the Meta sensitivity policy on Event.
+	Error string `json:"error,omitempty"`
 }
 
 // ToolCallUpdateData contains data for a tool call update event.
@@ -247,28 +333,43 @@ type SessionChangeData struct {
 
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
-	SessionID               string          `json:"session_id"`
-	Name                    string          `json:"name,omitempty"` // User-friendly session name
-	ACPServer               string          `json:"acp_server"`
-	ACPSessionID            string          `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
-	WorkingDir              string          `json:"working_dir"`
-	CreatedAt               time.Time       `json:"created_at"`
-	UpdatedAt               time.Time       `json:"updated_at"`
-	LastUserMessageAt       time.Time       `json:"last_user_message_at,omitempty"` // Time of last user prompt
-	EventCount              int             `json:"event_count"`
-	MaxSeq                  int64           `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
-	Status                  SessionStatus   `json:"status"`
-	Description             string          `json:"description,omitempty"`
-	Pinned                  bool            `json:"pinned,omitempty"`                    // Deprecated: use Archived instead. If true, session cannot be deleted
-	Archived                bool            `json:"archived,omitempty"`                  // If true, session is archived (hidden from main list by default)
-	ArchivedAt              time.Time       `json:"archived_at,omitempty"`               // Time when session was archived (cleared when unarchived)
-	ArchiveReason           ArchiveReason   `json:"archived_reason,omitempty"`           // Reason why the session was archived (cleared when unarchived)
-	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
-	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
-	BaselineModel           string          `json:"baseline_model,omitempty"`            // User's intended model; never mutated by per-prompt overrides
-	BeadsIssue              string          `json:"beads_issue,omitempty"`               // Linked beads issue ID (e.g. "mitto-123"), empty if none
-	OriginPromptName        string          `json:"origin_prompt_name,omitempty"`        // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	SessionID         string        `json:"session_id"`
+	Name              string        `json:"name,omitempty"`             // User-friendly session name
+	NameIsFallback    bool          `json:"name_is_fallback,omitempty"` // True when Name was populated by the quick fallback path (GenerateAndSetTitle step 1) and has not yet been overwritten by an aux-generated real title (mitto-ee3)
+	ACPServer         string        `json:"acp_server"`
+	ACPSessionID      string        `json:"acp_session_id,omitempty"` // ACP-assigned session ID for resumption
+	WorkingDir        string        `json:"working_dir"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	LastUserMessageAt time.Time     `json:"last_user_message_at,omitempty"` // Time of last user prompt
+	EventCount        int           `json:"event_count"`
+	MaxSeq            int64         `json:"max_seq,omitempty"` // Highest sequence number persisted (for immediate persistence)
+	Status            SessionStatus `json:"status"`
+	Description       string        `json:"description,omitempty"`
+	Pinned            bool          `json:"pinned,omitempty"`          // Deprecated: use Archived instead. If true, session cannot be deleted
+	Archived          bool          `json:"archived,omitempty"`        // If true, session is archived (hidden from main list by default)
+	ArchivedAt        time.Time     `json:"archived_at,omitempty"`     // Time when session was archived (cleared when unarchived)
+	ArchiveReason     ArchiveReason `json:"archived_reason,omitempty"` // Reason why the session was archived (cleared when unarchived)
+	// NoArchive marks this conversation as never-archivable (mitto-yvel).
+	// Resolved once from the originating prompt's target.noArchive at
+	// creation time (see ResolvedPromptTarget.NoArchive) and never
+	// mutated afterwards: reuse dispatches into an existing conversation
+	// leave it unchanged, and PATCH /api/sessions/{id} /
+	// mitto_conversation_update do not accept it. Enforcement at archive
+	// entry points is done by downstream work (mitto-yvel.3).
+	NoArchive        bool   `json:"no_archive,omitempty"`
+	RunnerType       string `json:"runner_type,omitempty"`        // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted bool   `json:"runner_restricted,omitempty"`  // Whether the runner has restrictions enabled
+	CurrentModeID    string `json:"current_mode_id,omitempty"`    // Current session mode ID (e.g., "ask", "code", "architect")
+	BaselineModel    string `json:"baseline_model,omitempty"`     // User's intended model; never mutated by per-prompt overrides
+	BeadsIssue       string `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
+	OriginPromptName string `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	// BackgroundColor is a creation-time default color (hex, e.g. "#E1BEE7")
+	// applied from the originating prompt's target.backgroundColor
+	// (mitto-8sk), rendered by the sidebar as a left accent stripe. Also
+	// settable/clearable manually via PATCH /api/sessions/{id}. Reuse
+	// dispatches never overwrite an existing value.
+	BackgroundColor         string          `json:"background_color,omitempty"`
 	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
 	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
 	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated
@@ -294,6 +395,16 @@ type Metadata struct {
 	// Persisted so the retry cadence survives restarts. Cleared on any
 	// successful (manual or auto) unarchive.
 	AutoUnarchiveLastAttemptAt time.Time `json:"auto_unarchive_last_attempt_at,omitempty"`
+}
+
+// IsArchivable reports whether this conversation may be archived. It returns
+// false only when NoArchive is set (mitto-yvel.3); every archive entry point
+// (REST PATCH, MCP mitto_conversation_archive, auto-archive for inactivity or
+// repeated ACP start/resume failures) must check this before mutating
+// Archived/ArchivedAt/ArchiveReason. Deletion is never gated by this — a
+// protected conversation must still be deletable (epic decision 3).
+func (m Metadata) IsArchivable() bool {
+	return !m.NoArchive
 }
 
 // ChildOrigin represents how a child conversation was created.

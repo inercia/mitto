@@ -256,8 +256,15 @@ export async function ensureActiveSession(page: Page): Promise<string> {
   // Determine whether we need a new session:
   //   • textarea absent → loop session is active (no regular input area)
   //   • textarea disabled → session exists but ACP is not ready yet
-  const textareaCount = await textarea.count();
-  const needsNewSession = textareaCount === 0 || (await textarea.isDisabled());
+  // Inspect presence and disabled state in one DOM snapshot. During bootstrap,
+  // the dashboard can replace a transient textarea between count() and
+  // isDisabled(); the latter would then wait for a detached element until the
+  // test timeout instead of creating the session.
+  const needsNewSession = await textarea.evaluateAll(
+    (elements) =>
+      elements.length === 0 ||
+      elements.every((element) => (element as HTMLTextAreaElement).disabled),
+  );
 
   if (needsNewSession) {
     // Ensure we are on the Conversations tab before creating a new session.

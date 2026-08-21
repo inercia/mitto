@@ -1,0 +1,396 @@
+icon: book-open
+name: 'Skill: ingest from Confluence page'
+menus: prompts, !promptsLoop
+description: Extract information from a Confluence page (and its child pages) and integrate it into an existing `SKILL.md` (and its `references/` folder)
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md") && Tools.HasAnyPattern(["confluence_*", "*_confluence"])'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SkillFile
+    type: filename
+    glob:
+      - "**/SKILL.md"
+    remember: folder
+    required: true
+    description: The `SKILL.md` file this ingestion run integrates into. New reference files land in its sibling `references/` folder.
+  - name: ConfluencePageURL
+    type: text
+    required: true
+    description: 'URL or ID of the Confluence page to ingest (e.g. https://<site>.atlassian.net/wiki/spaces/ENG/pages/123456789/Runbook or the bare page ID 123456789)'
+  - name: MaxDepth
+    type: text
+    group: Advanced
+    required: false
+    description: 'How many levels of child/linked pages to follow (default: 1 — only the root page + its direct children). Use 0 for the root page only. Cap: 3.'
+  - name: LinkFilter
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: 'Optional guidance narrowing which linked pages to follow (e.g. "only pages under the same space", "skip anything tagged draft", "follow only pages whose title contains ''API''"). If empty, the built-in heuristics in Step 2b apply.'
+  - name: Focus
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: 'Optional narrowing of what to extract from the fetched pages — one or more topics, subsections, or aspects the operator cares about (e.g. "only the section on cache invalidation, ignore the migration history", "the API-versioning policy, not the deprecation timeline", "just the on-call escalation table"). If empty, the entire page (and each followed child page) is treated as relevant and evaluated section-by-section per Step 3.'
+target:
+  # Shared with every other prompt under config/prompts/builtin/skills/: all
+  # `Skill: …` prompts funnel into the same non-archived conversation in this
+  # working_dir so they never run in parallel on the same skill.
+  title: 'Skill workshop'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  This run integrates into the skill anchored at
+  `{{ .Args.SkillFile }}` (workspace-relative). Its sibling references
+  folder is `{{ Dir .Args.SkillFile }}/references/`. Every mention
+  below of "`SKILL.md`" means that specific file; every mention of
+  "`references/`" means that specific sibling folder — do not touch a
+  different skill's files.
+
+  Extract information from the Confluence page at
+  `{{ .Args.ConfluencePageURL }}` (and, up to depth `{{ Arg .Args.MaxDepth "1" }}`,
+  its child/linked pages) and integrate the relevant parts into
+  `{{ .Args.SkillFile }}` and, where appropriate, into files under
+  `{{ Dir .Args.SkillFile }}/references/`.
+
+  {{ if .Args.Focus -}}
+  ## Operator focus (narrows this run)
+
+  The operator has asked this run to focus specifically on:
+
+  ```
+  {{ .Args.Focus }}
+  ```
+
+  Treat only the parts of the fetched pages that speak to that focus as
+  in-scope. Sections, tables, or child pages that do not bear on the
+  focus above are **Off-topic for this run**, even if they would
+  otherwise teach something useful about the skill — file them as
+  `Off-topic` in the Step 3 analysis table with a one-word note (e.g.
+  `off-focus`) and move on. The focus **also narrows link-following**:
+  when weighing whether to descend into a linked page in Step 2b, prefer
+  pages whose title, breadcrumb, or lead paragraph plausibly relates to
+  the focus above; skip pages that are clearly outside it, even if
+  `LinkFilter` would otherwise permit them. If nothing in the fetched
+  pages matches the focus, say so explicitly in Step 7 and do not
+  invent placements.
+  {{- else -}}
+  The operator did not narrow the focus, so treat the **entire root
+  page and every fetched child page** as potentially relevant and
+  evaluate each section per Step 3.
+  {{- end }}
+
+  ## Step 1 — Understand the target skill
+
+  Read `{{ .Args.SkillFile }}` in full. Then think carefully and
+  summarize, in this conversation, a short **skill briefing** (5–10
+  lines) covering:
+
+  - **Purpose** — what problem does this skill solve?
+  - **Scope** — what is in-scope vs. explicitly out-of-scope?
+  - **Aim** — what outcome does an agent using this skill try to achieve?
+  - **Audience** — which agent(s) / which situations trigger this skill?
+
+  Do not proceed until this briefing is written out — every later placement
+  decision refers back to it.
+
+  ## Step 2 — Fetch the Confluence page
+
+  Match Confluence MCP tools **by capability, not exact name**. Here you need
+  to **fetch a page by URL or ID and read its rendered body** (e.g.
+  `confluence_get_page*`, `get_page_confluence`, `confluence_search` to
+  resolve a URL/title → page ID when only a search tool is exposed). No
+  writing / commenting tool is needed — this prompt never modifies Confluence.
+
+  From `{{ .Args.ConfluencePageURL }}`, resolve the page ID:
+
+  - If the input is a bare numeric ID, use it directly.
+  - If the input is a URL of the form `.../pages/<ID>/...`, extract `<ID>`.
+  - If neither pattern matches (e.g. tiny/short-URL form), use a search tool
+    to resolve it, then confirm the returned title matches the URL slug
+    before proceeding.
+
+  Fetch the root page's body (rendered / storage format, whichever the tool
+  returns) and its metadata (title, space, ancestors, direct children).
+
+  If the page cannot be fetched — invalid URL, missing permissions, page
+  not accessible to the connected Confluence workspace, tool error —
+  **stop immediately** and print a one-line explanation. Do not guess the
+  page's content; do not proceed to link traversal or analysis.
+
+  ## Step 2b — Follow links (bounded traversal)
+
+  Confluence pages are rarely self-contained: child pages, sibling
+  "See also" links, and inline references usually carry material context.
+  Traverse them under strict bounds.
+
+  **Bounds — enforce every one:**
+
+  - **Depth cap:** follow links up to `MaxDepth = {{ Arg .Args.MaxDepth "1" }}`
+    levels from the root page. Depth 0 = root only; depth 1 = root + direct
+    children/links; depth 2 = also grandchildren. **Hard ceiling is 3** — if
+    the operator passed a larger value, silently clamp it and note the clamp
+    in the Step 7 summary.
+  - **Total-page cap:** fetch at most **20 pages** across the whole run
+    (including the root). Stop link expansion once the cap is reached and
+    note it in the summary.
+  - **Cycle avoidance:** maintain a `visited` set keyed by page ID. Never
+    fetch the same page twice, even if reached by multiple paths.
+  - **Space discipline:** by default, only follow links whose target lives
+    in the **same Confluence space** as the root page. Cross-space links
+    are recorded as "not followed (cross-space)" unless the operator's
+    `LinkFilter` explicitly allows them.
+
+  **Which links to follow (in priority order):**
+
+  1. **Child pages** (from the page tree / `ancestors`-`children` metadata)
+     — usually worth following; they typically extend the parent's topic.
+  2. **Inline links to other Confluence pages in the same space** — follow
+     when the anchor text or surrounding sentence signals continuation
+     ("see also", "details in", "runbook", "reference", etc.) or matches
+     the skill briefing's scope.
+  3. **Links to attachments** (PDFs, images, .docx) — record their titles
+     but do NOT try to fetch/parse binary attachments unless a
+     Confluence tool clearly exposes their text content; note them for
+     the operator instead.
+  4. **External links** (non-Confluence URLs) and **cross-space links**
+     — do NOT follow; list them under "External references" in Step 3
+     so the operator can decide whether to ingest them separately.
+
+  **Custom filter:** if `LinkFilter` is non-empty
+  ({{ Arg .Args.LinkFilter "(none)" }}), apply it as an additional narrowing
+  rule *on top of* the defaults above — it can only reduce the set of
+  followed pages, never widen past the caps.
+
+  **When to stop early** (before hitting the caps):
+
+  - The next candidate page is clearly off-topic vs. the Step 1 briefing.
+  - The last three followed pages contributed no new Relevant chunks in
+    Step 3 — further traversal is unlikely to be productive.
+  - A page fails to fetch: record the failure, skip it, and do not retry
+    its own children (they are unreachable via this branch).
+
+  Print a **traversal log** in this conversation as pages are fetched:
+  `<depth> | <page ID> | <title> | followed? (yes/skipped-reason) |
+  parent`. Include the final counts (`fetched: N`, `skipped: N`,
+  `depth reached: N`).
+
+  ## Step 3 — Analyze the pages against the skill briefing
+
+  Walk through the fetched pages in traversal order. For each page (or
+  coherent section within a long page) decide:
+
+  - **Relevant** — teaches something that fits the Step 1 briefing.
+    Note *what* is being taught (a fact, a gotcha, a workflow step, an
+    example, an API detail, a decision + rationale, a validation trick).
+  - **Off-topic** — housekeeping pages, meeting minutes unrelated to the
+    skill, stale drafts, org-chart pages. Explicitly ignore.
+
+  Print a compact **analysis table** in this conversation:
+  `<page ID or section anchor> | relevant? | what it teaches` — one row per
+  page or section. Do not fabricate lessons that are not clearly stated or
+  clearly implied by the fetched content.
+
+  Also list the "External references" bucket separately: cross-space and
+  non-Confluence links you deliberately did not follow, one per line, so
+  the operator can spot obvious gaps.
+
+  ## Step 4 — Decide destination for each relevant chunk
+
+  For every **Relevant** row from Step 3, pick exactly one destination and
+  briefly justify:
+
+  - **`SKILL.md`** — core, canonical guidance the agent must always see
+    (invariants, primary workflow, key gotchas, trigger conditions,
+    "always do X / never do Y" rules). Keep the file lean; only promote
+    content that materially changes agent behavior for the common case.
+  - **`references/<file>.md`** — supporting material: examples, long API
+    tables, runbooks, edge-case discussions, decision records, or
+    background reading. Choose a **descriptive, kebab-case filename**
+    derived from the page's topic (e.g. `references/timeout-tuning.md`,
+    `references/deployment-runbook.md`). Reuse an existing file under
+    `references/` when the new content is a natural extension of it;
+    create a new file only when no reasonable home exists. Create the
+    `references/` directory if it does not yet exist.
+
+  When several fetched pages cover one topic, prefer **one** reference
+  file that consolidates them (with sub-headings per source page) over
+  one file per page — the reader loads by topic, not by Confluence URL.
+
+  Print the placement plan as a bullet list — one bullet per chunk with
+  destination + one-sentence justification — before writing anything.
+
+  ## Step 4.5 — De-duplicate against existing content
+
+  Before writing anything, verify each planned chunk is genuinely new
+  information — not a restatement of something already in the skill.
+  This step matters more for Confluence than for a single Slack thread,
+  because a page tree often repeats the same overview across parent and
+  child pages, and the same runbook step may already have been ingested
+  from a previous run.
+
+  For every chunk from Step 4:
+
+  1. **Load the full comparison surface.** Read the current contents of
+     `SKILL.md` **and** every file under `references/` (not just the
+     chosen destination file — the same lesson may already live in a
+     sibling reference, especially one written from a related Confluence
+     page). Use grep/search for keywords, symbol names, page titles, and
+     distinctive phrases from the chunk to locate candidate overlaps
+     fast, then read the surrounding paragraph to judge in context.
+  2. **Compare semantically, not textually.** Two passages count as
+     duplicates when they convey the **same fact, rule, gotcha,
+     procedure step, or example**, even if worded differently, split
+     across bullets, or converted from a Confluence table to a Markdown
+     list. Superficial paraphrases and reordered steps are duplicates.
+     A different fact about the same topic is **not** a duplicate.
+  3. **Cross-page consolidation.** When multiple fetched pages restate
+     the same point (common for Confluence parent/child page trees),
+     keep **one** chunk (the clearest wording, ideally the one already
+     scoped to a consolidated reference file per Step 4) and drop the
+     rest as duplicates of *each other* — before comparing against the
+     existing skill. Do this pass first so the against-skill comparison
+     runs on a de-duplicated candidate set.
+  4. **Classify each chunk into exactly one bucket:**
+     - `Duplicate` — the fact is already covered somewhere in the skill
+       (or was collapsed into a sibling chunk in the cross-page pass);
+       drop the chunk. Note the existing location.
+     - `Refinement` — the fact exists but this Confluence page adds
+       precision (a caveat, an exact version/number, a corner case, a
+       corrected claim, a newer procedure step). Do not add a new
+       section; instead, edit the existing passage in place to
+       incorporate the refinement (Step 5 rules on preserving
+       surrounding content still apply).
+     - `New` — the fact does not appear anywhere in `SKILL.md` or
+       `references/`. Write as planned in Step 4.
+  5. **Print the de-duplication table** before proceeding to Step 5:
+     `chunk (short label) | source page | bucket | existing location
+     (if Duplicate / Refinement) | action`. This is the operator's audit
+     trail — if half the chunks come back as `Duplicate`, that is a
+     healthy outcome (the traversal correctly re-encountered known
+     material), not a failure.
+
+  If **every** relevant chunk resolves to `Duplicate`, skip Step 5
+  entirely and go straight to Step 7 with a "nothing new to add"
+  summary. Do not invent additions just to justify running the prompt.
+
+  ## Step 5 — Write the extracted content
+
+  Apply the plan from Step 4, filtered by Step 4.5. Rules:
+
+  - **Add or refine, never remove.** Do not delete or rewrite existing
+    lines in `SKILL.md` or in reference files just to make room; only
+    append new sections, extend existing ones, or make the targeted
+    in-place edits identified as `Refinement` in Step 4.5.
+  - **No duplication.** Step 4.5 is the authoritative gate — write only
+    chunks classified as `New` or `Refinement`. If new evidence surfaces
+    mid-write that a chunk is actually a duplicate, stop and reclassify
+    rather than writing it "just in case".
+  - **Match the target file's style.** Mirror the existing heading
+    depth, list style, code-block conventions, and voice. If `SKILL.md`
+    uses `##` for top-level sections, so should any additions.
+  - **Distill, don't paste.** Do not paste raw Confluence storage-format
+    markup, macro placeholders, or full rendered HTML into the file;
+    convert to plain Markdown and keep only the substance. Strip
+    Confluence-specific chrome (edit-timestamps, contributor lists,
+    "last edited by …" footers).
+  - **Cite sources compactly.** At the end of each reference file, and
+    at the end of each section added to `SKILL.md` that was distilled
+    from a specific page, include a `Sources:` block. For **new
+    reference files** this block is **mandatory** and must include the
+    canonical Confluence URL(s) of the source page(s) — one line per
+    source, in the shape:
+    `- <Page title> — <Space name> — <Confluence URL>`.
+    This gives readers a one-click path back to the authoritative
+    source for more detail. For **existing files** you are extending,
+    append the new source(s) to the existing `Sources:` block (or
+    create one if the file has none). Prefer the shortest stable URL
+    Confluence exposes (typically the `/wiki/spaces/<SPACE>/pages/<ID>/`
+    form) over deep anchors, which are more likely to rot.
+  - **New reference files** must begin with a short header:
+    - Line 1: a `#` title.
+    - A one-paragraph purpose statement (what the file covers, when the
+      agent should load it).
+    - A `Source:` (singular) or `Sources:` (plural) line **near the
+      top**, immediately under the purpose paragraph, with the same
+      shape as above. This is in addition to the mandatory `Sources:`
+      block at the end — the top-of-file citation is what the agent
+      sees during search / triage; the bottom block is the full
+      provenance record if several sources contributed.
+    After the header, add a trigger sentence in `SKILL.md` linking to
+    the new file (e.g.
+    `- Read [\`references/<name>\`](references/<name>) when <trigger>.`).
+  - Edit files with the workspace file-editing tools — **never** `sed`
+    or full-file rewrites.
+
+  ## Step 6 — Review and polish
+
+  Re-read every file you touched, end-to-end. Improve **flow, legibility,
+  and organization** without changing meaning:
+
+  - Reorder new bullets/sections so related material is contiguous.
+  - Merge near-duplicate bullets you just introduced (common when
+    several Confluence pages restate the same point).
+  - Fix transitions between the new content and the surrounding prose.
+  - Ensure headings still form a logical outline.
+  - Remove trailing whitespace and normalize blank lines.
+
+  Do not restyle or reword pre-existing content that you did not modify
+  in Step 5.
+
+  ## Step 7 — Summary
+
+  Notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Confluence page ingested into skill", style: "success")`
+  and print a short summary:
+
+  - Traversal stats: `pages fetched / skipped / max depth reached / caps hit`
+  - `SKILL.md`: sections added / extended / left untouched
+  - `references/`: files created / extended (one line per file, with the
+    trigger sentence added to `SKILL.md`)
+  - Chunk classification totals from Step 4.5:
+    `New: <n> / Refinement: <n> / Duplicate (against skill): <n> /
+    Duplicate (cross-page collapse): <n> / Off-topic: <n>`
+  - If `New + Refinement == 0`, say so explicitly ("nothing new to add,
+    the fetched pages are already fully covered by the existing skill")
+    — this is a healthy outcome, not a failure.
+  - External / cross-space references NOT followed (so the operator can
+    decide whether to ingest them in a separate run)
+
+  ## Guardrails
+
+  - **Preserve existing content.** This prompt only adds or refines; it
+    never removes lines that were in the file before Step 5.
+  - **No fabrication.** Do not invent facts, APIs, or gotchas that are
+    not stated (or clearly implied) in the fetched pages.
+  - **No duplication.** Never write a chunk without first classifying it
+    against the full existing skill in Step 4.5, and never skip the
+    cross-page collapse pass. "I did not see it in the destination file"
+    is not sufficient — check `SKILL.md` and every file under
+    `references/`. A page tree that restates the same overview five
+    times must not produce five copies of that overview in the skill.
+  - **Provenance is mandatory on new files.** Every reference file
+    this prompt creates MUST carry the canonical Confluence URL of at
+    least one source page, both in a `Source(s):` line near the top and
+    in the `Sources:` block at the bottom. Never create a new
+    `references/*.md` file with no traceable link back to its source —
+    the reader must be one click away from the authoritative Confluence
+    page for more detail.
+  - **Bounded traversal.** Respect the depth cap, the 20-page total cap,
+    the visited-set cycle guard, and the same-space default. Never
+    recurse beyond the operator-approved bounds "because it looked
+    interesting".
+  - **No writes to Confluence.** Never call any create/update/comment
+    tool. This prompt is read-only against Confluence.
+  - **No git mutations.** Do not run `git add` / `git commit` / `git
+    push` — the operator reviews and commits the diff themselves.
+  - **Stop on inaccessible root page.** If Step 2 cannot fetch the root
+    page, stop and report; do not guess or fall back to search-only
+    summaries.
+  - **Do not spawn child conversations** — this is an in-place authoring
+    task.

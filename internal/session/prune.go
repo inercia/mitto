@@ -19,6 +19,11 @@ const (
 	DefaultPruneKeepLast = 500
 	// MinPruneKeepLast is the minimum allowed value for keep_last in prune requests.
 	MinPruneKeepLast = 50
+	// pruneSlackDivisor derives the default hysteresis slack from MaxMessages
+	// (1/5 of the cap). Without slack the trigger and the target are the same
+	// number, so a session parked at the cap rewrites the whole events file on
+	// every append (mitto-9wwj).
+	pruneSlackDivisor = 5
 )
 
 // PruneConfig holds configuration for session pruning.
@@ -29,11 +34,32 @@ type PruneConfig struct {
 	// MaxSizeBytes is the maximum total size in bytes for a session's stored data.
 	// If 0, no size limit is enforced.
 	MaxSizeBytes int64
+	// Slack is the hysteresis applied to MaxMessages: pruning only triggers once
+	// the event count exceeds MaxMessages+Slack, and then trims back to
+	// MaxMessages, amortizing the O(n) rewrite over Slack+1 appends.
+	// 0 selects the default slack (MaxMessages/pruneSlackDivisor, at least 1);
+	// a negative value disables hysteresis, making the trim exact (used by the
+	// REST prune endpoint, where "keep exactly N" is the contract).
+	Slack int
 }
 
 // IsEnabled returns true if any pruning limits are configured.
 func (c *PruneConfig) IsEnabled() bool {
 	return c.MaxMessages > 0 || c.MaxSizeBytes > 0
+}
+
+// EffectiveSlack returns the hysteresis actually applied to MaxMessages.
+func (c *PruneConfig) EffectiveSlack() int {
+	if c.MaxMessages <= 0 || c.Slack < 0 {
+		return 0
+	}
+	if c.Slack > 0 {
+		return c.Slack
+	}
+	if slack := c.MaxMessages / pruneSlackDivisor; slack > 1 {
+		return slack
+	}
+	return 1
 }
 
 // PruneResult contains information about a pruning operation.
@@ -48,9 +74,11 @@ type PruneResult struct {
 
 // PruneKeepLast prunes a session's events, keeping only the last keepLast events.
 // This is a convenience wrapper around PruneIfNeeded for the REST API.
+// Hysteresis is disabled: an explicit "keep exactly N" request must trim exactly.
 func (s *Store) PruneKeepLast(sessionID string, keepLast int) (*PruneResult, error) {
 	return s.PruneIfNeeded(sessionID, &PruneConfig{
 		MaxMessages: keepLast,
+		Slack:       -1,
 	})
 }
 
@@ -62,19 +90,33 @@ func (s *Store) PruneIfNeeded(sessionID string, config *PruneConfig) (*PruneResu
 		return nil, nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	return s.pruneInternal(sessionID, config)
 }
 
-// pruneInternal performs the actual pruning (must be called with lock held).
+// pruneInternal performs the actual pruning (caller holds the session write lock).
 func (s *Store) pruneInternal(sessionID string, config *PruneConfig) (*PruneResult, error) {
 	log := logging.Session()
+
+	slack := config.EffectiveSlack()
+
+	// Cheap no-op pre-check: when only a message limit is configured, the
+	// metadata event count is enough to tell that nothing needs pruning, so the
+	// common append-path call avoids parsing the whole events file under the lock.
+	if config.MaxMessages > 0 && config.MaxSizeBytes == 0 {
+		meta, err := s.readMetadata(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if meta.EventCount <= config.MaxMessages+slack {
+			return nil, nil
+		}
+	}
 
 	// Read all events to analyze what needs pruning
 	events, err := s.readEventsInternal(sessionID)
@@ -104,8 +146,10 @@ func (s *Store) pruneInternal(sessionID string, config *PruneConfig) (*PruneResu
 	// Determine how many events to remove
 	eventsToRemove := 0
 
-	// Check message count limit
-	if config.MaxMessages > 0 && len(events) > config.MaxMessages {
+	// Check message count limit. The trigger carries a slack above the target so
+	// that a session sitting at the cap does not rewrite the whole file on every
+	// append; once triggered, the trim still goes down to MaxMessages.
+	if config.MaxMessages > 0 && len(events) > config.MaxMessages+slack {
 		eventsToRemove = len(events) - config.MaxMessages
 	}
 
@@ -140,7 +184,13 @@ func (s *Store) pruneInternal(sessionID string, config *PruneConfig) (*PruneResu
 
 	result.EventsRemoved = eventsToRemove
 
-	log.Info("session pruned",
+	// Single-event trims are routine bookkeeping; only batched prunes are
+	// worth an INFO line.
+	logPrune := log.Info
+	if result.EventsRemoved <= 1 {
+		logPrune = log.Debug
+	}
+	logPrune("session pruned",
 		"session_id", sessionID,
 		"events_removed", result.EventsRemoved,
 		"images_removed", result.ImagesRemoved,

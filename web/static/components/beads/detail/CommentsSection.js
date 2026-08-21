@@ -56,7 +56,7 @@ export function CommentsSection({
                     (cm) => html`
                       <li
                         key=${cm.id}
-                        class="border-l-2 border-l-mitto-accent-500/70 bg-mitto-accent-500/10 rounded-r p-2 pl-3"
+                        class="border-l-2 border-l-blue-500/70 bg-blue-500/10 rounded-r p-2 pl-3"
                       >
                         <div
                           class="flex items-center justify-between gap-2 mb-1"
@@ -87,7 +87,7 @@ export function CommentsSection({
           ? html`
               <textarea
                 ref=${commentRef}
-                class="${textareaClass} resize-y mt-2"
+                class="${textareaClass} text-sm resize-y mt-2"
                 rows="3"
                 placeholder="Add a comment…"
                 value=${commentDraft}

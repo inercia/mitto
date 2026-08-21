@@ -12,10 +12,11 @@ import {
   isNativeApp,
   getAPIPrefix,
 } from "../utils/native.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { endpoints } from "../utils/index.js";
+import { apiUrl } from "../utils/api.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 import { getContextWindowSize } from "../utils/models.js";
+import { routeDroppedPaths } from "../utils/paths.js";
 import {
   getPromptSortMode,
   getUIPromptPanelHeight,
@@ -25,17 +26,16 @@ import {
 } from "../utils/storage.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
-import { LoopFrequencyPanel } from "./LoopFrequencyPanel.js";
+import { LoopControlBar } from "./LoopControlBar.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, SettingsIcon } from "./Icons.js";
+import { BroomIcon, GripIcon, SettingsIcon } from "./Icons.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import {
   flattenPrompts,
-  getMissingPromptParameters,
+  shouldOpenPromptDialog,
+  promptDialogParameters,
   fetchCachedParamNames,
-  effectiveMissingParams,
-  promptParameters,
   promptResolveAsLoop,
 } from "../utils/prompts.js";
 
@@ -142,8 +142,6 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
- * @param {Array} props.loopPrompts - Array of prompts for the loop prompt selector
- * @param {Array} props.allPrompts - Full workspace prompts list (for arg-edit lookup on menu-scoped loop prompts)
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
  * @param {string} props.sessionId - Current session ID
@@ -158,6 +156,7 @@ function PromptStopButton({ onStop }) {
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
  * @param {boolean} props.loopConfigured - Whether a loop config exists (shows editor, disables queue buttons)
+ * @param {Function} props.onOpenLoopSettings - Opens the conversation panel on the Loop tab
  * @param {Function} [props.onLoopPrompt] - Called with (prompt, opts) when a loop-flagged prompt is selected, where opts is { asLoop } (the resolved per-send override). Routes to app-level branching (decideLoopAction). When absent, loop prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
@@ -174,8 +173,6 @@ export function ChatInput({
   isArchived = false,
   isArchivePending = false,
   predefinedPrompts = [],
-  loopPrompts = [],
-  allPrompts = [],
   inputRef,
   noSession = false,
   sessionId,
@@ -191,6 +188,7 @@ export function ChatInput({
   actionButtons = [],
   availableCommands = [],
   loopConfigured = false,
+  onOpenLoopSettings,
   onLoopPrompt,
   agentSupportsImages = false,
   acpReady = true,
@@ -208,9 +206,12 @@ export function ChatInput({
   contextUsage = null,
   tokenUsage = null,
   onOpenPromptParamDialog,
-  // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
-  // tasks" loop trigger tab in LoopFrequencyPanel (mitto-oja.4).
-  hasBeadsWorkspace = false,
+  // Per-ACP "Flush context" command (e.g. "/clear"). When non-empty AND
+  // onFlushContext is provided, the composer toolbar renders a first-class
+  // broom button next to Clear-message; hidden otherwise so ACPs without a
+  // flush command keep an unchanged composer layout (mitto-c23).
+  flushCommand = "",
+  onFlushContext,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -362,11 +363,6 @@ export function ChatInput({
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
   const prevCollapsedBeforeUIRef = useRef(false);
-  // Expand/collapse state for the loop settings body (chevron). Lifted here so
-  // it stays mutually exclusive with the prompt composition area: only one may be
-  // expanded at a time.
-  const [loopExpanded, setLoopExpanded] = useState(false);
-
   // Resize handle for UI prompt panels (textbox, form, options)
   const {
     height: uiPromptHeight,
@@ -381,14 +377,8 @@ export function ChatInput({
     },
   });
 
-  // Loop prompt lock state
-  // When locked, the prompt is saved to the loop config and textarea is read-only
+  // Whether configured loop triggers are currently enabled.
   const [isLoopLocked, setIsLoopLocked] = useState(false);
-  const [isLoopSaving, setIsLoopSaving] = useState(false);
-  const [loopPromptName, setLoopPromptName] = useState("");
-  // Tracks the last named prompt sent/queued in this conversation, so turning
-  // it into a loop can pre-select that prompt in the dropdown (mitto-ujt).
-  const lastSentPromptNameRef = useRef("");
 
   // Resize handle for textarea min height (controls the visual size of the input area)
   // Hard max for auto-grow (scrollbar appears beyond this)
@@ -436,27 +426,26 @@ export function ChatInput({
       );
     };
   }, []);
-  const [loopPrompt, setLoopPrompt] = useState(""); // The saved loop prompt
-  const [loopFrequency, setLoopFrequency] = useState({
-    value: 1,
-    unit: "hours",
-  });
-  const [loopNextScheduledAt, setLoopNextScheduledAt] = useState(null);
-  const [loopFreshContext, setLoopFreshContext] = useState(false);
   const [loopMaxIterations, setLoopMaxIterations] = useState(0);
-  const [loopIterationCount, setLoopIterationCount] = useState(0);
-  const [loopTrigger, setLoopTrigger] = useState("schedule");
-  const [loopDelaySeconds, setLoopDelaySeconds] = useState(5);
-  const [loopMaxDurationSeconds, setLoopMaxDurationSeconds] =
-    useState(0);
-  // onTasks trigger fields: CEL condition gating firing + the UI preset id
-  // compiled into it (empty condition = fire on any beads/task change).
-  const [loopCondition, setLoopCondition] = useState("");
-  const [loopConditionPreset, setLoopConditionPreset] = useState("");
-  // Reason the loop loop was auto-stopped (e.g. "maxDuration", "maxIterations",
+  const [loopMaxDurationSeconds, setLoopMaxDurationSeconds] = useState(0);
+  // Reason the loop was auto-stopped (e.g. "maxDuration", "maxIterations",
   // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
   const [loopStoppedReason, setLoopStoppedReason] = useState("");
-  const [loopArguments, setLoopArguments] = useState({});
+  const loopConfigVersionRef = useRef(0);
+
+  const resetLoopConfigState = useCallback(() => {
+    setIsLoopLocked(false);
+    setLoopMaxIterations(0);
+    setLoopMaxDurationSeconds(0);
+    setLoopStoppedReason("");
+  }, []);
+
+  const applyLoopConfigState = useCallback((config) => {
+    setLoopMaxIterations(config.max_iterations ?? 0);
+    setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
+    setLoopStoppedReason(config.stopped_reason || "");
+    setIsLoopLocked(config.enabled === true);
+  }, []);
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -482,26 +471,9 @@ export function ChatInput({
     setSlashSelectedIndex(0);
     setComboSelectedId(""); // Reset combo box selection
     // Reset loop lock state when session changes
-    setIsLoopLocked(false);
-    setIsLoopSaving(false);
-    setLoopPrompt("");
-    setLoopPromptName("");
-    setLoopFrequency({ value: 1, unit: "hours" });
-    setLoopNextScheduledAt(null);
-    setLoopMaxIterations(0);
-    setLoopIterationCount(0);
-    setLoopTrigger("schedule");
-    setLoopDelaySeconds(5);
-    setLoopMaxDurationSeconds(0);
-    setLoopCondition("");
-    setLoopConditionPreset("");
-    setLoopStoppedReason("");
-    setLoopArguments({});
-    // Collapse the loop properties body by default when switching
-    // conversations (the prompt composition area is collapsed separately by
-    // the loopConfigured effect below).
-    setLoopExpanded(false);
-  }, [sessionId]);
+    loopConfigVersionRef.current += 1;
+    resetLoopConfigState();
+  }, [sessionId, resetLoopConfigState]);
 
   // Reset combo box selection and free text input when UI prompt changes
   useEffect(() => {
@@ -534,125 +506,72 @@ export function ChatInput({
   // Fetch loop config when loop is configured for this session
   useEffect(() => {
     if (!loopConfigured || !sessionId) {
-      setIsLoopLocked(false);
-      setLoopPrompt("");
-      setLoopPromptName("");
-      setLoopFrequency({ value: 1, unit: "hours" });
-      setLoopNextScheduledAt(null);
-      setLoopTrigger("schedule");
-      setLoopDelaySeconds(5);
-      setLoopMaxDurationSeconds(0);
-      setLoopCondition("");
-      setLoopConditionPreset("");
-      setLoopStoppedReason("");
-      setLoopArguments({});
+      loopConfigVersionRef.current += 1;
+      resetLoopConfigState();
       // Don't clear the draft when disabling loop - preserve user's text
-      return;
+      return undefined;
     }
 
     // Default to collapsed prompt area for loop conversations
     setIsPromptCollapsed(true);
 
+    let cancelled = false;
+    const loopConfigVersion = loopConfigVersionRef.current;
     const fetchLoopConfig = async () => {
       try {
-        const response = await authFetch(
-          endpoints.sessions.loop(sessionId),
-        );
-        const ct = response.headers.get("content-type");
-        if (!response.ok || !ct || !ct.includes("application/json")) {
-          console.warn(
-            "Loop config fetch returned non-JSON response:",
-            response.status,
-            ct,
-          );
+        const config = await getSdkClient().sessions.loop.get(sessionId);
+        if (cancelled || loopConfigVersion !== loopConfigVersionRef.current) {
           return;
         }
-        const config = await response.json();
-        // Always update frequency
-        if (config.frequency) {
-          setLoopFrequency(config.frequency);
+        if (!config || typeof config !== "object") {
+          console.warn("Loop config fetch returned non-JSON response:", config);
+          return;
         }
-        // Update next_scheduled_at (only set if enabled)
-        if (config.enabled && config.next_scheduled_at) {
-          setLoopNextScheduledAt(config.next_scheduled_at);
-        } else {
-          setLoopNextScheduledAt(null);
-        }
-        // Update prompt name from config. When no loop prompt is configured
-        // yet, pre-select the last named prompt sent in this conversation
-        // (visual only) if it is still loop-eligible (mitto-ujt).
-        if (config.prompt_name) {
-          setLoopPromptName(config.prompt_name);
-        } else {
-          const lastSent = lastSentPromptNameRef.current;
-          const eligible =
-            lastSent && (loopPrompts || []).some((p) => p.name === lastSent);
-          setLoopPromptName(eligible ? lastSent : "");
-        }
-        setLoopFreshContext(config.fresh_context === true);
-        setLoopMaxIterations(config.max_iterations ?? 0);
-        setLoopIterationCount(config.iteration_count ?? 0);
-        setLoopTrigger(config.trigger || "schedule");
-        setLoopDelaySeconds(config.delay_seconds ?? 5);
-        setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
-        setLoopCondition(config.condition || "");
-        setLoopConditionPreset(config.condition_preset || "");
-        setLoopStoppedReason(config.stopped_reason || "");
-        setLoopArguments(config.arguments || {});
-        // Set lock state based on the enabled field
-        const isLocked = config.enabled === true;
-        setIsLoopLocked(isLocked);
-        // Set prompt state based on config
-        const isPendingPlaceholder = config.prompt === "(pending)";
-        if (config.prompt && !isPendingPlaceholder) {
-          setLoopPrompt(config.prompt);
-        } else {
-          setLoopPrompt("");
-        }
+        applyLoopConfigState(config);
       } catch (err) {
-        console.error("Failed to fetch loop config:", err);
+        if (!cancelled) console.error("Failed to fetch loop config:", err);
       }
     };
 
     fetchLoopConfig();
-  }, [loopConfigured, sessionId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [loopConfigured, sessionId, applyLoopConfigState, resetLoopConfigState]);
 
   // Listen for loop config updates from other clients via WebSocket
   useEffect(() => {
     const handleLoopConfigUpdated = (event) => {
       const {
         sessionId: updatedSessionId,
+        loopConfig,
         loopConfigured,
         loopEnabled: newLoopEnabled,
-        frequency,
-        nextScheduledAt,
-        iterationCount,
         maxIterations,
         stoppedReason,
       } = event.detail;
       // Only update if this is for our session
       if (updatedSessionId !== sessionId) return;
 
-      // Update frequency if provided
-      if (frequency) {
-        setLoopFrequency(frequency);
+      // Complete broadcasts are authoritative and invalidate an older GET.
+      if (loopConfig && typeof loopConfig === "object") {
+        loopConfigVersionRef.current += 1;
+        applyLoopConfigState(loopConfig);
+        return;
       }
-      if (iterationCount !== undefined)
-        setLoopIterationCount(iterationCount);
+
       if (maxIterations !== undefined) setLoopMaxIterations(maxIterations);
 
       // If loop config was deleted (not configured), reset state
       if (loopConfigured === false) {
-        setIsLoopLocked(false);
-        setLoopNextScheduledAt(null);
-        setLoopPrompt("");
+        loopConfigVersionRef.current += 1;
+        resetLoopConfigState();
         return;
       }
 
       // If loop run is disabled (unlocked), update lock state
       if (newLoopEnabled === false) {
         setIsLoopLocked(false);
-        setLoopNextScheduledAt(null);
         // Capture why the loop stopped so the restore dialog can offer to reset
         // the elapsed iterations/time when a max-iterations/max-duration cap was hit.
         setLoopStoppedReason(stoppedReason || "");
@@ -660,49 +579,9 @@ export function ChatInput({
         return;
       }
 
-      // If loop run is enabled (locked), fetch the full config for the prompt
+      // Backward compatibility for partial broadcasts from an older server.
       if (newLoopEnabled === true) {
-        // Update next scheduled time
-        if (nextScheduledAt) {
-          setLoopNextScheduledAt(nextScheduledAt);
-        }
-        // Fetch the full config to get the prompt name and fresh_context
-        authFetch(endpoints.sessions.loop(sessionId))
-          .then(async (response) => {
-            if (!response.ok) return null;
-            const ct = response.headers.get("content-type");
-            if (!ct || !ct.includes("application/json")) {
-              console.warn(
-                "Loop config fetch returned non-JSON response:",
-                response.status,
-                ct,
-              );
-              return null;
-            }
-            return response.json();
-          })
-          .then((config) => {
-            if (!config) return;
-            setLoopPromptName(config.prompt_name || "");
-            setLoopFreshContext(config.fresh_context === true);
-            setLoopMaxIterations(config.max_iterations ?? 0);
-            setLoopIterationCount(config.iteration_count ?? 0);
-            setLoopTrigger(config.trigger || "schedule");
-            setLoopDelaySeconds(config.delay_seconds ?? 5);
-            setLoopMaxDurationSeconds(config.max_duration_seconds ?? 0);
-            setLoopCondition(config.condition || "");
-            setLoopConditionPreset(config.condition_preset || "");
-            setLoopStoppedReason(config.stopped_reason || "");
-            setLoopArguments(config.arguments || {});
-            const isPendingPlaceholder = config.prompt === "(pending)";
-            if (config.prompt && !isPendingPlaceholder) {
-              setLoopPrompt(config.prompt);
-              setIsLoopLocked(true);
-            }
-          })
-          .catch((err) =>
-            console.error("Failed to fetch loop config:", err),
-          );
+        setIsLoopLocked(true);
       }
     };
 
@@ -716,7 +595,7 @@ export function ChatInput({
         handleLoopConfigUpdated,
       );
     };
-  }, [sessionId]);
+  }, [sessionId, applyLoopConfigState, resetLoopConfigState]);
 
   // Compute slash command filter from current text (text after '/' when text starts with '/')
   const slashFilter =
@@ -997,203 +876,9 @@ export function ChatInput({
     }
   };
 
-  // Handle locking the loop prompt (saves to backend and enables loop run)
-  const handleLockLoopPrompt = useCallback(async () => {
-    if (!sessionId || !text.trim() || isLoopSaving) return;
-
-    setIsLoopSaving(true);
-    try {
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: text.trim(), enabled: true }),
-        },
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setLoopPrompt(text.trim());
-        setIsLoopLocked(true);
-        // Update next scheduled time from server response (keep as ISO string for consistency)
-        if (data.next_scheduled_at) {
-          setLoopNextScheduledAt(data.next_scheduled_at);
-        }
-      } else {
-        console.error("Failed to lock loop prompt");
-      }
-    } catch (err) {
-      console.error("Failed to lock loop prompt:", err);
-    } finally {
-      setIsLoopSaving(false);
-    }
-  }, [sessionId, text, isLoopSaving]);
-
-  // Handle unlocking the loop prompt (allows editing and disables loop run)
-  const handleUnlockLoopPrompt = useCallback(async () => {
-    if (!sessionId || isLoopSaving) return;
-
-    setIsLoopSaving(true);
-    try {
-      const response = await secureFetch(
-        endpoints.sessions.loop(sessionId),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: false }),
-        },
-      );
-      if (response.ok) {
-        setIsLoopLocked(false);
-        setLoopNextScheduledAt(null); // Clear next scheduled time when disabled
-        // Focus the textarea so user can start editing
-        if (textareaRef.current) {
-          textareaRef.current.focus();
-        }
-      } else {
-        console.error("Failed to unlock loop prompt");
-      }
-    } catch (err) {
-      console.error("Failed to unlock loop prompt:", err);
-    } finally {
-      setIsLoopSaving(false);
-    }
-  }, [sessionId, isLoopSaving]);
-
-  // Handle loop prompt selection from LoopPromptSelector
-  const handleLoopPromptSelect = useCallback(
-    async (promptName) => {
-      if (!sessionId || isLoopSaving) return;
-
-      // Helper that performs the actual PATCH, optionally with arguments.
-      const doPatch = async (extraArgs) => {
-        setIsLoopSaving(true);
-        try {
-          const body = { prompt_name: promptName, enabled: true };
-          if (extraArgs && Object.keys(extraArgs).length > 0) {
-            body.arguments = extraArgs;
-          }
-          const response = await secureFetch(
-            endpoints.sessions.loop(sessionId),
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            },
-          );
-          if (response.ok) {
-            const data = await response.json();
-            setLoopPromptName(promptName);
-            setIsLoopLocked(true);
-            if (data.next_scheduled_at) {
-              setLoopNextScheduledAt(data.next_scheduled_at);
-            }
-          }
-        } catch (err) {
-          console.error("Failed to save loop prompt selection:", err);
-        } finally {
-          setIsLoopSaving(false);
-        }
-      };
-
-      // Check if the prompt declares parameters that need user input before saving.
-      const fullPrompt = loopPrompts.find((p) => p.name === promptName);
-
-      // Pre-populate the local condition state from the prompt's onTasks
-      // frontmatter default so the LoopFrequencyPanel reflects it immediately
-      // (mitto-pei). The PATCH below only sends prompt_name, so the backend's
-      // stored trigger/condition are left untouched until the user explicitly
-      // saves via the panel.
-      if (
-        fullPrompt?.loop?.trigger === "onTasks" &&
-        fullPrompt?.loop?.condition
-      ) {
-        setLoopCondition(fullPrompt.loop.condition);
-      }
-
-      let missing = fullPrompt
-        ? getMissingPromptParameters(fullPrompt, "conversation")
-        : [];
-      if (missing.length > 0 && sessionId && fullPrompt) {
-        const cached = await fetchCachedParamNames(sessionId, fullPrompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
-          await doPatch(userArgs);
-        });
-        return;
-      }
-
-      await doPatch(undefined);
-    },
-    [sessionId, isLoopSaving, loopPrompts, onOpenPromptParamDialog],
-  );
-
-  // Open the PromptParameterDialog pre-filled with current loop arguments.
-  // Prefer allPrompts (full workspace list) so menu-scoped loop prompts
-  // (e.g. `menus: beadsList`) — which are filtered out of loopPrompts by
-  // useWorkspacePrompts — still resolve for arg editing.
-  const handleEditLoopArguments = useCallback(() => {
-    const prompt =
-      (allPrompts || []).find((p) => p.name === loopPromptName) ||
-      (loopPrompts || []).find((p) => p.name === loopPromptName);
-    if (!prompt) return;
-    const params = promptParameters(prompt);
-    if (params.length === 0) return;
-    if (!onOpenPromptParamDialog) return;
-    onOpenPromptParamDialog(
-      prompt,
-      params,
-      async (userArgs) => {
-        try {
-          const resp = await secureFetch(
-            endpoints.sessions.loop(sessionId),
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ arguments: userArgs }),
-            },
-          );
-          if (resp.ok) setLoopArguments(userArgs);
-          else console.error("Failed to save loop arguments");
-        } catch (err) {
-          console.error("Failed to save loop arguments:", err);
-        }
-      },
-      { initialValues: loopArguments, hostSessionId: sessionId },
-    );
-  }, [
-    allPrompts,
-    loopPrompts,
-    loopPromptName,
-    loopArguments,
-    sessionId,
-    onOpenPromptParamDialog,
-  ]);
-
-  // Handle frequency change from the LoopFrequencyPanel
-  const handleLoopFrequencyChange = useCallback(
-    (newFrequency, newNextScheduledAt) => {
-      setLoopFrequency(newFrequency);
-      if (newNextScheduledAt) {
-        setLoopNextScheduledAt(newNextScheduledAt);
-      }
-    },
-    [],
-  );
-
-  // Handle max iterations change from the LoopFrequencyPanel
-  const handleLoopMaxIterationsChange = useCallback((newValue) => {
-    setLoopMaxIterations(newValue);
-  }, []);
-
-  // Handle pause/resume toggle from the LoopFrequencyPanel
+  // Keep compact controls synchronized after a local pause/restore mutation.
   const handleLoopEnabledChange = useCallback((newEnabled) => {
     setIsLoopLocked(newEnabled);
-    if (!newEnabled) {
-      setLoopNextScheduledAt(null);
-    }
   }, []);
 
   // Handle slash command selection
@@ -1356,7 +1041,9 @@ export function ChatInput({
       return;
     }
 
-    // When agent is streaming, queue the prompt instead of sending immediately
+    // When agent is streaming, queue the prompt instead of sending immediately.
+    // Mirror the non-streaming branch's parameter-dialog flow so `required: true`
+    // parameters are collected before the prompt is enqueued (mitto-gtf).
     if (isStreaming && onAddToQueue && prompt.name) {
       if (isQueueFull) {
         setSendError(
@@ -1365,14 +1052,35 @@ export function ChatInput({
         setTimeout(() => setSendError(null), 10000);
         return;
       }
-      try {
-        lastSentPromptNameRef.current = prompt.name;
-        await onAddToQueue("", [], [], { promptName: prompt.name });
-      } catch (err) {
-        console.error("Failed to add to queue:", err);
-        setSendError(err.message || "Failed to add to queue");
-        setTimeout(() => setSendError(null), 10000);
+      const enqueue = async (userArgs) => {
+        try {
+          await onAddToQueue("", [], [], {
+            promptName: prompt.name,
+            ...(userArgs ? { arguments: userArgs } : {}),
+          });
+        } catch (err) {
+          console.error("Failed to add to queue:", err);
+          setSendError(err.message || "Failed to add to queue");
+          setTimeout(() => setSendError(null), 10000);
+        }
+      };
+      const cachedForEnqueue = sessionId
+        ? await fetchCachedParamNames(sessionId, prompt.name)
+        : undefined;
+      if (
+        shouldOpenPromptDialog(prompt, "prompts", cachedForEnqueue) &&
+        onOpenPromptParamDialog
+      ) {
+        onOpenPromptParamDialog(
+          prompt,
+          promptDialogParameters(prompt, "prompts"),
+          async (userArgs) => {
+            await enqueue(userArgs);
+          },
+        );
+        return;
       }
+      await enqueue(null);
       return;
     }
 
@@ -1382,19 +1090,25 @@ export function ChatInput({
     // options.arguments map is passed to onSend, which routes through the queue
     // API so the backend can apply ${VAR} substitution.
     if (onSend && prompt.name) {
-      let missing = getMissingPromptParameters(prompt, "prompts");
-      if (missing.length > 0 && sessionId) {
-        const cached = await fetchCachedParamNames(sessionId, prompt.name);
-        missing = effectiveMissingParams(missing, cached);
-      }
-      if (missing.length > 0 && onOpenPromptParamDialog) {
-        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-          lastSentPromptNameRef.current = prompt.name;
-          onSend("", [], [], { promptName: prompt.name, arguments: userArgs });
-        });
+      const cachedForSend = sessionId
+        ? await fetchCachedParamNames(sessionId, prompt.name)
+        : undefined;
+      if (
+        shouldOpenPromptDialog(prompt, "prompts", cachedForSend) &&
+        onOpenPromptParamDialog
+      ) {
+        onOpenPromptParamDialog(
+          prompt,
+          promptDialogParameters(prompt, "prompts"),
+          async (userArgs) => {
+            onSend("", [], [], {
+              promptName: prompt.name,
+              arguments: userArgs,
+            });
+          },
+        );
         return;
       }
-      lastSentPromptNameRef.current = prompt.name;
       onSend("", [], [], { promptName: prompt.name });
     }
   };
@@ -1414,31 +1128,22 @@ export function ChatInput({
     setImproveError(null);
 
     try {
-      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+      // Covers two 55s server attempts plus Retry-After and client overhead.
+      const timeoutId = setTimeout(() => controller.abort(), 125000);
 
-      const response = await secureFetch(endpoints.aux.improvePrompt(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: text,
-          workspace_uuid:
-            window.mittoCurrentWorkspaceUUID ||
+      let data;
+      try {
+        data = await getSdkClient().misc.improvePrompt(
+          text,
+          window.mittoCurrentWorkspaceUUID ||
             sessionStorage.getItem("mittoCurrentWorkspaceUUID") ||
             "",
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorMessageFromData(errData, "Failed to improve prompt"),
+          { signal: controller.signal },
         );
+      } finally {
+        clearTimeout(timeoutId);
       }
 
-      const data = await response.json();
       if (data.improved_prompt && onDraftChange) {
         onDraftChange(targetSessionId, data.improved_prompt);
         if (targetSessionId === sessionId) {
@@ -1460,10 +1165,13 @@ export function ChatInput({
       console.error("Failed to improve prompt:", err);
       // Only show error if we're still on the session that had the error
       if (targetSessionId === sessionId) {
-        if (err.name === "AbortError") {
+        // The SDK wraps an aborted fetch in a MittoNetworkError whose
+        // `.cause` is the original AbortError (sdk/core/errors.js), so check
+        // both the outer and the wrapped name.
+        if (err.name === "AbortError" || err.cause?.name === "AbortError") {
           setImproveError("Request timed out. Please try again.");
         } else {
-          const msg = err.message || "Failed to improve prompt";
+          const msg = errorMessage(err, "Failed to improve prompt");
           const hasCrashHint =
             msg.includes("crashed") || msg.includes("try again");
           setImproveError(
@@ -1524,6 +1232,17 @@ export function ChatInput({
       return null;
     }
 
+    // Zero-byte files (e.g. previews dragged from other browser tabs, Slack,
+    // Google Images, .webloc shortcuts) produce a header-only multipart part
+    // that the Go multipart parser rejects with "NextPart: EOF".
+    if (!file.size || file.size === 0) {
+      setUploadError(
+        "Cannot upload zero-byte image — did you drop a preview from another window?",
+      );
+      setTimeout(() => setUploadError(null), 6000);
+      return null;
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const previewUrl = URL.createObjectURL(file);
     const tempImage = {
@@ -1539,17 +1258,10 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("image", file);
 
-      const response = await secureFetch(endpoints.sessions.images(sessionId), {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload image"));
-      }
-
-      const data = await response.json();
+      const data = await getSdkClient().sessions.images.upload(
+        sessionId,
+        formData,
+      );
       setPendingImages((prev) =>
         prev.map((img) =>
           img.id === tempId
@@ -1567,7 +1279,7 @@ export function ChatInput({
       return data;
     } catch (err) {
       console.error("Failed to upload image:", err);
-      setUploadError(err.message || "Failed to upload image");
+      setUploadError(errorMessage(err, "Failed to upload image"));
       setTimeout(() => setUploadError(null), 5000);
       setPendingImages((prev) => prev.filter((img) => img.id !== tempId));
       URL.revokeObjectURL(previewUrl);
@@ -1593,25 +1305,28 @@ export function ChatInput({
     });
 
     try {
-      const response = await secureFetch(
-        endpoints.sessions.imagesFromPath(sessionId),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ paths }),
-        },
+      const results = await getSdkClient().sessions.images.uploadFromPath(
+        sessionId,
+        paths,
       );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload images"));
-      }
-
-      const results = await response.json();
       const tempIds = tempImages.map((t) => t.id);
       setPendingImages((prev) =>
         prev.filter((img) => !tempIds.includes(img.id)),
       );
+
+      // The from-path endpoint silently skips unreadable/oversized paths and
+      // returns only the successes — surface skipped ones instead of letting
+      // the attachment vanish without explanation (mitto-q8fx).
+      if (results.length < tempImages.length) {
+        const uploadedNames = new Set(results.map((r) => r.name));
+        const failedNames = tempImages
+          .filter((t) => !uploadedNames.has(t.filename))
+          .map((t) => t.filename);
+        if (failedNames.length > 0) {
+          setUploadError(`Failed to upload: ${failedNames.join(", ")}`);
+          setTimeout(() => setUploadError(null), 6000);
+        }
+      }
 
       for (const data of results) {
         setPendingImages((prev) => [
@@ -1628,7 +1343,7 @@ export function ChatInput({
       return results;
     } catch (err) {
       console.error("Failed to upload images from paths:", err);
-      setUploadError(err.message || "Failed to upload images");
+      setUploadError(errorMessage(err, "Failed to upload images"));
       setTimeout(() => setUploadError(null), 5000);
       const tempIds = tempImages.map((t) => t.id);
       setPendingImages((prev) =>
@@ -1640,6 +1355,15 @@ export function ChatInput({
 
   // Upload a single file (non-image)
   const uploadFile = async (file) => {
+    // Zero-byte files produce a header-only multipart part that the Go
+    // multipart parser rejects with "NextPart: EOF" (same class as
+    // uploadImage above).
+    if (!file.size || file.size === 0) {
+      setUploadError("Cannot upload zero-byte file.");
+      setTimeout(() => setUploadError(null), 6000);
+      return null;
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const tempFile = {
       id: tempId,
@@ -1655,17 +1379,7 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await secureFetch(endpoints.sessions.files(sessionId), {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload file"));
-      }
-
-      const data = await response.json();
+      const data = await getSdkClient().files.upload(sessionId, formData);
       setPendingFiles((prev) =>
         prev.map((f) =>
           f.id === tempId
@@ -1683,7 +1397,7 @@ export function ChatInput({
       return data;
     } catch (err) {
       console.error("Failed to upload file:", err);
-      setUploadError(err.message || "Failed to upload file");
+      setUploadError(errorMessage(err, "Failed to upload file"));
       setTimeout(() => setUploadError(null), 5000);
       setPendingFiles((prev) => prev.filter((f) => f.id !== tempId));
       return null;
@@ -1713,23 +1427,26 @@ export function ChatInput({
     });
 
     try {
-      const response = await secureFetch(
-        endpoints.sessions.filesFromPath(sessionId),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ paths }),
-        },
+      const results = await getSdkClient().files.uploadFromPath(
+        sessionId,
+        paths,
       );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(errorMessageFromData(error, "Failed to upload files"));
-      }
-
-      const results = await response.json();
       const tempIds = tempFiles.map((t) => t.id);
       setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));
+
+      // The from-path endpoint silently skips unreadable/oversized paths and
+      // returns only the successes — surface skipped ones instead of letting
+      // the attachment vanish without explanation (mitto-q8fx).
+      if (results.length < tempFiles.length) {
+        const uploadedNames = new Set(results.map((r) => r.name));
+        const failedNames = tempFiles
+          .filter((t) => !uploadedNames.has(t.filename))
+          .map((t) => t.filename);
+        if (failedNames.length > 0) {
+          setUploadError(`Failed to upload: ${failedNames.join(", ")}`);
+          setTimeout(() => setUploadError(null), 6000);
+        }
+      }
 
       for (const data of results) {
         setPendingFiles((prev) => [
@@ -1747,7 +1464,7 @@ export function ChatInput({
       return results;
     } catch (err) {
       console.error("Failed to upload files from paths:", err);
-      setUploadError(err.message || "Failed to upload files");
+      setUploadError(errorMessage(err, "Failed to upload files"));
       setTimeout(() => setUploadError(null), 5000);
       const tempIds = tempFiles.map((t) => t.id);
       setPendingFiles((prev) => prev.filter((f) => !tempIds.includes(f.id)));
@@ -1823,25 +1540,6 @@ export function ChatInput({
   };
 
   /**
-   * Check if a file path is inside the workspace directory.
-   * @param {string} filePath - Absolute file path
-   * @param {string} workspacePath - Workspace directory path
-   * @returns {string|null} Relative path if inside workspace, null otherwise
-   */
-  const getRelativePathIfInWorkspace = (filePath, workspacePath) => {
-    if (!filePath || !workspacePath) return null;
-    // Normalize paths (remove trailing slashes)
-    const normalizedFile = filePath.replace(/\/+$/, "");
-    const normalizedWorkspace = workspacePath.replace(/\/+$/, "");
-    // Check if file is inside workspace
-    if (normalizedFile.startsWith(normalizedWorkspace + "/")) {
-      // Return relative path (without leading slash)
-      return normalizedFile.slice(normalizedWorkspace.length + 1);
-    }
-    return null;
-  };
-
-  /**
    * Insert text at the current cursor position in the textarea.
    * @param {string} textToInsert - Text to insert
    */
@@ -1867,37 +1565,72 @@ export function ChatInput({
   };
 
   // Handle file drop - supports both images and other files
-  // On native macOS app, files dropped from within the workspace are inserted as relative paths
+  // On native macOS app, files dropped from within the workspace are inserted
+  // as relative paths; files dropped from outside the workspace are uploaded
+  // server-side via the from-path endpoint (routeDroppedPaths, utils/paths.js)
+  // instead of the blob-based FormData path below, which fails for source
+  // apps that only "promise" the file instead of handing over real bytes
+  // (e.g. dragging from the VSCode explorer — mitto-q8fx).
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragOver(false);
     if (isFullyDisabled || isReadOnly || !sessionId) return;
 
-    // Smart path insertion for native macOS app
-    // When dropping files from the current workspace, insert relative path instead of uploading
+    const files = Array.from(e.dataTransfer.files);
+    if (window.console?.debug) {
+      console.debug(
+        "[ChatInput] drop items:",
+        files.map((f) => ({ name: f.name, type: f.type, size: f.size })),
+      );
+    }
+
     if (isNativeApp() && workingDir) {
       const filePaths = extractFilePathsFromDrag(e.dataTransfer);
       if (filePaths.length > 0) {
-        // Check if all dropped files are within the workspace
-        const relativePaths = filePaths
-          .map((fp) => getRelativePathIfInWorkspace(fp, workingDir))
-          .filter(Boolean);
+        const { insertAsText, uploadFromPath } = routeDroppedPaths(
+          filePaths,
+          workingDir,
+        );
 
-        // If we found relative paths for ALL files, insert them as text
-        if (
-          relativePaths.length === filePaths.length &&
-          relativePaths.length > 0
-        ) {
-          // Insert relative paths, separated by spaces if multiple
-          const pathsText = relativePaths.join(" ");
-          insertTextAtCursor(pathsText);
+        if (uploadFromPath.length === 0) {
+          // Every dropped file resolves inside the workspace: insert
+          // relative paths as text, separated by spaces if multiple.
+          insertTextAtCursor(insertAsText.join(" "));
           return; // Don't upload, we've handled the drop
         }
-        // If some files are outside workspace, fall through to upload behavior
+
+        // At least one path is outside the workspace: read it server-side
+        // via the from-path endpoint instead of falling through to the
+        // blob-based FormData upload. Match each outside path back to its
+        // dropped File by filename to classify it as an image or a plain
+        // file using the browser's detected MIME type — populated correctly
+        // even when the byte stream itself cannot be read (mitto-q8fx).
+        const imagePaths = [];
+        const otherPaths = [];
+        for (const path of uploadFromPath) {
+          const filename = path.split("/").pop();
+          const match = files.find((f) => f.name === filename);
+          if (match && match.type.startsWith("image/")) {
+            imagePaths.push(path);
+          } else {
+            otherPaths.push(path);
+          }
+        }
+        if (insertAsText.length > 0) {
+          insertTextAtCursor(insertAsText.join(" "));
+        }
+        if (imagePaths.length > 0) {
+          await uploadImagesFromPaths(imagePaths);
+        }
+        if (otherPaths.length > 0) {
+          await uploadFilesFromPaths(otherPaths);
+        }
+        return;
       }
+      // No usable absolute paths (e.g. no text/uri-list): fall through to
+      // the blob-based upload below.
     }
 
-    const files = Array.from(e.dataTransfer.files);
     const imageFiles = files.filter((f) => f.type.startsWith("image/"));
     const otherFiles = files.filter((f) => !f.type.startsWith("image/"));
 
@@ -1929,6 +1662,12 @@ export function ChatInput({
     if (isFullyDisabled || isReadOnly || !sessionId) return;
 
     const items = Array.from(e.clipboardData.items);
+    if (window.console?.debug) {
+      console.debug(
+        "[ChatInput] paste items:",
+        items.map((it) => ({ kind: it.kind, type: it.type })),
+      );
+    }
     const imageItems = items.filter((item) => item.type.startsWith("image/"));
 
     if (imageItems.length > 0) {
@@ -1989,6 +1728,17 @@ export function ChatInput({
   const hasActionButtons = actionButtons && actionButtons.length > 0;
   // UI prompts from MCP tools should be shown WHILE streaming (the tool is waiting for user input)
   const hasActiveUIPrompt = !!activeUIPrompt;
+  // Hard gate (mitto-9l8): true whenever a blocking MCP UI prompt (form,
+  // options, textbox) is on screen. Permission prompts are excluded — they
+  // render inline buttons and don't need the composition area hidden.
+  // Unlike isPromptCollapsed (a soft, one-shot UX flag that other code paths
+  // can flip independently of the prompt's lifecycle), this is derived
+  // structurally from activeUIPrompt itself, so the composition area cannot
+  // be exposed while a prompt is still pending regardless of what happens to
+  // isPromptCollapsed (e.g. the optimistic restore in handleUIPromptAnswer
+  // below, or a WebSocket send failing before the prompt is cleared).
+  const mcpUIBlocking =
+    hasActiveUIPrompt && activeUIPrompt.promptType !== "permission";
 
   // Handle UI prompt answer click
   const handleUIPromptAnswer = useCallback(
@@ -2185,7 +1935,7 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea textarea textarea-sm font-mono w-full resize-none"
+                          class="ui-textbox-textarea textarea textarea-sm w-full resize-none"
                           style="min-height: 120px;"
                           maxlength=${16384}
                           onInput=${(e) => {
@@ -2483,59 +2233,20 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       `}
 
-      <!-- Loop settings card (shown when loop is enabled) -->
-      <!-- Part of normal document flow - pushes conversation area up. -->
-      <!-- Single merged card: compact header always visible; body expands on demand. -->
+      <!-- Compact loop controls. Full settings live in SessionPanel's Loop tab. -->
       <div class="max-w-4xl mx-auto">
-        <${LoopFrequencyPanel}
+        <${LoopControlBar}
           isOpen=${loopConfigured && !hasActiveUIPrompt}
-          disabled=${isLoopLocked}
           sessionId=${sessionId}
-          frequency=${loopFrequency}
-          onFrequencyChange=${handleLoopFrequencyChange}
-          nextScheduledAt=${loopNextScheduledAt}
+          enabled=${isLoopLocked}
           isStreaming=${isStreaming}
-          freshContext=${loopFreshContext}
-          onFreshContextChange=${setLoopFreshContext}
-          maxIterations=${loopMaxIterations}
-          iterationCount=${loopIterationCount}
-          onMaxIterationsChange=${handleLoopMaxIterationsChange}
-          onLoopEnabledChange=${handleLoopEnabledChange}
-          prompts=${loopPrompts}
-          allPrompts=${allPrompts}
-          selectedPromptName=${loopPromptName}
-          selectedPromptBody=${loopPrompt}
-          onPromptSelect=${handleLoopPromptSelect}
-          isPromptAreaVisible=${!isPromptCollapsed}
-          onTogglePromptArea=${() =>
-            setIsPromptCollapsed((v) => {
-              const nextCollapsed = !v;
-              // Expanding the prompt area collapses the loop properties.
-              if (!nextCollapsed) setLoopExpanded(false);
-              return nextCollapsed;
-            })}
-          expanded=${loopExpanded}
-          onToggleExpanded=${() =>
-            setLoopExpanded((v) => {
-              const next = !v;
-              // Expanding the loop properties collapses the prompt area.
-              if (next) setIsPromptCollapsed(true);
-              return next;
-            })}
-          trigger=${loopTrigger}
-          delaySeconds=${loopDelaySeconds}
-          maxDurationSeconds=${loopMaxDurationSeconds}
-          condition=${loopCondition}
-          conditionPreset=${loopConditionPreset}
-          hasBeadsWorkspace=${hasBeadsWorkspace}
           stoppedReason=${loopStoppedReason}
-          minDelaySeconds=${5}
-          onTriggerChange=${setLoopTrigger}
-          onDelayChange=${setLoopDelaySeconds}
-          onMaxDurationChange=${setLoopMaxDurationSeconds}
-          onConditionChange=${setLoopCondition}
-          onConditionPresetChange=${setLoopConditionPreset}
-          onEditArguments=${handleEditLoopArguments}
+          maxDurationSeconds=${loopMaxDurationSeconds}
+          maxIterations=${loopMaxIterations}
+          onLoopEnabledChange=${handleLoopEnabledChange}
+          isPromptAreaVisible=${!isPromptCollapsed}
+          onTogglePromptArea=${() => setIsPromptCollapsed((value) => !value)}
+          onOpenSettings=${onOpenLoopSettings}
         />
       </div>
 
@@ -2547,7 +2258,7 @@ ${activeUIPrompt.text || ""}</textarea
       !isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
-          <div class="flex flex-wrap gap-2">
+          <div class="mitto-carousel gap-2 py-0.5" data-mitto-no-swipe>
             ${actionButtons.map(
               (btn, idx) => html`
                 <button
@@ -2704,7 +2415,8 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && (loopConfigured || hasActiveUIPrompt)) &&
+      ${!mcpUIBlocking &&
+      !(isPromptCollapsed && loopConfigured) &&
       html`
         <div class="max-w-4xl mx-auto chat-input-container">
           <div class="chat-input-box" ref=${dropupRef}>
@@ -3068,6 +2780,38 @@ ${activeUIPrompt.text || ""}</textarea
                       d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
                     />
                   </svg>
+                </button>
+
+                <!-- Flush Context Button (mitto-c23, mitto-cmk): first-class
+                     surface for the per-ACP context-flush command. Same code
+                     path as the "..." menu's Flush item (kept as fallback) and
+                     the header toolbar's Flush button. Always rendered so the
+                     capability stays discoverable; disabled with an
+                     explanatory tooltip when the ACP advertises no flush
+                     command (mitto-cmk). The "..." menu and header toolbar
+                     still omit their entry entirely — greying out a row inside
+                     a menu is worse than leaving it out. Not gated on
+                     isStreaming (matches the menu item) or on text.trim
+                     (flushing the agent's context is independent of composer
+                     content). -->
+                <button
+                  type="button"
+                  onClick=${() => onFlushContext && onFlushContext()}
+                  onMouseDown=${(e) => e.preventDefault()}
+                  disabled=${isFullyDisabled ||
+                  isReadOnly ||
+                  !acpReady ||
+                  !flushCommand ||
+                  !onFlushContext}
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip=${flushCommand
+                    ? `Clear the agent's context (${flushCommand})`
+                    : "This agent does not support clearing the context"}
+                  aria-label=${flushCommand
+                    ? "Clear the agent's context"
+                    : "This agent does not support clearing the context"}
+                >
+                  <${BroomIcon} className="w-4 h-4" />
                 </button>
               </div>
 

@@ -278,6 +278,132 @@ func TestCSRFMiddleware_DoubleSubmitPattern(t *testing.T) {
 	}
 }
 
+// --- Shared bearer token CSRF exemption tests (mitto-7gta.26) ---
+
+func TestCSRFMiddleware_TokenAuthChecker_ValidTokenBypassesCSRF(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+	cm.SetTokenAuthChecker(func(r *http.Request) bool {
+		return r.Header.Get("Authorization") == "Bearer valid-token"
+	})
+
+	handler := cm.CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// A state-changing external request with a valid bearer token and NO
+	// CSRF cookie/header pair must still succeed.
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req = makeExternalRequest(req)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("valid bearer token: status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestCSRFMiddleware_TokenAuthChecker_InvalidTokenStillEnforcesCSRF(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+	cm.SetTokenAuthChecker(func(r *http.Request) bool {
+		return r.Header.Get("Authorization") == "Bearer valid-token"
+	})
+
+	handler := cm.CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// An invalid/garbage bearer token must NOT bypass CSRF -- this is the
+	// critical "validate, don't just detect the header" property. Without a
+	// matching double-submit cookie/header pair, the request must be rejected.
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	req = makeExternalRequest(req)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("invalid bearer token: status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestCSRFMiddleware_TokenAuthChecker_NilCheckerPreservesExistingBehaviour(t *testing.T) {
+	// No SetTokenAuthChecker call at all -- the default nil checker must not
+	// change any existing double-submit-cookie behaviour.
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	handler := cm.CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	req = makeExternalRequest(req)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("nil tokenAuthChecker with bearer header only: status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}
+
+func TestCSRFMiddleware_TokenAuthChecker_AbsentHeaderFallsThroughToCookieCheck(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+	cm.SetTokenAuthChecker(func(r *http.Request) bool {
+		return r.Header.Get("Authorization") == "Bearer valid-token"
+	})
+
+	handler := cm.CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// No Authorization header at all: checker returns false, falls through to
+	// the normal double-submit cookie pattern, which succeeds when it matches.
+	token, _ := cm.GenerateToken()
+	req := httptest.NewRequest(http.MethodPost, "/api/test", nil)
+	req.Header.Set(csrfTokenHeader, token)
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: token})
+	req = makeExternalRequest(req)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("absent bearer header with matching CSRF cookie/header: status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestCSRFManager_SetTokenAuthChecker(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	if cm.tokenAuthChecker != nil {
+		t.Error("tokenAuthChecker should be nil by default")
+	}
+
+	called := false
+	cm.SetTokenAuthChecker(func(r *http.Request) bool {
+		called = true
+		return true
+	})
+	if cm.tokenAuthChecker == nil {
+		t.Fatal("tokenAuthChecker should be set after SetTokenAuthChecker")
+	}
+	cm.tokenAuthChecker(httptest.NewRequest(http.MethodGet, "/", nil))
+	if !called {
+		t.Error("installed checker was not invoked")
+	}
+
+	// Passing nil disables the exemption again.
+	cm.SetTokenAuthChecker(nil)
+	if cm.tokenAuthChecker != nil {
+		t.Error("tokenAuthChecker should be nil after SetTokenAuthChecker(nil)")
+	}
+}
+
 func TestCSRFManager_Close(t *testing.T) {
 	cm := NewCSRFManager()
 

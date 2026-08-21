@@ -56,7 +56,10 @@ func (s *Store) CleanupArchivedSessions(retentionPeriod string) (int, error) {
 			continue // Skip sessions with invalid metadata
 		}
 
-		// Only process archived sessions
+		// Only process archived sessions. NoArchive conversations never reach
+		// meta.Archived == true (all archive entry points check
+		// Metadata.IsArchivable() before setting it, mitto-yvel.3), so no
+		// separate NoArchive check is needed here — unreachable by construction.
 		if !meta.Archived {
 			continue
 		}

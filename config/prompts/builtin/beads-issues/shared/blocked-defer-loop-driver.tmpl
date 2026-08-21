@@ -1,0 +1,64 @@
+{{/*
+  beads-issues/shared/blocked-defer-loop-driver — Step 4 "Blocked → Defer +
+  Handoff" body for loop-driver-shaped prompts (loop-fixing-bug,
+  loop-implementing-feature, publish-post). Renders the same 3-step
+  defer/handoff/disarm block as `blocked-defer-handoff` but with the
+  loop-driver-specific noun ("a run"), extended blocker-category intro,
+  "state label" phrasing (applies to every stage, not one specific label),
+  the "# e.g. tomorrow / +1d" comment on the `bd update`, the "on the bead"
+  suffix on the handoff comment, "End the iteration" wording, and the
+  trailing "The user resumes the loop…" note.
+
+  Callers pass the resolved `$target` and the noun-specific placeholder:
+
+      {{ template "beads-issues/shared/blocked-defer-loop-driver" (dict
+          "Target"      $target
+          "SessionID"   .Session.ID
+          "Placeholder" "<target-bug>"
+          "IntroExtra"  ""
+      ) }}
+
+  Parameters:
+    Target      — resolved bead ID (empty string when no bead is linked).
+    SessionID   — .Session.ID, threaded through the disarm line.
+    Placeholder — `<target-…>` literal for the empty-target fallback
+                  (`<target-bug>`, `<target-feature>`, `<target-post>`).
+    IntroExtra  — optional extra text spliced INSIDE the "(a secret, an
+                  external action, a product decision<IntroExtra>)"
+                  parenthetical, so publish-post can extend the
+                  "product decision" list with its placeholder note.
+                  Empty (default) leaves the intro at the shared wording.
+
+  The output is column-0 text (matches the existing blocked-defer-handoff
+  fragment's convention). The caller's YAML `content: |` scalar's own
+  indentation is applied by the YAML loader before the template engine
+  runs, so this fragment renders at the same visible indent as the
+  caller's surrounding paragraphs — no double-indentation.
+*/}}
+Use this whenever a run cannot make progress autonomously: something is unclear (a
+decision/info only the user can give), something can't be solved without help (a
+secret, an external action, a product decision{{ with .IntroExtra }}{{ . }}{{ end }}), or you are otherwise stuck. **Do not**
+advance the state label in this case. Instead:
+
+1. Defer and flag the bead so it drops out of `bd ready`:
+
+   ```bash
+   bd update {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
+   ```
+
+2. Write a **structured handoff** comment on the bead:
+
+   ```bash
+   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+   ```
+
+3. End the iteration with a concise handoff message naming the blocker and the single
+   thing needed (interactive runs also `mitto_ui_notify`), and disable this
+   conversation's own loop flag so the loop does not spin on the blocker:
+
+   ```
+   mitto_conversation_update(self_id: "{{ .SessionID }}", conversation_id: "self", loop_enabled: false)
+   ```
+
+The user resumes the loop (re-enabling the loop, or force-running) after clearing the
+`needs-human` label and addressing the handoff.

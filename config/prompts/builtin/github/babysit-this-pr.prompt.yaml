@@ -1,0 +1,330 @@
+icon: globe
+name: 'GitHub: babysit this PR'
+menus: prompts, conversation
+parameters:
+  - name: Pr
+    type: text
+    required: false
+    description: 'Optional PR reference (a number like `123`, or a full URL like `https://github.com/owner/repo/pull/123`). If omitted, the PR created earlier in THIS conversation is auto-detected from the conversation history; if none is found, the loop aborts.'
+description: Auto-loop — keep babysitting the PR that was created in this conversation (rebase, fix CI, address comments, merge when ready), then self-terminate when it is merged or closed
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- loop
+- github
+enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Permissions.CanStartConversation'
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 3600
+  mode: always
+  maxIterations: 30
+  maxDuration: "6h"
+target:
+  title: '{{ if .Args.Pr }}PR #{{ .Args.Pr }}{{ else }}GitHub: babysit this PR{{ end }}'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Auto-loop sibling of **"GitHub: babysit my PRs"** scoped to **the single pull
+  request that was created earlier in THIS conversation**. On every run this
+  conversation advances that one PR one step toward done — rebasing when
+  stale, fixing CI, addressing review comments, and merging when ready — and
+  self-terminates when the PR is merged or closed (or if no PR can be
+  identified in the conversation).
+
+  Only ever acts on the PR when **you are the author**.
+
+  {{ template "_shared/session-context" . }}
+
+  Available ACP servers:
+  {{ Default "(none)" .ACP.AvailableText }}
+
+  Existing child conversations (spawned by previous runs):
+  {{ .Children.MCPText }}
+
+  When spawning conversations to fix issues, prefer `"coding"` or `"fast"` tagged
+  servers. **Never** configure spawned conversations as loops — they are
+  one-off tasks.
+
+  ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent mode — scheduled loop run.**
+  {{ template "_shared/silent-notify-only" . }}
+  - Act autonomously when safe (clean rebases); otherwise just notify.
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present, so you *may* use the interactive `mitto_ui_*` tools (ask before risky actions
+  like merges/rebases).
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run, so no further run will fire). If the PR is still
+  open after this run it will **not** be monitored further — post a closing
+  `mitto_ui_notify` summary noting the PR state so the user can re-run this
+  prompt later to keep babysitting it.
+  {{- end }}
+
+  ## Step 1 — Identify the target PR (single PR, this conversation only)
+
+  This loop babysits exactly **one** PR: the PR that was created earlier in
+  **this** conversation. Establish it in the following priority order — the
+  first source that yields a PR wins; do **not** merge sources or babysit more
+  than one PR:
+  {{- if .Args.Pr }}
+
+  **Source 0 — explicit `Pr` argument (highest priority).** The user
+  supplied `Pr = {{ .Args.Pr }}`. Parse it:
+  - If it looks like a full URL (`https://github.com/<owner>/<repo>/pull/<n>`),
+    extract `<owner>/<repo>` as the repository and `<n>` as the PR number.
+  - If it is a bare number, use the current folder's repository (see below) and
+    that number as the PR.
+
+  Skip sources 1–3.
+  {{- else }}
+
+  **Source 1 — PR already under babysitting from earlier runs of THIS
+  conversation.** Look for it in these places, in order:
+
+  1. Prior assistant output in this conversation (call
+     `mitto_conversation_history` with `self_id = "{{ .Session.ID }}"`,
+     `conversation_id = "{{ .Session.ID }}"`, `text_contains = "PR #"`)
+     — scan for a "Babysitting PR #<number> in <owner>/<repo>" line printed
+     by an earlier run of this same prompt.
+  2. Child conversation titles in `{{ .Children.MCPText }}` — titles like
+     `Fix CI for PR #<number>: ...` or `Address review comments on PR
+     #<number>: ...` encode the PR number this loop already latched onto.
+
+  If a PR number surfaces here, adopt it and skip source 2.
+
+  **Source 2 — PR created earlier in THIS conversation (first-run path).**
+  Search this conversation's history for a PR-creation event:
+
+  ```
+  mitto_conversation_history(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    tool_name: "shell",
+    text_contains: "gh pr create")
+  ```
+
+  Also try `text_contains: "https://github.com/"` (any tool) to catch URLs
+  printed by `gh pr create`, `github_create_pull_request`, or other
+  MCP-based PR-creation tools:
+
+  ```
+  mitto_conversation_history(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    text_contains: "https://github.com/")
+  ```
+
+  From the matches, extract the **most recent** PR URL of the form
+  `https://github.com/<owner>/<repo>/pull/<number>` that was produced by a
+  tool call (`gh pr create`, `github_create_pull_request`, or a comparable
+  MCP tool), not merely mentioned in prose. That is **the** PR this loop
+  will babysit. Note owner/repo/number in your output so future runs
+  recover it via source 1.
+
+  **Source 3 — nothing found.** No PR argument, no prior-run marker, and no
+  PR-creation event in history → this prompt has nothing to do. Go straight
+  to **Step 5 (self-terminate)** and post a `mitto_ui_notify` explaining
+  that no PR could be identified.
+  {{- end }}
+
+  Once you have `<owner>/<repo>` and `<number>`, verify auth:
+
+  ```bash
+  gh auth status
+  gh repo view <owner>/<repo> --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  ```
+
+  If `gh auth status` fails, stop immediately and inform the user.
+
+  {{ template "github/shared/gh-owned-logins" . }}
+
+  Every per-PR GitHub prompt routes into **one** conversation per PR, keyed on the
+  conversation title `PR #<number>`. Normalise this conversation's name to that
+  exact form so later dispatches of "Address PR Comments", "Check PR Comments" or
+  "GitHub: review a Pull Request" for the same PR land here instead of starting a
+  second worker on the same branch. Skip the call if the current name
+  (`{{ .Session.Name }}`) is already exactly `PR #<number>`:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    name: "PR #<number>")
+  ```
+
+  Use the bare PR **number** (not a URL or branch name) so the title is
+  canonical even when this run was started from a URL.
+
+  Print one line to standard output so source 1 of future runs recovers the
+  target:
+
+  ```
+  Babysitting PR #<number> in <owner>/<repo> (branch <headRefName> → <baseRefName>).
+  ```
+
+  **Local git operations** (the rebase in Step 3a) need a checkout of
+  `<owner>/<repo>`. If the current folder is already a checkout of that repo,
+  use it; otherwise clone it on demand into a temp dir (`gh repo clone
+  <owner>/<repo> "$(mktemp -d)"`) and run the git commands there.
+
+  ## Step 2 — Verify the PR is still actionable
+
+  Pull the current state of the PR:
+
+  ```bash
+  gh pr view <number> --repo <owner>/<repo> \
+    --json number,title,state,headRefName,baseRefName,statusCheckRollup,mergeable,mergeStateStatus,updatedAt,createdAt,isDraft,reviewDecision,author,reviewThreads,headRefOid
+  ```
+
+  Then decide:
+  - **`author.login` not in the owned-logins set** → not your PR; go to
+    **Step 5 (self-terminate)** with a warning notification (this should not
+    normally happen since you created it, but hard-verify).
+  - **`state` is `MERGED` or `CLOSED`** → the PR is **done**. Go to **Step 5
+    (self-terminate)** with a success notification.
+  - **`state` is `OPEN`** → continue to Step 3.
+
+  ## Step 3 — Babysit the PR
+
+  Perform all applicable checks below on **this one PR**. Track whether each
+  step is **actionable** (something to advance) for the stop decision in
+  Step 4.
+
+  **Never modify the local checkout** — the user may have uncommitted work
+  there. Rebases go through a temporary worktree; force-pushes use
+  `--force-with-lease` (never `--force`).
+
+  **Spawn rules** (used by 3b and 3c):
+
+  {{ template "github/shared/spawn-rules" . }}
+
+  ### 3a. Rebase if behind base
+
+  {{ template "github/shared/pr-rebase-if-behind" . }}
+
+  ### 3b. Fix failing CI
+
+  {{ template "github/shared/pr-working-copy-decision" . }}
+
+  {{ template "github/shared/pr-fix-ci" . }}
+
+  ### 3c. Address unresolved review comments
+
+  {{ template "github/shared/pr-fetch-review-threads" . }}
+
+  If the unresolved count is 0, this step is **not actionable** — skip to 3d.
+
+  Otherwise this PR is **actionable**. Notify (`warning`) with the count.
+
+  Dedup guard: skip spawning if an existing child titled `Address review
+  comments on PR #<number>` is still running or was updated after the newest
+  thread's `createdAt`. Otherwise, reuse the working-copy decision computed
+  in 3b and spawn (interactive: ask first; silent: automatic):
+
+  ```
+  {{ template "github/shared/pr-comments" . }}
+  ```
+
+  ### 3d. Merge when ready
+
+  {{ template "github/shared/pr-ready-to-merge" . }}
+
+  This prompt babysits a specific PR, so the `--repo` scope for
+  `gh pr merge` is the `<owner>/<repo>` identified in Step 1. Merging
+  makes the PR **done** → next run's Step 2 sees `MERGED` and stops.
+
+  In silent mode, treat a ready-but-unmerged PR as **actionable** (still
+  waiting on a human).
+
+  ## Step 4 — Summary and stop decision
+
+  Decide whether to keep iterating:
+  - **Interactive mode**: print a brief single-PR summary
+    (PR | Title | Rebase | CI | Review | Notes).
+  - **Silent mode**: stay quiet unless something actionable happened this run.
+
+  The PR is **done** when it is merged or closed. The PR is **steady** when
+  it is fully up to date, has no failing CI, no unresolved threads, and is
+  only waiting on a human to review/merge — nothing **this loop** can
+  advance right now.
+
+  **Keep iterating** (end this run normally; the next fires after `delay`) as
+  long as the PR is still open — whether actionable or steady. A steady PR
+  is **not** a reason to stop: keep watching it until it merges or closes.
+
+  **Otherwise** — the PR is merged or closed — go to **Step 5**.
+
+  ## Step 5 — Stop: self-terminate
+
+  Reached when: no PR could be identified (Step 1 source 3), the PR is not
+  yours (Step 2), the PR is merged or closed (Step 2 or Step 4), or this
+  was the final scheduled iteration.
+
+  Remove this conversation's own loop flag so it becomes a regular
+  conversation:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "self", loop_enabled: false)
+  ```
+
+  Then notify the user (both modes):
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
+    title: "Babysit PR — done",
+    message: "<one line describing why iteration stopped: merged / closed / not-yours / no-PR-in-conversation>",
+    style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+
+  ## Guidelines
+
+  - **Single-PR scope**: this loop babysits **exactly one** PR — the one
+    created in this conversation (or the one supplied via the
+    `Pr` parameter). Never expand the target set to other PRs on
+    the account; for that, use "GitHub: babysit my PRs" or
+    "GitHub: iterate babysitting new PRs" instead.
+  - **One conversation per PR**: this conversation is named `PR #<number>`,
+    the shared routing key of every per-PR GitHub prompt. Never rename it
+    away from that form, or concurrent dispatches will start a second
+    worker on the same branch.
+  - **PR identification order**: `Pr` argument → prior-run marker
+    in this conversation's history / children → PR-creation event in this
+    conversation's history → self-terminate (nothing to babysit).
+  - **Only act on your own PR** — the PR's `author.login` must be a
+    member of the owned-logins set enumerated from `gh auth status`.
+    Never rebase, merge, or spawn fix children for a PR authored by
+    someone else.
+  - **Never modify the local checkout** — the user may have uncommitted
+    work there. Rebases always go through a temporary worktree; spawned
+    children compute `WORKING_MODE = worktree` unless the local checkout
+    is on the PR branch, at the PR's head commit, and completely clean.
+  - **Force-push** with `--force-with-lease` (never `--force`).
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  - **Interaction mode**: scheduled run — use only `mitto_ui_notify`,
+    never block on interactive UI, and do **not** auto-merge.
+  {{- else }}
+  - **Interaction mode**: force-triggered or non-loop — you may use
+    `mitto_ui_options`/`mitto_ui_form` and offer to merge with
+    confirmation.
+  {{- end }}
+  - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning and
+    skip if a child already exists for the same PR + task; cap at **3
+    spawns per run**, prioritizing rebase conflicts > CI failures >
+    unresolved comments. Spawned conversations are one-off and **must
+    never be loops**.
+  - **Notify only when it matters** on scheduled runs (rebased, CI broke,
+    ready to merge, merged, or final stop). Stay quiet on routine no-op
+    runs.
+  - **Self-terminate** via `loop_enabled: false` when the PR is merged /
+    closed / cannot be identified. Keep iterating while it is open — even
+    if steady (only waiting on a human) — so it stays monitored until it
+    lands. The user can re-run this prompt later to babysit another PR.
+  - If `gh` authentication fails, stop immediately and inform the user.

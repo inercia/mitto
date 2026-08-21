@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // sessionListIsStreaming fetches GET /api/sessions and returns the is_streaming
@@ -57,7 +57,7 @@ func sessionListIsStreaming(t *testing.T, ts *TestServer, sessionID string) bool
 func TestSessionList_IsStreamingSurvivesReload(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	sess, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestSessionList_IsStreamingSurvivesReload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
+	ws, err := ts.Client.Connect(ctx, sess.SessionID, api.SessionCallbacks{
 		OnPromptComplete: func(eventCount int) {
 			atomic.AddInt32(&promptComplete, 1)
 		},

@@ -1,0 +1,39 @@
+icon: chat-bubble
+name: Explain
+menus: prompts, !promptsLoop
+description: Explain the code or concept we just discussed
+group: Documentation
+backgroundColor: '#E1BEE7'
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{- if .Session.HasMessages }}
+  Explain the code or concept we just discussed. Before explaining, read the
+  actual code or files involved so the explanation reflects the real
+  implementation, not assumptions about it. If multiple files are involved,
+  read them in parallel to build context faster.
+  {{- else }}
+  This is the first message in this conversation, so there is nothing "we just
+  discussed". Figure out what to explain by inspecting the current repository
+  state:
+
+  1. Run `git status` and `git diff` to see uncommitted changes.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to find a plausible
+     recent focus of work.
+  3. If it is still unclear, ask the user which file, function, or concept
+     they want explained before continuing.
+
+  Read the actual code — do not explain from assumptions.
+  {{- end }}
+
+  ### Structure your explanation:
+
+  1. **Purpose**: What problem does this solve? Why does it exist?
+  2. **How it works**: Step-by-step walkthrough of the logic
+  3. **Key components**: Important functions, classes, or patterns used
+  4. **Data flow**: How data moves through the system
+  5. **Edge cases**: Special conditions or error handling
+  6. **Dependencies**: What this relies on, what relies on it
+
+  Use concrete examples from the code. Define jargon when you use it.

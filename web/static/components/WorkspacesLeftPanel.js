@@ -37,6 +37,7 @@ export function WorkspacesLeftPanel({
   setSelectedWorkspaceKey,
   guardNewFolder,
   toggleFolder,
+  expandFolder,
   getWorkspaceKey,
   addWorkspace,
   removeWorkspace,
@@ -79,8 +80,13 @@ export function WorkspacesLeftPanel({
                         : "hover:bg-base-200/40"}"
                       onClick=${() =>
                         guardNewFolder(() => {
-                          setSelectedFolder(displayName);
-                          setSelectedWorkspaceKey(null);
+                          if (isFolderSelected) {
+                            toggleFolder(displayName);
+                          } else {
+                            setSelectedFolder(displayName);
+                            setSelectedWorkspaceKey(null);
+                            expandFolder(displayName);
+                          }
                         })}
                     >
                       <span

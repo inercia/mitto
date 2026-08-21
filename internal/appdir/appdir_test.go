@@ -145,6 +145,21 @@ func TestSettingsPath(t *testing.T) {
 	}
 }
 
+func TestSlackCatalogPath(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	path, err := SlackCatalogPath()
+	if err != nil {
+		t.Fatalf("SlackCatalogPath() failed: %v", err)
+	}
+	if want := filepath.Join(customDir, SlackCatalogFileName); path != want {
+		t.Errorf("SlackCatalogPath() = %q, want %q", path, want)
+	}
+}
+
 func TestSessionsDir(t *testing.T) {
 	customDir := t.TempDir()
 	t.Setenv(MittoDirEnv, customDir)
@@ -159,6 +174,52 @@ func TestSessionsDir(t *testing.T) {
 	expected := filepath.Join(customDir, SessionsDirName)
 	if sessionsDir != expected {
 		t.Errorf("SessionsDir() = %q, want %q", sessionsDir, expected)
+	}
+}
+
+func TestStatsDir(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	statsDir, err := StatsDir()
+	if err != nil {
+		t.Fatalf("StatsDir() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, StatsDirName)
+	if statsDir != expected {
+		t.Errorf("StatsDir() = %q, want %q", statsDir, expected)
+	}
+
+	// StatsDir must return the path only; it must not create the directory.
+	if _, err := os.Stat(expected); !os.IsNotExist(err) {
+		t.Errorf("StatsDir() unexpectedly created %q (err=%v); it should return path only", expected, err)
+	}
+}
+
+func TestChatHistoryDir(t *testing.T) {
+	customDir := t.TempDir()
+	t.Setenv(MittoDirEnv, customDir)
+	ResetCache()
+	t.Cleanup(ResetCache)
+
+	chatHistoryDir, err := ChatHistoryDir()
+	if err != nil {
+		t.Fatalf("ChatHistoryDir() failed: %v", err)
+	}
+
+	expected := filepath.Join(customDir, ChatHistoryDirName)
+	if chatHistoryDir != expected {
+		t.Errorf("ChatHistoryDir() = %q, want %q", chatHistoryDir, expected)
+	}
+
+	// ChatHistoryDir must return the path only; it must not create the
+	// directory (callers persist via fileutil.WriteJSONAtomic, which
+	// creates it on first write — see internal/chatui/inputhistory.go).
+	if _, err := os.Stat(expected); !os.IsNotExist(err) {
+		t.Errorf("ChatHistoryDir() unexpectedly created %q (err=%v); it should return path only", expected, err)
 	}
 }
 

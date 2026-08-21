@@ -362,17 +362,52 @@ function _parseUndelimited(text, segments) {
  */
 // Labels shown in the conversation-header subtitle when a loop has stopped or paused.
 // Keyed by the `loop_stopped_reason` string sent by the backend.
-// Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
+// Each entry has { label, kind, isError? } where kind is "stopped" (terminal/red)
+// or "paused" (resumable/amber). isError=true marks stops that require user
+// attention (missing prompt / resume failures / context too large) — these
+// drive the sidebar warning indicator via isLoopErrorStop() below. Natural
+// terminations (maxDuration, maxIterations, iterationSafeguard) are not
+// errors: the loop did what it was configured to do.
 export const LOOP_STOPPED_LABELS = {
   maxDuration: { label: "Stopped: max time", kind: "stopped" },
   maxIterations: { label: "Stopped: max iters", kind: "stopped" },
   iterationSafeguard: { label: "Stopped: max iters", kind: "stopped" },
-  promptUnresolved: { label: "Stopped: prompt missing", kind: "stopped" },
-  resumeFailures: { label: "Stopped: resume errors", kind: "stopped" },
-  contextWindowExceeded: { label: "Stopped: context too large", kind: "stopped" },
+  promptUnresolved: {
+    label: "Stopped: prompt missing",
+    kind: "stopped",
+    isError: true,
+  },
+  resumeFailures: {
+    label: "Stopped: resume errors",
+    kind: "stopped",
+    isError: true,
+  },
+  contextWindowExceeded: {
+    label: "Stopped: context too large",
+    kind: "stopped",
+    isError: true,
+  },
+  deliveryFailures: {
+    label: "Stopped: delivery errors",
+    kind: "stopped",
+    isError: true,
+  },
   pausedByUser: { label: "Paused by you", kind: "paused" },
   disabledByAgent: { label: "Paused by the agent", kind: "paused" },
 };
+
+/**
+ * Returns true when a loop's stopped_reason represents an error condition
+ * that requires user attention (missing prompt, repeated resume failures,
+ * context window exceeded). Natural terminations and user/agent pauses
+ * return false.
+ * @param {string|null|undefined} reason - The loop_stopped_reason value.
+ * @returns {boolean}
+ */
+export function isLoopErrorStop(reason) {
+  if (!reason) return false;
+  return LOOP_STOPPED_LABELS[reason]?.isError === true;
+}
 
 /**
  * Compact human-readable duration for a loop max-duration cap.
@@ -389,32 +424,60 @@ export function formatLoopMaxDuration(seconds) {
 
 /**
  * Compact trigger-type label shown in the conversation-header subtitle badge next
- * to the loop status pill. "schedule" (default) shows the frequency (e.g.
- * "every 2h"); "onCompletion" shows the post-completion delay; "onTasks" shows a
- * fixed label (fires on beads/task changes, not on a cadence, so no "every N" or
- * countdown is meaningful).
- * @param {string} trigger - "schedule" | "onCompletion" | "onTasks" (falsy/other → schedule)
- * @param {number} delaySeconds - onCompletion delay in seconds (ignored otherwise)
+ * to the loop status pill. Accepts either a scalar legacy trigger ("schedule" |
+ * "onCompletion" | "onTasks") or an array of trigger names (mitto-r6j) — an
+ * array with a single entry behaves identically to the scalar form.
+ *
+ * Single-trigger loops render the trigger-specific label: "every 2h" (schedule),
+ * "after agent finishes[ · +Ns]" (onCompletion), "on task changes" (onTasks).
+ * Multi-trigger loops render the label for the FIRST trigger in the array
+ * followed by " +N" (where N is the count of additional triggers) — keeps the
+ * header subtitle short while still signalling that more than one trigger is
+ * armed. Hovering the badge (aria-label / title) can carry the full breakdown.
+ *
+ * @param {string|string[]|null|undefined} trigger - single trigger name or array of names
+ * @param {number} delaySeconds - onCompletion delay in seconds (ignored for other triggers)
  * @param {{value:number, unit:string}|null} frequency - schedule frequency (ignored for event-driven triggers)
- * @returns {string|null} the label, or null when nothing can be derived (e.g. no frequency yet)
+ * @returns {string|null} the label, or null when nothing can be derived (e.g. no triggers/frequency)
  */
 export function computeHeaderTriggerLabel(trigger, delaySeconds, frequency) {
-  if (trigger === "onCompletion") {
-    return `after agent finishes${delaySeconds > 0 ? ` · +${delaySeconds}s` : ""}`;
+  // Normalize into an ordered, non-empty list. Fall back to ["schedule"] when
+  // the caller supplied a truly empty/absent value, matching the backend's
+  // EffectiveTriggers() fallback so the badge still renders "every N" for
+  // legacy loops that never wrote a Triggers slice.
+  let list;
+  if (Array.isArray(trigger)) {
+    list = trigger.filter((t) => typeof t === "string" && t.length > 0);
+  } else if (typeof trigger === "string" && trigger.length > 0) {
+    list = [trigger];
+  } else {
+    list = [];
   }
-  if (trigger === "onTasks") {
-    return "on task changes";
-  }
-  if (frequency) {
-    const u =
-      frequency.unit === "minutes"
-        ? "min"
-        : frequency.unit === "hours"
-          ? "h"
-          : "d";
-    return `every ${frequency.value}${u}`;
-  }
-  return null;
+  if (list.length === 0) list = ["schedule"];
+
+  const labelFor = (t) => {
+    if (t === "onCompletion") {
+      return `after agent finishes${delaySeconds > 0 ? ` · +${delaySeconds}s` : ""}`;
+    }
+    if (t === "onTasks") {
+      return "on task changes";
+    }
+    if (frequency) {
+      const u =
+        frequency.unit === "minutes"
+          ? "min"
+          : frequency.unit === "hours"
+            ? "h"
+            : "d";
+      return `every ${frequency.value}${u}`;
+    }
+    return null;
+  };
+
+  const primary = labelFor(list[0]);
+  if (primary === null) return null;
+  const extras = list.length - 1;
+  return extras > 0 ? `${primary} +${extras}` : primary;
 }
 
 // =============================================================================
@@ -590,8 +653,12 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // Reason the loop loop stopped (maxDuration, maxIterations, etc.); null while running
         loop_stopped_reason:
           s.loop_stopped_reason ?? stored.loop_stopped_reason ?? null,
-        // Loop glance fields (shown in the conversation-header subtitle)
+        // Loop glance fields (shown in the conversation-header subtitle).
+        // loop_trigger is the legacy scalar (primary trigger) kept for
+        // backward compat with pre-r6j code paths; loop_triggers is the
+        // canonical list of all armed triggers (mitto-r6j).
         loop_trigger: s.loop_trigger ?? stored.loop_trigger ?? null,
+        loop_triggers: s.loop_triggers ?? stored.loop_triggers ?? null,
         loop_iteration_count:
           s.loop_iteration_count ?? stored.loop_iteration_count ?? null,
         loop_max_iterations:
@@ -670,7 +737,9 @@ export function convertEventsToMessages(events, options = {}) {
           seq,
           promptName: event.data?.prompt_name || undefined,
           argumentCount: event.data?.argument_count || undefined,
+          arguments: event.data?.arguments || undefined,
           meta: event.data?.meta || undefined,
+          provenance: event.data?.provenance || undefined,
         };
         // Convert stored image references to full image objects with URLs
         // Image refs are stored as: [{id, name?, mime_type}]
@@ -1326,6 +1395,89 @@ export function hslToHex(h, s, l) {
       .padStart(2, "0");
   };
   return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/**
+ * Converts RGB components to HSL.
+ * @param {number} r - Red (0-255)
+ * @param {number} g - Green (0-255)
+ * @param {number} b - Blue (0-255)
+ * @returns {object} { h, s, l } with h in 0-360 and s/l in 0-100
+ */
+export function rgbToHsl(r, g, b) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l: l * 100 };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s: s * 100, l: l * 100 };
+}
+
+// Dark-theme accent tuning. The conversation palette (CONVERSATION_COLORS) is
+// made of Material 100/200 pastels: high lightness, modest saturation. Blending
+// those over the dark sidebar collapses every hue into near-identical greys, so
+// on dark the color is rebuilt from its hue with a saturation floor and a low
+// lightness instead of tinting with the raw pastel.
+const ACCENT_DARK_TINT_LIGHTNESS = 22;
+const ACCENT_DARK_TINT_ALPHA = 0.85;
+const ACCENT_DARK_STRIPE_LIGHTNESS = 62;
+const ACCENT_DARK_SAT_MIN = 55;
+const ACCENT_DARK_SAT_MAX = 90;
+const ACCENT_DARK_STRIPE_SAT_MIN = 60;
+const ACCENT_DARK_STRIPE_SAT_MAX = 95;
+// Below this saturation a palette entry is treated as achromatic (the "Grey"
+// swatch) and must stay grey — clamping it to the saturation floor would turn
+// it into a red row.
+const ACCENT_ACHROMATIC_SAT = 10;
+
+/**
+ * Derives the sidebar accent styles for a conversation's background color.
+ *
+ * Light theme keeps the pastel itself (translucent row tint + solid stripe).
+ * Dark theme re-derives a hue-preserving dark tint and a brightened stripe so
+ * the palette stays distinguishable against the dark sidebar.
+ *
+ * @param {string} hexColor - Conversation color (e.g. "#C5CAE9"), may be empty
+ * @param {boolean} isLight - Whether the light theme is active
+ * @returns {object|null} { tint, stripe } CSS colors, or null when unset/invalid
+ */
+export function getConversationAccentStyles(hexColor, isLight) {
+  const rgb = hexToRgb(hexColor);
+  if (!rgb) return null;
+
+  if (isLight) {
+    return {
+      tint: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.45)`,
+      stripe: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
+    };
+  }
+
+  const { h, s } = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  const achromatic = s < ACCENT_ACHROMATIC_SAT;
+  const tintSat = achromatic
+    ? 0
+    : Math.min(Math.max(s, ACCENT_DARK_SAT_MIN), ACCENT_DARK_SAT_MAX);
+  const stripeSat = achromatic
+    ? 0
+    : Math.min(
+        Math.max(s, ACCENT_DARK_STRIPE_SAT_MIN),
+        ACCENT_DARK_STRIPE_SAT_MAX,
+      );
+  const hue = Math.round(h);
+  return {
+    tint: `hsla(${hue}, ${Math.round(tintSat)}%, ${ACCENT_DARK_TINT_LIGHTNESS}%, ${ACCENT_DARK_TINT_ALPHA})`,
+    stripe: `hsl(${hue}, ${Math.round(stripeSat)}%, ${ACCENT_DARK_STRIPE_LIGHTNESS}%)`,
+  };
 }
 
 /**
@@ -1988,6 +2140,25 @@ export function conversationToMarkdown(messages) {
 }
 
 /**
+ * Finds the most recent copyable agent (assistant) message in a conversation
+ * and returns it as Markdown. Scans from the end; skips any non-agent message
+ * (user, thought, tool, error, system) and any agent message that yields no
+ * Markdown yet (e.g. a streaming message with no HTML accumulated so far),
+ * falling back to an earlier agent message when one exists.
+ * @param {Array} messages
+ * @returns {string} Markdown of the last copyable agent message, or "" when none
+ */
+export function lastAgentMarkdown(messages) {
+  if (!messages || messages.length === 0) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== ROLE_AGENT) continue;
+    const md = messageToMarkdown(messages[i]);
+    if (md) return md;
+  }
+  return "";
+}
+
+/**
  * Copies text to the clipboard. Returns true on success, false on failure.
  * Falls back to execCommand('copy') when navigator.clipboard is unavailable.
  * @param {string} text
@@ -2025,28 +2196,67 @@ export async function copyToClipboard(text) {
  * @returns {string}
  */
 /**
- * Build a map from error-message index → retry payload { text, images }.
+ * Build a map from error-message index → retry payload
+ * { text, images, promptName, argumentCount, arguments }.
  * Single forward pass: tracks the most recent user message that has truthy
  * `.text`; when an error message is encountered, records that payload.
+ * promptName/argumentCount/arguments are carried through so a retry can
+ * replay the original named prompt exactly (see MessageList.js retry handler).
  *
  * @param {Array} displayMessages - The ordered (forward) array of messages
- * @returns {Map<number, {text: string, images: Array}>} index → retry payload
+ * @returns {Map<number, {text: string, images: Array, promptName: (string|undefined), argumentCount: (number|undefined), arguments: (Object|undefined)}>} index → retry payload
  */
 export function buildRetryTargets(displayMessages) {
   const map = new Map();
   if (!Array.isArray(displayMessages)) return map;
   let lastUserText = null;
   let lastUserImages = [];
+  let lastUserPromptName;
+  let lastUserArgumentCount;
+  let lastUserArguments;
   for (let i = 0; i < displayMessages.length; i++) {
     const msg = displayMessages[i];
     if (msg.role === ROLE_USER && msg.text) {
       lastUserText = msg.text;
       lastUserImages = msg.images || [];
+      lastUserPromptName = msg.promptName;
+      lastUserArgumentCount = msg.argumentCount;
+      lastUserArguments = msg.arguments;
     } else if (msg.role === ROLE_ERROR && lastUserText !== null) {
-      map.set(i, { text: lastUserText, images: lastUserImages });
+      map.set(i, {
+        text: lastUserText,
+        images: lastUserImages,
+        promptName: lastUserPromptName,
+        argumentCount: lastUserArgumentCount,
+        arguments: lastUserArguments,
+      });
     }
   }
   return map;
+}
+
+/**
+ * Decide whether a retry target (from buildRetryTargets) can be replayed as
+ * the original named prompt (preserving its UI pill, modelTag/preferredModels
+ * routing, and prompt-level processing) instead of falling back to plain
+ * full-text replay.
+ *
+ * True only when the target has a promptName AND either the prompt took no
+ * arguments (argumentCount falsy) or the persisted `arguments` map has at
+ * least `argumentCount` entries. Older events with no persisted arguments,
+ * and events where a sensitive argument was omitted at persist time (map
+ * has fewer entries than argumentCount), fall back to full-text replay.
+ *
+ * @param {{promptName: (string|undefined), argumentCount: (number|undefined), arguments: (Object|undefined)}} target
+ * @returns {boolean}
+ */
+export function canReplayNamedPrompt(target) {
+  if (!target || !target.promptName) return false;
+  if (!target.argumentCount) return true;
+  return (
+    !!target.arguments &&
+    Object.keys(target.arguments).length >= target.argumentCount
+  );
 }
 
 /**

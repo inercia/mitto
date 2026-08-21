@@ -5,7 +5,7 @@ package inprocess
 import (
 	"testing"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // TestSessionLifecycle tests the complete session lifecycle:
@@ -22,7 +22,7 @@ func TestSessionLifecycle(t *testing.T) {
 	t.Logf("Initial session count: %d", initialCount)
 
 	// 2. Create a new session
-	createReq := client.CreateSessionRequest{
+	createReq := api.CreateSessionRequest{
 		Name: "Test Session",
 	}
 	session, err := ts.Client.CreateSession(createReq)
@@ -83,7 +83,7 @@ func TestCreateMultipleSessions(t *testing.T) {
 	// Create 3 sessions
 	var sessionIDs []string
 	for i := 0; i < 3; i++ {
-		session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+		session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 		if err != nil {
 			t.Fatalf("CreateSession %d failed: %v", i, err)
 		}

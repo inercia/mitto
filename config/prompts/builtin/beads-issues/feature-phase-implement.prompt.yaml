@@ -1,0 +1,163 @@
+icon: build
+name: Feature — implement phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to implement
+  - name: SubmitStrategy
+    type: text
+    group: Advanced
+    required: false
+    description: How finished work is submitted. "Commit" (default) commits this increment; "Pull Request" commits on the configured task/epic branch; "None" leaves changes for review.
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this phase, forwarded by the driver that dispatched it.
+description: Internal phase-tier prompt — implement the feature per its plan and add the `implemented` label. Invoked by name from the feature-implementation driver; runs on the Coding tier.
+group: Tasks
+backgroundColor: '#C8E6C9'
+preferredModels:
+  - modelTag: Coding
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Feature Implementation — Implement Phase
+
+  This is the **implement** stage of the label-encoded feature-implementation state
+  machine (`planned` → `implemented` → `tested` → `verified`). It is normally invoked
+  by name from the `Loop implementing feature` driver (or by a list orchestrator),
+  which selects this phase when the target bead carries `planned` but not yet
+  `implemented`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit-after-implement is disabled." -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** — commit on the configured task/epic branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit-after-implement is enabled." }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"      $target
+      "Noun"        "target feature"
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+  ) }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  {{ template "beads-issues/shared/tier-check" (dict
+      "Target"    $target
+      "Tier"      "Coding"
+      "Phase"     "implement"
+      "Confirmed" (Model "Coding")
+      "ModelName" .Session.ModelName
+      "ModelTags" .Session.ModelTags
+  ) }}
+
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array and prior comments (especially the plan-phase `Plan:`
+  comment recorded when `planned` was added — it tells you the approach and design
+  decisions). If `implemented` is already present, this phase's work is already
+  done — `bd comment` a note that the phase re-ran redundantly and stop **without**
+  re-adding the label.
+
+  **Important — this phase runs in its own loop iteration.** Unlike a single
+  long-lived session, each phase of this driver is a separate scheduled run, so any
+  uncommitted work here would be lost between iterations unless committed now (see
+  Step 3).
+
+  ## Step 2 — Implement the feature
+
+  This is a **scheduled, silent** phase (invoked by the driver's on-completion
+  loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
+  decide autonomously; if something is genuinely unclear or unsolvable without user
+  input, defer via **Step 4**.
+
+  Write the code per the plan, in the **smallest coherent increment** that makes
+  functional progress:
+
+  - Follow the design decisions and approach recorded in the `Plan:` comment.
+  - Match the surrounding style and conventions; do not refactor unrelated code.
+  - Do not gold-plate — implement exactly what the plan and acceptance criteria call
+    for; further increments (or the test/review phases) will build on this one.
+
+  When the increment is **functionally complete** (it builds and does what it is meant
+  to, even if tests/polish come in later phases), proceed to Step 3.
+
+  ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }}
+
+  ```bash
+  bd comment {{ $target }} "Implementation [tier: Coding]: <what was built, files touched, any deviations from the plan and why>."
+  bd update {{ $target }} --add-label implemented
+  ```
+
+  Only add the label after the comment is posted.
+
+  {{ if $commit -}}
+  {{ if $pr }}
+  Submit strategy is **Pull Request** — ensure the bead's feature branch exists and
+  is checked out before committing:
+
+  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+      "Ctx"    .
+      "Target" $target
+      "Type"   "feat"
+  ) }}
+  {{ end }}
+  Then commit the increment as a **single, focused commit** using the project's commit
+  conventions and reference the bead ID in the message.
+
+  {{ template "git/shared/safe-commit" (dict
+      "Type"     "feat"
+      "Target"   $target
+      "Summary"  "<one-line summary>"
+      "BodyHint" (printf "<body: what changed and why, reference %s>" $target)
+  ) }}
+  {{- else -}}
+  Do **not** commit. Leave the implementation changes staged/unstaged for the user to
+  review; the bead comment already records what changed.
+  {{- end }}
+
+  Then stop — the driver's next scheduled run will observe `implemented` and dispatch
+  the test phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<target-feature>"
+      "Label"       "implemented"
+      "BlockedAt"   "implement"
+  ) }}
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`implemented`). Do not
+    write tests or self-review — those are separate phases.
+  - **Commit to persist across iterations.** Each phase runs in a separate loop
+    iteration; with `SubmitStrategy: "None"`, work here is only as durable as the
+    conversation's working tree.
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Implementation"
+      "Tier"            "Coding"
+  ) }}

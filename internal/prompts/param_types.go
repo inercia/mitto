@@ -2,8 +2,11 @@ package prompts
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // KnownPromptParameterTypes is the canonical registry of supported parameter types
@@ -20,7 +23,11 @@ import (
 //   - sessionId      — a Mitto conversation/session UUID
 //   - childSessionId — a child conversation/session UUID (relative to the host conversation)
 //   - workspaceId    — a Mitto workspace UUID
-//   - workspaceFolder — an absolute path to the workspace root directory
+//   - workspaceFolder — an absolute path to a workspace root directory, rendered
+//     as a dropdown of the known workspace folders (labelled by workspace
+//     display name, valued by absolute path). Interactive, dialog-collected
+//     (like boolean/prompts): no menu auto-supplies it and it never gates menu
+//     visibility.
 //   - acpServer      — an ACP server (agent) name
 //   - text           — generic free-form text (the catch-all type)
 //   - boolean        — a yes/no flag, rendered as a checkbox; supplied as the
@@ -32,7 +39,35 @@ import (
 //     boolean): no menu auto-supplies it and it never gates menu
 //     visibility. Feeds the {{ PromptText .Args.NAME }} template
 //     action. multiLine is not supported (rejected by the existing
-//     text-only check).
+//     text-only check). The picked prompt's own parameters are, by
+//     default, collected in a nested sub-dialog and shipped as a
+//     `<Name>_Args` companion argument; set `collectInnerArgs: false`
+//     to opt out when the picker is used only as a name/edit-subject
+//     reference and the picked prompt's own parameter values are never
+//     consumed (mitto-48c). collectInnerArgs is only valid on type
+//     "prompts" (rejected elsewhere).
+//   - filename       — a workspace-relative file path, rendered as a dropdown
+//     of files under an optional Dir (workspace-relative, non-recursive),
+//     optionally filtered by a Glob (filepath.Match). Interactive,
+//     dialog-collected (like boolean/prompts): no menu auto-supplies it and
+//     it never gates menu visibility. Feeds the {{ ReadFile .Args.NAME }}
+//     template action, which enforces path safety (absolute-path reject,
+//     ".." reject, symlink-escape reject, 256 KB cap) at read time — Dir/Glob
+//     are UI dropdown hints only. multiLine/options are not supported
+//     (rejected by the existing text-only check).
+//   - dirname        — a workspace-relative directory path, rendered as a
+//     dropdown of immediate sub-directories under an optional Dir
+//     (workspace-relative, non-recursive), optionally filtered by a Glob
+//     (filepath.Match applied to the sub-directory name only). Interactive,
+//     dialog-collected (like boolean/prompts/filename): no menu auto-supplies
+//     it and it never gates menu visibility. Hidden directories (leading ".")
+//     are excluded by default. Returned value is a workspace-relative
+//     directory path suitable for the {{ dirExists .Args.NAME }} template
+//     action or joining with a filename to build a ReadFile argument. Dir/Glob
+//     are UI dropdown hints only — path safety for downstream consumers is
+//     enforced at read time by the helper that consumes the value.
+//     multiLine/options are not supported (rejected by the existing text-only
+//     check).
 var KnownPromptParameterTypes = []string{
 	"beadsId",
 	"beadsTitle",
@@ -44,6 +79,8 @@ var KnownPromptParameterTypes = []string{
 	"text",
 	"boolean",
 	"prompts",
+	"filename",
+	"dirname",
 }
 
 // IsKnownPromptParameterType reports whether t is a recognised parameter type.
@@ -52,6 +89,60 @@ func IsKnownPromptParameterType(t string) bool {
 		if t == known {
 			return true
 		}
+	}
+	return false
+}
+
+// Remember* constants enumerate the accepted values of PromptParameter.Remember.
+// An empty string is treated as RememberNever (default: do not persist).
+//
+//   - RememberNever: do not persist (default)
+//   - RememberFolder: per-workspace persistence, keyed by workspace UUID
+//   - RememberConversation: per-session persistence, keyed by session ID
+//     (mitto-47y.6.2). Applies at both outer and inner (`type: prompts`)
+//     picker scopes with the same read/write semantics as folder.
+//   - RememberGlobal: reserved; accepted by the enum but not stored in v1
+const (
+	RememberNever        = "never"
+	RememberFolder       = "folder"
+	RememberConversation = "conversation"
+	RememberGlobal       = "global"
+)
+
+// IsValidRemember reports whether s is an accepted value for the Remember
+// field of a PromptParameter. An empty string counts as valid (means "never").
+func IsValidRemember(s string) bool {
+	switch s {
+	case "", RememberNever, RememberFolder, RememberConversation, RememberGlobal:
+		return true
+	}
+	return false
+}
+
+// Show* constants enumerate the accepted values of PromptParameter.Show.
+// An empty string is treated as ShowAuto (default). Show controls the
+// RENDER axis (is this field in the form once the dialog is open) and, for
+// ShowAlways only, also forces the OPEN axis (the dialog appears even if no
+// other parameter would have opened it).
+//
+//   - ShowAuto: rendered whenever the dialog opens (for any reason); does not
+//     by itself force the dialog open (default)
+//   - ShowAlways: rendered, AND its presence forces the dialog open even for
+//     an otherwise-satisfied prompt
+//   - ShowNever: never rendered and never opens the dialog; the value comes
+//     from a menu, a declared default, or a cached value
+const (
+	ShowAuto   = "auto"
+	ShowAlways = "always"
+	ShowNever  = "never"
+)
+
+// IsValidShow reports whether s is an accepted value for the Show field of a
+// PromptParameter. An empty string counts as valid (means "auto").
+func IsValidShow(s string) bool {
+	switch s {
+	case "", ShowAuto, ShowAlways, ShowNever:
+		return true
 	}
 	return false
 }
@@ -101,6 +192,102 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if param.MultiLine && param.Type != "text" {
 			return fmt.Errorf("parameter %q: multiLine is only valid for type \"text\", not %q", param.Name, param.Type)
 		}
+		// options constrains a "text" parameter to a fixed enumeration rendered
+		// as a dropdown. It is only meaningful on type "text", mutually exclusive
+		// with multiLine, and must contain non-empty, unique values. When a
+		// default is declared it must be one of the listed options.
+		if len(param.Options) > 0 {
+			if param.Type != "text" {
+				return fmt.Errorf("parameter %q: options is only valid for type \"text\", not %q", param.Name, param.Type)
+			}
+			if param.MultiLine {
+				return fmt.Errorf("parameter %q: options and multiLine are mutually exclusive (dropdown vs. textarea)", param.Name)
+			}
+			seen := make(map[string]struct{}, len(param.Options))
+			for _, opt := range param.Options {
+				if opt == "" {
+					return fmt.Errorf("parameter %q: options must not contain empty strings", param.Name)
+				}
+				if _, dup := seen[opt]; dup {
+					return fmt.Errorf("parameter %q: options must not contain duplicate values (%q)", param.Name, opt)
+				}
+				seen[opt] = struct{}{}
+			}
+			if param.Default != "" {
+				if _, ok := seen[param.Default]; !ok {
+					return fmt.Errorf("parameter %q: default %q is not one of the declared options", param.Name, param.Default)
+				}
+			}
+		}
+		// Dir/Glob are only meaningful for the "filename" and "dirname" types.
+		// Reject elsewhere to catch misconfiguration early (mirrors the
+		// multiLine/options pattern).
+		isFileOrDirType := param.Type == "filename" || param.Type == "dirname"
+		if param.Dir != "" && !isFileOrDirType {
+			return fmt.Errorf("parameter %q: dir is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
+		}
+		if len(param.Glob) > 0 && !isFileOrDirType {
+			return fmt.Errorf("parameter %q: glob is only valid for types \"filename\" or \"dirname\", not %q", param.Name, param.Type)
+		}
+		// collectInnerArgs only controls nested-args collection for a
+		// "prompts" picker's own sub-dialog; reject it elsewhere (mirrors
+		// the multiLine/options/dir/glob "only valid for type X" pattern).
+		if param.CollectInnerArgs != nil && param.Type != "prompts" {
+			return fmt.Errorf("parameter %q: collectInnerArgs is only valid for type \"prompts\", not %q", param.Name, param.Type)
+		}
+		if isFileOrDirType {
+			// Dir must be workspace-relative: no absolute paths, no ".." segments.
+			// The runtime endpoint re-checks containment against the workspace
+			// root; these guards catch obvious misconfiguration at load time.
+			if param.Dir != "" {
+				if filepath.IsAbs(param.Dir) {
+					return fmt.Errorf("parameter %q: dir must be workspace-relative, not absolute (%q)", param.Name, param.Dir)
+				}
+				clean := filepath.Clean(param.Dir)
+				if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+					return fmt.Errorf("parameter %q: dir must not escape the workspace root (%q)", param.Name, param.Dir)
+				}
+				for _, seg := range strings.Split(param.Dir, string(filepath.Separator)) {
+					if seg == ".." {
+						return fmt.Errorf("parameter %q: dir must not contain %q segments (%q)", param.Name, "..", param.Dir)
+					}
+				}
+			}
+			// Glob compile-check: reject malformed patterns at load time so
+			// prompt files fail-fast instead of at first UI open. Uses
+			// doublestar so patterns with "**" (recursive) are accepted here
+			// and honored by the runtime endpoint. Every entry in the list
+			// is validated; an empty entry is rejected explicitly (an empty
+			// pattern would silently match nothing).
+			for _, g := range param.Glob {
+				if g == "" {
+					return fmt.Errorf("parameter %q: glob entries must not be empty", param.Name)
+				}
+				if !doublestar.ValidatePattern(g) {
+					return fmt.Errorf("parameter %q: invalid glob %q", param.Name, g)
+				}
+			}
+		}
+		// Validate the optional Remember field: reject unknown values so
+		// prompt files fail-fast instead of silently ignoring a typo (mitto-x8v).
+		if !IsValidRemember(param.Remember) {
+			return fmt.Errorf("parameter %q: unknown remember value %q (must be one of: %q, %q, %q, %q)",
+				param.Name, param.Remember, RememberNever, RememberFolder, RememberConversation, RememberGlobal)
+		}
+		// Validate the optional Show field: reject unknown values so a typo
+		// fails fast instead of silently degrading to the default behaviour.
+		if !IsValidShow(param.Show) {
+			return fmt.Errorf("parameter %q: unknown show value %q (must be one of: %q, %q, %q)",
+				param.Name, param.Show, ShowAuto, ShowAlways, ShowNever)
+		}
+		// Group is valid on every parameter type (unlike multiLine/options/
+		// dir/glob/collectInnerArgs, which are type-gated); it is purely
+		// presentational, gating the parameter dialog's tab bar. Reject a
+		// declared-but-whitespace-only value so a typo like `group: " "`
+		// fails fast instead of silently producing an unlabeled tab.
+		if param.Group != "" && strings.TrimSpace(param.Group) == "" {
+			return fmt.Errorf("parameter %q: group must not be empty or whitespace-only", param.Name)
+		}
 		// Validate the optional cache block.
 		if param.Cache != nil {
 			if !KnownPromptCacheDestinations[param.Cache.Destination] {
@@ -120,13 +307,7 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if param.Type != "childSessionId" {
 			continue
 		}
-		parts := strings.Split(menus, ",")
-		var menuList []string
-		for _, m := range parts {
-			if m = strings.TrimSpace(m); m != "" && !strings.HasPrefix(m, "!") {
-				menuList = append(menuList, m)
-			}
-		}
+		menuList, _ := ParseMenuTokens(menus)
 		if len(menuList) == 0 {
 			// Empty menus treated as "prompts" — allowed.
 			return nil

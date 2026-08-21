@@ -1,0 +1,209 @@
+name: 'Support: investigate'
+description: 'Investigate a tracked support question internally using the channel playbook fragments (.mitto/support/<channel-id>/{investigation,resources,escalation}.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
+group: Support
+backgroundColor: '#D1C4E9'
+icon: search
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
+tags:
+- support
+target:
+  reuse:
+    issue: true
+    coalesce: true
+parameters:
+  - name: IssueID
+    description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
+    required: false
+    type: beadsId
+  - name: SlackChannelID
+    type: text
+    required: false
+    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the fragment reader falls back to instructing the agent to read the file at runtime using the bead metadata slack_channel field.'
+prompt: |-
+  {{- $bead := .Session.BeadsIssue -}}
+  {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
+  {{- $channel := Arg "SlackChannelID" "" -}}
+  {{- if eq $channel "" -}}
+  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
+  {{- end -}}
+  # Support — Investigate
+
+  {{ template "_shared/session-context" . }}
+
+  {{ template "support/shared/playbook-files-policy" . }}
+
+  ## Description
+
+  Investigate a tracked support question **on our side** — do the work needed to actually answer it.
+  Use this when we have enough of the customer's context but still need to **find the answer**: follow
+  the channel's playbook fragments (`.mitto/support/<channel-id>/{investigation,resources,escalation,
+  scope,tone,redirects}.md` — one topic per file), correlate with what is on the bead, record what
+  you learn, and — if you reach a confident answer — leave a **draft reply** ready for review.
+
+  > **Applicable state:** any open tracked bead. Typically `state:triaged`, `awaiting-us`, or
+  > `gathering-info`. This prompt sets `state:gathering-info` while it works.
+
+  ## CRITICAL: User Interaction Rules
+
+  {{ template "_shared/no-text-ui" . }}
+  >
+  > ⚠️ **This prompt NEVER posts to Slack.** It only investigates and records a draft. Posting is
+  > done — with your approval — by **"Support: reply to user"**.
+
+  ## Bead writing conventions (descriptions & comments)
+
+  {{ template "beads-issues/shared/markdown-convention" . }}
+  {{ template "_shared/reply-fence-convention" "reply" }}
+
+  {{ template "support/shared/message-comment-key" . }}
+
+  ## Slack tools (names vary by MCP server)
+
+  {{ template "support/shared/slack-tools" (dict "Capabilities" "Here you only need to **read a thread's replies** (to make sure you are investigating the latest ask)." "NoPosting" true "ReadMetadata" true) }}
+
+  ## Step 1: Identify the target bead
+
+  {{ template "support/shared/target-bead-picker" (dict "Ctx" . "Filter" "" "EmptyMessage" "") }}
+
+  ## Step 2: Load history + refresh the thread
+
+  - Load the full history: `bd show <id>` and `bd comments <id>`. The bead is the source of truth.
+    Note the current `state:*` label and the stored `slack_thread_ts` / `slack_channel` / `slack_url`.
+  - **Guard — already `state:drafting`?** If the bead is in `state:drafting`, a draft reply already
+    exists and is waiting for your review — re-investigating would discard that work. Do **not** swap
+    the state automatically. Instead use `mitto_ui_options` (timeout 300):
+    - **Question**: "This bead already has a draft (`state:drafting`). Investigate again anyway?"
+    - **Options**: `[{label: "Open reply-to-user instead"}, {label: "Re-investigate anyway"}, {label: "Cancel"}]`.
+    - On **"Open reply-to-user instead"** or **"Cancel"** (or timeout): `mitto_ui_notify` (info)
+      suggesting **"Support: reply to user"**, and stop without changing state.
+    - Only on **"Re-investigate anyway"** proceed with the rest of this step.
+  - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts`, and add a
+    markdown comment for **each new** message (`[INBOUND]` customer / `[CONTEXT]` others) — "new"
+    meaning its Slack `ts` is not already in `bd comments <id>` (see the `ts:` dedup rule). This keeps
+    the investigation grounded in the latest ask.
+  - Mark that we are actively working it: swap the state label in place (never `bd set-state`):
+    `bd update <id> --remove-label state:<previous> --add-label state:gathering-info`, and add a short
+    `**[STATE · <time>]** <prev> → gathering-info` comment.
+
+  ## Step 3: Read the channel playbook fragments
+
+  You must work using **this channel's documented playbook**, not by guessing. The playbook is
+  stored **per channel** as topical fragments under **`.mitto/support/<channel-id>/`**, where
+  `<channel-id>` is the bead's stored `slack_channel` value (from Step 2). Build the exact path
+  from that value — e.g. if `slack_channel` is `C0XXXXXXX`, fragments live in
+  `.mitto/support/C0XXXXXXX/`. Every fragment is read-only under the policy above. If one is missing,
+  note that on the bead when relevant and continue with the generic defaults; do not ask to create it.
+
+  ### 3.1 `investigation.md`
+
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "investigation" "Purpose" "learn this channel's investigation method (tool order, safe commands, MCP/CLI tools, confidence rules)" "Owner" "" "OwnerAsk" false) }}
+
+  ### 3.2 `resources.md`
+
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "resources" "Purpose" "know which repos, runbooks, dashboards, and docs to consult for this channel" "Owner" "" "OwnerAsk" false) }}
+
+  ### 3.3 `escalation.md`
+
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "escalation" "Purpose" "know who/when/how to escalate for this channel" "Owner" "" "OwnerAsk" false) }}
+
+  ### 3.4 `redirects.md`
+
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "redirects" "Purpose" "know where out-of-scope questions should go" "Owner" "" "OwnerAsk" false) }}
+
+  ### 3.5 `scope.md` and `tone.md` (readers)
+
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the question is in scope for this channel before investigating" "Owner" "Support: watch channel" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when drafting the reply" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+
+  ### 3.6 Record reusable findings without editing the playbook
+
+  If you discover a useful pattern, record it on the bead as a `[CONTEXT]` note. Do not append it to
+  any file under `.mitto/support/<channel-id>/` unless the user directly requested that exact edit.
+
+  ## Step 4: Investigate
+
+  - **Scope check first.** Using `scope.md` (Step 3.5), confirm the question is something this
+    channel is responsible for. If it is clearly **out of scope**, do not fabricate a generic
+    answer — record a `[CONTEXT]` note that it is out of scope (and where it should go, per
+    `redirects.md` if present), and draft a brief redirect instead of a solution. If scope is
+    unclear, treat it as in-scope but lower your confidence.
+  - Follow `investigation.md` and `resources.md` to actually find the answer. Pull in whatever they
+    point to: the Q&A / knowledge tool, docs links, repos, related tickets, prior resolved beads on
+    the same topic, and — where safe and useful — **run simple read-only commands locally** (e.g.
+    `curl some.domain.com`) and capture the command **and** its output.
+  - Correlate findings with the question on the bead. Note confidence, caveats, and any documentation
+    links you found (they are valuable in the eventual reply).
+
+  ## Step 5: Record findings on the bead
+
+  - Add a markdown `[CONTEXT]` comment capturing what you investigated and concluded — preserve the
+    layout with `$'...'` (real `\n`) or stdin:
+    ```
+    printf '%s' "$findings_markdown" | bd comment <id> --stdin
+    ```
+    Header: `**[CONTEXT investigation · YYYY-MM-DD HH:MM UTC]**`. Include: what you checked, the key
+    finding(s), any commands + results, documentation links, and a confidence note.
+
+  ## Step 6: Decide the outcome
+
+  - **Confident answer found** → record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment
+    clearly marked **"DRAFT — not yet posted"** (this is the same draft **"Support: reply to user"**
+    reuses). Header `**[OUTBOUND us · DRAFT — not yet posted · YYYY-MM-DD HH:MM UTC]**`, then the reply
+    itself **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead writing
+    conventions**) so the exact customer-facing text is unambiguous. Then set `state:drafting`
+    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and hand off per
+    Step 7.
+  - **Still missing customer detail** → we need to **ask the customer**, but we must not mark the bead
+    as `need-info` yet: `need-info` means *we have already posted the question and are waiting on the
+    customer*. Until we actually post, the clarifying question is **our** pending action, exactly like an
+    answer draft. So treat the clarifying **question as a draft**: record it as an `[OUTBOUND]`-style
+    *draft* comment clearly marked **"DRAFT — not yet posted"** (header
+    `**[OUTBOUND us · DRAFT (request for info) — not yet posted · YYYY-MM-DD HH:MM UTC]**`), with the
+    question itself **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead
+    writing conventions**). Then set `state:drafting`
+    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`), note what is
+    missing, and hand off per Step 7 — **"Support: reply to user"** reviews and posts it (a clarifying
+    question posts through the same review/approve/post path as any answer). Do **not** set `need-info`
+    here.
+  - **Inconclusive** → leave `state:gathering-info`, record what is blocking, and `mitto_ui_notify`
+    (info) with the suggested next step. Then stop.
+
+  ## Step 7: Hand off the draft (do NOT dump it as chat text, do NOT ask for approval here)
+
+  Once a draft is saved and the bead is `state:drafting`, your job is done. **Posting — with an
+  editable review and explicit approval — is the job of "Support: reply to user", not this prompt.**
+
+  - ❌ **NEVER** paste the full draft into the chat as plain text.
+  - ❌ **NEVER** ask a free-text "approve / hold / post?" question. This prompt does not post, so it
+    must not offer to post.
+  - ✅ **Persist first** — the draft is already saved as an `[OUTBOUND]` DRAFT comment on the bead
+    (Step 6); that bead comment is the single source of truth for the reply. Do not rely on the chat
+    transcript to carry the draft.
+  - ✅ Send a short **`mitto_ui_notify`** (success): a draft is ready and **saved on the bead**, review
+    and post it with **"Support: reply to user"**. Include the bead ID. Do not include the full draft
+    body in the notification — just confirm it is saved and where to review it.
+  - ✅ End with a brief one-line chat summary (state is now `drafting`; draft saved on the bead;
+    next step is **"Support: reply to user"**). Do not reproduce the draft.
+
+  ## Set priority by intervention urgency (final step)
+
+  Whatever outcome you reached in Step 6, finish by setting the bead's priority to match how urgently
+  *you* (the human) must act. This prompt produces one of two outcomes and prices them accordingly: a
+  saved draft — whether it is an **answer** or a **clarifying question** — makes it **P1**
+  (`state:drafting`, pending *your* approval to post), while still-investigating (`gathering-info`)
+  makes it **P2**. Note we never set `need-info` here: `need-info` is a *post-ask* state (we already
+  posted the clarifying question and are waiting on the customer), reached only after
+  **"Support: reply to user"** posts the draft. In general:
+
+  {{ template "support/shared/priority-rubric" . }}
+
+  ## Notes
+
+  - Load the bead (`bd show` + `bd comments`) **before** investigating — it is the source of truth.
+  - This prompt is **investigate-and-record** — it never posts a reply to the Slack channel, and it
+    never presents the draft for approval. It saves the draft on the bead and hands off.
+  - Keep the bead the single source of truth: log findings as `[CONTEXT]`, the draft as a marked
+    `[OUTBOUND]` DRAFT, and every state change as `[STATE]`. The chat transcript is **not** a store —
+    the draft must live on the bead, never only in chat.
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "investigate" "When" "the investigation is complete (Steps 5–7)" "ChannelStep" " (Step 2)") }}

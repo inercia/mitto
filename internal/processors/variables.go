@@ -83,6 +83,7 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 		"@mitto:children":              formatChildSessions(input.ChildSessions),
 		"@mitto:loop":                  strconv.FormatBool(input.IsLoop),
 		"@mitto:loop_forced":           strconv.FormatBool(input.IsLoopForced),
+		"@mitto:loop_run_on_start":     strconv.FormatBool(input.IsLoopRunOnStart),
 		"@mitto:user_data_schema":      input.UserDataSchemaJSON,
 		"@mitto:user_data":             input.UserDataJSON,
 	}
@@ -143,6 +144,8 @@ func formatChildSessions(children []ChildSession) string {
 			ACPServer:   child.ACPServer,
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
+			BeadsIssue:  child.BeadsIssue,
+			QueuedCount: child.QueuedCount,
 		})
 	}
 	return config.FormatChildren(infos)
@@ -178,6 +181,8 @@ func formatMCPChildren(children []ChildSession) string {
 			ACPServer:   child.ACPServer,
 			Origin:      child.ChildOrigin,
 			IsPrompting: child.IsPrompting,
+			BeadsIssue:  child.BeadsIssue,
+			QueuedCount: child.QueuedCount,
 		})
 	}
 	return config.FormatChildren(infos)

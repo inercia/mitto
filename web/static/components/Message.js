@@ -18,10 +18,12 @@ import {
 } from "../lib.js";
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
-import { CopyIcon, CheckIcon } from "./Icons.js";
+import { CopyIcon, CheckIcon, getPromptIcon } from "./Icons.js";
 import { Tooltip } from "./Tooltip.js";
 import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
+import { preloadBeadsIssues } from "../utils/beadsPreload.js";
+import { describeProvenance } from "../utils/promptProvenance.js";
 
 /**
  * Compute human-readable text for a session_change system message.
@@ -44,6 +46,12 @@ function sessionChangeText(m) {
       return `Mode changed to ${value}`;
     case "prompt_arguments":
       return `Prompt arguments: ${items.join(", ")}`;
+    case "context_cleared":
+      return value === "flush"
+        ? "🧹 Context cleared for fresh loop iteration"
+        : value === "new_session"
+          ? "🧹 New agent session started for fresh loop iteration"
+          : "🧹 Context cleared";
     default: {
       // Generic fallback so future/unknown kinds still render with no code change.
       const what = m.label || m.kind || "Session";
@@ -85,6 +93,76 @@ function formatMessageTime(timestamp) {
 }
 
 /**
+ * MessageEnter — wraps a message with the `.message-enter` fadeIn animation,
+ * then strips the class from the DOM element after the animation ends. Retiring
+ * the class drops the finished-but-not-retired animation from the compositor
+ * so the element no longer occupies its own GPU layer once faded in (mitto-e5k).
+ *
+ * The animation itself remains declared in styles.css so the initial paint
+ * still fades in; only the post-fadeIn residency is retired.
+ *
+ * The animationend listener is filtered on `animationName === "fadeIn"` so a
+ * future @keyframes on the same element cannot mis-trigger cleanup. A 250 ms
+ * setTimeout safety net also strips the class in case animationend never fires
+ * (e.g. an engine that collapses the animation to 0 s without firing the
+ * event); it is idempotent.
+ */
+function MessageEnter(props) {
+  const className = props.class || props.className || "";
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    let done = false;
+    const strip = () => {
+      if (done) return;
+      done = true;
+      el.classList.remove("message-enter");
+    };
+    const onEnd = (e) => {
+      if (e.animationName === "fadeIn") strip();
+    };
+    el.addEventListener("animationend", onEnd);
+    const timeoutId = setTimeout(strip, 250);
+    return () => {
+      el.removeEventListener("animationend", onEnd);
+      clearTimeout(timeoutId);
+    };
+  }, []);
+  const finalClass = className
+    ? `message-enter ${className}`
+    : "message-enter";
+  return html`<div ref=${ref} class=${finalClass}>${props.children}</div>`;
+}
+
+/**
+ * ProvenanceFooter — small icon+label indicator rendered beneath a message
+ * bubble/pill when the backend attached loop-trigger provenance (mitto-rg79).
+ * Shared by both NamedPromptPill and the free-text user message bubble so the
+ * markup/behavior lives in exactly one place. Renders nothing when
+ * `provenanceInfo` is null/undefined (ordinary human-typed/ad-hoc prompts).
+ * The indicator is wrapped in a Tooltip exposing describeProvenance(...).detail
+ * so hovering either surface (pill or bubble footer) reveals the same detail
+ * text.
+ */
+function ProvenanceFooter({ provenanceInfo, testId }) {
+  if (!provenanceInfo) return null;
+  const ProvenanceIcon = getPromptIcon(provenanceInfo.iconKey);
+  return html`
+    <${Tooltip} tip=${provenanceInfo.detail}>
+      <div
+        class="flex items-center gap-1 text-xs text-mitto-text-muted"
+        data-testid=${testId}
+        aria-label=${`Trigger: ${provenanceInfo.label}`}
+      >
+        ${ProvenanceIcon && html`<${ProvenanceIcon} className="w-3 h-3" />`}
+        <span>${provenanceInfo.label}</span>
+      </div>
+    <//>
+  `;
+}
+
+/**
  * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
  * Displayed right-aligned (like user messages) with an icon and the prompt name.
  * When the prompt was sent with arguments (argumentCount > 0), a small numeric
@@ -110,37 +188,53 @@ function NamedPromptPill({ message }) {
   } else {
     argTip = `${message.argumentCount} argument(s)`;
   }
+  // Loop-trigger provenance (mitto-rg79): compact icon + label beneath the
+  // pill, shown only when the backend attached provenance to this prompt
+  // (loop-delivered, manual "Run now", or the startup pulse). Absent for
+  // ordinary human-typed/ad-hoc named-prompt sends.
+  const provenanceInfo = describeProvenance(message.provenance);
+  // Combined tooltip: trigger description first (when present), then the
+  // existing argument info — hovering anywhere on the pill surfaces both.
+  const pillTip = [provenanceInfo?.detail, message.argumentCount > 0 && argTip]
+    .filter(Boolean)
+    .join(" · ");
   return html`
-    <div class="message-enter flex justify-end items-center gap-2 mb-3">
-      ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
-      <div
-        class="badge badge-primary badge-lg gap-2"
-        data-testid="named-prompt-pill"
-      >
-        <svg
-          class="w-4 h-4 shrink-0"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-          />
-        </svg>
-        <span class="text-sm font-medium">${message.promptName}</span>
-        ${message.argumentCount > 0 &&
-        html`<${Tooltip} tip=${argTip}>
-          <span
-            class="badge badge-sm badge-ghost tabular-nums"
-            data-testid="prompt-arg-count"
-            >${message.argumentCount}</span
+    <${MessageEnter} class="flex flex-col items-end gap-1 mb-3">
+      <div class="flex items-center gap-2">
+        ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
+        <${Tooltip} tip=${pillTip}>
+          <div
+            class="badge badge-primary badge-lg gap-2"
+            data-testid="named-prompt-pill"
           >
-        <//>`}
+            <svg
+              class="w-4 h-4 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
+            </svg>
+            <span class="text-sm font-medium">${message.promptName}</span>
+            ${message.argumentCount > 0 &&
+            html`<span
+              class="badge badge-sm badge-ghost tabular-nums"
+              data-testid="prompt-arg-count"
+              >${message.argumentCount}</span
+            >`}
+          </div>
+        <//>
       </div>
-    </div>
+      <${ProvenanceFooter}
+        provenanceInfo=${provenanceInfo}
+        testId="named-prompt-provenance"
+      />
+    <//>
   `;
 }
 
@@ -185,7 +279,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
     : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted";
 
   return html`
-    <div class="message-enter flex justify-start mb-3">
+    <${MessageEnter} class="flex justify-start mb-3">
       <div
         class="${bubbleClass} ${isCollapsible
           ? "thought-bubble-collapsible"
@@ -217,7 +311,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
           </div>
         </div>
       </div>
-    </div>
+    <//>
   `;
 }
 
@@ -228,8 +322,17 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
  * @param {boolean} props.isLast - Whether this is the last message
  * @param {boolean} props.isStreaming - Whether the session is currently streaming
  * @param {Function} [props.onRetry] - Optional callback to retry (resend last prompt). Shown on error messages.
+ * @param {string} [props.workspaceUUID] - UUID of the workspace this message's conversation belongs to
+ * @param {string} [props.workspacePath] - Working directory of the workspace this message's conversation belongs to
  */
-function MessageImpl({ message, isLast, isStreaming, onRetry }) {
+function MessageImpl({
+  message,
+  isLast,
+  isStreaming,
+  onRetry,
+  workspaceUUID,
+  workspacePath,
+}) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
   const isThought = message.role === ROLE_THOUGHT;
@@ -240,13 +343,13 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
   // System messages
   if (isSystem) {
     return html`
-      <div class="message-enter flex justify-center mb-3">
+      <${MessageEnter} class="flex justify-center mb-3">
         <div
           class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
           ${message.kind ? sessionChangeText(message) : message.text}
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -317,14 +420,18 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
     const renderTitle = () => {
       return titleSegments.map((segment, index) => {
         if (segment.type === "path") {
-          // Build viewer URL for this file path
+          // Build viewer URL for this file path. Prefer the workspace of the
+          // conversation this message belongs to — the window globals track the
+          // most recently activated conversation, which resolves to the wrong
+          // workspace (and a 404 in the viewer) for messages rendered from a
+          // different conversation.
           const apiPrefix = getAPIPrefix();
-          const workspaceUUID = window.mittoCurrentWorkspaceUUID || "";
-          const wsPath = window.mittoCurrentWorkspace || "";
+          const wsUUID = workspaceUUID || window.mittoCurrentWorkspaceUUID || "";
+          const wsPath = workspacePath || window.mittoCurrentWorkspace || "";
           const relativePath = segment.value.replace(/^\.\//, "");
           let viewerUrl = null;
-          if (workspaceUUID) {
-            viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+          if (wsUUID) {
+            viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(wsUUID)}&path=${encodeURIComponent(relativePath)}`;
             if (wsPath) {
               viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
             }
@@ -358,7 +465,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
     };
 
     return html`
-      <div class="message-enter flex justify-center mb-1">
+      <${MessageEnter} class="flex justify-center mb-1">
         <div
           class="text-sm text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg"
         >
@@ -366,7 +473,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           <span class="font-medium">${renderTitle()}</span>
           ${renderStatus()}
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -387,7 +494,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
       [message.text],
     );
     return html`
-      <div class="message-enter flex justify-start mb-3">
+      <${MessageEnter} class="flex justify-start mb-3">
         <div role="alert" class="alert alert-error max-w-[85%] md:max-w-[75%]">
           <span>❌</span>
           <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
@@ -418,7 +525,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
             </button>
           <//>`}
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -462,18 +569,26 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           table.parentNode.insertBefore(wrapper, table);
           wrapper.appendChild(table);
         });
-        const { ids, meta } = getBeadsKnownIds(
-          window.mittoCurrentWorkspace || "",
+        const workingDir = window.mittoCurrentWorkspace || "";
+        const { ids, meta } = getBeadsKnownIds(workingDir);
+        const linkified = linkifyBeadsRefs(
+          userMessageRef.current,
+          ids,
+          meta,
         );
-        linkifyBeadsRefs(userMessageRef.current, ids, meta);
+        preloadBeadsIssues(linkified, workingDir);
       }
 
       const onBeadsUpdated = () => {
         if (userMessageRef.current && useMarkdown) {
-          const { ids, meta } = getBeadsKnownIds(
-            window.mittoCurrentWorkspace || "",
+          const workingDir = window.mittoCurrentWorkspace || "";
+          const { ids, meta } = getBeadsKnownIds(workingDir);
+          const linkified = linkifyBeadsRefs(
+            userMessageRef.current,
+            ids,
+            meta,
           );
-          linkifyBeadsRefs(userMessageRef.current, ids, meta);
+          preloadBeadsIssues(linkified, workingDir);
         }
       };
       window.addEventListener("beads-ids-updated", onBeadsUpdated);
@@ -491,10 +606,15 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
     };
 
     const userTimeStr = formatMessageTime(message.timestamp);
+    // Loop-trigger provenance (mitto-rg79): same footer indicator as
+    // NamedPromptPill, shown beneath ordinary/free-text prompts too when the
+    // backend attached provenance (loop-delivered, manual "Run now", or the
+    // startup pulse). Absent for ordinary human-typed messages.
+    const provenanceInfo = describeProvenance(message.provenance);
     return html`
-      <div class="message-enter flex justify-end mb-3 group">
+      <${MessageEnter} class="flex flex-col items-end gap-1 mb-3">
         <div
-          class="max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
+          class="group max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
         >
           ${hasImages &&
           html`
@@ -520,7 +640,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
                 dangerouslySetInnerHTML=${{ __html: renderedHtml }}
               />`
             : html`<pre
-                class="whitespace-pre-wrap font-sans text-sm m-0"
+                class="markdown-content markdown-content-user whitespace-pre-wrap font-sans text-sm m-0"
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
           <div class="flex items-center justify-end gap-1 mt-1">
@@ -547,7 +667,11 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
             html`<div class="message-timestamp">${userTimeStr}</div>`}
           </div>
         </div>
-      </div>
+        <${ProvenanceFooter}
+          provenanceInfo=${provenanceInfo}
+          testId="user-message-provenance"
+        />
+      <//>
     `;
   }
 
@@ -588,19 +712,27 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           window.renderMermaidDiagrams(agentMessageRef.current);
         }
 
-        // Linkify beads IDs
-        const { ids, meta } = getBeadsKnownIds(
-          window.mittoCurrentWorkspace || "",
+        // Linkify beads IDs and warm the show:<id> cache slot for each new link.
+        const workingDir = window.mittoCurrentWorkspace || "";
+        const { ids, meta } = getBeadsKnownIds(workingDir);
+        const linkified = linkifyBeadsRefs(
+          agentMessageRef.current,
+          ids,
+          meta,
         );
-        linkifyBeadsRefs(agentMessageRef.current, ids, meta);
+        preloadBeadsIssues(linkified, workingDir);
       }
 
       const onBeadsUpdated = () => {
         if (agentMessageRef.current) {
-          const { ids, meta } = getBeadsKnownIds(
-            window.mittoCurrentWorkspace || "",
+          const workingDir = window.mittoCurrentWorkspace || "";
+          const { ids, meta } = getBeadsKnownIds(workingDir);
+          const linkified = linkifyBeadsRefs(
+            agentMessageRef.current,
+            ids,
+            meta,
           );
-          linkifyBeadsRefs(agentMessageRef.current, ids, meta);
+          preloadBeadsIssues(linkified, workingDir);
         }
       };
       window.addEventListener("beads-ids-updated", onBeadsUpdated);
@@ -626,7 +758,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
       ? formatMessageTime(message.timestamp)
       : null;
     return html`
-      <div class="message-enter flex justify-start mb-3 group">
+      <${MessageEnter} class="flex justify-start mb-3 group">
         <div
           class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
         >
@@ -661,7 +793,7 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
             html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
           </div>
         </div>
-      </div>
+      <//>
     `;
   }
 
@@ -679,9 +811,11 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
  *   message.title   — tool call title
  *   message.images  — user-attached images (reference equality is fine here)
  *   message.complete — whether the message is finalised
+ *   message.provenance — loop trigger source rendered below named prompts
  *   isLast          — affects showCursor / timestamp visibility
  *   isStreaming      — drives the streaming cursor
  *   onRetry         — error-message retry callback reference
+ *   workspaceUUID / workspacePath — target workspace for tool-title file links
  *
  * The actively streaming message always updates message.html on every chunk,
  * so it will never be memoized away — the comparator naturally returns false.
@@ -694,9 +828,12 @@ export function messagePropsAreEqual(prev, next) {
     prev.message.title === next.message.title &&
     prev.message.images === next.message.images &&
     prev.message.complete === next.message.complete &&
+    prev.message.provenance === next.message.provenance &&
     prev.isLast === next.isLast &&
     prev.isStreaming === next.isStreaming &&
-    prev.onRetry === next.onRetry
+    prev.onRetry === next.onRetry &&
+    prev.workspaceUUID === next.workspaceUUID &&
+    prev.workspacePath === next.workspacePath
   );
 }
 

@@ -48,7 +48,9 @@ func (h *Handlers) handleGetCallback(w http.ResponseWriter, cs *session.Callback
 	cb, err := cs.Get()
 	if err != nil {
 		if err == session.ErrCallbackNotFound {
-			writeErrorJSON(w, http.StatusNotFound, "", "No callback configured")
+			writeJSONOK(w, map[string]interface{}{
+				"configured": false,
+			})
 			return
 		}
 		if h.deps.Logger != nil {
@@ -59,6 +61,7 @@ func (h *Handlers) handleGetCallback(w http.ResponseWriter, cs *session.Callback
 	}
 
 	writeJSONOK(w, map[string]interface{}{
+		"configured":   true,
 		"callback_url": h.buildCallbackURL(cb.Token),
 		"created_at":   cb.CreatedAt,
 	})

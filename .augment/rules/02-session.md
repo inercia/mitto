@@ -24,7 +24,7 @@ keywords:
 
 | Component            | Responsibility                              | Thread-Safe             |
 | -------------------- | ------------------------------------------- | ----------------------- |
-| `Store`              | Low-level file I/O, CRUD operations         | Yes (mutex)             |
+| `Store`              | Low-level file I/O, CRUD operations         | Yes (global gate + keyed session locks) |
 | `Recorder`           | High-level recording API, session lifecycle | Yes (mutex)             |
 | `Player`             | Read-only playback, navigation              | No (single-user)        |
 | `Lock`               | Session locking, heartbeat, cleanup         | Yes (mutex + goroutine) |
@@ -104,6 +104,34 @@ type Metadata struct {
 
 `MaxSeq` is used by `SessionWSClient.getServerMaxSeq()` for client synchronization.
 
+### Prune hysteresis (`PruneConfig.Slack`, mitto-9wwj)
+
+`Recorder.recordEvent` / `RecordEventWithSeq` call `PruneIfNeeded` after **every** append. Historically `pruneInternal` triggered and targeted the same `MaxMessages`, so any session past the cap did a full `events.jsonl` parse + rewrite + fsync per single append under `s.mu`. Fix (`internal/session/prune.go`):
+
+- `PruneConfig.Slack` — hysteresis on `MaxMessages`. Default `MaxMessages/5` (min 1). **Negative = exact trim** (no hysteresis).
+- Triggers only when `len(events) > MaxMessages + slack`; still trims down to `MaxMessages`.
+- Pre-checks `meta.EventCount` to **skip the full parse** on the no-op append-path call.
+- `Store.PruneKeepLast` (REST "keep exactly N") passes `Slack: -1` to preserve exact-trim semantics.
+- Seq / `MaxSeq` semantics untouched. Regression: `TestStore_PruneIfNeeded_WriteAmplificationAtCap`.
+
+### Store two-level locking (`mitto-pkeh`)
+
+`Store.mu` is a lifecycle and all-store-operation gate, not the mutex for every
+session write. Ordinary session-scoped methods hold `Store.mu.RLock()` plus a
+ref-counted keyed session `RWMutex`, so unrelated sessions can perform disk I/O
+concurrently while same-session metadata/events/prune operations remain ordered.
+
+Global snapshot or destructive operations retain `Store.mu.Lock()`: `List`,
+child scans/counts, `Delete`/cascade, cleanup passes, observer mutation, and
+`Close`. This keeps their prior correctness semantics and makes `Close` wait for
+all in-flight session operations.
+
+**Lock order**: Store lifecycle gate → keyed-lock registry → session mutex;
+release in reverse order. A keyed entry's reference count includes waiters, and
+the entry is deleted only after its mutex is unlocked. Never call a public
+session-locking method from code already holding the exclusive Store gate; use
+the corresponding internal no-lock helper.
+
 ## Lock Management
 
 ```go
@@ -119,14 +147,7 @@ lock.SetWaitingPermission("File write")  // During permission request
 
 ## Loop Prompts (LoopStore)
 
-Stored in `loop.json`. Only top-level sessions may have loop prompts (child → 400).
-
-**Key fields**:
-- `PromptName` — references workspace prompt by name (resolved at send time via cache)
-- `MaxIterations` — cap on runs (0 = unlimited). Auto-disables when reached.
-- `Trigger` — `schedule` (default) or `onCompletion` (event-driven)
-- `DelaySeconds` — wait after agent idle before firing (onCompletion only)
-- `MaxDurationSeconds` — wall-clock cap since first run
+Stored in `loop.json`. Only top-level sessions may have loop prompts (child → 400). Field semantics documented in [docs/devel/message-queue.md](../docs/devel/message-queue.md).
 
 **Critical**: Changing `LoopStore.Update()` signature requires updating BOTH `session_loop_api.go` (PATCH handler) AND `mcpserver/server.go` (MCP tool) — both call `Update()`.
 
@@ -134,26 +155,18 @@ Stored in `loop.json`. Only top-level sessions may have loop prompts (child → 
 
 ## Auxiliary Package
 
-The `internal/auxiliary` package provides a hidden ACP session for utility tasks. Lazy init, auto-approve permissions, file writes denied, thread-safe.
+`internal/auxiliary` — hidden ACP session for utility tasks (title gen, follow-ups). Lazy init, auto-approve permissions, file writes denied, thread-safe. Entry points: `Initialize` / `GenerateTitle` / `Shutdown`.
 
-```go
-auxiliary.Initialize(acpCommand, logger)
-title, err := auxiliary.GenerateTitle(ctx, userMessage)
-auxiliary.Shutdown()
-```
+**Deferred title admission**: `SharedACPProcess` signals the zero-active-RPC edge;
+`ACPProcessManager.WaitForProcessQuiescence` coalesces waiters per workspace and
+requires a short stable-idle window before title-session creation. Retained
+conversation title jobs should use this optional provider capability after
+`ErrProcessBusy`, with bounded polling only as the fallback. Do not raise the
+global busy threshold or add independent per-title creation polling.
 
 ## Action Buttons Store
 
-The `ActionButtonsStore` persists follow-up suggestions to disk. See [docs/devel/follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) for full architecture.
-
-```go
-abStore := store.ActionButtons(sessionID)
-abStore.Set(buttons, eventSeq)   // after analysis
-abStore.Get()                    // returns empty slice if none
-abStore.Clear()                  // on new prompt
-```
-
-Stored in `action_buttons.json` (not events.jsonl). Delete on clear (vs writing empty). Two-tier cache in BackgroundSession: memory + disk.
+`ActionButtonsStore` persists follow-up suggestions to `action_buttons.json` (not `events.jsonl`). Two-tier cache in BackgroundSession (memory + disk); `Clear()` deletes the file rather than writing empty. See [docs/devel/follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md).
 
 ## Feature Flags (AdvancedSettings)
 

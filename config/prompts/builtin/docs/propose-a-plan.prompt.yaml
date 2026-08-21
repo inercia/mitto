@@ -1,0 +1,103 @@
+icon: list
+name: Propose a plan
+menus: prompts, !promptsLoop
+description: Turn the current request into an approved plan, then file implementation beads or directly execute a truly simple change
+group: Planning
+backgroundColor: '#BBDEFB'
+enabledWhen: CommandExists("bd")
+preferredModels:
+  - modelTag: Reasoning
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Plan an Informal Request
+
+  {{- if .Session.HasMessages }}
+  Review the conversation so far and identify the concrete request being planned,
+  including decisions, constraints, and scope already established. Do not ask the
+  user to repeat information that is present in the conversation.
+  {{- else }}
+  There is no prior task context. Before exploring or planning, use
+  `mitto_ui_form(self_id: "{{ .Session.ID }}")` to ask what the user wants to plan
+  in a required multi-line text field named `request`. Wait for the answer.
+  {{- end }}
+
+  ## Step 1 — Understand the request and current implementation
+
+  Explore the relevant codebase areas. Read affected files, tests, documentation,
+  and nearby patterns or reusable utilities. Do not speculate about code you have
+  not inspected. Clarify only ambiguities that materially affect scope, architecture,
+  safety, or verification, using the appropriate Mitto UI tool.
+
+  Produce a plan with:
+
+  1. **Goal and scope** — intended outcome plus explicit non-goals.
+  2. **Current state** — relevant implementation and what is missing.
+  3. **Implementation steps** — concrete ordered actions with likely files/areas.
+  4. **Dependencies** — prerequisites and work that can proceed in parallel.
+  5. **Risks** — compatibility, migration, security, rollout, and mitigations.
+  6. **Verification** — tests and observable completion criteria for every step.
+
+  ## Step 2 — Classify task size
+
+  Classify the request as **simple** only when every condition below is true:
+
+  - it has one narrow, independently deliverable outcome;
+  - it is expected to modify one existing source, configuration, or documentation file;
+  - it adds no external dependency and creates no new package or subsystem;
+  - it changes no schema, migration, public API, protocol, persisted format, or CLI contract;
+  - it does not affect authentication, security, concurrency, lifecycle, deployment,
+    compatibility, or multiple components;
+  - it has no dependent subtasks and needs no epic or ordering graph;
+  - one focused test/check can establish completion without broad integration work.
+
+  If any condition is false or uncertain, classify the request as **complex**. State
+  the classification and cite the conditions that determined it.
+
+  ## Step 3 — Review the plan and choose the path
+
+  Present the complete plan in `mitto_ui_textbox(self_id: "{{ .Session.ID }}")` for
+  editing. Use the submitted text as the approved plan; a textbox submission edits
+  text but does not by itself authorize execution or ticket creation.
+
+  For a **simple** task, use `mitto_ui_options` with exactly these action choices:
+
+  - **File beads tickets and stop** — planning only; continue to Step 4.
+  - **Skip ticket creation and implement here** — execute the approved plan directly
+    in this conversation, write/update focused tests, run verification, report the
+    result, and stop without creating beads.
+  - **Revise the plan** — return to the textbox.
+  - **Cancel** — make no changes and create no tickets.
+
+  For a **complex** task, do not offer direct implementation. Use `mitto_ui_options`
+  with **File beads tickets and stop**, **Revise the plan**, and **Cancel**. Complex
+  work always proceeds through tickets when approved.
+
+  ## Step 4 — Design the ticket hierarchy
+
+  Reach this step only when the user chose **File beads tickets and stop**.
+
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  Convert the approved plan into independently implementable work items. For a simple
+  plan, normally create one standalone bead and no epic. For a complex plan, keep
+  tightly coupled changes together but split work that can be implemented, reviewed,
+  verified, or sequenced independently.
+
+  {{ template "beads-issues/shared/planning-ticket-conventions" . }}
+
+  Assign priority from impact, urgency, risk, and critical-path position. Every plan
+  step and completion criterion must map to a proposed or existing bead.
+
+  Print the proposed epic → child hierarchy and standalone items with type, priority,
+  labels, plan-step coverage, and direct blockers. Then use
+  `mitto_ui_form(self_id: "{{ .Session.ID }}")` with checked-by-default checkboxes for
+  every proposed epic and work item. Incorporate requested revisions and re-present
+  the hierarchy before creating anything. If everything is unchecked or the user
+  cancels, create nothing and stop. If an approved epic has fewer than two approved
+  children, create its children as standalone beads instead.
+
+  Treat the approved plan's steps, risks, and verification criteria as the source
+  units for the shared coverage matrix and retrospective.
+
+  {{ template "beads-issues/shared/planned-work-ticket-tail" . }}

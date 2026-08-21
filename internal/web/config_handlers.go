@@ -199,13 +199,13 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 					password = s.config.MittoConfig.Web.Auth.Simple.Password
 				}
 
-				// On platforms with secure storage, store password in Keychain
+				// On supported platforms, store the password in the unified vault
 				// and omit it from settings.json
 				if secrets.IsSupported() {
 					if err := secrets.SetExternalAccessPassword(password); err != nil {
 						return nil, fmt.Errorf("failed to store password in secure storage: %w", err)
 					}
-					// Omit password from settings.json when stored in Keychain
+					// Omit password from settings.json after verified persistence
 					password = ""
 				}
 
@@ -325,21 +325,24 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 	// request body (edited via the dedicated /api/global/shortcuts endpoint), so
 	// carry the existing value forward to avoid wiping them on an unrelated save.
 	var shortcutsConfig map[string][]configPkg.ShortcutButton
+	var taskLabelColorsConfig []configPkg.TaskLabelColor
 	if s.config.MittoConfig != nil {
 		shortcutsConfig = s.config.MittoConfig.Shortcuts
+		taskLabelColorsConfig = s.config.MittoConfig.TaskLabelColors
 	}
 
 	return &configPkg.Settings{
-		ACPServers:    newACPServers,
-		Prompts:       settingsPrompts,
-		Web:           newWebConfig,
-		UI:            newUIConfig,
-		Session:       sessionConfig,
-		Conversations: conversationsConfig,
-		Permissions:   permissionsConfig,
-		MCP:           mcpConfig,
-		Models:        modelsConfig,
-		Shortcuts:     shortcutsConfig,
+		ACPServers:      newACPServers,
+		Prompts:         settingsPrompts,
+		Web:             newWebConfig,
+		UI:              newUIConfig,
+		Session:         sessionConfig,
+		Conversations:   conversationsConfig,
+		Permissions:     permissionsConfig,
+		MCP:             mcpConfig,
+		Models:          modelsConfig,
+		Shortcuts:       shortcutsConfig,
+		TaskLabelColors: taskLabelColorsConfig,
 	}, nil
 }
 

@@ -1,0 +1,31 @@
+{{- /*
+  support/priority-rubric — the three-bullet "P1 / P2 / P3 by intervention
+  urgency" list plus the standard `bd update --priority` trailer used at
+  the bottom of every per-bead support prompt (check-status, gather-info,
+  investigate, reply-to-user, continue-conversation).
+
+  Callers keep their own prompt-specific preamble — the sentence(s)
+  explaining which priority *this* prompt typically lands the bead in —
+  and then invoke the fragment to emit the shared rubric + trailer:
+
+      ## Set priority by intervention urgency (final step)
+
+      <prompt-specific preamble sentence(s) ending with "In general:">
+
+      {{ template "support/shared/priority-rubric" . }}
+
+  Whitespace contract identical to the other support fragments:
+  fragment body is column-1 Markdown with NO leading and NO trailing
+  newline; callers use plain `{{ template ... }}` (no trim markers)
+  and rely on the surrounding YAML newlines for spacing.
+*/ -}}
+- **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
+  (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
+- **P2 (MEDIUM)** — in motion, our court, not blocked on your approval: `triaged` / `gathering-info`
+  / `awaiting-us`.
+- **P3 (LOW)** — waiting on the customer, nothing for you to do now: `awaiting-customer` / `need-info`
+  (we just posted a reply or a clarifying question; the ball is in their court).
+
+Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
+`**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
+{{- /* no trailing newline */ -}}

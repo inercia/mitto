@@ -299,8 +299,10 @@ import (
 
 	embeddedconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/buildinfo"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/hooks"
+	"github.com/inercia/mitto/internal/instancefile"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/web"
 )
@@ -1029,12 +1031,9 @@ func run() error {
 		FileLevel: fileLevel,
 	}
 	if logsDir, err := appdir.LogsDir(); err == nil {
-		logConfig.FileLog = &logging.FileLogConfig{
-			Path:       filepath.Join(logsDir, "mitto.log"),
-			MaxSizeMB:  10,
-			MaxBackups: 3,
-			Compress:   false,
-		}
+		fileLogConfig := logging.DefaultFileLogConfig()
+		fileLogConfig.Path = filepath.Join(logsDir, "mitto.log")
+		logConfig.FileLog = &fileLogConfig
 	}
 
 	if err := logging.Initialize(logConfig); err != nil {
@@ -1048,7 +1047,14 @@ func run() error {
 
 	// Log startup info including log file location
 	if logConfig.FileLog != nil {
-		slog.Info("Mitto starting", "log_file", logConfig.FileLog.Path)
+		identity := buildinfo.Read()
+		slog.Info("Mitto starting",
+			"log_file", logConfig.FileLog.Path,
+			"executable", identity.Executable,
+			"revision", identity.Revision,
+			"build_time", identity.BuildTime,
+			"modified", identity.Modified,
+		)
 	}
 
 	// Initialize WebView console logger for debugging
@@ -1221,20 +1227,40 @@ func run() error {
 		slog.Info("Serving static files from filesystem (development mode)", "dir", staticDir)
 	}
 
+	// Resolve the instance.json token now (mitto-pscc.9) — BEFORE constructing
+	// the server, since web.NewServer builds the AuthManager from cfg.Web.Auth
+	// immediately. Adopt it as the shared bearer token when auth is configured
+	// (Simple/Cloudflare) but the operator has not set one explicitly
+	// (MITTO_SHARED_TOKEN/settings.json/keychain always wins). The
+	// instance.json write further below passes this same value explicitly so
+	// both agree on a single resolution instead of generating independently.
+	instanceToken, tokErr := instancefile.ResolveToken()
+	if tokErr != nil {
+		slog.Warn("Failed to resolve instance token for shared-token auth adoption", "error", tokErr)
+	}
+	sharedTokenFromInstance := false
+	if instanceToken != "" && cfg != nil && cfg.Web.Auth != nil && cfg.Web.Auth.SharedToken == "" {
+		cfg.Web.Auth.SharedToken = instanceToken
+		sharedTokenFromInstance = true
+		slog.Info("Adopted instance.json token as the shared bearer token for programmatic access")
+	}
+
 	webConfig := web.Config{
-		Workspaces:       workspaces,
-		AutoApprove:      autoApprove,
-		Debug:            false,
-		MittoConfig:      cfg,
-		StaticDir:        staticDir,
-		FromCLI:          false, // macOS app always uses file-based persistence
-		OnWorkspaceSave:  onWorkspaceSave,
-		ConfigReadOnly:   configReadOnly,
-		RCFilePath:       rcFilePath,
-		HasRCFileServers: hasRCFileServers,
-		PromptsCache:     promptsCache,
-		AccessLog:        accessLogConfig,
-		BeadsCache:       true, // mitto-is2.5: read-cache on by default in the macOS app
+		Workspaces:                  workspaces,
+		AutoApprove:                 autoApprove,
+		Debug:                       false,
+		MittoConfig:                 cfg,
+		StaticDir:                   staticDir,
+		FromCLI:                     false, // macOS app always uses file-based persistence
+		OnWorkspaceSave:             onWorkspaceSave,
+		ConfigReadOnly:              configReadOnly,
+		RCFilePath:                  rcFilePath,
+		HasRCFileServers:            hasRCFileServers,
+		PromptsCache:                promptsCache,
+		AccessLog:                   accessLogConfig,
+		BeadsCache:                  true, // mitto-is2.5: read-cache on by default in the macOS app
+		EnablePProf:                 config.PProfEnabled(cfg),
+		SharedTokenFromInstanceFile: sharedTokenFromInstance,
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
@@ -1290,7 +1316,7 @@ func run() error {
 	// initNotifications() is called (which happens later in this function).
 	var externalStartErr error
 	var externalFailedPort int
-	if cfg != nil && cfg.Web.Auth != nil && cfg.Web.ExternalPort >= 0 {
+	if cfg != nil && srv.IsAuthenticationEnabled() && cfg.Web.ExternalPort >= 0 {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(cfg.Web.ExternalPort)
 		if err != nil {
@@ -1307,6 +1333,30 @@ func run() error {
 		// Note: StartExternalListener already logs success
 	}
 
+	// Write instance.json (mitto-pscc.2) now that the real port(s) are known,
+	// so local clients (e.g. the CLI) can discover this running instance.
+	// Best-effort: a write failure is a discoverability inconvenience, not a
+	// reason to abort startup.
+	apiPrefix := config.DefaultAPIPrefix
+	if cfg != nil && cfg.Web.APIPrefix != "" {
+		apiPrefix = cfg.Web.APIPrefix
+	}
+	externalURL := ""
+	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" {
+		externalURL = cfg.Web.Hooks.ExternalAddress
+	} else if actualExternalPort > 0 {
+		externalURL = fmt.Sprintf("http://0.0.0.0:%d", actualExternalPort)
+	}
+	if err := instancefile.Write(&instancefile.Instance{
+		PID:         os.Getpid(),
+		URL:         url,
+		APIPrefix:   apiPrefix,
+		ExternalURL: externalURL,
+		Token:       instanceToken,
+	}); err != nil {
+		slog.Warn("Failed to write instance file", "error", err)
+	}
+
 	// Run the up hook if configured
 	// Use external port if available (for tunneling services like Tailscale/ngrok),
 	// otherwise fall back to local port
@@ -1318,7 +1368,7 @@ func run() error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -1549,7 +1599,7 @@ func run() error {
 			DownHook:  cfg.Web.Hooks.Down,
 			Port:      hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)
@@ -1578,6 +1628,11 @@ func run() error {
 		// normal power management.
 		stopNetworkPowerAssertion()
 		srv.Shutdown()
+	})
+	shutdown.AddCleanup(func(reason string) {
+		if err := instancefile.Remove(); err != nil {
+			slog.Warn("Failed to remove instance file", "error", err)
+		}
 	})
 
 	// Set the UI termination callback - this will be called after all cleanup

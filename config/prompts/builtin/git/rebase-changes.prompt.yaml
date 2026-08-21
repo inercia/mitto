@@ -1,0 +1,62 @@
+icon: sync
+name: Rebase changes
+menus: prompts, !promptsLoop
+description: Rebase changes on top of main
+group: Submission of changes
+backgroundColor: '#B2DFDB'
+enabledWhen: '!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'Submission of changes'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Rebase the current branch onto the target branch, resolving conflicts and pushing the result.
+
+  ### 1. Check Repository Status
+
+  ```bash
+  git branch --show-current
+  git status --porcelain
+  git status
+  ```
+
+  If uncommitted changes exist, ask user whether to stash, commit, or discard. Do not proceed until clean.
+
+  ### 2. Identify Target Remote and Branch
+
+  {{ template "git/shared/identify-remote-branch" . }}
+
+  ### 3. Rebase and Resolve Conflicts
+
+  {{ template "git/shared/rebase-onto-base" . }}
+
+  ### 4. Report
+
+  ```console
+  ✅ Rebase completed successfully!
+  Rebased X commits onto <target-remote>/<target-branch>
+  ```
+
+  ### 5. Push
+
+  ```bash
+  git push --force-with-lease origin <current-branch>
+  ```
+
+  In fork workflows: push to `origin` (your fork), not `upstream`.
+
+  ## Guidelines
+
+  - Protect uncommitted changes — no work should be lost
+  - Detect the correct remote and confirm with user
+  - Ask when uncertain about any decision
+  - Fetch before rebasing
+  - Use `--force-with-lease` when force pushing
+  - Push to the branch's tracking remote (usually `origin`), not the rebase target remote
+  - Offer to abort (`git rebase --abort`) if rebase becomes too complex
+  - Preserve commit messages and authorship
+  - Ask rather than guess on conflict resolution
+  - Remind user that collaborators may need to reset local branches after push

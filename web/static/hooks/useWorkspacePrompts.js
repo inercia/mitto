@@ -5,15 +5,23 @@
 // (mitto:prompts_changed). Exposes the full prompt list, the "prompts" dropup
 // subset, the loop-selector subset, and per-session / per-beads-issue fetch
 // helpers.
-const { useState, useEffect, useCallback, useMemo } = window.preact;
+const { useState, useEffect, useRef, useCallback, useMemo } = window.preact;
 
-import { authFetch, endpoints } from "../utils/index.js";
+import { fetchWorkspacePromptsCached } from "../utils/index.js";
 import {
   promptMenus,
   promptMenuExcludes,
   promptMenuIncludes,
   menuSatisfies,
 } from "../utils/prompts.js";
+
+/** Debounce window (ms) for the mitto:prompts_changed event fan-out. The
+ * event is dispatched once per server prompts_changed message AND once per
+ * mcp_tools_available message, and the server itself re-broadcasts after an
+ * async MCP-tools re-verify — so a single on-disk change can fire several
+ * events in quick succession. Collapsing them into one force refresh avoids
+ * a burst of full-body requests (mitto-8x9). */
+const PROMPTS_CHANGED_DEBOUNCE_MS = 250;
 
 /**
  * Workspace-prompts fetch/cache hook.
@@ -34,8 +42,12 @@ export function useWorkspacePrompts({
 }) {
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
-  const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
-    useState(null); // Last-Modified header for conditional requests
+  // Last-Modified bookkeeping for conditional requests now lives inside
+  // promptsCache.js (keyed per request-params), not as hook state — keeping
+  // it here made fetchWorkspacePrompts's identity change on every response,
+  // which tore down and re-armed the 30s interval / visibility effects below
+  // on every fetch instead of running on a stable cadence (mitto-8x9).
+  const promptsChangedTimerRef = useRef(null);
 
   // Predefined prompts: prompts whose `menus` list includes "prompts" (the ChatInput dropup).
   // Parameters that the "prompts" menu cannot auto-fill are collected via the
@@ -84,14 +96,10 @@ export function useWorkspacePrompts({
       const dir = workingDir || session?.working_dir;
       if (!sessionId || !dir) return [];
       try {
-        const res = await authFetch(
-          endpoints.workspacePrompts.list({
-            working_dir: dir,
-            session_id: sessionId,
-          }),
-        );
-        if (!res.ok) return [];
-        const data = await res.json();
+        const data = await fetchWorkspacePromptsCached({
+          working_dir: dir,
+          session_id: sessionId,
+        });
         const all = data?.prompts || [];
         // Keep prompts that opt into ANY of the requested menus. Parameters that
         // a menu cannot auto-fill are collected via the PromptParameterDialog
@@ -108,49 +116,28 @@ export function useWorkspacePrompts({
     [],
   );
 
-  // Fetch workspace prompts with conditional request support (If-Modified-Since)
-  // This enables efficient loop refresh without transferring data if unchanged
+  // Fetch workspace prompts via the shared promptsCache (mitto-8x9): TTL +
+  // in-flight dedup collapse bursts from this hook's several triggers
+  // (workspace change, session switch, 30s interval, visibility, file
+  // watcher) and revalidates with If-Modified-Since once the TTL expires.
   const fetchWorkspacePrompts = useCallback(
     async (workingDir, forceRefresh = false) => {
       if (!workingDir) return;
 
-      const headers = {};
-      // Use If-Modified-Since for conditional requests (unless forcing refresh)
-      if (
-        !forceRefresh &&
-        workspacePromptsLastModified &&
-        workingDir === workspacePromptsDir
-      ) {
-        headers["If-Modified-Since"] = workspacePromptsLastModified;
-      }
-
       try {
-        const res = await authFetch(
-          endpoints.workspacePrompts.list({
-            working_dir: workingDir,
-            session_id: activeSessionId,
-          }),
-          { headers },
+        const data = await fetchWorkspacePromptsCached(
+          { working_dir: workingDir, session_id: activeSessionId },
+          { force: forceRefresh },
         );
 
-        // 304 Not Modified - prompts haven't changed
-        if (res.status === 304) {
-          return;
-        }
-
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-
-        const data = await res.json();
-        setWorkspacePrompts(data?.prompts || []);
+        setWorkspacePrompts(data.prompts);
         setWorkspacePromptsDir(workingDir);
 
         // One-time notice when the backend migrated legacy .md prompt files to
         // the new .prompt.yaml format. The backend reports this only once per
         // migration (afterwards the .prompt.yaml already exists), so no extra
         // client-side de-duplication is needed.
-        const migrated = data?.migrated;
+        const migrated = data.migrated;
         if (showToast && Array.isArray(migrated) && migrated.length > 0) {
           const names = migrated.join(", ");
           showToast({
@@ -159,26 +146,16 @@ export function useWorkspacePrompts({
             message: `New .prompt.yaml files were written for: ${names}. You can remove the old .md files when ready.`,
           });
         }
-
-        // Store Last-Modified header for future conditional requests
-        const lastModified = res.headers.get("Last-Modified");
-        setWorkspacePromptsLastModified(lastModified);
       } catch (err) {
         console.error("Failed to fetch workspace prompts:", err);
         // Only clear prompts on error if this is a new workspace
         if (workingDir !== workspacePromptsDir) {
           setWorkspacePrompts([]);
           setWorkspacePromptsDir(workingDir);
-          setWorkspacePromptsLastModified(null);
         }
       }
     },
-    [
-      workspacePromptsDir,
-      workspacePromptsLastModified,
-      activeSessionId,
-      showToast,
-    ],
+    [workspacePromptsDir, activeSessionId, showToast],
   );
 
   // Fetch workspace prompts when the active session's working_dir changes
@@ -232,21 +209,35 @@ export function useWorkspacePrompts({
   }, [workingDir, fetchWorkspacePrompts]);
 
   // Refresh prompts when file watcher detects changes (mitto:prompts_changed event)
-  // This event is dispatched by handleGlobalEvent when receiving prompts_changed from WebSocket
+  // This event is dispatched by handleGlobalEvent when receiving prompts_changed from WebSocket.
+  // It fans out on more than one server message (prompts_changed AND
+  // mcp_tools_available, plus a re-broadcast after an async MCP-tools
+  // re-verify), so a single on-disk change can fire several events in quick
+  // succession. Trailing-edge debounce collapses a burst into one force
+  // refresh instead of one per event (mitto-8x9). Force is kept (not the TTL
+  // cache) so a genuine change is never masked by a stale cached response.
   useEffect(() => {
     const handlePromptsChanged = (event) => {
       console.log("[prompts] File watcher detected changes:", event.detail);
 
-      // Refresh workspace prompts (force refresh to skip conditional request)
-      // The backend merges all sources (global + server + workspace), so this is all we need.
-      if (workingDir) {
-        fetchWorkspacePrompts(workingDir, true);
+      if (!workingDir) return;
+      if (promptsChangedTimerRef.current) {
+        clearTimeout(promptsChangedTimerRef.current);
       }
+      promptsChangedTimerRef.current = setTimeout(() => {
+        promptsChangedTimerRef.current = null;
+        fetchWorkspacePrompts(workingDir, true);
+      }, PROMPTS_CHANGED_DEBOUNCE_MS);
     };
 
     window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
-    return () =>
+    return () => {
       window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
+      if (promptsChangedTimerRef.current) {
+        clearTimeout(promptsChangedTimerRef.current);
+        promptsChangedTimerRef.current = null;
+      }
+    };
   }, [workingDir, fetchWorkspacePrompts]);
 
   return {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"text/template"
@@ -283,6 +284,148 @@ func TestRenderPromptTemplate_TriggerOnTasksChanges(t *testing.T) {
 	}
 }
 
+// TestRenderPromptTemplate_TriggerKind verifies that {{ .Trigger.Kind }},
+// {{ .Trigger.IsManual }}, and {{ .Trigger.IsRunOnStart }} (mitto-qzqm) render
+// correctly for each of the 5 canonical trigger kinds, and that the
+// {{ with .Trigger }}...{{ else }}...{{ end }} guard falls through to the
+// else-branch for a non-loop dispatch (nil .Trigger).
+func TestRenderPromptTemplate_TriggerKind(t *testing.T) {
+	body := `{{ with .Trigger }}kind={{ .Kind }} manual={{ .IsManual }} start={{ .IsRunOnStart }}{{ else }}none{{ end }}`
+
+	tests := []struct {
+		name string
+		data any
+		want string
+	}{
+		{
+			name: "schedule",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "schedule"}},
+			want: "kind=schedule manual=false start=false",
+		},
+		{
+			name: "onCompletion",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onCompletion"}},
+			want: "kind=onCompletion manual=false start=false",
+		},
+		{
+			name: "onTasks",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onTasks"}},
+			want: "kind=onTasks manual=false start=false",
+		},
+		{
+			name: "onChild",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onChild"}},
+			want: "kind=onChild manual=false start=false",
+		},
+		{
+			name: "onSlack-manual-and-runOnStart",
+			data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "onSlack", IsManual: true, IsRunOnStart: true}},
+			want: "kind=onSlack manual=true start=true",
+		},
+		{
+			name: "non-loop-nil-trigger",
+			data: cel.PromptEnabledContext{},
+			want: "none",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderPromptTemplate("trigger-kind-test", body, tc.data, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRenderPromptTemplate_TriggerKind_InheritsThroughPromptTextWithArgs pins
+// the shallow-copy inheritance in PromptTextWithArgs (internal/cel/templatefuncs.go
+// "inner = *ctx"): a nested sub-render must see the same .Trigger.Kind as the
+// parent context (mitto-qzqm).
+func TestRenderPromptTemplate_TriggerKind_InheritsThroughPromptTextWithArgs(t *testing.T) {
+	bodies := map[string]string{
+		"inner": `inner-kind={{ .Trigger.Kind }}`,
+	}
+	resolver := func(name string) (string, error) {
+		if b, ok := bodies[name]; ok {
+			return b, nil
+		}
+		return "", fmt.Errorf("resolver: unknown %q", name)
+	}
+
+	ctx := &cel.PromptEnabledContext{
+		Trigger:            &cel.TriggerContext{Kind: "onTasks"},
+		PromptTextResolver: resolver,
+	}
+	fm := cel.BuildTemplateFuncMap(ctx)
+	body := `outer-kind={{ .Trigger.Kind }} {{ PromptTextWithArgs "inner" (dict) }}`
+	got, err := RenderPromptTemplate("t", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	want := "outer-kind=onTasks inner-kind=onTasks"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestRenderPromptTemplate_TriggerOnChild verifies that
+// {{ .Trigger.OnChild.{ChildID,Event,StoppedReason} }} (mitto-qvlh) render
+// correctly against a populated cel.PromptEnabledContext.
+func TestRenderPromptTemplate_TriggerOnChild(t *testing.T) {
+	body := `{{ with .Trigger }}{{ with .OnChild }}child={{ .ChildID }} event={{ .Event }} reason={{ .StoppedReason }}{{ end }}{{ end }}`
+
+	ctx := cel.PromptEnabledContext{
+		Trigger: &cel.TriggerContext{
+			Kind: "onChild",
+			OnChild: &cel.TriggerOnChildContext{
+				ChildID:       "child-1",
+				Event:         "anyLoopStopped",
+				StoppedReason: "maxDuration",
+			},
+		},
+	}
+	got, err := RenderPromptTemplate("trigger-onchild-test", body, ctx, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "child=child-1 event=anyLoopStopped reason=maxDuration"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestRenderPromptTemplate_TriggerOnChild_NilGuard verifies the nested
+// {{ with .Trigger }}{{ with .OnChild }} guard renders empty when OnChild is
+// nil (e.g. a schedule/onCompletion fire that carries no child detail), and
+// when .Trigger itself is nil (non-loop dispatch).
+func TestRenderPromptTemplate_TriggerOnChild_NilGuard(t *testing.T) {
+	body := `head{{ with .Trigger }}{{ with .OnChild }}[{{ .ChildID }}]{{ end }}{{ end }}tail`
+
+	tests := []struct {
+		name string
+		data any
+	}{
+		{name: "trigger-set-onchild-nil", data: cel.PromptEnabledContext{Trigger: &cel.TriggerContext{Kind: "schedule"}}},
+		{name: "trigger-nil", data: cel.PromptEnabledContext{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderPromptTemplate("trigger-onchild-nilguard-test", body, tc.data, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != "headtail" {
+				t.Errorf("got %q, want %q", got, "headtail")
+			}
+		})
+	}
+}
+
 // TestValidatePromptTemplateSyntax verifies parse-only validation: plain bodies
 // and bodies with valid template syntax (including FuncMap calls) pass, while
 // structurally broken bodies (e.g. unbalanced actions) return an error (mitto-e7u).
@@ -550,7 +693,7 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 }
 
-// TestRefineImplementation_LoopAndModes verifies the beads-refine-implementation
+// TestInvestigateAllMore_LoopAndModes verifies the beads/investigate-all-more
 // builtin prompt (mitto-mx4):
 //
 //	(a) it parses cleanly — this exercises parse-time CEL validation of the
@@ -562,9 +705,10 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 //	    against the pre-mitto-pei stale template vars (.Session.IsPeriodic*).
 //
 // Loaded from the real builtin directory so it exercises the on-disk content.
-func TestRefineImplementation_LoopAndModes(t *testing.T) {
+func TestInvestigateAllMore_LoopAndModes(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	name := "beads-refine-implementation.prompt.yaml"
+	name := "beads/investigate-all-more.prompt.yaml"
 	path := filepath.Join(builtinDir, name)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -579,20 +723,20 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 	if prompt.Loop == nil {
 		t.Fatalf("expected a loop block; got nil")
 	}
-	if prompt.Loop.Trigger != "onTasks" {
-		t.Errorf("loop.trigger = %q, want %q", prompt.Loop.Trigger, "onTasks")
+	if !prompt.Loop.hasTrigger("onTasks") {
+		t.Errorf("loop.trigger = %v, want to include %q", prompt.Loop.Trigger, "onTasks")
 	}
 	if prompt.Loop.Mode != PromptLoopModeAlways {
 		t.Errorf("loop.mode = %q, want %q", prompt.Loop.Mode, PromptLoopModeAlways)
 	}
-	if !strings.Contains(prompt.Loop.Condition, "implementation-refined") {
-		t.Errorf("loop.condition should gate on the implementation-refined label; got %q", prompt.Loop.Condition)
+	if !strings.Contains(prompt.Loop.TasksCondition(), "implementation-refined") {
+		t.Errorf("loop.onTasks.condition should gate on the implementation-refined label; got %q", prompt.Loop.TasksCondition())
 	}
 
 	body := prompt.Content
 	render := func(ctx *cel.PromptEnabledContext) string {
 		funcs := cel.BuildTemplateFuncMap(ctx)
-		out, rerr := RenderPromptTemplate("beads-refine-implementation", body, ctx, funcs)
+		out, rerr := RenderPromptTemplate("beads-investigate-all-more", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
 		}
@@ -634,13 +778,14 @@ func TestRefineImplementation_LoopAndModes(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-investigate.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/investigate.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-investigate.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/investigate.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -741,13 +886,14 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-assess.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/assess.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-assess.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/assess.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -948,6 +1094,7 @@ func TestBuiltinPrompts_NoDeprecatedMittoVars(t *testing.T) {
 // would only fail-open silently in production. This test actually renders every
 // builtin prompt with a representative context and fails if any template errors out.
 func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 	prompts, err := LoadPromptsFromDir(builtinDir)
 	if err != nil {
@@ -982,6 +1129,92 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 	t.Logf("rendered %d builtin prompts — all templates valid ✓", len(prompts))
 }
 
+// TestBuiltinPrompts_WithFragments (mitto-g61.6 test #2) re-runs the same
+// render sweep as TestBuiltinPrompts_AllRenderWithoutError with the on-disk
+// builtin fragments (if any) installed on the process-wide singleton. It
+// asserts that having a real fragment registry attached does not regress
+// rendering of any builtin prompt (i.e. no name collisions between fragments
+// and builtin templates, no funcmap conflicts introduced by attach).
+func TestBuiltinPrompts_WithFragments(t *testing.T) {
+	// Isolate the singleton so parallel tests are unaffected.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	prompts, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Skipf("cannot load builtins from %s: %v", builtinDir, err)
+	}
+	if len(prompts) == 0 {
+		t.Skip("no builtin prompts found")
+	}
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{
+			ID:            "test-session",
+			Name:          "Test Conversation",
+			BeadsIssue:    "mitto-test",
+			HasBeadsIssue: true,
+			ParentID:      "parent-1",
+			IsChild:       true,
+		},
+		Args: map[string]string{"IssueID": "mitto-test", "Condition": "all tests pass"},
+	}
+
+	var failures []string
+	for _, p := range prompts {
+		funcs := cel.BuildTemplateFuncMap(ctx)
+		if _, rerr := RenderPromptTemplate(p.Name, p.Content, ctx, funcs); rerr != nil {
+			failures = append(failures, p.Name+": "+rerr.Error())
+		}
+	}
+	if len(failures) > 0 {
+		t.Errorf("builtin prompts failed to render with fragments installed:\n  %s", strings.Join(failures, "\n  "))
+	}
+	t.Logf("rendered %d builtin prompts against %d fragments ✓", len(prompts), reg.Len())
+}
+
+// NOTE (mitto-g61.6 tests #5, #6, #7): the caller-context / narrowed-context /
+// funcmap-inheritance behaviors are already locked in by the existing
+// TestRenderPromptTemplate_Fragments (basic-render, data-narrowing,
+// funcmap-inheritance subtests, near the bottom of this file). No new
+// duplicate tests are added here.
+//
+// TestRenderPromptTemplate_FragmentCycleFailsAtRender (mitto-g61.6 test #8)
+// verifies that a fragment that references itself (or a cycle of fragments)
+// triggers Go's text/template recursion limit at Execute time and returns a
+// non-nil error rather than infinite-looping or panicking. Fail-closed is the
+// documented contract of RenderPromptTemplate.
+func TestRenderPromptTemplate_FragmentCycleFailsAtRender(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	reg := NewFragmentRegistry()
+	// Direct self-reference: recurses without a termination condition.
+	reg.entries["loop-a"] = `A{{ template "loop-b" . }}`
+	reg.entries["loop-b"] = `B{{ template "loop-a" . }}`
+	SetCurrentFragments(reg)
+
+	ctx := &cel.PromptEnabledContext{}
+	funcs := cel.BuildTemplateFuncMap(ctx)
+	_, err := RenderPromptTemplate("t", `{{ template "loop-a" . }}`, ctx, funcs)
+	if err == nil {
+		t.Fatal("expected render error from cyclic fragment references, got nil")
+	}
+	// text/template's message for this is "exceeded maximum template depth".
+	if !strings.Contains(err.Error(), "depth") && !strings.Contains(err.Error(), "recurs") {
+		t.Logf("render error (accepted): %v", err)
+	}
+}
+
 // TestStatus_ThreeModeTargetResolution tests the three target-bead
 // resolution branches of beads-issue-status.prompt.yaml:
 //
@@ -995,13 +1228,14 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestStatus_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-status.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/status.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-status.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/status.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1094,13 +1328,14 @@ func TestStatus_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestResolved_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-resolved.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/resolved.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-resolved.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/resolved.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1193,13 +1428,14 @@ func TestResolved_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestWork_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-work.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/work.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-work.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/work.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1296,13 +1532,14 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 // Also asserts the YAML header migration: menus includes both "beadsIssues"
 // and "conversation", and the IssueID parameter is non-required.
 func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-followup-work.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads/followup-work.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-followup-work.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads/followup-work.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -1410,6 +1647,20 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 func TestInteractionMode_ConditionalRendering(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "github/shared/pr-comments" . }}` at parse-time precompile
+	// (mitto-g61.4). Restored on cleanup.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
 	// silentMarker/interactiveMarker are substrings that appear ONLY in the
 	// silent / interactive branch of the top "Interaction Mode" block of each
 	// prompt (verified to not occur elsewhere in the file as prose).
@@ -1420,31 +1671,31 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 		interactiveMarker string
 	}{
 		{
-			file:              "architectural-analysis.prompt.yaml",
+			file:              "docs/architectural-analysis.prompt.yaml",
 			name:              "architectural-analysis",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
-			file:              "jira-sync-tasks.prompt.yaml",
+			file:              "jira/sync-tasks.prompt.yaml",
 			name:              "jira-sync-tasks",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
-			file:              "github-sync-tasks.prompt.yaml",
+			file:              "github/sync-tasks.prompt.yaml",
 			name:              "github-sync-tasks",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
-			file:              "github-babysit-contributions.prompt.yaml",
+			file:              "github/babysit-contributions.prompt.yaml",
 			name:              "github-babysit-contributions",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
 		},
 		{
-			file:              "github-babysit-my-prs.prompt.yaml",
+			file:              "github/babysit-my-prs.prompt.yaml",
 			name:              "github-babysit-my-prs",
 			silentMarker:      "a scheduled loop run; the user is not watching.",
 			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
@@ -1456,7 +1707,6 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
 		},
 		{
-			file:              "github-iterate-babysit-new-prs.prompt.yaml",
 			name:              "github-iterate-babysit-new-prs",
 			silentMarker:      "Silent mode — scheduled loop run.",
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
@@ -1599,6 +1849,70 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	}
 	if gotVerbose != "verbose" {
 		t.Errorf("IsUninterrupted=false: got %q, want %q", gotVerbose, "verbose")
+	}
+}
+
+// TestBeadsIssuesPrompts_NoStaleIterateDriverNames is the static reproduction
+// test for mitto-k20a. The "Iterate -> Loop" rename (commit 9403463f,
+// 2026-07-05) updated frontmatter `name:` and filenames but left free-text
+// driver-name cross-references in sibling prompt bodies untouched. The real
+// builtin driver names today are "Loop fixing bug" and "Loop implementing
+// feature" (see beads-issues/loop-fixing-bug.prompt.yaml and
+// beads-issues/loop-implementing-feature.prompt.yaml); no builtin prompt is
+// named "Iterate fixing bug" or "Iterate implementing feature" anymore.
+//
+// A phase agent learns its driver's name ONLY from this prose, then copies it
+// verbatim when dispatching back via mitto_conversation_send_prompt.
+// Resolution is deferred to dequeue time (internal/conversation/queue_dispatcher.go),
+// so a stale name enqueues successfully and then fails silently — no retry
+// (the failure is permanent, not transient) and no user-visible surface
+// beyond one ERROR log line. This test scans every builtin prompt file for
+// the two stale substrings and fails, listing every offending file:line, if
+// any survive.
+//
+// Currently RED: 9 occurrences survive across 8 files (5 "Iterate implementing
+// feature" refs in the Feature family, 4 "Iterate fixing bug" refs in the
+// Bug-fix family). It turns GREEN once the fix phase rewrites the prose to the
+// current driver names.
+func TestBeadsIssuesPrompts_NoStaleIterateDriverNames(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	staleNames := []string{"Iterate fixing bug", "Iterate implementing feature"}
+
+	var offenders []string
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Errorf("ReadFile(%s): %v", path, rerr)
+			return nil
+		}
+		relPath, _ := filepath.Rel(builtinDir, path)
+		relPath = filepath.ToSlash(relPath)
+		content := string(data)
+		for _, stale := range staleNames {
+			if strings.Contains(content, stale) {
+				for lineNo, line := range strings.Split(content, "\n") {
+					if strings.Contains(line, stale) {
+						offenders = append(offenders, fmt.Sprintf("%s:%d: contains stale driver-name reference %q", relPath, lineNo+1, stale))
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
+	}
+
+	if len(offenders) > 0 {
+		sort.Strings(offenders)
+		t.Errorf("found %d stale \"Iterate ...\" driver-name reference(s) (mitto-k20a) — the real, post-rename builtin driver names are \"Loop fixing bug\" and \"Loop implementing feature\":\n%s",
+			len(offenders), strings.Join(offenders, "\n"))
 	}
 }
 
@@ -1982,6 +2296,7 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 // resolvePreferredModelsByPromptName → SelectPreferredModel → setActiveModelOnly
 // switches to the right tier when they are dispatched by name from the driver.
 func TestBugFixPhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
@@ -1990,17 +2305,17 @@ func TestBugFixPhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 		expectedTier string
 	}{
 		{
-			file:         "beads-issue-fix-phase-investigate.prompt.yaml",
+			file:         "beads-issues/fix-phase-investigate.prompt.yaml",
 			name:         "Bug fix — investigate phase",
 			expectedTier: "Reasoning",
 		},
 		{
-			file:         "beads-issue-fix-phase-reproduce.prompt.yaml",
+			file:         "beads-issues/fix-phase-reproduce.prompt.yaml",
 			name:         "Bug fix — reproduce phase",
 			expectedTier: "Coding",
 		},
 		{
-			file:         "beads-issue-fix-phase-fix.prompt.yaml",
+			file:         "beads-issues/fix-phase-fix.prompt.yaml",
 			name:         "Bug fix — fix phase",
 			expectedTier: "Coding",
 		},
@@ -2045,12 +2360,13 @@ func TestBugFixPhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 // mirrors TestIterateFixingBug_RendersForRepresentativeContexts and guards
 // against future template regressions in the phase prompts themselves.
 func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	files := []string{
-		"beads-issue-fix-phase-investigate.prompt.yaml",
-		"beads-issue-fix-phase-reproduce.prompt.yaml",
-		"beads-issue-fix-phase-fix.prompt.yaml",
+		"beads-issues/fix-phase-investigate.prompt.yaml",
+		"beads-issues/fix-phase-reproduce.prompt.yaml",
+		"beads-issues/fix-phase-fix.prompt.yaml",
 	}
 
 	for _, file := range files {
@@ -2089,7 +2405,7 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			// (b) Arg-only context — IssueID supplied by the dispatching
 			// driver (which is the primary invocation path for phase prompts).
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if file == "beads-issue-fix-phase-fix.prompt.yaml" {
+			if file == "beads-issues/fix-phase-fix.prompt.yaml" {
 				args["Commit"] = "true"
 			}
 			outB := render(&cel.PromptEnabledContext{Args: args})
@@ -2101,7 +2417,7 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			}
 
 			// Fix phase must render commit-enabled scaffolding when Commit=true.
-			if file == "beads-issue-fix-phase-fix.prompt.yaml" {
+			if file == "beads-issues/fix-phase-fix.prompt.yaml" {
 				if !strings.Contains(outB, "git commit -m") {
 					t.Errorf("%s branch (b): expected 'git commit -m' scaffolding when Commit=true; got:\n%s", file, outB)
 				}
@@ -2280,6 +2596,7 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 // switches to the right tier when they are dispatched by name from the driver.
 // Mirrors TestBugFixPhasePrompts_ParseAndDeclarePreferredModels.
 func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
@@ -2288,22 +2605,22 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 		expectedTier string
 	}{
 		{
-			file:         "beads-issue-feature-phase-plan.prompt.yaml",
+			file:         "beads-issues/feature-phase-plan.prompt.yaml",
 			name:         "Feature — plan phase",
 			expectedTier: "Reasoning",
 		},
 		{
-			file:         "beads-issue-feature-phase-implement.prompt.yaml",
+			file:         "beads-issues/feature-phase-implement.prompt.yaml",
 			name:         "Feature — implement phase",
 			expectedTier: "Coding",
 		},
 		{
-			file:         "beads-issue-feature-phase-test.prompt.yaml",
+			file:         "beads-issues/feature-phase-test.prompt.yaml",
 			name:         "Feature — test phase",
 			expectedTier: "Coding",
 		},
 		{
-			file:         "beads-issue-feature-phase-review.prompt.yaml",
+			file:         "beads-issues/feature-phase-review.prompt.yaml",
 			name:         "Feature — review phase",
 			expectedTier: "Reasoning",
 		},
@@ -2340,6 +2657,50 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 	}
 }
 
+// TestHighConfidenceBuiltinPrompts_DeclarePairedFallback pins the three
+// high-confidence builtin prompts scoped by mitto-42t to the paired
+// `[Cheap, Coding]` preferredModels fallback (matching the existing convention
+// on beads-overview, github-sync-tasks, jira-sync-tasks, report-to-parent,
+// child-cleanup, check-ci). Regression guard: silently dropping the tag on any
+// of these three would revert them to the session baseline and lose the
+// deliberate cost-tier decision recorded on the bead.
+func TestHighConfidenceBuiltinPrompts_DeclarePairedFallback(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	builtinDir := "../../config/prompts/builtin"
+
+	wantTags := []string{"Cheap", "Coding"}
+
+	files := []string{
+		"beads-issues/dependencies.prompt.yaml",
+		"support/check-status.prompt.yaml",
+		"beads/triage-bugs.prompt.yaml",
+	}
+
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			p, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if len(p.PreferredModels) != len(wantTags) {
+				t.Fatalf("%s: len(PreferredModels) = %d, want %d ([%s])",
+					file, len(p.PreferredModels), len(wantTags), strings.Join(wantTags, ", "))
+			}
+			for i, want := range wantTags {
+				if got := p.PreferredModels[i].ModelTag; got != want {
+					t.Errorf("%s: PreferredModels[%d].ModelTag = %q, want %q",
+						file, i, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestFeaturePhasePrompts_RenderForRepresentativeContexts renders each of the
 // four phase-tier prompts with (a) a linked-issue context, (b) an arg-only
 // context, and (c) a no-target context, and asserts each render succeeds and
@@ -2348,13 +2709,14 @@ func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
 // TestBugFixPhasePrompts_RenderForRepresentativeContexts and guards against
 // future template regressions in the feature phase prompts themselves.
 func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	files := []string{
-		"beads-issue-feature-phase-plan.prompt.yaml",
-		"beads-issue-feature-phase-implement.prompt.yaml",
-		"beads-issue-feature-phase-test.prompt.yaml",
-		"beads-issue-feature-phase-review.prompt.yaml",
+		"beads-issues/feature-phase-plan.prompt.yaml",
+		"beads-issues/feature-phase-implement.prompt.yaml",
+		"beads-issues/feature-phase-test.prompt.yaml",
+		"beads-issues/feature-phase-review.prompt.yaml",
 	}
 
 	for _, file := range files {
@@ -2393,7 +2755,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			// (b) Arg-only context — IssueID supplied by the dispatching
 			// driver (which is the primary invocation path for phase prompts).
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
+			if file != "beads-issues/feature-phase-plan.prompt.yaml" {
 				args["Commit"] = "true"
 			}
 			outB := render(&cel.PromptEnabledContext{Args: args})
@@ -2406,7 +2768,7 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 
 			// Implement/Test/Review phases must render commit-enabled
 			// scaffolding when Commit=true. The Plan phase has no Commit param.
-			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
+			if file != "beads-issues/feature-phase-plan.prompt.yaml" {
 				if !strings.Contains(outB, "git commit -m") {
 					t.Errorf("%s branch (b): expected 'git commit -m' scaffolding when Commit=true; got:\n%s", file, outB)
 				}
@@ -2444,19 +2806,20 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 // Test guards against future regressions in ANY of the 7 phase prompts
 // (drop-out of the tier-check block, wrong tier name, or wrong comment prefix).
 func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
 		file string
 		tier string // declared tier per the phase's preferredModels
 	}{
-		{"beads-issue-fix-phase-investigate.prompt.yaml", "Reasoning"},
-		{"beads-issue-fix-phase-reproduce.prompt.yaml", "Coding"},
-		{"beads-issue-fix-phase-fix.prompt.yaml", "Coding"},
-		{"beads-issue-feature-phase-plan.prompt.yaml", "Reasoning"},
-		{"beads-issue-feature-phase-implement.prompt.yaml", "Coding"},
-		{"beads-issue-feature-phase-test.prompt.yaml", "Coding"},
-		{"beads-issue-feature-phase-review.prompt.yaml", "Reasoning"},
+		{"beads-issues/fix-phase-investigate.prompt.yaml", "Reasoning"},
+		{"beads-issues/fix-phase-reproduce.prompt.yaml", "Coding"},
+		{"beads-issues/fix-phase-fix.prompt.yaml", "Coding"},
+		{"beads-issues/feature-phase-plan.prompt.yaml", "Reasoning"},
+		{"beads-issues/feature-phase-implement.prompt.yaml", "Coding"},
+		{"beads-issues/feature-phase-test.prompt.yaml", "Coding"},
+		{"beads-issues/feature-phase-review.prompt.yaml", "Reasoning"},
 	}
 
 	for _, tc := range cases {
@@ -2484,10 +2847,10 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 			// Common context: arg-only IssueID so the tier-check block renders
 			// (the block is gated by target-resolved).
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if tc.file == "beads-issue-fix-phase-fix.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-implement.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-test.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
+			if tc.file == "beads-issues/fix-phase-fix.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-implement.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-test.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-review.prompt.yaml" {
 				args["Commit"] = "false"
 			}
 
@@ -2568,19 +2931,20 @@ func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
 // so a bead's audit trail makes the tier split visible without needing to
 // cross-reference the run's active model.
 func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
 
 	cases := []struct {
 		file   string
 		prefix string // exact "<Noun> [tier: <Tier>]:" fragment expected in the rendered body
 	}{
-		{"beads-issue-fix-phase-investigate.prompt.yaml", "Investigation [tier: Reasoning]:"},
-		{"beads-issue-fix-phase-reproduce.prompt.yaml", "Reproduction [tier: Coding]:"},
-		{"beads-issue-fix-phase-fix.prompt.yaml", "Fix [tier: Coding]:"},
-		{"beads-issue-feature-phase-plan.prompt.yaml", "Plan [tier: Reasoning]:"},
-		{"beads-issue-feature-phase-implement.prompt.yaml", "Implementation [tier: Coding]:"},
-		{"beads-issue-feature-phase-test.prompt.yaml", "Testing [tier: Coding]:"},
-		{"beads-issue-feature-phase-review.prompt.yaml", "Review [tier: Reasoning]:"},
+		{"beads-issues/fix-phase-investigate.prompt.yaml", "Investigation [tier: Reasoning]:"},
+		{"beads-issues/fix-phase-reproduce.prompt.yaml", "Reproduction [tier: Coding]:"},
+		{"beads-issues/fix-phase-fix.prompt.yaml", "Fix [tier: Coding]:"},
+		{"beads-issues/feature-phase-plan.prompt.yaml", "Plan [tier: Reasoning]:"},
+		{"beads-issues/feature-phase-implement.prompt.yaml", "Implementation [tier: Coding]:"},
+		{"beads-issues/feature-phase-test.prompt.yaml", "Testing [tier: Coding]:"},
+		{"beads-issues/feature-phase-review.prompt.yaml", "Review [tier: Reasoning]:"},
 	}
 
 	for _, tc := range cases {
@@ -2596,10 +2960,10 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 			}
 
 			args := map[string]string{"IssueID": "mitto-xyz"}
-			if tc.file == "beads-issue-fix-phase-fix.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-implement.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-test.prompt.yaml" ||
-				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
+			if tc.file == "beads-issues/fix-phase-fix.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-implement.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-test.prompt.yaml" ||
+				tc.file == "beads-issues/feature-phase-review.prompt.yaml" {
 				args["Commit"] = "false"
 			}
 			ctx := &cel.PromptEnabledContext{Args: args}
@@ -2623,6 +2987,20 @@ func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
 func TestBuiltinPromptLoopModes(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
+	// Install the on-disk fragment registry so ParsePromptFile can resolve
+	// `{{ template "github/shared/pr-comments" . }}` at parse-time precompile
+	// (mitto-g61.4). Restored on cleanup.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
 	boolPtr := func(b bool) *bool { return &b }
 
 	type want struct {
@@ -2633,29 +3011,28 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 	cases := map[string]want{
 		// Group A — always (5).
 		"beads-issue-iterate-until-complete.prompt.yaml": {mode: "always", def: nil},
-		"github-iterate-babysit-new-prs.prompt.yaml":     {mode: "always", def: nil},
 		"iterate-until.prompt.yaml":                      {mode: "always", def: nil},
 		"iterate-fixing.prompt.yaml":                     {mode: "always", def: nil},
 		"iterate-implementing.prompt.yaml":               {mode: "always", def: nil},
 
 		// Group B — optional / default:true (4).
-		"github-babysit-contributions.prompt.yaml": {mode: "optional", def: boolPtr(true)},
-		"github-babysit-my-prs.prompt.yaml":        {mode: "optional", def: boolPtr(true)},
-		"github-sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
-		"jira-sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
+		"github/babysit-contributions.prompt.yaml": {mode: "optional", def: boolPtr(true)},
+		"github/babysit-my-prs.prompt.yaml":        {mode: "optional", def: boolPtr(true)},
+		"github/sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
+		"jira/sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
-		// Group C — optional / default:false (11).
-		"check-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"continue.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"fix-ci.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
-		"run-tests.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
-		"analyze-logs.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
-		"architectural-analysis.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
-		"beads-work.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
-		"github-review-slack-prs.prompt.yaml":    {mode: "optional", def: boolPtr(false)},
-		"jira-status-all-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"jira-status-one-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"jira-work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
+		// Group C — optional / default:false (10).
+		"ci/check-ci.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
+		"misc/continue.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
+		"ci/fix-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"testing/run-tests.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
+		"ci/analyze-logs.prompt.yaml":             {mode: "optional", def: boolPtr(false)},
+		"docs/architectural-analysis.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"github/review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
+		"cso/investigation.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
+		"jira/status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
+		"jira/status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
+		"jira/work.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
 	}
 
 	for file, w := range cases {
@@ -2691,25 +3068,29 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 
 	// Representative sample of the "never loop" set: no loop block at all.
 	neverFiles := []string{
-		"explain.prompt.yaml",
-		"refactor.prompt.yaml",
+		"code/explain.prompt.yaml",
+		"code/refactor.prompt.yaml",
 		"review.prompt.yaml",
-		"add-tests.prompt.yaml",
-		"whats-next.prompt.yaml",
-		"child-create-minions.prompt.yaml",
-		"github-post-merge-cleanup.prompt.yaml",
-		"beads-issue-decompose.prompt.yaml",
+		"testing/add-tests.prompt.yaml",
+		"misc/whats-next.prompt.yaml",
+		"child/create-minions.prompt.yaml",
+		"github/post-merge-cleanup.prompt.yaml",
+		"beads-issues/decompose.prompt.yaml",
 		// Tasks prompts that are one-shot reports, context-bound, or
 		// confirmation-gated — loop re-firing makes no sense for them.
-		"beads-followup-work.prompt.yaml",
-		"beads-cleanup-stale.prompt.yaml",
-		"beads-group-epics.prompt.yaml",
-		"beads-overview.prompt.yaml",
-		"beads-reevaluate.prompt.yaml",
-		"beads-status-all-inprogress.prompt.yaml",
-		"beads-status-one-inprogress.prompt.yaml",
-		"beads-issue-status.prompt.yaml",
-		"beads-issue-work.prompt.yaml",
+		"beads/followup-work.prompt.yaml",
+		"beads/cleanup-stale.prompt.yaml",
+		"beads/group-epics.prompt.yaml",
+		"beads/overview.prompt.yaml",
+		"beads/reevaluate.prompt.yaml",
+		"beads/status-all-inprogress.prompt.yaml",
+		"beads/status-one-inprogress.prompt.yaml",
+		"beads-issues/status.prompt.yaml",
+		"beads-issues/work.prompt.yaml",
+		// Interactive-only: body blocks on mitto_ui_options for prior-bead
+		// disambiguation, ranked pick, and plan approval — already covered
+		// unattended by the "Loop processing tasks" prompt (mitto-qaej).
+		"beads/work.prompt.yaml",
 	}
 
 	for _, file := range neverFiles {
@@ -2725,6 +3106,303 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 			}
 			if prompt.Loop != nil {
 				t.Errorf("%s: Loop = %+v, want nil (never-loop set)", file, prompt.Loop)
+			}
+		})
+	}
+}
+
+// TestCSOInvestigationBuiltinContract pins the builtin incident-response prompt's
+// discovery metadata, instruction-file parameters, Slack loop defaults, playbook
+// selection, generic no-playbook path, and required report shape.
+func TestCSOInvestigationBuiltinContract(t *testing.T) {
+	const name = "cso/investigation.prompt.yaml"
+	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", name))
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", name, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile(%s): %v", name, err)
+	}
+	if prompt.Name != "CSO: investigation" || prompt.Group != "CSO" {
+		t.Errorf("prompt identity = (%q, %q), want (%q, %q)", prompt.Name, prompt.Group, "CSO: investigation", "CSO")
+	}
+	if prompt.Loop == nil || !prompt.Loop.hasTrigger("onSlack") {
+		t.Fatalf("Loop = %#v, want onSlack trigger", prompt.Loop)
+	}
+	if got := prompt.Loop.SlackEventMode(); got != "anyHumanMessage" {
+		t.Errorf("SlackEventMode() = %q, want %q", got, "anyHumanMessage")
+	}
+	if got := prompt.Loop.SlackThreadPolicy(); got != "any" {
+		t.Errorf("SlackThreadPolicy() = %q, want %q", got, "any")
+	}
+	parameters := make(map[string]PromptParameter, len(prompt.Parameters))
+	for _, parameter := range prompt.Parameters {
+		parameters[parameter.Name] = parameter
+	}
+	for name, wantDefault := range map[string]string{
+		"InvestigationInstructions": ".mitto/cso/investigation.md",
+		"EscalationInstructions":    ".mitto/cso/escalation.md",
+	} {
+		parameter, ok := parameters[name]
+		if !ok {
+			t.Errorf("parameter %q not found", name)
+			continue
+		}
+		if parameter.Type != "filename" || parameter.Required == nil || *parameter.Required {
+			t.Errorf("parameter %q = %#v, want optional filename", name, parameter)
+		}
+		if parameter.Default != wantDefault {
+			t.Errorf("parameter %q default = %q, want %q", name, parameter.Default, wantDefault)
+		}
+	}
+
+	emptyWorkspace := t.TempDir()
+	ctx := &cel.PromptEnabledContext{Workspace: cel.WorkspaceContext{Folder: emptyWorkspace}}
+	out, err := RenderPromptTemplate(prompt.Name, prompt.Content, ctx, cel.BuildTemplateFuncMap(ctx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate: %v", err)
+	}
+	for _, marker := range []string{
+		"No workspace-specific investigation playbook exists",
+		"If escalation is required and no workspace playbook exists",
+		"## Required investigation report",
+		"1. **Summary**", "2. **Timeline**", "3. **Findings**",
+		"4. **Hypotheses**", "5. **Next Steps**", "6. **Escalation Handoff**",
+	} {
+		if !strings.Contains(out, marker) {
+			t.Errorf("rendered prompt missing contract marker %q", marker)
+		}
+	}
+	if strings.Contains(out, "## Slack-triggered incident context") {
+		t.Error("non-Slack render unexpectedly included Slack-triggered context")
+	}
+
+	defaultDir := t.TempDir()
+	defaultPlaybookDir := filepath.Join(defaultDir, ".mitto", "cso")
+	if err := os.MkdirAll(defaultPlaybookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultPlaybookDir, "investigation.md"), []byte("DEFAULT INVESTIGATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultPlaybookDir, "escalation.md"), []byte("DEFAULT ESCALATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defaultCtx := &cel.PromptEnabledContext{Workspace: cel.WorkspaceContext{Folder: defaultDir}}
+	defaultOut, err := RenderPromptTemplate(prompt.Name, prompt.Content, defaultCtx, cel.BuildTemplateFuncMap(defaultCtx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(default files): %v", err)
+	}
+	for _, marker := range []string{"DEFAULT INVESTIGATION", "DEFAULT ESCALATION"} {
+		if !strings.Contains(defaultOut, marker) {
+			t.Errorf("default-file render missing %q", marker)
+		}
+	}
+
+	customDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(customDir, "runbooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, "runbooks", "investigate.md"), []byte("CUSTOM INVESTIGATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, "runbooks", "escalate.md"), []byte("CUSTOM ESCALATION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	customCtx := &cel.PromptEnabledContext{
+		Workspace: cel.WorkspaceContext{Folder: customDir},
+		Args: map[string]string{
+			"InvestigationInstructions": "runbooks/investigate.md",
+			"EscalationInstructions":    "runbooks/escalate.md",
+		},
+	}
+	customOut, err := RenderPromptTemplate(prompt.Name, prompt.Content, customCtx, cel.BuildTemplateFuncMap(customCtx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(custom files): %v", err)
+	}
+	for _, marker := range []string{"`runbooks/investigate.md`", "CUSTOM INVESTIGATION", "`runbooks/escalate.md`", "CUSTOM ESCALATION"} {
+		if !strings.Contains(customOut, marker) {
+			t.Errorf("custom-file render missing %q", marker)
+		}
+	}
+}
+
+// TestBuiltinPromptsNoArchivePolicy pins the mitto-yvel.5 audit of the
+// builtin corpus: exactly one prompt — the unified standing supervisor
+// "Loop processing tasks" — declares target.noArchive: true, and the
+// underlying rule (any builtin whose loop is both unconditional and
+// unbounded must be protected) is enforced mechanically so a future
+// unbounded supervisor cannot be added without also setting the flag.
+//
+// "Unconditional" means loop.mode is absent or "always" (mode: optional
+// lets the operator dispatch the same prompt as a one-shot, so a static
+// create-time flag would also make every one-shot send unarchivable — see
+// the bead's audit notes for the deliberately-deferred optional-loop
+// schedulers). "Unbounded" means both maxIterations and maxDuration are
+// 0/absent (the loop never self-terminates).
+func TestBuiltinPromptsNoArchivePolicy(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	// Exact allowlist: fails loudly both if the flag is dropped from the
+	// standing supervisor and if it is sprayed onto new prompts without
+	// review updating this list.
+	wantNoArchive := map[string]bool{
+		"beads-issues/loop-processing.prompt.yaml": true,
+	}
+	gotNoArchive := map[string]bool{}
+
+	walkErr := filepath.WalkDir(builtinDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".prompt.yaml") {
+			return nil
+		}
+		relPath, err := filepath.Rel(builtinDir, path)
+		if err != nil {
+			return err
+		}
+		relPath = filepath.ToSlash(relPath)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", relPath, err)
+			return nil
+		}
+		prompt, err := ParsePromptFile(relPath, data, time.Now())
+		if err != nil {
+			// Parse errors are already reported by TestBuiltinPromptsParseClean.
+			return nil
+		}
+
+		if prompt.Target != nil && prompt.Target.NoArchive {
+			gotNoArchive[relPath] = true
+		}
+
+		if prompt.Loop == nil {
+			return nil
+		}
+		unconditional := prompt.Loop.Mode == "" || prompt.Loop.Mode == PromptLoopModeAlways
+		if !unconditional {
+			return nil
+		}
+		maxDurationSeconds, err := prompt.Loop.MaxDurationSeconds()
+		if err != nil {
+			t.Errorf("%s: MaxDurationSeconds: %v", relPath, err)
+			return nil
+		}
+		unbounded := prompt.Loop.MaxIterations == 0 && maxDurationSeconds == 0
+		// A missing target: block is NOT an exemption — that was exactly
+		// loop-processing's own state before mitto-yvel.5, so skipping it
+		// would leave the hole this invariant exists to close.
+		if unbounded && (prompt.Target == nil || !prompt.Target.NoArchive) {
+			t.Errorf("%s: unconditional (mode=%q) + unbounded (maxIterations=0, maxDuration=0) loop but Target.NoArchive = false/absent — a standing supervisor that can never self-terminate must declare a target: block with noArchive: true", relPath, prompt.Loop.Mode)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(%s): %v", builtinDir, walkErr)
+	}
+
+	for file := range wantNoArchive {
+		if !gotNoArchive[file] {
+			t.Errorf("%s: expected Target.NoArchive = true, got false/absent", file)
+		}
+	}
+	for file := range gotNoArchive {
+		if !wantNoArchive[file] {
+			t.Errorf("%s: Target.NoArchive = true but not in the reviewed allowlist — update wantNoArchive if this is intentional", file)
+		}
+	}
+}
+
+// TestBuiltinPromptsNoArchivePolicy_AuditedCandidatesNotProtected pins the
+// mitto-yvel.5 audit outcome for the specific candidates the bead description
+// called out for review (bounded `always` drivers and `optional` schedulers)
+// with named subtests, so a reviewer can see *why* each is excluded — not
+// just that the mechanical invariant in TestBuiltinPromptsNoArchivePolicy
+// happens to pass for it. Each case documents its own discriminator:
+//
+//   - bounded: mode is absent/"always" but maxIterations/maxDuration are set,
+//     so the loop self-terminates — archiving after that is expected cleanup,
+//     not silent task-processing loss.
+//   - optional: mode is "optional", so the same prompt can be dispatched as a
+//     one-shot; a static create-time noArchive would also make every
+//     one-shot send unarchivable.
+func TestBuiltinPromptsNoArchivePolicy_AuditedCandidatesNotProtected(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	type discriminator string
+	const (
+		bounded  discriminator = "bounded"  // unconditional but self-terminating
+		optional discriminator = "optional" // dispatchable as a one-shot
+	)
+
+	cases := map[string]discriminator{
+		"beads-issues/loop-fixing-bug.prompt.yaml":           bounded,
+		"beads-issues/loop-implementing-feature.prompt.yaml": bounded,
+		"beads-issues/loop-until-complete.prompt.yaml":       bounded,
+		"beads-issues/mention-driver.prompt.yaml":            bounded,
+		"ci/check-ci.prompt.yaml":                            optional,
+		"docs/architectural-analysis.prompt.yaml":            optional,
+	}
+
+	for file, disc := range cases {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile(%s): %v", file, err)
+			}
+			prompt, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if prompt.Loop == nil {
+				t.Fatalf("%s: Loop = nil, want non-nil (audit candidate must carry a loop: block)", file)
+			}
+			if prompt.Target != nil && prompt.Target.NoArchive {
+				t.Errorf("%s: Target.NoArchive = true, want false (deliberately excluded: %s)", file, disc)
+			}
+
+			switch disc {
+			case bounded:
+				if prompt.Loop.Mode != "" && prompt.Loop.Mode != PromptLoopModeAlways {
+					t.Errorf("%s: Loop.Mode = %q, want \"\"/%q for the bounded discriminator to apply", file, prompt.Loop.Mode, PromptLoopModeAlways)
+				}
+				maxDurationSeconds, err := prompt.Loop.MaxDurationSeconds()
+				if err != nil {
+					t.Fatalf("%s: MaxDurationSeconds: %v", file, err)
+				}
+				if prompt.Loop.MaxIterations == 0 && maxDurationSeconds == 0 {
+					t.Errorf("%s: MaxIterations=0 and MaxDuration=0, want at least one bound set for the bounded discriminator to apply", file)
+				}
+			case optional:
+				if prompt.Loop.Mode != PromptLoopModeOptional {
+					t.Errorf("%s: Loop.Mode = %q, want %q for the optional discriminator to apply", file, prompt.Loop.Mode, PromptLoopModeOptional)
+				}
 			}
 		})
 	}
@@ -2754,13 +3432,14 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 // exercises the current on-disk content; the render itself also proves the
 // YAML/template parses.
 func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-mention-driver.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/mention-driver.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-mention-driver.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/mention-driver.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -2782,10 +3461,10 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 			HasBeadsIssue: true,
 		},
 		Args: map[string]string{
-			"IssueID":     "mitto-abc",
-			"MentionTS":   "2026-07-16T10:00:00Z",
-			"MentionBody": "please fix the crash",
-			"Commit":      "true",
+			"IssueID":        "mitto-abc",
+			"MentionTS":      "2026-07-16T10:00:00Z",
+			"MentionBody":    "please fix the crash",
+			"SubmitStrategy": "Commit",
 		},
 		Iteration: cel.IterationContext{IsFirst: true},
 	}
@@ -2823,12 +3502,12 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	if !strings.Contains(outA, "[addressed-comment:") {
 		t.Errorf("branch (a): expected back-reference marker '[addressed-comment:' in output")
 	}
-	// Commit=true branch: git-add-by-path guidance must render, "do NOT commit" must not.
+	// SubmitStrategy=Commit branch: git-add-by-path guidance must render, "do NOT commit" must not.
 	if !strings.Contains(outA, "git add <file>") {
-		t.Errorf("branch (a): expected Commit=true git-add guidance in output; got:\n%s", outA)
+		t.Errorf("branch (a): expected SubmitStrategy=Commit git-add guidance in output; got:\n%s", outA)
 	}
 	if strings.Contains(outA, "do NOT commit") {
-		t.Errorf("branch (a): Commit=true rendered the Commit=false 'do NOT commit' copy")
+		t.Errorf("branch (a): SubmitStrategy=Commit rendered the SubmitStrategy=None 'do NOT commit' copy")
 	}
 	// The router must NOT do the phase work inline — it must never contain
 	// `bd update ... --add-label mention-{investigated|planned|implemented|answered}`.
@@ -2843,13 +3522,13 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 		}
 	}
 
-	// (b) Arg-only context, Commit=false.
+	// (b) Arg-only context, SubmitStrategy=None.
 	ctxB := &cel.PromptEnabledContext{
 		Args: map[string]string{
-			"IssueID":     "mitto-xyz",
-			"MentionTS":   "2026-07-16T11:00:00Z",
-			"MentionBody": "how do I run tests?",
-			"Commit":      "false",
+			"IssueID":        "mitto-xyz",
+			"MentionTS":      "2026-07-16T11:00:00Z",
+			"MentionBody":    "how do I run tests?",
+			"SubmitStrategy": "None",
 		},
 		Iteration: cel.IterationContext{IsLoop: true},
 	}
@@ -2858,10 +3537,10 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
 	}
 	if !strings.Contains(outB, "do NOT commit") {
-		t.Errorf("branch (b): expected Commit=false 'do NOT commit' copy in output; got:\n%s", outB)
+		t.Errorf("branch (b): expected SubmitStrategy=None 'do NOT commit' copy in output; got:\n%s", outB)
 	}
 	if strings.Contains(outB, "git add <file>") {
-		t.Errorf("branch (b): Commit=false rendered the Commit=true git-add guidance")
+		t.Errorf("branch (b): SubmitStrategy=None rendered the SubmitStrategy=Commit git-add guidance")
 	}
 	if !strings.Contains(outB, `"IssueID": "mitto-xyz"`) {
 		t.Errorf("branch (b): expected resolved target 'mitto-xyz' passed as IssueID; got:\n%s", outB)
@@ -2884,97 +3563,754 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 	}
 }
 
-// TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments reproduces mitto-rtdr.
+// TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments reproduces mitto-rtdr,
+// updated for the mitto-cwz.3 rename of .Args.Commit -> .Args.SubmitStrategy.
 //
-// beads-issue-loop-processing.prompt.yaml spawns per-mention (§A), per-bug (§B) and
-// per-feature (§C) child conversations, all with loop_prompt_name and
-// loop_trigger: onCompletion — i.e. their onCompletion re-fires must render the
+// beads-issue-loop-processing.prompt.yaml spawns per-mention (SS A), per-bug (SS B) and
+// per-feature (SS C) child conversations, all with loop_prompt_name and
+// loop_trigger: onCompletion -- i.e. their onCompletion re-fires must render the
 // loop body with the same .Args as the initial run. In internal/mcpserver the
 // initial-prompt path reads input.Arguments (tools_conversation_new.go:651)
 // while the loop-body path reads a separate input.LoopArguments field
-// (:538 → session.LoopPrompt.Arguments). If the spawn block passes only
+// (:538 -> session.LoopPrompt.Arguments). If the spawn block passes only
 // arguments: and not loop_arguments:, every re-fire renders the loop body with
-// .Args = nil (missingkey=zero → .Args.Commit == ""), which in the loop-body
-// phase-dispatch template's positive-match gate
-// (`{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}`) resolves to
-// "false" — silently disabling commits.
+// .Args = nil (missingkey=zero => .Args.SubmitStrategy == ""), which in the
+// loop-body phase-dispatch templates' default-on gate
+// (`{{ $commit := ne $submit "None" }}`) still resolves to "commit" for an
+// empty string -- so an unmirrored spawn does not silently disable commits the
+// way the old positive-match `eq .Args.Commit "true"` gate did. The invariant
+// this test pins is narrower but still real: the spawn block must literally
+// mirror the SAME resolved SubmitStrategy value into both `arguments:` and
+// `loop_arguments:`, for every value the picker can produce ("Commit",
+// "Pull Request", "None") and for the unset case (default-on fallback to
+// "Commit") -- a spawn block that mirrors the literal into `arguments:` only,
+// or mirrors a stale/different value into `loop_arguments:`, would still pass
+// a "value present somewhere in the block" check but desyncs the initial run
+// from every re-fire.
 //
-// The reproduction: render the orchestrator body with .Args.Commit = "true" and
-// assert each of the §A, §B, §C spawn blocks includes BOTH `arguments:` AND
-// `loop_arguments:` fields — with the resolved Commit value. The current
-// template only sets `arguments:`, so this test fails and pins the bug in place
-// until fix layer 1 lands.
+// The reproduction: render the orchestrator body with each SubmitStrategy
+// value (including unset) and assert each of the SS A, SS B, SS C spawn blocks
+// includes BOTH `arguments:` AND `loop_arguments:` fields, with the identical
+// resolved SubmitStrategy literal on both sides.
 func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-loop-processing.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issues/loop-processing.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-loop-processing.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issues/loop-processing.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
 	body := prompt.Content
 
-	ctx := &cel.PromptEnabledContext{
-		Session: cel.SessionContext{
-			ID:            "orch-1",
-			BeadsIssue:    "",
-			HasBeadsIssue: false,
+	// The three named-prompt spawn blocks -- one per section. Each maps to a
+	// loop_prompt_name whose loop body renders on onCompletion re-fires.
+	sections := []struct {
+		section    string // section label for error messages
+		promptName string // prompt_name string that anchors the spawn block
+	}{
+		{"section A", `prompt_name: "Mention — driver",`},
+		{"section B", `prompt_name: "Loop fixing bug",`},
+		{"section C", `prompt_name: "Loop implementing feature",`},
+	}
+
+	// cases covers the three SubmitStrategy picker values plus the unset case
+	// (default-on fallback to "Commit" per the template's
+	// `{{ if .Args.SubmitStrategy }}...{{ else }}Commit{{ end }}` literal).
+	cases := []struct {
+		name    string
+		args    map[string]string
+		wantVal string
+		// wantInstr, when non-empty, is the AdditionalInstructions literal that
+		// must be mirrored into both sides alongside SubmitStrategy. The
+		// operator's instructions only reach the §A/§B/§C drivers (and from
+		// there their phase prompts) through the spawn maps, so an unmirrored
+		// value silently drops them on every onCompletion re-fire.
+		wantInstr string
+	}{
+		{"unset defaults to Commit", map[string]string{}, "Commit", ""},
+		{"Commit", map[string]string{"SubmitStrategy": "Commit"}, "Commit", ""},
+		{"Pull Request", map[string]string{"SubmitStrategy": "Pull Request"}, "Pull Request", ""},
+		{"None", map[string]string{"SubmitStrategy": "None"}, "None", ""},
+		{
+			"AdditionalInstructions propagated",
+			map[string]string{"SubmitStrategy": "Commit", "AdditionalInstructions": "Only touch pkg/foo"},
+			"Commit",
+			"Only touch pkg/foo",
 		},
-		Args: map[string]string{"Commit": "true"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &cel.PromptEnabledContext{
+				Session: cel.SessionContext{
+					ID:            "orch-1",
+					BeadsIssue:    "",
+					HasBeadsIssue: false,
+				},
+				Args: tc.args,
+			}
+			funcs := cel.BuildTemplateFuncMap(ctx)
+			out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
+			if rerr != nil {
+				t.Fatalf("RenderPromptTemplate: %v", rerr)
+			}
+
+			for _, sec := range sections {
+				anchor := strings.Index(out, sec.promptName)
+				if anchor < 0 {
+					t.Errorf("%s: spawn block anchor %q not found in rendered orchestrator; got:\n%s",
+						sec.section, sec.promptName, out)
+					continue
+				}
+				// The spawn block is a compact mitto_conversation_new(...) call -- bound
+				// the window generously to the next closing paren.
+				end := strings.Index(out[anchor:], "\n  )\n")
+				if end < 0 {
+					end = len(out) - anchor
+					if end > 2000 {
+						end = 2000
+					}
+				}
+				block := out[anchor : anchor+end]
+
+				argsIdx := strings.Index(block, "arguments:")
+				loopArgsIdx := strings.Index(block, "loop_arguments:")
+				if argsIdx < 0 {
+					t.Errorf("%s: spawn block is missing an `arguments:` field entirely; block:\n%s",
+						sec.section, block)
+					continue
+				}
+				if loopArgsIdx < 0 {
+					t.Errorf("%s: spawn block sets loop_prompt_name + onCompletion but is missing `loop_arguments:` -- every re-fire will render the loop body with an empty .Args. Mirror `arguments:` into `loop_arguments:`. Block:\n%s",
+						sec.section, block)
+					continue
+				}
+
+				// Split the block at the loop_arguments: anchor so the two
+				// halves can be checked independently -- a block that only
+				// sets the literal in `arguments:` (and leaves
+				// `loop_arguments:` referencing something else, or omits the
+				// key) must fail here, not just "somewhere in the block".
+				argsSide := block[argsIdx:loopArgsIdx]
+				loopArgsSide := block[loopArgsIdx:]
+
+				wantLiteral := `"SubmitStrategy": "` + tc.wantVal + `"`
+				if !strings.Contains(argsSide, wantLiteral) {
+					t.Errorf("%s: arguments: side missing %s; args-side:\n%s", sec.section, wantLiteral, argsSide)
+				}
+				if !strings.Contains(loopArgsSide, wantLiteral) {
+					t.Errorf("%s: loop_arguments: side missing %s -- re-fires would desync from the initial run; loop_arguments-side:\n%s", sec.section, wantLiteral, loopArgsSide)
+				}
+
+				if tc.wantInstr != "" {
+					wantInstrLiteral := `"AdditionalInstructions": "` + tc.wantInstr + `"`
+					if !strings.Contains(argsSide, wantInstrLiteral) {
+						t.Errorf("%s: arguments: side missing %s; args-side:\n%s", sec.section, wantInstrLiteral, argsSide)
+					}
+					if !strings.Contains(loopArgsSide, wantInstrLiteral) {
+						t.Errorf("%s: loop_arguments: side missing %s -- re-fires would drop the operator's instructions; loop_arguments-side:\n%s", sec.section, wantInstrLiteral, loopArgsSide)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestIssueLoopProcessing_CoalesceDuringBusyIsFalse reproduces mitto-cwg.
+//
+// beads-issue-loop-processing.prompt.yaml is an onTasks supervisor: it fires on
+// beads changes and spawns worker children that themselves mutate .beads/
+// (add labels, close). At quiescence, LoopRunner.fireTasksRebase (in
+// internal/conversation/loop_runner_tasks.go) branches on
+// loop.ShouldCoalesceDuringBusy(): the default (CoalesceDuringBusy *bool == nil
+// → true, see internal/session/loop.go) overwrites the pre-run baseline with
+// the post-mutation snapshot silently, so the supervisor never sees the
+// terminal-label / close events its own children produced. The opt-in re-fire
+// path (maybeFireAccumulatedDelta) only runs when CoalesceDuringBusy is *false.
+//
+// The sibling builtin beads/investigate-all-more.prompt.yaml already declares
+// `coalesceDuringBusy: false` in its loop block for exactly this reason
+// (mitto-dmb). This test pins that same convention onto the L1 supervisor
+// prompt. It fails until the loop frontmatter adds `coalesceDuringBusy: false`;
+// after the fix, the parser resolves CoalesceDuringBusy to *false and the
+// assertion passes.
+func TestIssueLoopProcessing_CoalesceDuringBusyIsFalse(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	builtinDir := "../../config/prompts/builtin"
+	name := "beads-issues/loop-processing.prompt.yaml"
+	path := filepath.Join(builtinDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatalf("expected a loop block; got nil")
+	}
+	// Guard: coalesceDuringBusy is only meaningful for trigger: onTasks. If this
+	// ever regresses, the rest of the assertion is moot — fail loudly.
+	if !prompt.Loop.hasTrigger("onTasks") {
+		t.Fatalf("loop.trigger = %v, want to include %q (mitto-cwg guard)",
+			prompt.Loop.Trigger, "onTasks")
+	}
+	if !prompt.Loop.hasTrigger("schedule") {
+		t.Fatalf("loop.trigger = %v, want hourly schedule fallback alongside onTasks", prompt.Loop.Trigger)
+	}
+	if got := prompt.Loop.FrequencyValue(); got != 60 {
+		t.Errorf("loop.schedule.value = %d, want 60", got)
+	}
+	if got := prompt.Loop.FrequencyUnit(); got != "minutes" {
+		t.Errorf("loop.schedule.unit = %q, want %q", got, "minutes")
+	}
+	if prompt.Loop.TasksCoalesceDuringBusy() == nil {
+		t.Fatalf("loop.onTasks.coalesceDuringBusy is unset; the deployed supervisor takes the silent-swallow branch at fireTasksRebase (mitto-cwg). Declare `coalesceDuringBusy: false` in the loop.onTasks: frontmatter of %s, mirroring beads/investigate-all-more.prompt.yaml", name)
+	}
+	if *prompt.Loop.TasksCoalesceDuringBusy() {
+		t.Errorf("loop.onTasks.coalesceDuringBusy = true, want false (mitto-cwg): supervisor must react to its own subtree's beads mutations, not silently absorb them into a baseline rebase")
+	}
+}
+
+// TestIssueLoopProcessing_EpicReaperPresent pins mitto-qxb: the L1 orchestrator
+// (config/prompts/builtin/beads-issues/loop-processing.prompt.yaml) must contain
+// an activity-local epic-reaper in Step 2P that auto-closes epics whose children
+// are all closed, including when the final leaf was already closed by its driver.
+//
+// The reaper is a prompt-template edit (bash inside the rendered body executed
+// by the LLM at runtime), so behavioural coverage lives in the live orchestrator.
+// This test locks the *structural* contract so an accidental prompt-edit that
+// drops any of the reaper's load-bearing pieces fails CI:
+//
+//   - Step 2P captures closed_this_pass and reaped_child_beads, then merges them
+//     with the current onTasks touched-bead delta for bounded reconciliation.
+//   - A "Reap epics whose children are all closed" sub-block is rendered when
+//     bugs and/or features are enabled — this is the reaper itself. It must
+//     derive touched_epics, guard on epic|open, count non-closed children via
+//     bd children, invoke bd close with the canonical reason, and enforce a
+//     hard cap (20) with overflow logging.
+//   - Step 2T's transparency table header includes Reaped-epics=<count>.
+//   - Step 6's mitto_ui_notify message includes Reaped-epics: <count>.
+//   - The stale "human owns closing the epic" language is gone from the intro
+//     paragraph and the "Expand epics; don't spawn them" Guidelines bullet
+//     (those two spots now describe the reaper closing the epic).
+func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	builtinDir := "../../config/prompts/builtin"
+	name := "beads-issues/loop-processing.prompt.yaml"
+	path := filepath.Join(builtinDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+
+	// Render with both bugs and features enabled — that is the default
+	// deployment (FixBugs="true", WorkOnFeatures="true") and the only mode
+	// where the reaper block is meaningful (it lives inside the same
+	// {{ if or ... }} guard as the terminal-label close loop).
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args:    map[string]string{"FixBugs": "true", "WorkOnFeatures": "true"},
+		Trigger: &cel.TriggerContext{OnTasks: &cel.TriggerOnTasksContext{Changes: cel.TasksChangesView{
+			Touched: []map[string]any{{
+				"id": "mitto-driver-closed", "status": "closed", "priority": 2, "title": "Already closed by driver",
+			}},
+		}}},
 	}
 	funcs := cel.BuildTemplateFuncMap(ctx)
-	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
+	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", prompt.Content, ctx, funcs)
 	if rerr != nil {
 		t.Fatalf("RenderPromptTemplate: %v", rerr)
 	}
 
-	// The three named-prompt spawn blocks — one per section. Each maps to a
-	// loop_prompt_name whose loop body renders on onCompletion re-fires.
-	sections := []struct {
-		section    string // §A / §B / §C label for error messages
-		promptName string // prompt_name string that anchors the spawn block
-	}{
-		{"§A", `prompt_name: "Mention — driver",`},
-		{"§B", `prompt_name: "Loop fixing bug",`},
-		{"§C", `prompt_name: "Loop implementing feature",`},
+	// --- Terminal-label loop tracks closed_this_pass ---
+	if !strings.Contains(out, "closed_this_pass=()") {
+		t.Errorf("expected the terminal-label close loop to initialise `closed_this_pass=()` so the reaper below can walk parents of just-closed children; not found in rendered body")
+	}
+	if !strings.Contains(out, `closed_this_pass+=("$id")`) {
+		t.Errorf("expected the terminal-label close loop to append closed bead IDs into closed_this_pass (`closed_this_pass+=(\"$id\")`); not found in rendered body")
+	}
+	if !strings.Contains(out, "reaped_child_beads=()") || !strings.Contains(out, `reaped_child_beads+=("<bead-id>")`) {
+		t.Errorf("expected Step 2P to retain linked bead IDs from reaped children for parent reconciliation")
 	}
 
-	for _, sec := range sections {
-		anchor := strings.Index(out, sec.promptName)
-		if anchor < 0 {
-			t.Errorf("%s: spawn block anchor %q not found in rendered orchestrator; got:\n%s",
-				sec.section, sec.promptName, out)
-			continue
+	// --- Reaper sub-block anchors ---
+	reaperHeader := "### Reap epics whose children are all closed"
+	anchor := strings.Index(out, reaperHeader)
+	if anchor < 0 {
+		t.Fatalf("expected Step 2P sub-heading %q in rendered body (mitto-qxb); not found — the epic-reaper block is missing", reaperHeader)
+	}
+	// Bound the reaper block to the next H3/H2 heading or the end of body.
+	tail := out[anchor+len(reaperHeader):]
+	nextH := len(tail)
+	for _, marker := range []string{"\n### ", "\n## "} {
+		if idx := strings.Index(tail, marker); idx >= 0 && idx < nextH {
+			nextH = idx
 		}
-		// The spawn block is a compact mitto_conversation_new(...) call — bound
-		// the window generously to the next closing paren.
-		end := strings.Index(out[anchor:], "\n  )\n")
-		if end < 0 {
-			end = len(out) - anchor
-			if end > 2000 {
-				end = 2000
+	}
+	block := tail[:nextH]
+
+	// Load-bearing pieces of the reaper bash: merge this pass's closures,
+	// reaped workers' linked beads, and the current onTasks delta; derive parent
+	// epics; guard on epic|open; count open children; close with the canonical
+	// reason; and enforce the 20/pass cap.
+	mustContain := []struct {
+		frag string
+		why  string
+	}{
+		{`touched_child_beads+=("mitto-driver-closed")`, "reaper must materialize the current onTasks touched-bead delta so driver-closed leaves remain visible"},
+		{`candidate_beads=("${closed_this_pass[@]}" "${reaped_child_beads[@]}" "${touched_child_beads[@]}")`, "reaper must union all three bounded reconciliation sources"},
+		{`for cid in "${candidate_beads[@]}"`, "reaper must inspect the union rather than only leaves closed by Step 2P itself"},
+		{`.[0].parent`, "reaper must read the .parent field from `bd show <id> --json` to find each closed child's owning epic"},
+		{`if [ "$kind" = "epic" ]`, "reaper must also consider a touched child-epic directly so nested epic closure propagates"},
+		{`"epic|open"`, "reaper must guard on issue_type==epic && status==open before closing (idempotency + type safety)"},
+		{`bd children`, "reaper must count non-closed children via `bd children <epic> --json` — the all-children-closed check"},
+		{`bd close "$epic_id"`, "reaper must actually close the epic via bd close"},
+		{"All children closed by L1 orchestrator pass", "reaper must use the canonical close reason from the plan/design"},
+		{"reap_cap=20", "reaper must enforce a hard cap of 20 reaped epics per pass (bounded blast radius)"},
+		{"Epic reaper cap", "reaper must log an overflow message when the 20/pass cap is hit so operators can see the backlog"},
+	}
+	for _, m := range mustContain {
+		if !strings.Contains(block, m.frag) {
+			t.Errorf("epic-reaper block is missing %q (%s); block:\n%s", m.frag, m.why, block)
+		}
+	}
+
+	// --- Step 2T transparency: Reaped-epics counter in the candidates header ---
+	if !strings.Contains(out, "Reaped-epics=<count>") {
+		t.Errorf("Step 2T candidates header must include `Reaped-epics=<count>` alongside A/B/C counts so reap actions surface in the transparency table (mitto-qxb acceptance criterion)")
+	}
+	if !strings.Contains(out, "Reaped epics:") {
+		t.Errorf("Step 2T must define a `Reaped epics:` bulleted list below the candidates table (rendered when the reaper closed any epics this pass)")
+	}
+
+	// --- Step 6 notification includes Reaped-epics count ---
+	if !strings.Contains(out, "Reaped-epics: <count from Step 2P epic-reaper") {
+		t.Errorf("Step 6 mitto_ui_notify message must include the `Reaped-epics: <count from Step 2P epic-reaper, 0 if none>` field so end-of-pass notifications report reaper activity")
+	}
+
+	// --- Stale "human owns closing the epic" language must be gone ---
+	stale := "human owns closing the epic"
+	if strings.Contains(out, stale) {
+		t.Errorf("rendered orchestrator still contains stale language %q — the reaper now closes the epic in the same pass; intro paragraph (Step 2) and Guidelines `Expand epics; don't spawn them` bullet must both be updated (mitto-qxb)", stale)
+	}
+}
+
+// TestIssueLoopProcessing_RecoversOrphanedInProgress pins mitto-1a0z: legacy
+// status=in_progress cannot remain a permanent blind spot in the L1 supervisor.
+// Recovery is deliberately conservative: terminal labels close through Step 2P;
+// otherwise only ownerless, non-epic records with no activity for 24h return to
+// open for normal verification. Staleness alone must never close a bead.
+func TestIssueLoopProcessing_RecoversOrphanedInProgress(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	name := "beads-issues/loop-processing.prompt.yaml"
+	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	ctx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args:    map[string]string{"FixBugs": "true", "WorkOnFeatures": "true"},
+	}
+	out, err := RenderPromptTemplate("loop-processing-in-progress-recovery", prompt.Content, ctx, cel.BuildTemplateFuncMap(ctx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate: %v", err)
+	}
+
+	for _, frag := range []string{
+		"## Step 2Q — Recover orphaned legacy `in_progress` beads",
+		"bd list --type bug --status open,in_progress --label fixed",
+		"bd list --status open,in_progress --label verified",
+		`select(.issue_type != "bug" and .issue_type != "epic")`,
+		"bd list --status in_progress --json",
+		`select(.issue_type != "epic")`,
+		`index("in-flight")) == null`,
+		`formal_owners=$(cat <<'OWNERS'`,
+		`grep -Fq "{$id}" <<<"$formal_owners"`,
+		"no non-archived conversation owner",
+		"bd comments \"$id\" --json",
+		"date -u -v-24H",
+		`[ -n "$last_activity" ]`,
+		`bd update "$id" --status open`,
+		`recovered_in_progress+=("$id")`,
+		"Recovered-in-progress: <count from Step 2Q",
+	} {
+		if !strings.Contains(out, frag) {
+			t.Errorf("rendered prompt missing in_progress recovery contract %q", frag)
+		}
+	}
+
+	start := strings.Index(out, "## Step 2Q — Recover orphaned legacy `in_progress` beads")
+	if start < 0 {
+		t.Fatalf("could not find Step 2Q recovery block")
+	}
+	end := strings.Index(out[start:], "\n## Step 2R")
+	if end < 0 {
+		t.Fatalf("could not isolate Step 2Q recovery block")
+	}
+	block := out[start : start+end]
+	if strings.Contains(block, `bd close "$id"`) {
+		t.Errorf("Step 2Q must return stale orphaned beads to open, never close them from staleness alone")
+	}
+
+	raw := string(data)
+	rawStart := strings.Index(raw, "## Step 2Q — Recover orphaned legacy `in_progress` beads")
+	if rawStart < 0 {
+		t.Fatalf("could not find raw Step 2Q recovery block")
+	}
+	rawEnd := strings.Index(raw[rawStart:], "\n  ## Step 2R")
+	if rawEnd < 0 {
+		t.Fatalf("could not isolate raw Step 2Q recovery block")
+	}
+	rawBlock := raw[rawStart : rawStart+rawEnd]
+	for _, ownerSource := range []string{"{{ .Children.MCPText }}", "{{ .Workspace.Peers.AllText }}"} {
+		if !strings.Contains(rawBlock, ownerSource) {
+			t.Errorf("Step 2Q formal-owner snapshot missing %q", ownerSource)
+		}
+	}
+}
+
+// TestTerminalParentClosureGuards pins mitto-0cxa: terminal phase labels describe
+// the current bead's work, but must not close a parent while child work remains.
+// The L1 sweep and both L2 Done branches fail closed on bd children; the review
+// phase never bypasses that centralized guard. Step 2R must also release malformed
+// metadata-less in-flight claims, which otherwise strand those children forever.
+func TestTerminalParentClosureGuards(t *testing.T) {
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin/beads-issues", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	supervisor := read("loop-processing.prompt.yaml")
+	if got := strings.Count(supervisor, `open_children=$(bd children "$id" --json`); got != 2 {
+		t.Errorf("terminal sweep child guards = %d, want 2 (bug + non-bug)", got)
+	}
+	if got := strings.Count(supervisor, `if [ "${open_children:-1}" -ne 0 ]`); got < 2 {
+		t.Errorf("terminal sweep fail-closed branches = %d, want at least 2", got)
+	}
+	for _, frag := range []string{
+		"**malformed claims**",
+		`grep -Fq "{$id}" <<<"$malformed_claim_owners"`,
+		`select((.metadata.claimed_by // "") == "" or (.metadata.claim_heartbeat_at // "") == "")`,
+		"reason=malformed_claim",
+	} {
+		if !strings.Contains(supervisor, frag) {
+			t.Errorf("supervisor missing malformed-claim recovery contract %q", frag)
+		}
+	}
+
+	for _, name := range []string{"loop-implementing-feature.prompt.yaml", "loop-fixing-bug.prompt.yaml"} {
+		body := read(name)
+		guard := strings.Index(body, `open_children=$(bd children {{ $target }} --json`)
+		close := strings.Index(body, `bd close {{ $target }}`)
+		if guard < 0 || close < 0 || guard > close {
+			t.Errorf("%s must fail-closed on non-closed children before bd close", name)
+		}
+		for _, frag := range []string{"terminal **parent**, not", "leave the bead open", "eventual parent close after every child is closed"} {
+			if !strings.Contains(body, frag) {
+				t.Errorf("%s missing parent handoff contract %q", name, frag)
 			}
 		}
-		block := out[anchor : anchor+end]
-
-		if !strings.Contains(block, "arguments:") {
-			t.Errorf("%s: spawn block is missing an `arguments:` field entirely; block:\n%s",
-				sec.section, block)
-		}
-		if !strings.Contains(block, "loop_arguments:") {
-			t.Errorf("%s: spawn block sets loop_prompt_name + onCompletion but is missing `loop_arguments:` — every re-fire will render the loop body with an empty .Args. Mirror `arguments:` into `loop_arguments:`. Block:\n%s",
-				sec.section, block)
-		}
-		// loop_arguments must carry the resolved Commit value so the
-		// positive-match gate in the loop body resolves correctly on every
-		// re-fire, not just the initial prompt.
-		if strings.Contains(block, "loop_arguments:") &&
-			!strings.Contains(block, `"Commit": "true"`) {
-			t.Errorf("%s: rendered .Args.Commit=\"true\" but no `\"Commit\": \"true\"` in the spawn block; block:\n%s",
-				sec.section, block)
+		if strings.Contains(body, "**unconditionally close\n  the bead**") {
+			t.Errorf("%s retains stale unconditional-close instruction", name)
 		}
 	}
+
+	review := read("feature-phase-review.prompt.yaml")
+	if strings.Contains(review, `bd close {{ $target }}`) {
+		t.Errorf("feature review phase must not bypass the driver's child-aware Done branch")
+	}
+	if !strings.Contains(review, "verifies that every direct child is closed") {
+		t.Errorf("feature review phase must explain child-aware centralized closure")
+	}
+}
+
+// TestRenderPromptTemplate_Fragments verifies the fragment-attach behavior wired
+// into RenderPromptTemplate in mitto-g61.3: when a FragmentRegistry is installed
+// via SetCurrentFragments, every entry is attached to the template set as an
+// associated sub-template before the caller body is parsed, so
+// `{{ template "name" . }}` in the body resolves at render time.
+//
+// Covers the three bead acceptance criteria:
+//
+//	(a) basic render — {{ template "test/hello" . }} against a registry entry
+//	(b) data narrowing — {{ template "test/args-only" .Args }} renders with
+//	    the fragment referencing .Foo (not .Args.Foo)
+//	(c) FuncMap inheritance — the fragment uses {{ Arg "X" "def" }} (a builtin
+//	    from cel.BuildTemplateFuncMap) and resolves against the caller's .Args
+//
+// Also asserts (d) nil-registry passthrough (behavior bytewise-identical to
+// pre-fragment renders) and (e) fail-closed on a fragment parse error.
+func TestRenderPromptTemplate_Fragments(t *testing.T) {
+	// installFragments installs r as the package-wide registry for the test
+	// and clears it on teardown so no other test observes it.
+	installFragments := func(t *testing.T, r *FragmentRegistry) {
+		t.Helper()
+		SetCurrentFragments(r)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+	}
+
+	// newTestRegistry builds a FragmentRegistry directly from a name→body map.
+	// FragmentRegistry has no public AddOrReplace helper — LoadFragmentsFromDir
+	// is the only supported ingest path — but the entries field is
+	// package-internal so tests inside the prompts package can construct
+	// synthetic registries this way (matches the pattern used by
+	// TestFragmentRegistry_*).
+	newTestRegistry := func(entries map[string]string) *FragmentRegistry {
+		return &FragmentRegistry{entries: entries}
+	}
+
+	t.Run("basic-render", func(t *testing.T) {
+		reg := newTestRegistry(map[string]string{
+			"test/hello": "Hello {{ .Name }}",
+		})
+		installFragments(t, reg)
+
+		body := `intro | {{ template "test/hello" . }} | outro`
+		data := struct{ Name string }{Name: "world"}
+		got, err := RenderPromptTemplate("basic", body, data, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "intro | Hello world | outro"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("data-narrowing", func(t *testing.T) {
+		// Fragment references .Foo directly (not .Args.Foo) — proving the body
+		// can pass a narrowed sub-context to the fragment.
+		reg := newTestRegistry(map[string]string{
+			"test/args-only": "foo={{ .Foo }}",
+		})
+		installFragments(t, reg)
+
+		body := `{{ template "test/args-only" .Args }}`
+		data := struct {
+			Args map[string]string
+		}{Args: map[string]string{"Foo": "bar"}}
+		got, err := RenderPromptTemplate("narrowing", body, data, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := "foo=bar"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("funcmap-inheritance", func(t *testing.T) {
+		// Fragment uses the Arg helper from cel.BuildTemplateFuncMap. It must
+		// resolve inside the fragment because associated sub-templates inherit
+		// the parent's FuncMap.
+		reg := newTestRegistry(map[string]string{
+			"test/arg-helper": `x={{ Arg "X" "def" }}`,
+		})
+		installFragments(t, reg)
+
+		body := `{{ template "test/arg-helper" . }}`
+
+		// (i) With Arg set → helper returns the caller's value.
+		ctxSet := &cel.PromptEnabledContext{Args: map[string]string{"X": "provided"}}
+		got, err := RenderPromptTemplate("funcmap-set", body, ctxSet, cel.BuildTemplateFuncMap(ctxSet))
+		if err != nil {
+			t.Fatalf("unexpected error (X set): %v", err)
+		}
+		if got != "x=provided" {
+			t.Errorf("Arg set: got %q, want %q", got, "x=provided")
+		}
+
+		// (ii) Without Arg set → helper falls back to the fragment's default.
+		ctxAbsent := &cel.PromptEnabledContext{Args: map[string]string{}}
+		got, err = RenderPromptTemplate("funcmap-absent", body, ctxAbsent, cel.BuildTemplateFuncMap(ctxAbsent))
+		if err != nil {
+			t.Fatalf("unexpected error (X absent): %v", err)
+		}
+		if got != "x=def" {
+			t.Errorf("Arg absent: got %q, want %q", got, "x=def")
+		}
+	})
+
+	t.Run("nil-registry-passthrough", func(t *testing.T) {
+		// Explicitly clear any registry a previous parallel subtest might have
+		// installed (defensive — subtests above use t.Cleanup, but this
+		// documents the invariant).
+		SetCurrentFragments(nil)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+
+		// A body that uses template syntax but no fragments must render
+		// identically to the pre-fragment behavior.
+		body := "Hello {{ .Name }}"
+		data := struct{ Name string }{Name: "world"}
+		got, err := RenderPromptTemplate("nil-reg", body, data, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "Hello world" {
+			t.Errorf("got %q, want %q", got, "Hello world")
+		}
+	})
+
+	t.Run("fragment-parse-error-fails-closed", func(t *testing.T) {
+		// LoadFragmentsFromDir validates fragment bodies at load time so a
+		// broken fragment cannot normally reach the registry. But if one is
+		// installed directly (e.g. by a test or a broken bootstrap), the
+		// attach loop in RenderPromptTemplate must fail closed with a
+		// wrapped error that names the offending fragment.
+		reg := newTestRegistry(map[string]string{
+			"test/broken": "{{ if .Flag }}oops", // missing {{ end }}
+		})
+		installFragments(t, reg)
+
+		body := "any {{ .X }} body"
+		got, err := RenderPromptTemplate("fail-closed", body, struct{ X string }{X: "y"}, nil)
+		if err == nil {
+			t.Fatalf("expected error, got nil (output=%q)", got)
+		}
+		if !strings.Contains(err.Error(), "fragment") {
+			t.Errorf("error %q should mention 'fragment'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "test/broken") {
+			t.Errorf("error %q should name the offending fragment %q", err.Error(), "test/broken")
+		}
+		if got != "" {
+			t.Errorf("on error want empty output, got %q", got)
+		}
+	})
+}
+
+// TestValidatePromptTemplateSyntax_Fragments pins mitto-g61.4: load-time
+// validation attaches the fragment registry before parsing the body, so a
+// reference to an unknown fragment fails at parse time (same class of failure
+// as an unbalanced `{{ ... }}`), while a reference to a known fragment
+// validates cleanly.
+//
+// Covers: (a) unknown fragment fails with a wrapped error naming the prompt,
+// (b) known fragment validates, (c) nil registry (default) still validates a
+// syntactically-valid body without fragment refs.
+func TestValidatePromptTemplateSyntax_Fragments(t *testing.T) {
+	newTestRegistry := func(entries map[string]string) *FragmentRegistry {
+		return &FragmentRegistry{entries: entries}
+	}
+	installFragments := func(t *testing.T, r *FragmentRegistry) {
+		t.Helper()
+		SetCurrentFragments(r)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+	}
+
+	t.Run("unknown-fragment-fails", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello",
+		}))
+		body := `{{ template "test/unknown" . }}`
+		err := ValidatePromptTemplateSyntax("caller", body)
+		if err == nil {
+			t.Fatalf("expected error for unknown fragment reference, got nil")
+		}
+		if !strings.Contains(err.Error(), "caller") {
+			t.Errorf("error %q should mention the prompt name %q", err.Error(), "caller")
+		}
+	})
+
+	t.Run("known-fragment-validates", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello {{ .Name }}",
+		}))
+		body := `intro {{ template "test/known" . }} outro`
+		if err := ValidatePromptTemplateSyntax("caller", body); err != nil {
+			t.Fatalf("expected nil error for known fragment reference, got: %v", err)
+		}
+	})
+
+	t.Run("nil-registry-passthrough", func(t *testing.T) {
+		SetCurrentFragments(nil)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+		// Body has template syntax but no fragment refs — nil registry must
+		// preserve pre-fragment behavior (validates cleanly).
+		if err := ValidatePromptTemplateSyntax("caller", "hello {{ .Name }}"); err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	})
+
+	t.Run("fragment-parse-error-fails-closed", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/broken": "{{ if .Flag }}oops", // missing {{ end }}
+		}))
+		body := `hello {{ .X }}`
+		err := ValidatePromptTemplateSyntax("caller", body)
+		if err == nil {
+			t.Fatalf("expected error when an installed fragment fails to parse, got nil")
+		}
+		if !strings.Contains(err.Error(), "test/broken") {
+			t.Errorf("error %q should name the offending fragment %q", err.Error(), "test/broken")
+		}
+	})
+}
+
+// TestPrecompileTemplateConds_Fragments mirrors the fragment attachment
+// contract on the sibling path exercised by ParsePromptFile. Unknown fragment
+// refs must fail at precompile so a broken prompt file is rejected at load
+// (not silently deferred to render time). Known fragments must succeed even
+// though the fragment body references funcs from the FuncMap (Cond/When are
+// stubbed to keep precompile side-effect free).
+func TestPrecompileTemplateConds_Fragments(t *testing.T) {
+	newTestRegistry := func(entries map[string]string) *FragmentRegistry {
+		return &FragmentRegistry{entries: entries}
+	}
+	installFragments := func(t *testing.T, r *FragmentRegistry) {
+		t.Helper()
+		SetCurrentFragments(r)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+	}
+
+	t.Run("unknown-fragment-fails", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello",
+		}))
+		body := `pre {{ template "test/unknown" . }} post`
+		err := PrecompileTemplateConds("caller", body)
+		if err == nil {
+			t.Fatalf("expected error for unknown fragment reference, got nil")
+		}
+		if !strings.Contains(err.Error(), "caller") {
+			t.Errorf("error %q should mention the prompt name %q", err.Error(), "caller")
+		}
+	})
+
+	t.Run("known-fragment-succeeds", func(t *testing.T) {
+		installFragments(t, newTestRegistry(map[string]string{
+			"test/known": "hello",
+		}))
+		body := `{{ template "test/known" . }}`
+		if err := PrecompileTemplateConds("caller", body); err != nil {
+			t.Fatalf("expected nil error for known fragment reference, got: %v", err)
+		}
+	})
+
+	t.Run("nil-registry-passthrough", func(t *testing.T) {
+		SetCurrentFragments(nil)
+		t.Cleanup(func() { SetCurrentFragments(nil) })
+		if err := PrecompileTemplateConds("caller", "hello {{ .Session.ID }}"); err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+	})
 }

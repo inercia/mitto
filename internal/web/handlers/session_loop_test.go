@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -201,11 +202,14 @@ func TestHandleSessionLoop_OnCompletionRoundTrip(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:             "keep going",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       30,
 		MaxDurationSeconds: 3600,
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
 	}
@@ -232,7 +236,7 @@ func TestHandleSessionLoop_OnCompletionDelayClampedOnPut(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 1, // below the default floor (5)
 	})
 
@@ -256,7 +260,7 @@ func TestHandleSessionLoop_PatchPartialPreservesOnCompletionFields(t *testing.T)
 	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 30,
 	})
 
@@ -275,6 +279,9 @@ func TestHandleSessionLoop_PatchPartialPreservesOnCompletionFields(t *testing.T)
 	if err != nil {
 		t.Fatalf("Get loop after PATCH: %v", err)
 	}
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if stored.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger after PATCH = %q, want %q (must not be clobbered)", stored.Trigger, session.TriggerOnCompletion)
 	}
@@ -302,7 +309,7 @@ func TestHandleSessionLoop_PatchResetCounters(t *testing.T) {
 	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:             "keep going",
 		Enabled:            true,
-		Trigger:            session.TriggerOnCompletion,
+		Triggers:           []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds:       30,
 		MaxDurationSeconds: 60,
 	})
@@ -369,7 +376,7 @@ func TestHandleSessionLoop_PatchDelayClamped(t *testing.T) {
 	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
-		Trigger:      session.TriggerOnCompletion,
+		Triggers:     []session.LoopTrigger{session.TriggerOnCompletion},
 		DelaySeconds: 30,
 	})
 
@@ -393,7 +400,7 @@ func TestHandleSessionLoop_PatchDelayClamped(t *testing.T) {
 }
 
 // TestHandleSessionLoop_MakeLoopDraft verifies the "Make loop" frontend flow:
-// PUT /api/sessions/{id}/loop with a draft body (enabled:false, prompt:"(pending)")
+// PUT /api/sessions/{id}/loop with a draft body (enabled:false, empty prompt)
 // on an existing top-level session succeeds and stores the draft config.
 func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
 	store, h := newLoopStore(t)
@@ -409,7 +416,6 @@ func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
 
 	// Draft body — mirrors what handleMakeLoop in app.js sends.
 	body, _ := json.Marshal(LoopPromptRequest{
-		Prompt:    "(pending)",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   false,
 	})
@@ -432,8 +438,80 @@ func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
 	if stored.Enabled {
 		t.Errorf("Draft loop should have Enabled=false, got true")
 	}
-	if stored.Prompt != "(pending)" {
-		t.Errorf("Draft loop prompt = %q, want %q", stored.Prompt, "(pending)")
+	if stored.Prompt != "" {
+		t.Errorf("Draft loop prompt = %q, want empty", stored.Prompt)
+	}
+}
+
+// TestHandleSessionLoop_PendingPlaceholderNormalized verifies that a legacy
+// client sending the "(pending)" draft placeholder has it normalised to an
+// empty prompt on write, so the runner can never deliver it literally.
+func TestHandleSessionLoop_PendingPlaceholderNormalized(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-pending-normalized"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Prompt:    "(pending)",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   false,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT loop: Status = %d, want 200. Body: %s", w.Code, w.Body.String())
+	}
+
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after PUT: %v", err)
+	}
+	if stored.Prompt != "" {
+		t.Errorf("Stored prompt = %q, want empty (placeholder normalized)", stored.Prompt)
+	}
+}
+
+// TestHandleSessionLoop_EnableWithoutPromptRejected verifies that enabling a
+// loop that has neither a free-text body nor a prompt name is rejected, so a
+// draft can never start firing an empty prompt.
+func TestHandleSessionLoop_EnableWithoutPromptRejected(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-enable-no-prompt"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PUT enabled loop without prompt: Status = %d, want %d. Body: %s",
+			w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 
@@ -806,12 +884,15 @@ func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
 	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:          "review beads changes",
 		Enabled:         true,
-		Trigger:         session.TriggerOnTasks,
+		Triggers:        []session.LoopTrigger{session.TriggerOnTasks},
 		Condition:       &cond,
 		ConditionPreset: &preset,
 		CooldownSeconds: &cooldown,
 	})
 
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
 	if got.Trigger != session.TriggerOnTasks {
 		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnTasks)
 	}
@@ -850,7 +931,174 @@ func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
 		t.Errorf("CooldownSeconds after PATCH = %d, want preserved %d", stored.CooldownSeconds, cooldown)
 	}
 	if !stored.IsOnTasks() {
-		t.Errorf("Trigger after PATCH = %q, want onTasks (must not be clobbered)", stored.Trigger)
+		t.Errorf("Trigger after PATCH = %q, want onTasks (must not be clobbered)", stored.EffectiveTriggers())
+	}
+}
+
+// TestHandleSessionLoop_OnChildRoundTrip verifies that the onChild trigger and
+// its child_events field round-trip through PUT and PATCH (mitto-987y.6).
+// onChild must be armed alongside another trigger (see
+// TestHandleSessionLoop_OnChildAloneRejected), so this seeds [onTasks, onChild].
+func TestHandleSessionLoop_OnChildRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-onchild-roundtrip"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:      "react to child",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+		ChildEvents: []session.ChildEvent{session.ChildEventAnyDeleted},
+	})
+
+	if !got.HasTrigger(session.TriggerOnChild) {
+		t.Errorf("Triggers = %v, want onChild included", got.Triggers)
+	}
+	if len(got.ChildEvents) != 1 || got.ChildEvents[0] != session.ChildEventAnyDeleted {
+		t.Errorf("ChildEvents = %v, want [anyDeleted]", got.ChildEvents)
+	}
+
+	// PATCH: replace child_events wholesale.
+	newEvents := []session.ChildEvent{session.ChildEventAnyEndResponse, session.ChildEventAnyDeleted}
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{ChildEvents: &newEvents})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after PATCH: %v", err)
+	}
+	if len(stored.ChildEvents) != 2 {
+		t.Errorf("ChildEvents after PATCH = %v, want both events", stored.ChildEvents)
+	}
+	if !stored.IsOnChild() {
+		t.Errorf("Triggers after PATCH = %v, want onChild preserved (must not be clobbered)", stored.Triggers)
+	}
+
+	// PATCH with a nil ChildEvents must leave the stored list unchanged.
+	patchBody2, _ := json.Marshal(LoopPromptPatchRequest{}) // nil ChildEvents
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionLoop(w2, req2, sid, "")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("PATCH (nil child_events) loop: Status = %d, want %d. Body: %s", w2.Code, http.StatusOK, w2.Body.String())
+	}
+	stored2, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after nil-PATCH: %v", err)
+	}
+	if len(stored2.ChildEvents) != 2 {
+		t.Errorf("nil PATCH should not clear ChildEvents; got %v", stored2.ChildEvents)
+	}
+}
+
+// TestHandleSessionLoop_OnChildAloneRejected verifies that arming onChild
+// without another trigger is rejected with 400 (session.ErrOnChildAlone),
+// both on PUT and on a PATCH that would leave onChild as the sole trigger.
+func TestHandleSessionLoop_OnChildAloneRejected(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-onchild-alone"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Prompt:   "react to child",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnChild},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT onChild alone: Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	// The rejected config must not have been persisted.
+	if _, err := store.Loop(sid).Get(); err == nil {
+		t.Error("Get after rejected PUT: expected no config to be stored")
+	}
+
+	// Seed a valid multi-trigger loop, then PATCH to drop everything but onChild.
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:   "react to child",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+	})
+	onlyOnChild := []session.LoopTrigger{session.TriggerOnChild}
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Triggers: &onlyOnChild})
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionLoop(w2, req2, sid, "")
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("PATCH to onChild-alone: Status = %d, want %d. Body: %s", w2.Code, http.StatusBadRequest, w2.Body.String())
+	}
+	// The prior valid config must survive the rejected PATCH.
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after rejected PATCH: %v", err)
+	}
+	if !stored.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("Triggers after rejected PATCH = %v, want onTasks preserved (not clobbered)", stored.Triggers)
+	}
+}
+
+// TestHandleSessionLoop_InvalidChildEventRejected verifies that an unknown
+// child_events entry is classified as a 400 Bad Request (session.ErrInvalidChildEvent),
+// both on PUT and on PATCH.
+func TestHandleSessionLoop_InvalidChildEventRejected(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-invalid-child-event"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	body, _ := json.Marshal(LoopPromptRequest{
+		Prompt:      "react to child",
+		Enabled:     true,
+		Triggers:    []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+		ChildEvents: []session.ChildEvent{"bogus"},
+	})
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT invalid child_events: Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	// Seed a valid loop, then PATCH with an unknown event.
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:   "react to child",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnTasks, session.TriggerOnChild},
+	})
+	bogus := []session.ChildEvent{"bogus"}
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{ChildEvents: &bogus})
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	h.HandleSessionLoop(w2, req2, sid, "")
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("PATCH invalid child_events: Status = %d, want %d. Body: %s", w2.Code, http.StatusBadRequest, w2.Body.String())
 	}
 }
 
@@ -874,9 +1122,9 @@ func TestHandleSessionLoop_PatchInvalidConditionRejected(t *testing.T) {
 	}
 
 	putLoopForTest(t, h, sid, LoopPromptRequest{
-		Prompt:  "review beads changes",
-		Enabled: true,
-		Trigger: session.TriggerOnTasks,
+		Prompt:   "review beads changes",
+		Enabled:  true,
+		Triggers: []session.LoopTrigger{session.TriggerOnTasks},
 	})
 
 	badCond := "not valid cel("
@@ -1012,5 +1260,482 @@ func TestHandleSessionLoop_PATCH_ArgumentsPersisted(t *testing.T) {
 	stored, _ := store.Loop(sid).Get()
 	if stored.Arguments["KEY"] != "patched" {
 		t.Errorf("nil PATCH should not clear Arguments; KEY = %q", stored.Arguments["KEY"])
+	}
+}
+
+// newLoopStoreWithPrompts is a variant of newLoopStore that also wires a
+// GetWorkspacePromptsAll stub so the mitto-le4.1 frontmatter merge path can be
+// exercised. Passing a nil returnPrompts function leaves the dep unset (nil),
+// so the merge is skipped entirely.
+func newLoopStoreWithPrompts(t *testing.T, returnPrompts func(workingDir string) []configPkg.WebPrompt) (*session.Store, *Handlers) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	deps := Deps{Store: store}
+	if returnPrompts != nil {
+		deps.GetWorkspacePromptsAll = returnPrompts
+	}
+	h := New(deps)
+	return store, h
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_Baseline (T1) verifies that
+// a PUT with only PromptName + Enabled fills empty fields from the resolved
+// prompt's loop: frontmatter block.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_Baseline(t *testing.T) {
+	tr, fa := true, false
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:      []string{"onTasks"},
+				OnTasks:      &configPkg.PromptLoopOnTasks{CoalesceDuringBusy: &fa},
+				FreshContext: &tr,
+				RunOnStart:   &tr,
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-baseline"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName: "test-prompt",
+		Enabled:    true,
+	})
+
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
+	if got.Trigger != session.TriggerOnTasks {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnTasks)
+	}
+	if !got.FreshContext {
+		t.Errorf("FreshContext = false, want true (filled from frontmatter)")
+	}
+	if got.RunOnStart == nil || !*got.RunOnStart {
+		t.Errorf("RunOnStart = %v, want non-nil *true", got.RunOnStart)
+	}
+	if got.CoalesceDuringBusy == nil || *got.CoalesceDuringBusy {
+		t.Errorf("CoalesceDuringBusy = %v, want non-nil *false", got.CoalesceDuringBusy)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins (T2) verifies
+// that an explicit non-zero request field wins over the frontmatter default.
+// FreshContext is intentionally omitted here — LoopPrompt.FreshContext is a
+// plain bool so "explicit false" is indistinguishable from "unset"; the
+// value-type quirk is documented in the helper's comment.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_ExplicitWins(t *testing.T) {
+	tr := true
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:       []string{"onTasks"},
+				MaxIterations: 42,
+				RunOnStart:    &tr,
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-explicit"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	fa := false
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName:    "test-prompt",
+		Enabled:       true,
+		Triggers:      []session.LoopTrigger{session.TriggerOnCompletion}, // explicit, must win
+		DelaySeconds:  30,
+		MaxIterations: 7,   // explicit, must win over frontmatter's 42
+		RunOnStart:    &fa, // explicit *false must win over frontmatter *true
+	})
+
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
+	if got.Trigger != session.TriggerOnCompletion {
+		t.Errorf("Trigger = %q, want %q (explicit request wins)", got.Trigger, session.TriggerOnCompletion)
+	}
+	if got.MaxIterations != 7 {
+		t.Errorf("MaxIterations = %d, want 7 (explicit request wins)", got.MaxIterations)
+	}
+	if got.RunOnStart == nil || *got.RunOnStart {
+		t.Errorf("RunOnStart = %v, want non-nil *false (explicit request wins)", got.RunOnStart)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut (T3) verifies that
+// LoopApplyPromptDefaults: &false disables the merge entirely, so no
+// frontmatter field leaks into the persisted loop.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_OptOut(t *testing.T) {
+	tr := true
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:       []string{"onTasks"},
+				FreshContext:  &tr,
+				RunOnStart:    &tr,
+				MaxIterations: 42,
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-optout"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	fa := false
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName:              "test-prompt",
+		Enabled:                 true,
+		Triggers:                []session.LoopTrigger{session.TriggerOnCompletion}, // required non-schedule so no Frequency needed
+		DelaySeconds:            30,
+		LoopApplyPromptDefaults: &fa,
+	})
+
+	// SA1019: intentionally verifying the legacy Trigger field stays in
+	// sync with Triggers[0] via Normalize() (back-compat contract).
+	//nolint:staticcheck
+	if got.Trigger != session.TriggerOnCompletion {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnCompletion)
+	}
+	if got.FreshContext {
+		t.Errorf("FreshContext = true, want false (merge opt-out honored)")
+	}
+	if got.RunOnStart != nil {
+		t.Errorf("RunOnStart = %v, want nil (merge opt-out honored)", got.RunOnStart)
+	}
+	if got.MaxIterations != 0 {
+		t.Errorf("MaxIterations = %d, want 0 (merge opt-out honored)", got.MaxIterations)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_NoPromptName (T4) verifies
+// that a free-text prompt (no PromptName) does NOT trigger any prompt lookup;
+// the stub panics if invoked.
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_NoPromptName(t *testing.T) {
+	promptStub := func(string) []configPkg.WebPrompt {
+		t.Fatalf("GetWorkspacePromptsAll must not be called when PromptName is empty")
+		return nil
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-nopromptname"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "free-text body",
+		Enabled:   true,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	})
+
+	if got.Prompt != "free-text body" {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, "free-text body")
+	}
+	// SA1019: intentionally verifying the legacy Trigger field stays empty
+	// (no merge occurred) — back-compat contract.
+	//nolint:staticcheck
+	if got.Trigger != "" {
+		t.Errorf("Trigger = %q, want empty (no merge)", got.Trigger)
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName (T5)
+// verifies that a PromptName that does not resolve to any prompt is a
+// graceful no-op — the request persists as-is (matches the MCP path when
+// .Loop == nil).
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_UnknownPromptName(t *testing.T) {
+	promptStub := func(string) []configPkg.WebPrompt {
+		return nil // empty prompt list
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-unknown"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName: "does-not-exist",
+		Enabled:    true,
+		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
+	})
+
+	if got.PromptName != "does-not-exist" {
+		t.Errorf("PromptName = %q, want %q", got.PromptName, "does-not-exist")
+	}
+	// SA1019: intentionally verifying the legacy Trigger field stays empty
+	// (graceful fallback) — back-compat contract.
+	//nolint:staticcheck
+	if got.Trigger != "" {
+		t.Errorf("Trigger = %q, want empty (unknown prompt is graceful fallback)", got.Trigger)
+	}
+	if got.FreshContext {
+		t.Errorf("FreshContext = true, want false (unknown prompt is graceful fallback)")
+	}
+}
+
+// TestHandleSessionLoop_PUT_MergesPromptDefaults_MultiTriggerAndSettleWindow
+// (T6) verifies that a prompt declaring a multi-trigger loop: frontmatter
+// block (trigger: [schedule, onTasks]) fills the WHOLE list into Triggers —
+// not just the primary/first entry — and that onTasks.settleWindow reaches
+// SettleWindowSeconds through applyPromptLoopDefaultsToLoopPrompt
+// (mitto-r6j.5).
+func TestHandleSessionLoop_PUT_MergesPromptDefaults_MultiTriggerAndSettleWindow(t *testing.T) {
+	promptStub := func(string) []configPkg.WebPrompt {
+		return []configPkg.WebPrompt{{
+			Name: "test-prompt",
+			Loop: &configPkg.PromptLoop{
+				Trigger:  []string{"schedule", "onTasks"},
+				Schedule: &configPkg.PromptLoopSchedule{Value: 2, Unit: "hours"},
+				OnTasks:  &configPkg.PromptLoopOnTasks{SettleWindow: 45, ConditionPreset: "any-change", Cooldown: 90},
+			},
+		}}
+	}
+
+	store, h := newLoopStoreWithPrompts(t, promptStub)
+	sid := "put-merge-multitrigger-settle"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "t", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		PromptName: "test-prompt",
+		Enabled:    true,
+	})
+
+	if len(got.Triggers) != 2 || !got.HasTrigger(session.TriggerSchedule) || !got.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("Triggers = %v, want both schedule and onTasks filled from frontmatter", got.Triggers)
+	}
+	if got.SettleWindowSeconds == nil || *got.SettleWindowSeconds != 45 {
+		t.Errorf("SettleWindowSeconds = %v, want *45 (filled from frontmatter)", got.SettleWindowSeconds)
+	}
+	if got.ConditionPreset != "any-change" {
+		t.Errorf("ConditionPreset = %q, want %q (filled from frontmatter)", got.ConditionPreset, "any-change")
+	}
+	if got.CooldownSeconds != 90 {
+		t.Errorf("CooldownSeconds = %d, want 90 (filled from frontmatter)", got.CooldownSeconds)
+	}
+}
+
+// TestHandleSessionLoop_Restore_StoppedSavedConfig_ClearsReasonAndResetsCounters
+// verifies the D2 two-step restore for mitto-uun: when the saved config was
+// preserved from an auto-stopped loop (Enabled=false + StoppedReason set +
+// IterationCount>0), the restore path (a) clears the stopped-reason so Set()
+// writes a resumable config, (b) calls ResetCounters() as a separate step so
+// IterationCount / FirstRunAt / LastSentAt land at zero, and (c) preserves the
+// saved Enabled value (a stopped loop restores as paused; the user must
+// explicitly re-enable via Update). This decouples the counter-reset intent
+// from Set()'s field-preservation semantics.
+func TestHandleSessionLoop_Restore_StoppedSavedConfig_ClearsReasonAndResetsCounters(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-restore-stopped-saved"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 1: configure an active loop, record several deliveries, then
+	// auto-stop it — mirrors the shape of a loop that hit its cap.
+	loop := store.Loop(sid)
+	if err := loop.Set(&session.LoopPrompt{
+		Prompt:        "keep going",
+		Frequency:     session.Frequency{Value: 3, Unit: session.FrequencyHours},
+		Enabled:       true,
+		MaxIterations: 3,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := loop.RecordSent(); err != nil {
+			t.Fatalf("RecordSent()[%d] error = %v", i, err)
+		}
+	}
+	if err := loop.MarkStopped(session.StoppedReasonMaxIterations); err != nil {
+		t.Fatalf("MarkStopped() error = %v", err)
+	}
+
+	// Step 2: un-loop (detach) — the stopped state is preserved in the saved
+	// slot, and loop.json is removed.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/loop", nil)
+	delW := httptest.NewRecorder()
+	h.HandleSessionLoop(delW, delReq, sid, "")
+	if delW.Code != http.StatusNoContent {
+		t.Fatalf("DELETE loop: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
+	}
+	savedBeforeRestore, err := loop.GetSaved()
+	if err != nil {
+		t.Fatalf("GetSaved() before restore = %v, want nil", err)
+	}
+	// Sanity: the saved slot really does carry the auto-stopped state — that
+	// is the input this test is exercising.
+	if savedBeforeRestore.Enabled {
+		t.Fatalf("saved.Enabled = true before restore; test setup is wrong (expected auto-stopped shape)")
+	}
+	if savedBeforeRestore.StoppedReason != session.StoppedReasonMaxIterations {
+		t.Fatalf("saved.StoppedReason = %q, want %q (test setup is wrong)",
+			savedBeforeRestore.StoppedReason, session.StoppedReasonMaxIterations)
+	}
+	if savedBeforeRestore.IterationCount != 3 {
+		t.Fatalf("saved.IterationCount = %d, want 3 (test setup is wrong)",
+			savedBeforeRestore.IterationCount)
+	}
+
+	// Step 3: POST /loop/restore — must clear StoppedReason, reset counters,
+	// and preserve the saved Enabled state (paused stays paused).
+	restReq := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sid+"/loop/restore", nil)
+	restW := httptest.NewRecorder()
+	h.HandleSessionLoop(restW, restReq, sid, "restore")
+	if restW.Code != http.StatusOK {
+		t.Fatalf("POST restore: Status = %d, want %d. Body: %s", restW.Code, http.StatusOK, restW.Body.String())
+	}
+	var restored session.LoopPrompt
+	if err := json.Unmarshal(restW.Body.Bytes(), &restored); err != nil {
+		t.Fatalf("decode restore response: %v", err)
+	}
+
+	// D2 acceptance criteria:
+	if restored.StoppedReason != "" {
+		t.Errorf("restored.StoppedReason = %q, want empty (D2 pre-Set clear)", restored.StoppedReason)
+	}
+	if restored.StoppedAt != nil {
+		t.Errorf("restored.StoppedAt = %v, want nil (D2 pre-Set clear)", restored.StoppedAt)
+	}
+	if restored.IterationCount != 0 {
+		t.Errorf("restored.IterationCount = %d, want 0 (D2 explicit ResetCounters)",
+			restored.IterationCount)
+	}
+	if restored.FirstRunAt != nil {
+		t.Errorf("restored.FirstRunAt = %v, want nil (D2 explicit ResetCounters)",
+			restored.FirstRunAt)
+	}
+	if restored.LastSentAt != nil {
+		t.Errorf("restored.LastSentAt = %v, want nil (D2 explicit ResetCounters)",
+			restored.LastSentAt)
+	}
+	// Enabled must reflect the saved value — a stopped loop restores as paused
+	// (the D2 comment: "paused draft comes back paused"). The user re-enables
+	// via a subsequent Update.
+	if restored.Enabled {
+		t.Errorf("restored.Enabled = true, want false (auto-stopped saved config must restore as paused)")
+	}
+	// Mutable config fields must survive the round-trip.
+	if restored.Prompt != "keep going" {
+		t.Errorf("restored.Prompt = %q, want %q", restored.Prompt, "keep going")
+	}
+}
+
+// TestHandleSessionLoop_MultiTriggerRoundTrip verifies that PUT with a
+// multi-trigger list round-trips through GET, and that the response carries
+// both the legacy scalar "trigger" (primary/first) and the full "triggers"
+// list (mitto-r6j.5 wire contract).
+func TestHandleSessionLoop_MultiTriggerRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-multitrigger-roundtrip"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "check and continue",
+		Enabled:   true,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion},
+	})
+
+	// SA1019: intentionally verifying the legacy Trigger field mirrors
+	// Triggers[0] (primary trigger) — back-compat contract.
+	//nolint:staticcheck
+	if got.Trigger != session.TriggerSchedule {
+		t.Errorf("Trigger (primary) = %q, want %q", got.Trigger, session.TriggerSchedule)
+	}
+	if len(got.Triggers) != 2 || got.Triggers[0] != session.TriggerSchedule || got.Triggers[1] != session.TriggerOnCompletion {
+		t.Errorf("Triggers = %v, want [schedule onCompletion]", got.Triggers)
+	}
+
+	// Re-fetch via GET to confirm the same shape persists.
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sid+"/loop", nil)
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var fetched session.LoopPrompt
+	if err := json.Unmarshal(w.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if len(fetched.Triggers) != 2 {
+		t.Fatalf("GET Triggers len = %d, want 2", len(fetched.Triggers))
+	}
+	if !fetched.HasTrigger(session.TriggerSchedule) || !fetched.HasTrigger(session.TriggerOnCompletion) {
+		t.Errorf("GET Triggers = %v, want both schedule and onCompletion", fetched.Triggers)
+	}
+}
+
+// TestHandleSessionLoop_PatchDoesNotClobberTriggers is the regression test for
+// the mitto-r6j.5 clobber bug: LoopStore.Update used to collapse a
+// multi-trigger config to a single trigger on ANY write that touched the
+// (then-scalar) trigger parameter. A PATCH that does not mention triggers at
+// all must leave a pre-existing two-trigger list fully intact.
+func TestHandleSessionLoop_PatchDoesNotClobberTriggers(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-patch-no-clobber-triggers"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "check and continue",
+		Enabled:   true,
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule, session.TriggerOnCompletion},
+	})
+
+	// PATCH an unrelated field only.
+	disabled := false
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Enabled: &disabled})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get loop after PATCH: %v", err)
+	}
+	if stored.Enabled {
+		t.Error("Enabled after PATCH = true, want false")
+	}
+	effective := stored.EffectiveTriggers()
+	if len(effective) != 2 || !stored.HasTrigger(session.TriggerSchedule) || !stored.HasTrigger(session.TriggerOnCompletion) {
+		t.Errorf("EffectiveTriggers() after unrelated PATCH = %v, want both schedule and onCompletion preserved (clobber regression)", effective)
 	}
 }

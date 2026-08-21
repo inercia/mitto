@@ -1,0 +1,40 @@
+{{/*
+  interaction-mode — the standard "Interaction Mode" block for prompts that
+  can run either as an unattended scheduled loop OR as a normal on-demand
+  conversation, WITHOUT any prompt-specific extras.
+
+  This is the "sync-tasks style" flavor: the interactive branch phrases
+  itself as "a regular conversation or a force-triggered loop run" and
+  frames interactive tools as the default. Used by prompts where the
+  primary mode is on-demand and the scheduled loop is opt-in.
+
+  Consumers: jira/sync-tasks, jira/pull-issue, jira/push-issue,
+  github/sync-tasks.
+
+  For prompts whose primary mode is the scheduled loop (with on-demand as
+  the force-triggered exception), use `_shared/interaction-mode-babysit`
+  instead. For loop drivers marked "READ THIS FIRST", use
+  `_shared/interaction-mode-unattended`.
+
+  If your prompt needs extra bullets (autonomy criteria, stop-iterating
+  hooks, references to specific steps), do NOT use this fragment —
+  hand-roll the block using `_shared/silent-notify-only.tmpl` for the
+  common preamble and add your own bullets around it.
+
+  Usage:
+
+    {{ template "_shared/interaction-mode" . }}
+
+  The fragment emits its own `## Interaction Mode` heading — do NOT add
+  one at the call site.
+*/}}
+## Interaction Mode
+{{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+**Silent mode** — a scheduled loop run; the user is not watching.
+{{ template "_shared/silent-notify-only" . }}
+{{- else }}
+
+**Interactive mode** — a regular conversation or a force-triggered loop run; the user is present.
+- Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+{{- end }}

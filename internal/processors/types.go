@@ -2,7 +2,7 @@
 // It supports three modes:
 //   - Text-mode: simple prepend/append of static text (no external command).
 //   - Command-mode: execute an external command to transform the message.
-//   - Prompt-mode: send a prompt to an auxiliary ACP session as fire-and-forget.
+//   - Prompt-mode: send a prompt to a tracked auxiliary ACP session.
 //
 // Text-mode processors are typically created from config.MessageProcessor entries
 // via Manager.AddTextProcessors. Command-mode and prompt-mode processors are loaded
@@ -126,6 +126,36 @@ const (
 // (fire-and-forget). Returns error only if the prompt couldn't be dispatched.
 type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt string) error
 
+// PromptCompletion reports the content-free terminal outcome of a tracked
+// prompt-mode processor execution.
+type PromptCompletion struct {
+	SaveCount      int
+	SaveCountKnown bool
+}
+
+// PromptCompletionFunc executes a prompt-mode processor through auxiliary
+// completion rather than returning at handoff. dispatchID is stable across
+// persistence and retries so terminal logs can be reconciled.
+type PromptCompletionFunc func(ctx context.Context, workspaceUUID, processorName, dispatchID, prompt string) (PromptCompletion, error)
+
+// NotifyFunc is a callback invoked when a prompt-mode processor dispatch
+// exhausts all retries (see Manager.dispatchWithRetry, mitto-exr). name is
+// the processor name (or "+"-joined combined name for a batched dispatch)
+// and lastErr is the final error from the last attempt. Injected by the web
+// layer via Manager.SetNotifyFunc to surface a workspace-scoped UI toast —
+// this is the only user-visible signal for close-phase (conversationClosed)
+// processors, whose originating session has already been archived.
+type NotifyFunc func(workspaceUUID, name string, lastErr error)
+
+// LateDeliveryFunc is a callback invoked when Manager.FlushPendingDispatches
+// successfully delivers one or more previously-spooled batches for a
+// workspace (mitto-yfv8). Distinct from NotifyFunc (which reports failure):
+// this reports a deferred success, so the user knows earlier "lost" work
+// eventually landed. names lists the processor name(s) of every entry that
+// was delivered in this flush. Injected by the web layer via
+// Manager.SetLateDeliveryFunc; nil means late deliveries are only logged.
+type LateDeliveryFunc func(workspaceUUID string, names []string)
+
 // Phase defines when in the conversation lifecycle a processor fires.
 type Phase string
 
@@ -248,9 +278,8 @@ type Processor struct {
 	Text string `yaml:"text,omitempty" json:"text,omitempty"`
 
 	// Prompt is the prompt template to send to an auxiliary ACP session (prompt-mode only).
-	// When set, Command and Text must be empty. The processor runs in fire-and-forget mode:
-	// the prompt is dispatched to a workspace-scoped auxiliary session and the pipeline
-	// continues immediately without waiting for the agent's response.
+	// When set, Command and Text must be empty. The pipeline dispatches the prompt
+	// asynchronously, while its worker tracks auxiliary completion durably.
 	// Supports @mitto:variable substitution and Go-template .Args rendering.
 	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 
@@ -290,6 +319,15 @@ type Processor struct {
 	// other filters). If the expression evaluates to false, the processor is skipped.
 	// Example: 'ACP.Tags.exists(t, t == "reasoning")' — only apply for reasoning models.
 	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"enabled_when,omitempty"`
+
+	// RunOnCascadedClose opts a conversationClosed prompt-mode processor into
+	// firing again when a session is closed as part of a cascade delete
+	// (ArchiveReason "parent_deleted"). By default such closes are skipped for
+	// prompt-mode processors because they analyze the whole conversation tree,
+	// so the parent-level close already covers descendants (mitto-ce3b); set
+	// this to true only if the processor genuinely needs per-child context.
+	// Ignored for command-mode processors, which always run per session.
+	RunOnCascadedClose bool `yaml:"runOnCascadedClose,omitempty" json:"run_on_cascaded_close,omitempty"`
 
 	// FilePath is the path to the processor's YAML file (set internally).
 	FilePath string `yaml:"-" json:"-"`
@@ -349,7 +387,7 @@ func (h *Processor) IsTextMode() bool {
 }
 
 // IsPromptMode returns true if this processor operates in prompt-mode.
-// Prompt-mode processors send a prompt to an auxiliary ACP session as fire-and-forget.
+// Prompt-mode processors send a prompt to an auxiliary ACP session.
 // They have a non-empty Prompt field and empty Command and Text fields.
 func (h *Processor) IsPromptMode() bool {
 	return h.Command == "" && h.Text == "" && h.Prompt != ""
@@ -447,6 +485,13 @@ type CloseProcessorInput struct {
 	ArchiveReason string `json:"archiveReason,omitempty"`
 	// ArchivedAt is when the session was archived.
 	ArchivedAt time.Time `json:"archivedAt"`
+	// HistorySnapshot is a bounded immutable copy of user/agent history captured
+	// synchronously before a delete can remove the source session. It is appended
+	// to every prompt-mode close processor and excluded from command stdin.
+	HistorySnapshot string `json:"-"`
+	// HistorySnapshotError distinguishes unavailable source history from a valid
+	// empty snapshot. Prompt-mode work is not dispatched when this is non-empty.
+	HistorySnapshotError string `json:"-"`
 	// ProcessorArgOverrides holds per-processor argument value overrides from the
 	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
 	// Excluded from JSON — never sent to external command processors.

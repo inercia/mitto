@@ -3,18 +3,21 @@ const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
 import {
-  secureFetch,
-  authFetch,
   apiUrl,
-  errorMessageFromData,
   hasNativeFolderPicker,
   pickFolder,
   openExternalURL,
   fetchConfig,
   invalidateConfigCache,
-  endpoints,
 } from "../utils/index.js";
-import { setPromptSortMode as savePromptSortMode } from "../utils/storage.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage, errorStatus } from "../utils/sdkErrors.js";
+import {
+  setPromptSortMode as savePromptSortMode,
+  getDashboardHiddenCharts,
+  setDashboardHiddenCharts,
+} from "../utils/storage.js";
+import { DASHBOARD_CHARTS } from "../utils/dashboardCharts.js";
 
 // Import shared library functions
 import {
@@ -48,6 +51,9 @@ import {
   SearchIcon,
   LayersIcon,
   KeyboardIcon,
+  DashboardIcon,
+  TagIcon,
+  ChatBubbleIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
@@ -57,7 +63,15 @@ import { ModelTagSelect } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
+import { TaskLabelColorsEditor } from "./TaskLabelColorsEditor.js";
+import { SlackSettingsTab } from "./SlackSettingsTab.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
+import {
+  addTaskLabelColor as appendTaskLabelColor,
+  moveTaskLabelColor as reorderTaskLabelColor,
+  removeTaskLabelColor as deleteTaskLabelColor,
+  updateTaskLabelColor as patchTaskLabelColor,
+} from "../utils/taskLabelColors.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
 // by the folder-level editor and the render-time toolbars; each maps to the
@@ -140,13 +154,62 @@ const THEME_LABELS = {
 // and by app.js (folder context-menu submenu — see SessionList.js). Keep the
 // entries in sync with internal/config/config.go DefaultOpenTargets().
 export const DEFAULT_MAC_OPEN_TARGETS = [
-  { id: "finder", label: "Finder", icon: "finder", command: "open ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
-  { id: "terminal", label: "Terminal", icon: "terminal", command: "open -a Terminal ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
-  { id: "iterm", label: "iTerm", icon: "iterm", command: "open -a iTerm ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-  { id: "vscode", label: "Visual Studio Code", icon: "vscode", command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`, enabled: false, builtin: true },
-  { id: "cursor", label: "Cursor", icon: "cursor", command: "open -a Cursor ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-  { id: "xcode", label: "Xcode", icon: "xcode", command: "open -a Xcode ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-  { id: "goland", label: "GoLand", icon: "goland", command: "open -a GoLand ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  {
+    id: "finder",
+    label: "Finder",
+    icon: "finder",
+    command: "open ${MITTO_WORKING_DIR}",
+    enabled: true,
+    builtin: true,
+  },
+  {
+    id: "terminal",
+    label: "Terminal",
+    icon: "terminal",
+    command: "open -a Terminal ${MITTO_WORKING_DIR}",
+    enabled: true,
+    builtin: true,
+  },
+  {
+    id: "iterm",
+    label: "iTerm",
+    icon: "iterm",
+    command: "open -a iTerm ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "vscode",
+    label: "Visual Studio Code",
+    icon: "vscode",
+    command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`,
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    icon: "cursor",
+    command: "open -a Cursor ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "xcode",
+    label: "Xcode",
+    icon: "xcode",
+    command: "open -a Xcode ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
+  {
+    id: "goland",
+    label: "GoLand",
+    icon: "goland",
+    command: "open -a GoLand ${MITTO_WORKING_DIR}",
+    enabled: false,
+    builtin: true,
+  },
 ];
 
 /**
@@ -856,8 +919,7 @@ function ServerEditForm({
               className="w-full"
               onChange=${(name) => {
                 setModelProfile(name);
-                const cleared =
-                  !name && !modelTag && !!rawModelConstraint;
+                const cleared = !name && !modelTag && !!rawModelConstraint;
                 if (cleared) setModelConstraintCleared(true);
                 const overrides = {
                   modelProfile: name,
@@ -879,8 +941,7 @@ function ServerEditForm({
               className="w-full"
               onChange=${(tag) => {
                 setModelTag(tag);
-                const cleared =
-                  !tag && !modelProfile && !!rawModelConstraint;
+                const cleared = !tag && !modelProfile && !!rawModelConstraint;
                 if (cleared) setModelConstraintCleared(true);
                 const overrides = {
                   modelTag: tag,
@@ -1323,7 +1384,10 @@ function ACPServerDeleteWizard({
     setStep("intro");
     setFolderIndex(0);
     setChoices(
-      (plan?.folders || []).map(() => ({ newServer: null, acknowledged: false })),
+      (plan?.folders || []).map(() => ({
+        newServer: null,
+        acknowledged: false,
+      })),
     );
     setExecError("");
     setExecResult(null);
@@ -1335,7 +1399,10 @@ function ACPServerDeleteWizard({
   const folders = plan.folders || [];
   const folderTotal = (f) =>
     (f?.non_archived_conversations || 0) + (f?.archived_conversations || 0);
-  const totalConversations = folders.reduce((acc, f) => acc + folderTotal(f), 0);
+  const totalConversations = folders.reduce(
+    (acc, f) => acc + folderTotal(f),
+    0,
+  );
 
   const setChoiceFor = (idx, patch) => {
     setChoices((prev) => {
@@ -1348,9 +1415,9 @@ function ACPServerDeleteWizard({
   const currentFolder = folders[folderIndex];
   const currentChoice = choices[folderIndex] || {};
   // replacement_candidates is an array of server-name strings.
-  const currentCandidates = (currentFolder?.replacement_candidates || []).filter(
-    (name) => name && name !== serverName,
-  );
+  const currentCandidates = (
+    currentFolder?.replacement_candidates || []
+  ).filter((name) => name && name !== serverName);
 
   // "Next" enablement for the per-folder step.
   const canAdvanceFolder = () => {
@@ -1389,39 +1456,27 @@ function ACPServerDeleteWizard({
       folders.forEach((f, i) => {
         foldersPayload[f.working_dir] = choices[i]?.newServer || "";
       });
-      const res = await secureFetch(
-        endpoints.acpServers.reassignAndDelete(serverName),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ folders: foldersPayload }),
-        },
+      const data = await getSdkClient().acpServers.reassignAndDelete(
+        serverName,
+        { folders: foldersPayload },
       );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // 409 arrives as an errorEnvelope: {error: {code, message, details:
-        // {active_session_ids: [...]}}}. Surface a refusal list from that.
-        const activeIds =
-          res.status === 409 && Array.isArray(data?.error?.details?.active_session_ids)
-            ? data.error.details.active_session_ids
-            : null;
-        if (activeIds && activeIds.length > 0) {
-          setActiveRefusal(
-            activeIds.map((sid) => ({ session_id: sid })),
-          );
-          setStep("error");
-          return;
-        }
-        setExecError(
-          errorMessageFromData(data, `Failed to delete "${serverName}"`),
-        );
-        setStep("error");
-        return;
-      }
       setExecResult(data);
       setStep("success");
     } catch (err) {
-      setExecError(err?.message || String(err));
+      // 409 arrives as a MittoApiError whose `.details` carries
+      // {active_session_ids: [...]} (see sdk/core/errors.js). Surface a
+      // refusal list from that.
+      const activeIds =
+        errorStatus(err) === 409 &&
+        Array.isArray(err.details?.active_session_ids)
+          ? err.details.active_session_ids
+          : null;
+      if (activeIds && activeIds.length > 0) {
+        setActiveRefusal(activeIds.map((sid) => ({ session_id: sid })));
+        setStep("error");
+        return;
+      }
+      setExecError(errorMessage(err, `Failed to delete "${serverName}"`));
       setStep("error");
     }
   };
@@ -1438,7 +1493,8 @@ function ACPServerDeleteWizard({
   // Recap lines for the confirm step.
   const recapLines = folders.map((f, i) => {
     const choice = choices[i] || {};
-    const label = f.workspace_name || getBasename(f.working_dir) || f.working_dir;
+    const label =
+      f.workspace_name || getBasename(f.working_dir) || f.working_dir;
     const total = folderTotal(f);
     if (choice.newServer) {
       return {
@@ -1533,7 +1589,10 @@ function ACPServerDeleteWizard({
     }
     return html`
       <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
-      <button class="btn btn-primary btn-sm" onClick=${() => setStep("confirm")}>
+      <button
+        class="btn btn-primary btn-sm"
+        onClick=${() => setStep("confirm")}
+      >
         Back to review
       </button>
     `;
@@ -1560,7 +1619,9 @@ function ACPServerDeleteWizard({
             class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-3 space-y-1"
           >
             <div>
-              <span class="font-semibold">Folders referencing this server:</span>
+              <span class="font-semibold"
+                >Folders referencing this server:</span
+              >
               ${" "}${folders.length}
             </div>
             <div>
@@ -1576,7 +1637,6 @@ function ACPServerDeleteWizard({
           `}
         </div>
       `}
-
       ${step === "folder" &&
       currentFolder &&
       html`
@@ -1596,7 +1656,8 @@ function ACPServerDeleteWizard({
             </div>
             <div class="text-xs text-mitto-text-muted mt-1">
               ${currentFolder.non_archived_conversations || 0} active +
-              ${" "}${currentFolder.archived_conversations || 0} archived conversation(s)
+              ${" "}${currentFolder.archived_conversations || 0} archived
+              conversation(s)
             </div>
           </div>
 
@@ -1647,8 +1708,7 @@ function ACPServerDeleteWizard({
                     No other ACP server is configured for this folder.
                     Continuing will
                     <span class="font-semibold">DELETE</span>
-                    ${" "}${folderTotal(currentFolder)}
-                    conversation(s) in
+                    ${" "}${folderTotal(currentFolder)} conversation(s) in
                     <code class="text-xs">${currentFolder.working_dir}</code>.
                   </div>
                 </div>
@@ -1671,7 +1731,6 @@ function ACPServerDeleteWizard({
               `}
         </div>
       `}
-
       ${step === "confirm" &&
       html`
         <div class="space-y-3 text-sm">
@@ -1709,7 +1768,6 @@ function ACPServerDeleteWizard({
           </p>
         </div>
       `}
-
       ${step === "executing" &&
       html`
         <div class="text-center py-8">
@@ -1719,15 +1777,11 @@ function ACPServerDeleteWizard({
           <p class="text-mitto-text-secondary">Applying changes...</p>
         </div>
       `}
-
       ${step === "success" &&
       execResult &&
       html`
         <div class="space-y-2 text-sm">
-          <div
-            role="alert"
-            class="alert alert-success alert-soft text-sm"
-          >
+          <div role="alert" class="alert alert-success alert-soft text-sm">
             <div>
               Deleted ACP server
               <span class="font-semibold">"${serverName}"</span>.
@@ -1745,21 +1799,20 @@ function ACPServerDeleteWizard({
             <li>
               Workspaces reassigned:
               ${" "}${execResult.reassigned_workspace_count ||
-                (Array.isArray(execResult.reassigned_workspaces)
-                  ? execResult.reassigned_workspaces.length
-                  : 0)}
+              (Array.isArray(execResult.reassigned_workspaces)
+                ? execResult.reassigned_workspaces.length
+                : 0)}
             </li>
             <li>
               Workspaces removed:
               ${" "}${execResult.deleted_workspace_count ||
-                (Array.isArray(execResult.deleted_workspaces)
-                  ? execResult.deleted_workspaces.length
-                  : 0)}
+              (Array.isArray(execResult.deleted_workspaces)
+                ? execResult.deleted_workspaces.length
+                : 0)}
             </li>
           </ul>
         </div>
       `}
-
       ${step === "error" &&
       html`
         <div class="space-y-3 text-sm">
@@ -1778,9 +1831,7 @@ function ACPServerDeleteWizard({
                         key=${c.session_id}
                         class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2"
                       >
-                        <div class="font-medium">
-                          ${c.name || c.session_id}
-                        </div>
+                        <div class="font-medium">${c.name || c.session_id}</div>
                         <div class="text-mitto-text-muted truncate">
                           ${c.working_dir || ""}
                           ${c.is_prompting ? " · prompting" : ""}
@@ -1811,6 +1862,7 @@ export function SettingsDialog({
   onClose,
   onSave,
   forceOpen = false,
+  initialTab = null,
   showToast,
 }) {
   const [activeTab, setActiveTab] = useState("servers");
@@ -1821,6 +1873,10 @@ export function SettingsDialog({
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
 
+  useEffect(() => {
+    if (isOpen && initialTab) setActiveTab(initialTab);
+  }, [isOpen, initialTab]);
+
   // ACP server delete wizard (mitto-pgt). deleteWizardPlan holds the response
   // from GET /api/acp-servers/{name}/prepare-delete; the wizard opens when it
   // is non-null AND has_active === false. Refusals for active conversations or
@@ -1829,6 +1885,48 @@ export function SettingsDialog({
   const [deleteWizardName, setDeleteWizardName] = useState("");
   const [deleteWizardPlan, setDeleteWizardPlan] = useState(null);
   const [deleteBlockedInfo, setDeleteBlockedInfo] = useState(null);
+
+  // ------ Dashboard tab state (mitto-w6b) -------------------------------------
+  // Local mirror of the hidden-charts list persisted via storage.js. Seeded from
+  // localStorage on mount and kept in sync via the change event so a toggle on
+  // any tab / window updates this tab instantly. `hidingAllError` is a transient
+  // inline message shown when the user tries to hide the last visible chart.
+  const [hiddenCharts, setHiddenCharts] = useState(getDashboardHiddenCharts);
+  const [hidingAllError, setHidingAllError] = useState("");
+
+  useEffect(() => {
+    const onChange = (e) => {
+      const next = Array.isArray(e?.detail?.ids) ? e.detail.ids : [];
+      setHiddenCharts(next);
+    };
+    window.addEventListener("mitto-dashboard-hidden-charts-changed", onChange);
+    return () =>
+      window.removeEventListener(
+        "mitto-dashboard-hidden-charts-changed",
+        onChange,
+      );
+  }, []);
+
+  // Toggle a chart's visibility. Refuses the change if it would hide every
+  // known chart (mirrors the backend's `at_least_one_chart_must_be_visible`
+  // guard). On refusal, surfaces a 3s inline message and does not persist.
+  const toggleChart = (id, wantsVisible) => {
+    const currentHidden = new Set(hiddenCharts);
+    if (wantsVisible) {
+      currentHidden.delete(id);
+    } else {
+      currentHidden.add(id);
+    }
+    const nextHidden = Array.from(currentHidden);
+    if (!wantsVisible && nextHidden.length >= DASHBOARD_CHARTS.length) {
+      setHidingAllError("At least one chart must remain visible.");
+      window.setTimeout(() => setHidingAllError(""), 3000);
+      return;
+    }
+    setHidingAllError("");
+    setHiddenCharts(nextHidden);
+    setDashboardHiddenCharts(nextHidden);
+  };
 
   // ------ Global Shortcuts tab state ------------------------------------------
   // Global shortcut buttons stored in settings.json, keyed by section ID. These
@@ -1847,8 +1945,8 @@ export function SettingsDialog({
     if (!isOpen || activeTab !== "shortcuts" || shortcutsLoaded) return;
     setShortcutsLoading(true);
     setShortcutsError("");
-    authFetch(endpoints.global.shortcuts({ include_prompts: true }))
-      .then((r) => r.json())
+    getSdkClient()
+      .shortcuts.getGlobal({ include_prompts: true })
       .then((data) => {
         setShortcutsSections(data.sections || {});
         const all = data.prompts || [];
@@ -1923,20 +2021,76 @@ export function SettingsDialog({
         .filter((r) => r.prompt)
         .slice(0, 10);
     }
-    const res = await secureFetch(endpoints.global.shortcuts(), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok)
-      throw new Error(
-        errorMessageFromData(data, "Failed to save global shortcuts"),
-      );
-    setShortcutsSections(data.sections || {});
-    // Notify open Tasks lists / conversation toolbars so their merged shortcut
-    // buttons refresh immediately, without a full page reload.
-    window.dispatchEvent(new CustomEvent("mitto:global_shortcuts_updated"));
+    try {
+      const data = await getSdkClient().shortcuts.setGlobal({ sections });
+      setShortcutsSections(data.sections || {});
+      // Notify open Tasks lists / conversation toolbars so their merged
+      // shortcut buttons refresh immediately, without a full page reload.
+      window.dispatchEvent(new CustomEvent("mitto:global_shortcuts_updated"));
+    } catch (err) {
+      throw new Error(errorMessage(err, "Failed to save global shortcuts"));
+    }
+  };
+
+  // ------ Global Tasks label-color state --------------------------------------
+  const [taskLabelColors, setTaskLabelColors] = useState([]);
+  const [taskLabelColorsLoading, setTaskLabelColorsLoading] = useState(false);
+  const [taskLabelColorsLoaded, setTaskLabelColorsLoaded] = useState(false);
+  const [taskLabelColorsError, setTaskLabelColorsError] = useState("");
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "tasks" || taskLabelColorsLoaded) return;
+    setTaskLabelColorsLoading(true);
+    setTaskLabelColorsError("");
+    getSdkClient()
+      .taskLabelColors.getGlobal()
+      .then((data) => {
+        setTaskLabelColors(data.entries || []);
+        setTaskLabelColorsLoaded(true);
+      })
+      .catch((err) => {
+        setTaskLabelColorsError(
+          "Failed to load task label colors: " + err.message,
+        );
+      })
+      .finally(() => setTaskLabelColorsLoading(false));
+  }, [isOpen, activeTab, taskLabelColorsLoaded]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setTaskLabelColorsLoaded(false);
+      setTaskLabelColors([]);
+      setTaskLabelColorsError("");
+    }
+  }, [isOpen]);
+
+  const addTaskLabelColor = () =>
+    setTaskLabelColors((prev) => appendTaskLabelColor(prev));
+  const updateTaskLabelColor = (idx, patch) =>
+    setTaskLabelColors((prev) => patchTaskLabelColor(prev, idx, patch));
+  const removeTaskLabelColor = (idx) =>
+    setTaskLabelColors((prev) => deleteTaskLabelColor(prev, idx));
+  const moveTaskLabelColor = (idx, dir) =>
+    setTaskLabelColors((prev) => reorderTaskLabelColor(prev, idx, dir));
+
+  const persistTaskLabelColors = async () => {
+    if (!taskLabelColorsLoaded) return;
+    const entries = taskLabelColors.map((entry) => ({
+      label: (entry.label || "").trim(),
+      color: (entry.color || "").trim(),
+    }));
+    if (entries.some((entry) => !entry.label)) {
+      setActiveTab("tasks");
+      throw new Error("Task labels must not be empty");
+    }
+    if (entries.some((entry) => !/^#[0-9a-fA-F]{6}$/.test(entry.color))) {
+      setActiveTab("tasks");
+      throw new Error("Task label colors must be six-digit hex values");
+    }
+    const data = await getSdkClient().taskLabelColors.setGlobal({ entries });
+    setTaskLabelColors(data.entries || []);
+    // Same-window update; the server broadcast handles every other client.
+    window.dispatchEvent(new CustomEvent("mitto:task_label_colors_updated"));
   };
 
   // Configuration state
@@ -2072,6 +2226,15 @@ export function SettingsDialog({
 
   // Input font size setting (web UI)
   const [inputFontSize, setInputFontSize] = useState("default");
+
+  // Conversation font family setting (web UI) — applied to .markdown-content
+  // only, independent of the compose/input font.
+  const [conversationFontFamily, setConversationFontFamily] =
+    useState("system");
+
+  // Conversation base font size (web UI) — the sidebar small-A / large-A
+  // toggle re-anchors on this base.
+  const [conversationFontSize, setConversationFontSize] = useState("sm");
 
   // Send key mode setting (web UI) - default: "enter"
   // "enter" = Enter to send, Shift+Enter for new line
@@ -2267,8 +2430,8 @@ export function SettingsDialog({
 
   // Fetch available agent types for the type dropdown
   useEffect(() => {
-    authFetch(endpoints.agents.types())
-      .then((r) => r.json())
+    getSdkClient()
+      .agents.types()
       .then((data) => setAgentTypes(data.agent_types || []))
       .catch(() => setAgentTypes([]));
   }, []);
@@ -2276,37 +2439,38 @@ export function SettingsDialog({
   // Load supported runners from server
   const loadSupportedRunners = async () => {
     try {
-      const res = await fetch(endpoints.runners.supported(), {
-        credentials: "same-origin",
-      });
-      if (res.ok) {
-        const runners = await res.json();
-        setSupportedRunners(runners || []);
-      }
+      const runners = await getSdkClient().serverConfig.supportedRunners();
+      setSupportedRunners(runners || []);
     } catch (err) {
-      console.error("Failed to load supported runners:", err);
-      // Fallback to all runners if fetch fails
-      setSupportedRunners([
-        { type: "exec", label: "exec (no restrictions)", supported: true },
-        {
-          type: "sandbox-exec",
-          label: "sandbox-exec (macOS)",
-          supported: false,
-        },
-        { type: "firejail", label: "firejail (Linux)", supported: false },
-        { type: "docker", label: "docker (all platforms)", supported: true },
-      ]);
+      // A non-2xx status is silently skipped (mirrors the old `if (res.ok)`
+      // guard); only a network-level failure gets the fallback list.
+      if (errorStatus(err) === undefined) {
+        console.error("Failed to load supported runners:", err);
+        setSupportedRunners([
+          { type: "exec", label: "exec (no restrictions)", supported: true },
+          {
+            type: "sandbox-exec",
+            label: "sandbox-exec (macOS)",
+            supported: false,
+          },
+          { type: "firejail", label: "firejail (Linux)", supported: false },
+          {
+            type: "docker",
+            label: "docker (all platforms)",
+            supported: true,
+          },
+        ]);
+      }
     }
 
     // Also load runner defaults
     try {
-      const res = await authFetch(endpoints.runners.defaults());
-      if (res.ok) {
-        const defaults = await res.json();
-        setRunnerDefaults(defaults || {});
-      }
+      const defaults = await getSdkClient().serverConfig.runnerDefaults();
+      setRunnerDefaults(defaults || {});
     } catch (err) {
-      console.error("Failed to load runner defaults:", err);
+      if (errorStatus(err) === undefined) {
+        console.error("Failed to load runner defaults:", err);
+      }
     }
   };
 
@@ -2316,14 +2480,21 @@ export function SettingsDialog({
     try {
       // Fetch config and external status in parallel.
       // force=true ensures the settings dialog always shows the latest saved config.
-      const [config, externalStatusRes] = await Promise.all([
+      const [config, externalStatus] = await Promise.all([
         fetchConfig(null, /* force */ true),
-        authFetch(endpoints.misc.externalStatus()),
+        // A non-2xx status is silently skipped (mirrors the old `if
+        // (externalStatusRes.ok)` guard); only a network-level failure
+        // propagates to the outer catch below, same as authFetch's reject.
+        getSdkClient()
+          .serverConfig.externalStatus()
+          .catch((err) => {
+            if (errorStatus(err) === undefined) throw err;
+            return null;
+          }),
       ]);
 
       // Load external status
-      if (externalStatusRes.ok) {
-        const externalStatus = await externalStatusRes.json();
+      if (externalStatus) {
         setExternalEnabled(externalStatus.enabled);
         setCurrentExternalPort(externalStatus.port || null);
       }
@@ -2510,6 +2681,14 @@ export function SettingsDialog({
       // Load input font size setting (web UI) - default to "default"
       setInputFontSize(config.ui?.web?.input_font_size || "default");
 
+      // Load conversation font family setting (web UI) - default to "system"
+      setConversationFontFamily(
+        config.ui?.web?.conversation_font_family || "system",
+      );
+
+      // Load conversation base font size setting (web UI) - default to "sm"
+      setConversationFontSize(config.ui?.web?.conversation_font_size || "sm");
+
       // Load send key mode setting (web UI) - default to "enter"
       setSendKeyMode(config.ui?.web?.send_key_mode || "enter");
 
@@ -2534,14 +2713,13 @@ export function SettingsDialog({
 
       // Load available flags and configured default flags
       try {
-        const flagsRes = await authFetch(endpoints.misc.advancedFlags());
-        if (flagsRes.ok) {
-          const flagsData = await flagsRes.json();
-          setAvailableFlags(flagsData.flags || []);
-          setDefaultFlags(flagsData.configured_defaults || {});
-        }
+        const flagsData = await getSdkClient().serverConfig.advancedFlags();
+        setAvailableFlags(flagsData.flags || []);
+        setDefaultFlags(flagsData.configured_defaults || {});
       } catch (err) {
-        console.warn("Failed to load advanced flags:", err);
+        if (errorStatus(err) === undefined) {
+          console.warn("Failed to load advanced flags:", err);
+        }
       }
     } catch (err) {
       setError("Failed to load configuration: " + err.message);
@@ -2726,6 +2904,8 @@ export function SettingsDialog({
         web: {
           input_font_family: inputFontFamily,
           input_font_size: inputFontSize,
+          conversation_font_family: conversationFontFamily,
+          conversation_font_size: conversationFontSize,
           send_key_mode: sendKeyMode,
           conversation_cycling_mode: conversationCyclingMode,
           single_expanded_group: singleExpandedGroup,
@@ -2876,24 +3056,7 @@ export function SettingsDialog({
       console.log("DEBUG: Saving config:", JSON.stringify(config.ui, null, 2));
       console.log("DEBUG: nativeNotifications state:", nativeNotifications);
 
-      const res = await secureFetch(endpoints.config.update(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-
-      if (!res.ok) {
-        let errData = null;
-        try {
-          errData = await res.json();
-        } catch (_e) {
-          /* non-JSON error body */
-        }
-        throw new Error(
-          errorMessageFromData(errData, "Failed to save configuration"),
-        );
-      }
-      const result = await res.json();
+      const result = await getSdkClient().serverConfig.save(config);
 
       // Config changed on disk — invalidate cache so next read is fresh.
       invalidateConfigCache();
@@ -2901,6 +3064,7 @@ export function SettingsDialog({
       // Persist global shortcuts (dedicated endpoint; no-op if the Shortcuts tab
       // was never opened). Runs after the main config save so its write wins.
       await persistGlobalShortcuts();
+      await persistTaskLabelColors();
 
       // Update the global sound and notification setting flags
       if (isMacApp) {
@@ -2934,15 +3098,16 @@ export function SettingsDialog({
       // Hoist activeExternalPort so it is visible at the toast-building site below.
       let activeExternalPort = null;
       try {
-        const statusRes = await authFetch(endpoints.misc.externalStatus());
-        if (statusRes.ok) {
-          const status = await statusRes.json();
-          setExternalEnabled(status.enabled);
-          setCurrentExternalPort(status.port || null);
-          activeExternalPort = status.port || null;
-        }
+        const status = await getSdkClient().serverConfig.externalStatus();
+        setExternalEnabled(status.enabled);
+        setCurrentExternalPort(status.port || null);
+        activeExternalPort = status.port || null;
       } catch (e) {
-        console.error("Failed to fetch external status:", e);
+        // A non-2xx status is silently skipped (mirrors the old `if
+        // (statusRes.ok)` guard); only a network-level failure is logged.
+        if (errorStatus(e) === undefined) {
+          console.error("Failed to fetch external status:", e);
+        }
       }
 
       // If the save tore down the external listener (e.g. incomplete credentials),
@@ -2990,7 +3155,7 @@ export function SettingsDialog({
 
       onSave?.();
     } catch (err) {
-      setError(err.message);
+      setError(errorMessage(err, "Failed to save configuration"));
     } finally {
       const elapsed = Date.now() - saveStartTime;
       const remaining = Math.max(0, 1000 - elapsed);
@@ -3144,39 +3309,7 @@ export function SettingsDialog({
     }
     setError("");
     try {
-      const res = await authFetch(endpoints.acpServers.prepareDelete(serverName));
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 404) {
-          // Server unknown to the backend — treat as already-gone.
-          removeServerFromState(serverName);
-          return;
-        }
-        if (res.status === 403) {
-          // The prepare-delete handler does not distinguish RC-file vs
-          // config-read-only, but reassign-and-delete does (via 403 with
-          // "defined in RC file" in the message). Treat both here as a
-          // read-only refusal shown in the blocking modal.
-          const msg = errorMessageFromData(
-            data,
-            `Cannot delete "${serverName}": configuration is read-only.`,
-          );
-          const isRC = /RC file|\.mittorc/i.test(msg);
-          setDeleteBlockedInfo({
-            kind: isRC ? "rcfile" : "readonly",
-            serverName,
-            message: msg,
-          });
-          return;
-        }
-        setError(
-          errorMessageFromData(
-            data,
-            `Failed to prepare deletion of "${serverName}"`,
-          ),
-        );
-        return;
-      }
+      const data = await getSdkClient().acpServers.prepareDelete(serverName);
       if (data?.has_active === true) {
         setDeleteBlockedInfo({
           kind: "active",
@@ -3194,7 +3327,31 @@ export function SettingsDialog({
       setDeleteWizardName(serverName);
       setDeleteWizardPlan(data);
     } catch (err) {
-      setError(err?.message || String(err));
+      if (errorStatus(err) === 404) {
+        // Server unknown to the backend — treat as already-gone.
+        removeServerFromState(serverName);
+        return;
+      }
+      if (errorStatus(err) === 403) {
+        // The prepare-delete handler does not distinguish RC-file vs
+        // config-read-only, but reassign-and-delete does (via 403 with
+        // "defined in RC file" in the message). Treat both here as a
+        // read-only refusal shown in the blocking modal.
+        const msg = errorMessage(
+          err,
+          `Cannot delete "${serverName}": configuration is read-only.`,
+        );
+        const isRC = /RC file|\.mittorc/i.test(msg);
+        setDeleteBlockedInfo({
+          kind: isRC ? "rcfile" : "readonly",
+          serverName,
+          message: msg,
+        });
+        return;
+      }
+      setError(
+        errorMessage(err, `Failed to prepare deletion of "${serverName}"`),
+      );
     }
   };
 
@@ -3308,6 +3465,33 @@ export function SettingsDialog({
   // Commit a profile's raw tag draft text into its tags array (comma-separated,
   // trimmed, empties dropped, deduped), then reset the draft to empty so the
   // input is ready for the next tag (existing tags are shown as chips).
+  const duplicateProfile = (i) => {
+    setModelProfiles((prev) => {
+      if (i < 0 || i >= prev.length) return prev;
+      const src = prev[i];
+      const copy = {
+        ...src,
+        name: `${(src.name || "").trim()} (Copy)`.trim(),
+        criteria: src.criteria ? { ...src.criteria } : null,
+        tags: Array.isArray(src.tags) ? [...src.tags] : [],
+      };
+      const next = [...prev];
+      next.splice(i + 1, 0, copy);
+      return next;
+    });
+    // Shift tagDrafts for indices > i up by one to stay aligned; the
+    // freshly-inserted i+1 slot starts with no in-progress draft.
+    setTagDrafts((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([key, val]) => {
+        const idx = Number(key);
+        next[idx > i ? idx + 1 : idx] = val;
+      });
+      return next;
+    });
+    setExpandedProfileIndex(i + 1);
+  };
+
   const commitTagDraft = (i) => {
     const raw = tagDrafts[i];
     if (raw === undefined) return;
@@ -3335,7 +3519,10 @@ export function SettingsDialog({
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "mcp", label: "MCP", icon: LightningIcon },
+    { id: "slack", label: "Slack", icon: ChatBubbleIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
+    { id: "dashboard", label: "Dashboard", icon: DashboardIcon },
+    { id: "tasks", label: "Tasks", icon: TagIcon },
     { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon },
   ];
 
@@ -5153,6 +5340,10 @@ export function SettingsDialog({
                   </div>
                 `}
 
+                <!-- Slack Tab -->
+                ${activeTab === "slack" &&
+                html`<${SlackSettingsTab} showToast=${showToast} />`}
+
                 <!-- UI Tab -->
                 ${activeTab === "ui" &&
                 html`
@@ -5341,6 +5532,55 @@ export function SettingsDialog({
                               <option value="medium">Medium</option>
                               <option value="large">Large</option>
                               <option value="xl">Extra Large</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Conversation font
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Font family and base size for conversation
+                              messages. The sidebar small-A / large-A toggle
+                              re-anchors on the base size.
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <select
+                              value=${conversationFontFamily}
+                              onChange=${(e) =>
+                                setConversationFontFamily(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="system">System Default</option>
+                              <option value="sans-serif">Sans-Serif</option>
+                              <option value="serif">Serif</option>
+                              <option value="inter">Inter</option>
+                              <option value="sf-pro">SF Pro</option>
+                              <option value="helvetica-neue">
+                                Helvetica Neue
+                              </option>
+                              <option value="roboto">Roboto</option>
+                              <option value="georgia">Georgia</option>
+                              <option value="charter">Charter</option>
+                              <option value="ibm-plex-sans">
+                                IBM Plex Sans
+                              </option>
+                            </select>
+                            <select
+                              value=${conversationFontSize}
+                              onChange=${(e) =>
+                                setConversationFontSize(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="xs">Extra Small (13px)</option>
+                              <option value="sm">Small (14px)</option>
+                              <option value="md">Medium (15px)</option>
+                              <option value="lg">Large (16px)</option>
+                              <option value="xl">Extra Large (18px)</option>
                             </select>
                           </div>
                         </div>
@@ -5577,9 +5817,7 @@ export function SettingsDialog({
 
                         <!-- Open In Targets -->
                         <div class="p-4 space-y-2">
-                          <div class="font-medium text-sm">
-                            Open In targets
-                          </div>
+                          <div class="font-medium text-sm">Open In targets</div>
                           <div class="text-xs text-mitto-text-muted mb-2">
                             Configure which apps appear in the folder "Open ▸"
                             menu. Toggle rows to enable/disable; click Edit to
@@ -5657,7 +5895,10 @@ export function SettingsDialog({
                                             setOpenInTargets((list) =>
                                               list.map((x) =>
                                                 x.id === t.id
-                                                  ? { ...x, label: e.target.value }
+                                                  ? {
+                                                      ...x,
+                                                      label: e.target.value,
+                                                    }
                                                   : x,
                                               ),
                                             )}
@@ -5672,7 +5913,10 @@ export function SettingsDialog({
                                           setOpenInTargets((list) =>
                                             list.map((x) =>
                                               x.id === t.id
-                                                ? { ...x, command: e.target.value }
+                                                ? {
+                                                    ...x,
+                                                    command: e.target.value,
+                                                  }
                                                 : x,
                                             ),
                                           )}
@@ -5721,6 +5965,74 @@ export function SettingsDialog({
                         </div>
                       </div>
                     `}
+                  </div>
+                `}
+
+                <!-- Dashboard Tab (mitto-w6b) -->
+                ${activeTab === "dashboard" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Choose which charts appear on the Dashboard's Activity
+                      strip. At least one chart must remain visible.
+                    </p>
+                    ${hidingAllError &&
+                    html`
+                      <div
+                        class="alert alert-warning alert-sm text-sm"
+                        data-testid="dashboard-hiding-all-error"
+                      >
+                        ${hidingAllError}
+                      </div>
+                    `}
+                    <div
+                      class="rounded border border-mitto-border divide-y divide-mitto-border"
+                    >
+                      ${DASHBOARD_CHARTS.map(
+                        (c) => html`
+                          <div key=${c.id} class="flex items-center gap-3 p-3">
+                            <div class="flex-1 min-w-0">
+                              <div class="font-medium text-sm truncate">
+                                ${c.label}
+                              </div>
+                              <div
+                                class="text-xs text-mitto-text-muted truncate"
+                              >
+                                ${c.id}
+                              </div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              class="checkbox checkbox-sm checkbox-primary"
+                              data-testid=${`dashboard-chart-toggle-${c.id}`}
+                              checked=${!hiddenCharts.includes(c.id)}
+                              onChange=${(e) =>
+                                toggleChart(c.id, e.target.checked)}
+                            />
+                          </div>
+                        `,
+                      )}
+                    </div>
+                  </div>
+                `}
+
+                <!-- Tasks Tab -->
+                ${activeTab === "tasks" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Configure global task-title background colors by label.
+                      Order matters: the first matching label wins.
+                    </p>
+                    <${TaskLabelColorsEditor}
+                      entries=${taskLabelColors}
+                      loading=${taskLabelColorsLoading}
+                      error=${taskLabelColorsError}
+                      onAdd=${addTaskLabelColor}
+                      onUpdate=${updateTaskLabelColor}
+                      onRemove=${removeTaskLabelColor}
+                      onMove=${moveTaskLabelColor}
+                    />
                   </div>
                 `}
 
@@ -5826,7 +6138,7 @@ export function SettingsDialog({
                               `;
                             })()}
                             <button
-                              class="btn btn-sm btn-ghost"
+                              class="btn btn-xs btn-ghost btn-square"
                               title="Move up"
                               aria-label="Move up"
                               data-testid=${`model-profile-move-up-${i}`}
@@ -5839,7 +6151,7 @@ export function SettingsDialog({
                               <${ChevronUpIcon} className="w-4 h-4" />
                             </button>
                             <button
-                              class="btn btn-sm btn-ghost"
+                              class="btn btn-xs btn-ghost btn-square"
                               title="Move down"
                               aria-label="Move down"
                               data-testid=${`model-profile-move-down-${i}`}
@@ -5852,8 +6164,22 @@ export function SettingsDialog({
                               <${ChevronDownIcon} className="w-4 h-4" />
                             </button>
                             <button
-                              class="btn btn-sm btn-ghost text-error"
+                              class="btn btn-xs btn-ghost btn-square"
+                              title="Duplicate profile"
+                              aria-label="Duplicate profile"
+                              data-testid=${`model-profile-duplicate-${i}`}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                duplicateProfile(i);
+                              }}
+                            >
+                              <${DuplicateIcon} className="w-4 h-4" />
+                            </button>
+                            <button
+                              class="btn btn-xs btn-ghost btn-square text-error"
                               title="Remove profile"
+                              aria-label="Remove profile"
+                              data-testid=${`model-profile-remove-${i}`}
                               onClick=${(e) => {
                                 e.stopPropagation();
                                 removeProfile(i);
@@ -6127,8 +6453,7 @@ export function SettingsDialog({
         <div class="space-y-3 text-sm">
           <p>
             There are active conversations using
-            <span class="font-semibold"
-              >"${deleteBlockedInfo.serverName}"</span
+            <span class="font-semibold">"${deleteBlockedInfo.serverName}"</span
             >. Close or archive them first:
           </p>
           <ul class="space-y-1">
@@ -6169,12 +6494,9 @@ export function SettingsDialog({
         // Workspaces tab immediately (matches the backend's authoritative
         // view of workspace configs after the reassign-and-delete call).
         try {
-          const res = await authFetch(endpoints.workspaces.list());
-          if (res.ok) {
-            const wsData = await res.json().catch(() => ({}));
-            if (Array.isArray(wsData?.workspaces)) {
-              setWorkspaces(wsData.workspaces);
-            }
+          const wsData = await getSdkClient().workspaces.list();
+          if (Array.isArray(wsData?.workspaces)) {
+            setWorkspaces(wsData.workspaces);
           }
         } catch (_err) {
           // Best-effort refresh; the local state was updated already.
@@ -6182,14 +6504,10 @@ export function SettingsDialog({
         if (showToast && result) {
           const parts = [];
           if (result.reassigned_conversation_count) {
-            parts.push(
-              `${result.reassigned_conversation_count} reassigned`,
-            );
+            parts.push(`${result.reassigned_conversation_count} reassigned`);
           }
           if (result.deleted_conversation_count) {
-            parts.push(
-              `${result.deleted_conversation_count} deleted`,
-            );
+            parts.push(`${result.deleted_conversation_count} deleted`);
           }
           const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
           showToast(

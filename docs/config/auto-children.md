@@ -111,6 +111,17 @@ When a new top-level conversation is created in a workspace with `auto_children`
 
 Children are created **asynchronously** — failures are logged but do not block parent creation.
 
+### Per-prompt opt-out
+
+A prompt can suppress `auto_children` for creates it originates by setting
+[`target.suppressAutoChildren: true`](prompts.md#target-find-or-route-dispatch) in
+its frontmatter. Use for narrow one-shot workflows — e.g. "just review this PR",
+"answer a quick question" — where the reviewer/linter pair would add cost and
+noise without value. Workspace configuration is unchanged; the flag only skips
+the goroutine for creates whose originating prompt sets it. Applies to the REST
+create path (`POST /api/sessions`); MCP `mitto_conversation_new` never spawns
+auto-children today.
+
 ### Deletion (Cascade)
 
 Auto-children are **cascade-deleted** when their parent is deleted:

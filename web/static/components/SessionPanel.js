@@ -13,17 +13,21 @@ import {
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
-import { apiUrl, errorMessageFromData } from "../utils/api.js";
-import { secureFetch, authFetch } from "../utils/csrf.js";
-import { endpoints } from "../utils/endpoints.js";
-import { ConfirmDialog } from "./ConfirmDialog.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage, isNotFoundError } from "../utils/sdkErrors.js";
+import { withIssueCaches } from "../sdk/index.js";
+import { isGone, markGone } from "../utils/beadsGoneCache.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { statusBadge as beadsStatusBadge } from "./BeadsView.js";
-import { formatTimeAgo, looksLikeFilePath } from "../lib.js";
+import { formatTimeAgo } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
-import { isNativeApp, getAPIPrefix } from "../utils/index.js";
+import { isNativeApp } from "../utils/index.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
+import { LoopSettingsTab } from "./LoopSettingsTab.js";
+import { CallbackTriggerSection } from "./CallbackTriggerSection.js";
+import { getPromptIcon } from "./Icons.js";
+import { describeProvenance } from "../utils/promptProvenance.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (copied from ConversationPropertiesPanel)
@@ -64,53 +68,6 @@ function getContextWindowSize(modelId) {
     if (lower.includes(key)) return MODEL_CONTEXT_WINDOWS[key];
   }
   return null;
-}
-
-function utcToLocalTimeDisplay(utcTime) {
-  if (!utcTime) return "";
-  const [hours, minutes] = utcTime.split(":").map(Number);
-  const now = new Date();
-  const utcDate = new Date(
-    Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate(),
-      hours,
-      minutes,
-      0,
-    ),
-  );
-  return utcDate.toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function formatFrequency(frequency) {
-  if (!frequency) return "";
-  const { value, unit, at } = frequency;
-  let text = "";
-  if (value === 1) {
-    switch (unit) {
-      case "minutes":
-        text = "Every minute";
-        break;
-      case "hours":
-        text = "Every hour";
-        break;
-      case "days":
-        text = "Every day";
-        break;
-      default:
-        text = `Every ${unit}`;
-    }
-  } else {
-    text = `Every ${value} ${unit}`;
-  }
-  if (unit === "days" && at) {
-    text += ` at ${utcToLocalTimeDisplay(at)}`;
-  }
-  return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +142,12 @@ export function SessionPanel({
   configOptions = [],
   onSetConfigOption,
   mcpTools = [],
+  loopPrompts = [],
+  allPrompts = [],
+  hasBeadsWorkspace = false,
+  onOpenPromptParamDialog,
   showToast,
+  messages = [],
 }) {
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
@@ -248,9 +210,7 @@ export function SessionPanel({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
   const [loopConfig, setLoopConfig] = useState(null);
-  const [callbackConfig, setCallbackConfig] = useState(null);
-  const [callbackCopied, setCallbackCopied] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState(null);
+  const loopConfigVersionRef = useRef(0);
   const [isMcpToolsExpanded, setIsMcpToolsExpanded] = useState(false);
   const [isAdvancedExpanded, setIsAdvancedExpanded] = useState(false);
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -265,6 +225,23 @@ export function SessionPanel({
     const modelOpt = configOptions.find((opt) => opt.id === "model");
     return modelOpt?.current_value || null;
   }, [configOptions]);
+
+  // Newest message carrying loop-trigger provenance (mitto-rg79), scanned
+  // newest-first so a "Last loop delivery" detail can be shown in Properties
+  // without waiting for a full-transcript pass. Independent of the
+  // *configured* trigger settings shown in the Loop tab — this reflects what
+  // actually fired most recently.
+  const lastLoopDeliveryMessage = useMemo(() => {
+    if (!messages?.length) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.provenance) return messages[i];
+    }
+    return null;
+  }, [messages]);
+  const lastLoopDeliveryInfo = useMemo(
+    () => describeProvenance(lastLoopDeliveryMessage?.provenance),
+    [lastLoopDeliveryMessage],
+  );
 
   // --- Changes tab state ---
   const [changesData, setChangesData] = useState(null);
@@ -283,67 +260,112 @@ export function SessionPanel({
 
   // --- Effects: reset on session change ---
   useEffect(() => {
+    loopConfigVersionRef.current += 1;
     setIsEditingTitle(false);
     setLoopConfig(null);
-    setCallbackConfig(null);
-    setCallbackCopied(false);
     setFlagsError(null);
     setSavingFlags({});
     setEditingAttribute(null);
     setUserDataError(null);
   }, [sessionId, isOpen]);
 
+  const loopAvailable =
+    sessionInfo?.loop_configured === true || loopConfig !== null;
+
+  // A loop can be detached or the user can switch conversations while this tab
+  // is selected. Keep both local and app-level tab state on a valid selection.
+  useEffect(() => {
+    if (currentTab === "loop" && !loopAvailable) {
+      handleTabChange("properties");
+    }
+  }, [currentTab, loopAvailable, handleTabChange]);
+
+  // Keep an open panel synchronized with loop changes made by another client,
+  // MCP, or another local surface. Bump the version so an older in-flight GET
+  // cannot overwrite this newer server broadcast when it eventually resolves.
+  useEffect(() => {
+    if (!isOpen || !sessionId) return undefined;
+
+    const handleLoopConfigUpdated = (event) => {
+      const detail = event.detail || {};
+      if (detail.sessionId !== sessionId) return;
+
+      loopConfigVersionRef.current += 1;
+      if (detail.loopConfigured === false) {
+        setLoopConfig(null);
+        return;
+      }
+      if (detail.loopConfig && typeof detail.loopConfig === "object") {
+        setLoopConfig(detail.loopConfig);
+      }
+    };
+
+    window.addEventListener(
+      "mitto:loop_config_updated",
+      handleLoopConfigUpdated,
+    );
+    return () =>
+      window.removeEventListener(
+        "mitto:loop_config_updated",
+        handleLoopConfigUpdated,
+      );
+  }, [isOpen, sessionId]);
+
   // --- Effects: fetch properties data when open ---
   useEffect(() => {
-    if (!isOpen || !sessionId) return;
+    if (!isOpen || !sessionId) return undefined;
+
+    let cancelled = false;
+    const loopConfigVersion = loopConfigVersionRef.current;
 
     const fetchData = async () => {
       setIsLoadingFlags(true);
       setFlagsError(null);
 
-      // Loop + callback endpoints only exist for loop conversations.
+      // The loop endpoint only exists for loop conversations.
       // Gating on loop_configured avoids 404 noise on regular sessions.
       const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        const [loopRes, callbackRes, flagsRes, settingsRes] =
-          await Promise.all([
-            loopConfigured
-              ? authFetch(endpoints.sessions.loop(sessionId))
-              : Promise.resolve(null),
-            loopConfigured
-              ? authFetch(endpoints.sessions.callback(sessionId))
-              : Promise.resolve(null),
-            authFetch(endpoints.misc.advancedFlags()),
-            authFetch(endpoints.sessions.settings(sessionId)),
-          ]);
+        // Each call swallows its own failure (mirrors the old per-Response
+        // `x && x.ok` tolerance — the SDK throws on a non-2xx status where
+        // the old raw fetch() would just resolve with `res.ok === false`),
+        // so one endpoint failing does not blank out the other two.
+        const [loopData, flagsData, settingsData] = await Promise.all([
+          loopConfigured
+            ? getSdkClient()
+                .sessions.loop.get(sessionId)
+                .catch(() => null)
+            : Promise.resolve(null),
+          getSdkClient()
+            .misc.advancedFlags()
+            .catch(() => null),
+          getSdkClient()
+            .sessions.getSettings(sessionId)
+            .catch(() => null),
+        ]);
 
-        if (loopRes && loopRes.ok)
-          setLoopConfig(await loopRes.json());
-        else setLoopConfig(null);
-
-        if (callbackRes && callbackRes.ok)
-          setCallbackConfig(await callbackRes.json());
-        else setCallbackConfig(null);
-
-        if (flagsRes.ok) {
-          const flagsData = await flagsRes.json();
-          setAvailableFlags(flagsData.flags || flagsData || []);
+        if (!cancelled && loopConfigVersion === loopConfigVersionRef.current) {
+          setLoopConfig(loopData || null);
         }
+        if (cancelled) return;
 
-        if (settingsRes.ok) {
-          const settingsData = await settingsRes.json();
-          setSessionSettings(settingsData.settings || {});
-        }
+        if (flagsData) setAvailableFlags(flagsData.flags || flagsData || []);
+
+        if (settingsData) setSessionSettings(settingsData.settings || {});
       } catch (err) {
+        if (cancelled) return;
         console.error("[SessionPanel] Failed to fetch properties data:", err);
         setFlagsError("Failed to load settings");
       } finally {
-        setIsLoadingFlags(false);
+        if (!cancelled) setIsLoadingFlags(false);
       }
     };
 
     fetchData();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, sessionId, sessionInfo?.loop_configured]);
 
   // --- Effects: fetch linked beads issue status when open ---
@@ -354,19 +376,24 @@ export function SessionPanel({
       setBeadsStatus(null);
       return;
     }
+    // mitto-msv: skip ids already known to 404 so re-opens of a stale panel
+    // do not re-issue the same 404. markGone below feeds the shared negative
+    // cache so the other surfaces (header, session-item pill) also skip it.
+    if (isGone(sessionInfo.working_dir, sessionInfo.beads_issue)) {
+      setBeadsStatus(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
+      // withIssueCaches' show() records any 404 in the shared negative
+      // cache itself (mirrors useLinkedBeadPhase.js); the isGone() guard
+      // above already handles the skip-network short-circuit, so only
+      // markGone is wired in here.
+      const issues = withIssueCaches(getSdkClient().issues, { markGone });
       try {
-        const res = await authFetch(
-          endpoints.issues.show(sessionInfo.beads_issue, {
-            working_dir: sessionInfo.working_dir,
-          }),
-        );
-        if (!res.ok) {
-          if (!cancelled) setBeadsStatus(null);
-          return;
-        }
-        const data = await res.json();
+        const data = await issues.show(sessionInfo.beads_issue, {
+          working_dir: sessionInfo.working_dir,
+        });
         if (cancelled) return;
         const issueObj = Array.isArray(data) ? data[0] : data;
         if (issueObj && !issueObj.error && issueObj.status) {
@@ -394,15 +421,20 @@ export function SessionPanel({
       try {
         const wsUuid =
           sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
-        const [userDataRes, schemaRes] = await Promise.all([
-          authFetch(endpoints.sessions.userData(sessionId)),
-          authFetch(endpoints.workspaces.userDataSchema(wsUuid)),
+        // Each call swallows its own failure (see the properties-tab effect
+        // above for the rationale): a missing user-data-schema (404) is a
+        // normal "workspace declares no schema" outcome, not an error.
+        const [userData, schema] = await Promise.all([
+          getSdkClient()
+            .sessions.getUserData(sessionId)
+            .catch(() => null),
+          getSdkClient()
+            .workspaces.getUserDataSchema(wsUuid)
+            .catch((err) => (isNotFoundError(err) ? { fields: [] } : null)),
         ]);
 
-        if (userDataRes.ok) setUserData(await userDataRes.json());
-
-        if (schemaRes.ok) setUserDataSchema(await schemaRes.json());
-        else if (schemaRes.status === 404) setUserDataSchema({ fields: [] });
+        if (userData) setUserData(userData);
+        if (schema) setUserDataSchema(schema);
       } catch (err) {
         console.error("[SessionPanel] Failed to fetch user data:", err);
         setUserDataError("Failed to load user data");
@@ -427,12 +459,10 @@ export function SessionPanel({
       setIsLoadingChanges(true);
       setChangesError(null);
       try {
-        const resp = await authFetch(endpoints.sessions.changes(sessionId));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
+        const data = await getSdkClient().sessions.changes(sessionId);
         setChangesData(data);
       } catch (err) {
-        setChangesError(err.message);
+        setChangesError(errorMessage(err, "Failed to load changes"));
       } finally {
         setIsLoadingChanges(false);
       }
@@ -512,102 +542,19 @@ export function SessionPanel({
       setSavingFlags((prev) => ({ ...prev, [flagName]: true }));
       setFlagsError(null);
       try {
-        const res = await secureFetch(endpoints.sessions.settings(sessionId), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ settings: { [flagName]: newValue } }),
+        const data = await getSdkClient().sessions.updateSettings(sessionId, {
+          [flagName]: newValue,
         });
-        if (res.ok) {
-          const data = await res.json();
-          setSessionSettings(data.settings || {});
-        } else {
-          const errorData = await res.json().catch(() => ({}));
-          setFlagsError(
-            errorMessageFromData(errorData, "Failed to save setting"),
-          );
-        }
+        setSessionSettings(data.settings || {});
       } catch (err) {
         console.error("Failed to save flag:", err);
-        setFlagsError("Failed to save setting");
+        setFlagsError(errorMessage(err, "Failed to save setting"));
       } finally {
         setSavingFlags((prev) => ({ ...prev, [flagName]: false }));
       }
     },
     [sessionId],
   );
-
-  // --- Handlers: callback URL ---
-  const handleEnableCallback = useCallback(async () => {
-    const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-      method: "POST",
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setCallbackConfig(data);
-      try {
-        await navigator.clipboard.writeText(data.callback_url);
-        setCallbackCopied(true);
-        setTimeout(() => setCallbackCopied(false), 2000);
-      } catch (e) {
-        /* clipboard may not be available */
-      }
-    }
-  }, [sessionId]);
-
-  const handleCopyCallbackUrl = useCallback(async () => {
-    if (callbackConfig?.callback_url) {
-      try {
-        await navigator.clipboard.writeText(callbackConfig.callback_url);
-        setCallbackCopied(true);
-        setTimeout(() => setCallbackCopied(false), 2000);
-      } catch (e) {
-        /* clipboard may not be available */
-      }
-    }
-  }, [callbackConfig]);
-
-  const handleRotateCallback = useCallback(() => {
-    setConfirmDialog({
-      title: "Rotate Callback URL",
-      message:
-        "Rotate callback URL? The old URL will stop working immediately.",
-      confirmLabel: "Rotate",
-      confirmVariant: "danger",
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-          method: "POST",
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setCallbackConfig(data);
-          try {
-            await navigator.clipboard.writeText(data.callback_url);
-            setCallbackCopied(true);
-            setTimeout(() => setCallbackCopied(false), 2000);
-          } catch (e) {
-            /* clipboard may not be available */
-          }
-        }
-      },
-    });
-  }, [sessionId]);
-
-  const handleRevokeCallback = useCallback(() => {
-    setConfirmDialog({
-      title: "Revoke Callback URL",
-      message: "Revoke callback URL? It will stop working immediately.",
-      confirmLabel: "Revoke",
-      confirmVariant: "danger",
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
-          method: "DELETE",
-        });
-        if (res.ok) setCallbackConfig(null);
-      },
-    });
-  }, [sessionId]);
 
   // --- Handlers: user data editing ---
   const handleStartEditAttribute = useCallback((attr) => {
@@ -643,23 +590,14 @@ export function SessionPanel({
           value: editedAttributeValue,
         });
       }
-      const res = await secureFetch(endpoints.sessions.userData(sessionId), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attributes: updatedAttributes }),
+      const data = await getSdkClient().sessions.setUserData(sessionId, {
+        attributes: updatedAttributes,
       });
-      if (res.ok) {
-        setUserData(await res.json());
-        setEditingAttribute(null);
-      } else {
-        const errorData = await res.json().catch(() => ({}));
-        setUserDataError(
-          errorMessageFromData(errorData, "Failed to save attribute"),
-        );
-      }
+      setUserData(data);
+      setEditingAttribute(null);
     } catch (err) {
       console.error("Failed to save attribute:", err);
-      setUserDataError("Failed to save attribute");
+      setUserDataError(errorMessage(err, "Failed to save attribute"));
     } finally {
       setIsSavingAttribute(false);
     }
@@ -704,6 +642,7 @@ export function SessionPanel({
         onClose=${handleClose}
         widthClass="w-full"
         panelClass="bg-mitto-sidebar border-l border-mitto-border-1 h-full flex flex-col overflow-hidden"
+        rootStyle="--dock-w:24rem"
         testid="session-panel"
       >
         <!-- Header -->
@@ -764,6 +703,20 @@ export function SessionPanel({
               />
             </svg>
           </label>
+          ${
+            loopAvailable &&
+            html`
+              <label class="tab flex-1" title="Loop" aria-label="Loop">
+                <input
+                  type="radio"
+                  name="session-panel-tabs"
+                  checked=${currentTab === "loop"}
+                  onChange=${() => handleTabChange("loop")}
+                />
+                <${LoopFilledIcon} className="w-4 h-4 text-mitto-accent" />
+              </label>
+            `
+          }
           <label class="tab flex-1" title="Advanced" aria-label="Advanced">
             <input
               type="radio"
@@ -788,21 +741,12 @@ export function SessionPanel({
               ? renderPropertiesContent()
               : currentTab === "changes"
                 ? renderChangesContent()
-                : renderAdvancedTabContent()
+                : currentTab === "loop"
+                  ? renderLoopTabContent()
+                  : renderAdvancedTabContent()
           }
         </div>
       <//>
-
-      <${ConfirmDialog}
-        isOpen=${!!confirmDialog}
-        title=${confirmDialog?.title || "Confirm"}
-        message=${confirmDialog?.message || ""}
-        confirmLabel=${confirmDialog?.confirmLabel || "Yes"}
-        cancelLabel=${confirmDialog?.cancelLabel || "Cancel"}
-        confirmVariant=${confirmDialog?.confirmVariant || "primary"}
-        onConfirm=${confirmDialog?.onConfirm}
-        onCancel=${() => setConfirmDialog(null)}
-      />
     <//>
   `;
 
@@ -867,12 +811,10 @@ export function SessionPanel({
       setIsLoadingChanges(true);
       setChangesError(null);
       try {
-        const resp = await authFetch(endpoints.sessions.changes(sessionId));
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
+        const data = await getSdkClient().sessions.changes(sessionId);
         setChangesData(data);
       } catch (err) {
-        setChangesError(err.message);
+        setChangesError(errorMessage(err, "Failed to load changes"));
       } finally {
         setIsLoadingChanges(false);
       }
@@ -1287,6 +1229,60 @@ export function SessionPanel({
           `}
         </div>
 
+        <!-- Last loop delivery (mitto-rg79): reflects the actual last-firing
+             trigger, independent of the configured trigger settings in the
+             Loop tab. Only rendered when at least one message in this
+             conversation carries trigger provenance. -->
+        ${lastLoopDeliveryInfo &&
+        (() => {
+          const ProvenanceIcon = getPromptIcon(lastLoopDeliveryInfo.iconKey);
+          const slack = lastLoopDeliveryMessage?.provenance?.slack;
+          return html`
+            <div data-testid="session-panel-last-loop-delivery">
+              <label
+                class="block text-sm font-medium text-mitto-text-secondary mb-1"
+                >Last loop delivery</label
+              >
+              <div class="text-xs text-mitto-text-secondary space-y-0.5">
+                <div class="flex justify-between items-center">
+                  <span class="flex items-center gap-1.5">
+                    ${ProvenanceIcon &&
+                    html`<${ProvenanceIcon} className="w-3.5 h-3.5" />`}
+                    <span class="text-mitto-text-300"
+                      >${lastLoopDeliveryInfo.label}</span
+                    >
+                  </span>
+                  ${lastLoopDeliveryMessage?.timestamp &&
+                  html`<span
+                    class="text-mitto-text-300"
+                    title=${new Date(
+                      lastLoopDeliveryMessage.timestamp,
+                    ).toLocaleString()}
+                  >
+                    ${formatTimeAgo(lastLoopDeliveryMessage.timestamp)}
+                  </span>`}
+                </div>
+                ${slack &&
+                (slack.channel_id || slack.event_count > 0) &&
+                html`<div class="flex justify-between">
+                  <span>Slack</span>
+                  <span class="text-mitto-text-300"
+                    >${[
+                      slack.installation_id &&
+                        `installation ${slack.installation_id}`,
+                      slack.channel_id && `channel ${slack.channel_id}`,
+                      slack.event_count > 0 &&
+                        `${slack.event_count} event${slack.event_count === 1 ? "" : "s"}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}</span
+                  >
+                </div>`}
+              </div>
+            </div>
+          `;
+        })()}
+
         <!-- Workspace Section -->
         <div>
           <label
@@ -1341,48 +1337,6 @@ export function SessionPanel({
                   >`}
               ${beadsStatus && beadsStatusBadge(beadsStatus)}
             </div>
-          </div>
-        `}
-
-        <!-- Loop Prompts Section -->
-        ${loopConfig?.enabled &&
-        html`
-          <div>
-            <label
-              class="block text-sm font-medium text-mitto-text-secondary mb-2"
-              >Loop Prompts</label
-            >
-            <div class="flex items-center gap-2 text-sm text-mitto-text-300">
-              <${LoopFilledIcon}
-                className="w-4 h-4 shrink-0 text-mitto-accent"
-              />
-              <span>${formatFrequency(loopConfig.frequency)}</span>
-            </div>
-            ${loopConfig.last_sent_at &&
-            html`<p
-              class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
-            >
-              <strong>Last run:</strong>
-              <span
-                >${new Date(loopConfig.last_sent_at).toLocaleString()}</span
-              >
-            </p>`}
-            ${loopConfig.next_scheduled_at &&
-            html`<p
-              class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
-            >
-              <strong>Next run:</strong>
-              <span
-                >${new Date(
-                  loopConfig.next_scheduled_at,
-                ).toLocaleString()}</span
-              >
-            </p>`}
-            <p class="mt-1 text-xs text-mitto-text-500">
-              ${(loopConfig.max_iterations ?? 0) > 0
-                ? `Run ${loopConfig.iteration_count ?? 0} of ${loopConfig.max_iterations}`
-                : `${loopConfig.iteration_count ?? 0} run${(loopConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
-            </p>
           </div>
         `}
 
@@ -1565,6 +1519,32 @@ export function SessionPanel({
   }
 
   // ---------------------------------------------------------------------------
+  // Loop tab content
+  // ---------------------------------------------------------------------------
+  function renderLoopTabContent() {
+    return html`
+      <div class="p-4">
+        <${LoopSettingsTab}
+          sessionId=${sessionId}
+          loopConfig=${loopConfig}
+          prompts=${loopPrompts}
+          allPrompts=${allPrompts}
+          hasBeadsWorkspace=${hasBeadsWorkspace}
+          isStreaming=${isStreaming}
+          onOpenPromptParamDialog=${onOpenPromptParamDialog}
+          onConfigChange=${setLoopConfig}
+          showToast=${showToast}
+        >
+          <${CallbackTriggerSection}
+            sessionId=${sessionId}
+            loopEnabled=${loopConfig?.enabled === true}
+          />
+        </${LoopSettingsTab}>
+      </div>
+    `;
+  }
+
+  // ---------------------------------------------------------------------------
   // Advanced tab content (MCP Tools + Permissions)
   // ---------------------------------------------------------------------------
   function renderAdvancedTabContent() {
@@ -1633,87 +1613,6 @@ export function SessionPanel({
             </div>
           `,
         )}
-
-        <!-- Callback URL Section (only for loop conversations) -->
-        ${loopConfig &&
-        html`
-          <div>
-            <label
-              class="block text-sm font-medium text-mitto-text-secondary mb-2"
-              >Callback URL</label
-            >
-            ${loopConfig.enabled
-              ? html`
-                  ${callbackConfig?.callback_url
-                    ? html`
-                        <div class="flex items-center gap-1.5">
-                          <${Tooltip} tip="Copy callback URL to clipboard" placement="top">
-                            <button
-                              onClick=${handleCopyCallbackUrl}
-                              class="btn btn-xs btn-soft"
-                            >
-                              ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
-                            </button>
-                          </${Tooltip}>
-                          <${Tooltip} tip="Generate new callback URL (invalidates old one)" placement="top">
-                            <button
-                              onClick=${handleRotateCallback}
-                              class="btn btn-xs btn-soft"
-                            >
-                              🔄 Rotate
-                            </button>
-                          </${Tooltip}>
-                          <${Tooltip} tip="Revoke callback URL" placement="top">
-                            <button
-                              onClick=${handleRevokeCallback}
-                              class="btn btn-xs btn-soft btn-error"
-                              aria-label="Revoke callback URL"
-                            >
-                              ✕
-                            </button>
-                          </${Tooltip}>
-                        </div>
-                      `
-                    : html`
-                        <${Tooltip} tip="Generate a callback URL for triggering this loop conversation externally" placement="top">
-                          <button
-                            onClick=${handleEnableCallback}
-                            class="btn btn-xs btn-soft"
-                          >
-                            🔗 Enable Callback URL
-                          </button>
-                        </${Tooltip}>
-                      `}
-                `
-              : html`
-                  ${callbackConfig?.callback_url
-                    ? html`
-                        <p class="text-xs text-mitto-text-muted mb-1.5 italic">
-                          Preserved but inactive while loop is disabled
-                        </p>
-                        <div class="flex items-center gap-1.5">
-                          <button
-                            onClick=${handleCopyCallbackUrl}
-                            class="btn btn-xs btn-soft"
-                          >
-                            ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
-                          </button>
-                          <button
-                            onClick=${handleRevokeCallback}
-                            class="btn btn-xs btn-soft btn-error"
-                          >
-                            ✕ Revoke
-                          </button>
-                        </div>
-                      `
-                    : html`
-                        <p class="text-xs text-mitto-text-500">
-                          No callback URL configured.
-                        </p>
-                      `}
-                `}
-          </div>
-        `}
 
         <!-- MCP Tools Section (Collapsible) -->
         ${mcpTools &&

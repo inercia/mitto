@@ -11,7 +11,7 @@ import (
 	"time"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // safeErrorCollector is a thread-safe error message collector for tests.
@@ -69,7 +69,7 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
@@ -109,10 +109,13 @@ func TestACPRestart_SingleCrash(t *testing.T) {
 		return errorCollector.contains("Restarting") && errorCollector.contains("attempt 1 of 3")
 	}, "restart notification")
 
-	// Verify we got the restart message
-	if !errorCollector.contains("AI agent restarted") {
-		t.Error("Expected 'AI agent restarted' message")
-	}
+	// Wait for the second observer callback ("AI agent restarted. Retrying your
+	// message automatically...") which is dispatched only after restartACPProcess
+	// completes. A bare contains() here races against that callback on a busy
+	// scheduler (mitto-8yz).
+	waitFor(t, 10*time.Second, func() bool {
+		return errorCollector.contains("AI agent restarted")
+	}, "restart completion notification")
 }
 
 // TestACPRestart_RateLimiting tests that restarts are rate-limited to MaxACPRestarts per window.
@@ -121,7 +124,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -132,7 +135,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
@@ -203,7 +206,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 func TestACPRestart_BackoffDelays(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -213,7 +216,7 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 		},
@@ -281,7 +284,7 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 func TestACPRestart_ReasonTracking(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -299,7 +302,7 @@ func TestACPRestart_ReasonTracking(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
-	callbacks := client.SessionCallbacks{
+	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)

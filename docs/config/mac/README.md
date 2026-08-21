@@ -240,15 +240,15 @@ On macOS, the following seven targets are available out of the box. They are all
 labeled as built-in in the UI and cannot be removed, only enabled/disabled or have
 their command edited:
 
-| ID         | Default label        | Default enabled | Command                                          |
-| ---------- | -------------------- | --------------- | ------------------------------------------------ |
-| `finder`   | Finder               | ✅ yes          | `open ${MITTO_WORKING_DIR}`                      |
-| `terminal` | Terminal             | ✅ yes          | `open -a Terminal ${MITTO_WORKING_DIR}`          |
-| `iterm`    | iTerm                | ❌ no           | `open -a iTerm ${MITTO_WORKING_DIR}`             |
-| `vscode`   | Visual Studio Code   | ❌ no           | `open -a "Visual Studio Code" ${MITTO_WORKING_DIR}` |
-| `cursor`   | Cursor               | ❌ no           | `open -a Cursor ${MITTO_WORKING_DIR}`            |
-| `xcode`    | Xcode                | ❌ no           | `open -a Xcode ${MITTO_WORKING_DIR}`             |
-| `goland`   | GoLand               | ❌ no           | `open -a GoLand ${MITTO_WORKING_DIR}`            |
+| ID         | Default label      | Default enabled | Command                                             |
+| ---------- | ------------------ | --------------- | --------------------------------------------------- |
+| `finder`   | Finder             | ✅ yes          | `open ${MITTO_WORKING_DIR}`                         |
+| `terminal` | Terminal           | ✅ yes          | `open -a Terminal ${MITTO_WORKING_DIR}`             |
+| `iterm`    | iTerm              | ❌ no           | `open -a iTerm ${MITTO_WORKING_DIR}`                |
+| `vscode`   | Visual Studio Code | ❌ no           | `open -a "Visual Studio Code" ${MITTO_WORKING_DIR}` |
+| `cursor`   | Cursor             | ❌ no           | `open -a Cursor ${MITTO_WORKING_DIR}`               |
+| `xcode`    | Xcode              | ❌ no           | `open -a Xcode ${MITTO_WORKING_DIR}`                |
+| `goland`   | GoLand             | ❌ no           | `open -a GoLand ${MITTO_WORKING_DIR}`               |
 
 ### Adding a custom target
 

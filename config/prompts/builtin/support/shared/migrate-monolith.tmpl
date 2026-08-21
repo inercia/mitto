@@ -1,0 +1,84 @@
+{{- /*
+  support/migrate-monolith — one-shot, idempotent auto-split of the legacy
+  monolithic `.mitto/slack-support-<channel-id>.md` playbook into the new
+  topical-fragment layout under `.mitto/support/<channel-id>/`.
+
+  Purpose: retire the monolith without any manual user step. On first read
+  after Phase 3 lands, `Support: watch channel` and `Support: investigate`
+  render this block ABOVE their fragment gate, so the migration runs BEFORE
+  `channel-fragment-read` looks for topical files — otherwise the owner-ask
+  would fire spuriously on a channel that still has a monolith.
+
+  Idempotence: the whole block short-circuits when
+  `.mitto/support/<channel-id>/` already exists — never re-migrates a
+  previously-migrated channel and never rewrites existing fragments.
+
+  Callers pass named fields via a `dict`:
+
+      Channel:    the channel ID (used to build the paths). Required.
+      ActiveBead: the bead ID to comment on after migrating (typically the
+                  bead the caller is currently working). May be empty; if
+                  empty the [CONTEXT] note step is skipped.
+
+  Usage (rendered as a top-level Markdown block — the CALLER supplies no
+  surrounding markers):
+
+      {{ template "support/shared/migrate-monolith"
+           (dict "Channel" $channel "ActiveBead" "<id-or-empty>") }}
+
+  Whitespace: emits a leading `###` sub-heading and a trailing blank line
+  so it composes cleanly at the top of an existing section.
+*/ -}}
+{{- $channel    := .Channel    -}}
+{{- $activeBead := .ActiveBead -}}
+### Monolithic-playbook auto-migration (idempotent, runs at most once)
+
+Before doing anything else in this section, check whether this channel is still on the legacy
+monolithic playbook (`.mitto/slack-support-{{ $channel }}.md`) and split it into the new
+topical-fragment layout if so. This runs at most once per channel per environment.
+
+1. **Idempotence check.** If `.mitto/support/{{ $channel }}/` **already exists** (any file inside),
+   the migration is already done — **skip the rest of this block** and continue with the section
+   below.
+2. **No-monolith check.** Else if `.mitto/slack-support-{{ $channel }}.md` does **not** exist,
+   there is nothing to migrate — **skip the rest of this block** and continue with the section
+   below (the normal missing-fragment owner-ask path will handle first-time channels).
+3. **Split the monolith.** Otherwise, perform the one-shot migration:
+    1. Read `.mitto/slack-support-{{ $channel }}.md` in full.
+    2. Create the target directory `.mitto/support/{{ $channel }}/`.
+    3. Partition each `## <heading>` section into the matching new fragment file (write each as a
+       standalone Markdown file with the original section content, minus the top-level `##`
+       header; keep any nested `###` sub-headings intact):
+
+       | Monolithic `## <heading>`                    | Target fragment                                  |
+       |----------------------------------------------|--------------------------------------------------|
+       | Scope of Investigation and Reply             | `scope.md`                                       |
+       | Response Style and Tone                      | `tone.md`                                        |
+       | Investigations: how to gather information    | `investigation.md`                               |
+       | Repos / docs / runbooks                      | `resources.md`                                   |
+       | Escalation                                   | `escalation.md`                                  |
+       | Gotchas / do-nots                            | **split**: safety/investigation rules → `investigation.md`; do-not-address / tone rules → `tone.md` |
+       | Other instructions / Meta-instructions       | append to the most topically-relevant fragment above |
+       | anything not matched by the table above      | append to a single `_unclassified.md` (readers ignore this file, but no data is lost) |
+
+    4. Write each fragment to `.mitto/support/{{ $channel }}/<fragment>.md`. Preserve the original
+       Markdown verbatim within each section — do **not** rewrite or summarise.
+    5. Move the original file into the new directory so everything stays under one path:
+       `mv .mitto/slack-support-{{ $channel }}.md .mitto/support/{{ $channel }}/_migrated_from_monolith.md`.
+       This is reversible and preserves the source of truth for audit.
+    6. {{ if $activeBead -}}
+       Post a `[CONTEXT]` comment on the active bead (`{{ $activeBead }}`) recording the
+       migration:
+       ```
+       bd comment {{ $activeBead }} "**[CONTEXT · migration]** Migrated monolithic playbook → fragment layout at \`.mitto/support/{{ $channel }}/\`. Old file kept as \`_migrated_from_monolith.md\`."
+       ```
+       {{- else -}}
+       If any tracked bead in this channel is currently in flight, post a short `[CONTEXT]`
+       comment on it noting the migration path (`.mitto/support/{{ $channel }}/`) and that the
+       original file is preserved as `_migrated_from_monolith.md`.
+       {{- end }}
+
+After the block above, continue with the section below — it now sees the freshly-created
+fragments (or the pre-existing ones) and does its normal work.
+
+{{- /* trailing blank line intentional so callers compose cleanly */ -}}

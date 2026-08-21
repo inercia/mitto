@@ -115,6 +115,115 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the effective prompt name for find-or-route lookups. Both the
+	// reuseIssue and singleton blocks below use the same fallback (initial ->
+	// origin) so a caller that only sets initial_prompt_name still routes.
+	promptName := req.InitialPromptName
+	if promptName == "" {
+		promptName = req.OriginPromptName
+	}
+
+	// Resolve the full target: block once, up front, so target.backgroundColor
+	// (mitto-8sk) is available on EVERY create branch — including one that
+	// hits the reuseIssue block below and therefore never reaches the
+	// reuseTitle resolution call further down. The title/reuseTitle
+	// *decision* is still made independently at its original call site;
+	// this hoisted call only harvests the color (and avoids a second
+	// resolution call when reuseTitle also needs to run, see below).
+	var targetBackgroundColor string
+	var resolvedTarget ResolvedPromptTarget
+	var resolvedTargetErr error
+	targetResolved := false
+	if promptName != "" && h.deps.ResolvePromptTarget != nil {
+		resolvedTarget, resolvedTargetErr = h.deps.ResolvePromptTarget(promptName, req.WorkingDir, req.Arguments, req.BeadsIssue)
+		targetResolved = true
+		if resolvedTargetErr == nil {
+			targetBackgroundColor = resolvedTarget.BackgroundColor
+		}
+	}
+
+	// reuseIssue find-or-route: when a request carries beads_issue AND the
+	// originating prompt declares target.reuseIssue, the per-issue reuse
+	// decision is authoritative. If a matching non-archived conversation
+	// exists in the same working_dir, funnel the dispatch into it instead of
+	// creating a duplicate. If it doesn't match, the singleton fallback is
+	// SKIPPED for this request — otherwise two distinct beads issues driven
+	// by the same singleton prompt would collapse into one conversation.
+	// The per-(workingDir, beadsIssue) lock is held for the rest of this
+	// function so scan+create is atomic relative to concurrent creates for
+	// the same issue.
+	reuseIssueEvaluated := false
+	if req.BeadsIssue != "" && promptName != "" && h.deps.ResolvePromptReuseIssue != nil && h.deps.ResolvePromptReuseIssue(promptName, req.WorkingDir) {
+		reuseIssueEvaluated = true
+		key := req.WorkingDir + "\x00" + req.BeadsIssue
+		unlock := h.lockReuseIssue(key)
+		defer unlock()
+
+		if h.deps.Store != nil {
+			metas, _ := h.deps.Store.List()
+			if existingID, found := session.FindConversationByBeadsIssue(metas, req.WorkingDir, req.BeadsIssue); found {
+				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+					return
+				}
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+				return
+			}
+		}
+		// No candidate — fall through to normal creation. Lock stays held via
+		// defer so the BeadsIssue+OriginPromptName persistence below completes
+		// before another concurrent waiter's scan runs and misses this new one.
+	}
+
+	// reuseTitle find-or-route: when the originating prompt declares
+	// target.reuseTitle (with a non-empty target.title, enforced at load
+	// time by ValidatePromptTarget), route dispatches to an existing
+	// non-archived conversation in the same working_dir whose Name matches
+	// the declared title. If no candidate exists, fall through to normal
+	// creation with req.Name defaulted to the target title so a subsequent
+	// scan matches it. Skip the singleton fallback on both hit and miss —
+	// title reuse is authoritative for this prompt. When the caller
+	// supplied a non-empty req.Name that differs from the target title,
+	// override it (with a debug log) since target.title is the canonical
+	// lookup key.
+	reuseTitleEvaluated := false
+	if !reuseIssueEvaluated && promptName != "" && targetResolved {
+		title, reuseTitle, terr := resolvedTarget.Title, resolvedTarget.ReuseTitle, resolvedTargetErr
+		if terr != nil {
+			writeErrorJSON(w, http.StatusBadRequest, "invalid_prompt_target_title", terr.Error())
+			return
+		}
+		if reuseTitle && title != "" {
+			reuseTitleEvaluated = true
+			if req.Name != "" && req.Name != title && h.deps.Logger != nil {
+				h.deps.Logger.Debug("overriding request name with target.title from prompt frontmatter",
+					"prompt", promptName, "request_name", req.Name, "target_title", title)
+			}
+			req.Name = title
+			key := req.WorkingDir + "\x00" + title
+			unlock := h.lockReuseTitle(key)
+			defer unlock()
+
+			if h.deps.Store != nil {
+				metas, _ := h.deps.Store.List()
+				if existingID, found := session.FindConversationByTitle(metas, req.WorkingDir, title); found {
+					if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+						return
+					}
+					h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+					return
+				}
+			}
+			// No candidate — fall through to normal creation with req.Name
+			// set to title. Lock stays held via defer so the create below
+			// completes before another concurrent waiter's scan runs.
+		} else if !reuseTitle && title != "" && req.Name == "" {
+			// Plain target.title (no reuseTitle): adopt as default Name only
+			// when the caller did not supply one. Caller override wins;
+			// find-or-route is NOT invoked (reuseTitle is opt-in).
+			req.Name = title
+		}
+	}
+
 	// Singleton find-or-route (mitto-4mb.3): when the prompt that originates this
 	// conversation is declared singleton, route to an existing non-archived
 	// conversation in the same working dir instead of creating a duplicate. The
@@ -122,11 +231,11 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// function so the scan + create/seed sequence is atomic relative to other
 	// concurrent creates for the same key — two rapid clicks cannot both miss
 	// the scan and create duplicates.
-	promptName := req.InitialPromptName
-	if promptName == "" {
-		promptName = req.OriginPromptName
-	}
-	if promptName != "" && h.deps.ResolvePromptSingleton != nil && h.deps.ResolvePromptSingleton(promptName, req.WorkingDir) {
+	//
+	// Skipped when reuseIssue or reuseTitle already evaluated (and missed) for
+	// this request: singleton would incorrectly collapse distinct instances
+	// into one conversation.
+	if !reuseIssueEvaluated && !reuseTitleEvaluated && promptName != "" && h.deps.ResolvePromptSingleton != nil && h.deps.ResolvePromptSingleton(promptName, req.WorkingDir) {
 		key := req.WorkingDir + "\x00" + promptName
 		unlock := h.lockSingleton(key)
 		defer unlock()
@@ -134,6 +243,9 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		if h.deps.Store != nil {
 			metas, _ := h.deps.Store.List()
 			if existingID, found := session.FindSingletonCandidate(metas, req.WorkingDir, promptName); found {
+				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
+					return
+				}
 				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
 				return
 			}
@@ -146,11 +258,24 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// Note: The session manager already has the store set by the server at startup.
 	// No need to create a new store here.
 
+	// Resolve target.suppressAutoChildren from the originating prompt
+	// frontmatter (mitto-nlx). When set, the session manager skips the
+	// workspace-level auto_children spawn for this new top-level session.
+	// Uses the same promptName fallback (initial -> origin) as the reuse
+	// resolvers above.
+	suppressAutoChildren := false
+	if promptName != "" && h.deps.ResolvePromptSuppressAutoChildren != nil {
+		suppressAutoChildren = h.deps.ResolvePromptSuppressAutoChildren(promptName, req.WorkingDir)
+	}
+
 	// Create the background session with workspace configuration.
 	// The session/new ACP RPC is no longer performed here — it is deferred to the
 	// first prompt (see ensureSharedACPSession) so creating a conversation never
 	// blocks on a busy agent. r.Context() is still passed for the create call.
-	bs, err := h.deps.SessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
+	bs, err := h.deps.SessionManager.CreateSessionWithWorkspaceAndOptions(
+		r.Context(), req.Name, req.WorkingDir, workspace,
+		conversation.CreateSessionOptions{SuppressAutoChildren: suppressAutoChildren},
+	)
 	if err != nil {
 		if err == conversation.ErrTooManySessions {
 			writeErrorJSON(w, http.StatusServiceUnavailable, "too_many_sessions", "Maximum number of sessions reached (32)")
@@ -210,6 +335,30 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Persist the originating prompt's target.backgroundColor (if any) as a
+	// creation-time default (mitto-8sk), and target.noArchive (if set) as a
+	// permanent non-archivable flag (mitto-yvel.2). Create-only: reuse
+	// dispatches above return before reaching this point, so an existing
+	// conversation's color (including a user's manual recolor) or NoArchive
+	// value is never overwritten. The empty-check inside the update closure
+	// enforces the same rule against the metadata actually on disk for the
+	// color; NoArchive is set-only (never cleared) since it is immutable
+	// after creation.
+	if targetBackgroundColor != "" || resolvedTarget.NoArchive {
+		if store := h.deps.Store; store != nil {
+			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
+				if targetBackgroundColor != "" && meta.BackgroundColor == "" {
+					meta.BackgroundColor = targetBackgroundColor
+				}
+				if resolvedTarget.NoArchive {
+					meta.NoArchive = true
+				}
+			}); err != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to set background_color/no_archive on new session", "error", err, "session_id", bs.GetSessionID())
+			}
+		}
+	}
+
 	// Determine the ACP server name for the response
 	acpServerName := h.deps.DefaultACPServer
 	if workspace != nil && workspace.ACPServer != "" {
@@ -233,6 +382,8 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"status":             "active",
 		"beads_issue":        req.BeadsIssue,
 		"origin_prompt_name": originPromptName,
+		"background_color":   targetBackgroundColor,
+		"no_archive":         resolvedTarget.NoArchive,
 	}
 	if h.deps.BroadcastSessionCreated != nil {
 		h.deps.BroadcastSessionCreated(sessionData)
@@ -270,6 +421,46 @@ func (h *Handlers) seedQueueWithNamedPrompt(bs *conversation.BackgroundSession, 
 	}
 	// Dispatch immediately if the agent is idle — same path as the queue API.
 	go bs.TryProcessQueuedMessage()
+}
+
+// maybeCoalesce returns true (and writes a 200 coalesced response) when the
+// prompt declares target.reuseCoalesce AND an identical dispatch is already
+// in flight or queued on the target conversation. Callers MUST invoke this
+// INSIDE the per-key reuse lock (lockReuseIssue / lockReuseTitle /
+// lockSingleton) so the check-then-skip is atomic against concurrent dupes.
+// Returns false when reuseCoalesce is off or no match is found — callers
+// then fall through to reuseSingletonSession as before (mitto-djs1).
+func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, workingDir string, arguments map[string]string) bool {
+	if promptName == "" || h.deps.ResolvePromptReuseCoalesce == nil {
+		return false
+	}
+	if !h.deps.ResolvePromptReuseCoalesce(promptName, workingDir) {
+		return false
+	}
+	store := h.deps.Store
+	if store == nil {
+		return false
+	}
+	var bs *conversation.BackgroundSession
+	if h.deps.SessionManager != nil {
+		bs = h.deps.SessionManager.GetSession(existingID)
+	}
+	queue := store.Queue(existingID)
+	if !conversation.PromptMatchesActiveOrQueued(bs, queue, promptName, arguments) {
+		return false
+	}
+	if h.deps.Logger != nil {
+		h.deps.Logger.Info("Coalesced duplicate prompt dispatch",
+			"session_id", existingID,
+			"prompt_name", promptName,
+			"working_dir", workingDir)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"session_id": existingID,
+		"reused":     true,
+		"coalesced":  true,
+	})
+	return true
 }
 
 // reuseSingletonSession routes a singleton-prompt create request to an

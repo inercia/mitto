@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -349,6 +350,263 @@ func TestBackoffDelay(t *testing.T) {
 	})
 }
 
+// TestFormatACPError_QueryClosedHandshake verifies the cause-neutral,
+// remedy-first handshake message (mitto-biu, correcting mitto-bov). The SDK
+// tears down its session/new async iterator on this signature both on
+// cold-start auth failure AND on a wedged shared process (mitto-aoo) — so the
+// message must NOT assert an auth diagnosis, must lead with "Restart ACP", and
+// may only mention re-authentication as a hedged secondary hint.
+func TestFormatACPError_QueryClosedHandshake(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		wantContains string
+		wantExcludes string
+	}{
+		{
+			name:         "exact SDK payload triggers remedy-first guidance",
+			err:          fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+			wantContains: "Restart ACP",
+		},
+		{
+			name:         "exact SDK payload does not assert an auth diagnosis",
+			err:          fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+			wantExcludes: "authentication has expired",
+		},
+		{
+			name:         "case-insensitive match on details substring",
+			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
+			wantContains: "handshake failed",
+		},
+		{
+			name:         "case-insensitive match still does not assert auth expiry",
+			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
+			wantExcludes: "authentication has expired",
+		},
+		{
+			name:         "generic -32603 without query-closed falls through to catch-all",
+			err:          fmt.Errorf(`{"code":-32603,"message":"Internal error"}`),
+			wantExcludes: "authentication has expired",
+		},
+		{
+			name:         "query-closed phrase without -32603 does not hijack",
+			err:          fmt.Errorf(`something else: query closed before response received`),
+			wantExcludes: "authentication has expired",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatACPError(tt.err)
+			if tt.wantContains != "" && !containsIgnoreCase(got, tt.wantContains) {
+				t.Errorf("FormatACPError(%v) = %q, want to contain %q", tt.err, got, tt.wantContains)
+			}
+			if tt.wantExcludes != "" && containsIgnoreCase(got, tt.wantExcludes) {
+				t.Errorf("FormatACPError(%v) = %q, must NOT contain %q", tt.err, got, tt.wantExcludes)
+			}
+		})
+	}
+}
+
+// TestFormatACPErrorWithContext_QueryClosedHandshake_ProcessHistory verifies
+// the mitto-azk warm/cold/unknown split: a shared process that previously
+// completed a session RPC (ProcessHistoryWarm) gets a wedge-oriented message
+// with the authentication hint dropped entirely, while ProcessHistoryCold and
+// the zero-value ProcessHistoryUnknown both retain the original mitto-biu
+// hedged wording (auth remains a plausible cause on a first-contact failure).
+func TestFormatACPErrorWithContext_QueryClosedHandshake_ProcessHistory(t *testing.T) {
+	queryClosedErr := fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`)
+
+	tests := []struct {
+		name         string
+		hints        FormatErrorHints
+		wantContains []string
+		wantExcludes []string
+	}{
+		{
+			name:         "warm process drops the auth hint entirely",
+			hints:        FormatErrorHints{ProcessHistory: ProcessHistoryWarm},
+			wantContains: []string{"Restart ACP", "handshake failed", "wedged"},
+			wantExcludes: []string{"authenticated", "authentication", "claude auth login", "auggie auth login"},
+		},
+		{
+			name:         "cold process retains the hedged auth hint",
+			hints:        FormatErrorHints{ProcessHistory: ProcessHistoryCold},
+			wantContains: []string{"Restart ACP", "handshake failed", "authenticated"},
+		},
+		{
+			name:         "unknown (zero-value) process history retains the hedged auth hint",
+			hints:        FormatErrorHints{ProcessHistory: ProcessHistoryUnknown},
+			wantContains: []string{"Restart ACP", "handshake failed", "authenticated"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatACPErrorWithContext(queryClosedErr, tt.hints)
+			for _, want := range tt.wantContains {
+				if !containsIgnoreCase(got, want) {
+					t.Errorf("FormatACPErrorWithContext(err, %+v) = %q, want to contain %q", tt.hints, got, want)
+				}
+			}
+			for _, exclude := range tt.wantExcludes {
+				if containsIgnoreCase(got, exclude) {
+					t.Errorf("FormatACPErrorWithContext(err, %+v) = %q, must NOT contain %q", tt.hints, got, exclude)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatACPError_IsZeroHintWrapperAroundFormatACPErrorWithContext locks in
+// that FormatACPError(err) stays byte-identical to
+// FormatACPErrorWithContext(err, FormatErrorHints{}) for every existing
+// caller — the mitto-azk contract that the context-aware variant is
+// opt-in-only and does not alter default behavior.
+func TestFormatACPError_IsZeroHintWrapperAroundFormatACPErrorWithContext(t *testing.T) {
+	errs := []error{
+		nil,
+		fmt.Errorf(`failed to create session: {"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+		fmt.Errorf(`{"code":-32603,"message":"Internal error"}`),
+		errors.New("rate limit exceeded"),
+		errors.New("Authentication required"),
+		errors.New("peer disconnected"),
+		errors.New("some unrecognized failure"),
+	}
+
+	for _, err := range errs {
+		wrapper := FormatACPError(err)
+		explicit := FormatACPErrorWithContext(err, FormatErrorHints{})
+		if wrapper != explicit {
+			t.Errorf("FormatACPError(%v) = %q, want byte-identical to FormatACPErrorWithContext(err, FormatErrorHints{}) = %q", err, wrapper, explicit)
+		}
+	}
+}
+
+// TestFormatACPErrorWithContext_UpstreamConnectTimeout_mitto_gbf5 reproduces
+// mitto-gbf5: an upstream connect-timeout brownout to xlb.api.augmentcode.com
+// (data.apiStatus == "unavailable", UND_ERR_CONNECT_TIMEOUT) currently falls
+// through to the generic -32603 "internal error" branch of
+// FormatACPErrorWithContext because extractHTTPStatus finds no HTTP status in
+// the envelope. The condition should instead be named for the user (e.g.
+// "unreachable"/"unavailable") so it is distinguishable from an unrelated
+// agent-side internal error. This test is expected to FAIL until a dedicated
+// upstream-unavailable classifier is added ahead of the generic -32603 branch.
+func TestFormatACPErrorWithContext_UpstreamConnectTimeout_mitto_gbf5(t *testing.T) {
+	// Exact payload observed in the 2026-08-08 11:38-11:41 brownout (see
+	// mitto-gbf5 description / Investigation comment).
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: xlb.api.augmentcode.com:443, timeout: 10000ms))","data":{"apiStatus":"unavailable"}}`)
+
+	got := FormatACPErrorWithContext(err, FormatErrorHints{})
+
+	if containsIgnoreCase(got, "encountered an internal error") {
+		t.Errorf("FormatACPErrorWithContext(err) = %q; upstream connect-timeout brownout must not be shaped as a generic internal error", got)
+	}
+	if !containsIgnoreCase(got, "unreachable") && !containsIgnoreCase(got, "unavailable") {
+		t.Errorf("FormatACPErrorWithContext(err) = %q; want a message naming the upstream-unreachable condition (mitto-gbf5)", got)
+	}
+}
+
+// TestIsHandshakeQueryClosedError is the classifier truth table for the
+// string-based predicate extracted in mitto-biu, mirroring the structured twin
+// acperrors.IsAgentQueryClosedErr (internal/acpproc/acperrors/acperrors_test.go).
+func TestIsHandshakeQueryClosedError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{
+			"exact wedge signature",
+			fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"Query closed before response received"}}`),
+			true,
+		},
+		{
+			"case-insensitive message match",
+			fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"QUERY CLOSED BEFORE RESPONSE RECEIVED"}}`),
+			true,
+		},
+		{
+			"right code, unrelated message",
+			fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"some other failure"}}`),
+			false,
+		},
+		{
+			"query-closed phrase without -32603",
+			errors.New("something else: query closed before response received"),
+			false,
+		},
+		{"unrelated plain error", errors.New("context canceled"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsHandshakeQueryClosedError(tt.err); got != tt.want {
+				t.Errorf("IsHandshakeQueryClosedError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsAuthError verifies the predicate used by handlePromptError to stop
+// queue advancement when the upstream CLI's authentication has expired
+// (mitto-r5o). Match is case-insensitive on "authentication required".
+func TestIsAuthError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "Claude Code -32000 payload",
+			err:  fmt.Errorf(`{"code":-32000,"message":"Authentication required"}`),
+			want: true,
+		},
+		{
+			name: "lowercase phrase",
+			err:  fmt.Errorf("authentication required"),
+			want: true,
+		},
+		{
+			name: "mixed case phrase",
+			err:  fmt.Errorf("Authentication Required"),
+			want: true,
+		},
+		{
+			name: "wrapped in ACPClassifiedError",
+			err: &ACPClassifiedError{
+				Class:         ACPErrorTransient,
+				OriginalError: fmt.Errorf(`{"code":-32000,"message":"Authentication required"}`),
+			},
+			want: true,
+		},
+		{
+			name: "unrelated error",
+			err:  fmt.Errorf("some other failure"),
+			want: false,
+		},
+		{
+			name: "bare -32000 without auth phrase does not match",
+			err:  fmt.Errorf(`{"code":-32000,"message":"Some unrelated server error"}`),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsAuthError(tt.err); got != tt.want {
+				t.Errorf("IsAuthError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsMCPInitTimeout verifies the predicate used by the auto-resume paths to
 // carve out the transient cold-start MCP-init timeout from the hard failure
 // counter (mitto-54k.6).
@@ -400,6 +658,51 @@ func TestIsMCPInitTimeout(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsMCPInitTimeout(tt.err); got != tt.want {
 				t.Errorf("IsMCPInitTimeout(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsContextTooLargeError_mitto_2efc_UncorroboratedInvalidArgument
+// reproduces mitto-2efc: IsContextTooLargeError's mitto-k4x pair-match on
+// `"httpStatus":400` + `"apiStatus":"invalidArgument"` is unconditional, with
+// no requirement that the payload actually mention a token/length overflow.
+// This misclassifies ANY upstream 400 invalidArgument (e.g. a deferred
+// model-switch race, or any other malformed-request 400) as
+// contextWindowExceeded, sending the loop runner down the wrong recovery path
+// (3-strike context-window ceiling instead of the generic 8-strike delivery
+// failure ceiling) and producing a misleading stopped_reason on the bead.
+//
+// This test is expected to FAIL until IsContextTooLargeError requires
+// corroborating evidence (a token/length signal in the payload) before
+// classifying an uncorroborated 400/invalidArgument as context-too-large.
+func TestIsContextTooLargeError_mitto_2efc_UncorroboratedInvalidArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "uncorroborated 400 invalidArgument (no token/length signal) is NOT context-too-large",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"model claude-opus-5 is not yet available for this account"}}`),
+			want: false,
+		},
+		{
+			name: "400 invalidArgument corroborated by a token/length phrase IS still context-too-large",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"request exceeds maximum token length"}}`),
+			want: true,
+		},
+		{
+			name: "HTTP 413 is unaffected by the corroboration requirement",
+			err:  fmt.Errorf(`HTTP error: 413 Payload Too Large`),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsContextTooLargeError(tt.err); got != tt.want {
+				t.Errorf("IsContextTooLargeError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

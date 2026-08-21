@@ -39,6 +39,7 @@ Communication Protocol (ACP).
 - [Web Interface](devel/web-interface.md) - Streaming, mobile support
 - [WebSocket Documentation](devel/websockets/) - Protocol, sync, reconnection
 - [Workspaces](devel/workspaces.md) - Multi-workspace architecture
+- [CLI Conversation Commands](devel/cli-conversation.md) - `mitto conversation`/`mitto auth` design decision record
 
 ### Development
 

@@ -1,0 +1,1611 @@
+icon: loop
+name: Loop processing tasks
+menus: beadsList, promptsLoop
+parameters:
+  - name: SubmitStrategy
+    type: text
+    group: Changes
+    description: 'How finished work is submitted. "Commit" (default) — workers commit their changes. "Pull Request" — workers branch from FromBranch and open PRs according to GroupEpics. "None" — changes remain uncommitted for human review.'
+    options: ["Commit", "Pull Request", "None"]
+    default: "Commit"
+  - name: FromBranch
+    type: text
+    group: Changes
+    default: "main"
+    description: Base branch for new Pull Request branches. Each new top-level task starts from a fresh branch based on this ref; grouped epic children share the epic branch created from it.
+  - name: GroupEpics
+    type: boolean
+    group: Changes
+    default: "true"
+    description: When true (default), children of one epic share a branch and produce one PR for the epic after its last child finishes. When false, every child task gets its own branch and PR.
+  - name: FixBugs
+    type: boolean
+    default: "true"
+    description: When true (default), the loop processes open bugs via §B. Set to false to disable bug handling entirely — Step 2B is skipped and §B is never dispatched. Useful when the operator only wants the loop to work on features (or on @mitto mentions).
+  - name: WorkOnFeatures
+    type: boolean
+    default: "true"
+    description: When true (default), the loop processes open features via §C. Set to false to disable feature handling entirely — Step 2C is skipped and §C is never dispatched. Useful when the operator only wants the loop to work on bugs (or on @mitto mentions).
+  - name: MaxParallelWorkers
+    type: text
+    group: Advanced
+    options: ["1", "2", "3"]
+    default: "1"
+    description: 'Upper bound on concurrent §B/§C worker conversations in the workspace. "1" (default) is strictly serial. Raising it only raises the CEILING — a second worker is dispatched only when Step 3D can prove from recorded evidence that the candidates touch disjoint code; absence of evidence keeps the pass at one worker. Forced back to "1" when SubmitStrategy is "Pull Request" because branch switching races in the shared working tree.'
+  - name: PostIterationPrompt
+    type: prompts
+    group: Advanced
+    required: false
+    description: Optional prompt to run after a task completes and before the next one is picked (e.g. "Run tests"). Dispatched as its own short-lived child conversation from Step 5H; best-effort — a failing hook never blocks the next task. Leave empty to disable.
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions applied on top of the steps below, and propagated verbatim to every §A/§B/§C driver (and from there to their phase prompts) so the whole chain follows them (e.g. "only work on beads labelled `frontend`", "always run `make lint` before committing", "never touch files under vendor/"). Used for this run only; nothing is persisted.'
+description: "Unified standing supervisor — on every beads change and every 60 minutes as a recovery fallback, process at most one increment from whichever class has work — (A) unaddressed @mitto comments, (B) eligible open bugs, (C) eligible open features. Comments first, then bugs, then features. One worker in flight at a time, unless MaxParallelWorkers is raised and the candidates are provably code-disjoint."
+backgroundColor: '#E1BEE7'
+group: Tasks
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
+loop:
+  # Standing supervisor: never stops on its own (maxIterations/maxDuration = 0);
+  # runOnStart fires once at boot so it picks up work without waiting for a task
+  # change; freshContext keeps token spend bounded and prevents stale reasoning;
+  # coalesceDuringBusy: false ensures §A/§B/§C children's own .beads/ mutations
+  # re-fire the supervisor (mitto-cwg) instead of being silently rebased;
+  # onChild immediately re-evaluates the queue when a spawned worker finishes or
+  # is deleted; schedule supplies an hourly recovery pass if an event trigger is
+  # missed or coalesced before the supervisor can process it.
+  trigger: [onTasks, onChild, schedule]
+  schedule:
+    value: 60
+    unit: minutes
+  onTasks:
+    coalesceDuringBusy: false
+  onChild:
+    when: [anyEndResponse, anyDeleted]
+  maxIterations: 0
+  maxDuration: 0
+  runOnStart: true
+  freshContext: true
+target:
+  title: 'Loop processing tasks'
+  reuse:
+    title: true
+    coalesce: true
+  # Standing supervisor with maxIterations/maxDuration = 0 (see loop: above) —
+  # archiving this conversation silently stops all task processing for the
+  # workspace, with no signal to the operator. Protect it (mitto-yvel.5).
+  noArchive: true
+# Pure procedural orchestration (enumerate → decide → dispatch → yield); real
+# reasoning is delegated to §A/§B/§C driver children which switch tier themselves.
+# Coding tier pin prevents inheriting the seeding conversation's model.
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{ template "_shared/session-context" . }}
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  Existing children: `{{ Default "(none)" .Children.MCPText }}`
+  Workspace peers: `{{ Default "(none)" .Workspace.Peers.AllText }}`
+  Active peer drivers: {{ .Workspace.Peers.PromptingCount }} / {{ .Workspace.Peers.Count }}
+
+  {{- with .Trigger }}{{ if .IsRunOnStart }}
+
+  ## Bootstrap pass
+
+  Mitto just started — this is the first loop pass since boot. Orphaned children that ran (or were reaped) while Mitto was down may still hold `[<ts>]` deduplication markers on their linked beads without a matching alive conversation. Give Step 2Q (deduplication cross-check) and Step 2P (terminal-label reap) extra attention on this pass; do not skip them even if `.beads/` looks quiet.
+
+  {{ end }}{{ end }}
+
+  {{- with .Trigger }}{{ with .OnTasks }}
+
+  ## Triggered by these beads changes
+
+  This pass was fired by the changes below (deltas since the previous baseline). Use these as **hints
+  for triage priority** — a bead in this list is more likely to have new `@mitto` comments (§A), a
+  fresh reproduction (§B), or a design update (§C) than a random bead — but do NOT skip the normal
+  Step-2 filtering: a change here does not by itself make a bead eligible for a §A/§B/§C worker.
+
+  {{- if .Changes.Touched }}
+  {{ range .Changes.Touched -}}
+  - `{{ .id }}` ({{ .status }}, P{{ .priority }}): {{ .title }}
+  {{ end -}}
+  {{- else }}
+  _(no touched beads reported — likely a rebase-driven re-fire; proceed with the normal scan)_
+  {{- end }}
+  {{ end }}{{ end }}
+
+  {{- with .Trigger }}{{ with .OnChild }}
+
+  ## Triggered by child conversation
+
+  This pass was fired by child conversation `{{ .ChildID }}` (event: `{{ .Event }}`){{ if .StoppedReason }}, with stopped reason `{{ .StoppedReason }}`{{ end }}.
+
+  Before running the broader Step 2 sweep, do a small focused reconciliation of THIS child in Step 2P:
+
+  - Look up its `beads_issue` (via `mitto_conversation_get` on the child ID above), and check whether that bead has reached a terminal-label state now that the child has finished.
+  - If yes, close it via the normal Step 2P terminal-label handling.
+  - Only after this focused reconciliation, run the full Step 2 sweep as usual.
+
+  {{ if eq .Event "anyLoopStopped" }}The child driver's own loop has stopped — its linked bead is a **high-priority reap candidate** for Step 2P even if the terminal-label heuristics are ambiguous.
+  {{ end }}
+  {{ end }}{{ end }}
+
+  {{- with .Trigger }}{{ if and (and (eq .Kind "schedule") (not .OnTasks)) (and (not .OnChild) (not .IsRunOnStart)) }}
+
+  ## Scheduled recovery pass
+
+  Neither an `onTasks` beads change nor an `onChild` lifecycle event fired this pass — this is the hourly `schedule` recovery run. External triggers may have been coalesced during a busy window; run the full Step 2 sweep even if nothing looks urgent. This pass exists precisely to catch what the event-driven triggers missed.
+
+  {{ end }}{{ end }}
+
+  {{- $submit := Default "Commit" .Args.SubmitStrategy }}
+  {{- $fromBranch := Default "main" .Args.FromBranch }}
+  {{- $groupEpics := ne .Args.GroupEpics "false" }}
+  {{- /* Pull Request work is serial because all branches share one working tree. */ -}}
+  {{- $maxWorkers := Default "1" .Args.MaxParallelWorkers }}
+  {{- if eq $submit "Pull Request" }}{{ $maxWorkers = "1" }}{{ end }}
+
+  {{ template "beads-issues/shared/additional-instructions" . }}
+  # Beads: Loop Processing Beads (unified list-level orchestrator)
+
+  Beads is a CLI issue tracker (`bd`); IDs look like `bd-xyz`. This is a list-level
+  `onTasks` supervisor (`menus: beadsList`, no `Item.*`) that wakes on any `.beads/`
+  change, processes **one increment** from one class, then yields. Three classes, strict
+  priority **A → B → C**:
+
+  - **§A — Address `@mitto` comments.** One per-mention driver child that walks a
+    small phase state machine (investigate → plan → implement, or answer, on the
+    appropriate model tier), writes `[addressed-comment: <ts>]` back-reference, and
+    self-terminates.
+  - **§B — Fix eligible open bugs.** Spawn `Loop fixing bug` as an `onCompletion` child
+    (one `researched → reproduced → fixed` step per re-fire).
+  - **§C — Implement eligible open features.** Spawn `Loop implementing feature` as an
+    `onCompletion` child (one `planned → implemented → tested → verified` step per re-fire).
+
+  Comments first (small, human-driven); bugs before features (defects block). Multiple
+  pending increments are safe: each worker's `bd` mutation triggers a fresh `onTasks` pass.
+
+  **Epics are containers, not work items.** An `epic` bead is never dispatched to a driver
+  on its own; instead, Step 2 **expands every open epic into its open children** and merges
+  those children into the eligible sets by their own `issue_type`: `bug` children flow into
+  §B, and every other non-epic child type (`feature`, `task`, `story`, `chore`, etc.) flows
+  into §C via the `Loop implementing feature` driver. The epic itself stays open until all
+  its children reach a terminal state — Step 2P's "Close terminal-label beads" sweep closes
+  the individual children as their drivers finish, and Step 2P's "Reap epics" sub-step
+  automatically closes the epic once its last child is closed. Reconciliation stays bounded
+  to this pass's closures, linked beads from children reaped this pass, and the current
+  `onTasks` delta — it never sweeps unrelated open epics.
+
+  {{ if eq $submit "Pull Request" -}}
+  ### Changes policy
+
+  Before doing any task work, its driver must switch to a deterministic working branch
+  created from `{{ $fromBranch }}` — never branch from the current HEAD or a previous
+  task's branch. {{ if $groupEpics }}For an epic child, use the epic's shared branch; reuse it for later siblings and open
+  **one epic PR** only when the last open child finishes. Top-level tasks still get one
+  branch and PR each.{{ else }}Epic grouping is disabled: every task, including each epic child, gets a fresh branch
+  and its own PR.{{ end }}
+  {{- end }}
+
+  ### Concurrency, recovery, deferral, preflight (summary — enforced in Steps 2P/2Q/2R/2Z/§B/§C/7)
+
+  - **Cap: {{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} per workspace** total across §B + §C{{ if .Args.PostIterationPrompt }} + the Step 5H
+    post-task hook{{ end }} (non-archived conversations whose title starts with `Fix ` /
+    `Implement `{{ if .Args.PostIterationPrompt }} / `Post-task: `{{ end }}). The
+    cap is workspace-scoped (enumerated via `.Workspace.Peers.All` — non-archived
+    sibling conversations sharing this session's `(WorkingDir, ACPServer)`,
+    populated at template-dispatch time), not per-orchestrator — parallel
+    `Loop processing tasks` sessions in the same workspace share the {{ if eq $maxWorkers "1" }}single
+    slot{{ else }}same {{ $maxWorkers }} slots{{ end }} (mitto-9mk). §A mention drivers self-terminate and are NOT counted.
+    {{ if eq $maxWorkers "1" }}Serial execution prevents overlapping-file races{{ if .Args.PostIterationPrompt }} — including between a
+    driver editing the tree and a post-task hook (e.g. `Run tests`) reading it{{ end }}.{{ else }}The cap is a **ceiling, not a target** — Step 3D still has to prove code
+    disjointness before a second worker starts, so most passes stay at one{{ if .Args.PostIterationPrompt }}, and the
+    Step 5H post-task hook always runs alone (it may read/mutate the whole tree){{ end }}.{{ end }} Step 2P prunes
+    stale children every pass to free {{ if eq $maxWorkers "1" }}the slot{{ else }}slots{{ end }}.
+  - **Deferral:** any un-progressable bead gets `--add-label needs-human --defer +1d`
+    plus a comment starting `[deferred: <RFC3339>]` (full template in Step 7).
+    Step 2Z undefers when the human replies, posting `[undeferred: <deferred-ts>]`.
+  - **Legacy status recovery:** Step 2Q returns an ownerless non-epic bead from
+    legacy `in_progress` to `open` only after 24h without issue/comment activity.
+    Fresh human work, passive `in-flight` claims, and formal conversation owners
+    are preserved. Recovery never means completion; §B/§C still verify and close.
+  - **Preflight:** requires **Can start conversation** and **Can Send Prompt** flags
+    plus a non-child session. Any tool error from a disabled flag, or
+    `Session.IsChild` true → single `mitto_ui_notify` naming the blocker, then STOP
+    (no `bd` writes, no spawns).
+
+  ## Step 1 — Validate the nested driver prompts
+
+  §B/§C spawn children by name; each enabled driver must be registered in the
+  workspace prompt view. Checked in-template via `.Prompts.Enabled` (mitto-s1w
+  — same source of truth as `mitto_prompt_get` / `mitto_prompt_list`, no MCP
+  round-trip). On failure, disable that class for this pass only.
+
+  **The verdicts below are AUTHORITATIVE and already final.** They were computed
+  by Mitto against the live workspace prompt registry at dispatch time. Do NOT
+  re-verify them with `mitto_prompt_get`, `mitto_prompt_list`, `grep`, or any
+  shell command — a prompt whose YAML has no `enabled:` key IS enabled (the
+  registry prunes disabled prompts before the snapshot is built, so absence of
+  the key means enabled, never disabled). Overriding a `PASSED` verdict with a
+  hand-rolled check is a bug, not diligence.
+
+  {{- $fixBugsEnabled := ne .Args.FixBugs "false" }}
+  {{- $workOnFeaturesEnabled := ne .Args.WorkOnFeatures "false" }}
+  {{- $bugDriverPresent := .Prompts.Enabled "Loop fixing bug" }}
+  {{- $featureDriverPresent := .Prompts.Enabled "Loop implementing feature" }}
+  {{ if $fixBugsEnabled }}
+  {{- if $bugDriverPresent }}
+  - §B driver check: **PASSED** — `Loop fixing bug` is registered and enabled. §B may spawn.
+  {{- else }}
+  - §B disabled this pass: `Loop fixing bug` is not enabled in the workspace prompt registry.
+  {{- end }}
+  {{- else }}
+  - §B not applicable this pass (`FixBugs=false`).
+  {{- end }}
+  {{ if $workOnFeaturesEnabled }}
+  {{- if $featureDriverPresent }}
+  - §C driver check: **PASSED** — `Loop implementing feature` is registered and enabled. §C may spawn.
+  {{- else }}
+  - §C disabled this pass: `Loop implementing feature` is not enabled in the workspace prompt registry.
+  {{- end }}
+  {{- else }}
+  - §C not applicable this pass (`WorkOnFeatures=false`).
+  {{- end }}
+
+  ## Step 2P — Prune stale children (reap before you spawn)
+
+  Run FIRST every pass, before Step 2Z.
+
+  ### Reject terminal labels carried through a reopen
+
+  Before walking children, normalize class-terminal labels on open or legacy
+  `in_progress` beads. This ordering is mandatory: otherwise the child-reap pass
+  can delete a recurrence's worker merely because an old terminal label survived
+  the reopen.
+
+  Build `current_terminal_labels` from every candidate `id` + `terminal_label`
+  pair (`fixed` for a bug, `verified` for any other non-epic). History entries are
+  newest-first status snapshots (`CommitDate` + `Issue`); `bd history` does **not**
+  include labels. The Python probe finds the most recent transition into the current non-closed episode
+  from history, then finds the most recent terminal phase comment in the live
+  `bd show --include-comments` snapshot (`Fix [tier:` for
+  bugs, `Review [tier:` for other work). `datetime.fromisoformat` compares normalized
+  RFC3339 instants — never raw timestamp strings. A never-reopened bead is current;
+  for a reopened bead the terminal phase comment must be strictly newer than the current episode's
+  open transition. Missing or malformed evidence is stale (fail
+  safe):
+
+  ```bash
+  declare -A current_terminal_labels=()
+  while IFS=$'\t' read -r id terminal_label; do
+    [ -n "$id" ] || continue
+    history=$(bd history "$id" --json 2>/dev/null || printf '[]')
+    current=$(bd show "$id" --json --include-comments 2>/dev/null || printf '[]')
+    payload=$(printf '%s\n%s\n' "$history" "$current" \
+      | jq -s '{history:.[0],current:.[1]}' 2>/dev/null \
+      || printf '{"history":[],"current":[]}')
+    verdict=$(printf '%s' "$payload" | python3 -c '
+  import json, sys
+  from datetime import datetime
+
+  label = sys.argv[1]
+  prefixes = {"fixed": "Fix [tier:", "verified": "Review [tier:"}
+  try:
+      payload = json.load(sys.stdin)
+      entries = payload.get("history")
+      current = payload.get("current")
+      if not isinstance(entries, list) or not entries or not isinstance(current, list) or not current:
+          raise ValueError("missing evidence")
+      issue = lambda e: e.get("Issue") or {}
+      status = lambda e: issue(e).get("status")
+      when = lambda e: e.get("CommitDate")
+      live = current[0]
+      if live.get("status") not in ("open", "in_progress") or label not in (live.get("labels") or []):
+          raise ValueError("candidate no longer terminal")
+      reopened_at = next((when(entries[i]) for i in range(len(entries) - 1)
+          if status(entries[i]) in ("open", "in_progress") and status(entries[i + 1]) == "closed"), None)
+      if reopened_at is None:
+          print("current")
+          raise SystemExit
+      prefix = prefixes[label]
+      terminal_at = max((comment.get("created_at") for comment in (live.get("comments") or [])
+          if (comment.get("text") or "").startswith(prefix) and comment.get("created_at")), default=None)
+      parse = lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))
+      print("current" if terminal_at and parse(terminal_at) > parse(reopened_at) else "stale")
+  except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+      print("stale")
+  ' "$terminal_label" 2>/dev/null || printf 'stale')
+    if [ "$verdict" = "current" ]; then
+      current_terminal_labels["$id"]="$terminal_label"
+      continue
+    fi
+    bd comment "$id" "Orchestrator: terminal label=$terminal_label is not newer than the current open episode; removing the stale label so the recurrence remains actionable."
+    bd update "$id" --remove-label "$terminal_label"
+  done < <(
+    {{ if ne .Args.FixBugs "false" -}}
+    bd list --type bug --status open,in_progress --label fixed --json | jq -r '.[] | "\(.id)\tfixed"'
+    {{ end -}}
+    {{ if ne .Args.WorkOnFeatures "false" -}}
+    bd list --status open,in_progress --label verified --json \
+      | jq -r '.[] | select(.issue_type != "bug" and .issue_type != "epic") | "\(.id)\tverified"'
+    {{ end -}}
+  )
+  ```
+
+  A stale result removes only the class-terminal label so preserved phase labels route the recurrence to the next required driver phase
+  and leave the bead actionable. Only IDs in `current_terminal_labels` may be reaped as terminal or
+  closed below.
+
+  After this normalization, walk `{{ .Children.MCPText }}` and delete
+  (via `mitto_conversation_delete`, NOT archive — delete frees the ACP slot fully)
+  any child matching the FIRST applicable category. Do NOT reap §A mention drivers
+  (they self-terminate; §A owns their wait/archive path){{ if .Args.PostIterationPrompt }}. `Post-task: …` hook
+  children are owned by Step 5H's wait/delete path and are NOT reaped here — with
+  one exception: a hook child older than **2h** is stale (its owning Step 5H pass
+  died mid-wait) and MUST be reaped, otherwise it holds the workspace worker slot
+  forever and every subsequent pass yields at-cap{{ end }}.
+
+  1. **Terminal** — child status `done`/`completed`/`stopped`/`failed`, OR its
+     `beads_issue` is present in `current_terminal_labels` with the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for `Fix …`{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for
+     `Implement …`{{ end }}). Also close the bead in the same pass (see below).
+  2. **Orphaned** — `beads_issue` bead is closed OR carries `needs-human` (driver
+     is deferred; §B/§C will re-spawn once Step 2Z undefers).
+  3. **Idle 2h+** — status `iterating`/`queued` with no fresh `Investigation:` /
+     `Reproduction:` / `Fix:` / `Plan:` / `Implementation:` / `Verification:`
+     comment on `beads_issue` in 2h.
+  4. **Duplicate** — two children share the same `beads_issue`; keep the older,
+     reap the younger.
+
+  Initialise `reaped_child_beads=()` before walking the children. For each reap,
+  append the child's non-empty `beads_issue` to that array, write one bead comment,
+  then delete. This preserves the owning bead after deletion so the epic-reaper can
+  reconcile a parent whose leaf was already closed by its driver:
+
+  ```bash
+  reaped_child_beads=()
+  # For each reaped child with a linked bead:
+  reaped_child_beads+=("<bead-id>")
+  bd comment <bead-id> "Orchestrator: reaping child <child-id> (reason: <terminal|orphaned|idle-2h|duplicate>). Bead will be re-picked if still eligible."
+  ```
+  ```
+  mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+  ```
+
+  {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
+  ### Close terminal-label beads
+
+  Right after the reap loop, close any open OR legacy-`in_progress` bead still
+  carrying the class-terminal label after the reopen guard above (independent of
+  whether its driver still exists), **but only when it has no non-closed direct
+  children**. A terminal non-epic with open children is a completed parent scope,
+  not a closable leaf: leave its terminal label in place, keep it open, and let
+  §B/§C process its children. A later child-close event will revisit this sweep.
+  Fail closed when child enumeration fails or returns malformed JSON. Track the closed IDs in
+  `closed_this_pass` so 2B/2C's "recently-closed parent" exclusion can skip their
+  parent-child dependents this pass, AND so the epic-reaper below can walk their
+  parent epics.
+
+  For each bead closed here, strip the `in-flight` label + `claimed_*` metadata
+  before `bd close` (mitto-ial: ghost claims must not survive into archives).
+  Promote `claimed_at` into `work_started_at` first, guarded on
+  `work_started_at` being absent (earliest-start semantics), since
+  `claimed_at` carries no liveness meaning but is the only work-start signal
+  available on a closed bead (mitto-v3en):
+
+  ```bash
+  closed_this_pass=()
+  {{ if ne .Args.FixBugs "false" -}}
+  for id in $(bd list --type bug --status open,in_progress --label fixed --json | jq -r '.[].id'); do
+    [ "${current_terminal_labels[$id]:-}" = "fixed" ] || continue
+    open_children=$(bd children "$id" --json 2>/dev/null \
+      | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
+    if [ "${open_children:-1}" -ne 0 ]; then
+      echo "Orchestrator: keeping terminal parent $id open; non-closed children=$open_children"
+      continue
+    fi
+    bd comment "$id" "Orchestrator: terminal label=fixed; closing."
+    started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
+    prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
+    if [ -n "$started" ] && [ -z "$prior" ]; then
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at \
+        --set-metadata "work_started_at=$started"
+    else
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at
+    fi
+    bd close "$id"
+    closed_this_pass+=("$id")
+  done
+  {{ end }}
+  {{- if ne .Args.WorkOnFeatures "false" }}
+  for id in $(bd list --status open,in_progress --label verified --json \
+    | jq -r '.[] | select(.issue_type != "bug" and .issue_type != "epic") | .id'); do
+    [ "${current_terminal_labels[$id]:-}" = "verified" ] || continue
+    open_children=$(bd children "$id" --json 2>/dev/null \
+      | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
+    if [ "${open_children:-1}" -ne 0 ]; then
+      echo "Orchestrator: keeping terminal parent $id open; non-closed children=$open_children"
+      continue
+    fi
+    bd comment "$id" "Orchestrator: terminal label=verified; closing."
+    started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
+    prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
+    if [ -n "$started" ] && [ -z "$prior" ]; then
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at \
+        --set-metadata "work_started_at=$started"
+    else
+      bd update "$id" --remove-label in-flight \
+        --unset-metadata claimed_by --unset-metadata claimed_at \
+        --unset-metadata claim_heartbeat_at
+    fi
+    bd close "$id"
+    closed_this_pass+=("$id")
+  done
+  {{- end }}
+  ```
+
+  Log one-line counts for Step 6: `Closed: <n>`.
+
+  ### Reap epics whose children are all closed
+
+  Right after the terminal-label close loop, derive candidate epics from THREE
+  activity-local sources: `closed_this_pass`, `reaped_child_beads`, and the current
+  `onTasks` delta's touched bead IDs. The latter two close the gap where a driver or
+  human already closed the last leaf before this Step 2P pass, leaving
+  `closed_this_pass` empty. This is still a bounded reconciliation — never sweep all
+  open epics. A changed leaf or reaped linked worker is the ownership signal.
+  Reaping lives ONLY in this orchestrator (never in per-driver prompts) to avoid
+  parent-close races between concurrent §B/§C drivers touching different children
+  of the same epic.
+
+  ```bash
+  reaped_epics=()
+  touched_child_beads=()
+  {{- with .Trigger }}{{ with .OnTasks }}
+  {{- range .Changes.Touched }}
+  touched_child_beads+=({{ .id | printf "%q" }})
+  {{- end }}
+  {{- end }}{{ end }}
+
+  # Derive touched epics from this pass's closures, reaped workers' linked beads,
+  # and the current onTasks delta. A touched epic is considered directly and its
+  # own parent is also considered so nested epics reconcile on successive events.
+  declare -A touched_epics_set=()
+  candidate_beads=("${closed_this_pass[@]}" "${reaped_child_beads[@]}" "${touched_child_beads[@]}")
+  for cid in "${candidate_beads[@]}"; do
+    candidate=$(bd show "$cid" --json 2>/dev/null)
+    kind=$(jq -r '.[0].issue_type // empty' <<<"$candidate")
+    pid=$(jq -r '.[0].parent // empty' <<<"$candidate")
+    if [ "$kind" = "epic" ]; then
+      touched_epics_set["$cid"]=1
+    fi
+    if [ -n "$pid" ]; then
+      touched_epics_set["$pid"]=1
+    fi
+  done
+  touched_epics=("${!touched_epics_set[@]}")
+
+  # Hard cap: 20 reaped epics per pass; log-and-skip beyond.
+  reap_cap=20
+  reap_count=0
+  overflow_epics=()
+  for epic_id in "${touched_epics[@]}"; do
+    if [ "$reap_count" -ge "$reap_cap" ]; then
+      overflow_epics+=("$epic_id")
+      continue
+    fi
+    # Confirm it's an open epic (idempotency: a concurrent pass may already have closed it).
+    meta=$(bd show "$epic_id" --json 2>/dev/null | jq -r '.[0] | "\(.issue_type)|\(.status)"')
+    if [ "$meta" != "epic|open" ]; then
+      continue
+    fi
+    # All children closed? A child-epic counts as satisfied only when its own status==closed,
+    # so nested epics reap in dependency order across successive passes.
+    open_children=$(bd children "$epic_id" --json 2>/dev/null | jq '[.[] | select(.status != "closed")] | length')
+    if [ "${open_children:-1}" -eq 0 ]; then
+      bd comment "$epic_id" "Orchestrator: reaping epic $epic_id — all children closed after activity-local reconciliation."
+      bd close "$epic_id" --reason "All children closed by L1 orchestrator pass"
+      reaped_epics+=("$epic_id")
+      reap_count=$((reap_count + 1))
+    fi
+  done
+  if [ "${#overflow_epics[@]}" -gt 0 ]; then
+    echo "Epic reaper cap ($reap_cap) reached; remaining touched epics: ${overflow_epics[*]}"
+  fi
+  ```
+
+  Log one-line count for Step 6: `Reaped epics: <n>`.
+  {{- end }}
+
+  Log one-line count for Step 6: `Reaped: <n>`.
+
+  ## Step 2Q — Recover orphaned legacy `in_progress` beads
+
+  The current L1/L2 ownership protocol NEVER uses `status=in_progress`: a live
+  driver leaves the bead `open` and carries a passive `in-flight` label plus
+  `claimed_by`/heartbeat metadata. Legacy prompts and manual sessions did set
+  `in_progress`, however, and 2B/2C intentionally exclude that status to avoid
+  racing another worker. Without reconciliation, an abandoned legacy status is
+  therefore invisible forever.
+
+  Enumerate every non-epic `in_progress` bead. Preserve it (no writes) when ANY
+  ownership/freshness signal is present:
+
+  1. it carries `in-flight`; or
+  2. its ID formally matches the `beads_issue` of a non-archived conversation in
+     `{{ .Children.MCPText }}` or the pre-rendered `Workspace peers:` block
+     (literal equality only; never infer ownership from titles); or
+  3. its latest activity is less than 24h old. Latest activity is the later of
+     the issue's `updated_at` and newest `bd comments <id> --json` `created_at`.
+     Comments count because active audits may append evidence without changing
+     the issue row itself.
+
+  ```bash
+  recovered_in_progress=()
+  legacy_cutoff=$(date -u -v-24H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+  formal_owners=$(cat <<'OWNERS'
+  {{ .Children.MCPText }}
+  {{ .Workspace.Peers.AllText }}
+  OWNERS
+  )
+
+  while IFS= read -r id; do
+    # MCPText/AllText render a formal beads_issue as a literal trailing {<id>}.
+    # Fixed-string matching with braces is exact; titles never participate.
+    if grep -Fq "{$id}" <<<"$formal_owners"; then
+      continue
+    fi
+    issue_updated=$(bd show "$id" --json | jq -r '.[0].updated_at // empty')
+    comment_updated=$(bd comments "$id" --json | jq -r '[.[].created_at // empty] | max // empty')
+    last_activity=$(printf '%s\n%s\n' "$issue_updated" "$comment_updated" | grep -v '^$' | sort | tail -1)
+    if [ -n "$last_activity" ] && jq -n -e --arg activity "$last_activity" --arg cutoff "$legacy_cutoff" \
+         '$activity < $cutoff' >/dev/null; then
+      bd comment "$id" "Orchestrator recovery: legacy status=in_progress has no in-flight claim, no non-archived conversation owner, and no issue/comment activity for 24h; returning to open for normal verification. This does not mark the work complete."
+      bd update "$id" --status open
+      recovered_in_progress+=("$id")
+    fi
+  done < <(bd list --status in_progress --json \
+    | jq -r '.[] | select(.issue_type != "epic") | select(((.labels // []) | index("in-flight")) == null) | .id')
+  ```
+
+  Do NOT close a bead merely because stale notes say "implemented", tests passed,
+  or a patch exists. Returning it to `open` deliberately routes it through 2B/2C's
+  already-landed detection and the normal driver state machine, which must verify
+  terminal evidence before closure. The status update is visible to Step 2 in this
+  same pass; no restart or separate cleanup prompt is required.
+
+  Log one-line count for Step 6: `Recovered-in-progress: <n>`.
+
+  ## Step 2R — Reap stale in-flight claims (cross-signal reaper)
+
+  Run AFTER Step 2P (children/beads already reaped) and BEFORE Step 2Z (undefer),
+  with Step 2Q immediately before this step so legacy statuses are recovered first,
+  so a released claim is eligible for §B/§C in the *same* pass. First reconcile
+  **malformed claims**: an `in-flight` label missing either `claimed_by` or
+  `claim_heartbeat_at` cannot participate in the stale-heartbeat cross-signal
+  check and otherwise remains excluded forever. Preserve such a label only when
+  the bead ID formally equals the `beads_issue` of a non-archived child or
+  workspace-peer conversation; that live owner can repair metadata on its next
+  driver iteration. Otherwise comment once, remove `in-flight`, clear any partial
+  `claimed_*` metadata, and classify the release as `malformed_claim`. Never use
+  titles to infer ownership.
+
+  ```bash
+  malformed_claim_owners=$(cat <<'OWNERS'
+  {{ .Children.MCPText }}
+  {{ .Workspace.Peers.AllText }}
+  OWNERS
+  )
+  while IFS=$'\t' read -r id claimer heartbeat; do
+    [ -n "$id" ] || continue
+    if grep -Fq "{$id}" <<<"$malformed_claim_owners"; then
+      echo "Orchestrator reaper: preserving malformed claim for formally owned bead $id"
+      continue
+    fi
+    bd comment "$id" "Orchestrator reaper: releasing malformed in-flight claim (claimer=${claimer:-missing}, heartbeat=${heartbeat:-missing}, reason=malformed_claim). Bead is back in the normal work queue."
+    bd update "$id" --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at
+  done < <(bd list --status open --label in-flight --json \
+    | jq -r '.[] | select((.metadata.claimed_by // "") == "" or (.metadata.claim_heartbeat_at // "") == "") | [.id, (.metadata.claimed_by // ""), (.metadata.claim_heartbeat_at // "")] | @tsv')
+  ```
+
+  Then enumerate every well-formed
+  open bead carrying the `in-flight` label whose `claim_heartbeat_at` is stale
+  (older than 60 min) — the L2 loop-drivers refresh the heartbeat every
+  iteration (`delay: 30 s + turn duration`), so 60 min without a heartbeat means
+  the driver is genuinely dead, wedged, or archived. For each stale bead, cross-
+  signal against the claimer conversation via `mitto_conversation_get` before
+  clearing the claim (a legitimately long turn is not a stale claim — see the
+  mitto-ial bead description's cross-signal table):
+
+  | Claimer conversation state           | Action                                            |
+  |--------------------------------------|---------------------------------------------------|
+  | not-found / archived / !is_running   | REAP (`conversation_gone`)                        |
+  | is_prompting == true                 | SKIP (`still_prompting` — long turn is legit)     |
+  | updated_at > now − 30 min            | SKIP-with-warn (`wedged_but_ticking`)             |
+  | else                                 | REAP (`silent_conversation`)                      |
+
+  Enumerate stale claims:
+
+  ```bash
+  stale_cutoff=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+  bd list --status open --label in-flight --has-metadata-key claim_heartbeat_at --json \
+    | jq -r --arg cutoff "$stale_cutoff" '.[] | select(.metadata.claim_heartbeat_at < $cutoff) | "\(.id)\t\(.metadata.claimed_by)\t\(.metadata.claim_heartbeat_at)"'
+  ```
+
+  For each `<id>\t<claimer>\t<heartbeat>` row, cross-signal:
+
+  ```
+  mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "<claimer>")
+  ```
+
+  Decide via the table above. On **REAP** — one bead comment, then clear the
+  claim (the bead itself remains open; it becomes eligible again on the next
+  pass's §B/§C enumeration — releasing and re-picking in the same pass would
+  race the reaper's own writes). Promote `claimed_at` into `work_started_at`
+  first, guarded on `work_started_at` being absent (earliest-start
+  semantics) — the reaped bead stays open and may be re-claimed later, and
+  an unguarded promote at eventual close would overwrite this first
+  attempt's start time (mitto-v3en):
+
+  ```bash
+  bd comment <id> "Orchestrator reaper: releasing stale in-flight claim (claimer=<claimer>, last heartbeat=<heartbeat>, reason=<conversation_gone|silent_conversation|wedged_but_ticking>). Bead is back in the normal work queue."
+  started=$(bd show <id> --json | jq -r '.[0].metadata.claimed_at // empty')
+  prior=$(bd show <id> --json | jq -r '.[0].metadata.work_started_at // empty')
+  if [ -n "$started" ] && [ -z "$prior" ]; then
+    bd update <id> --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at \
+      --set-metadata "work_started_at=$started"
+  else
+    bd update <id> --remove-label in-flight \
+      --unset-metadata claimed_by --unset-metadata claimed_at \
+      --unset-metadata claim_heartbeat_at
+  fi
+  ```
+
+  On **SKIP** / **SKIP-with-warn** — one bead comment only, do NOT clear the
+  claim:
+
+  ```bash
+  bd comment <id> "Orchestrator reaper: stale heartbeat (<heartbeat>) but claimer <claimer> is <is_prompting|updated recently>; leaving claim in place."
+  ```
+
+  Log one-line count for Step 6: `Reaper: released=<n> skipped=<n>`.
+
+  ## Step 2Z — Undefer any bead the user has replied to
+
+  Run BEFORE Step 2 so undeferred beads are eligible in the *same* pass. Load the
+  `needs-human` set and each bead's context:
+
+  ```bash
+  bd list --status open --label needs-human --json
+  # for each <id>:
+  bd show <id> --long --json
+  bd comments <id> --json
+  ```
+
+  Locate the **most recent** comment whose FIRST line matches
+  `[deferred: <RFC3339-timestamp>]` — call it `<deferred-ts>`. If a bead carries
+  `needs-human` with no deferral marker (legacy/hand-labelled), skip it (let the human
+  clear the label manually).
+
+  **Undefer** when any of these fires vs. `<deferred-ts>`:
+
+  1. Non-orchestrator comment after `<deferred-ts>` whose body does not start with
+     `[deferred:`, `[undeferred:`, `[addressed-comment:`, or `Orchestrator:` (those
+     are our own bookkeeping — not the human replying).
+  2. Description edited after `<deferred-ts>` (proxy: `updated_at` bump with no
+     orchestrator comment at the same time; when in doubt count as a reply).
+
+  On either signal:
+
+  ```bash
+  bd update <id> --remove-label needs-human --defer ''
+  bd comment <id> "[undeferred: <deferred-ts>]
+  Orchestrator: detected human response — <which signal fired>. Bead is back in the normal work queue."
+  ```
+
+  If the human already removed `needs-human` themselves, the bead won't appear in the
+  query above — nothing to do here, but if you notice a lingering `--defer` date on
+  such a bead elsewhere, clear it with `bd update <id> --defer ''`.
+
+  Do NOT spawn workers inside Step 2Z; Step 2 will pick undeferred beads up via the
+  normal §B/§C enumeration once `needs-human` is gone. Step 2Z is a full pre-scan
+  (unlike Steps 3-6 which are one-target).
+
+  ## Step 2 — Build the three eligible sets
+
+  Enumerate all three classes so the priority decision is one comparison.
+
+  ### 2A — Unaddressed `@mitto` mentions
+
+  Load open beads and each bead's comments (mentions on closed beads don't count):
+
+  ```bash
+  bd list --status open --json
+  # for each candidate <id>:
+  bd comments <id> --json
+  ```
+
+  Classify each comment: a **mention** contains `@mitto` (case-insensitive) authored by
+  someone other than this orchestrator; a **back-reference** is any orchestrator/worker
+  comment whose first line is `[addressed-comment: <RFC3339-timestamp>]`. A mention is
+  **unaddressed** iff no later back-reference names its exact timestamp. Collect
+  `(id, ts, body)` tuples, ordered by ascending `ts` then bead ID (oldest first).
+
+  **Exclude** any tuple whose `<id>` matches an existing non-archived conversation's
+  `beads_issue` in **either** this session's `{{ .Children.MCPText }}` **or** the
+  pre-rendered `Workspace peers:` block at the top (peers are the workspace-wide
+  siblings; both renderings expose the linked beads_issue as a literal `{<id>}`
+  substring) — another agent (or user-driven session) is already working on that
+  bead, so this pass leaves the mention alone; it will re-surface on a future pass
+  once the active conversation is done or archived.
+
+  **Formal-match only — no title inference.** The "already working on it"
+  exclusion fires ONLY when a non-archived conversation's `beads_issue` field
+  **literally equals `<id>`**. Do NOT exclude based on similarity between the
+  bead title and a session title (e.g. a user session titled "Dashboard" does
+  NOT exclude beads whose scope words happen to overlap with "dashboard"). If
+  a human wants a session to reserve a bead, they set `beads_issue` on that
+  session — an empty `beads_issue` means "no claim". This rule applies
+  identically to 2A / 2B / 2C.
+
+  ### 2B — Eligible open bugs
+
+  {{ if eq .Args.FixBugs "false" -}}
+  **Bug processing is disabled** (`FixBugs=false`). Skip this section entirely —
+  treat 2B as empty (count = 0) in Steps 3 and 6. Do NOT enumerate or dispatch bugs.
+  {{- else -}}
+  **Eligibility rule.** A bug's eligibility is decided by its **own** `status`
+  (must be `open`) and its **own** labels/in-progress/needs-human state. Parent
+  epic status is **irrelevant** — open children of closed epics are processed the
+  same as open children of open epics or top-level bugs. The "recently-closed
+  parent" exclusion below is narrowly scoped to parents THIS outer run just
+  closed in Step 2P (mitto-fko: avoid rushing into `.n` subtasks before human
+  re-triage), NOT any-closed-parent.
+
+  ```bash
+  bd ready --json          # prefer ready set; filter type=="bug"
+  bd list --type bug --status open --json      # fallback
+
+  # Epic expansion — bug children of every epic (open OR closed).
+  for epic_id in $(bd list --type epic --all --json | jq -r '.[].id'); do
+    bd children "$epic_id" --json | jq '.[] | select(.status == "open" and .issue_type == "bug")'
+  done
+  ```
+
+  Merge and de-duplicate by `id`, then apply exclusions.
+
+  **Exclude** any bug that:
+
+  - carries terminal label `fixed` (Step 2P will close it this pass), OR
+  - carries the `in-flight` label (mitto-ial: an L2 driver already holds a
+    passive claim; belt-and-suspenders with the `beads_issue` peer-match rule
+    below, since a peer conversation may have been archived without clearing
+    its claim — Step 2R will release those on staleness), OR
+  - is `in_progress` elsewhere, OR
+  - carries `needs-human` (previously deferred), OR
+  - **formally** matches a non-archived conversation's `beads_issue` in
+    **either** this session's `{{ .Children.MCPText }}` **or** the pre-rendered
+    `Workspace peers:` block at the top (literal `==` — NOT fuzzy title match;
+    see 2A's "Formal-match only" note), OR
+  - **appears already fixed** (see below), OR
+  - has a `parent-child` dependency whose parent was closed **by THIS pass's
+    Step 2P** (pass-local set only — mitto-fko; check `bd show <id> --json`
+    dependencies).
+
+  **Already-landed fix detection.** Before adding a bead to the set, scan for a
+  commit that already resolves it (typical when a human fixed the bug directly
+  and forgot the `(refs <id>)` footer):
+
+  ```bash
+  bd show <id> --json | jq -r '.[0].commits[]?.hash' | head -3
+  git log --since=<bead.created_at> --oneline --format='%h %s' \
+    | grep -iE '<2-4 distinctive keywords from bead title, joined by |>' | head -5
+  ```
+
+  Before accepting any candidate, establish its temporal ordering:
+
+  ```bash
+  bd history <id> --json
+  git show -s --format='%cI' <hash>
+  ```
+
+  Only beads that have never been closed are eligible for this shortcut.
+  If history contains any prior closed episode, leave the bead actionable — do not infer that
+  any attached commit resolves the current recurrence, even when its timestamp is
+  newer than the reopen. A newer commit on a reopened bead still completes through the normal driver,
+  which verifies the current issue and adds the terminal label.
+
+  For a never-closed bead, require the candidate commit timestamp to be strictly
+  newer than `bead.created_at`. If either timestamp or ordering cannot be established,
+  leave the bead actionable — do not exclude it or add terminal labels. This fail-safe
+  prevents a historical fix from re-closing a later regression.
+
+  Only if a candidate passes that temporal gate AND its diff/subject plausibly
+  resolves the bead (matches the bead's file surface or has distinctive unambiguous keywords),
+  **exclude AND self-heal** — post a repair comment and add the class-terminal
+  chain so Step 2P closes it:
+
+  ```bash
+  bd comment <id> "Orchestrator: fix appears to have landed at <hash> ('<subject>') outside the beads workflow (missing '(refs <id>)' footer). Adding terminal labels so Step 2P closes the bead. If incorrect, remove the labels and comment to re-open the workflow."
+  bd update <id> --add-label researched --add-label reproduced --add-label fixed
+  ```
+
+  Keep the similarity check **narrow** — over-spawning a driver (it self-verifies
+  and terminates quickly) is safer than mis-closing on a coincidental match.
+
+  Order survivors with the canonical ranking:
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"           "the surviving bugs"
+      "Deterministic" true
+  ) }}
+
+  A bead dropped by criterion 1 is not discarded — it still appears in the Step 2T
+  table with the 🟡 `blocked` status and its `blocked-by <id>` reason.
+
+  **How this pass consumes the ranking:** the ordering applies to the WHOLE set (2T
+  lists every candidate in it), and the shortlist is just its top slice. §B always
+  dispatches shortlist #1; #2 and #3 are the fallbacks used when #1 is disqualified
+  at spawn time (an existing child already carries its `beads_issue`, or its
+  preflight fails){{ if ne $maxWorkers "1" }}, and — because the worker cap is **{{ $maxWorkers }}** (see Guidelines) — they are
+  ALSO the candidates Step 3D may clear for a parallel dispatch alongside #1{{ end }}. Anything
+  not dispatched this pass is marked ⏸️ `queued` rather than dropped.
+  {{- end }}
+
+  ### 2C — Eligible open features
+
+  {{ if eq .Args.WorkOnFeatures "false" -}}
+  **Feature processing is disabled** (`WorkOnFeatures=false`). Skip this section
+  entirely — treat 2C as empty (count = 0) in Steps 3 and 6. Do NOT enumerate or
+  dispatch features.
+  {{- else -}}
+  Same shape as 2B — same exclusions, same eligibility rule (bead's own
+  `status`/labels decide; parent epic's status is irrelevant; recently-closed
+  parent is pass-local, mitto-fko), and the **same canonical ordering** applied
+  to the surviving features. Differences:
+
+  - Terminal label is `verified`.
+  - Self-heal chain (already-landed fix) adds `planned`, `implemented`, `tested`,
+    `verified` (the §C terminal chain) instead of the §B chain.
+  - §C is the catch-all for every non-bug work item, including epic members
+    typed `task` / `story` / `chore`.
+
+  ```bash
+  bd ready --json          # prefer ready set; filter type=="feature"
+  bd list --type feature --status open --json      # fallback
+
+  # Epic expansion — every open non-bug, non-epic child of any epic (open OR
+  # closed) routes through the feature driver.
+  for epic_id in $(bd list --type epic --all --json | jq -r '.[].id'); do
+    bd children "$epic_id" --json \
+      | jq '.[] | select(.status == "open" and .issue_type != "bug" and .issue_type != "epic")'
+  done
+  ```
+
+  Merge and de-duplicate by `id`, then apply exclusions and ordering.
+  {{- end }}
+
+  ## Step 2T — Emit the candidates table
+
+  Before Step 3, print ONE Markdown table summarising every enumerated candidate
+  and its disposition. This is the ONE place per pass where per-bead reasoning is
+  exposed — no per-bead prose outside this table.
+
+  One row per candidate across all three sets. Order: class A → B → C, then
+  class-native (2A: `ts` asc; 2B/2C: the canonical ranking established in those
+  sections).
+  Include EVERY candidate, including excluded — those rows are the whole point.
+
+  - **Class** — `A` / `B` / `C`.
+  - **Issue** — bead ID (for 2A, append ` [<ts>]`).
+  - **Status** — one emoji:
+    - 🟢 `spawnable` — passed all exclusions; considered in Step 3.
+    - 🔴 `excluded` — failed at least one exclusion (see Reason).
+    - 🟡 `blocked` — unmet `bd` dependencies.
+    - ⏸️ `queued` — eligible but deferred to a later pass (concurrency cap,
+      epic container). Not an error; reconsidered on next fire.
+  - **Reason** — 🟢: blank or `ready`; otherwise ONE dominant reason
+    (`beads_issue match: <session-id>` — always include the literal session ID,
+    `label: needs-human`, `label: fixed (terminal)`,
+    `label: in-flight (claimed by <claimer>)` — always include the claimer
+    session ID from `metadata.claimed_by`,
+    `already-landed fix (commit <hash>)`, `recently-closed parent <id>`,
+    `blocked-by <id>`, `scope disabled`, `concurrency cap`, `epic (container)`).
+
+  Format exactly:
+
+  ```
+  Candidates (A=<count> B=<count> C=<count> Reaped-epics=<count>):
+
+  | Class | Issue | Status | Reason |
+  |-------|-------|--------|--------|
+  | A | <id> [<ts>] | 🟢 spawnable | ready |
+  | B | <id> | 🔴 excluded | beads_issue match: <session-id> |
+  | C | <id> | 🟡 blocked | blocked-by <id> |
+  | C | <id> | ⏸️ queued | concurrency cap |
+  ```
+
+  If Step 2P's epic-reaper closed any epics this pass, append a small bulleted
+  list below the table (one line per reaped epic, `<id> (children=<n>)`) under
+  the header `Reaped epics:` — this satisfies the "reap actions appear in §2T"
+  audit requirement without widening the candidates-table schema (reap is a
+  fundamentally different action from candidate dispatch).
+
+  If ALL three sets are empty (nothing even entered enumeration) AND no epics
+  were reaped, print `Candidates: none (A=0 B=0 C=0 Reaped-epics=0).` and skip
+  the table. If epics were reaped but candidate sets are empty, still print the
+  header line plus the `Reaped epics:` list (skip the empty table body).
+
+  ## Step 3 — Pick the class for this pass
+
+  Strict priority{{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }} **A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}**{{ else }} (only §A enabled — bugs and features are both disabled){{ end }}:
+
+  1. 2A non-empty → §A on the oldest unaddressed mention.
+  {{ if ne .Args.FixBugs "false" -}}
+  2. Else 2B non-empty AND Step 1 "Loop fixing bug" preflight succeeded → §B on
+     **2B's first row** (the top of the canonical ranking established in 2B).
+  {{ end -}}
+  {{ if ne .Args.WorkOnFeatures "false" -}}
+  {{ if ne .Args.FixBugs "false" }}3{{ else }}2{{ end }}. Else 2C non-empty AND Step 1 "Loop implementing feature" preflight
+     succeeded → §C on **2C's first row** (same canonical ranking as §B).
+  {{ end -}}
+  {{ if ne .Args.FixBugs "false" }}{{ if ne .Args.WorkOnFeatures "false" }}4{{ else }}3{{ end }}{{ else }}{{ if ne .Args.WorkOnFeatures "false" }}3{{ else }}2{{ end }}{{ end }}. Otherwise → Step 6 with reason "nothing eligible" (include `scope: bugs={{ if ne .Args.FixBugs "false" }}on{{ else }}off{{ end }}
+     features={{ if ne .Args.WorkOnFeatures "false" }}on{{ else }}off{{ end }}` so the operator can see whether the empty result is real or
+     just a disabled-scope pass).
+
+  One class per pass only — the `onTasks` fire that lands after the chosen worker's
+  `bd` mutations will re-enter this prompt with a fresh view of all three sets.
+  {{- if and (ne $maxWorkers "1") (or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false")) }}
+
+  ## Step 3D — Can a second worker start? (disjointness proof)
+
+  The operator raised the ceiling to **{{ $maxWorkers }} concurrent workers**
+  (`MaxParallelWorkers`). That is a **ceiling, not a target**: workers share ONE
+  working tree, so two drivers editing the same files corrupt each other's diffs and
+  produce commits nobody can untangle. A second worker starts **only** when you can
+  prove from *recorded evidence* that the candidates cannot collide.
+
+  Run this only when §B or §C was chosen above and its slot budget is not yet full.
+  Candidates are the remaining entries of the chosen class's shortlist (#2, #3 …), in
+  rank order; the class chosen in Step 3 does not change (never mix §B and §C in one
+  pass — the class-priority rule stands).
+
+  **The burden of proof is on parallelism.** Evaluate each additional candidate `<c>`
+  against the already-dispatched target(s). ALL of the following must hold:
+
+  1. **Recorded file surface on both sides.** Each bead must carry an explicit,
+     already-written list of the files/directories it will touch — a previous
+     driver's `Investigation [tier: …]:` or `Plan [tier: …]:` comment (both record
+     code locations / files touched), or the bead's own design/acceptance text.
+     Read it, do not derive it:
+
+     ```bash
+     bd show <c> --long --json | jq -r '.[0].design, .[0].acceptance_criteria'
+     bd show <c> --long --include-comments | grep -E '^(Investigation|Plan) \[tier:'
+     ```
+
+     If either bead has **no recorded surface**, the proof fails. Do NOT infer a
+     surface by reading code, guessing from the title, or asking a model — an
+     unverified guess is exactly the failure mode this gate exists to prevent.
+     A never-dispatched bead usually has no recorded surface; that is the normal
+     case and the correct answer is a single-worker pass.
+  2. **Disjoint at directory granularity.** The two surfaces must share no file AND
+     no immediate parent directory. Same-directory work counts as a collision even
+     when the file lists differ (drivers routinely touch a sibling test file, a
+     `doc.go`, or a shared helper in the same package).
+  3. **No shared build/config surface.** Neither may touch a file both would plausibly
+     need to re-generate or re-format: `go.mod`, `go.sum`, `package.json`, lockfiles,
+     `Makefile`, CI config, generated bundles, or the same schema/migration directory.
+  4. **No dependency edge, no shared parent epic.** `bd dep tree <c>` must show no
+     path to or from the dispatched target, and the two must not be children of the
+     same epic (siblings in one epic almost always share a code surface).
+  5. **Same class, independent lifecycles.** Both are §B or both are §C, and neither
+     is the `<id>` of a bead already carried by any non-archived child or peer
+     conversation (the Step 2B/2C exclusion already removed those — re-check anyway).
+
+  Any criterion you cannot answer from recorded evidence is a **fail**, not a maybe.
+  On a fail: leave the candidate as ⏸️ `queued` and stop widening — do not try
+  candidate #3 after #2 failed{{ if ne $maxWorkers "2" }} unless #2 failed criterion 5 only (already
+  dispatched elsewhere), which says nothing about #3{{ end }}.
+
+  On a pass, record the proof on **both** beads so the decision is auditable and a
+  later human can see why they ran together:
+
+  ```bash
+  bd comment <c> "Orchestrator: dispatched in parallel with <other-id> (cap {{ $maxWorkers }}). Disjointness: <c> touches <paths-a>; <other-id> touches <paths-b>; no shared directory, no dependency edge, no shared epic."
+  ```
+
+  Then dispatch it through the same §B/§C spawn block as the primary target. Every
+  additional worker consumes one slot and is counted by the concurrency gate exactly
+  like the first{{ if .Args.PostIterationPrompt }}; the Step 5H post-task hook is NEVER one of them — it needs the
+  tree to itself and only runs when the live worker count is 0{{ end }}.
+  {{- end }}
+
+  ---
+
+  ## §A — Address ONE `@mitto` mention
+
+  Take the first tuple from 2A — call it **`(<id>, <ts>, <body>)`**. If any existing
+  child in `{{ .Children.MCPText }}` carries the literal trailing `{<id>}` suffix
+  (the rendered `beads_issue` — e.g. `... {mitto-59b}`) AND its `(name)` mentions
+  `[<ts>]`, this mention was already dispatched — drop it and re-run Step 3. Otherwise
+  spawn ONE per-mention router driver whose seed AND `onCompletion` re-fire are both
+  the named mention driver (which itself dispatches phase-tiered prompts —
+  Reasoning for investigate/plan/answer, Coding for implement — one per turn):
+
+  ```
+  mitto_conversation_new(
+    self_id: "{{ .Session.ID }}",
+    title: "Address @mitto on <id> [<ts>]",
+    beads_issue: "<id>",
+    prompt_name: "Mention — driver",
+    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_prompt_name: "Mention — driver",
+    loop_arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_trigger: "onCompletion",
+    loop_completion_delay_seconds: 30,
+    loop_max_iterations: 8,
+    loop_max_duration_seconds: 3600
+  )
+  ```
+
+  `beads_issue` links the driver (`.Session.BeadsIssue` resolves; UI puts it on
+  the right row). `title` includes `[<ts>]` as the dedup key — cross-check
+  prevents double-spawn before the driver posts its back-reference.
+  `prompt_name` (not `initial_prompt`) closes mitto-dj9: the server expands the
+  named prompt on every seed and every re-fire. Budget mirrors the driver's own
+  `loop:` frontmatter (`delay: 30`, `maxIterations: 8`, `maxDuration: "1h"`).
+
+  Record the returned `conversation_id` as **`<child-id>`**. On create failure, jump
+  to Step 7 for `(<id>, <ts>)`.
+
+  ### §A wait, verify, archive
+
+  ```
+  mitto_children_tasks_wait(
+    self_id: "{{ .Session.ID }}",
+    children_list: ["<child-id>"],
+    timeout_seconds: 1800
+  )
+  ```
+
+  - **Driver done** — re-read `bd comments <id> --json`. If `[addressed-comment: <ts>]`
+    is present, archive the driver (the mention driver has already logged its own
+    per-phase `Investigation:` / `Plan:` / `Implementation:` / `Answer:` comments
+    tagged with their tier). If missing (driver crashed / forgot), write a fallback
+    back-reference yourself so the mention is not re-dispatched forever, then
+    archive:
+
+    ```bash
+    bd comment <id> "[addressed-comment: <ts>]
+    Orchestrator fallback: mention driver <child-id> did not post a back-reference. Marking processed to prevent re-dispatch; re-open by adding a fresh @mitto comment if not actually carried out."
+    ```
+    ```
+    mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+
+    Then surface the milestone to the operator (workspace-scoped toast; clicking
+    opens the bead via the `beads_issue` deep-link — mitto-9yz). Capture the bead
+    title once for the message body:
+
+    ```bash
+    title=$(bd show <id> --json | jq -r '.[0].title')
+    ```
+    ```
+    mitto_workspace_ui_notify(
+      self_id: "{{ .Session.ID }}",
+      workspace_uuid: "{{ .Workspace.UUID }}",
+      title: "@mitto mention addressed",
+      message: "Replied on <id>: <title>",
+      style: "info",
+      beads_issue: "<id>"
+    )
+    ```
+
+  - **Timeout** — log on the bead, do NOT kill/archive (driver may still be walking
+    its phases): `bd comment <id> "Orchestrator: 30-minute wait for @mitto driver (mention at <ts>) timed out; leaving driver running."`
+  - **Wait errored** (flag missing at runtime) → notify and STOP; do not archive.
+
+  Then {{ if .Args.PostIterationPrompt }}Step 5H{{ else }}Step 6{{ end }}.
+
+  ---
+
+  {{ if ne .Args.FixBugs "false" -}}
+  ## §B — Fix ONE bug
+
+  Take the first entry from 2B as **`<id>`**. **Concurrency gate (workspace-scoped):**
+  read the pre-rendered `Workspace peers:` block at the top and count peers whose
+  `(name)` starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: `{{ else }} or `Implement `{{ end }}.
+  `.Workspace.Peers.All` is already
+  scoped to non-archived sibling conversations sharing this session's
+  `(WorkingDir, ACPServer)` — i.e. the workspace boundary — and is populated at
+  template-dispatch time (no MCP round-trip), so this counts drivers spawned by any
+  orchestrator in the workspace and parallel `Loop processing tasks` sessions share
+  the {{ if eq $maxWorkers "1" }}single slot{{ else }}same {{ $maxWorkers }} slots{{ end }} instead of each spawning their own (mitto-9mk).{{ if .Args.PostIterationPrompt }}
+  A running `Post-task: …` hook holds {{ if eq $maxWorkers "1" }}the same slot{{ else }}the tree exclusively{{ end }}, so a driver never starts while
+  the hook is mutating/reading the tree.{{ end }}
+  If the workspace-wide count is already ≥ **{{ $maxWorkers }}**, skip the spawn this pass — write
+  `bd comment <id> "Orchestrator: concurrency cap ({{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} in workspace) reached; bug queued for a later pass."`
+  and jump to Step 6. Otherwise spawn ONE child whose seed AND `onCompletion` re-fire
+  are both the named per-bug driver:
+
+  ```
+  mitto_conversation_new(
+    self_id: "{{ .Session.ID }}",
+    title: "Fix <id>",
+    beads_issue: "<id>",
+    prompt_name: "Loop fixing bug",
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_prompt_name: "Loop fixing bug",
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_trigger: "onCompletion",
+    loop_completion_delay_seconds: 30,
+    loop_max_iterations: 20,
+    loop_max_duration_seconds: 14400
+  )
+  ```
+
+  `prompt_name` (not `initial_prompt`) closes mitto-dj9 (server expands on every
+  seed and re-fire). Budget mirrors the per-bug driver's `delay: 30`,
+  `maxIterations: 20`, `maxDuration: "4h"`. Record `conversation_id` as
+  **`<child-id>`**. On create failure → Step 7.
+  {{- if ne $maxWorkers "1" }}
+
+  If **Step 3D** cleared additional candidates, repeat this exact spawn block once
+  per cleared candidate (each with its own `<id>` / `<child-id>`), stopping when the
+  live worker count reaches {{ $maxWorkers }}. Call the resulting set **`<ids>`** /
+  **`<child-ids>`**.
+  {{- end }}
+
+  ### §B wait, log, archive
+
+  Wait on the **bead's terminal state** (`closed`), not on the child agent's
+  yield. This is strictly more correct — "child agent stopped talking" ≠ "bead
+  closed" (the child may yield mid-turn, hit its context budget, crash, or be
+  archived without a terminal `bd` action) — and dramatically reduces
+  orchestrator activations (~1 per real terminal event instead of ~1 per
+  child turn). 4h timeout mirrors the per-bug driver's `maxDuration: "4h"`.
+
+  ```
+  mitto_conversation_wait(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    what: "beads_issues_reached_state",
+    beads_issues: [{{ if ne $maxWorkers "1" }}"<ids…>"{{ else }}"<id>"{{ end }}],
+    beads_target_state: "closed",
+    beads_match: "{{ if ne $maxWorkers "1" }}any{{ else }}all{{ end }}",
+    timeout_seconds: 14400
+  )
+  ```
+  {{- if ne $maxWorkers "1" }}
+
+  With several workers in flight, list every dispatched `<id>` and use
+  `beads_match: "any"` — the pass ends as soon as the FIRST bead closes; the others
+  keep running and are picked up by the next `onTasks` fire (Step 2P reaps their
+  children once their beads reach terminal state). Apply the branches below to the
+  bead(s) the wait reports as reached, and leave the still-running ones untouched.
+  {{- end }}
+
+  - **Bead closed** (happy path) — write one bookkeeping comment then archive
+    the child (the driver has already logged its own `Investigation:` /
+    `Reproduction:` / `Fix:` comments):
+
+    ```bash
+    title=$(bd show <id> --json | jq -r '.[0].title')
+    bd comment <id> "Orchestrator: bead reached terminal state (closed); archiving worker conversation <child-id>."
+    ```
+    ```
+    mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+
+    Then surface the terminal close to the operator (workspace-scoped toast;
+    clicking opens the closed bead — mitto-9yz):
+
+    ```
+    mitto_workspace_ui_notify(
+      self_id: "{{ .Session.ID }}",
+      workspace_uuid: "{{ .Workspace.UUID }}",
+      title: "Task completed",
+      message: "Closed <id>: <title>",
+      style: "success",
+      beads_issue: "<id>"
+    )
+    ```
+
+  - **Timeout** (4h wall-clock cap) — log and move on, do NOT kill/archive
+    (the child's own `maxDuration` is the authoritative upper bound):
+    `bd comment <id> "Orchestrator: 4h bead-state wait timed out; leaving child running."`
+  - **Wait errored** → notify and STOP.
+
+  Then {{ if .Args.PostIterationPrompt }}Step 5H{{ else }}Step 6{{ end }}.
+
+  ---
+  {{- end }}
+
+  {{ if ne .Args.WorkOnFeatures "false" -}}
+  ## §C — Implement ONE feature
+
+  Take the first entry from 2C as **`<id>`**. **Concurrency gate (workspace-scoped):**
+  same rule as §B — read the pre-rendered `Workspace peers:` block at the top
+  (backed by `.Workspace.Peers.All`, scoped to non-archived siblings sharing
+  this session's `(WorkingDir, ACPServer)`) and count peers whose `(name)`
+  starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: ` (§B, §C and the Step 5H hook share
+  the {{ $maxWorkers }}-worker budget{{ else }} or `Implement ` (§B and §C share the {{ $maxWorkers }}-driver budget{{ end }}
+  workspace-wide, not per-orchestrator; mitto-9mk).
+  At cap → `bd comment <id> "Orchestrator: concurrency cap ({{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} in workspace) reached; feature queued for a later pass."`
+  and jump to Step 6. Otherwise spawn ONE child (seed AND `onCompletion` re-fire both the
+  named per-feature driver):
+
+  ```
+  mitto_conversation_new(
+    self_id: "{{ .Session.ID }}",
+    title: "Implement <id>: <slug>",
+    beads_issue: "<id>",
+    prompt_name: "Loop implementing feature",
+    arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_prompt_name: "Loop implementing feature",
+    loop_arguments: { "IssueID": "<id>", "SubmitStrategy": "{{ $submit }}", "FromBranch": {{ $fromBranch | printf "%q" }}, "GroupEpics": "{{ $groupEpics }}"{{ with .Args.AdditionalInstructions }}, "AdditionalInstructions": {{ . | printf "%q" }}{{ end }} },
+    loop_trigger: "onCompletion",
+    loop_completion_delay_seconds: 30,
+    loop_max_iterations: 30,
+    loop_max_duration_seconds: 28800
+  )
+  ```
+
+  Budget mirrors the per-feature driver's `delay: 30`, `maxIterations: 30`,
+  `maxDuration: "8h"` (28800s). On create failure → Step 7.
+
+  `<id>` may be a top-level feature OR a non-bug epic child (`feature`/`task`/
+  `story`/`chore`); the driver's state machine is type-agnostic. For epic
+  members use `Implement <id> (child of <epic-id>): <slug>` so the epic context
+  is visible in the conversation list.
+  {{- if ne $maxWorkers "1" }}
+
+  If **Step 3D** cleared additional candidates, repeat this spawn block once per
+  cleared candidate, stopping when the live worker count reaches {{ $maxWorkers }}.
+  Note that Step 3D's criterion 4 rejects two children of the same epic, so epic
+  siblings are never fanned out together.
+  {{- end }}
+
+  ### §C wait, log, archive
+
+  Same rule as §B — wait on the **feature bead's terminal state** (`closed`),
+  not on the child agent's yield. Same rationale (correctness + activation
+  reduction) and same 4h timeout mirroring the per-feature driver's
+  `maxDuration: "8h"` (the wait cap is intentionally shorter than the driver's
+  own cap so the orchestrator recovers even if the driver is still going).
+
+  ```
+  mitto_conversation_wait(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    what: "beads_issues_reached_state",
+    beads_issues: [{{ if ne $maxWorkers "1" }}"<ids…>"{{ else }}"<id>"{{ end }}],
+    beads_target_state: "closed",
+    beads_match: "{{ if ne $maxWorkers "1" }}any{{ else }}all{{ end }}",
+    timeout_seconds: 14400
+  )
+  ```
+  {{- if ne $maxWorkers "1" }}
+
+  Same multi-worker rule as §B: list every dispatched `<id>`, `beads_match: "any"`,
+  and apply the branches below only to the bead(s) reported as reached.
+  {{- end }}
+
+  - **Bead closed** (happy path) — write one bookkeeping comment then archive
+    the child (the driver has already logged its own per-phase `Plan:` /
+    `Implementation:` / `Testing:` / `Review:` comments):
+
+    ```bash
+    title=$(bd show <id> --json | jq -r '.[0].title')
+    bd comment <id> "Orchestrator: bead reached terminal state (closed); archiving worker conversation <child-id>."
+    ```
+    ```
+    mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+    ```
+
+    Then surface the terminal close to the operator (workspace-scoped toast;
+    clicking opens the closed bead — mitto-9yz):
+
+    ```
+    mitto_workspace_ui_notify(
+      self_id: "{{ .Session.ID }}",
+      workspace_uuid: "{{ .Workspace.UUID }}",
+      title: "Task completed",
+      message: "Closed <id>: <title>",
+      style: "success",
+      beads_issue: "<id>"
+    )
+    ```
+
+  - **Timeout** (4h wall-clock cap) — log and move on, do NOT kill/archive.
+    Epic containers that legitimately stay open after the child finishes will
+    also land here (the child closed the leaf, not the epic; Step 2P will
+    reap the child on the next pass):
+    `bd comment <id> "Orchestrator: 4h bead-state wait timed out; leaving child running."`
+  - **Wait errored** → notify and STOP.
+
+  Then {{ if .Args.PostIterationPrompt }}Step 5H{{ else }}Step 6{{ end }}.
+
+  ---
+  {{- end }}
+
+  {{ if .Args.PostIterationPrompt -}}
+  ## Step 5H — Post-task hook (after ONE task completes, before the next is picked)
+
+  Reached **only** from the completion branches above — §A "Driver done", §B/§C
+  "Bead closed" — i.e. a real task just finished. Do NOT run it on the at-cap,
+  nothing-eligible, timeout, wait-errored or Step 7 (deferral) paths: this hook
+  marks *a task finished*, not *a pass finished*.
+
+  **Exclusivity gate (mandatory, run BEFORE the spawn).** The hook needs the working
+  tree to itself: it must not start while any other worker is running, and while it
+  runs no other worker may start. This is **exclusivity, not a slot count** —{{ if ne $maxWorkers "1" }} even with
+  the cap raised to {{ $maxWorkers }}, the hook requires a live worker count of exactly 0.{{ else }} it holds
+  the single workspace worker slot for its whole run.{{ end }} The
+  pre-rendered `Workspace peers:` block is a template-dispatch-time snapshot and
+  is stale by now (a driver may have been spawned earlier in this very pass), so
+  re-enumerate live:
+
+  ```
+  mitto_conversation_list(
+    self_id: "{{ .Session.ID }}",
+    archived: false,
+    working_dir: "{{ .Workspace.Folder }}"
+  )
+  ```
+
+  Count entries whose `title` starts with `Fix `, `Implement ` or `Post-task: `,
+  excluding this session itself and the just-finished child you archived in
+  §A/§B/§C above (it may still appear if the archive has not settled — match it
+  by `conversation_id`).
+
+  - Count ≥ 1 → **do not spawn**. Write
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) skipped — another worker is active in the workspace; will run after a later task completes."`
+    and jump to Step 6 with hook status `not-run`. Never queue, never retry
+    inline: skipping is correct, the hook fires after the next completed task.
+  - Count = 0 → proceed with the spawn below.
+
+  Dispatch the operator-picked follow-up as its **own child conversation** so its
+  token spend, file reads and tool calls never pollute this supervisor's context,
+  then block until it reports. Spawn it **by name** (`prompt_name`, never
+  `initial_prompt`) — the server expands `{{ .Args.PostIterationPrompt }}` in the
+  child's own context, exactly like the §A/§B/§C drivers (mitto-dj9); you never
+  inline or execute the hook's text yourself. The `Post-task: ` title prefix is
+  load-bearing: it is what §B/§C's concurrency gate counts, so peer orchestrators
+  hold off while this hook runs. `<id>` is the bead just completed (for §A, the
+  bead carrying the addressed mention):
+
+  {{- $hookArgs := ArgsMap "PostIterationPrompt_Args" }}
+
+  ```
+  mitto_conversation_new(
+    self_id: "{{ .Session.ID }}",
+    title: "Post-task: <id>",
+    beads_issue: "<id>",
+    prompt_name: "{{ .Args.PostIterationPrompt }}"{{ if $hookArgs }},
+    arguments: { {{ $sep := "" }}{{ range $k, $v := $hookArgs }}{{ $sep }}"{{ $k }}": "{{ $v }}"{{ $sep = ", " }}{{ end }} }{{ end }}
+  )
+  ```
+
+  Record the returned `conversation_id` as **`<hook-child-id>`**, then block on it,
+  passing the context/reporting inquiry as the wait's own prompt (the wait appends
+  the reporting instructions for you):
+
+  ```
+  mitto_children_tasks_wait(
+    self_id: "{{ .Session.ID }}",
+    children_list: ["<hook-child-id>"],
+    task_id: "post-task-<id>",
+    prompt: "You ran as a post-task hook right after beads issue <id> was completed by the Loop processing tasks orchestrator, before the next task is picked. Summarize the outcome.",
+    timeout_seconds: 3600
+  )
+  ```
+
+  - **Reported** — log and delete the hook child:
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) completed: <one-line outcome from the report>."`
+    then `mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: "<hook-child-id>")`.
+  - **Timed out (1h) or no report** — the hook holds the workspace worker slot, so
+    it must not be left running indefinitely:
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) did not report within 1h; deleting hook child to release the worker slot."`
+    then `mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: "<hook-child-id>")`
+    and continue.
+  - **Spawn failed** (flag off, quota, unknown prompt) — one
+    `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) could not be dispatched: <error>; skipped."` and continue.
+    Do NOT run the hook inline — the supervisor stays procedural.
+
+  Best-effort by construction: a hook that fails, times out or reports a problem
+  **never** blocks the next task and never re-opens the completed bead. If the hook
+  discovers real work (e.g. tests it ran now fail), it is the hook prompt's own job
+  to file a bead — the orchestrator will pick it up on the next `onTasks` pass.
+
+  The hook child **does** count against the workspace worker cap while it runs
+  (that mutual exclusion is the point: a `Run tests`-style hook must never race a
+  driver editing the same tree). Every exit branch above therefore releases the
+  slot — reported and timed-out both end in `mitto_conversation_delete`. Step 2P
+  still never reaps a `Post-task: …` child: Step 5H owns its lifecycle.
+
+  Then Step 6.
+
+  ---
+  {{- end }}
+
+  ## Step 6 — End-of-pass notification and yield
+
+  ```
+  mitto_ui_notify(
+    self_id: "{{ .Session.ID }}",
+    title: "Loop processing tasks — pass complete",
+    message: "<Class ran (A/B/C) and target processed | 'nothing eligible' if Step 3 fell through | 'at cap' if concurrency gate skipped>. Sets: A=<count> B=<count> C=<count>. Active drivers: <count of running Fix/Implement children after this pass>/{{ $maxWorkers }}.{{ if ne $maxWorkers "1" }} Parallel: <n dispatched this pass, and for n>1 the disjointness basis in ≤10 words | 'serial' when only one>.{{ end }} Reaped: <count from Step 2P, 0 if none>. Closed: <count of terminal-label beads closed this pass, 0 if none>. Reaped-epics: <count from Step 2P epic-reaper, 0 if none>. Recovered-in-progress: <count from Step 2Q, 0 if none>. Reaper: released=<n> skipped=<n> (from Step 2R, 0/0 if none). Undeferred: <count from Step 2Z, 0 if none>.{{ if .Args.PostIterationPrompt }} Post-task hook: <ran-ok|timed-out|spawn-failed|skipped-worker-active|not-run>.{{ end }} Will re-fire on beads changes.",
+    style: "success"
+  )
+  ```
+
+  End the turn — the next `.beads/` change (new `@mitto` comment, a bug's label
+  advancing, a feature landing) will wake this supervisor. Do NOT call
+  `mitto_conversation_update(loop_enabled: false)` just because sets were empty;
+  the loop stays armed and idle until the next real change.
+
+  ## Step 7 — Blocked → Defer + Handoff (canonical deferral template)
+
+  Use whenever the orchestrator hits a wall on a specific target — spawn
+  impossible (flag missing, quota, `mitto_conversation_new` errored) or the
+  target is intrinsically un-actionable (credentials, ambiguity, decision,
+  external access, manual verification). Never guess; never silently drop.
+
+  **§B / §C — canonical defer:**
+
+  ```bash
+  bd update <id> --add-label needs-human --defer +1d
+  bd comment <id> "[deferred: <now-RFC3339>]
+  Why: <root cause — what was tried, what error/blocker, or which autonomy boundary>.
+  What human intervention is required: <the ONE concrete action — e.g. 'enable Can start conversation flag', 'provide API key for X', 'decide between A and B'>.
+  How to resume: reply to this bead; the orchestrator will detect it, clear \`needs-human\`, and re-queue."
+  ```
+
+  **§A — spawn failure only** (mention drivers handle ambiguous-mention deferral
+  themselves). Use the SAME `[deferred: ...]` template on the bead, but do NOT
+  write `[addressed-comment: <ts>]` — the mention was never dispatched. Step 2Z
+  will undefer and §A will re-see the mention.
+
+  After deferring, post Step 6's notification and end. Do NOT try another target
+  this pass — a flag/quota failure likely affects them all.
+
+  ## Guidelines
+
+  - **One increment per pass.** {{ if eq $maxWorkers "1" }}Exactly one worker, one class.{{ else }}One class per pass, and at most
+    {{ $maxWorkers }} workers within it — and more than one ONLY on a Step 3D disjointness
+    proof. Absent that proof, the pass is single-worker.{{ end }} The `onTasks`
+    re-fire drives cross-pass progress — never batch.
+  - **Strict class priority A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}, then bead priority within class.** Class comes first
+    (bugs always before features), then within the chosen class pick the
+    highest-priority bead (`critical → high → medium → low`, i.e. `P0` before
+    `P1` before `P2` before `P3`) per the §2B/§2C ranking — including its
+    epic-finishing promotion, which is the only sanctioned way a lower-priority
+    bead outranks a higher one. Never demote by "looks small" / "looks urgent";
+    never promote a feature over an eligible bug on urgency vibes.
+  - **Top-level only.** `Session.IsChild` → notify + STOP; no `bd` writes, no spawns.
+  - **Silent unless it matters.** `mitto_ui_notify` only at Step 6, degrade paths
+    (Step 7, wait errors), and wait-timeout milestones. Never per-target.
+  - **Milestone toasts only.** `mitto_workspace_ui_notify` fires ONLY on terminal
+    close (§B/§C "Bead closed" branch) and on `@mitto` mention addressed (§A
+    "Driver done" branch). Never on phase transitions, dispatches, per-pass
+    activity, timeouts, or failures — those already surface via the beads list
+    and would flood the operator on retry storms. `sound`/`sticky`/`native`
+    stay off (loops fire frequently; audible/persistent spam is an anti-pattern).
+  - **Live state every pass.** Re-run 2P/2Z/2A/2B/2C fresh; never cache — sets go
+    stale by design.
+  - **Uncommitted changes never justify skipping a pass.** A dirty working tree is
+    informational only. Per-bead drivers protect unrelated work by staging only
+    paths they edited (`git add <file>` — never `-A`/`-a`/`.`), so unrelated
+    uncommitted changes stay untouched. The orchestrator enumerates and
+    dispatches; it does NOT second-guess drivers' path-scoped-add discipline.
+    Genuine edit collisions surface inside the driver (via `needs-human` defer).
+    The ONLY legitimate pass-level yields: (a) sets empty after 2A/2B/2C,
+    (b) concurrency cap (Step 3), (c) Step 7 deferral, (d) preflight failure.
+  {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
+  - **Cap: {{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }}.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share{{ else }}{{ if ne .Args.FixBugs "false" }}§B has{{ else }}§C has{{ end }}{{ end }}{{ if .Args.PostIterationPrompt }} — together with the Step 5H
+    post-task hook —{{ end }} a budget of {{ $maxWorkers }} concurrent worker conversation{{ if ne $maxWorkers "1" }}s{{ end }}.
+    {{ if eq $maxWorkers "1" }}Serial execution prevents overlapping-file races.{{ else }}Workers share ONE working tree, so the extra slots are usable only for
+    provably code-disjoint beads (Step 3D){{ if .Args.PostIterationPrompt }}; the post-task hook still runs alone{{ end }}.{{ end }} At cap → skip the spawn;
+    Step 2P will free the slot. §A mention drivers self-terminate and don't count.
+  {{- if ne $maxWorkers "1" }}
+  - **Never parallelize on a hunch.** Step 3D's proof must rest on a *recorded* file
+    surface on BOTH beads. No recorded surface, same directory, shared build/config
+    file, dependency edge, or shared parent epic → one worker. Reading the code to
+    guess a surface is not evidence; a mis-parallelized pass costs more than the
+    serial pass it tried to avoid.
+  {{- end }}
+  {{- end }}
+  - **Reap aggressively.** Step 2P deletes (not archives) terminal/orphaned/idle-2h/
+    duplicate children every pass. Never let the child list grow unbounded.
+  - **Never duplicate a spawn.** Cross-check `beads_issue` (§A: also mention `<ts>`
+    in child title) on `{{ .Children.MCPText }}` before every create.
+  - **Never reuse a child for a different task.** One child ↔ one bead / one
+    mention, for life. Do NOT `mitto_conversation_send_prompt` a child a different
+    bead or unrelated instruction — its accumulated context poisons the new task
+    (wrong bead ID in commits, wrong `bd close` target, stale notes). If every
+    eligible child is busy, the correct action is "wait" (Step 6, at-cap yield) —
+    NOT "repurpose an idle child". `send_prompt` on an existing child is legit only
+    for (a) nudging the SAME child about the SAME bead, or (b) telling it to stop.
+    For any new bead / mention, always spawn fresh with `mitto_conversation_new`.
+  - **Skip beads with active conversations (workspace-scoped).** Any bead whose
+    `beads_issue` matches a non-archived conversation in **either** this session's
+    `{{ .Children.MCPText }}` **or** `.Workspace.Peers.All` (ours, a peer
+    orchestrator's, or a user's) is excluded from all three sets — racing loses
+    updates. Enumerate workspace-wide, not just this session's own children
+    (mitto-9mk); `.Workspace.Peers` is already scoped to non-archived siblings
+    sharing this session's `(WorkingDir, ACPServer)` and populated at template-
+    dispatch time. Re-enumerated once the conversation is done or archived.
+  - **Skip beads with an `in-flight` claim (mitto-ial).** An L2 loop-driver
+    marks the beads it is actively working with the `in-flight` label plus
+    `claimed_by`/`claimed_at`/`claim_heartbeat_at` metadata, while leaving
+    `status=open` so a crash never strands the bead. 2B/2C exclude such beads
+    (belt-and-suspenders with the workspace-peer rule above — a peer may have
+    been archived without clearing its claim). Step 2R releases malformed claims
+    that lack required owner/heartbeat metadata and have no formal conversation
+    owner; its cross-signal reaper also releases stale well-formed claims (heartbeat
+    > 60 min old AND claimer conversation is gone / silent). Every
+    close site (Step 2P sweep, driver Done branches, mention Finalize) strips
+    the claim before `bd close` so closed beads never carry ghost claims.
+  - **Recover abandoned legacy `in_progress` status (Step 2Q).** Current drivers
+    never set it; they use passive `in-flight` claims on open beads. Preserve a
+    legacy `in_progress` bead while it has a formal non-archived conversation
+    owner, an `in-flight` claim, or issue/comment activity within 24h. Otherwise
+    return it to `open` for normal verification — never close from stale prose.
+  - **Honor scope flags.** `FixBugs` and `WorkOnFeatures` (both default `"true"`)
+    gate §B and §C. When `"false"`, the section is skipped and treated as empty
+    in Step 3. §A is ALWAYS on regardless.
+  {{ if .Args.PostIterationPrompt -}}
+  - **Post-task hook is best-effort AND mutually exclusive with drivers.** Step 5H
+    runs `{{ .Args.PostIterationPrompt }}` in its own short-lived child only after a
+    task actually completed (§A driver done, §B/§C bead closed) — never on at-cap,
+    nothing-eligible, timeout or deferral paths. It holds the single workspace
+    worker slot for its duration: it is skipped when any `Fix …` / `Implement …` /
+    `Post-task: …` conversation is already live (re-checked live at Step 5H, not
+    from the stale dispatch-time peers snapshot), and while it runs §B/§C count it
+    and refuse to spawn. Without this a `Run tests`-style hook would race a driver
+    editing the very tree it is testing. Its failure, timeout or negative findings
+    never block the next task and never re-open the completed bead; new work it
+    discovers must be filed as a bead and picked up on a later pass.
+  {{- end }}
+  - **Expand epics; don't spawn them.** An `epic` bead is a container — never
+    dispatched itself. 2B and 2C walk each open epic's open children: `bug`
+    children → §B, other non-epic types (`feature`/`task`/`story`/`chore`) → §C
+    via `Loop implementing feature` (its planned→implemented→tested→verified
+    machine applies to all types). The epic stays open while children run;
+    Step 2P closes each child as its driver terminates, and Step 2P's
+    epic-reaper closes the epic itself in the same pass once its last child is
+    closed. Candidate parents come only from this pass's closures, reaped linked
+    workers, and the current `onTasks` delta — never from a global epic sweep.
+  {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
+  - **Close terminal-label leaves and completed parents.** Step 2P first removes a
+    class-terminal label carried through a later reopen, then closes an open bead
+    carrying the current-episode terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}) only when it has no non-closed direct children. A terminal parent stays
+    open until child completion triggers a later pass. `needs-human` beads are excluded by
+    the label filter (deferred beads carry `needs-human`, not the terminal label);
+    those stay with the human.
+  {{- end }}
+  - **`[addressed-comment: <ts>]` is the §A dedup key** — never delete or rewrite;
+    re-processing means a fresh `@mitto` with a new `<ts>`.
+  - **Defer instead of guessing.** Anything needing a decision/credential/external
+    access/clarification → Step 7. Never leave a half-processed bead without a
+    machine-parseable marker — Step 2Z's undeferral relies on it.
+  - **Undefer on human response.** Step 2Z re-opens `needs-human` beads whose newest
+    `[deferred: <ts>]` has a subsequent non-orchestrator comment or description
+    edit. Always post `[undeferred: <deferred-ts>]` when stripping the label.
+    Bug/feature drivers defer internally the same way; §2B/§2C exclusion honors
+    their `needs-human` and undefers identically.
+  - **Always log to the tracker.** Short `bd comment` for every orchestration
+    action (spawn, timeout, completion, defer, undefer, reap).
+  - **No `Item.*`.** `beadsList` prompt — all targeting comes from Step 2.

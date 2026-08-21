@@ -24,6 +24,11 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	ErrSessionLocked   = errors.New("session is locked by another process")
 	ErrStoreClosed     = errors.New("store is closed")
+	// ErrSessionNoArchive is the canonical rejection reported by every archive
+	// entry point when the target conversation's Metadata.NoArchive flag is set
+	// (mitto-yvel.3), so REST and MCP surface the same wording. Deletion is
+	// unaffected by this flag and must never check it.
+	ErrSessionNoArchive = errors.New("conversation is marked non-archivable and cannot be archived; delete it instead")
 )
 
 // Verify Store implements SessionStore at compile time.
@@ -32,8 +37,60 @@ var _ SessionStore = (*Store)(nil)
 // Store provides session persistence operations.
 type Store struct {
 	baseDir string
-	mu      sync.RWMutex
-	closed  bool
+
+	// mu is the lifecycle/global-operation gate. Session-scoped operations hold
+	// its shared side plus a keyed session lock; all-store scans, deletion, and
+	// Close hold its exclusive side.
+	mu     sync.RWMutex
+	closed bool
+
+	sessionLocksMu sync.Mutex
+	sessionLocks   map[string]*storeSessionLock
+
+	// deleteObserver, when set, is invoked once per session removed by Delete
+	// (the target session itself plus any cascade-deleted descendants), after
+	// s.mu has been released. Guarded by s.mu; see SetDeleteObserver.
+	deleteObserver func(sessionID, parentSessionID string)
+
+	// loopStoppedObserver, when set, is invoked once a session's loop stops
+	// via LoopStore.MarkStopped. Guarded by s.mu; see SetLoopStoppedObserver.
+	// Threaded into each *LoopStore returned by Loop(sessionID)
+	// (store_dispensers.go).
+	loopStoppedObserver func(sessionID string, reason StoppedReason)
+}
+
+// SetDeleteObserver registers a callback invoked once per session removed by
+// Delete (target plus any cascade-deleted descendants). The callback receives
+// the deleted session's ID and its immediate parent's ID (empty string if it
+// had none). It is invoked after the store's internal lock has been released,
+// so the callback may safely call back into other Store methods (e.g.
+// GetMetadata, Exists) without deadlocking. Pass nil to clear the observer.
+//
+// Only Delete notifies: retention-driven removal of archived sessions
+// (CleanupArchivedSessions) deliberately does not, since it reclaims disk for
+// sessions already archived rather than acting on a user-visible deletion.
+func (s *Store) SetDeleteObserver(fn func(sessionID, parentSessionID string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteObserver = fn
+}
+
+// SetLoopStoppedObserver registers a callback invoked once per stop of a
+// session's loop (LoopStore.MarkStopped, which detects the transition), across
+// every stop path (auto-stop on max iterations/duration,
+// resume/delivery/context failures, MCP loop_enabled:false, REST pause,
+// archive). The callback
+// receives the stopped session's own ID and the StoppedReason; it does NOT
+// receive a parent session ID (unlike SetDeleteObserver) because, unlike a
+// deleted session, the stopped session's own metadata still exists at
+// notification time, so a caller that needs the parent can resolve it via
+// GetMetadata(sessionID).ParentSessionID. Invoked after the write and after
+// the LoopStore's internal lock has been released, so the callback may
+// safely call back into the store. Pass nil to clear the observer.
+func (s *Store) SetLoopStoppedObserver(fn func(sessionID string, reason StoppedReason)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loopStoppedObserver = fn
 }
 
 // NewStore creates a new session store with the given base directory.
@@ -42,8 +99,54 @@ func NewStore(baseDir string) (*Store, error) {
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create session directory: %w", err)
 	}
+	cleanupOrphanSessionDirs(baseDir)
 	log.Debug("session store initialized", "base_dir", baseDir)
 	return &Store{baseDir: baseDir}, nil
+}
+
+// cleanupOrphanSessionDirs removes every immediate subdirectory of baseDir
+// that has neither metadata.json nor events.jsonl (mitto-32ef). Such
+// directories are invisible to session listing (metadata.json is
+// authoritative) and can only contain leftover sidecars — historically
+// created by a sidecar writer (processor_state.json, queue.json, ...)
+// racing a concurrent Store.Delete and recreating the just-removed
+// directory via WriteJSONAtomic's MkdirAll. That race is closed separately
+// (see fileutil.WriteJSONAtomicIfDirExists), so this is a one-shot sweep of
+// orphans accumulated before the fix, run once per process start.
+//
+// Fails open: a read or removal error for one entry is logged and does not
+// abort the sweep or NewStore.
+func cleanupOrphanSessionDirs(baseDir string) {
+	log := logging.Session()
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		log.Warn("orphan session dir cleanup: failed to list base dir", "error", err, "base_dir", baseDir)
+		return
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(baseDir, entry.Name())
+		_, metaErr := os.Stat(filepath.Join(dir, metadataFileName))
+		_, eventsErr := os.Stat(filepath.Join(dir, eventsFileName))
+		if !os.IsNotExist(metaErr) || !os.IsNotExist(eventsErr) {
+			// Has metadata.json and/or events.jsonl (or a stat error other
+			// than "not exist") — not an orphan, or unsafe to judge; skip.
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Warn("orphan session dir cleanup: failed to remove orphan", "error", err, "session_dir", dir)
+			continue
+		}
+		removed++
+		log.Info("orphan session dir cleanup: removed orphan directory (no metadata.json/events.jsonl)", "session_dir", dir)
+	}
+	if removed > 0 {
+		log.Info("orphan session dir cleanup: complete", "base_dir", baseDir, "removed", removed)
+	}
 }
 
 // RunMigrations runs any pending data migrations on the session store.
@@ -87,12 +190,11 @@ func (s *Store) lockPath(sessionID string) string {
 // Create creates a new session with the given metadata.
 func (s *Store) Create(meta Metadata) error {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(meta.SessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	sessionDir := s.sessionDir(meta.SessionID)
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
@@ -127,12 +229,11 @@ func (s *Store) Create(meta Metadata) error {
 // AppendEvent appends an event to the session's event log.
 // The event's Seq field is automatically assigned based on the current event count.
 func (s *Store) AppendEvent(sessionID string, event Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	// Read metadata first to get current event count for sequence number
 	meta, err := s.readMetadata(sessionID)
@@ -199,12 +300,11 @@ func (s *Store) AppendEvent(sessionID string, event Event) error {
 // This is used for immediate persistence where seq is assigned at streaming time.
 func (s *Store) RecordEvent(sessionID string, event Event) error {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	// Validate seq is pre-assigned
 	if event.Seq <= 0 {
@@ -280,12 +380,11 @@ func (s *Store) RecordEvent(sessionID string, event Event) error {
 
 // GetMetadata retrieves the metadata for a session.
 func (s *Store) GetMetadata(sessionID string) (Metadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return Metadata{}, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return Metadata{}, err
 	}
+	defer unlock()
 
 	return s.readMetadata(sessionID)
 }
@@ -315,12 +414,11 @@ func (s *Store) writeMetadata(meta Metadata) error {
 
 // UpdateMetadata updates the metadata for a session.
 func (s *Store) UpdateMetadata(sessionID string, updateFn func(*Metadata)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	meta, err := s.readMetadata(sessionID)
 	if err != nil {
@@ -341,12 +439,11 @@ func (s *Store) ReadEvents(sessionID string) ([]Event, error) {
 // If afterSeq is 0, all events are returned.
 // If afterSeq is 5, only events with seq > 5 are returned.
 func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]Event, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	f, err := os.Open(s.eventsPath(sessionID))
 	if err != nil {
@@ -411,12 +508,11 @@ func (s *Store) ReadEventsFrom(sessionID string, afterSeq int64, limit int) ([]E
 // If beforeSeq > 0, only events with seq < beforeSeq are considered.
 // Returns events in chronological order (oldest first).
 func (s *Store) ReadEventsLast(sessionID string, limit int, beforeSeq int64) ([]Event, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	f, err := os.Open(s.eventsPath(sessionID))
 	if err != nil {
@@ -483,8 +579,8 @@ func (s *Store) ReadEventsLastReverse(sessionID string, limit int, beforeSeq int
 
 // List returns metadata for all sessions.
 func (s *Store) List() ([]Metadata, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -524,52 +620,89 @@ func (s *Store) List() ([]Metadata, error) {
 // auto-children (IsAutoChild=true) are cascade deleted while MCP-children
 // (IsAutoChild=false) are orphaned (ParentSessionID cleared).
 func (s *Store) Delete(sessionID string) error {
+	deleted, observer, err := s.deleteLocked(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Notify the delete observer, if any, only after the lock has been
+	// released so an observer that calls back into the Store cannot
+	// deadlock. Order matches removal order: cascade descendants first,
+	// then the target session itself.
+	if observer != nil {
+		for _, d := range deleted {
+			observer(d.ID, d.ParentID)
+		}
+	}
+
+	return nil
+}
+
+// deleteLocked performs the actual deletion under s.mu and returns the list
+// of sessions removed (cascade descendants followed by the target session),
+// along with a snapshot of the delete observer captured under the lock. It
+// does not invoke the observer itself - that is the caller's (Delete's)
+// responsibility, done after the lock is released.
+func (s *Store) deleteLocked(sessionID string) ([]deletedSession, func(string, string), error) {
 	log := logging.Session()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return ErrStoreClosed
+		return nil, nil, ErrStoreClosed
 	}
 
 	sessionDir := s.sessionDir(sessionID)
 	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
-		return ErrSessionNotFound
+		return nil, nil, ErrSessionNotFound
+	}
+
+	// Capture the target session's own parent before removing its metadata,
+	// so it can be reported to the delete observer below.
+	var parentID string
+	if meta, err := s.readMetadata(sessionID); err == nil {
+		parentID = meta.ParentSessionID
 	}
 
 	// Before deleting, find and clean up any child sessions that reference this parent.
 	// Auto-children are cascade deleted; MCP-children are orphaned.
-	if _, err := s.handleChildSessionsOnParentDelete(sessionID, nil); err != nil {
+	deleted, err := s.handleChildSessionsOnParentDelete(sessionID, nil)
+	if err != nil {
 		log.Error("failed to handle child sessions on parent delete", "error", err, "session_id", sessionID)
 		// Continue with deletion even if cleanup fails - we don't want to block deletion
 	}
 
 	if err := os.RemoveAll(sessionDir); err != nil {
-		return err
+		return nil, nil, err
 	}
 
+	// Release the shared per-directory queue lock (mitto-pr0), if any, so the
+	// process-wide registry does not retain an entry for a deleted session.
+	releaseQueueLock(sessionDir)
+
+	deleted = append(deleted, deletedSession{ID: sessionID, ParentID: parentID})
+
 	log.Debug("session deleted", "session_id", sessionID, "session_dir", sessionDir)
-	return nil
+	return deleted, s.deleteObserver, nil
 }
 
 // Exists checks if a session exists.
 func (s *Store) Exists(sessionID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
 		return false
 	}
+	defer unlock()
 
-	_, err := os.Stat(s.metadataPath(sessionID))
+	_, err = os.Stat(s.metadataPath(sessionID))
 	return err == nil
 }
 
 // CountSessions returns the number of stored sessions.
 // M3: This is used by the health check endpoint.
 func (s *Store) CountSessions() (int, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return 0, ErrStoreClosed

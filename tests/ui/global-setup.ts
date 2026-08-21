@@ -66,6 +66,28 @@ async function globalSetup(config: FullConfig): Promise<void> {
     JSON.stringify(workspaces, null, 2),
   );
 
+  // Pin the project-alpha folder so its sidebar row (and the per-folder
+  // "New conversation" button) is visible even before any session exists.
+  // Without this, a fresh test environment shows "No conversations yet"
+  // with zero folder rows -- the sidebar's global "New Conversation" button
+  // was removed in favor of a per-folder button, which only renders once
+  // its folder is either session-derived or pinned (mitto-vmnh). This must
+  // be written here (not just in start-test-server.sh) because this
+  // function wipes and recreates testDir *after* the webServer has already
+  // started mitto against it.
+  const folders = {
+    folders: {
+      [workspaces.workspaces[0].working_dir]: {
+        pinned: true,
+      },
+    },
+  };
+
+  await fs.writeFile(
+    path.join(testDir, "folders.json"),
+    JSON.stringify(folders, null, 2),
+  );
+
   console.log(`✅ Test environment created at ${testDir}`);
 }
 

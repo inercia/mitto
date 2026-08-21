@@ -1,0 +1,37 @@
+{{- /*
+  jira/push-transition — canonical push-side "close JIRA when the bead is
+  closed locally" block: transition-list lookup, terminal-target rule,
+  fallback `[mitto]` close-comment when no terminal transition is available,
+  and the `jira_pushed_status` idempotency metadata. Extracted per mitto-g61
+  from push-issue Step 3 and sync-tasks Step 8A, which shipped near-identical
+  copies (only the bead-id placeholder and comment-body scaffold differ).
+  The caller is expected to supply its own MCP-vs-CLI conditional wrappers
+  around this fragment where a step-specific tool name would otherwise appear
+  (Access Method varies enough per prompt to keep out of the fragment).
+  The fragment names both endpoints generically (`jira_get_transitions`,
+  `jira_transition_issue`, `jira_add_comment`, `jira issue transitions`,
+  `jira issue move`, `jira issue comment add`) so callers can drop it in
+  under an existing "prefer MCP tools" preamble.
+*/ -}}
+If the bead is **closed** locally (status `closed` — **not** `deferred`, `blocked`, or any other non-terminal local status; `deferred` is local-only and must never trigger a JIRA-side write) and the JIRA ticket is **not** already in a **terminal** status (see the terminal-status allow-list), transition JIRA to a terminal status. JIRA workflows vary per project, so look up the available transitions for this ticket and pick a transition whose **target status name** matches the terminal allow-list (`Done` / `Closed` / `Resolved` / `Cancelled`/`Canceled` / `Won't Do` / `Won't Fix`/`Wontfix` / `Duplicate`, case-insensitive, exact). Prefer `Done` when multiple terminal transitions are available.
+
+Do **not** pick a transition merely because its target `statusCategory` is `done` — deployment-pipeline statuses like `Deployed to Stage`, `Released`, or `Ready for Prod` often live in the green category but are not terminal, and transitioning there would misrepresent the ticket state.
+
+Use **JIRA MCP tools** when available: `jira_get_transitions` to list the workflow's transitions for `<KEY>`, then `jira_transition_issue` to apply the chosen one. Otherwise use the **`jira` CLI**:
+
+```bash
+jira issue transitions <KEY>                                        # list available transitions
+jira issue move <KEY> "Done" --resolution "Done" --comment "Closed in beads (<bead-id>)"
+# (name of the target status may differ per workflow — fall back to whatever
+# 'jira issue transitions <KEY>' lists as the done-category transition)
+```
+
+If **no** terminal transition is available (workflow restriction, permission denied, or the only reachable done-category transitions are non-terminal names like `Deployed to Stage`), do **not** force it — instead add a `[mitto]` comment saying the bead was closed locally, so a human can transition manually (via `jira_add_comment` when MCP tools are available, otherwise via `jira issue comment add <KEY> --body-file /tmp/jira-<key>.mitto.close.md`). The comment body starts with `[mitto] Closed in beads: <reason>`.
+
+Record what was done on the bead so re-runs are idempotent:
+
+```bash
+bd update <bead-id> --set-metadata jira_pushed_status="<new-status>"
+```
+
+Skip this whole step if `metadata.jira_pushed_status` already matches the JIRA ticket's current status (nothing changed since the last push).

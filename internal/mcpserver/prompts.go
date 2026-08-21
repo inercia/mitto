@@ -84,12 +84,24 @@ func (s *Server) loadMergedPrompts(workingDir string) []config.WebPrompt {
 	if sm != nil {
 		workspacePromptsDirs = append(workspacePromptsDirs, sm.GetWorkspacePromptsDirs(workingDir)...)
 	}
+	absDirs := make([]string, 0, len(workspacePromptsDirs))
 	for _, dir := range workspacePromptsDirs {
-		absDir := dir
 		if !filepath.IsAbs(dir) {
-			absDir = filepath.Join(workingDir, dir)
+			dir = filepath.Join(workingDir, dir)
 		}
-		prompts, err := config.LoadPromptsFromDir(absDir)
+		absDirs = append(absDirs, dir)
+	}
+	fragments, fragmentErrors, fragmentErr := config.LoadScopedFragmentsFromDirs(absDirs)
+	if s.logger != nil {
+		if fragmentErr != nil {
+			s.logger.Warn("Failed to load workspace prompt fragments", "workspace", workingDir, "error", fragmentErr)
+		}
+		for _, loadErr := range fragmentErrors {
+			s.logger.Warn("Failed to load workspace prompt fragment", "workspace", workingDir, "error", loadErr)
+		}
+	}
+	for _, absDir := range absDirs {
+		prompts, err := config.LoadPromptsFromDirWithFragments(absDir, fragments)
 		if err != nil {
 			continue
 		}
@@ -170,15 +182,16 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 	prompts := make([]PromptInfo, 0, len(merged)) // Must be empty array, not nil — ACP validates this
 	for _, p := range merged {
 		prompts = append(prompts, PromptInfo{
-			Name:            p.Name,
-			Description:     p.Description,
-			Group:           p.Group,
-			BackgroundColor: p.BackgroundColor,
-			Icon:            p.Icon,
-			Source:          string(p.Source),
-			Enabled:         p.Enabled,
-			Loop:            p.Loop,
-			Parameters:      p.Parameters,
+			Name:                p.Name,
+			Description:         p.Description,
+			Group:               p.Group,
+			BackgroundColor:     p.BackgroundColor,
+			Icon:                p.Icon,
+			Source:              string(p.Source),
+			Enabled:             p.Enabled,
+			Loop:                p.Loop,
+			Parameters:          p.Parameters,
+			NestedPromptSchemas: buildNestedPromptSchemas(p.Parameters, merged),
 		})
 	}
 	return nil, PromptListOutput{Success: true, Prompts: prompts, WorkingDir: workingDir}, nil
@@ -202,23 +215,33 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 		return nil, PromptGetOutput{Error: err.Error()}, nil
 	}
 
-	p, found := s.findPromptByName(workingDir, input.Name)
+	merged := s.loadMergedPrompts(workingDir)
+	var p config.WebPrompt
+	found := false
+	for _, wp := range merged {
+		if strings.EqualFold(wp.Name, input.Name) {
+			p = wp
+			found = true
+			break
+		}
+	}
 	if !found {
 		return nil, PromptGetOutput{Error: "prompt not found: " + input.Name}, nil
 	}
 	return nil, PromptGetOutput{
 		Success: true,
 		Prompt: &PromptDetail{
-			Name:            p.Name,
-			Prompt:          p.Prompt,
-			Description:     p.Description,
-			Group:           p.Group,
-			BackgroundColor: p.BackgroundColor,
-			Icon:            p.Icon,
-			Source:          string(p.Source),
-			Enabled:         p.Enabled,
-			Loop:            p.Loop,
-			Parameters:      p.Parameters,
+			Name:                p.Name,
+			Prompt:              p.Prompt,
+			Description:         p.Description,
+			Group:               p.Group,
+			BackgroundColor:     p.BackgroundColor,
+			Icon:                p.Icon,
+			Source:              string(p.Source),
+			Enabled:             p.Enabled,
+			Loop:                p.Loop,
+			Parameters:          p.Parameters,
+			NestedPromptSchemas: buildNestedPromptSchemas(p.Parameters, merged),
 		},
 	}, nil
 }
@@ -310,7 +333,11 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	}
 
 	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
-	if err := config.PrecompileTemplateConds(name, promptText); err != nil {
+	fragments, _, fragmentErr := config.LoadScopedFragmentsFromDirs([]string{promptsDir})
+	if fragmentErr != nil {
+		return nil, PromptUpdateOutput{Error: "failed to read prompt fragments: " + fragmentErr.Error()}, nil
+	}
+	if err := config.PrecompileTemplateCondsWithFragments(name, promptText, fragments); err != nil {
 		return nil, PromptUpdateOutput{Error: "invalid prompt template: " + err.Error()}, nil
 	}
 	// Warn (non-fatal) when body still uses deprecated @mitto: tokens (mitto-m7sb.9).

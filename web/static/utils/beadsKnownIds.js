@@ -1,8 +1,8 @@
 // Mitto Web Interface - Beads Known IDs Cache
 // Module-level cache of known beads issue IDs keyed by working directory.
 
-import { authFetch } from "./csrf.js";
-import { endpoints } from "./endpoints.js";
+import { getSdkClient } from "./sdkClient.js";
+import { withIssueCaches } from "../sdk/index.js";
 
 // cache: workingDir -> { ids: Set<string>, meta: Map<string, {title, status}> }
 const cache = new Map();
@@ -15,21 +15,27 @@ const cache = new Map();
 export async function fetchAndCacheBeadsIds(workingDir) {
   if (!workingDir) return;
   try {
-    const res = await authFetch(
-      endpoints.issues.list({ working_dir: workingDir }),
-    );
-    if (!res.ok) return;
-    const data = await res.json();
+    // withIssueCaches' onListed hook only fires with the raw array (mirrors
+    // the original `!res.ok` / non-array guards), so cache population below
+    // only happens for a genuinely successful list() call.
+    const issues = withIssueCaches(getSdkClient().issues, {
+      onListed: (_wd, data) => {
+        const ids = new Set();
+        const meta = new Map();
+        for (const issue of data) {
+          if (!issue.id) continue;
+          const lower = issue.id.toLowerCase();
+          ids.add(lower);
+          meta.set(lower, {
+            title: issue.title || "",
+            status: issue.status || "",
+          });
+        }
+        cache.set(workingDir, { ids, meta });
+      },
+    });
+    const data = await issues.list({ working_dir: workingDir });
     if (!Array.isArray(data) || data.error) return;
-    const ids = new Set();
-    const meta = new Map();
-    for (const issue of data) {
-      if (!issue.id) continue;
-      const lower = issue.id.toLowerCase();
-      ids.add(lower);
-      meta.set(lower, { title: issue.title || "", status: issue.status || "" });
-    }
-    cache.set(workingDir, { ids, meta });
     window.dispatchEvent(
       new CustomEvent("beads-ids-updated", { detail: { workingDir } }),
     );

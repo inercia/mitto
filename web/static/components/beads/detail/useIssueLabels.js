@@ -16,8 +16,8 @@
 
 const { useState, useEffect, useCallback, useRef } = window.preact;
 
-import { authFetch, secureFetch, endpoints } from "../../../utils/index.js";
-import { readBeadsResponse } from "../../../utils/beads.js";
+import { getSdkClient } from "../../../utils/sdkClient.js";
+import { errorMessage } from "../../../utils/sdkErrors.js";
 
 export function useIssueLabels({
   data,
@@ -47,11 +47,10 @@ export function useIssueLabels({
   const fetchAllLabels = useCallback(async () => {
     if (!workingDir) return;
     try {
-      const res = await authFetch(
-        endpoints.issues.labelsAll({ working_dir: workingDir }),
-      );
-      const respData = await readBeadsResponse(res);
-      if (res.ok && Array.isArray(respData)) {
+      const respData = await getSdkClient().issues.labelsAll({
+        working_dir: workingDir,
+      });
+      if (Array.isArray(respData)) {
         setAllLabels(
           respData
             .map((l) => (typeof l === "string" ? l : l && l.label))
@@ -75,23 +74,11 @@ export function useIssueLabels({
       if (!data || !data.id || !value) return false;
       setLabelsBusy(true);
       try {
-        const res = await secureFetch(
-          endpoints.issues.labels(data.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ label: value, action }),
-          },
+        await getSdkClient().issues.labels(
+          data.id,
+          { working_dir: workingDir },
+          { label: value, action },
         );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || `Failed to ${action} label`,
-            });
-          return false;
-        }
         showToast &&
           showToast({
             style: "success",
@@ -110,7 +97,7 @@ export function useIssueLabels({
         showToast &&
           showToast({
             style: "error",
-            title: err.message || `Failed to ${action} label`,
+            title: errorMessage(err, `Failed to ${action} label`),
           });
         return false;
       } finally {

@@ -1,0 +1,114 @@
+icon: search
+name: Investigate more
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Investigate a Bead in Depth
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header" (dict
+      "Target"   $target
+      "Role"     "Your job is to **deepen the understanding** of this bead: gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is genuinely ready to work on. If the problem turns out to be larger or more complex than the bead currently captures, **split it into sub-issues**."
+      "NoTarget" "Investigate the **current problem** under discussion here — the topic, code, error, or question raised in this conversation. Treat the conversation itself as the subject: gather the missing context from the codebase and history, clarify what is vague, and produce an Investigation Report. Do **not** run any `bd` commands — there is no bead to load, enrich, or close."
+  ) }}
+
+  {{ if $target -}}
+  ## Step 1 — Load the bead's full detail
+
+  {{ template "beads-issues/shared/load-context" $target }}
+
+  Note what is already well-specified versus what is thin, vague, or missing.
+  {{- end }}
+
+  ## Step 2 — Investigate against the codebase and history
+
+  {{ template "beads-issues/shared/investigate-evidence" $target }}
+
+  ## Step 3 — Identify gaps and open questions
+
+  {{ template "beads-issues/shared/investigate-gaps" (dict "From" "Steps 1–2") }}
+
+  For each gap, note whether you can resolve it from the evidence or need the user to decide.
+
+  ## Step 4 — Resolve open questions with the user
+
+  For anything you **cannot** settle from evidence, ask the user — do not invent answers. Batch
+  related questions into a single `mitto_ui_options(self_id: "{{ .Session.ID }}",
+  allow_free_text: true)` call, and for each, offer your **best-guess answer** as an option the user
+  can confirm, correct, or override via free text. Skip this step if nothing is genuinely ambiguous.
+
+  ## Step 5 — Assess complexity & whether to decompose
+
+  Decide whether the (now clearer) bead or current problem should stay a single unit or be split:
+
+  - **Keep as one** if the work is atomic, tightly coupled, or small with narrow criteria.
+  - **Split into sub-issues** if it spans independent concerns, is too large for one reviewable PR,
+    or has distinct acceptance criteria that map to separate deliverables.
+
+  For a full, dependency-aware breakdown you may defer to the **"Decompose issue"** prompt;
+  otherwise propose the sub-issues inline in the next step.
+
+  ## Step 6 — Propose the enrichment
+
+  Produce a concise **Investigation Report** and the concrete updates you propose:
+
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" $target "SubIssues" true) }}
+
+  {{ if $target -}}
+  ## Step 7 — Confirm before writing
+
+  This is **read-only until you confirm**. Present the report, then confirm via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g. "Apply this
+  enrichment to `{{ $target }}`?" with options:
+
+  - **"Apply the enrichment"** — update the bead's fields only.
+  - **"Apply and create the sub-issues"** — also create the recommended children.
+  - **"Just the report"** — make no changes.
+  - (free text) — to adjust anything first.
+
+  Honour the user's choice exactly; do not write anything they did not approve.
+
+  ## Step 8 — Apply the approved changes
+
+  {{ template "beads-issues/shared/investigate-apply" (dict "Target" $target) }}
+
+  Create approved **sub-issues** as children, then wire any dependencies:
+
+  ```bash
+  bd create "<child title>" --parent {{ $target }} --type <type> --priority <0-4> --body-file /tmp/child.md
+  bd dep add <blocked-child-id> <blocker-child-id>   # only if one child must precede another
+  ```
+
+  Report any command that failed and why.
+  {{- else }}
+  ## Step 8 — Present the Investigation Report
+
+  Present the Investigation Report from Step 6 to the user. If unattended, simply emit it as the
+  conversation output. There is **no bead or tracker** to persist these findings to — the report
+  itself is the deliverable.
+  {{- end }}
+
+  ## Step 9 — Final summary
+
+  Summarise what was learned{{ if $target }}, which fields were enriched, and any sub-issues created (with their IDs and titles). If the bead is now ready to implement, suggest the **"Start work"** prompt{{ end }}.
+
+  ## Final step — Offer to delete this conversation
+
+  {{ template "_shared/offer-delete-conversation" . }}

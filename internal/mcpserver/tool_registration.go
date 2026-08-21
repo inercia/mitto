@@ -41,6 +41,12 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Description: "Return the most recent cold-start diagnostic summaries (phase timeline + durations) captured by the cold-start tracer (mitto-3mv). Useful for post-hoc analysis of cold-start latency without grepping logs. Pass by_workspace=true to also receive a per-workspace rollup (total, failures, failure rate, p50/p95, last outcome) sorted by failure rate descending.",
 	}, s.createColdStartRecentHandler())
 
+	// mitto_goroutine_gauge_recent tool - always available
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name:        "mitto_goroutine_gauge_recent",
+		Description: "Return the most recent periodic goroutine gauge samples (mitto-x3x), newest first. Each sample carries the raw goroutine total plus per-category attribution (live ACP processes, connected WebSocket clients, open MCP SSE keepalive streams), sampled independently of cold-start frequency. Use this to answer 'is the goroutine count ratcheting?' without grepping logs or restarting for pprof — see docs/devel/web-interface.md 'Triaging goroutine counts'.",
+	}, s.createGoroutineGaugeRecentHandler())
+
 	// mitto_beads_cache_metrics tool - registered only when the beads read
 	// cache is enabled (--beads-cache flag). Nil callback means the cache is
 	// off in this process, so we skip registration to avoid a tool that would
@@ -83,7 +89,8 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 
 // selfIDNote is the standard note about self_id for tools that require session identification.
 // For ACP-routed agents (like Auggie), the self_id is automatically correlated via the ACP layer,
-// so any stable value works. For external MCP clients, the real session_id must be discovered first.
+// so any stable value works. Uncorrelated external MCP clients cannot impersonate a conversation
+// by supplying its registered session ID.
 const selfIDNote = "The self_id parameter identifies YOUR current session (not the target conversation). " +
 	"If your session_id was already provided in the conversation context (e.g., in a '[Session Context]' block), use that value directly — " +
 	"do NOT call 'mitto_conversation_get_current' first. " +
@@ -108,6 +115,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Send a message/prompt to an EXISTING conversation (identified by conversation_id). " +
 			"The prompt is added to that conversation's queue and will be processed when the target agent becomes idle. " +
 			"Use 'mitto_conversation_list' first to find existing conversation IDs, or use an ID returned by 'mitto_conversation_new'. " +
+			"To enqueue on YOUR OWN conversation (self-dispatch, e.g. queueing your next phase), pass \"self\" (or your own conversation ID) as conversation_id. " +
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
@@ -171,6 +179,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"native=true shows a native OS notification (macOS only) in addition to the in-app toast. " +
 			"sound=true plays a notification sound. " +
 			"sticky=true keeps the native notification in Notification Center until the user dismisses it (default: false, auto-removes after 5s). " +
+			"beads_issue is an optional bead ID (e.g. 'mitto-abc') — when set, clicking the toast opens the beads viewer for that issue (takes precedence over session-focus fallback; no-op if the frontend cannot resolve the id). " +
 			"Requires 'Can prompt user' flag to be enabled. " +
 			selfIDNote,
 	}, s.handleUINotify)
@@ -193,6 +202,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"native=true shows a native OS notification (macOS only) in addition to the in-app toast. " +
 			"sound=true plays a notification sound. " +
 			"sticky=true keeps the native notification in Notification Center until the user dismisses it (default: false, auto-removes after 5s). " +
+			"beads_issue is an optional bead ID (e.g. 'mitto-abc') — when set, clicking the toast opens the beads viewer for that issue (takes precedence over session-focus fallback; no-op if the frontend cannot resolve the id). " +
 			"Requires 'Can prompt user' flag to be enabled on the caller session when the caller has a registered session; " +
 			"unregistered callers (auxiliary sessions) are allowed as long as they supply a valid workspace_uuid. " +
 			selfIDNote,
@@ -228,9 +238,12 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'loop_enabled' to false to create the loop configuration in a paused state. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'loop_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), or 'onTasks' to fire when beads/tasks in the workspace change (event-driven), instead of on a fixed 'schedule'; neither onCompletion nor onTasks requires a frequency. " +
+			"Set 'loop_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), 'onTasks' to fire when beads/tasks in the workspace change (event-driven), or 'onChild' to fire when a child conversation of this loop finishes a response or is deleted (event-driven), instead of on a fixed 'schedule'; neither onCompletion, onTasks, nor onChild requires a frequency. 'onChild' can never be armed alone (it is purely reactive to a child's lifecycle) — arm it alongside at least one other trigger. " +
+			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion') — each arms independently and stays armed for the loop's lifetime, and each trigger's own settings (frequency, completion delay, task condition, child events) apply independently. " +
+			"If two armed triggers want to fire in the same narrow window, only ONE run is delivered — the other is dropped, not queued (precedence within a tick: onTasks > onChild > onCompletion > schedule). 'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
+			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted'/'anyLoopStopped' to restrict which child lifecycle events fire the run (empty/absent = anyEndResponse + anyDeleted; anyLoopStopped — fires once when a child's own loop stops, a real 'child driver is done' signal — is opt-in only). " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
@@ -306,9 +319,12 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"To disable loop entirely, set 'loop_enabled' to false. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'loop_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), or 'schedule' (frequency-based, default); neither onCompletion nor onTasks requires a frequency. " +
+			"Set 'loop_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), 'onChild' (event-driven: fire when a child conversation of this loop finishes a response or is deleted), or 'schedule' (frequency-based, default); neither onCompletion, onTasks, nor onChild requires a frequency. 'onChild' can never be armed alone — arm it alongside at least one other trigger. " +
+			"Several triggers can be armed at once by passing a comma-separated list (e.g. 'schedule,onCompletion'); the list REPLACES the currently armed set, each arms independently, and — if two armed triggers want to fire in the same narrow window — only ONE run is delivered (the other is dropped, not queued; precedence within a tick: onTasks > onChild > onCompletion > schedule). " +
+			"'loop_max_iterations' and 'loop_max_duration_seconds' are shared across every armed trigger, decremented once per delivered run regardless of which trigger fired it. " +
 			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
 			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
+			"For 'onChild', optionally set 'loop_child_events' to a list of 'anyEndResponse'/'anyDeleted'/'anyLoopStopped' to restrict which child lifecycle events fire the run (nil = unchanged, non-nil replaces the stored list wholesale; empty/absent once applied = anyEndResponse + anyDeleted; anyLoopStopped — fires once when a child's own loop stops — is opt-in only). " +
 			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
@@ -317,10 +333,17 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_wait",
 		Description: "Wait until something happens in a conversation. " +
-			"Currently supports: 'agent_responded' — blocks until the agent finishes responding. " +
-			"Returns immediately if the condition is already met (e.g., agent is not currently responding). " +
+			"Supports two 'what' values: " +
+			"'agent_responded' — blocks until the agent finishes responding (default timeout: 10 min); " +
+			"'beads_issues_reached_state' — blocks until one or more bd issues reach a target status. " +
+			"For 'beads_issues_reached_state', provide 'beads_issues' (list of bd IDs, e.g. [\"mitto-1ac\"]), " +
+			"'beads_target_state' (e.g. \"closed\", case-insensitive), and optionally 'beads_match' " +
+			"(\"all\" (default) or \"any\"). Default timeout for this mode is 4 hours. " +
+			"The output includes 'reached_issues', 'pending_issues', and 'current_states' (id → status snapshot). " +
+			"Returns immediately if the condition is already met (e.g., agent is not currently responding, or all listed beads already at the target state). " +
 			"Optionally specify a 'workspace' UUID when waiting on a conversation in a different workspace (requires user confirmation). " +
 			"If the wait times out, the result includes 'timed_out: true' and 'still_prompting' indicating whether the agent is still responding — you do NOT need to separately check the prompting status. " +
+			"Note: each physical call blocks at most a few minutes internally regardless of timeout_seconds or the mode's default, to avoid tripping a client-side HTTP transport timeout on very long waits — if 'timed_out' comes back true well before your requested duration has elapsed, simply call this tool again with the same parameters to keep waiting. " +
 			selfIDNote,
 	}, s.handleConversationWait)
 

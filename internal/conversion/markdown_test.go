@@ -149,6 +149,24 @@ func TestConverter_Convert(t *testing.T) {
 	}
 }
 
+// TestConverter_RejectsEntityEncodedDangerousURL pins the Goldmark
+// GO-2026-5320 fix for mitto-q7ib. URL validation must happen after resolving character
+// references, otherwise &#106;avascript: is emitted as an executable href.
+func TestConverter_RejectsEntityEncodedDangerousURL(t *testing.T) {
+	converter := NewConverter()
+
+	result, err := converter.Convert(`[click](&#106;avascript:alert(1))`)
+	if err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+	if strings.Contains(strings.ToLower(result), "javascript:") {
+		t.Fatalf("dangerous entity-encoded URL was rendered: %s", result)
+	}
+	if !strings.Contains(result, `<a href="">click</a>`) {
+		t.Fatalf("dangerous URL should render with an empty href, got: %s", result)
+	}
+}
+
 // TestConverter_ConvertToSafeHTML tests the safe HTML conversion with error fallback.
 func TestConverter_ConvertToSafeHTML(t *testing.T) {
 	converter := NewConverter()

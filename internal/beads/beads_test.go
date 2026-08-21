@@ -7,8 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/bdexec"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 // ---------------------------------------------------------------------------
@@ -33,6 +37,60 @@ type runnerCall struct {
 	env  []string
 }
 
+type deadlineRunner struct {
+	deadline time.Time
+	wait     bool
+}
+
+type opaqueTimeoutRunner struct {
+	calls  atomic.Int32
+	stderr string
+}
+
+type blockingRunner struct {
+	entered chan struct{}
+	release <-chan struct{}
+	calls   atomic.Int32
+}
+
+func (r *blockingRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
+	r.calls.Add(1)
+	r.entered <- struct{}{}
+	select {
+	case <-r.release:
+		return []byte("[]"), "", nil
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+}
+
+func (r *blockingRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
+	return r.Run(ctx, dir, args...)
+}
+
+func (r *deadlineRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
+	r.deadline, _ = ctx.Deadline()
+	if r.wait {
+		<-ctx.Done()
+		return nil, "", ctx.Err()
+	}
+	return []byte("[]"), "", nil
+}
+
+func (r *deadlineRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
+	return r.Run(ctx, dir, args...)
+}
+
+func (r *opaqueTimeoutRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, string, error) {
+	r.calls.Add(1)
+	<-ctx.Done()
+	return nil, r.stderr, errors.New("signal: killed")
+}
+
+func (r *opaqueTimeoutRunner) RunWithEnv(ctx context.Context, dir string, _ []string, args ...string) ([]byte, string, error) {
+	return r.Run(ctx, dir, args...)
+}
+
 func (r *recordingRunner) Run(_ context.Context, dir string, args ...string) ([]byte, string, error) {
 	r.calls = append(r.calls, runnerCall{dir: dir, args: args})
 	if len(r.responses) == 0 {
@@ -53,7 +111,9 @@ func (r *recordingRunner) RunWithEnv(_ context.Context, dir string, extraEnv []s
 	return resp.stdout, resp.stderr, resp.err
 }
 
-func newClient(r *recordingRunner) *cliClient { return &cliClient{runner: r} }
+func newClient(r *recordingRunner) *cliClient {
+	return NewClientWithRunner(r).(*cliClient)
+}
 
 // initializedDir returns a temp dir that already contains .beads/config.yaml so
 // isInitialized(dir) reports true and EnsureInitialized is a no-op. Use this for
@@ -251,6 +311,113 @@ func TestSchemaSkewInfo_JSONBlobLegacyFallback(t *testing.T) {
 	}
 }
 
+// TestSchemaSkewInfo_FlatErrorHintShape verifies that bd 1.1.2's flat
+// {"error","hint"} stderr shape (no remote_migrate_gate key, no legacy
+// "database is at vN" / "binary expects vM" text; versions are embedded
+// inline as "(v49 -> v53)") still yields the parsed DB/binary versions
+// instead of the zeroed-out details reported in mitto-292. The exact stderr
+// below is the one captured from the mitto-292 log line that showed
+// db_version=0 binary_version=0 despite IsSchemaSkew correctly returning
+// true (verified via the investigate-phase probe on this bead).
+func TestSchemaSkewInfo_FlatErrorHintShape(t *testing.T) {
+	stderr := `{"error": "refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53): migrating clones independently forks the schema (#4259)", "hint": "run BD_ALLOW_REMOTE_MIGRATE=1 bd migrate on the designated migrator clone"}`
+	err := &CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: stderr, ExitCode: 1}
+
+	if !IsSchemaSkew(err) {
+		t.Fatal("IsSchemaSkew = false, want true for bd 1.1.2's flat error/hint shape")
+	}
+
+	info := SchemaSkewInfo(err)
+	if info.DBVersion != 49 {
+		t.Errorf("DBVersion = %d, want 49 (mitto-292: currently parses as 0)", info.DBVersion)
+	}
+	if info.BinaryVersion != 53 {
+		t.Errorf("BinaryVersion = %d, want 53 (mitto-292: currently parses as 0)", info.BinaryVersion)
+	}
+}
+
+// TestSchemaSkewInfo_BD112GateBlob reproduces mitto-iwe1: the real bd 1.1.2
+// remote_migrate_gate blob (captured verbatim from a mitto.log WARN "beads
+// schema needs migration" line) currently yields DBVersion=0,
+// BinaryVersion=0, and two all-empty Options entries instead of the parsed
+// values, even though IsSchemaSkew correctly detects the failure and the
+// outer JSON envelope decodes without error. Three independent shape
+// mismatches (see Investigation comment on mitto-iwe1) cause this:
+//  1. bd 1.1.2 emits current_version/latest_version, not
+//     db_version/binary_version (or any other alias applyGateFields
+//     recognizes) -> versions stay 0.
+//  2. bd JSON-escapes ">" in the error string, so the arrow fallback regex
+//     (which expects a literal "->") never matches "(v49 -\u003e v53)".
+//  3. bd's option objects use {id, when, risk, commands}, not
+//     {mode, description, command} -> json.Unmarshal succeeds but produces
+//     len(Options)==2 with every field empty, which is worse than omitting
+//     them (the UI would render two blank remediation buttons).
+func TestSchemaSkewInfo_BD112GateBlob(t *testing.T) {
+	// Verbatim stderr blob from bd 1.1.2 (mitto.log, 2026-08-10).
+	stderr := `{
+  "error": "refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -\u003e v53): migrating clones independently forks the schema (#4259)",
+  "hint": "Coordination decision required: only ONE clone may migrate a shared remote; a second clone migrating independently forks the schema unrecoverably (#4259). Do NOT auto-run a migration — surface remote_migrate_gate.options to the operator and let them choose.",
+  "remote_migrate_gate": {
+    "current_version": 49,
+    "docs": "https://github.com/gastownhall/beads/blob/main/website/docs/getting-started/upgrading.md#remote-backed-databases-and-multiple-clones",
+    "expected": "exactly one designated clone migrates and publishes; every other clone adopts the result",
+    "human_decision_required": true,
+    "latest_version": 53,
+    "observed": "4 pending schema migration(s) and a configured remote",
+    "options": [
+      {
+        "commands": [
+          "BD_ALLOW_REMOTE_MIGRATE=1 bd migrate",
+          "bd dolt push"
+        ],
+        "id": "migrate",
+        "risk": "if another clone also migrates independently, the schema forks unrecoverably (#4259)",
+        "when": "you are the single designated migrator (only ONE machine, confirmed with the operator) and no other clone has migrated yet"
+      },
+      {
+        "commands": [
+          "bd bootstrap"
+        ],
+        "id": "adopt",
+        "risk": "re-clones and replaces the local database; push or export unpushed work first or it is lost",
+        "when": "another machine has already migrated and pushed"
+      }
+    ],
+    "pending": 4,
+    "severity": "blocking"
+  },
+  "schema_version": 1
+}`
+	err := &CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: stderr, ExitCode: 1}
+
+	if !IsSchemaSkew(err) {
+		t.Fatal("IsSchemaSkew = false, want true for the bd 1.1.2 remote_migrate_gate blob")
+	}
+
+	info := SchemaSkewInfo(err)
+	if info.DBVersion != 49 {
+		t.Errorf("DBVersion = %d, want 49 (mitto-iwe1: current_version/latest_version not recognized)", info.DBVersion)
+	}
+	if info.BinaryVersion != 53 {
+		t.Errorf("BinaryVersion = %d, want 53 (mitto-iwe1: current_version/latest_version not recognized)", info.BinaryVersion)
+	}
+	if len(info.Options) != 2 {
+		t.Fatalf("Options len = %d, want 2 (%+v)", len(info.Options), info.Options)
+	}
+	if info.Options[0].Mode != "migrate" {
+		t.Errorf("Options[0].Mode = %q, want %q (mitto-iwe1: id/when/risk/commands not mapped)", info.Options[0].Mode, "migrate")
+	}
+	if info.Options[0].Description == "" {
+		t.Errorf("Options[0].Description empty, want non-empty (mitto-iwe1: when/risk not mapped to Description)")
+	}
+	if info.Options[0].Command == "" {
+		t.Errorf("Options[0].Command empty, want non-empty (mitto-iwe1: commands[] not mapped to Command)")
+	}
+	if info.Options[1].Mode != "adopt" {
+		t.Errorf("Options[1].Mode = %q, want %q", info.Options[1].Mode, "adopt")
+	}
+}
+
 // TestSchemaSkewInfo_Empty verifies that a nil error and a *CmdError with
 // empty stderr both yield a zero-value SchemaSkewDetails.
 func TestSchemaSkewInfo_Empty(t *testing.T) {
@@ -412,6 +579,120 @@ func TestClient_List_NotInitialized_ReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestClient_SameDatabaseSerializes reproduces mitto-i2ep's post-limiter
+// recurrence: two globally-allowed bd processes still contend when they resolve
+// to the same embedded Dolt database.
+func TestClient_SameDatabaseSerializes(t *testing.T) {
+	runner := &blockingRunner{
+		entered: make(chan struct{}, 2),
+		release: nil,
+	}
+	root := initializedDir(t)
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested workspace: %v", err)
+	}
+
+	holderCtx, cancelHolder := context.WithCancel(context.Background())
+	defer cancelHolder()
+	holderDone := make(chan struct{})
+	go func() {
+		_, _ = NewClientWithRunner(runner).Show(holderCtx, root, "mitto-held")
+		close(holderDone)
+	}()
+	select {
+	case <-runner.entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first bd invocation")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewClientWithRunner(runner).Show(ctx, nested, "mitto-queued")
+		errCh <- err
+	}()
+
+	select {
+	case <-runner.entered:
+		t.Fatal("second bd invocation reached the same database while the first was active")
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued Show() error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("same-database Show() did not respect its context deadline")
+	}
+
+	cancelHolder()
+	select {
+	case <-holderDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for holder call to exit")
+	}
+}
+
+// TestClient_SharedConcurrencyLimit verifies the independent process-wide cap:
+// once distinct databases occupy all global slots, another read expires in the
+// limiter queue instead of spawning an additional process.
+func TestClient_SharedConcurrencyLimit(t *testing.T) {
+	release := make(chan struct{})
+	runner := &blockingRunner{
+		entered: make(chan struct{}, bdexec.MaxConcurrent+1),
+		release: release,
+	}
+	holderCtx, cancelHolders := context.WithCancel(context.Background())
+	defer cancelHolders()
+	holdersDone := make(chan struct{}, bdexec.MaxConcurrent)
+
+	for range bdexec.MaxConcurrent {
+		client := NewClientWithRunner(runner)
+		dir := t.TempDir()
+		go func() {
+			_, _ = client.Show(holderCtx, dir, "mitto-held")
+			holdersDone <- struct{}{}
+		}()
+		select {
+		case <-runner.entered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for bd limiter capacity to fill")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	queuedDir := t.TempDir()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewClientWithRunner(runner).Show(ctx, queuedDir, "mitto-queued")
+		errCh <- err
+	}()
+
+	select {
+	case <-runner.entered:
+		t.Fatal("third bd invocation reached the runner while shared capacity was occupied")
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued Show() error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Show() did not respect its context deadline")
+	}
+
+	if got := runner.calls.Load(); got != bdexec.MaxConcurrent {
+		t.Fatalf("runner calls = %d, want %d; queued call must not spawn bd", got, bdexec.MaxConcurrent)
+	}
+	cancelHolders()
+	for range bdexec.MaxConcurrent {
+		select {
+		case <-holdersDone:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for holder call to exit")
+		}
+	}
+}
+
 // TestClient_List_DoltBackend_RunsBd verifies that a Dolt-backed database — which
 // has .beads/metadata.json but no .beads/config.yaml — is recognized as
 // initialized, so List invokes bd instead of short-circuiting to "[]".
@@ -433,16 +714,90 @@ func TestClient_List_DoltBackend_RunsBd(t *testing.T) {
 	if len(r.calls) != 1 {
 		t.Fatalf("expected 1 runner call (initialized via metadata.json), got %d", len(r.calls))
 	}
-	if got := r.calls[0].args[0]; got != "list" {
-		t.Errorf("expected bd \"list\" call, got %q", got)
+	if got := strings.Join(r.calls[0].args[:2], " "); got != "--readonly list" {
+		t.Errorf("expected read-only bd list call, got %q", got)
 	}
 }
 
-// TestClient_Create_NotInitialized_RunsInitThenCreate verifies that creating a
-// task in an uninitialized folder first runs "bd init" and then "bd create".
-func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
+// TestClient_ListAllLabels_DoesNotUseSlowSubcommand is a REPRODUCTION test for
+// mitto-i2ep ("bd label list-all takes 30-37s and blocks ALL concurrent bd
+// reads").
+//
+// Root cause under test: cliClient.ListAllLabels (cli.go) shells out to
+// "bd label list-all --json", which was measured (investigation comment on
+// mitto-i2ep) to take ~30s on a 374-issue Dolt-backed repo — CPU-bound, and
+// for the full duration it holds bd's exclusive Dolt "noms/LOCK", blocking
+// every other concurrent bd invocation (show/list/ready/status, and writes)
+// in the same repo. The same investigation proved "bd list --all --json"
+// (already used elsewhere in this file, ~0.8s) yields byte-identical
+// {label,count} aggregates.
+//
+// Expected behavior (post-fix): ListAllLabels must NOT invoke the
+// "label list-all" subcommand at all; it should derive the label/count
+// aggregate from "bd list --all --json" instead, avoiding the long-held
+// exclusive lock.
+//
+// This test is expected to FAIL against the current implementation (which
+// calls "bd label list-all") and to PASS once ListAllLabels is switched to
+// derive its result from "bd list --all --json".
+func TestClient_ListAllLabels_DoesNotUseSlowSubcommand(t *testing.T) {
+	dir := initializedDir(t)
 	r := &recordingRunner{responses: []runnerResp{
-		{stdout: []byte("")},   // init
+		{stdout: []byte(`[{"id":"x-1","labels":["a","b"]},{"id":"x-2","labels":["a"]}]`)},
+	}}
+	c := newClient(r)
+
+	if _, err := c.ListAllLabels(context.Background(), dir); err != nil {
+		t.Fatalf("ListAllLabels() error: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected exactly 1 runner call, got %d: %+v", len(r.calls), r.calls)
+	}
+	args := r.calls[0].args
+	if len(args) >= 2 && args[0] == "label" && args[1] == "list-all" {
+		t.Errorf("ListAllLabels invoked the slow, lock-holding %q subcommand (args=%v); "+
+			"it should derive labels from \"bd list --all --json\" instead (mitto-i2ep)", "label list-all", args)
+	}
+}
+
+func TestClient_ListAllLabels_UsesBoundedDeadline(t *testing.T) {
+	r := &deadlineRunner{}
+	c := &cliClient{runner: r}
+
+	if _, err := c.ListAllLabels(context.Background(), initializedDir(t)); err != nil {
+		t.Fatalf("ListAllLabels() error: %v", err)
+	}
+	remaining := time.Until(r.deadline)
+	if remaining <= 0 || remaining > LabelsReadTimeout {
+		t.Fatalf("runner deadline remaining = %v, want within (0, %v]", remaining, LabelsReadTimeout)
+	}
+	if LabelsReadTimeout >= 5*time.Second {
+		t.Fatalf("LabelsReadTimeout = %v, want below 5s endpoint budget", LabelsReadTimeout)
+	}
+}
+
+func TestClient_ListAllLabels_DeadlineFailsOpen(t *testing.T) {
+	r := &deadlineRunner{wait: true}
+	c := &cliClient{runner: r}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	out, err := c.ListAllLabels(ctx, initializedDir(t))
+	if err != nil {
+		t.Fatalf("ListAllLabels() error: %v, want fail-open response", err)
+	}
+	if string(out) != "[]" {
+		t.Fatalf("ListAllLabels() = %q, want empty label list", out)
+	}
+}
+
+// TestClient_Create_NotInitialized_RunsInitThenGuardsThenCreate verifies that a
+// Mitto-created database is secured as local-only before its first write.
+func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
+	setupModeTestDir(t)
+	r := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte("")}, // init
+		{}, {}, {},           // local-only policy guards
 		{stdout: []byte(`{}`)}, // create
 	}}
 	c := newClient(r)
@@ -450,14 +805,14 @@ func TestClient_Create_NotInitialized_RunsInitThenCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
-	if len(r.calls) != 2 {
-		t.Fatalf("expected 2 runner calls (init + create), got %d: %v", len(r.calls), r.calls)
+	if len(r.calls) != 5 {
+		t.Fatalf("expected 5 runner calls (init + guards + create), got %d: %v", len(r.calls), r.calls)
 	}
 	if r.calls[0].args[0] != "init" {
 		t.Errorf("first call = %v, want init", r.calls[0].args)
 	}
-	if r.calls[1].args[0] != "create" {
-		t.Errorf("second call = %v, want create", r.calls[1].args)
+	if r.calls[4].args[0] != "create" {
+		t.Errorf("last call = %v, want create", r.calls[4].args)
 	}
 }
 
@@ -681,6 +1036,51 @@ func TestClient_ConfigShow_FiltersToEditableSources(t *testing.T) {
 	}
 }
 
+// TestClient_ConfigShow_HidesKVNamespace pins the mitto-xdqx fix: kv.* keys
+// (populated by `bd remember`, sometimes several KB each) share provenance
+// with editable database config but are internal beads state and must not be
+// surfaced in the editable-config UI, where rendering them as <input> rows
+// froze the Tasks tab.
+func TestClient_ConfigShow_HidesKVNamespace(t *testing.T) {
+	jsonResp := `[
+		{"key":"issue_prefix","value":"PROJ","source":"database"},
+		{"key":"kv.memory.some-note","value":"a very long blob","source":"database"},
+		{"key":"kv.other.thing","value":"x","source":"database"}
+	]`
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(jsonResp)}}}
+	c := newClient(r)
+	result, err := c.ConfigShow(context.Background(), "/dir")
+	if err != nil {
+		t.Fatalf("ConfigShow() error: %v", err)
+	}
+	if result["issue_prefix"] != "PROJ" {
+		t.Errorf("issue_prefix missing or wrong: %v", result)
+	}
+	if _, ok := result["kv.memory.some-note"]; ok {
+		t.Errorf("kv.memory.* key should be excluded: %v", result)
+	}
+	if _, ok := result["kv.other.thing"]; ok {
+		t.Errorf("kv.* key should be excluded: %v", result)
+	}
+}
+
+func TestClient_ConfigShow_HidesDatabaseModePolicyKeys(t *testing.T) {
+	jsonResp := `[
+		{"key":"jira.url","value":"https://j","source":"config.yaml"},
+		{"key":"no-push","value":"true","source":"database"},
+		{"key":"dolt.local-only","value":"true","source":"database"},
+		{"key":"dolt.auto-push","value":"false","source":"database"}
+	]`
+	r := &recordingRunner{responses: []runnerResp{{stdout: []byte(jsonResp)}}}
+	result, err := newClient(r).ConfigShow(context.Background(), "/dir")
+	if err != nil {
+		t.Fatalf("ConfigShow() error: %v", err)
+	}
+	if len(result) != 1 || result["jira.url"] != "https://j" {
+		t.Errorf("ConfigShow() = %v, want only editable integration key", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // syncArgs (via Sync)
 // ---------------------------------------------------------------------------
@@ -843,6 +1243,38 @@ func TestRunJSONRead_RetriesOnceOnTransientLock(t *testing.T) {
 	}
 }
 
+func TestRunJSONOnceWithTimeout_PreservesDeadlineForOpaqueRunnerError(t *testing.T) {
+	r := &opaqueTimeoutRunner{}
+	c := &cliClient{runner: r}
+
+	_, err := c.runJSONOnceWithTimeout(context.Background(), "/dir", 10*time.Millisecond, "status", "--json")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runJSONOnceWithTimeout() error = %v, want context deadline exceeded", err)
+	}
+	if got := r.calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1", got)
+	}
+}
+
+func TestRunJSONRead_DoesNotRetryTimedOutTransientLock(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stderr: "another dolt process is using the database",
+			err:    errors.Join(context.DeadlineExceeded, errors.New("signal: killed")),
+		},
+		{stdout: []byte("[]")},
+	}}
+	c := &cliClient{runner: r}
+
+	_, err := c.runJSONRead(context.Background(), "/dir", "status", "--json")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runJSONRead() error = %v, want context deadline exceeded", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1; timed-out reads must not retry", len(r.calls))
+	}
+}
+
 // TestCreate_NotRetriedOnTransientLock verifies that Create — which is
 // non-idempotent — is NOT retried even on a transient lock error, to avoid
 // duplicating a write if the first attempt actually committed.
@@ -881,6 +1313,46 @@ func TestEnsureInitialized_AlreadyInitialized(t *testing.T) {
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("expected 0 runner calls (already initialized), got %d", len(r.calls))
+	}
+}
+
+func TestEnsureInitialized_NewDatabaseDefaultsAndReconcilesLocal(t *testing.T) {
+	setupModeTestDir(t)
+	dir := t.TempDir()
+	r := &recordingRunner{}
+	if err := newClient(r).EnsureInitialized(context.Background(), dir); err != nil {
+		t.Fatalf("EnsureInitialized() error: %v", err)
+	}
+	mode, configured, err := workspaces.ConfiguredFolderBeadsDatabaseMode(dir)
+	if err != nil || !configured || mode != workspaces.BeadsDatabaseModeLocal {
+		t.Fatalf("persisted mode = (%q, %v, %v), want local", mode, configured, err)
+	}
+	want := [][]string{
+		{"init", "--non-interactive", "--quiet", "--skip-agents", "--skip-hooks"},
+		{"config", "set", "no-push", "true"},
+		{"config", "set", "dolt.local-only", "true"},
+		{"config", "set", "dolt.auto-push", "false"},
+	}
+	assertRunnerArgs(t, r.calls, want)
+}
+
+func TestEnsureInitialized_ExplicitSharedModeRequiresRemoteBeforeInit(t *testing.T) {
+	setupModeTestDir(t)
+	dir := t.TempDir()
+	if err := workspaces.SetFolderBeadsDatabaseMode(dir, workspaces.BeadsDatabaseModeShared); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	r := &recordingRunner{}
+	err := newClient(r).EnsureInitialized(context.Background(), dir)
+	if !errors.Is(err, ErrSharedModeRequiresRemote) {
+		t.Fatalf("EnsureInitialized() error = %v, want ErrSharedModeRequiresRemote", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("runner calls = %d, want 0 before shared-mode readiness", len(r.calls))
+	}
+	mode, configured, loadErr := workspaces.ConfiguredFolderBeadsDatabaseMode(dir)
+	if loadErr != nil || !configured || mode != workspaces.BeadsDatabaseModeShared {
+		t.Fatalf("persisted mode = (%q, %v, %v), want unchanged shared", mode, configured, loadErr)
 	}
 }
 
@@ -1104,9 +1576,13 @@ func TestNewClient_DefaultsWebUIActor(t *testing.T) {
 	if !ok {
 		t.Fatalf("NewClient did not return *cliClient")
 	}
-	r, ok := c.runner.(execRunner)
+	lr, ok := c.runner.(limitedRunner)
 	if !ok {
-		t.Fatalf("NewClient runner is %T, want execRunner", c.runner)
+		t.Fatalf("NewClient runner is %T, want limitedRunner", c.runner)
+	}
+	r, ok := lr.inner.(execRunner)
+	if !ok {
+		t.Fatalf("limitedRunner inner is %T, want execRunner", lr.inner)
 	}
 	if r.actor != webUIActor {
 		t.Errorf("execRunner.actor = %q, want %q", r.actor, webUIActor)

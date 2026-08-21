@@ -77,7 +77,7 @@ httpServer := httptest.NewServer(srv.Handler())
 defer httpServer.Close()
 
 // Create client pointing to test server
-client := client.New(httpServer.URL)
+client := api.New(httpServer.URL)
 ```
 
 ### Testing Auth Changes

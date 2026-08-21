@@ -1,0 +1,22 @@
+{{- /*
+  _shared/loop/wait-with-retry — the standalone "**On timeout**:"
+  paragraph shared by prompts that block on `mitto_children_tasks_wait`
+  and need identical retry-with-same-task_id semantics.
+
+  Emits ONLY the timeout-retry advisory paragraph — the caller is
+  responsible for setting up its own `mitto_children_tasks_wait(...)`
+  call site immediately above.
+
+  Consumers: child/continue, child/create-minions. Loop-family prompts
+  (loop/fixing, loop/implementing, beads-issues/loop-*) get the same
+  guidance embedded inside _shared/loop/parallelize-subtasks, so they
+  do not need to include this fragment separately.
+
+  Pre-conditions: none. This fragment is pure prose; the caller does
+  not need to pass any data.
+
+  Usage — parameter-less; may be rendered against any context:
+
+      {{ template "_shared/loop/wait-with-retry" . }}
+*/ -}}
+**On timeout**: retry pending children with `mitto_children_tasks_wait` using the **same `task_id`** (omit the prompt to avoid duplicates). Reports already received are preserved. After two timeouts, treat as failure.

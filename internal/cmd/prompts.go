@@ -56,6 +56,8 @@ var promptsUpdateBuiltinCmd = &cobra.Command{
 latest versions embedded in the Mitto binary.
 
 This command will overwrite any local modifications to builtin prompts.
+After deployment it loads the complete MITTO_DIR/prompts tree using the same
+fragment-first ordering as the runtime and fails if any prompt is invalid.
 Use --dry-run to see what would be updated without making changes.
 Use --force to skip the confirmation prompt.
 
@@ -177,19 +179,10 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Clean existing *.prompt.yaml files in the builtin directory before deploying
-	// This ensures removed prompts don't linger
-	existingFiles, err := filepath.Glob(filepath.Join(builtinDir, "*.prompt.yaml"))
-	if err != nil {
-		return fmt.Errorf("failed to list existing prompts: %w", err)
-	}
-	for _, f := range existingFiles {
-		if err := os.Remove(f); err != nil {
-			return fmt.Errorf("failed to remove old prompt %s: %w", filepath.Base(f), err)
-		}
-	}
-
-	// Deploy with force=true to overwrite existing files
+	// Deploy with force=true to overwrite existing files. Stale-file pruning
+	// is delegated to the next EnsureBuiltinPrompts run at startup (mitto-j88.1),
+	// which is the single source of truth for prune semantics and handles nested
+	// subdirectories correctly.
 	result, err := embeddedconfig.DeployBuiltinPrompts(builtinDir, true)
 	if err != nil {
 		return fmt.Errorf("failed to deploy builtin prompts: %w", err)
@@ -211,5 +204,37 @@ func runPromptsUpdateBuiltin(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nTotal: %d deployed, %d errors\n", len(result.Deployed), len(result.Errors))
+
+	// Validate the files from their deployed location, not from the embedded FS.
+	// This catches partial installs and fragment/prompt mismatches before the
+	// command reports success.
+	fmt.Println("\nVerifying installed prompt tree...")
+	promptDirs, fragmentDirs, err := promptTreeDirs("")
+	if err != nil {
+		return fmt.Errorf("failed to resolve installed prompt tree: %w", err)
+	}
+	verification, err := verifyPromptTree(promptDirs, fragmentDirs)
+	if err != nil {
+		return fmt.Errorf("failed to load installed prompt tree: %w", err)
+	}
+	fmt.Printf("  Fragments loaded: %d\n", verification.FragmentCount)
+	fmt.Printf("  Prompts loaded:   %d\n", verification.PromptCount)
+
+	for _, e := range verification.FragmentErrors {
+		fmt.Printf("  ✗ fragment %s: %v\n", e.Path, e.Err)
+	}
+	for _, r := range verification.DirResults {
+		for _, e := range r.LoadErrors {
+			fmt.Printf("  ✗ prompt %s: %v\n", e.Path, e.Err)
+		}
+	}
+
+	if validationErr := verification.validationError(); validationErr != nil {
+		return fmt.Errorf("builtin prompts were deployed but the installed tree is invalid: %w", validationErr)
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("builtin prompt deployment completed with %d file error(s)", len(result.Errors))
+	}
+	fmt.Println("Installation verification: OK")
 	return nil
 }

@@ -1,0 +1,36 @@
+{{- /*
+  support/ask-redirects — owner-ask step for the OPTIONAL `redirects.md`
+  fragment. Owner: `Support: investigate`.
+
+  Rendered by the owner prompt when the agent judges that out-of-scope
+  redirects are relevant for this channel and
+  `.mitto/support/<channel-id>/redirects.md` does not yet exist. Because
+  this fragment is optional, the owner may skip asking entirely; when it
+  does ask, it uses this template.
+
+  Fields on the `dict` argument:
+
+    TimeoutSeconds:  int. Interactive owners pass 300; silent owners a
+                     short value.
+
+  Whitespace: fragment body starts flush at column 1 (no leading `- `) and
+  emits no trailing newline; callers use plain `{{ template ... }}`.
+*/ -}}
+{{- $timeout := .TimeoutSeconds -}}
+**Ask + write `redirects.md`.** Open a focused `mitto_ui_form`
+  (`timeout_seconds: {{ $timeout }}`) titled "Channel redirects — where do out-of-scope questions
+  belong?" with these fields (all optional, but at least one should be filled in):
+  - `topic_map` (textarea) — "Topic → destination map: for each out-of-scope topic, name the
+    correct channel / team / contact. One per line, e.g. 'billing questions → #billing-help'."
+  - `boilerplate` (textarea, optional) — "Boilerplate redirect message(s) we can adapt when
+    politely pointing a customer elsewhere. Keep them short and friendly."
+  - `notes` (textarea, optional) — "Anything else relevant to redirects (do-not-redirect topics,
+    exceptions)."
+
+  When the form returns, create `.mitto/support/<channel-id>/` if it does not exist, then write the
+  result to `.mitto/support/<channel-id>/redirects.md` as a Markdown document with sections
+  `# Topic map`, `# Boilerplate` (only if non-empty), and `# Notes` (only if non-empty). Confirm
+  the write via `mitto_ui_notify` (success). If the form times out or is aborted, do **not** write
+  a partial file — fall back per the caller's policy (this fragment is optional; skip silently is
+  acceptable).
+{{- /* no trailing newline */ -}}

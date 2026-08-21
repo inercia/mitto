@@ -1,36 +1,113 @@
 ##########################################################################################
-# Builtin processor: injects beads memories (bd prime --memories-only) at the start of
-# a conversation, so agents begin with project-specific knowledge pre-loaded.
+# Builtin processor: injects a compact beads memory INDEX (keys only, no bodies) at the
+# start of a conversation, so agents know what persistent knowledge exists without
+# paying the full context cost of every memory body up front.
 #
 # When the `bd` command is available AND the workspace contains a `.beads` directory
 # (i.e. beads has been initialized for this project), this processor runs
-# `bd prime --memories-only` and PREPENDS its output to the user's first message.
-# The user's original message is always preserved.
+# `bd --readonly prime --memories-only` using the bd 1.2.2-compatible syntax, extracts just
+# the memory headings (titles/keys), and PREPENDS a
+# short markdown index plus on-demand lookup instructions to the user's first message.
+# The user's original message is always preserved. Agents then pull full bodies only
+# for the memories that turn out to be relevant, via `bd memories <keyword>` (search)
+# or `bd recall <key>` (read one in full).
 #
 # Activation conditions:
 #   1. The `bd` command exists on PATH (CommandExists CEL gate)
 #   2. The workspace contains a `.beads` directory (DirExists CEL gate)
+#   3. `sh` and `awk` exist on PATH (CommandExists CEL gates) — needed to reduce
+#      the memory markdown to a validated title/key index.
 #
 # Throttling:
-#   - Fires on the first message, then re-runs repeatedly to keep beads memories
-#     fresh as the conversation grows, without injecting on every single message.
+#   - Fires on the first message, then re-runs only after enough token budget has
+#     been consumed (afterTokens) to justify a fresh index. Time/message-count
+#     reruns were removed (mitto-telc) to avoid repeatedly re-injecting the same
+#     index during a long-lived conversation.
 #
-# Uses command-mode with outputFormat:raw so that the plain-text markdown output
-# from `bd prime --memories-only` is injected directly without a JSON wrapper.
+# Implementation note: command-mode processors exec their `command` directly (no
+# shell), so the `bd --readonly prime | awk ...` pipeline requires an explicit `sh -c`
+# wrapper (mirrors the pattern in internal/web/handlers/badge_click.go). The script
+# captures `bd`'s exit status explicitly and exits with it BEFORE piping to awk, so a
+# `bd` failure (e.g. no beads database) still surfaces as processor failure instead of
+# silently producing an empty/misleading index.
+#
+# Uses command-mode with outputFormat:raw so that the plain-text markdown output is
+# injected directly without a JSON wrapper.
 ##########################################################################################
 name: beads-prime
-description: "Injects beads memories (bd prime --memories-only) at the start of a conversation"
+description: "Injects a compact beads memory index (keys only) plus bd memories/bd recall lookup instructions at the start of a conversation"
 enabled: true
-enabledWhen: 'CommandExists("bd") && DirExists(".beads")'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && CommandExists("sh") && CommandExists("awk")'
 when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
     afterTokens: 80000
-command: bd
-args: [prime, --memories-only]
+command: sh
+args:
+  - -c
+  - |
+    attempt=1
+    while [ "$attempt" -le 2 ]; do
+      out=$(bd --readonly prime --memories-only)
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+      fi
+      parsed=$(printf '%s' "$out" | awk '
+        BEGIN {
+          n = 0
+          expected = -1
+          zero_heading = 0
+          zero_marker = 0
+        }
+        /^## Persistent Memories \([0-9]+\)$/ {
+          line = $0
+          sub(/^## Persistent Memories \(/, "", line)
+          sub(/\)$/, "", line)
+          expected = line + 0
+        }
+        /^# Beads Persistent Memories$/ { zero_heading = 1 }
+        /^No memories stored\./ { zero_marker = 1 }
+        /^### / {
+          key = $0
+          sub(/^### /, "", key)
+          keys[n++] = key
+        }
+        END {
+          if (expected < 0 && zero_heading && zero_marker) {
+            expected = 0
+          }
+          if (expected < 0 || n != expected) {
+            printf "expected=%d actual=%d\n", expected, n > "/dev/stderr"
+            exit 65
+          }
+          print "## Beads Memory Index"
+          print ""
+          if (n == 0) {
+            print "No persistent memories recorded yet."
+          } else {
+            print "Titles/keys of persistent memories (bodies omitted to save context):"
+            print ""
+            for (i = 0; i < n; i++) {
+              print "- `" keys[i] "`"
+            }
+          }
+          print ""
+          print "Use `bd memories <keyword>` to search memory bodies by keyword, or `bd recall <key>` to read one memory in full."
+        }
+      ' 2>&1)
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        printf '%s\n' "$parsed"
+        exit 0
+      fi
+      if [ "$attempt" -eq 2 ]; then
+        printf 'beads-prime: memory index format/count mismatch workspace=%s %s\n' "$(pwd -P)" "$parsed" > /dev/stderr
+        exit "$rc"
+      fi
+      attempt=$((attempt + 1))
+    done
 input: none
 output: prepend
 outputFormat: raw

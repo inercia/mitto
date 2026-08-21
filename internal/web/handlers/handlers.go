@@ -22,7 +22,30 @@ import (
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/slackbridge"
+	"github.com/inercia/mitto/internal/slackcatalog"
+	"github.com/inercia/mitto/internal/stats"
 )
+
+// ResolvedPromptTarget is the resolved form of a prompt's target: block,
+// returned by Deps.ResolvePromptTarget (mitto-8sk). Grouped into a struct
+// (rather than growing another positional return value) so new target
+// fields can be added without touching every call site's signature.
+type ResolvedPromptTarget struct {
+	// Title is the rendered target.title (empty when the prompt has no
+	// target block or no title).
+	Title string
+	// ReuseTitle mirrors target.reuse.title.
+	ReuseTitle bool
+	// BackgroundColor mirrors target.backgroundColor: a creation-time
+	// default color for the conversation this prompt creates. Empty when
+	// unset. Never re-applied on a reuse dispatch.
+	BackgroundColor string
+	// NoArchive mirrors target.noArchive: marks the conversation this
+	// prompt creates as non-archivable (mitto-yvel). Create-time only,
+	// like BackgroundColor — never re-applied on a reuse dispatch.
+	NoArchive bool
+}
 
 // Deps holds the dependencies that REST handlers need from the web server.
 // It is a facade that decouples handlers from the concrete *web.Server type.
@@ -32,6 +55,14 @@ import (
 type Deps struct {
 	// Logger is the structured logger. May be nil; all uses are nil-guarded.
 	Logger *slog.Logger
+
+	// SlackCatalog owns process-global Slack app and installation metadata.
+	// Nil means Slack integration management is unavailable.
+	SlackCatalog *slackcatalog.Service
+
+	// SlackEnvironment coordinates the explicit legacy environment import.
+	// Nil means the compatibility migration surface is unavailable.
+	SlackEnvironment *slackbridge.EnvironmentMigration
 
 	// ConfigReadOnly mirrors Server.config.ConfigReadOnly: when true, the
 	// configuration was loaded from a custom --config file and must not be
@@ -144,6 +175,10 @@ type Deps struct {
 	// given session. May be nil; callers must nil-guard.
 	BroadcastSettingsUpdated func(sessionID string, settings map[string]bool)
 
+	// BroadcastTaskLabelColorsUpdated notifies every global-events client that
+	// the global task-label color mapping changed. May be nil.
+	BroadcastTaskLabelColorsUpdated func()
+
 	// BroadcastSessionDeleted mirrors Server.BroadcastSessionDeleted: it notifies
 	// all connected clients that a session was deleted. May be nil; callers must
 	// nil-guard.
@@ -200,6 +235,40 @@ type Deps struct {
 	// given working dir via the full merge pipeline) is declared singleton. May be
 	// nil; callers must nil-guard (treat nil as "not singleton").
 	ResolvePromptSingleton func(promptName, workingDir string) bool
+
+	// ResolvePromptReuseIssue reports whether the named prompt (resolved for the
+	// given working dir via the full merge pipeline) has target.reuseIssue set.
+	// May be nil; callers must nil-guard (treat nil as "not reuseIssue").
+	ResolvePromptReuseIssue func(promptName, workingDir string) bool
+
+	// ResolvePromptTarget returns the named prompt's resolved target block:
+	// title (rendered as a Go text/template against args + beadsIssue +
+	// workingDir, mitto-5qbo), reuseTitle, and backgroundColor (mitto-8sk;
+	// a creation-time-only default, never re-applied on a reuse dispatch)
+	// (resolved for the given working dir via the full merge pipeline).
+	// Returns a zero-value ResolvedPromptTarget with a nil error when the
+	// prompt is not found or has no target block. Returns a non-nil err on
+	// template parse/exec failure or an empty rendered title, so the caller
+	// can reject the create with a 4xx (invalid prompt frontmatter). May be
+	// nil; callers must nil-guard.
+	ResolvePromptTarget func(promptName, workingDir string, args map[string]string, beadsIssue string) (ResolvedPromptTarget, error)
+
+	// ResolvePromptReuseCoalesce reports whether the named prompt (resolved for
+	// the given working dir via the full merge pipeline) has target.reuseCoalesce
+	// enabled (nullable *bool dereferenced to true). Consulted after a reuse
+	// mode (reuseIssue / reuseTitle / singleton) resolves to an existing
+	// conversation so an identical in-flight or queued dispatch becomes a
+	// no-op instead of enqueuing a duplicate (mitto-djs1). May be nil;
+	// callers must nil-guard (treat nil as "not reuseCoalesce").
+	ResolvePromptReuseCoalesce func(promptName, workingDir string) bool
+
+	// ResolvePromptSuppressAutoChildren reports whether the named prompt
+	// (resolved for the given working dir via the full merge pipeline) has
+	// target.suppressAutoChildren set. When true, the create path skips the
+	// workspace-level auto_children spawn for this new top-level session
+	// (mitto-nlx). May be nil; callers must nil-guard (treat nil as "do not
+	// suppress").
+	ResolvePromptSuppressAutoChildren func(promptName, workingDir string) bool
 
 	// DefaultACPServer mirrors Server.config.ACPServer: the default ACP server
 	// name used in the create-session response when the resolved workspace does
@@ -333,11 +402,63 @@ type Deps struct {
 	// May be nil; the auth-info handler then reports both as false.
 	AuthInfo func() (simple bool, cloudflare bool)
 
+	// RotateSharedToken rotates the shared bearer token (mitto-pscc.9):
+	// generates a new token, installs it on the running AuthManager, and
+	// rewrites instance.json so CLI/SDK clients discover the new value via
+	// `mitto auth rotate`. Returns the new token's fingerprint (see
+	// instancefile.Fingerprint) — never the token value itself, in a
+	// response body, or a log line. Returns ErrSharedTokenNotConfigured or
+	// ErrSharedTokenNotRotatable for the documented refusal cases (mapped to
+	// 409 by HandleRotateSharedToken); any other error is a genuine failure
+	// (mapped to 500). May be nil; the handler then reports 503.
+	RotateSharedToken func() (fingerprint string, err error)
+
 	// ImprovePrompt mirrors Server.auxiliaryManager.ImprovePrompt: it rewrites a
 	// user prompt via the workspace-scoped auxiliary session. It is nil when the
 	// server has no auxiliary manager; the improve-prompt handler treats a nil
 	// value as "service unavailable" (503), matching the original behavior.
 	ImprovePrompt func(ctx context.Context, workspaceUUID, prompt string) (string, error)
+
+	// StatsStore mirrors Server.statsStore: the dashboard time-series stats
+	// store used by HandleDashboardTimeseries. May be nil; the handler then
+	// serves an empty (zero-filled) response.
+	StatsStore stats.Store
+
+	// StatsBackfillerInProgress mirrors Server.statsBackfiller.InProgress:
+	// reports whether a stats backfill pass is currently running so the
+	// timeseries response can flag partial data. May be nil; treated as false.
+	StatsBackfillerInProgress func() bool
+
+	// RememberFolderArgs persists a filtered subset of prompt arguments so that
+	// the same prompt dialog opens pre-filled next time in the same workspace
+	// (mitto-x8v). The handler filters args to those whose declared Remember
+	// value is RememberFolder; this closure only performs the write and returns
+	// a non-nil error on I/O failure. May be nil; callers must nil-guard.
+	// workspaceUUID / promptName may be empty — the closure then no-ops.
+	RememberFolderArgs func(workspaceUUID, promptName string, args map[string]string) error
+
+	// GetRememberedArgs returns the previously remembered arguments for a
+	// (workspace UUID, prompt name) pair (mitto-x8v). It returns an empty map
+	// when nothing is remembered or when either identifier is empty. May be
+	// nil; the GET handler treats that as "feature disabled" (empty response).
+	GetRememberedArgs func(workspaceUUID, promptName string) (map[string]string, error)
+
+	// RememberConversationArgs persists a filtered subset of prompt arguments
+	// so that the same prompt dialog opens pre-filled next time in the same
+	// SESSION (mitto-47y.6.2). Mirrors RememberFolderArgs but keyed by
+	// sessionID rather than workspace UUID. The handler filters args to those
+	// whose declared Remember value is RememberConversation; this closure only
+	// performs the write and returns a non-nil error on I/O failure. May be
+	// nil; callers must nil-guard. sessionID / promptName may be empty — the
+	// closure then no-ops.
+	RememberConversationArgs func(sessionID, promptName string, args map[string]string) error
+
+	// GetRememberedConversationArgs returns the previously remembered
+	// arguments for a (session ID, prompt name) pair from the
+	// conversation-scope namespace (mitto-47y.6.2). It returns an empty map
+	// when nothing is remembered or when either identifier is empty. May be
+	// nil; the GET handler treats that as "conversation scope disabled".
+	GetRememberedConversationArgs func(sessionID, promptName string) (map[string]string, error)
 }
 
 // Handlers groups the REST API handler methods extracted from the web server.
@@ -347,6 +468,12 @@ type Handlers struct {
 	beadsCleanupMu     sync.Mutex
 	beadsCleanupActive map[string]bool
 
+	// tsCache is the 30s in-process response cache for
+	// HandleDashboardTimeseries. Lazily initialized on first use so New(Deps{})
+	// stays unchanged.
+	tsCacheOnce sync.Once
+	tsCache     *timeseriesCache
+
 	// singletonLocksMu guards singletonLocks (lazily-created keyed mutexes).
 	singletonLocksMu sync.Mutex
 	// singletonLocks holds one mutex per "workingDir\x00promptName" key. It
@@ -354,6 +481,22 @@ type Handlers struct {
 	// HandleCreateSession so two concurrent requests for the same key cannot
 	// both miss the scan and create duplicate conversations. See lockSingleton.
 	singletonLocks map[string]*sync.Mutex
+
+	// reuseIssueLocksMu guards reuseIssueLocks (lazily-created keyed mutexes).
+	reuseIssueLocksMu sync.Mutex
+	// reuseIssueLocks holds one mutex per "workingDir\x00beadsIssue" key. It
+	// serializes the reuseIssue find-or-route scan+create/seed sequence in
+	// HandleCreateSession so two concurrent requests for the same key cannot
+	// both miss the scan and create duplicate conversations. See lockReuseIssue.
+	reuseIssueLocks map[string]*sync.Mutex
+
+	// reuseTitleLocksMu guards reuseTitleLocks (lazily-created keyed mutexes).
+	reuseTitleLocksMu sync.Mutex
+	// reuseTitleLocks holds one mutex per "workingDir\x00title" key. It
+	// serializes the reuseTitle find-or-route scan+create/seed sequence in
+	// HandleCreateSession so two concurrent requests for the same key cannot
+	// both miss the scan and create duplicate conversations. See lockReuseTitle.
+	reuseTitleLocks map[string]*sync.Mutex
 }
 
 // New creates a new Handlers with the given dependencies.
@@ -374,6 +517,44 @@ func (h *Handlers) lockSingleton(key string) func() {
 		h.singletonLocks[key] = mu
 	}
 	h.singletonLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockReuseIssue locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+// Key format is "workingDir\x00beadsIssue" — see HandleCreateSession.
+func (h *Handlers) lockReuseIssue(key string) func() {
+	h.reuseIssueLocksMu.Lock()
+	if h.reuseIssueLocks == nil {
+		h.reuseIssueLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := h.reuseIssueLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		h.reuseIssueLocks[key] = mu
+	}
+	h.reuseIssueLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockReuseTitle locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+// Key format is "workingDir\x00title" — see HandleCreateSession.
+func (h *Handlers) lockReuseTitle(key string) func() {
+	h.reuseTitleLocksMu.Lock()
+	if h.reuseTitleLocks == nil {
+		h.reuseTitleLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := h.reuseTitleLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		h.reuseTitleLocks[key] = mu
+	}
+	h.reuseTitleLocksMu.Unlock()
 
 	mu.Lock()
 	return mu.Unlock

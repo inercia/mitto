@@ -1,0 +1,71 @@
+{{/*
+  _shared/loop/parallelize-subtasks — the "## Parallelize independent
+  subtasks when possible" section shared by the generic loop drivers
+  (loop/fixing, loop/implementing). Not for the beads-issues loop
+  drivers — those have their own bead-aware "Step 3f — Parallel
+  fan-out" (see beads-issues/shared/loop-driver-guidelines-parallel).
+
+  Callers pass a Verb and a StateFile so the wording fits the caller's
+  domain (fix vs implement, and whatever tracking artifact the caller
+  uses):
+
+      {{ template "_shared/loop/parallelize-subtasks" (dict
+          "Verb"          "fix"
+          "StateFile"     "tracking bead"
+          "SessionID"     .Session.ID
+      ) }}
+
+  Parameters:
+    Verb       — the caller's work verb ("fix", "implement", …). Spliced
+                 into "prefer to <Verb> the subtasks in parallel" and
+                 similar spots.
+    StateFile  — noun for the tracking artifact ("tracking bead", "spec",
+                 …). Used in the "update the <StateFile>" wrap-up bullet.
+    SessionID  — the caller's .Session.ID (spliced into the fan-out
+                 mitto_* call examples; keeps the fragment usable inside
+                 restricted target.title FuncMaps that don't expose
+                 .Session directly).
+
+  The fragment emits its own `## Parallelize independent subtasks when
+  possible` heading — do NOT add one at the call site. Output is
+  column-0 text; the caller's YAML `content: |` scalar's own indentation
+  is applied by the YAML loader before the template engine runs.
+*/}}
+## Parallelize independent subtasks when possible
+
+A single increment may itself decompose into **two or more genuinely independent
+subtasks** — ones that touch **different files/modules**, have **no ordering
+dependencies** between them, and cannot conflict. When such a clean split exists,
+prefer to {{ .Verb }} the subtasks **in parallel across child conversations** rather
+than serially inline; this still counts as one increment for the run.
+
+Only fan out when **all** of these hold; otherwise do the increment inline as above:
+
+- this conversation can spawn children — it is **top-level** (not itself a child) and
+  the **Can start conversation** + **Can Send Prompt** advanced-settings flags are on;
+- the subtasks are **disjoint** — no shared files, no shared state, and none depends on
+  another's output. **Never** split work that has interdependencies or could produce
+  conflicting edits;
+- splitting genuinely saves wall-clock time (skip it for one-file or trivial changes).
+
+To fan out (use `{{ .SessionID }}` as `self_id` for every `mitto_*` call):
+
+1. Define each subtask completely and self-contained: what to {{ .Verb }}, the
+   **disjoint** set of files/modules it owns (verify the sets do not overlap), how to
+   verify that increment, and a definition of done. Cap at **3–4** parallel subtasks
+   per run.
+2. For each subtask, reuse a suitable **idle** existing child when available, otherwise
+   `mitto_conversation_new` one — preferring a faster/cheaper agent for routine work —
+   seeding a fully self-contained worker prompt that ends by reporting via
+   `mitto_children_tasks_report`.
+3. Block on all of them at once:
+   `mitto_children_tasks_wait(self_id: "{{ .SessionID }}", children_list: [<child ids>], task_id: "<short label>", timeout_seconds: 1800)`.
+   On timeout, retry the pending children with the **same** `task_id` (omit the prompt
+   to avoid duplicates); after a second timeout treat those subtasks as failed.
+4. **Synthesize** the reports, verify the combined result, then update the {{ .StateFile }}
+   (and commit, if enabled) exactly as for an inline increment. Clean up finished
+   children you no longer need.
+
+If any subtask reports a conflict with another, stop parallelizing that work and finish
+it inline on a subsequent run. If a spawn call errors because a flag is off, fall back
+to doing the increment inline.

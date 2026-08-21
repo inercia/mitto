@@ -137,12 +137,11 @@ func GetFileExtension(mimeType string) string {
 // Returns the file ID that can be used to retrieve it later.
 func (s *Store) SaveFile(sessionID string, data []byte, mimeType string, originalName string) (FileInfo, error) {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return FileInfo{}, ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return FileInfo{}, err
 	}
+	defer unlock()
 
 	// Determine file category and validate
 	category := GetFileCategory(mimeType)
@@ -218,12 +217,11 @@ func (s *Store) SaveFile(sessionID string, data []byte, mimeType string, origina
 
 // GetFilePath returns the file path for a stored file.
 func (s *Store) GetFilePath(sessionID, fileID string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return "", ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return "", err
 	}
+	defer unlock()
 
 	filePath := filepath.Join(s.filesDir(sessionID), fileID)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -235,12 +233,11 @@ func (s *Store) GetFilePath(sessionID, fileID string) (string, error) {
 
 // ListFiles returns all files for a session.
 func (s *Store) ListFiles(sessionID string) ([]FileInfo, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
+	unlock, err := s.lockSessionRead(sessionID)
+	if err != nil {
+		return nil, err
 	}
+	defer unlock()
 
 	files, _, err := s.listFilesInternal(sessionID)
 	return files, err
@@ -298,12 +295,11 @@ func (s *Store) listFilesInternal(sessionID string) ([]FileInfo, int64, error) {
 // DeleteFile removes a file from the session.
 func (s *Store) DeleteFile(sessionID, fileID string) error {
 	log := logging.Session()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
+	unlock, err := s.lockSessionWrite(sessionID)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 
 	filePath := filepath.Join(s.filesDir(sessionID), fileID)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {

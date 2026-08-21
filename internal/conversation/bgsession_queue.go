@@ -5,6 +5,7 @@ package conversation
 // it with the session's live dependencies.
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -17,6 +18,9 @@ import (
 // response, then processes the next queued message. This is used for startup initialization
 // and periodic queue checking. Returns true if a message was sent.
 func (bs *BackgroundSession) TryProcessQueuedMessage() bool {
+	if !bs.startupConfigConstraintsReady() {
+		return false
+	}
 	return bs.queueDisp.tryProcess(bs)
 }
 
@@ -43,6 +47,9 @@ func (bs *BackgroundSession) hasImmediateQueuedMessages() bool {
 // processNextQueuedMessage checks the queue and sends the next message if queue processing is enabled.
 // Returns true if a queued message was popped and dispatched.
 func (bs *BackgroundSession) processNextQueuedMessage() bool {
+	if !bs.startupConfigConstraintsReady() {
+		return false
+	}
 	return bs.queueDisp.processNext(bs)
 }
 
@@ -108,7 +115,16 @@ func (bs *BackgroundSession) queueRecordErrorEvent(msg string) {
 		Data:      session.ErrorData{Message: msg},
 	}); err != nil {
 		if bs.logger != nil {
-			bs.logger.Error("Failed to persist queued send error event", "error", err, "session_id", bs.persistedID)
+			// mitto-9zy1 defect 3: once the session is closed, the recorder has
+			// already stopped and persisting an error into a torn-down session is
+			// meaningless — downgrade to DEBUG so a failed queued send doesn't
+			// stack a second, purely diagnostic ERROR on top of the original
+			// during teardown.
+			level := slog.LevelError
+			if bs.IsClosed() {
+				level = slog.LevelDebug
+			}
+			bs.logger.Log(context.Background(), level, "Failed to persist queued send error event", "error", err, "session_id", bs.persistedID)
 		}
 		return
 	}

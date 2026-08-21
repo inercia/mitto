@@ -53,8 +53,12 @@ func (s *MockACPServer) handleMessage(line string) error {
 		return s.handleCancelPrompt(req)
 	case "session/set_mode", "session/setMode", "acp/setSessionMode":
 		return s.handleSetSessionMode(req)
-	// v0.13.5: session/set_model was removed in favour of the stable config-option
-	// framework. Mitto now issues session/set_config_option with configId=model.
+	// ACP 0.13 reintroduced a dedicated `session/set_model` RPC (mitto-vd5); Mitto
+	// now sends this as the primary path via ClientSideConnection.
+	// UnstableSetSessionModel. `session/set_config_option` is retained as the
+	// single-shot legacy fallback for pre-0.13-schema agents.
+	case "session/set_model":
+		return s.handleSetSessionModel(req)
 	case "session/set_config_option":
 		return s.handleSetSessionConfigOption(req)
 	case "shutdown":
@@ -271,6 +275,93 @@ func (s *MockACPServer) sendCurrentModeUpdate(modeID string) error {
 	return s.sendNotification(notification)
 }
 
+// handleSetSessionModel handles ACP 0.13 `session/set_model` — Mitto's primary
+// model-switch RPC after mitto-vd5. When MOCK_SET_MODEL_FORCE_LEGACY is set,
+// the handler returns JSON-RPC -32601 unconditionally to simulate a pre-0.13
+// agent, letting integration tests exercise Mitto's legacy-fallback path
+// (session/set_config_option) end-to-end. Otherwise the mock applies the same
+// MOCK_SET_MODEL_FAIL_FIRST / MOCK_SET_MODEL_DELAY_MS knobs, validates the
+// model id against defaultModelOptions, updates currentModel, and emits the
+// same config_option_update notification handleSetSessionConfigOption sends so
+// AgentModels().CurrentModelId stays wired up.
+func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
+	if s.forceLegacySetModel {
+		s.log("session/set_model forced to legacy fallback (MOCK_SET_MODEL_FORCE_LEGACY)")
+		return s.sendError(req.ID, -32601, "Method not found", nil)
+	}
+
+	var params SetSessionModelParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return s.sendError(req.ID, -32602, "Invalid params", nil)
+	}
+
+	if err := s.applyModelChange(req, params.ModelID, "set_model"); err != nil {
+		return err
+	}
+
+	// SDK's UnstableSetSessionModelResponse carries only _meta; emit an empty
+	// envelope so the client's future-typed unmarshal succeeds cleanly.
+	if err := s.sendResponse(req.ID, SetSessionModelResult{}); err != nil {
+		return err
+	}
+
+	// Emit the config_option_update notification so downstream state
+	// (Mitto's AgentModels tracking) still transitions — mirrors the
+	// legacy-path emission below.
+	updated := freshConfigOptionsWithModel(nil, s.currentModel)
+	notification := SessionNotification{JSONRPC: "2.0", Method: "session/update"}
+	notification.Params.SessionID = s.sessionID
+	notification.Params.Update = SessionUpdate{
+		ConfigOptionUpdate: &SessionConfigOptionUpdate{
+			SessionUpdate: "config_option_update",
+			ConfigOptions: updated,
+		},
+	}
+	return s.sendNotification(notification)
+}
+
+// applyModelChange runs the shared MOCK_SET_MODEL_FAIL_FIRST / _DELAY_MS
+// failure-injection + validation + currentModel update used by both
+// session/set_model (primary) and session/set_config_option(model) (legacy
+// fallback). Returns a non-nil error only when the caller has already sent an
+// error response and should stop (i.e. do not send a success response).
+// rpcTag is the label used in the RPC-order log ("set_model" | "set_config_option").
+func (s *MockACPServer) applyModelChange(req JSONRPCRequest, value, rpcTag string) error {
+	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS).
+	if s.setModelDelayMs > 0 {
+		time.Sleep(time.Duration(s.setModelDelayMs) * time.Millisecond)
+	}
+
+	// Failure injection: first N calls return a "timeout" error so
+	// isRetryableSetModelError matches. currentModel is NOT updated and no
+	// notification is sent — the retry must redo it. Shared counter across
+	// primary+legacy so a single MOCK_SET_MODEL_FAIL_FIRST budget is honoured
+	// regardless of which wire the RPC arrives on.
+	s.setModelCallCount++
+	if s.setModelCallCount <= s.setModelFailFirst {
+		s.log("Injecting %s(model) failure %d/%d for value %s",
+			rpcTag, s.setModelCallCount, s.setModelFailFirst, value)
+		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
+	}
+
+	// Validate the value against the advertised options.
+	validModel := false
+	for _, opt := range defaultModelOptions {
+		if opt.Value == value {
+			validModel = true
+			break
+		}
+	}
+	if !validModel {
+		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", value), nil)
+	}
+	s.currentModel = value
+
+	s.recordRPCOrder(rpcTag, value)
+	s.log("Session model changed via %s: %s -> %s", rpcTag, s.sessionID, value)
+	return nil
+}
+
 // handleSetSessionConfigOption handles v0.13.5 `session/set_config_option`
 // requests. Only the ValueId (Select) variant is supported; the boolean variant
 // is rejected. For the "model" category the mock retains the pre-0.13.5
@@ -289,45 +380,18 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 
 	isModel := params.ConfigID == "model"
 
-	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS) — only
-	// for the model category so unrelated config options don't drag.
-	if isModel && s.setModelDelayMs > 0 {
-		time.Sleep(time.Duration(s.setModelDelayMs) * time.Millisecond)
-	}
-
-	// Failure injection for the model category: the first N calls return a
-	// JSON-RPC error whose message contains "timeout" so
-	// isRetryableSetModelError matches it (mitto-3q9). currentModel is NOT
-	// updated and no notification is sent — the retry must redo it. Env var
-	// name is preserved (MOCK_SET_MODEL_FAIL_FIRST) for test back-compat.
 	if isModel {
-		s.setModelCallCount++
-		if s.setModelCallCount <= s.setModelFailFirst {
-			s.log("Injecting set_config_option(model) failure %d/%d for value %s",
-				s.setModelCallCount, s.setModelFailFirst, params.Value)
-			return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
+		// Shared model-change path: MOCK_SET_MODEL_DELAY_MS / _FAIL_FIRST
+		// knobs, model-id validation, currentModel update, RPC-order log.
+		// Emits its own error response on failure/rejection.
+		if err := s.applyModelChange(req, params.Value, "set_config_option"); err != nil {
+			return err
 		}
+	} else {
+		// Non-model config options: just record the arrival and echo back.
+		s.recordRPCOrder("set_config_option", params.Value)
+		s.log("Session config option changed: %s (%s -> %s)", s.sessionID, params.ConfigID, params.Value)
 	}
-
-	// Validate the value for the model category against the advertised options.
-	if isModel {
-		validModel := false
-		for _, opt := range defaultModelOptions {
-			if opt.Value == params.Value {
-				validModel = true
-				break
-			}
-		}
-		if !validModel {
-			return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", params.Value), nil)
-		}
-		s.currentModel = params.Value
-	}
-
-	// Record the RPC arrival order under the new label so ordering tests
-	// (deferred_config_test) can key off "set_config_option".
-	s.recordRPCOrder("set_config_option", params.Value)
-	s.log("Session config option changed: %s (%s -> %s)", s.sessionID, params.ConfigID, params.Value)
 
 	// Build the updated ConfigOptions snapshot to include in both the response
 	// and the config_option_update notification.

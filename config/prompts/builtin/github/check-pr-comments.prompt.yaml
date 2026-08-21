@@ -1,0 +1,128 @@
+icon: chat-bubble
+name: Check PR Comments
+menus: prompts, !promptsLoop
+description: Triage pull request review feedback — decide if it's worth addressing
+group: Submission of changes
+backgroundColor: '#B2DFDB'
+tags:
+- loop
+- github
+target:
+  title: "PR #{{ .Args.Pr }}"
+  reuse:
+    title: true
+    coalesce: true
+parameters:
+  - name: Pr
+    type: text
+    required: false
+    description: 'Optional PR to check — a number, URL, or branch name. If omitted, uses the current branch.'
+enabledWhen: 'FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab")) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+prompt: |
+  Check whether the current pull request has review comments worth acting on,
+  and — only if it does — hand the work off to the **Address PR Comments** prompt.
+  This is a lightweight triage step: **do not** implement fixes, push, or reply
+  to threads yourself.
+
+  {{ template "_shared/session-context" . }}
+
+  ## Interaction Mode
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Scheduled mode** — a loop run; the user is not watching.
+  {{ template "_shared/silent-notify-only" . }}
+  - If no PR matches the current branch (or the match is ambiguous), end the run
+    quietly with a single notification — do not block waiting for input.
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-loop conversation.
+  - You may use `mitto_ui_options`, `mitto_ui_form`, and other interactive tools
+    in addition to `mitto_ui_notify`.
+  - Confirm the triage verdict with the user before delegating.
+  {{- end }}
+
+  ### 1. Identify the PR/MR
+
+  {{ template "github/shared/identify-pr-by-branch" . }}
+
+  ### 2. Retrieve All Comments
+
+  {{ template "github/shared/pr-fetch-comments" . }}
+
+  ### 3. Triage Each Comment
+
+  For each unresolved comment, evaluate:
+
+  - **Relevance** — Does it apply to the current state of the code, or was it
+    already addressed / made moot by later commits?
+  - **Validity** — Is it technically correct? Aligned with project conventions?
+  - **Importance** — Blocking (must fix) / Important (should fix) /
+    Optional (nice-to-have) / Noise (can be ignored: bikeshedding, out-of-scope,
+    superseded, or purely subjective preference).
+  - **Effort** — Trivial / Small / Medium / Large.
+
+  Produce a compact table:
+
+  | Comment | Relevance | Importance | Effort | Verdict |
+  |---------|-----------|------------|--------|---------|
+  | ...     | ...       | ...        | ...    | address / defer / ignore |
+
+  ### 4. Decide
+
+  - **Address now** — at least one comment is Blocking, or one or more are
+    Important with reasonable effort.
+  - **Defer** — only Optional / low-effort polish; safe to postpone.
+  - **Ignore** — no unresolved comments, or all remaining ones are Noise /
+    superseded / out-of-scope.
+
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+  In scheduled mode: apply the decision autonomously — do not ask.
+  {{- else }}
+  Confirm the verdict with the user via `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)`
+  before proceeding to Step 5.
+  {{- end }}
+
+  ### 5. Hand Off (only when the verdict is "Address now")
+
+  Delegate the actual work to the **Address PR Comments** prompt — do **not**
+  implement fixes in this turn.
+
+  This conversation is the single conversation for this PR (its title is
+  `PR #{{ .Args.Pr }}`, shared by every per-PR GitHub prompt), so the hand-off
+  goes to **this** conversation, not to a child — that keeps one worker per PR
+  and avoids two agents pushing to the same branch:
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Address PR Comments",
+    arguments: { "Pr": "{{ .Args.Pr }}" })
+  ```
+
+  The queued prompt runs as the **next** turn of this conversation, after this
+  triage turn ends. Then notify the user with `mitto_ui_notify` that the address
+  run is queued, including a one-line summary of what needs fixing.
+
+  ### 6. Summary Notification
+
+  In all cases, end with a `mitto_ui_notify` summary:
+
+  ```console
+  🔎 PR Comment Triage — PR #{{ .Args.Pr }}
+
+  📊 Comments: X total (Y unresolved, Z noise/ignored)
+  🎯 Verdict: <address now | defer | ignore>
+  ➡️  Action: <"Address PR Comments" queued on this conversation" | "no action needed">
+  🔗 PR: <pr-url>
+  ```
+
+  ## Guidelines
+
+  - This prompt is **triage only** — never edit files, commit, push, or reply on
+    threads. That is the job of **Address PR Comments**.
+  - Treat already-resolved threads and self-authored comments as out of scope.
+  - When in doubt about importance, err on the side of "address now" so a human
+    (or the Address prompt) can make the final call.
+  - **One conversation per PR**: hand off by queueing "Address PR Comments" on
+    this conversation, never by spawning a child for the same PR.

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/hooks"
+	"github.com/inercia/mitto/internal/instancefile"
 	"github.com/inercia/mitto/internal/web"
 )
 
@@ -25,6 +27,7 @@ var (
 	workspacesFile  string
 	foldersFile     string
 	webBeadsCache   bool
+	webPProf        bool
 )
 
 // webCmd represents the web command
@@ -53,13 +56,14 @@ func init() {
 	rootCmd.AddCommand(webCmd)
 
 	webCmd.Flags().IntVar(&webPort, "port", 8080, "HTTP server port for local access (127.0.0.1). Use 0 for random port")
-	webCmd.Flags().StringVar(&webHost, "host", "127.0.0.1", "Host/IP to bind the local listener (default: 127.0.0.1 for security)")
+	webCmd.Flags().StringVar(&webHost, "host", "127.0.0.1", "Loopback host/IP for local access; use --port-external for remote access")
 	webCmd.Flags().IntVar(&webPortExternal, "port-external", 0, "HTTP server port for external access when enabled (0.0.0.0). Use 0 for random port")
 	webCmd.Flags().StringVar(&webStaticDir, "static-dir", "", "Serve static files from this directory instead of embedded assets (for development)")
 	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
 	webCmd.Flags().StringVar(&workspacesFile, "workspaces", "", "Path to workspaces file (JSON or YAML)")
 	webCmd.Flags().StringVar(&foldersFile, "folders", "", "Path to folders file (JSON or YAML); overlays folder-level settings onto loaded workspaces (changes not persisted)")
 	webCmd.Flags().BoolVar(&webBeadsCache, "beads-cache", true, "Enable in-memory cache for read-only bd invocations (mitto-is2). Pass --beads-cache=false to disable.")
+	webCmd.Flags().BoolVar(&webPProf, "pprof", false, "Enable net/http/pprof debug endpoints (/debug/pprof/*), loopback-only. Also settable via MITTO_PPROF=1 or web.pprof in settings.json (mitto-aek).")
 }
 
 func runWeb(cmd *cobra.Command, args []string) error {
@@ -151,12 +155,6 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Local listener binds to webHost (default: 127.0.0.1 for security).
-	// Use --host 0.0.0.0 when the listener must be reachable from outside the process
-	// (e.g. inside a Docker container where the host port mapping requires 0.0.0.0).
-	// External access uses a separate listener on 0.0.0.0 when enabled.
-	localAddr := fmt.Sprintf("%s:%d", webHost, localPort)
-
 	fmt.Printf("🌐 Starting web interface...\n")
 	switch len(webWorkspaces) {
 	case 0:
@@ -174,11 +172,6 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	if staticDir != "" {
 		fmt.Printf("   Static files: %s (hot-reload enabled)\n", staticDir)
 	}
-	if webHost != "127.0.0.1" && webHost != "localhost" {
-		fmt.Printf("   ⚠️  WARNING: Binding to %s with no authentication.\n", webHost)
-		fmt.Printf("      Anyone who can reach port %d has full access to this instance.\n", localPort)
-	}
-
 	// Initialize auxiliary session manager for utility tasks (auto-title, etc.)
 	// Use the first workspace's command for auxiliary sessions, or first ACP server from config
 	// Note: Auxiliary sessions are now managed by the web server's ACPProcessManager
@@ -214,21 +207,42 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// Priority: --access-log flag > settings.json > disabled by default for CLI
 	accessLogConfig := resolveAccessLogConfig(cfg, webAccessLog)
 
+	// Resolve the instance.json token now (mitto-pscc.9) — BEFORE constructing
+	// the server, since web.NewServer builds the AuthManager from cfg.Web.Auth
+	// immediately. Adopt it as the shared bearer token when auth is configured
+	// (Simple/Cloudflare) but the operator has not set one explicitly
+	// (MITTO_SHARED_TOKEN/settings.json/keychain, resolved earlier by
+	// config.resolveSharedToken, always wins). The instance.json write further
+	// below passes this same value explicitly so both agree on a single
+	// resolution instead of generating independently.
+	instanceToken, tokErr := instancefile.ResolveToken()
+	if tokErr != nil {
+		slog.Warn("Failed to resolve instance token for shared-token auth adoption", "error", tokErr)
+	}
+	sharedTokenFromInstance := false
+	if instanceToken != "" && cfg != nil && cfg.Web.Auth != nil && cfg.Web.Auth.SharedToken == "" {
+		cfg.Web.Auth.SharedToken = instanceToken
+		sharedTokenFromInstance = true
+		slog.Info("Adopted instance.json token as the shared bearer token for programmatic access")
+	}
+
 	// Create web server with workspaces
 	srv, err := web.NewServer(web.Config{
-		Workspaces:       webWorkspaces,
-		AutoApprove:      GetEffectiveAutoApprove(cmd),
-		Debug:            debug,
-		MittoConfig:      cfg,
-		StaticDir:        staticDir,
-		FromCLI:          fromCLI,
-		OnWorkspaceSave:  onWorkspaceSave,
-		ConfigReadOnly:   configReadOnly,
-		RCFilePath:       rcFilePath,
-		HasRCFileServers: hasRCFileServers,
-		PromptsCache:     promptsCache,
-		AccessLog:        accessLogConfig,
-		BeadsCache:       webBeadsCache,
+		Workspaces:                  webWorkspaces,
+		AutoApprove:                 GetEffectiveAutoApprove(cmd),
+		Debug:                       debug,
+		MittoConfig:                 cfg,
+		StaticDir:                   staticDir,
+		FromCLI:                     fromCLI,
+		OnWorkspaceSave:             onWorkspaceSave,
+		ConfigReadOnly:              configReadOnly,
+		RCFilePath:                  rcFilePath,
+		HasRCFileServers:            hasRCFileServers,
+		PromptsCache:                promptsCache,
+		AccessLog:                   accessLogConfig,
+		BeadsCache:                  webBeadsCache,
+		EnablePProf:                 webPProf || config.PProfEnabled(cfg),
+		SharedTokenFromInstanceFile: sharedTokenFromInstance,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
@@ -236,6 +250,12 @@ func runWeb(cmd *cobra.Command, args []string) error {
 
 	// Set external port configuration (used when external access is enabled)
 	srv.SetExternalPort(externalPort)
+
+	localAddr, err := web.PrimaryListenerAddress(webHost, localPort, srv.IsAuthenticationEnabled())
+	if err != nil {
+		_ = srv.Shutdown()
+		return err
+	}
 
 	// Start local listener
 	listener, err := net.Listen("tcp", localAddr)
@@ -249,8 +269,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Local URL: http://%s:%d\n", webHost, actualPort)
 
 	// Warn when no authentication is configured — the web interface is unprotected.
-	if cfg == nil || cfg.Web.Auth == nil ||
-		(cfg.Web.Auth.Simple == nil && cfg.Web.Auth.Cloudflare == nil) {
+	if !srv.IsAuthenticationEnabled() {
 		fmt.Fprintf(os.Stderr, "   ⚠️  Authentication is not configured — the web interface is unprotected. Anyone who can reach this server has full access.\n")
 	}
 
@@ -258,7 +277,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// intentionally disabled (port -1 = disabled, 0 = random, >0 = specific port).
 	// Track the actual external port for the up hook.
 	var actualExternalPort int
-	if cfg != nil && cfg.Web.Auth != nil && externalPort >= 0 {
+	if srv.IsAuthenticationEnabled() && externalPort >= 0 {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(externalPort)
 		if err != nil {
@@ -284,6 +303,38 @@ func runWeb(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Write instance.json (mitto-pscc.2) now that the real port(s) are known,
+	// so local clients (e.g. the CLI) can discover this running instance.
+	// Best-effort: a write failure is a discoverability inconvenience, not a
+	// reason to abort startup.
+	apiPrefix := config.DefaultAPIPrefix
+	if cfg != nil && cfg.Web.APIPrefix != "" {
+		apiPrefix = cfg.Web.APIPrefix
+	}
+	externalURL := ""
+	if cfg != nil && cfg.Web.Hooks.ExternalAddress != "" {
+		externalURL = cfg.Web.Hooks.ExternalAddress
+	} else if actualExternalPort > 0 {
+		externalURL = fmt.Sprintf("http://0.0.0.0:%d", actualExternalPort)
+	}
+	// The recorded URL must be reachable by a local client: a wildcard bind
+	// is not a valid destination, so it is reported as loopback; any other
+	// explicit --host is recorded verbatim.
+	instanceHost := webHost
+	switch instanceHost {
+	case "", "0.0.0.0", "::", "[::]":
+		instanceHost = "127.0.0.1"
+	}
+	if err := instancefile.Write(&instancefile.Instance{
+		PID:         os.Getpid(),
+		URL:         "http://" + net.JoinHostPort(instanceHost, strconv.Itoa(actualPort)),
+		APIPrefix:   apiPrefix,
+		ExternalURL: externalURL,
+		Token:       instanceToken,
+	}); err != nil {
+		slog.Warn("Failed to write instance file", "error", err)
+	}
+
 	// Run the up hook if configured
 	// Use external port if available (for tunneling services like Tailscale/ngrok),
 	// otherwise fall back to local port
@@ -295,7 +346,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	if cfg != nil {
 		// Set up failure callback to broadcast to UI clients
 		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 		})
 		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
 	}
@@ -332,7 +383,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 			DownHook:  cfg.Web.Hooks.Down,
 			Port:      hookPort,
 			OnFailure: func(failure hooks.HookFailure) {
-				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output)
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
 			},
 			OnRestart: func(attempt int) {
 				srv.BroadcastHookRestarted(attempt)
@@ -361,6 +412,11 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	})
 	shutdown.AddCleanup(func(reason string) {
 		srv.Shutdown()
+	})
+	shutdown.AddCleanup(func(reason string) {
+		if err := instancefile.Remove(); err != nil {
+			slog.Warn("Failed to remove instance file", "error", err)
+		}
 	})
 
 	// Start listening for signals

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/pkg/api"
 )
 
 // =============================================================================
@@ -25,7 +25,7 @@ func TestMultiClientSync_AllClientsSeeAllMessages(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create a session
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestMultiClientSync_AllClientsSeeAllMessages(t *testing.T) {
 	clientMessages := make([]map[int64]string, numClients)
 	clientConnected := make([]chan struct{}, numClients)
 	clientDone := make([]chan struct{}, numClients)
-	sessions := make([]*client.Session, numClients)
+	sessions := make([]*api.Session, numClients)
 
 	for i := 0; i < numClients; i++ {
 		clientMessages[i] = make(map[int64]string)
@@ -52,7 +52,7 @@ func TestMultiClientSync_AllClientsSeeAllMessages(t *testing.T) {
 	// Connect all clients
 	for i := 0; i < numClients; i++ {
 		idx := i
-		sess, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+		sess, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 			OnConnected: func(sessionID, clientID, acpServer string) {
 				t.Logf("Client %d connected: clientID=%s", idx, clientID)
 				close(clientConnected[idx])
@@ -139,7 +139,7 @@ func TestMultiClientSync_AllClientsSeeAllMessages(t *testing.T) {
 func TestMultiClientSync_LateJoinerSeesHistory(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestMultiClientSync_LateJoinerSeesHistory(t *testing.T) {
 	client1Done := make(chan struct{})
 
 	// Connect client 1 first
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("Client 1 connected: clientID=%s", clientID)
 			close(client1Connected)
@@ -197,12 +197,12 @@ func TestMultiClientSync_LateJoinerSeesHistory(t *testing.T) {
 	client2Connected := make(chan struct{})
 	client2EventsLoaded := make(chan struct{})
 
-	sess2, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			t.Logf("Client 2 (late joiner) connected: clientID=%s", clientID)
 			close(client2Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Type == "agent_message" {
@@ -251,7 +251,7 @@ func TestMultiClientSync_LateJoinerSeesHistory(t *testing.T) {
 func TestMultiClientSync_MidStreamJoiner(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestMultiClientSync_MidStreamJoiner(t *testing.T) {
 	client1FirstMessage := make(chan struct{})
 
 	// Connect client 1 first
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
@@ -320,11 +320,11 @@ func TestMultiClientSync_MidStreamJoiner(t *testing.T) {
 
 	// Connect client 2 while streaming is in progress
 	client2Connected := make(chan struct{})
-	sess2, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Type == "agent_message" {
@@ -383,7 +383,7 @@ func TestMultiClientSync_MidStreamJoiner(t *testing.T) {
 func TestMultiClientSync_ReconnectSeesAllMessages(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestMultiClientSync_ReconnectSeesAllMessages(t *testing.T) {
 	client2Done := make(chan struct{})
 
 	// Connect client 1
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
@@ -426,7 +426,7 @@ func TestMultiClientSync_ReconnectSeesAllMessages(t *testing.T) {
 	defer sess1.Close()
 
 	// Connect client 2
-	sess2, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			select {
 			case <-client2Connected:
@@ -497,11 +497,11 @@ func TestMultiClientSync_ReconnectSeesAllMessages(t *testing.T) {
 	client2Reconnected := make(chan struct{})
 	client2EventsLoaded := make(chan struct{})
 
-	sess2New, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2New, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Reconnected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Type == "agent_message" {
@@ -553,7 +553,7 @@ func TestMultiClientSync_ReconnectSeesAllMessages(t *testing.T) {
 func TestMultiClientSync_StreamingIndicator(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -571,7 +571,7 @@ func TestMultiClientSync_StreamingIndicator(t *testing.T) {
 	client2Done := make(chan struct{})
 
 	// Connect client 1
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
@@ -598,7 +598,7 @@ func TestMultiClientSync_StreamingIndicator(t *testing.T) {
 	defer sess1.Close()
 
 	// Connect client 2
-	sess2, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},
@@ -662,7 +662,7 @@ func TestMultiClientSync_StreamingIndicator(t *testing.T) {
 func TestMultiClientSync_NoDuplicateMessages(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -678,11 +678,11 @@ func TestMultiClientSync_NoDuplicateMessages(t *testing.T) {
 	client1Done := make(chan struct{})
 
 	// Connect client 1
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Type == "agent_message" && e.HTML != "" {
@@ -747,7 +747,7 @@ func TestMultiClientSync_NoDuplicateMessages(t *testing.T) {
 func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -762,14 +762,14 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 	client1Connected := make(chan struct{})
 	client1EventsLoaded := make(chan struct{})
 	client1EventsLoadedOnce := sync.Once{}
-	var initialEvents []client.SyncEvent
+	var initialEvents []api.SyncEvent
 	var initialTotalCount int
 
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			initialEvents = events
 			mu.Unlock()
@@ -778,7 +778,7 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 				close(client1EventsLoaded)
 			})
 		},
-		OnEventsLoadedWithMeta: func(events []client.SyncEvent, hasMore bool, isPrompting bool, totalCount int) {
+		OnEventsLoadedWithMeta: func(events []api.SyncEvent, hasMore bool, isPrompting bool, totalCount int) {
 			mu.Lock()
 			initialTotalCount = totalCount
 			mu.Unlock()
@@ -814,14 +814,14 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 	client2Connected := make(chan struct{})
 	client2EventsLoaded := make(chan struct{})
 	client2EventsLoadedOnce := sync.Once{}
-	var staleSyncEvents []client.SyncEvent
+	var staleSyncEvents []api.SyncEvent
 	var staleSyncTotalCount int
 
-	sess2, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			staleSyncEvents = events
 			mu.Unlock()
@@ -830,7 +830,7 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 				close(client2EventsLoaded)
 			})
 		},
-		OnEventsLoadedWithMeta: func(events []client.SyncEvent, hasMore bool, isPrompting bool, totalCount int) {
+		OnEventsLoadedWithMeta: func(events []api.SyncEvent, hasMore bool, isPrompting bool, totalCount int) {
 			mu.Lock()
 			staleSyncTotalCount = totalCount
 			mu.Unlock()
@@ -881,13 +881,13 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 	client3Connected := make(chan struct{})
 	client3EventsLoaded := make(chan struct{})
 	client3EventsLoadedOnce := sync.Once{}
-	var freshEvents []client.SyncEvent
+	var freshEvents []api.SyncEvent
 
-	sess3, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess3, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client3Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			freshEvents = events
 			mu.Unlock()
@@ -933,7 +933,7 @@ func TestMultiClientSync_StaleSyncRecovery(t *testing.T) {
 func TestMultiClientSync_EventOrdering(t *testing.T) {
 	ts := SetupTestServer(t)
 
-	session, err := ts.Client.CreateSession(client.CreateSessionRequest{})
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -952,11 +952,11 @@ func TestMultiClientSync_EventOrdering(t *testing.T) {
 	client2Done := make(chan struct{})
 
 	// Connect both clients
-	sess1, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess1, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client1Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Seq > 0 {
@@ -974,11 +974,11 @@ func TestMultiClientSync_EventOrdering(t *testing.T) {
 	}
 	defer sess1.Close()
 
-	sess2, err := ts.Client.Connect(ctx, session.SessionID, client.SessionCallbacks{
+	sess2, err := ts.Client.Connect(ctx, session.SessionID, api.SessionCallbacks{
 		OnConnected: func(sessionID, clientID, acpServer string) {
 			close(client2Connected)
 		},
-		OnEventsLoaded: func(events []client.SyncEvent, hasMore bool, isPrompting bool) {
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
 			mu.Lock()
 			for _, e := range events {
 				if e.Seq > 0 {

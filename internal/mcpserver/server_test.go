@@ -1,10 +1,13 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +18,9 @@ import (
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -148,6 +153,447 @@ func TestGetRuntimeInfo(t *testing.T) {
 	}
 	if info.NumCPU == 0 {
 		t.Error("NumCPU should not be 0")
+	}
+}
+
+func TestLogRetentionInfo(t *testing.T) {
+	oldest := time.Date(2026, 8, 13, 18, 30, 0, 0, time.UTC)
+	started := oldest.Add(time.Hour)
+	got := logRetentionInfo(logging.FileRetentionSnapshot{
+		MaxSizeMB: 10, MaxBackups: 32, Compress: true,
+		RetainedFiles: 12, RetainedBytes: 42, OldestRetainedAt: oldest,
+		RetainedSpanSeconds: 7200, Rotations: 8, DroppedRotations: 2,
+		CounterStartedAt: started,
+	})
+	if got.MaxSizeMB != 10 || got.MaxBackups != 32 || !got.Compress ||
+		got.RetainedFiles != 12 || got.RetainedBytes != 42 ||
+		got.OldestRetainedAt != oldest.Format(time.RFC3339Nano) ||
+		got.RetainedSpanSeconds != 7200 || got.Rotations != 8 || got.DroppedRotations != 2 ||
+		got.CounterStartedAt != started.Format(time.RFC3339Nano) {
+		t.Errorf("unexpected retention projection: %+v", got)
+	}
+}
+
+func TestGetRuntimeInfoIncludesActiveFileRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mitto.log")
+	if err := logging.Initialize(logging.Config{Level: "info", FileLog: &logging.FileLogConfig{
+		Path: path, MaxSizeMB: 7, MaxBackups: 9, Compress: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = logging.Close()
+		_ = logging.Initialize(logging.Config{Level: "info"})
+	})
+	logging.Get().Info("runtime retention projection")
+
+	retention := buildRuntimeInfo().LogFiles.MainLogRetention
+	if retention == nil {
+		t.Fatal("buildRuntimeInfo omitted active main-log retention")
+	}
+	if retention.MaxSizeMB != 7 || retention.MaxBackups != 9 || !retention.Compress ||
+		retention.RetainedFiles != 1 || retention.RetainedBytes == 0 ||
+		retention.OldestRetainedAt == "" || retention.CounterStartedAt == "" {
+		t.Errorf("unexpected runtime retention: %+v", retention)
+	}
+}
+
+// TestGetRuntimeInfoGoroutineAttribution pins buildRuntimeInfo's mitto-x3x
+// goroutine-attribution fields to the coldstart.Contention() providers: with
+// no providers registered they default to -1, and once registered they
+// surface the provider's value (same convention as the periodic gauge and
+// the cold-start log line, since buildRuntimeInfo sources all four from one
+// coldstart.Contention() call).
+func TestGetRuntimeInfoGoroutineAttribution(t *testing.T) {
+	coldstart.SetPromptingCounter(nil)
+	coldstart.SetLiveACPCounter(nil)
+	coldstart.SetConnectedWSCounter(nil)
+	coldstart.SetOpenMCPStreamCounter(nil)
+
+	info := buildRuntimeInfo()
+	if info.ConcurrentPrompting != -1 {
+		t.Errorf("ConcurrentPrompting = %d, want -1 without provider", info.ConcurrentPrompting)
+	}
+	if info.LiveACPProcesses != -1 {
+		t.Errorf("LiveACPProcesses = %d, want -1 without provider", info.LiveACPProcesses)
+	}
+	if info.ConnectedWSClients != -1 {
+		t.Errorf("ConnectedWSClients = %d, want -1 without provider", info.ConnectedWSClients)
+	}
+	if info.OpenMCPSSEStreams != -1 {
+		t.Errorf("OpenMCPSSEStreams = %d, want -1 without provider", info.OpenMCPSSEStreams)
+	}
+
+	coldstart.SetPromptingCounter(func() int { return 2 })
+	coldstart.SetLiveACPCounter(func() int { return 4 })
+	coldstart.SetConnectedWSCounter(func() int { return 6 })
+	coldstart.SetOpenMCPStreamCounter(func() int { return 1 })
+	t.Cleanup(func() {
+		coldstart.SetPromptingCounter(nil)
+		coldstart.SetLiveACPCounter(nil)
+		coldstart.SetConnectedWSCounter(nil)
+		coldstart.SetOpenMCPStreamCounter(nil)
+	})
+
+	info2 := buildRuntimeInfo()
+	if info2.ConcurrentPrompting != 2 || info2.LiveACPProcesses != 4 ||
+		info2.ConnectedWSClients != 6 || info2.OpenMCPSSEStreams != 1 {
+		t.Errorf("unexpected attribution: %+v", info2)
+	}
+	if info2.NumGoroutine <= 0 {
+		t.Errorf("NumGoroutine should be > 0, got %d", info2.NumGoroutine)
+	}
+}
+
+// TestCreateGoroutineGaugeRecentHandler exercises the mitto_goroutine_gauge_recent
+// tool handler (mitto-x3x) end to end against the real coldstart gauge ring:
+// it starts a short-interval gauge to populate real samples, then checks the
+// handler mirrors coldstart.RecentGaugeSamples and honors Limit.
+func TestCreateGoroutineGaugeRecentHandler(t *testing.T) {
+	stop := coldstart.StartGauge(context.Background(), nil, 5*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(coldstart.RecentGaugeSamples(0)) >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+
+	want := coldstart.RecentGaugeSamples(0)
+	if len(want) < 2 {
+		t.Fatalf("expected at least 2 gauge samples to be present, got %d", len(want))
+	}
+
+	srv := &Server{}
+	handler := srv.createGoroutineGaugeRecentHandler()
+
+	_, out, err := handler(context.Background(), nil, GoroutineGaugeRecentInput{})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(out.Samples) != len(want) {
+		t.Errorf("Samples length = %d, want %d (matching coldstart.RecentGaugeSamples(0))", len(out.Samples), len(want))
+	}
+
+	_, out2, err := handler(context.Background(), nil, GoroutineGaugeRecentInput{Limit: 1})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if len(out2.Samples) != 1 {
+		t.Errorf("Samples length with Limit=1 = %d, want 1", len(out2.Samples))
+	}
+}
+
+// TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams pins the mitto-x3x
+// open-SSE-stream tracking added to mcpRequestLoggingMiddleware: a GET
+// request increments Server.openSSEStreams for the duration of the (blocking)
+// downstream handler call and decrements it afterwards, while a POST leaves
+// the counter untouched.
+func TestMcpRequestLoggingMiddlewareTracksOpenSSEStreams(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Downstream handler blocks until released, simulating a long-lived SSE
+	// GET stream that pins a goroutine for its lifetime.
+	release := make(chan struct{})
+	var observedDuringGET atomic.Int64
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedDuringGET.Store(srv.openSSEStreams.Load())
+		<-release
+	})
+	wrapped := srv.mcpRequestLoggingMiddleware(next)
+
+	if got := srv.openSSEStreams.Load(); got != 0 {
+		t.Fatalf("expected openSSEStreams=0 before any request, got %d", got)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+		wrapped.ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+
+	// Wait for the handler to observe the incremented counter.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && observedDuringGET.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := observedDuringGET.Load(); got != 1 {
+		t.Errorf("expected openSSEStreams=1 while GET is in flight, got %d", got)
+	}
+
+	close(release)
+	<-done
+
+	if got := srv.openSSEStreams.Load(); got != 0 {
+		t.Errorf("expected openSSEStreams=0 after GET completes, got %d", got)
+	}
+
+	// A POST must not affect the counter at all.
+	postNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := srv.openSSEStreams.Load(); got != 0 {
+			t.Errorf("expected openSSEStreams=0 during POST, got %d", got)
+		}
+	})
+	postWrapped := srv.mcpRequestLoggingMiddleware(postNext)
+	postReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}"))
+	postWrapped.ServeHTTP(httptest.NewRecorder(), postReq)
+	if got := srv.openSSEStreams.Load(); got != 0 {
+		t.Errorf("expected openSSEStreams=0 after POST, got %d", got)
+	}
+}
+
+// TestMcpStreamableHTTPOptions_SessionTimeoutConfigured pins the mitto-txse
+// fix: the go-sdk's own SessionTimeout is now intentionally left at its zero
+// value ("never auto-close"), because its idle clock is refreshed ONLY by
+// POSTs (sessionInfo.startPOST/endPOST in mcp/streamable.go are invoked from
+// ServeHTTP only `if req.Method == http.MethodPost`) and never by the client's
+// long-lived standalone SSE GET keepalive. A conversation that goes
+// mcpIdleSessionTimeout between MCP *tool calls* — while faithfully keeping
+// its keepalive open — had its session silently deleted by the SDK, and the
+// next tools/call landed a 404 mid-turn (field evidence: 22 sessions reaped
+// at exactly 30.0 min after last POST, 44 keepalive GETs rejected, 1 real
+// tool call lost).
+//
+// Mitto now owns the idle-reap policy instead (reapIdleMCPSessions,
+// startMCPSessionReaper): activity is any request bearing the session id
+// (GET/POST/DELETE), and a session with a currently-open GET stream is exempt
+// from reaping outright regardless of idle time. This assertion is inverted
+// from the original mitto-6cz6 test by design — see the sibling
+// TestReapIdleMCPSessions_* tests below for the reaper's own behavior.
+//
+// The mitto-6cz6 rationale (every ACP session, including one-shot
+// processor-scoped auxiliary sessions, opens its own MCP session and never
+// explicitly DELETEs it, so without SOME idle reap policy these sessions
+// accumulate for the lifetime of the Mitto process — 279 concurrently open in
+// the field, one agent process alone holding 139 TCP connections) still
+// holds; it is now enforced by Mitto's own reaper rather than the SDK option.
+func TestMcpStreamableHTTPOptions_SessionTimeoutConfigured(t *testing.T) {
+	opts := mcpStreamableHTTPOptions()
+	if opts == nil {
+		t.Fatal("mcpStreamableHTTPOptions() returned nil")
+	}
+	if opts.SessionTimeout != 0 {
+		t.Errorf("StreamableHTTPOptions.SessionTimeout = %v, want 0 — the go-sdk's "+
+			"idle clock only resets on POST and never on the client's long-lived "+
+			"SSE GET keepalive, so a nonzero value here reaps sessions that are "+
+			"demonstrably still alive (mitto-txse). Mitto owns idle-reaping instead "+
+			"via reapIdleMCPSessions, which treats any request (including GET "+
+			"keepalives) as activity and exempts sessions with an open stream.",
+			opts.SessionTimeout)
+	}
+	// JSONResponse:true (mitto-6hr) must remain set regardless of the
+	// SessionTimeout change — it is an orthogonal, already-verified-correct
+	// mitigation for a different wedge and must not regress.
+	if !opts.JSONResponse {
+		t.Error("StreamableHTTPOptions.JSONResponse = false, want true (mitto-6hr fix must remain in place)")
+	}
+	if opts.DisableLocalhostProtection {
+		t.Error("StreamableHTTPOptions.DisableLocalhostProtection = true, want false")
+	}
+}
+
+// TestMCPStreamableHandler_RejectsCrossOriginRequest pins the go-sdk
+// GO-2026-4773 fix. A malicious website must not be able to POST MCP requests
+// to Mitto's local HTTP transport.
+func TestMCPStreamableHandler_RejectsCrossOriginRequest(t *testing.T) {
+	sdkServer := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return sdkServer
+	}, mcpStreamableHTTPOptions())
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://malicious.example")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin MCP request status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+// TestMCPStreamableHandler_RejectsNonJSONContentType pins the go-sdk
+// GO-2026-4773 fix against cross-site text/plain POST requests.
+func TestMCPStreamableHandler_RejectsNonJSONContentType(t *testing.T) {
+	sdkServer := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return sdkServer
+	}, mcpStreamableHTTPOptions())
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain MCP request status = %d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
+}
+
+// newReaperTestServer builds a minimal *Server suitable for exercising the
+// idle-session reaper (mitto-txse) without binding a real listener.
+func newReaperTestServer(t *testing.T) *Server {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	return srv
+}
+
+// TestReapIdleMCPSessions_GETKeepaliveOnlyActivityNotReaped is the exact
+// mitto-txse regression: a session that only ever sees GET keepalive requests
+// (no POST) must NOT be reaped as long as those keepalives keep arriving
+// within reaperTimeout of each other, even though the total elapsed time
+// since the last POST (there was none) vastly exceeds the timeout.
+func TestReapIdleMCPSessions_GETKeepaliveOnlyActivityNotReaped(t *testing.T) {
+	srv := newReaperTestServer(t)
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+
+	const sid = "sess-get-keepalive-only"
+	wrapped := srv.mcpRequestLoggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	// Seven keepalive GETs, five minutes apart (matches the field evidence's
+	// observed ~5min keepalive interval), no POST at all — total elapsed 35
+	// minutes, well past reaperTimeout, but each GET refreshes the clock.
+	for i := 0; i < 7; i++ {
+		clock = clock.Add(5 * time.Minute)
+		req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+		req.Header.Set(mcpSessionIDHeader, sid)
+		wrapped.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	srv.reapIdleMCPSessions()
+
+	srv.reaperMu.Lock()
+	_, tracked := srv.mcpSessionLeases[sid]
+	srv.reaperMu.Unlock()
+	if !tracked {
+		t.Error("session with only periodic GET keepalive activity was reaped (tracking entry removed) — " +
+			"GET requests must count as activity, not just POST (mitto-txse)")
+	}
+}
+
+// TestReapIdleMCPSessions_OpenStreamExemptPastTimeout pins that a session
+// with a currently-open GET stream is never reaped, regardless of how idle
+// its lastActivity timestamp is.
+func TestReapIdleMCPSessions_OpenStreamExemptPastTimeout(t *testing.T) {
+	srv := newReaperTestServer(t)
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+
+	const sid = "sess-open-stream"
+	srv.reaperTouch(sid)
+	srv.reaperStreamOpened(sid)
+	defer srv.reaperStreamClosed(sid)
+
+	// Advance well past the timeout with no further activity at all.
+	clock = clock.Add(31 * time.Minute)
+
+	srv.reapIdleMCPSessions()
+
+	srv.reaperMu.Lock()
+	lease, tracked := srv.mcpSessionLeases[sid]
+	openCount := 0
+	if tracked {
+		openCount = lease.openStreams
+	}
+	srv.reaperMu.Unlock()
+	if !tracked || openCount != 1 {
+		t.Errorf("session with an open GET stream was reaped past the idle timeout "+
+			"(tracked=%v, openCount=%d) — an open stream must exempt a session "+
+			"regardless of idle time (mitto-txse)", tracked, openCount)
+	}
+}
+
+// TestReapIdleMCPSessions_NoActivityNoStreamIsReapedAndLogged pins the
+// mitto-6cz6 non-regression: a session with no activity at all and no open
+// stream, past the idle timeout, IS reaped — via a synthetic DELETE served
+// against the real streamable handler, provably removing the session
+// server-side — and the reap is logged at INFO with the session id and idle
+// duration so a subsequent 404 is attributable.
+func TestReapIdleMCPSessions_NoActivityNoStreamIsReapedAndLogged(t *testing.T) {
+	srv := newReaperTestServer(t)
+
+	var logBuf bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return srv.mcpServer
+	}, mcpStreamableHTTPOptions())
+	srv.streamableHandler = handler
+
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// DisableStandaloneSSE so the client opens no GET stream of its own —
+	// isolates this test to the "truly idle" scenario.
+	transport := &mcp.StreamableClientTransport{Endpoint: ts.URL, DisableStandaloneSSE: true}
+	client := mcp.NewClient(&mcp.Implementation{Name: "mitto-reaper-test", Version: "1.0.0"}, nil)
+	ctx := context.Background()
+	clientSess, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("mcp client Connect (initialize) failed: %v", err)
+	}
+	sid := clientSess.ID()
+	if sid == "" {
+		t.Fatal("client session has no id after Connect")
+	}
+
+	clock := time.Now()
+	srv.reaperNow = func() time.Time { return clock }
+	srv.reaperTimeout = 30 * time.Minute
+	srv.reaperTouch(sid)
+	clock = clock.Add(31 * time.Minute)
+
+	srv.reapIdleMCPSessions()
+
+	srv.reaperMu.Lock()
+	_, tracked := srv.mcpSessionLeases[sid]
+	srv.reaperMu.Unlock()
+	if tracked {
+		t.Error("idle session with no open stream was not reaped (tracking entry still present)")
+	}
+
+	// Verify the session was actually removed server-side: a subsequent call
+	// over the now-stale session must fail (the server no longer knows it).
+	if _, err := clientSess.ListTools(ctx, &mcp.ListToolsParams{}); err == nil {
+		t.Error("expected ListTools to fail after reaping, but it succeeded — session was not actually removed server-side")
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "reaped idle MCP session") {
+		t.Errorf("expected an INFO log recording the reap, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, sid) {
+		t.Errorf("expected the reap log to include the session id %q, got logs:\n%s", sid, logs)
+	}
+	if !strings.Contains(logs, "idle_seconds") {
+		t.Errorf("expected the reap log to include idle_seconds, got logs:\n%s", logs)
 	}
 }
 
@@ -870,6 +1316,65 @@ func TestConversationStart_PlaceholderLoopSeed_Rejected(t *testing.T) {
 // ConversationStartInput.
 func intPtr(v int) *int { return &v }
 
+// TestConversationStart_LoopTrigger_CommaSeparatedList verifies that a
+// comma-separated loop_trigger MCP argument ("onCompletion,onTasks") arms
+// both triggers on the persisted LoopPrompt (mitto-r6j.5 flat-surface
+// fallback — MCP stays a plain string; multiple triggers are comma-joined
+// rather than a JSON array).
+func TestConversationStart_LoopTrigger_CommaSeparatedList(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		LoopPrompt:                 "check and continue",
+		LoopTrigger:                "onCompletion,onTasks",
+		LoopCompletionDelaySeconds: intPtr(30),
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error = %v", err)
+	}
+	if !output.LoopConfigured {
+		t.Fatal("LoopConfigured = false, want true")
+	}
+
+	loop, err := store.Loop(output.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop().Get() error = %v", err)
+	}
+	if len(loop.Triggers) != 2 || !loop.HasTrigger(session.TriggerOnCompletion) || !loop.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("Triggers = %v, want both onCompletion and onTasks", loop.Triggers)
+	}
+}
+
+// TestConversationStart_LoopTrigger_SingleValue verifies that a single
+// loop_trigger value (no comma) still produces a one-element trigger list.
+func TestConversationStart_LoopTrigger_SingleValue(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		LoopPrompt:                 "check and continue",
+		LoopTrigger:                "onCompletion",
+		LoopCompletionDelaySeconds: intPtr(30),
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error = %v", err)
+	}
+	if !output.LoopConfigured {
+		t.Fatal("LoopConfigured = false, want true")
+	}
+
+	loop, err := store.Loop(output.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop().Get() error = %v", err)
+	}
+	if len(loop.Triggers) != 1 || loop.Triggers[0] != session.TriggerOnCompletion {
+		t.Errorf("Triggers = %v, want [onCompletion]", loop.Triggers)
+	}
+}
+
 // TestConversationStart_Singleton_RoutesToExisting verifies that a second
 // mitto_conversation_new for the same singleton prompt in the same working dir
 // routes to the existing conversation (reused=true) instead of creating a
@@ -1042,6 +1547,7 @@ func (m *mockSessionManager) BroadcastSessionArchived(sessionID string, archived
 func (m *mockSessionManager) BroadcastSessionDeleted(sessionID string)                     {}
 func (m *mockSessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {}
 func (m *mockSessionManager) DeleteChildSessions(parentID string)                          {}
+func (m *mockSessionManager) ApplyOnCloseProcessors(sessionID string, reason string)       {}
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
@@ -2426,7 +2932,7 @@ func TestChildrenTasksWait_BothReportDuringWait(t *testing.T) {
 
 func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
 	// Same task_id across waits → reports are preserved.
-	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
 	// First wait with task_id: times out (child hasn't reported yet)
@@ -2458,6 +2964,7 @@ func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
 	_, waitOutput2, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
 		SelfID:         parentID,
 		ChildrenList:   childIDs,
+		Prompt:         "Report again only if still pending.",
 		TaskID:         "investigate",
 		TimeoutSeconds: 1,
 	})
@@ -2471,6 +2978,119 @@ func TestChildrenTasksWait_ReportsPreservedSameTask(t *testing.T) {
 	report := waitOutput2.Reports[childIDs[0]]
 	if !report.Completed {
 		t.Error("Expected child report to be completed (preserved across same-task waits)")
+	}
+	messages, err := store.Queue(childIDs[0]).List()
+	if err != nil {
+		t.Fatalf("list child queue: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("already-reported child received another prompt: %d queued messages", len(messages))
+	}
+}
+
+func TestChildrenTasksWait_SameTaskPromptRecoversAutoCompletedChild(t *testing.T) {
+	// mitto-nw8l: a new prompt must reopen a same-task wait whose prior result was synthetic.
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
+	var logOutput bytes.Buffer
+	srv.logger = slog.New(slog.NewTextHandler(&logOutput, nil))
+	ctx := context.Background()
+	taskID := "retry-after-idle"
+
+	collector, err := srv.getOrCreateCollector(parentID)
+	if err != nil {
+		t.Fatalf("get collector: %v", err)
+	}
+	waitCh, alreadyDone := collector.startWait(taskID, childIDs)
+	if alreadyDone {
+		t.Fatal("first wait unexpectedly started completed")
+	}
+	collector.markChildAutoCompleted(childIDs[0], "agent_idle")
+	select {
+	case <-waitCh:
+	case <-time.After(time.Second):
+		t.Fatal("synthetic report did not complete first wait")
+	}
+	collector.clearWait()
+
+	_, waitOnlyOutput, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         taskID,
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("same-task wait-only retry failed: %v", err)
+	}
+	waitOnlyReport := waitOnlyOutput.Reports[childIDs[0]]
+	if waitOnlyOutput.TimedOut || waitOnlyReport.Reason != "agent_idle" {
+		t.Fatalf("wait-only retry did not preserve synthetic result: %+v", waitOnlyReport)
+	}
+
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   childIDs,
+			Prompt:         "Please report the completed result.",
+			TaskID:         taskID,
+			TimeoutSeconds: 5,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	queue := store.Queue(childIDs[0])
+	deadline := time.Now().Add(time.Second)
+	for {
+		messages, err := queue.List()
+		if err != nil {
+			t.Fatalf("list child queue: %v", err)
+		}
+		if len(messages) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovery prompt was not enqueued")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case result := <-resultCh:
+		t.Fatalf("same-task recovery wait returned before the real report: %+v", result.output.Reports[childIDs[0]])
+	case <-time.After(100 * time.Millisecond):
+	}
+	if !collector.isWaiting() {
+		t.Fatal("collector cleared the recovery wait before the real report")
+	}
+
+	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childIDs[0],
+		Status:  "completed",
+		Summary: "Recovered result",
+		TaskID:  taskID,
+	})
+	if err != nil {
+		t.Fatalf("real report failed: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("recovery wait failed: %v", result.err)
+		}
+		report := result.output.Reports[childIDs[0]]
+		if !report.Completed || report.Report == nil || report.Report.Summary != "Recovered result" {
+			t.Fatalf("recovery wait did not return the real report: %+v", report)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery wait did not unblock after the real report")
+	}
+	if strings.Contains(logOutput.String(), "no active wait") {
+		t.Fatalf("recovery report was logged as late: %s", logOutput.String())
 	}
 }
 
@@ -2524,37 +3144,66 @@ func TestChildrenTasksWait_ReportsClearedOnNewTask(t *testing.T) {
 	}
 }
 
-func TestUnregisterSession_CleansUpCollector(t *testing.T) {
-	srv, _, parentID, childIDs := setupParentChildSessions(t, 1)
+func TestChildrenTasksReport_SurvivesParentSuspensionAndRestart(t *testing.T) {
+	srv, store, parentID, childIDs := setupParentChildSessions(t, 1)
 	ctx := context.Background()
 
-	// Child reports (creates collector for parent)
-	_, _, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+	srv.UnregisterSession(parentID)
+	_, output, err := srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
 		SelfID:  childIDs[0],
 		Status:  "completed",
 		Summary: "Done",
+		TaskID:  "suspended-parent",
 	})
 	if err != nil {
 		t.Fatalf("Report failed: %v", err)
 	}
-
-	// Verify collector exists
-	srv.childReportCollectorsMu.Lock()
-	_, exists := srv.childReportCollectors[parentID]
-	srv.childReportCollectorsMu.Unlock()
-	if !exists {
-		t.Fatal("Expected collector to exist after child report")
+	if !output.Success {
+		t.Fatalf("Report was not accepted: %s", output.Error)
 	}
 
-	// Unregister parent session
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Re-register parent: %v", err)
+	}
+	_, resumedWait, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "suspended-parent",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Wait after parent resume failed: %v", err)
+	}
+	resumedReport := resumedWait.Reports[childIDs[0]]
+	if resumedWait.TimedOut || !resumedReport.Completed || resumedReport.Report == nil || resumedReport.Report.Summary != "Done" {
+		t.Fatalf("Persisted report was not restored after parent resume: %+v", resumedReport)
+	}
 	srv.UnregisterSession(parentID)
 
-	// Verify collector was cleaned up
-	srv.childReportCollectorsMu.Lock()
-	_, exists = srv.childReportCollectors[parentID]
-	srv.childReportCollectorsMu.Unlock()
-	if exists {
-		t.Error("Expected collector to be cleaned up after unregistering parent session")
+	restarted, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("Restart server: %v", err)
+	}
+	if err := restarted.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Register parent after restart: %v", err)
+	}
+	if err := restarted.RegisterSession(childIDs[0], nil, logger); err != nil {
+		t.Fatalf("Register child after restart: %v", err)
+	}
+
+	_, waitOutput, err := restarted.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   childIDs,
+		TaskID:         "suspended-parent",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("Wait after restart failed: %v", err)
+	}
+	report := waitOutput.Reports[childIDs[0]]
+	if waitOutput.TimedOut || !report.Completed || report.Report == nil || report.Report.Summary != "Done" {
+		t.Fatalf("Persisted report was lost across suspension/restart: %+v", report)
 	}
 }
 
@@ -3251,6 +3900,8 @@ func (m *mockSessionManagerForWorkspaces) BroadcastSessionDeleted(sessionID stri
 func (m *mockSessionManagerForWorkspaces) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {
 }
 func (m *mockSessionManagerForWorkspaces) DeleteChildSessions(parentID string) {}
+func (m *mockSessionManagerForWorkspaces) ApplyOnCloseProcessors(sessionID string, reason string) {
+}
 func (m *mockSessionManagerForWorkspaces) GetWorkspaces() []config.WorkspaceSettings {
 	return m.workspaces
 }
@@ -3604,6 +4255,7 @@ func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionArchived(string, 
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForWorkspaceUpdate) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForWorkspaceUpdate) ApplyOnCloseProcessors(string, string)    {}
 func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaces() []config.WorkspaceSettings {
 	return m.workspaces
 }
@@ -3895,12 +4547,13 @@ func TestConversationDelete_ChildOfDifferentParent(t *testing.T) {
 
 // mockBackgroundSessionForWait implements BackgroundSession for testing the wait tool.
 type mockBackgroundSessionForWait struct {
-	prompting             atomic.Bool
-	queuedDeliveryInProg  atomic.Bool
-	waitCompleted         chan struct{} // close to simulate prompt completion
-	selfDestructCalled    atomic.Bool   // records whether RequestSelfDestruct was called
-	tryProcessCalledCount atomic.Int32  // records how many times TryProcessQueuedMessage was called
-	queueConfig           *config.QueueConfig
+	prompting              atomic.Bool
+	startupRecoveryPending atomic.Bool
+	queuedDeliveryInProg   atomic.Bool
+	waitCompleted          chan struct{} // close to simulate prompt completion
+	selfDestructCalled     atomic.Bool   // records whether RequestSelfDestruct was called
+	tryProcessCalledCount  atomic.Int32  // records how many times TryProcessQueuedMessage was called
+	queueConfig            *config.QueueConfig
 }
 
 func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWait {
@@ -3912,6 +4565,9 @@ func newMockBackgroundSessionForWait(prompting bool) *mockBackgroundSessionForWa
 }
 
 func (m *mockBackgroundSessionForWait) IsPrompting() bool { return m.prompting.Load() }
+func (m *mockBackgroundSessionForWait) StartupRecoveryPending() bool {
+	return m.startupRecoveryPending.Load()
+}
 func (m *mockBackgroundSessionForWait) HasQueuedDeliveryInProgress() bool {
 	return m.queuedDeliveryInProg.Load()
 }
@@ -3930,7 +4586,7 @@ func (m *mockBackgroundSessionForWait) LastQueuedSendError() (string, time.Time)
 }
 func (m *mockBackgroundSessionForWait) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
-	if !m.prompting.Load() {
+	if !m.prompting.Load() && !m.startupRecoveryPending.Load() {
 		return true
 	}
 	select {
@@ -3942,6 +4598,9 @@ func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Dura
 }
 func (m *mockBackgroundSessionForWait) ApplyModelTag(context.Context, string) (string, error) {
 	return "", nil
+}
+func (m *mockBackgroundSessionForWait) ActivePromptDispatch() (string, map[string]string, bool) {
+	return "", nil, false
 }
 
 // mockSessionManagerForWait implements SessionManager for testing the wait tool.
@@ -3975,6 +4634,7 @@ func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool, ...se
 func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
 func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
 func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
+func (m *mockSessionManagerForWait) ApplyOnCloseProcessors(string, string)               {}
 func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
@@ -4079,6 +4739,27 @@ func TestConversationWait_AgentResponded_NotPrompting(t *testing.T) {
 	}
 	if output.What != "agent_responded" {
 		t.Errorf("Expected what='agent_responded', got %q", output.What)
+	}
+}
+
+func TestConversationWait_AgentResponded_StartupRecoveryPending(t *testing.T) {
+	targetID := session.GenerateSessionID()
+	mockBS := newMockBackgroundSessionForWait(false)
+	mockBS.startupRecoveryPending.Store(true)
+	srv, callerID := setupServerForWait(t, targetID, mockBS)
+	srv.maxSingleWaitBlock = 50 * time.Millisecond
+
+	_, output, err := srv.handleConversationWait(context.Background(), nil, ConversationWaitInput{
+		SelfID:         callerID,
+		ConversationID: targetID,
+		What:           "agent_responded",
+		TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationWait returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Fatalf("startup-model recovery must remain pending, got %+v", output)
 	}
 }
 
@@ -4259,11 +4940,10 @@ func TestConversationWait_MissingWhat(t *testing.T) {
 }
 
 // =============================================================================
-// Pending Request FIFO Queue Tests
+// Pending Request Correlation Tests
 // =============================================================================
 
-func TestPendingRequestFIFO(t *testing.T) {
-	// Create a minimal server with FIFO queue
+func TestPendingRequestRejectsAmbiguousSharedKey(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -4279,31 +4959,14 @@ func TestPendingRequestFIFO(t *testing.T) {
 		t.Fatalf("NewServer failed: %v", err)
 	}
 
-	// Register three pending requests with the same key ("init")
-	srv.RegisterPendingRequest("init", "session-A")
-	srv.RegisterPendingRequest("init", "session-B")
-	srv.RegisterPendingRequest("init", "session-C")
-
-	// WaitForPendingRequest should return them in FIFO order
-	resultA := srv.WaitForPendingRequest("init")
-	if resultA != "session-A" {
-		t.Errorf("Expected session-A first (FIFO), got: %s", resultA)
+	if srv.RegisterPendingRequest("init", "session-A") {
+		t.Fatal("ambiguous shared correlation key was accepted")
 	}
-
-	resultB := srv.WaitForPendingRequest("init")
-	if resultB != "session-B" {
-		t.Errorf("Expected session-B second (FIFO), got: %s", resultB)
-	}
-
-	resultC := srv.WaitForPendingRequest("init")
-	if resultC != "session-C" {
-		t.Errorf("Expected session-C third (FIFO), got: %s", resultC)
-	}
-
-	// Queue should now be empty — next call should return "" (timeout)
-	resultEmpty := srv.WaitForPendingRequest("init")
-	if resultEmpty != "" {
-		t.Errorf("Expected empty string after queue drained, got: %s", resultEmpty)
+	srv.pendingRequestsMu.RLock()
+	_, exists := srv.pendingRequests["init"]
+	srv.pendingRequestsMu.RUnlock()
+	if exists {
+		t.Fatal("rejected shared key left a pending entry consumable by another conversation")
 	}
 }
 
@@ -4324,19 +4987,19 @@ func TestPendingRequestSingleEntry(t *testing.T) {
 		t.Fatalf("NewServer failed: %v", err)
 	}
 
-	srv.RegisterPendingRequest("init", "my-session")
+	srv.RegisterPendingRequest("my-session", "my-session")
 
-	result := srv.WaitForPendingRequest("init")
+	result := srv.WaitForPendingRequest("my-session")
 	if result != "my-session" {
 		t.Errorf("Expected my-session, got: %s", result)
 	}
 
 	// Key should be fully cleaned up (deleted, not empty slice)
 	srv.pendingRequestsMu.Lock()
-	queue, exists := srv.pendingRequests["init"]
+	queue, exists := srv.pendingRequests["my-session"]
 	srv.pendingRequestsMu.Unlock()
 	if exists {
-		t.Errorf("Expected key 'init' to be deleted after last entry consumed, but found queue of len %d", len(queue))
+		t.Errorf("Expected key to be deleted after last entry consumed, but found queue of len %d", len(queue))
 	}
 }
 
@@ -4470,45 +5133,6 @@ func TestMCPSessionCacheCleanupOnUnregister(t *testing.T) {
 	}
 }
 
-func TestResolveSelfIDWithMCP_DirectLookup(t *testing.T) {
-	// Phase 1: Direct session ID lookup should work without MCP session
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer store.Close()
-
-	srv, err := NewServer(
-		Config{Port: 0},
-		Dependencies{Store: store},
-	)
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
-
-	// Register a session
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	sessionMeta := session.Metadata{
-		SessionID:  "known-session",
-		Name:       "Test",
-		ACPServer:  "test",
-		WorkingDir: "/tmp",
-	}
-	if err := store.Create(sessionMeta); err != nil {
-		t.Fatalf("Failed to create session: %v", err)
-	}
-	if err := srv.RegisterSession("known-session", nil, logger); err != nil {
-		t.Fatalf("Failed to register session: %v", err)
-	}
-
-	// Direct lookup (Phase 1) should resolve even with nil req
-	result := srv.resolveSelfIDWithMCP("known-session", nil)
-	if result != "known-session" {
-		t.Errorf("Expected known-session via Phase 1, got: %s", result)
-	}
-}
-
 func TestResolveSelfIDWithMCP_Phase3CacheFallback(t *testing.T) {
 	// Phase 3: When Phase 1+2 fail, MCP session cache should resolve
 	tmpDir := t.TempDir()
@@ -4584,12 +5208,11 @@ func TestResolveSelfIDWithMCP_CacheResolvesBeforeWait(t *testing.T) {
 		t.Errorf("Cache lookup took too long (%v); expected < 100ms", elapsed)
 	}
 
-	// (b) Phase 3 (nil req → Phase 2 skipped): pre-register a pending request so
-	// WaitForPendingRequest returns immediately without the 5s timeout delay.
-	srv.RegisterPendingRequest("init", "mitto-session-xyz")
-	result := srv.resolveSelfIDWithMCP("init", nil)
+	// (b) The pending-correlation mechanism remains intact independently.
+	srv.RegisterPendingRequest("mitto-session-xyz", "mitto-session-xyz")
+	result := srv.WaitForPendingRequest("mitto-session-xyz")
 	if result != "mitto-session-xyz" {
-		t.Errorf("Expected Phase 3 correlation to resolve mitto-session-xyz, got: %s", result)
+		t.Errorf("Expected pending correlation to resolve mitto-session-xyz, got: %s", result)
 	}
 }
 
@@ -5003,6 +5626,7 @@ func (m *mockSessionManagerForChildren) BroadcastSessionArchived(string, bool, .
 func (m *mockSessionManagerForChildren) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForChildren) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForChildren) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForChildren) ApplyOnCloseProcessors(string, string)     {}
 func (m *mockSessionManagerForChildren) GetWorkspaces() []config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
@@ -5159,10 +5783,15 @@ func TestChildrenTasksWait_TimeoutWithSessionUnregistered(t *testing.T) {
 // =============================================================================
 
 // mockSessionManagerForChildrenMutable is like mockSessionManagerForChildren
-// but supports safe concurrent mutation of the sessions map.
+// but supports safe concurrent mutation of the sessions map, plus scriptable
+// ResumeSession behavior for tests that simulate a GC recycle followed by a
+// successful (or transiently-failing) auto-resume.
 type mockSessionManagerForChildrenMutable struct {
-	mu       sync.RWMutex
-	sessions map[string]BackgroundSession
+	mu           sync.RWMutex
+	sessions     map[string]BackgroundSession
+	resumeResult BackgroundSession // if set, ResumeSession registers and returns this
+	resumeErr    error             // if set, ResumeSession returns this error instead
+	resumeCalls  []string          // sessionIDs passed to ResumeSession, in order
 }
 
 func (m *mockSessionManagerForChildrenMutable) GetSession(sessionID string) BackgroundSession {
@@ -5181,13 +5810,26 @@ func (m *mockSessionManagerForChildrenMutable) RemoveSession(sessionID string) {
 	delete(m.sessions, sessionID)
 }
 
+func (m *mockSessionManagerForChildrenMutable) ResumeCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.resumeCalls)
+}
+
 func (m *mockSessionManagerForChildrenMutable) ListRunningSessions() []string { return nil }
 func (m *mockSessionManagerForChildrenMutable) CloseSessionGracefully(string, string, time.Duration) bool {
 	return true
 }
 func (m *mockSessionManagerForChildrenMutable) CloseSession(string, string) {}
-func (m *mockSessionManagerForChildrenMutable) ResumeSession(string, string, string) (BackgroundSession, error) {
-	return nil, nil
+func (m *mockSessionManagerForChildrenMutable) ResumeSession(sessionID, _, _ string) (BackgroundSession, error) {
+	m.mu.Lock()
+	m.resumeCalls = append(m.resumeCalls, sessionID)
+	result, err := m.resumeResult, m.resumeErr
+	if err == nil && result != nil {
+		m.sessions[sessionID] = result
+	}
+	m.mu.Unlock()
+	return result, err
 }
 func (m *mockSessionManagerForChildrenMutable) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
 	return nil
@@ -5199,6 +5841,7 @@ func (m *mockSessionManagerForChildrenMutable) BroadcastSessionArchived(string, 
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerForChildrenMutable) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerForChildrenMutable) ApplyOnCloseProcessors(string, string)    {}
 func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.WorkspaceSettings {
 	return nil
 }
@@ -5391,6 +6034,87 @@ func TestChildrenTasksWait_Signal2_DeliveryInProgress(t *testing.T) {
 	report, ok := output.Reports[childID]
 	if ok && report.Reason == "agent_idle" {
 		t.Errorf("Child was wrongly auto-completed with agent_idle while delivery was in progress")
+	}
+}
+
+// TestChildrenTasksWait_Signal3_StartupRecoveryPending is a regression test
+// for mitto-qy0j: a child whose BackgroundSession survives (bs != nil) but is
+// mid-startup-model-recovery (StartupRecoveryPending()==true, IsPrompting()
+// ==false — the queued initial prompt is gated behind an unresolved
+// session/set_model constraint) must NOT be auto-completed via the idle-grace
+// path. Before this fix, the poll loop only checked IsPrompting(), so this
+// state was indistinguishable from a genuinely idle/stuck agent.
+func TestChildrenTasksWait_Signal3_StartupRecoveryPending(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child Mid Startup Model Recovery",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child: not prompting (the queued prompt is gated), but startup model
+	// recovery is still in flight.
+	mockBS := newMockBackgroundSessionForWait(false)
+	mockBS.startupRecoveryPending.Store(true)
+	sm := &mockSessionManagerForChildren{
+		sessions: map[string]BackgroundSession{childID: mockBS},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	// Use a timeout shorter than the idle grace period + poll — should time
+	// out, not auto-complete via agent_idle.
+	_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+		SelfID:         parentID,
+		ChildrenList:   []string{childID},
+		TimeoutSeconds: 8,
+	})
+
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait returned error: %v", err)
+	}
+	if !output.TimedOut {
+		t.Error("Expected TimedOut=true (startup recovery pending should prevent agent_idle)")
+	}
+	report, ok := output.Reports[childID]
+	if ok && report.Reason == "agent_idle" {
+		t.Errorf("Child was wrongly auto-completed with agent_idle while startup model recovery was pending")
 	}
 }
 
@@ -5760,6 +6484,277 @@ func TestChildrenTasksWait_AutoCompletesStoppedChild(t *testing.T) {
 	}
 }
 
+// TestChildrenTasksWait_GCStoppedPromptingChildrenFailAfterRemoval reproduces
+// mitto-v87h: one Tier 6 recycle removes multiple actively prompting children
+// before the parent wait can inspect their in-memory queued-send errors.
+func TestChildrenTasksWait_GCStoppedPromptingChildrenFailAfterRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childIDs := []string{session.GenerateSessionID(), session.GenerateSessionID()}
+	sessions := make(map[string]BackgroundSession, len(childIDs))
+	for i, childID := range childIDs {
+		if err := store.Create(session.Metadata{
+			SessionID:       childID,
+			Name:            fmt.Sprintf("Prompting Child %d", i+1),
+			ACPServer:       "test-server",
+			WorkingDir:      "/test/dir",
+			ParentSessionID: parentID,
+		}); err != nil {
+			t.Fatalf("Failed to create child session: %v", err)
+		}
+		sessions[childID] = newMockBackgroundSessionForWait(true)
+	}
+
+	sm := &mockSessionManagerForChildrenMutable{sessions: sessions}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	for _, childID := range childIDs {
+		if err := srv.RegisterSession(childID, nil, logger); err != nil {
+			t.Fatalf("Failed to register child: %v", err)
+		}
+	}
+
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   childIDs,
+			TimeoutSeconds: 60,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Simulate one Tier 6 recycle. The live BackgroundSessions disappear, while
+	// their durable terminal records show that both were interrupted mid-prompt.
+	time.Sleep(200 * time.Millisecond)
+	for _, childID := range childIDs {
+		sm.RemoveSession(childID)
+		if err := store.RecordEvent(childID, session.Event{
+			Seq:       1,
+			Type:      session.EventTypeSessionEnd,
+			Timestamp: time.Now(),
+			Data: session.SessionEndData{
+				Reason:       "gc_suspended",
+				WasPrompting: true,
+			},
+		}); err != nil {
+			t.Fatalf("Record terminal outcome for %s: %v", childID, err)
+		}
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.Success {
+			t.Fatalf("Expected success envelope, got error: %s", result.output.Error)
+		}
+		if result.output.TimedOut {
+			t.Fatal("Expected terminal failures to unblock the wait without timeout")
+		}
+		for _, childID := range childIDs {
+			report, ok := result.output.Reports[childID]
+			if !ok {
+				t.Errorf("Missing report for child %s", childID)
+				continue
+			}
+			if report.Status != "failed" {
+				t.Errorf("Child %s status = %q, want failed", childID, report.Status)
+			}
+			if report.Reason != "processRecycled" {
+				t.Errorf("Child %s reason = %q, want processRecycled", childID, report.Reason)
+			}
+			if report.Completed {
+				t.Errorf("Child %s Completed = true, want false", childID)
+			}
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+}
+
+// TestChildrenTasksWait_ResumesModelGatedChildAfterGCRecycle is a regression
+// test for mitto-qy0j: a child that was GC-recycled (Tier 5/6 close every
+// session sharing a degraded process, via BackgroundSession.Close, BEFORE
+// stopping the process itself) before it ever dispatched its queued prompt
+// (WasPrompting=false — e.g. still gated on an unresolved startup model
+// constraint) must be resume-retried within the wait's bounded deadline
+// instead of being treated as a finished/auto-completed child. Once the
+// resumed session reports, the wait must resolve as a genuine completion.
+func TestChildrenTasksWait_ResumesModelGatedChildAfterGCRecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent Session",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to create parent session: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Model Gated Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("Failed to create child session: %v", err)
+	}
+
+	// Child starts running but not prompting — still gated on startup model
+	// application when the simulated GC recycle below removes it.
+	initialBS := newMockBackgroundSessionForWait(false)
+	initialBS.startupRecoveryPending.Store(true)
+
+	// The session the mock ResumeSession hands back once the parent's wait
+	// loop retries the resume after the recycle.
+	resumedBS := newMockBackgroundSessionForWait(false)
+
+	sm := &mockSessionManagerForChildrenMutable{
+		sessions:     map[string]BackgroundSession{childID: initialBS},
+		resumeResult: resumedBS,
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+	if err := srv.RegisterSession(childID, nil, logger); err != nil {
+		t.Fatalf("Failed to register child: %v", err)
+	}
+
+	ctx := context.Background()
+	type waitResult struct {
+		output ChildrenTasksWaitOutput
+		err    error
+	}
+	resultCh := make(chan waitResult, 1)
+	go func() {
+		_, output, err := srv.handleChildrenTasksWait(ctx, nil, ChildrenTasksWaitInput{
+			SelfID:         parentID,
+			ChildrenList:   []string{childID},
+			TimeoutSeconds: 30,
+		})
+		resultCh <- waitResult{output: output, err: err}
+	}()
+
+	// Simulate a GC Tier 5/6 recycle: the live BackgroundSession disappears
+	// and the durable terminal record shows it was NOT prompting — i.e. it
+	// never dispatched its queued (model-gated) prompt, so nothing was lost.
+	time.Sleep(200 * time.Millisecond)
+	sm.RemoveSession(childID)
+	if err := store.RecordEvent(childID, session.Event{
+		Seq:       1,
+		Type:      session.EventTypeSessionEnd,
+		Timestamp: time.Now(),
+		Data: session.SessionEndData{
+			Reason:       "gc_suspended",
+			WasPrompting: false,
+		},
+	}); err != nil {
+		t.Fatalf("Record terminal outcome for %s: %v", childID, err)
+	}
+
+	// The poll loop should resume-retry (not auto-complete/fail) this child.
+	deadline := time.Now().Add(10 * time.Second)
+	for sm.ResumeCallCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("ResumeSession was never called for the GC-recycled model-gated child")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for resumedBS.tryProcessCalledCount.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("resumed model-gated child did not restart queued prompt processing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The child (now on its resumed session) reports normally.
+	_, _, err = srv.handleChildrenTasksReport(ctx, nil, ChildrenTasksReportInput{
+		SelfID:  childID,
+		Status:  "completed",
+		Summary: "Recovered and finished the task",
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksReport failed: %v", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("handleChildrenTasksWait returned error: %v", result.err)
+		}
+		if !result.output.Success {
+			t.Fatalf("Expected success, got error: %s", result.output.Error)
+		}
+		if result.output.TimedOut {
+			t.Error("Expected the wait to resolve via the child's real report, not time out")
+		}
+		report, ok := result.output.Reports[childID]
+		if !ok {
+			t.Fatalf("Missing report for child %s", childID)
+		}
+		if !report.Completed || report.Status != "completed" {
+			t.Errorf("Expected a genuine completed report, got Completed=%v Status=%q Reason=%q",
+				report.Completed, report.Status, report.Reason)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Timeout waiting for handleChildrenTasksWait to return")
+	}
+
+	if got := sm.ResumeCallCount(); got == 0 {
+		t.Error("Expected ResumeSession to have been called at least once")
+	}
+}
+
 // =============================================================================
 // Auto-Resume Stored Sessions Tests
 // =============================================================================
@@ -5770,6 +6765,7 @@ type mockBackgroundSessionForAutoResume struct {
 }
 
 func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                             { return false }
+func (m *mockBackgroundSessionForAutoResume) StartupRecoveryPending() bool                  { return false }
 func (m *mockBackgroundSessionForAutoResume) HasQueuedDeliveryInProgress() bool             { return false }
 func (m *mockBackgroundSessionForAutoResume) GetQueueConfig() *config.QueueConfig           { return nil }
 func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                            { return 0 }
@@ -5789,15 +6785,20 @@ func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 func (m *mockBackgroundSessionForAutoResume) ApplyModelTag(context.Context, string) (string, error) {
 	return "", nil
 }
+func (m *mockBackgroundSessionForAutoResume) ActivePromptDispatch() (string, map[string]string, bool) {
+	return "", nil, false
+}
 
 // mockSessionManagerForAutoResume implements SessionManager where GetSession returns nil
 // for stored sessions, and ResumeSession makes the session available.
 type mockSessionManagerForAutoResume struct {
-	mu           sync.Mutex
-	sessions     map[string]BackgroundSession // initially empty for stored sessions
-	resumeCalls  []resumeCall
-	resumeErr    error             // if set, ResumeSession returns this error
-	resumeResult BackgroundSession // returned by ResumeSession on success
+	mu                        sync.Mutex
+	sessions                  map[string]BackgroundSession // initially empty for stored sessions
+	resumeCalls               []resumeCall
+	resumeErr                 error   // if set, ResumeSession returns this error
+	resumeErrs                []error // scripted per-call errors; nil entry means success
+	resumeErrIsMCPInitTimeout bool
+	resumeResult              BackgroundSession // returned by ResumeSession on success
 	// onResume is called after a successful resume to allow registering the session
 	// with the MCP server's internal registry (simulating the real flow).
 	onResume func(sessionID string)
@@ -5828,6 +6829,14 @@ func (m *mockSessionManagerForAutoResume) CloseSession(string, string) {}
 func (m *mockSessionManagerForAutoResume) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
 	m.mu.Lock()
 	m.resumeCalls = append(m.resumeCalls, resumeCall{sessionID, sessionName, workingDir})
+	if len(m.resumeErrs) > 0 {
+		err := m.resumeErrs[0]
+		m.resumeErrs = m.resumeErrs[1:]
+		if err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
 	if m.resumeErr != nil {
 		m.mu.Unlock()
 		return nil, m.resumeErr
@@ -5856,6 +6865,7 @@ func (m *mockSessionManagerForAutoResume) BroadcastSessionArchived(string, bool,
 func (m *mockSessionManagerForAutoResume) BroadcastSessionDeleted(string)            {}
 func (m *mockSessionManagerForAutoResume) BroadcastWaitingForChildren(string, bool)  {}
 func (m *mockSessionManagerForAutoResume) DeleteChildSessions(string)                {}
+func (m *mockSessionManagerForAutoResume) ApplyOnCloseProcessors(string, string)     {}
 func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
@@ -5882,7 +6892,9 @@ func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.Workspace
 	return nil
 }
 func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
-func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(error) bool  { return false }
+func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(err error) bool {
+	return err != nil && m.resumeErrIsMCPInitTimeout
+}
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -5976,6 +6988,72 @@ func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	queueLen, _ := store.Queue(childID).Len()
 	if queueLen != 1 {
 		t.Errorf("Expected 1 message in queue, got %d", queueLen)
+	}
+}
+
+// mitto-j66p: conversation_id "self" must resolve to the caller's own
+// conversation instead of failing with "conversation not found: self".
+func TestSendPrompt_SelfTarget_EnqueuesOnCaller(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	callerID := session.GenerateSessionID()
+	callerMeta := session.Metadata{
+		SessionID:  callerID,
+		Name:       "Self Dispatcher",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{
+			session.FlagCanSendPrompt: true,
+		},
+	}
+	if err := store.Create(callerMeta); err != nil {
+		t.Fatalf("Failed to create caller session: %v", err)
+	}
+
+	sm := &mockSessionManagerForAutoResume{
+		sessions: map[string]BackgroundSession{
+			callerID: &mockBackgroundSessionForAutoResume{},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller session: %v", err)
+	}
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         callerID,
+		ConversationID: "self",
+		Prompt:         "Next phase, please",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success for self-target, got error: %s", output.Error)
+	}
+
+	queueLen, _ := store.Queue(callerID).Len()
+	if queueLen != 1 {
+		t.Errorf("Expected 1 message in caller's own queue, got %d", queueLen)
+	}
+
+	// A self-dispatch must never resume anything: the caller is already running.
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(sm.resumeCalls) != 0 {
+		t.Errorf("Expected no ResumeSession calls for self-target, got %d", len(sm.resumeCalls))
 	}
 }
 
@@ -6218,6 +7296,77 @@ func TestChildrenTasksWait_AutoResumesStoredChild(t *testing.T) {
 	// Since it times out without a report, verify it was waited on (not skipped)
 	if !output.TimedOut {
 		t.Error("Expected timeout (child didn't report), but got success — this is fine if child reported")
+	}
+}
+
+// TestChildrenTasksWait_TransientStartupFailureRemainsRecoverable reproduces
+// mitto-n3x3. The persisted child represents an initial conversation-new start
+// failure; the first eager resume also times out, while the next attempt would
+// succeed. The wait must keep that child in a bounded starting state instead of
+// returning an immediately terminal-looking not_running report.
+func TestChildrenTasksWait_TransientStartupFailureRemainsRecoverable(t *testing.T) {
+	oldRetryDelays := childResumeRetryDelays
+	childResumeRetryDelays = []time.Duration{0}
+	t.Cleanup(func() { childResumeRetryDelays = oldRetryDelays })
+
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID: parentID, Name: "Parent", ACPServer: "test-server", WorkingDir: "/test/dir",
+		AdvancedSettings: map[string]bool{session.FlagCanSendPrompt: true},
+	}); err != nil {
+		t.Fatalf("store.Create(parent): %v", err)
+	}
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID: childID, Name: "Recoverable Child", ACPServer: "test-server",
+		WorkingDir: "/test/dir", ParentSessionID: parentID,
+	}); err != nil {
+		t.Fatalf("store.Create(child): %v", err)
+	}
+
+	transientErr := fmt.Errorf("MCP initialization timed out after 240s")
+	mockBS := &mockBackgroundSessionForAutoResume{}
+	sm := &mockSessionManagerForAutoResume{
+		sessions:                  map[string]BackgroundSession{},
+		resumeErrs:                []error{transientErr, nil},
+		resumeErrIsMCPInitTimeout: true,
+		resumeResult:              mockBS,
+	}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: sm})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	sm.onResume = func(sessionID string) { _ = srv.RegisterSession(sessionID, nil, logger) }
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession(parent): %v", err)
+	}
+
+	_, output, err := srv.handleChildrenTasksWait(context.Background(), nil, ChildrenTasksWaitInput{
+		SelfID: parentID, ChildrenList: []string{childID}, TimeoutSeconds: 1,
+	})
+	if err != nil {
+		t.Fatalf("handleChildrenTasksWait: %v", err)
+	}
+
+	sm.mu.Lock()
+	resumeCalls := append([]resumeCall(nil), sm.resumeCalls...)
+	sm.mu.Unlock()
+	if len(resumeCalls) < 2 {
+		t.Fatalf("transient startup recovery made %d resume attempt(s), want at least 2; output=%+v", len(resumeCalls), output)
+	}
+	if report, ok := output.Reports[childID]; ok && report.Status == "not_running" {
+		t.Fatalf("recoverable child was reported not_running after transient startup failure: %+v", report)
+	}
+	if !mockBS.tryProcessCalled.Load() {
+		t.Fatal("successful startup recovery did not kick queued prompt processing")
 	}
 }
 
@@ -6466,12 +7615,231 @@ func TestArchiveConversation_ChildNonParentRejected(t *testing.T) {
 	}
 }
 
+// TestArchiveConversation_NoArchiveRejected pins mitto-yvel.3: archiving a
+// top-level (non-child) NoArchive conversation via MCP is rejected with a
+// structured Success:false error and the conversation's Archived state is
+// left untouched.
+func TestArchiveConversation_NoArchiveRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	callerID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create caller: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  targetID,
+		Name:       "Protected",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		NoArchive:  true,
+	}); err != nil {
+		t.Fatalf("Failed to create target: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         callerID,
+		ConversationID: targetID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Error("Expected failure when archiving a NoArchive conversation")
+	}
+	if !strings.Contains(output.Error, "non-archivable") {
+		t.Errorf("Expected 'non-archivable' error, got: %s", output.Error)
+	}
+
+	updated, err := store.GetMetadata(targetID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updated.Archived {
+		t.Error("Archived = true after rejected archive request, want unchanged false")
+	}
+}
+
+// TestArchiveConversation_NoArchiveUnarchiveStillAllowed pins mitto-yvel.3:
+// unarchiving a NoArchive conversation via MCP is unaffected by the archive
+// guard (only archived:true is gated).
+func TestArchiveConversation_NoArchiveUnarchiveStillAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	callerID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  callerID,
+		Name:       "Caller",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create caller: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  targetID,
+		Name:       "Protected",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+		NoArchive:  true,
+	}); err != nil {
+		t.Fatalf("Failed to create target: %v", err)
+	}
+	// Pre-condition: pretend the conversation somehow ended up archived (e.g.
+	// legacy data predating this guard) — unarchive must still clear it.
+	if err := store.UpdateMetadata(targetID, func(m *session.Metadata) {
+		m.Archived = true
+		m.ArchiveReason = session.ArchiveReasonManual
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (seed archived) failed: %v", err)
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(callerID, nil, logger); err != nil {
+		t.Fatalf("Failed to register caller: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := false
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         callerID,
+		ConversationID: targetID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Errorf("Expected success when unarchiving a NoArchive conversation, got error: %s", output.Error)
+	}
+
+	updated, err := store.GetMetadata(targetID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updated.Archived {
+		t.Error("Archived = true after unarchive request, want false")
+	}
+}
+
+// TestArchiveConversation_NoArchiveChildStillDeletesViaRedirect pins
+// mitto-yvel.3: archiving a NoArchive CHILD conversation still delegates to
+// delete (the child-delegation block runs before the NoArchive guard), so
+// deletion of a protected conversation remains fully allowed (epic decision 3).
+func TestArchiveConversation_NoArchiveChildStillDeletesViaRedirect(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	parentID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:  parentID,
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}); err != nil {
+		t.Fatalf("Failed to create parent: %v", err)
+	}
+
+	childID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{
+		SessionID:       childID,
+		Name:            "Child",
+		ACPServer:       "test-server",
+		WorkingDir:      "/test/dir",
+		ParentSessionID: parentID,
+		NoArchive:       true,
+	}); err != nil {
+		t.Fatalf("Failed to create child: %v", err)
+	}
+
+	mockSM := &mockSessionManager{
+		workspacesForFolder: []config.WorkspaceSettings{
+			{ACPServer: "test-server", WorkingDir: "/test/dir"},
+		},
+	}
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{
+		Store:          store,
+		SessionManager: mockSM,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentID, nil, logger); err != nil {
+		t.Fatalf("Failed to register parent: %v", err)
+	}
+
+	ctx := context.Background()
+	archived := true
+	_, output, err := srv.handleArchiveConversation(ctx, nil, ArchiveConversationInput{
+		SelfID:         parentID,
+		ConversationID: childID,
+		Archived:       &archived,
+	})
+	if err != nil {
+		t.Fatalf("handleArchiveConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Errorf("Expected success when parent archives its NoArchive child (redirected to delete), got error: %s", output.Error)
+	}
+
+	// Verify child is permanently deleted (delegated to delete handler),
+	// NOT merely left un-archived by the guard.
+	_, err = store.GetMetadata(childID)
+	if err == nil {
+		t.Error("Expected NoArchive child to be permanently deleted via the archive-to-delete redirect, but it still exists")
+	}
+}
+
 // mockUIPrompter is a mock UIPrompter for testing handleUIOptions.
 type mockUIPrompter struct {
-	mu       sync.Mutex
-	response UIPromptResponse
-	err      error
-	calls    []UIPromptRequest
+	mu          sync.Mutex
+	response    UIPromptResponse
+	err         error
+	calls       []UIPromptRequest
+	notifyCalls []UINotifyRequest
+	notifyErr   error
 }
 
 func (m *mockUIPrompter) UIPrompt(_ context.Context, req UIPromptRequest) (UIPromptResponse, error) {
@@ -6483,7 +7851,12 @@ func (m *mockUIPrompter) UIPrompt(_ context.Context, req UIPromptRequest) (UIPro
 
 func (m *mockUIPrompter) DismissPrompt(_ string) {}
 
-func (m *mockUIPrompter) UINotify(_ UINotifyRequest) error { return nil }
+func (m *mockUIPrompter) UINotify(req UINotifyRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notifyCalls = append(m.notifyCalls, req)
+	return m.notifyErr
+}
 
 func (m *mockUIPrompter) lastCall() UIPromptRequest {
 	m.mu.Lock()
@@ -6492,6 +7865,16 @@ func (m *mockUIPrompter) lastCall() UIPromptRequest {
 		return UIPromptRequest{}
 	}
 	return m.calls[len(m.calls)-1]
+}
+
+// recordedNotifies returns a copy of every UINotify call the prompter has
+// received. Used by handler round-trip tests (e.g. mitto-9yz).
+func (m *mockUIPrompter) recordedNotifies() []UINotifyRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]UINotifyRequest, len(m.notifyCalls))
+	copy(out, m.notifyCalls)
+	return out
 }
 
 // newServerWithUIPrompter creates a test server with a session that has a UIPrompter and can_prompt_user flag.
@@ -7329,6 +8712,7 @@ func (m *mockSessionManagerCrossWorkspace) BroadcastSessionArchived(string, bool
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionDeleted(string)           {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastWaitingForChildren(string, bool) {}
 func (m *mockSessionManagerCrossWorkspace) DeleteChildSessions(string)               {}
+func (m *mockSessionManagerCrossWorkspace) ApplyOnCloseProcessors(string, string)    {}
 
 func (m *mockSessionManagerCrossWorkspace) GetWorkspaces() []config.WorkspaceSettings {
 	var result []config.WorkspaceSettings
@@ -9793,7 +11177,7 @@ func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.DelaySeconds != 30 || stored.MaxDurationSeconds != 3600 {
 		t.Errorf("stored delay/maxDur = %d/%d, want 30/3600", stored.DelaySeconds, stored.MaxDurationSeconds)
@@ -9817,6 +11201,70 @@ func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 	}
 	if out2.LoopMaxDurationSeconds != 3600 {
 		t.Errorf("patched maxDur = %d, want preserved 3600", out2.LoopMaxDurationSeconds)
+	}
+}
+
+// TestConversationUpdate_MultiTriggerCommaSeparated verifies that
+// mitto_conversation_update's flat loop_trigger argument accepts a
+// comma-separated list on both the create (isNew) and partial-update paths,
+// and that a partial update of an unrelated field does not clobber a
+// pre-existing multi-trigger list (mitto-r6j.5 clobber regression at the MCP
+// layer).
+func TestConversationUpdate_MultiTriggerCommaSeparated(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	prompt := "keep iterating"
+	trigger := "onCompletion,onTasks"
+
+	// Create via the isNew path.
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPrompt:     &prompt,
+		LoopTrigger:    &trigger,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+	if len(out.LoopTriggers) != 2 || out.LoopTriggers[0] != "onCompletion" || out.LoopTriggers[1] != "onTasks" {
+		t.Errorf("output LoopTriggers = %v, want [onCompletion onTasks]", out.LoopTriggers)
+	}
+
+	stored, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Get loop: %v", err)
+	}
+	if len(stored.Triggers) != 2 || !stored.HasTrigger(session.TriggerOnCompletion) || !stored.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("stored.Triggers = %v, want both onCompletion and onTasks", stored.Triggers)
+	}
+
+	// Partial update of an unrelated field must not clobber the trigger list.
+	disabled := false
+	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopEnabled:    &disabled,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (patch) error: %v", err)
+	}
+	if !out2.Success {
+		t.Fatalf("patch not successful: %s", out2.Error)
+	}
+	if len(out2.LoopTriggers) != 2 || out2.LoopTriggers[0] != "onCompletion" || out2.LoopTriggers[1] != "onTasks" {
+		t.Errorf("output LoopTriggers after unrelated patch = %v, want preserved [onCompletion onTasks]", out2.LoopTriggers)
+	}
+
+	stored2, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Get loop after patch: %v", err)
+	}
+	if len(stored2.Triggers) != 2 || !stored2.HasTrigger(session.TriggerOnCompletion) || !stored2.HasTrigger(session.TriggerOnTasks) {
+		t.Errorf("stored.Triggers after unrelated patch = %v, want preserved (clobber regression)", stored2.Triggers)
 	}
 }
 
@@ -9934,7 +11382,7 @@ func TestConversationStart_OnTasksLoop(t *testing.T) {
 		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnTasks() {
-		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onTasks", stored.EffectiveTriggers())
 	}
 	if stored.Condition != cond {
 		t.Errorf("stored condition = %q, want %q", stored.Condition, cond)
@@ -9981,7 +11429,7 @@ func TestConversationUpdate_OnTasksLoop(t *testing.T) {
 		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnTasks() {
-		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onTasks", stored.EffectiveTriggers())
 	}
 	if stored.Condition != cond {
 		t.Errorf("stored condition = %q, want %q", stored.Condition, cond)
@@ -10282,7 +11730,7 @@ func TestConversationStart_LoopPromptName_WithOnCompletion(t *testing.T) {
 		t.Fatalf("Loop.Get error: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.PromptName != "Loop body" {
 		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop body")
@@ -10429,8 +11877,8 @@ func TestConversationStart_PromptName_AutoAppliesLoopFrontmatter(t *testing.T) {
 			Name:   "Loop fixing bug",
 			Prompt: "drive the bug through phases",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				MaxDuration:   "4h",
 			},
@@ -10454,7 +11902,7 @@ func TestConversationStart_PromptName_AutoAppliesLoopFrontmatter(t *testing.T) {
 		t.Fatalf("Loop.Get error: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.DelaySeconds != 30 {
 		t.Errorf("stored DelaySeconds = %d, want 30 (from frontmatter)", stored.DelaySeconds)
@@ -10483,8 +11931,8 @@ func TestConversationStart_PromptName_LoopDefaults_ExplicitOverridesWin(t *testi
 			Name:   "Loop fixing bug",
 			Prompt: "body",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				MaxDuration:   "4h",
 			},
@@ -10555,8 +12003,8 @@ func TestConversationStart_PromptName_LoopApplyPromptDefaults_False(t *testing.T
 			Name:   "Loop fixing bug",
 			Prompt: "body",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 			},
 		},
@@ -10596,6 +12044,132 @@ func TestConversationStart_FreeTextSeed_NoAutoApply(t *testing.T) {
 	}
 }
 
+// TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse (mitto-ydj)
+// verifies that spawning a prompt whose loop: frontmatter is mode:optional
+// with default:false (e.g. testing/run-tests.prompt.yaml) creates the loop
+// fully configured but disabled when the caller leaves loop_enabled unset.
+func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Run tests",
+			Prompt: "run the tests",
+			Loop: &config.PromptLoop{
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
+				MaxIterations: 20,
+				Mode:          config.PromptLoopModeOptional,
+				Default:       boolPtr(false),
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Run tests",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true (loop must still be created, just disabled): %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.Enabled {
+		t.Errorf("stored Enabled = true, want false (mode:optional, default:false, caller left loop_enabled unset)")
+	}
+	// The rest of the frontmatter must still have been applied normally.
+	if !stored.IsOnCompletion() {
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
+	}
+	if stored.MaxIterations != 20 {
+		t.Errorf("stored MaxIterations = %d, want 20 (from frontmatter)", stored.MaxIterations)
+	}
+}
+
+// TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse_CallerOverrides
+// (mitto-ydj) verifies precedence: an explicit loop_enabled=true from the
+// caller wins over a mode:optional/default:false frontmatter.
+func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultFalse_CallerOverrides(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Run tests",
+			Prompt: "run the tests",
+			Loop: &config.PromptLoop{
+				Trigger:      []string{string(session.TriggerOnCompletion)},
+				OnCompletion: &config.PromptLoopOnCompletion{Delay: 30},
+				Mode:         config.PromptLoopModeOptional,
+				Default:      boolPtr(false),
+			},
+		},
+	})
+
+	ctx := context.Background()
+	callerEnabled := true
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:      parentID,
+		PromptName:  "Run tests",
+		LoopEnabled: &callerEnabled,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true: %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.Enabled {
+		t.Errorf("stored Enabled = false, want true (explicit caller loop_enabled=true must win over frontmatter default:false)")
+	}
+}
+
+// TestConversationStart_PromptName_LoopDefaults_OptionalDefaultNil_OnByDefault
+// (mitto-ydj) verifies that mode:optional with an absent default still spawns
+// an enabled loop — nil means "on by default, user-toggleable" (matches the
+// frontend's promptLoopInitialState), not "off".
+func TestConversationStart_PromptName_LoopDefaults_OptionalDefaultNil_OnByDefault(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Watch channel",
+			Prompt: "watch the channel",
+			Loop: &config.PromptLoop{
+				Trigger:      []string{string(session.TriggerOnCompletion)},
+				OnCompletion: &config.PromptLoopOnCompletion{Delay: 30},
+				Mode:         config.PromptLoopModeOptional,
+				// Default intentionally left nil.
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Watch channel",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true: %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.Enabled {
+		t.Errorf("stored Enabled = false, want true (mode:optional with nil default is on-by-default)")
+	}
+}
+
 // TestConversationStart_PromptName_LoopFrequencyAutoApply (mitto-r7y) verifies
 // that a schedule-trigger frontmatter (value/unit) is auto-applied so the
 // caller does not need to pass loop_frequency_value/unit.
@@ -10605,8 +12179,7 @@ func TestConversationStart_PromptName_LoopFrequencyAutoApply(t *testing.T) {
 			Name:   "Hourly loop",
 			Prompt: "check things",
 			Loop: &config.PromptLoop{
-				Value: 1,
-				Unit:  "hours",
+				Schedule: &config.PromptLoopSchedule{Value: 1, Unit: "hours"},
 			},
 		},
 	})
@@ -10642,8 +12215,8 @@ func TestConversationUpdate_LoopPromptName_AutoAppliesLoopFrontmatter(t *testing
 			Name:   "Loop fixing bug",
 			Prompt: "drive the bug",
 			Loop: &config.PromptLoop{
-				Trigger:       string(session.TriggerOnCompletion),
-				Delay:         30,
+				Trigger:       []string{string(session.TriggerOnCompletion)},
+				OnCompletion:  &config.PromptLoopOnCompletion{Delay: 30},
 				MaxIterations: 20,
 				MaxDuration:   "4h",
 			},
@@ -10671,7 +12244,7 @@ func TestConversationUpdate_LoopPromptName_AutoAppliesLoopFrontmatter(t *testing
 		t.Fatalf("Loop.Get error: %v", err)
 	}
 	if !stored.IsOnCompletion() {
-		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+		t.Errorf("stored trigger = %q, want onCompletion", stored.EffectiveTriggers())
 	}
 	if stored.DelaySeconds != 30 {
 		t.Errorf("stored DelaySeconds = %d, want 30 (from frontmatter)", stored.DelaySeconds)
@@ -10698,8 +12271,8 @@ func TestConversationUpdate_LoopPromptName_LoopApplyPromptDefaults_False(t *test
 			Name:   "Loop fixing bug",
 			Prompt: "body",
 			Loop: &config.PromptLoop{
-				Trigger: string(session.TriggerOnCompletion),
-				Delay:   30,
+				Trigger:      []string{string(session.TriggerOnCompletion)},
+				OnCompletion: &config.PromptLoopOnCompletion{Delay: 30},
 			},
 		},
 	})

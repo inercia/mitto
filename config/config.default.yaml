@@ -50,6 +50,11 @@ models:
       matchMode: contains
       pattern: Claude
     tags: [Anthropic]
+  - name: Claude Mythos
+    criteria:
+      matchMode: contains
+      pattern: Mythos
+    tags: [Smartest, Reasoning, Thinking, Deep, Slow, Expensive]
   - name: Claude Opus
     criteria:
       matchMode: contains
@@ -80,11 +85,29 @@ models:
       matchMode: contains
       pattern: GPT-4
     tags: [Smart, Coding]
+  # Vendor-level fallback: catches any GPT-* variant (e.g. future GPT-5.6, GPT-6);
+  # carries only the vendor tag so it never outranks GPT-5/GPT-4 for capability tags.
+  - name: OpenAI GPT
+    criteria:
+      matchMode: contains
+      pattern: GPT
+    tags: [OpenAI]
   - name: Gemini
     criteria:
       matchMode: contains
       pattern: Gemini
     tags: [Smart, LongContext]
+  # Open-weight / self-hostable families.
+  - name: GLM
+    criteria:
+      matchMode: contains
+      pattern: GLM
+    tags: [Smart, Coding, OpenWeight, SelfHostable]
+  - name: DeepSeek
+    criteria:
+      matchMode: contains
+      pattern: DeepSeek
+    tags: [Smart, Coding, OpenWeight, SelfHostable]
 
 # Global shortcut buttons
 # Quick-action buttons shown across the UI, keyed by the section they appear in:
@@ -165,6 +188,10 @@ web:
   #     - 10.0.0.0/8
   #     - 172.16.0.0/12
   #     - 192.168.0.0/16
+  #   # Header modes: x-forwarded-for (default), x-real-ip, cf-connecting-ip
+  #   # Enable single-IP modes only when the proxy overwrites client values.
+  #   trusted_proxy_headers:
+  #     - x-forwarded-for
   #
   #   # Allowed origins for WebSocket connections (CSRF protection)
   #   # If empty, only same-origin requests are allowed
@@ -182,13 +209,26 @@ web:
 
   # Beads (issue tracker) endpoint configuration
   # beads:
-  #   # Opt in to the POST /api/beads/migrate endpoint that runs
+  #   # Admin kill-switch for the POST /api/beads/migrate endpoint that runs
   #   # `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema && bd dolt push` (or
   #   # `bd bootstrap`) from the Beads panel when a schema-skew is detected.
-  #   # Default: false. Enable only on the designated migrator clone of a
-  #   # remote-backed beads database — running migrate on a non-designated
-  #   # clone forks the schema. See mitto-ukl.
-  #   allow_migrate_from_ui: false
+  #   # Default: true (enabled). The SchemaSkewDialog collects informed
+  #   # consent (mode radio + ack checkbox) before invoking the endpoint, so
+  #   # the common case just works. Set to false to hard-disable UI-driven
+  #   # migrations for multi-user deployments against a shared remote-backed
+  #   # clone where forking the schema is unacceptable. See mitto-ukl,
+  #   # mitto-erry.
+  #   allow_migrate_from_ui: true
+  #
+  #   # In-memory read-cache backstop TTL. Only relevant when
+  #   # --beads-cache is enabled (default: on). Freshness is primarily
+  #   # driven by writer-side invalidation and the .beads/ fsnotify
+  #   # watcher; this TTL only bounds staleness in the corner cases
+  #   # fsnotify can miss (NFS/SMB, inotify watch-limit exhaustion,
+  #   # watch-registration race, the 2 s self-suppress window).
+  #   # Any positive Go duration string. Empty / missing / non-positive
+  #   # falls back to the default. See mitto-9ni.
+  #   read_cache_ttl: "10m"
 
   # Scanner Defense (only applies to external listener)
   # Automatically blocks IPs that exhibit scanner-like behavior:
@@ -223,6 +263,8 @@ web:
 #   # Web interface settings (applies to both browser and macOS app)
 #   web:
 #     input_font_family: "system"  # Font for compose area: system, monospace, sans-serif, serif, menlo, etc.
+#     conversation_font_family: "system"  # Prose font for conversation messages: system, sans-serif, serif, inter, sf-pro, helvetica-neue, roboto, georgia, charter, ibm-plex-sans
+#     conversation_font_size: "sm"  # Base size for conversation messages (sidebar small-A/large-A re-anchors on it): xs (13px), sm (14px), md (15px), lg (16px), xl (18px)
 #     conversation_cycling_mode: "all"  # Navigation scope: "all" or "visible_groups" (only expanded groups)
 #     single_expanded_group: false  # Accordion mode: at most one conversation group expanded at a time
 #

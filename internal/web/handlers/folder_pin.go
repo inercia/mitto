@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 )
@@ -78,6 +79,15 @@ func (h *Handlers) handleFolderPinSet(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to update folder pin state")
 		return
+	}
+
+	// Stamp the folder's MRU timestamp on pin (so the "Add folder" dialog ranks
+	// recently-pinned folders first when they later re-enter the hidden list).
+	if body.Pinned {
+		if err := config.SetFolderLastOpenedAt(workingDir, time.Now()); err != nil && h.deps.Logger != nil {
+			h.deps.Logger.Warn("failed to stamp folder last_opened_at",
+				"working_dir", workingDir, "error", err)
+		}
 	}
 
 	// Propagate the new folder-native flag into the in-memory config so the next

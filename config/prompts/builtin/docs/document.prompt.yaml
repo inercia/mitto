@@ -1,0 +1,33 @@
+icon: edit
+name: Document
+menus: prompts, !promptsLoop
+description: Update user-facing documentation for the changes we just made
+group: Documentation
+backgroundColor: '#E1BEE7'
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  {{- if .Session.HasMessages }}
+  Review the conversation so far and infer what needs to be documented from the
+  work we have done together — the changes we made, the decisions we took, and
+  any new user-facing behavior that emerged. Also read the affected files and
+  the existing user-facing docs before writing anything.
+  {{- else }}
+  This is the first message in this conversation, so there is no prior context
+  to draw from. Figure out what needs to be documented by inspecting the current
+  repository state:
+
+  1. Run `git status` and `git diff` to see uncommitted changes.
+  2. If there are no uncommitted changes, run `git log --oneline -20` and
+     inspect the most recent commits (`git show <sha>`) to identify recent
+     user-facing changes worth documenting.
+  3. Read the affected files and the existing user-facing docs before writing
+     anything.
+  {{- end }}
+
+  Update the user-facing documentation to reflect those changes.
+
+  Focus on user-facing behavior: new or changed features, commands and options,
+  configuration, and any required migration steps.
+
+  {{ template "docs/shared/documentation-quality" . }}

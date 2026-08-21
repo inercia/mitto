@@ -1,0 +1,47 @@
+{{/*
+  offer-delete-conversation — the standard "Final step" block that ~12 prompts
+  emit after finishing a self-contained task. Prompts the user via
+  `mitto_ui_options` whether to delete this conversation now, honours the
+  answer, and falls back to a conservative "only delete on timeout when the
+  work is clearly complete and the conversation was dedicated to this task"
+  policy.
+
+  The block's wording is BYTE-IDENTICAL across the callers that use it, with
+  one purely cosmetic exception: the placeholder inside the notify's message
+  argument (`<one-line summary of what was done>`) is a literal instruction
+  the LLM substitutes at render time. Callers that want a different verb
+  (e.g. "discussed" instead of "done") just phrase their notification
+  appropriately at emission time — the fragment does not need to vary.
+
+  Usage — at the very end of the prompt body:
+
+      ## Final step — Offer to delete this conversation
+
+      {{ template "_shared/offer-delete-conversation" . }}
+
+  Callers may prepend an optional preamble blockquote before the fragment
+  call to skip the step under specific conditions (see e.g.
+  `beads-issues/resolved.prompt.yaml`).
+*/}}
+The task is complete. Offer to tidy up so finished conversations do not accumulate.
+
+1. Ask the user whether to delete this conversation now, via
+   `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+   - **"Yes, delete it"**
+   - **"No, keep it"**
+
+2. Honour the answer:
+   - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
+     message is delivered first) with
+     `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+     then self-destruct with
+     `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
+   - **Keep** → leave the conversation in place.
+
+3. **On timeout** (no response): only delete this conversation if **all** of the following hold —
+   it was **started by this prompt** (a dedicated conversation for this task, not an existing
+   conversation you were invoked into), **no further action is expected from the user**, and
+   **all the work was clearly completed**. If so, notify (as above) then self-destruct; otherwise
+   leave the conversation untouched.
+
+If the `mitto_*` tools are unavailable, skip this step silently.

@@ -14,7 +14,7 @@ HTTP callback endpoints allow external systems to trigger an on-demand run of a 
 
 ## Quick Start
 
-Once you've enabled a callback URL for a loop conversation (via the properties panel in the UI), you can trigger it with a simple `curl`:
+Once you have generated a callback URL from **SessionPanel → Loop → On callback**, you can trigger the loop conversation with a simple `curl`:
 
 ```bash
 # Trigger a loop conversation callback
@@ -35,7 +35,7 @@ curl -X POST https://your-mitto-server.com/mitto/api/callback/cb_YOUR_TOKEN_HERE
   -d '{"metadata": {"source": "my-script", "reason": "manual check"}}'
 ```
 
-> **Note:** The URL must include the API prefix (typically `/mitto`). The full URL is shown when you click **"Enable Callback URL"** or **"Copy URL"** in the conversation properties panel.
+> **Note:** The URL must include the API prefix (typically `/mitto`). Open the Loop tab with the compact control bar settings gear, check **On callback**, then use its copy button. The credential is displayed in a visually truncated field but copied in full.
 
 ## URL Scheme
 
@@ -80,7 +80,7 @@ Triggers the loop prompt for the session associated with this token.
 | 404    | `{"error": "not_found"}`          | Token doesn't match any session              |
 | 405    | `{"error": "method_not_allowed"}` | Non-POST method                              |
 | 409    | `{"error": "session_busy"}`       | Session is currently prompting               |
-| 410    | `{"error": "loop_disabled"}`  | Loop is disabled or not configured       |
+| 410    | `{"error": "loop_disabled"}`      | Loop is disabled or not configured           |
 | 429    | `{"error": "rate_limited"}`       | Too many requests for this token             |
 | 500    | `{"error": "internal"}`           | Delivery failure (session unavailable, etc.) |
 
@@ -117,10 +117,11 @@ Returns callback status for the session.
 
 **Responses:**
 
-| Status | Body                                                                    | Condition              |
-| ------ | ----------------------------------------------------------------------- | ---------------------- |
-| 200    | `{"callback_url": "https://...", "created_at": "2026-04-09T12:00:00Z"}` | Callback configured    |
-| 404    | `{"error": "not_found"}`                                                | No callback configured |
+| Status | Body                                                                                        | Condition              |
+| ------ | ------------------------------------------------------------------------------------------- | ---------------------- |
+| 200    | `{"configured": true, "callback_url": "https://...", "created_at": "2026-04-09T12:00:00Z"}` | Callback configured    |
+| 200    | `{"configured": false}`                                                                     | No callback configured |
+| 404    | `{"error":{"code":"not_found","message":"Session not found"}}`                              | Session does not exist |
 
 **Example:**
 
@@ -365,16 +366,24 @@ func (cr *CallbackRateLimiter) Allow(token string) bool
 
 ## Frontend
 
-The `ConversationPropertiesPanel` component shows callback controls in the **Loop Prompts** section.
+`SessionPanel` mounts `CallbackTriggerSection` as the **On callback** card
+in its conditional **Loop** tab, after the four automatic/lifecycle trigger
+cards (`schedule`, `onCompletion`, `onTasks`, and `onChild`). The compact
+`LoopControlBar` settings gear opens this tab directly.
+
+The callback is intentionally independent from the loop editor: its token is
+stored in `callback.json`, while automatic triggers and their full-list
+replacement live in `loop.json`. Creating or revoking a callback
+never adds an entry to the loop `triggers` array or changes a loop PATCH.
 
 ### UI States
 
-| Loop State | Callback State | UI Display                                                             |
-| -------------- | -------------- | ---------------------------------------------------------------------- |
-| Disabled       | None           | "Enable Loop Prompts first" message                                |
-| Enabled        | None           | "Enable Callback" button                                               |
-| Enabled        | Active         | URL display + Copy/Rotate/Revoke buttons                               |
-| Disabled       | Active         | Subdued display: "Callback preserved but inactive (loop disabled)" |
+| Loop State | Callback State | UI Display                                                            |
+| ---------- | -------------- | --------------------------------------------------------------------- |
+| Disabled   | None           | Unchecked, disabled checkbox; description says to resume the loop     |
+| Enabled    | None           | Unchecked checkbox                                                    |
+| Enabled    | Active         | Checked card with visually truncated URL and copy button              |
+| Disabled   | Active         | Checked card marked inactive; URL remains copyable and can be revoked |
 
 ### Workflow
 
@@ -385,7 +394,7 @@ sequenceDiagram
     participant Store as CallbackStore
     participant Index as CallbackIndex
 
-    Note over UI: User clicks "Enable Callback"
+    Note over UI: User checks "On callback"
     UI->>API: POST /api/sessions/{id}/callback
     API->>Store: CreateOrRotate(sessionID)
     Store->>Store: Generate token (crypto/rand)
@@ -393,21 +402,9 @@ sequenceDiagram
     Store-->>API: {token, created_at}
     API->>Index: Register(token, sessionID)
     API-->>UI: {callback_url, callback_token}
-    UI->>UI: Display URL with Copy button
+    UI->>UI: Display truncated URL with Copy button
 
-    Note over UI: User clicks "Rotate"
-    UI->>API: POST /api/sessions/{id}/callback
-    API->>Store: CreateOrRotate(sessionID)
-    Store->>Store: Read old token
-    Store->>Store: Generate new token
-    Store->>Store: Write new callback.json
-    Store-->>API: {new_token, created_at}
-    API->>Index: Remove(old_token)
-    API->>Index: Register(new_token, sessionID)
-    API-->>UI: {new_callback_url, new_token}
-    UI->>UI: Update URL display
-
-    Note over UI: User clicks "Revoke"
+    Note over UI: User unchecks "On callback"
     UI->>API: DELETE /api/sessions/{id}/callback
     API->>Store: Delete(sessionID)
     Store->>Store: Remove callback.json
@@ -656,4 +653,3 @@ curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
 2. Prompt content is controlled by session owner (via loop config)
 3. No data exposure — callback returns minimal response
 4. Session authentication required for all management endpoints
-

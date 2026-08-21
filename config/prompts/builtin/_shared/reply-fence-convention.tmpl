@@ -1,0 +1,32 @@
+{{- /*
+  reply-fence-convention — the standard "wrap any proposed customer-facing
+  reply inside a `--- BEGIN REPLY --- / --- END REPLY ---` block" bullet
+  used by the reply-drafting support prompts.
+
+  The template argument (`.` inside the fragment) is the caller's chosen
+  noun for the thing being fenced — different prompts frame it differently:
+    - "reply"                (reply-to-user)
+    - "clarifying message"   (gather-info)
+
+  Usage:
+
+      {{ template "_shared/reply-fence-convention" "reply" }}
+
+  Whitespace contract identical to `beads-issues/shared/markdown-convention`:
+  fragment body is column-1 Markdown with NO leading and NO trailing
+  newline. Callers use plain `{{ template ... }}` (no trim markers) and
+  typically chain this fragment immediately after
+  bead-markdown-convention so both bullets render as one list.
+*/ -}}
+- **The proposed {{ . }} to the user MUST be enclosed in a clearly delimited block** so a human can
+  identify *exactly* what we would send to the customer, character-for-character. Wrap **only** the
+  {{ . }} text between these two fences, on their own lines:
+  ```
+  --- BEGIN REPLY ---
+  <the exact message we would send to the user, in markdown>
+  --- END REPLY ---
+  ```
+  Put nothing else inside the fences — everything outside (the `[OUTBOUND]` header, notes) is context;
+  everything *inside* is the verbatim {{ . }}. Use this same block for every DRAFT and every POSTED
+  {{ . }} you record.
+{{- /* no trailing newline */ -}}

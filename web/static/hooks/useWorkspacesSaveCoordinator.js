@@ -13,13 +13,9 @@
 
 const { useCallback } = window.preact;
 
-import {
-  secureFetch,
-  endpoints,
-  errorMessageFromData,
-  fetchConfig,
-  invalidateConfigCache,
-} from "../utils/index.js";
+import { fetchConfig, invalidateConfigCache } from "../utils/index.js";
+import { getSdkClient } from "../utils/sdkClient.js";
+import { errorMessage } from "../utils/sdkErrors.js";
 
 export function useWorkspacesSaveCoordinator({
   // Selection
@@ -105,27 +101,15 @@ export function useWorkspacesSaveCoordinator({
       // belong to the Settings dialog. Omit the `web` section entirely so the backend
       // preserves the existing auth config and never validates a password here.
       const { web: _omitWeb, ...configWithoutWeb } = config;
-      const res = await secureFetch(endpoints.config.update(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      try {
+        await getSdkClient().serverConfig.save({
           ...configWithoutWeb,
           workspaces: updated,
           prompts: [],
-        }),
-      });
-      if (!res.ok) {
-        let errData = null;
-        try {
-          errData = await res.json();
-        } catch (_e) {
-          /* non-JSON error body */
-        }
-        throw new Error(
-          errorMessageFromData(errData, "Failed to save configuration"),
-        );
+        });
+      } catch (err) {
+        throw new Error(errorMessage(err, "Failed to save configuration"));
       }
-      await res.json();
       invalidateConfigCache();
 
       // Save workspace metadata after config save (workspace must exist first).

@@ -15,6 +15,12 @@ type PromptSource = prompts.PromptSource
 
 // --- Types (prompts.go) ---
 type PromptLoop = prompts.PromptLoop
+type PromptLoopSchedule = prompts.PromptLoopSchedule
+type PromptLoopOnCompletion = prompts.PromptLoopOnCompletion
+type PromptLoopOnTasks = prompts.PromptLoopOnTasks
+type PromptLoopOnChild = prompts.PromptLoopOnChild
+type PromptLoopOnSlack = prompts.PromptLoopOnSlack
+type PromptTarget = prompts.PromptTarget
 type PromptParameterCache = prompts.PromptParameterCache
 type PromptParameter = prompts.PromptParameter
 type PromptPreferredModel = prompts.PromptPreferredModel
@@ -23,6 +29,7 @@ type PromptLoadError = prompts.PromptLoadError
 
 // --- Types (cache.go) ---
 type PromptsCache = prompts.PromptsCache
+type PromptsSnapshot = prompts.PromptsSnapshot
 
 // --- Types (watcher.go) ---
 type PromptsChangeEvent = prompts.PromptsChangeEvent
@@ -31,6 +38,10 @@ type PromptsWatcher = prompts.PromptsWatcher
 
 // --- Types (migrate.go) ---
 type MigratedPrompt = prompts.MigratedPrompt
+
+// --- Types (fragments.go, mitto-g61) ---
+type FragmentRegistry = prompts.FragmentRegistry
+type FragmentLoadError = prompts.FragmentLoadError
 
 // --- Constants ---
 const (
@@ -47,7 +58,12 @@ const (
 var (
 	KnownPromptParameterTypes    = prompts.KnownPromptParameterTypes
 	KnownPromptCacheDestinations = prompts.KnownPromptCacheDestinations
+	KnownMenus                   = prompts.KnownMenus
+	KnownMenuTokens              = prompts.KnownMenuTokens
 )
+
+// --- Constants (menus.go, mitto-rjg6) ---
+const MenuInternal = prompts.MenuInternal
 
 // --- Functions as var-delegates ---
 var (
@@ -56,15 +72,26 @@ var (
 	DeprecatedMittoVars                       = prompts.DeprecatedMittoVars
 	DeprecatedMittoVarReplacement             = prompts.DeprecatedMittoVarReplacement
 	WarnDeprecatedMittoVars                   = prompts.WarnDeprecatedMittoVars
+	ParseMenuTokens                           = prompts.ParseMenuTokens
+	UnknownMenuTokens                         = prompts.UnknownMenuTokens
+	WarnUnknownMenus                          = prompts.WarnUnknownMenus
 	HasTemplateSyntax                         = prompts.HasTemplateSyntax
 	PrecompileTemplateConds                   = prompts.PrecompileTemplateConds
+	PrecompileTemplateCondsWithFragments      = prompts.PrecompileTemplateCondsWithFragments
 	ValidatePromptTemplateSyntax              = prompts.ValidatePromptTemplateSyntax
 	RenderPromptTemplate                      = prompts.RenderPromptTemplate
+	RenderPromptTemplateWithFragments         = prompts.RenderPromptTemplateWithFragments
 	ValidatePromptLoop                        = prompts.ValidatePromptLoop
+	ValidateLoopTriggers                      = prompts.ValidateLoopTriggers
+	DecodeInlineLoop                          = prompts.DecodeInlineLoop
+	ValidatePromptTarget                      = prompts.ValidatePromptTarget
 	ParsePromptFile                           = prompts.ParsePromptFile
 	LoadPromptFile                            = prompts.LoadPromptFile
+	LoadPromptFileWithFragments               = prompts.LoadPromptFileWithFragments
 	LoadPromptsFromDir                        = prompts.LoadPromptsFromDir
+	LoadPromptsFromDirWithFragments           = prompts.LoadPromptsFromDirWithFragments
 	LoadPromptsFromDirWithErrors              = prompts.LoadPromptsFromDirWithErrors
+	LoadPromptsFromDirWithErrorsAndFragments  = prompts.LoadPromptsFromDirWithErrorsAndFragments
 	PromptsToWebPrompts                       = prompts.PromptsToWebPrompts
 	FilterPromptsSpecificToACP                = prompts.FilterPromptsSpecificToACP
 	GetPromptsDirModTime                      = prompts.GetPromptsDirModTime
@@ -77,4 +104,11 @@ var (
 	MigrateMarkdownPromptsInDir               = prompts.MigrateMarkdownPromptsInDir
 	MergePrompts                              = prompts.MergePrompts
 	MergePromptsKeepDisabled                  = prompts.MergePromptsKeepDisabled
+	// --- Fragments (mitto-g61) ---
+	NewFragmentRegistry         = prompts.NewFragmentRegistry
+	LoadFragmentsFromDir        = prompts.LoadFragmentsFromDir
+	ReloadFragmentsFromDirs     = prompts.ReloadFragmentsFromDirs
+	LoadScopedFragmentsFromDirs = prompts.LoadScopedFragmentsFromDirs
+	CurrentFragments            = prompts.CurrentFragments
+	SetCurrentFragments         = prompts.SetCurrentFragments
 )

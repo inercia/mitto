@@ -26,7 +26,7 @@ export MITTO_DIR=/tmp/mitto-test
 
 # 3. Run the tests
 cd ..
-npx playwright test hierarchical-sessions --headed
+bunx playwright test hierarchical-sessions --headed
 ```
 
 ## Files
@@ -105,7 +105,7 @@ cd tests/ui/helpers
 
 ```bash
 cd tests/ui
-npx playwright test hierarchical-sessions
+bunx playwright test hierarchical-sessions
 ```
 
 ### 4. Review Results
@@ -173,7 +173,7 @@ The helper hasn't been run yet. Run:
 The advanced test requires the helper to create sessions first:
 ```bash
 ./setup-hierarchical-test.sh
-npx playwright test hierarchical-sessions --grep "real parent-child"
+bunx playwright test hierarchical-sessions --grep "real parent-child"
 ```
 
 ## Related Documentation

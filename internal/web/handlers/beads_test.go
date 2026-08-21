@@ -83,11 +83,46 @@ func (c *schemaSkewJSONClient) List(_ context.Context, _ string) ([]byte, error)
 	}
 }
 
+// schemaAheadBD122Client reproduces bd 1.2.2 refusing a database whose schema
+// cursor was advanced to v65 by the accidental v1.2.0/v1.2.1 releases.
+type schemaAheadBD122Client struct{ stubBeadsClient }
+
+func (c *schemaAheadBD122Client) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: `{
+  "error": "schema version mismatch: database is at v65, binary knows up to v53 (12 migrations ahead)",
+  "hint": "BD_IGNORE_SCHEMA_SKEW=1 bd <command>  or  bd --ignore-schema-skew <command>",
+  "schema_skew": {"current_version": 65, "delta": 12, "required_version": 53},
+  "schema_version": 1
+}`,
+	}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
 	createFn func(dir string, p beadsCreateParams) ([]byte, error)
 	updateFn func(p beads.UpdateParams) error
+}
+
+type remoteModeClient struct {
+	stubBeadsClient
+	hasRemote     bool
+	err           error
+	calls         int
+	reconcileMode config.BeadsDatabaseMode
+	reconcileErr  error
+}
+
+func (c *remoteModeClient) HasDoltRemote(context.Context, string) (bool, error) {
+	c.calls++
+	return c.hasRemote, c.err
+}
+
+func (c *remoteModeClient) ReconcileDatabaseMode(_ context.Context, _ string, mode config.BeadsDatabaseMode) error {
+	c.reconcileMode = mode
+	return c.reconcileErr
 }
 
 func (c *stubBeadsClient) List(_ context.Context, _ string) ([]byte, error) {
@@ -110,6 +145,9 @@ func (c *stubBeadsClient) Create(_ context.Context, dir string, p beads.CreatePa
 }
 func (c *stubBeadsClient) Delete(_ context.Context, _, _ string) error { return nil }
 func (c *stubBeadsClient) ListClosedIDs(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+func (c *stubBeadsClient) Statuses(_ context.Context, _ string, _ []string) (map[string]string, error) {
 	return nil, nil
 }
 func (c *stubBeadsClient) DeleteIDs(_ context.Context, _ string, _ []string) error { return nil }
@@ -136,8 +174,14 @@ func (c *stubBeadsClient) ConfigShow(_ context.Context, _ string) (map[string]st
 func (c *stubBeadsClient) ConfigSet(_ context.Context, _, _, _ string) error   { return nil }
 func (c *stubBeadsClient) ConfigUnset(_ context.Context, _, _ string) error    { return nil }
 func (c *stubBeadsClient) EnsureInitialized(_ context.Context, _ string) error { return nil }
+func (c *stubBeadsClient) ReconcileDatabaseMode(_ context.Context, _ string, _ config.BeadsDatabaseMode) error {
+	return nil
+}
 func (c *stubBeadsClient) Sync(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil
+}
+func (c *stubBeadsClient) MigrateLocal(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
 }
 func (c *stubBeadsClient) MigrateRemote(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`{}`), nil
@@ -205,6 +249,9 @@ func (h *Handlers) handleBeadsConfig(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handlers) handleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
 	h.HandleBeadsUpstream(w, r)
+}
+func (h *Handlers) handleBeadsDatabaseMode(w http.ResponseWriter, r *http.Request) {
+	h.HandleBeadsDatabaseMode(w, r)
 }
 func (h *Handlers) handleBeadsSync(w http.ResponseWriter, r *http.Request) { h.HandleBeadsSync(w, r) }
 
@@ -339,11 +386,44 @@ func TestHandleBeadsList_SchemaSkew(t *testing.T) {
 	if got, want := env.Error.Details["db_path"], "/Users/test/.beads-planning"; got != want {
 		t.Errorf("error.details.db_path = %v, want %q", got, want)
 	}
-	// allow_migrate_from_ui is false by default (no MittoConfig set on the
-	// vanilla test server), so the frontend should render the informational
-	// banner without offering the confirm-and-run migration button.
-	if got, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || got {
-		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want false", got, ok)
+	// allow_migrate_from_ui is true by default post-mitto-erry (no MittoConfig
+	// set on the vanilla test server → tri-state default-on), so the frontend
+	// can offer the confirm-and-run migration button.
+	if got, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || !got {
+		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want true (default-on)", got, ok)
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_KillSwitch covers the admin kill-switch
+// (mitto-erry): with web.beads.allow_migrate_from_ui explicitly false, the
+// capabilities envelope surfaces the disabled state so the frontend can
+// render the "disabled by administrator" branch instead of the confirm-and-
+// run button.
+func TestHandleBeadsList_SchemaSkew_KillSwitch(t *testing.T) {
+	deps := Deps{SessionManager: newBeadsTestSM(), BeadsClient: &schemaSkewClient{}}
+	deps.MittoConfig = &config.Config{}
+	f := false
+	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &f}
+	s := New(deps)
+
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if allow, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || allow {
+		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want false when kill-switch is set", allow, ok)
 	}
 }
 
@@ -353,7 +433,8 @@ func TestHandleBeadsList_SchemaSkew(t *testing.T) {
 func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
 	deps := Deps{SessionManager: newBeadsTestSM(), BeadsClient: &schemaSkewJSONClient{}}
 	deps.MittoConfig = &config.Config{}
-	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: true}
+	tr := true
+	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: &tr}
 	s := New(deps)
 
 	req := localhostRequest("/api/issues?working_dir=/test/workspace")
@@ -399,12 +480,144 @@ func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
 	}
 }
 
+func TestHandleBeadsList_SchemaSkew_LocalModeOffersLocalMigrationOnly(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	s := newBeadsTestServerWithClient(&schemaSkewJSONClient{})
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, localhostRequest("/api/issues?working_dir=/test/workspace"))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Details struct {
+				DatabaseMode string                   `json:"database_mode"`
+				Hint         string                   `json:"hint"`
+				Options      []beads.SchemaSkewOption `json:"options"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if env.Error.Details.DatabaseMode != "local" || len(env.Error.Details.Options) != 1 || env.Error.Details.Options[0].Mode != "migrate" {
+		t.Errorf("details = %+v, want local mode with migrate-only option", env.Error.Details)
+	}
+	if strings.Contains(env.Error.Details.Hint, "dolt push") || !strings.Contains(env.Error.Details.Hint, "will not push") {
+		t.Errorf("hint = %q, want explicit local-only guidance", env.Error.Details.Hint)
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_BD122DatabaseAhead reproduces mitto-cq2n.2.
+// A database newer than the installed binary needs the upstream recovery path,
+// never Mitto's migrate/bootstrap controls for a database behind the binary.
+func TestHandleBeadsList_SchemaSkew_BD122DatabaseAhead(t *testing.T) {
+	s := newBeadsTestServerWithClient(&schemaAheadBD122Client{})
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var env struct {
+		Error struct {
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if got := env.Error.Details["db_version"]; got != float64(65) {
+		t.Errorf("details.db_version = %v, want 65", got)
+	}
+	if got := env.Error.Details["binary_version"]; got != float64(53) {
+		t.Errorf("details.binary_version = %v, want 53", got)
+	}
+	if got := env.Error.Details["allow_migrate_from_ui"]; got != false {
+		t.Errorf("details.allow_migrate_from_ui = %v, want false for database-ahead recovery", got)
+	}
+	hint, _ := env.Error.Details["hint"].(string)
+	lowerHint := strings.ToLower(hint)
+	if !strings.Contains(lowerHint, "recovery") {
+		t.Errorf("details.hint = %q, want recovery guidance", hint)
+	}
+	if strings.Contains(lowerHint, "bd migrate") || strings.Contains(lowerHint, "bd bootstrap") {
+		t.Errorf("details.hint = %q, must not advise migrate/bootstrap for database ahead of binary", hint)
+	}
+	if strings.Contains(strings.ToLower(env.Error.Message), "needs migration") {
+		t.Errorf("error.message = %q, must identify database-ahead incompatibility", env.Error.Message)
+	}
+}
+
+// schemaSkewCountingClient always fails with a schema-skew error and counts
+// how many times List was invoked, used to verify runBeadsRead treats a
+// schema-version skew as terminal (non-retryable) rather than burning the
+// full retry budget on a failure that can never succeed.
+type schemaSkewCountingClient struct {
+	stubBeadsClient
+	calls int32
+}
+
+func (c *schemaSkewCountingClient) List(_ context.Context, _ string) ([]byte, error) {
+	atomic.AddInt32(&c.calls, 1)
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+			"Error: failed to open routed store at /Users/test/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ...",
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_NoRetry verifies that runBeadsRead bails out
+// immediately on a schema-skew failure instead of retrying: the failure is
+// deterministic (bd will refuse every attempt identically until the schema
+// is reconciled out-of-band), so retrying only adds latency and needlessly
+// triples the number of bd spawns per request (mitto-292).
+func TestHandleBeadsList_SchemaSkew_NoRetry(t *testing.T) {
+	oldRetries := beadsReadRetries
+	oldBackoff := beadsRetryBackoff
+	beadsReadRetries = 2
+	beadsRetryBackoff = time.Millisecond
+	defer func() {
+		beadsReadRetries = oldRetries
+		beadsRetryBackoff = oldBackoff
+	}()
+
+	client := &schemaSkewCountingClient{}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 1 {
+		t.Errorf("List call count = %d, want 1 (schema skew is terminal, should not retry; mitto-292)", got)
+	}
+}
+
 // listTimeoutClient is a beads.Client whose List blocks until ctx is done.
 type listTimeoutClient struct{ stubBeadsClient }
 
 func (c *listTimeoutClient) List(ctx context.Context, _ string) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func TestBeadsCacheFillBudgetBelowHandlerTimeout(t *testing.T) {
+	if beads.CacheFillMaxElapsed >= auxBackedRequestTimeout {
+		t.Fatalf("cache fill max elapsed %v must be below handler timeout %v",
+			beads.CacheFillMaxElapsed, auxBackedRequestTimeout)
+	}
+	if beads.LabelsReadTimeout >= auxBackedRequestTimeout {
+		t.Fatalf("labels read timeout %v must be below handler timeout %v",
+			beads.LabelsReadTimeout, auxBackedRequestTimeout)
+	}
 }
 
 func TestHandleBeadsList_Timeout_ReturnsRetryable503(t *testing.T) {
@@ -1829,6 +2042,28 @@ func TestHandleBeadsConfig_SetUnknownWorkspace(t *testing.T) {
 	}
 }
 
+func TestHandleBeadsConfig_PolicyKeysCannotBeMutated(t *testing.T) {
+	for _, key := range []string{"no-push", "dolt.local-only", "dolt.auto-push"} {
+		for _, method := range []string{http.MethodPut, http.MethodDelete} {
+			t.Run(method+"/"+key, func(t *testing.T) {
+				var req *http.Request
+				if method == http.MethodPut {
+					req = httptest.NewRequest(method, "/api/issues/config?working_dir=/test/workspace",
+						strings.NewReader(`{"key":"`+key+`","value":"unsafe"}`))
+				} else {
+					req = httptest.NewRequest(method, "/api/issues/config?working_dir=/test/workspace&key="+key, nil)
+				}
+				req.RemoteAddr = "127.0.0.1:1"
+				w := httptest.NewRecorder()
+				newBeadsTestServerWithClient(&stubBeadsClient{}).handleBeadsConfig(w, req)
+				if w.Code != http.StatusConflict {
+					t.Errorf("status = %d, want %d; body=%s", w.Code, http.StatusConflict, w.Body.String())
+				}
+			})
+		}
+	}
+}
+
 func TestHandleBeadsConfig_UnsetMissingKey(t *testing.T) {
 	s := newBeadsTestServer()
 	req := httptest.NewRequest(http.MethodDelete, "/api/issues/config?working_dir=/test/workspace", nil)
@@ -2148,6 +2383,133 @@ func TestHandleBeadsUpstream_SwitchAwayFromPrompts_ClearsPromptNames(t *testing.
 	}
 	if strings.Contains(body, "pull_prompt") {
 		t.Errorf("GET body = %q, pull_prompt should not be present after switching to jira", body)
+	}
+}
+
+// --- handleBeadsDatabaseMode -------------------------------------------------
+
+func TestHandleBeadsDatabaseMode_ValidatesWorkingDir(t *testing.T) {
+	for _, path := range []string{
+		"/api/issues/database-mode",
+		"/api/issues/database-mode?working_dir=relative/path",
+		"/api/issues/database-mode?working_dir=/unknown/dir",
+	} {
+		t.Run(path, func(t *testing.T) {
+			s := newBeadsTestServerWithClient(&remoteModeClient{})
+			w := httptest.NewRecorder()
+			s.handleBeadsDatabaseMode(w, localhostRequest(path))
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleBeadsDatabaseMode_GetInfersAndPersists(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		hasRemote bool
+		want      config.BeadsDatabaseMode
+	}{
+		{"local", false, config.BeadsDatabaseModeLocal},
+		{"shared", true, config.BeadsDatabaseModeShared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupMittoDir(t)
+			client := &remoteModeClient{hasRemote: tc.hasRemote}
+			s := newBeadsTestServerWithClient(client)
+			w := httptest.NewRecorder()
+			s.handleBeadsDatabaseMode(w, localhostRequest("/api/issues/database-mode?working_dir=/test/workspace"))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			var got beadsDatabaseModeResponse
+			if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got.DatabaseMode != tc.want || got.HasRemote != tc.hasRemote {
+				t.Errorf("response = %+v, want mode=%q has_remote=%v", got, tc.want, tc.hasRemote)
+			}
+			persisted, configured, err := config.ConfiguredFolderBeadsDatabaseMode("/test/workspace")
+			if err != nil || !configured || persisted != tc.want {
+				t.Errorf("persisted mode = (%q, %v, %v), want (%q, true, nil)", persisted, configured, err, tc.want)
+			}
+			if client.calls != 2 {
+				t.Errorf("remote probe calls = %d, want 2 (inference + response readiness)", client.calls)
+			}
+			if client.reconcileMode != tc.want {
+				t.Errorf("reconciled mode = %q, want %q", client.reconcileMode, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleBeadsDatabaseMode_ExplicitLocalReportsDormantRemote(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsDatabaseMode("/test/workspace", config.BeadsDatabaseModeLocal); err != nil {
+		t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+	}
+	client := &remoteModeClient{hasRemote: true}
+	s := newBeadsTestServerWithClient(client)
+	w := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(w, localhostRequest("/api/issues/database-mode?working_dir=/test/workspace"))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"database_mode":"local"`) ||
+		!strings.Contains(w.Body.String(), `"has_remote":true`) {
+		t.Fatalf("status/body = %d %s, want explicit local with dormant remote", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleBeadsDatabaseMode_PutValidatesAndPreservesUpstream(t *testing.T) {
+	setupMittoDir(t)
+	if err := config.SetFolderBeadsUpstream("/test/workspace", "jira"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() error = %v", err)
+	}
+	client := &remoteModeClient{hasRemote: true}
+	s := newBeadsTestServerWithClient(client)
+
+	bad := httptest.NewRequest(http.MethodPut, "/api/issues/database-mode?working_dir=/test/workspace",
+		strings.NewReader(`{"database_mode":"networked"}`))
+	bad.RemoteAddr = "127.0.0.1:1"
+	bw := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(bw, bad)
+	if bw.Code != http.StatusBadRequest {
+		t.Fatalf("invalid PUT status = %d, want %d", bw.Code, http.StatusBadRequest)
+	}
+
+	put := httptest.NewRequest(http.MethodPut, "/api/issues/database-mode?working_dir=/test/workspace",
+		strings.NewReader(`{"database_mode":"local"}`))
+	put.RemoteAddr = "127.0.0.1:1"
+	pw := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(pw, put)
+	if pw.Code != http.StatusOK || !strings.Contains(pw.Body.String(), `"has_remote":true`) {
+		t.Fatalf("PUT status/body = %d %s, want 200 with preserved remote indicator", pw.Code, pw.Body.String())
+	}
+	mode, configured, err := config.ConfiguredFolderBeadsDatabaseMode("/test/workspace")
+	if err != nil || !configured || mode != config.BeadsDatabaseModeLocal {
+		t.Errorf("persisted mode = (%q, %v, %v), want local", mode, configured, err)
+	}
+	if got := config.FolderBeadsUpstream("/test/workspace"); got != "jira" {
+		t.Errorf("FolderBeadsUpstream() = %q, want jira after mode switch", got)
+	}
+	if client.reconcileMode != config.BeadsDatabaseModeLocal {
+		t.Errorf("reconciled mode = %q, want local", client.reconcileMode)
+	}
+}
+
+func TestHandleBeadsDatabaseMode_SharedWithoutRemoteDoesNotPersist(t *testing.T) {
+	setupMittoDir(t)
+	client := &remoteModeClient{reconcileErr: beads.ErrSharedModeRequiresRemote}
+	s := newBeadsTestServerWithClient(client)
+	req := httptest.NewRequest(http.MethodPut, "/api/issues/database-mode?working_dir=/test/workspace",
+		strings.NewReader(`{"database_mode":"shared"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	s.handleBeadsDatabaseMode(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "existing Dolt remote") {
+		t.Fatalf("status/body = %d %s, want actionable conflict", w.Code, w.Body.String())
+	}
+	if mode, configured, err := config.ConfiguredFolderBeadsDatabaseMode("/test/workspace"); err != nil || configured || mode != "" {
+		t.Errorf("persisted mode = (%q, %v, %v), want unchanged", mode, configured, err)
 	}
 }
 

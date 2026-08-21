@@ -15,21 +15,35 @@ New installs are seeded with a set of well-known profiles from the embedded
 installs are left untouched). All use `matchMode: contains`, so they are
 version-agnostic, and their tags **union** across overlapping matches:
 
-| Profile | Pattern | Tags |
-|---------|---------|------|
-| Claude | `Claude` | `Anthropic` |
-| Claude Opus | `Opus` | `Smartest`, `Reasoning`, `Expensive` |
-| Claude Sonnet 5 | `Sonnet 5` | `Smart`, `Coding` |
-| Claude Sonnet 4 | `Sonnet 4` | `Smart`, `Coding` |
-| Claude Haiku | `Haiku` | `Fast`, `Cheap` |
-| GPT-5 | `GPT-5` | `Smart`, `Reasoning`, `Coding` |
-| GPT-4 | `GPT-4` | `Smart`, `Coding` |
-| Gemini | `Gemini` | `Smart`, `LongContext` |
+| Profile         | Pattern    | Tags                                                             |
+| --------------- | ---------- | ---------------------------------------------------------------- |
+| Claude          | `Claude`   | `Anthropic`                                                      |
+| Claude Mythos   | `Mythos`   | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
+| Claude Opus     | `Opus`     | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
+| Claude Sonnet 5 | `Sonnet 5` | `Smart`, `Coding`                                                |
+| Claude Sonnet 4 | `Sonnet 4` | `Smart`, `Coding`                                                |
+| Claude Haiku    | `Haiku`    | `Fast`, `Cheap`                                                  |
+| GPT-5           | `GPT-5`    | `Smart`, `Reasoning`, `Thinking`, `Deep`, `Coding`               |
+| GPT-4           | `GPT-4`    | `Smart`, `Coding`                                                |
+| OpenAI GPT      | `GPT`      | `OpenAI`                                                         |
+| Gemini          | `Gemini`   | `Smart`, `LongContext`                                           |
+| GLM             | `GLM`      | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
+| DeepSeek        | `DeepSeek` | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
 
 Because matching is additive, a name like `Claude Opus 4.x` resolves to the union of
 the vendor-level `Claude` profile and the `Claude Opus` profile
-(`Anthropic`, `Smartest`, `Reasoning`, `Expensive`). Edit or remove these in your
-`settings.json` (or the Models settings tab) to suit the models you use.
+(`Anthropic`, `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive`). Edit
+or remove these in your `settings.json` (or the Models settings tab) to suit the
+models you use.
+
+The `Claude Mythos` entry mirrors `Claude Opus`'s tags but is listed first, so
+`modelTag: Smartest` (and the other shared tags) resolves to Mythos when a
+Mythos-branded model is available, falling back to Opus otherwise. The `OpenAI GPT`
+entry is a vendor-level catch-all with only the `OpenAI` tag; it deliberately carries
+no capability tags so it never outranks `GPT-5` / `GPT-4` for `Coding` / `Smart`
+routing but still tags any future `GPT-*` variant (e.g. `GPT-5.6`, `GPT-6`) as
+`OpenAI`. `GLM` and `DeepSeek` seed tags for the common open-weight / self-hostable
+model families.
 
 ## YAML Configuration
 
@@ -52,26 +66,26 @@ models:
 
 ### Fields
 
-| Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| `name` | Yes | string | Display name of the profile. Profiles without a name are skipped. |
-| `criteria` | No | object | How to match a model. A profile with no criteria never matches (and so contributes no tags). |
-| `criteria.matchMode` | Yes (if criteria set) | string | One of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`. |
-| `criteria.pattern` | Yes (if criteria set) | string | The pattern compared against the model's display name. |
-| `tags` | No | list of string | Capability tags associated with this profile. |
+| Field                | Required              | Type           | Description                                                                                  |
+| -------------------- | --------------------- | -------------- | -------------------------------------------------------------------------------------------- |
+| `name`               | Yes                   | string         | Display name of the profile. Profiles without a name are skipped.                            |
+| `criteria`           | No                    | object         | How to match a model. A profile with no criteria never matches (and so contributes no tags). |
+| `criteria.matchMode` | Yes (if criteria set) | string         | One of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`.                              |
+| `criteria.pattern`   | Yes (if criteria set) | string         | The pattern compared against the model's display name.                                       |
+| `tags`               | No                    | list of string | Capability tags associated with this profile.                                                |
 
 ### Match Modes
 
 Matching is **case-insensitive** and reuses `config.ConstraintMatchesName` — the same
 engine as ACP-server model constraints (see [ACP Servers](acp.md)):
 
-| Mode | Matches when the model name… |
-|------|------------------------------|
-| `contains` | contains the pattern as a substring |
-| `exact` | equals the pattern exactly |
-| `startsWith` | starts with the pattern |
-| `regex` | matches the pattern as a regular expression (`(?i)` applied) |
-| `lookAlike` | contains every whitespace-separated word of the pattern |
+| Mode         | Matches when the model name…                                 |
+| ------------ | ------------------------------------------------------------ |
+| `contains`   | contains the pattern as a substring                          |
+| `exact`      | equals the pattern exactly                                   |
+| `startsWith` | starts with the pattern                                      |
+| `regex`      | matches the pattern as a regular expression (`(?i)` applied) |
+| `lookAlike`  | contains every whitespace-separated word of the pattern      |
 
 ## Internal Go API
 
@@ -126,7 +140,7 @@ of `modelName` / `modelTag`:
 ```yaml
 preferredModels:
   - modelName: Claude Sonnet 4 # matches a profile by its `name` (case-insensitive)
-  - modelTag: Coding           # selects any profile carrying this tag
+  - modelTag: Coding # selects any profile carrying this tag
 ```
 
 - **`modelName`** — case-insensitive equality against the profile's `name`.
@@ -149,7 +163,7 @@ preferredModels:
 
 ## Priority: list order = priority
 
-Both halves of resolution — the `preferredModels:` list on a prompt *and* the `models:`
+Both halves of resolution — the `preferredModels:` list on a prompt _and_ the `models:`
 list in settings — use **list order = priority**: the first entry that resolves wins.
 
 For tag-based resolution (`modelTag:`), Mitto walks the effective `models:` list from

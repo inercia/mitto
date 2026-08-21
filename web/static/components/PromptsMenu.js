@@ -178,9 +178,9 @@ export function PromptsMenu({
           ${!loopToggle &&
           prompt.loop &&
           html`<span
-            class="shrink-0 text-success opacity-80"
+            class="inline-flex items-center px-1 py-0.5 rounded bg-success text-success-content shrink-0"
             title="Loop prompt — sets the conversation to recurring mode"
-            ><${LoopIcon} className="w-3.5 h-3.5"
+            ><${LoopIcon} className="w-3 h-3"
           /></span>`}
           ${loopToggle &&
           (() => {
@@ -193,8 +193,7 @@ export function PromptsMenu({
                   : promptLoopDefaultOn(prompt);
               return html`<input
                 type="checkbox"
-                class="checkbox checkbox-sm shrink-0"
-                style="background-color: transparent"
+                class="checkbox checkbox-sm checkbox-success prompt-loop-checkbox shrink-0"
                 checked=${on}
                 title=${on
                   ? "Loop: ON — click to disable recurring runs"
@@ -214,8 +213,7 @@ export function PromptsMenu({
             // same control, but permanently on and not changeable.
             return html`<input
               type="checkbox"
-              class="checkbox checkbox-sm shrink-0"
-              style="background-color: transparent"
+              class="checkbox checkbox-sm checkbox-success prompt-loop-checkbox shrink-0"
               checked=${true}
               disabled
               title="Always loop — this prompt always runs as a recurring conversation (cannot be changed)"
@@ -277,7 +275,7 @@ export function PromptsMenu({
         />
       </div>
       <div
-        class="py-1 overflow-y-auto flex-1 min-h-0"
+        class="px-2 py-1 overflow-y-auto flex-1 min-h-0"
         style="scrollbar-gutter: stable;"
         data-testid=${listTestId}
       >

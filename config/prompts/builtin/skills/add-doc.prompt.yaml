@@ -1,0 +1,66 @@
+icon: book-open
+name: 'Skill: add doc'
+menus: prompts, !promptsLoop
+description: Rewrite a Markdown document to be an agent-friendly skill file and register it in `SKILL.md`
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && FileExists("**/SKILL.md")'
+preferredModels:
+  - modelTag: Reasoning
+parameters:
+  - name: SkillFile
+    type: filename
+    glob:
+      - "**/SKILL.md"
+    remember: folder
+    required: true
+    description: The `SKILL.md` file this run operates against. Pick the one whose sibling `references/` folder holds the document.
+  - name: Document
+    type: filename
+    glob:
+      - "**/references/*.md"
+    remember: folder
+    required: true
+    description: Markdown file to rewrite as an agent-friendly skill document
+target:
+  # Shared with every other prompt under config/prompts/builtin/skills/: all
+  # `Skill: …` prompts funnel into the same non-archived conversation in this
+  # working_dir so they never run in parallel on the same skill.
+  title: 'Skill workshop'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  This run operates on the skill anchored at `{{ .Args.SkillFile }}`
+  (workspace-relative). Its sibling references folder is
+  `{{ Dir .Args.SkillFile }}/references/`. Every reference below to
+  "`SKILL.md`" means that specific file; every reference to
+  "`references/`" means that specific sibling folder — do not touch a
+  different skill's files.
+
+  Review `{{ .Args.Document }}` and rewrite it to be optimized for an AI agent
+  operating in the scenarios that this document covers. The rewritten file should:
+
+  1. **Structure for the scenarios that matter**: Organize content by when an
+     agent would need it during real use (emergency / quick-reference procedures
+     first, detailed explanations later).
+
+  2. **Improve Readability**:
+     - Add an emergency / quick-reference section at the top
+     - Use tables for commands, error codes, and status indicators
+     - Include flowcharts or decision trees for troubleshooting
+     - Add a "Gotchas" section for non-obvious facts
+     - Provide diagnostic commands with expected outputs
+
+  3. **Enhance Flow**: Reorganize sections to follow a logical progression
+     (overview → common issues → diagnostics → resolution → detailed reference).
+
+  4. **Update SKILL.md**: Add an entry in `{{ .Args.SkillFile }}` that
+     describes WHEN an agent should load `{{ .Args.Document }}` (e.g.,
+     "Load when investigating issues, problems, or other failures").
+
+  5. **Follow Skill Formatting Standards**: Apply the agent-friendly formatting
+     patterns described in `AGENTS.md` and run `make format` after editing.
+
+  Focus on making `{{ .Args.Document }}` actionable for an agent working in
+  the scenarios that document covers.

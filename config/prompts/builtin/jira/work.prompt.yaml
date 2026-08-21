@@ -1,0 +1,136 @@
+icon: tag
+name: 'JIRA: start work'
+menus: prompts, !promptsLoop
+description: Pick a JIRA ticket from the active sprint and spawn parallel Mitto conversations to implement it
+backgroundColor: '#BBDEFB'
+group: JIRA
+enabledWhen: '!Session.IsChild && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && Permissions.CanStartConversation'
+loop:
+  trigger: [onCompletion]
+  onCompletion:
+    delay: 60
+  mode: optional
+  default: false
+target:
+  title: 'JIRA: start work'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
+  Existing children: `{{ .Children.AllText }}`
+  {{- end }}
+
+  # JIRA: Start Work on a Ticket
+
+  {{ if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+  **Access method — JIRA MCP tools.** The JIRA-fetch steps below name `jira_*` MCP tools; call each one directly. (The `mitto_*` orchestration is unaffected.)
+  {{- else }}
+  **Access method — the `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Run the CLI equivalent below wherever a step names a `jira_*` operation. All `mitto_*` steps (ui, conversation spawn/wait) are unchanged.
+
+  | Canonical operation | `jira` CLI command |
+  |---|---|
+  | `jira_get_agile_boards_jira` | `jira board list` |
+  | `jira_get_sprints_from_board_jira` (active) | `jira sprint list --state active --table --plain --columns id,name,state` |
+  | `jira_search_jira` (JQL) | `jira issue list -q "<JQL>" --plain --no-headers` (append `--raw` for JSON) |
+  | `jira_get_issue_jira` (fields/renderedFields) | `jira issue list -q "key = <KEY>" --raw` for JSON (all fields, `issuelinks`); `jira issue view <KEY>` for a rendered read (set `PAGER=cat`) |
+  | `jira_download_attachments_jira` | no equivalent — open the attachment URLs found in the `--raw` JSON |
+  | `jira_get_issue_development_info_jira` | no equivalent — use local `git log`/`git branch` (and `gh` if present) for linked branches/PRs |
+
+  CLI notes:
+  - Use `--plain`/`--raw` so nothing blocks on the interactive TUI; set `PAGER=cat` before `jira issue view` to bypass the pager.
+  - Some MCP-only signals (attachments, dev-panel PRs/branches) have no CLI equivalent — gather what you can locally and note the gap rather than blocking.
+  {{- end }}
+
+  ## Step 0 — Check for prior ticket context
+
+  {{ if UserData "JIRA Ticket" -}}
+  A ticket is saved for this conversation: **`{{ UserData "JIRA Ticket" }}`**.
+
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask the user:
+  - **Option 1**: `"Continue on {{ UserData "JIRA Ticket" }}"` — if chosen, skip directly to Step 3 using `{{ UserData "JIRA Ticket" }}` as the ticket key.
+  - **Option 2**: `"Work on a different ticket"` — if chosen, continue to Step 1.
+  {{- else }}
+  No prior ticket is saved for this conversation — proceed directly to Step 1.
+  {{- end }}
+
+  ## Step 1 — Find tickets to work on
+
+  1. Use `jira_get_agile_boards_jira` to find the relevant board (ask the user if there are multiple boards and you're not sure which one to use).
+  2. Use `jira_get_sprints_from_board_jira` with `state=active` to get the active sprint.
+  3. Use `jira_search_jira` with a JQL query like:
+     ```
+     sprint = <sprint_id> AND assignee = currentUser() AND status in ("To Do", "In Progress")
+     ```
+     to retrieve all tickets assigned to you in the active sprint that are not yet done.
+
+  ## Step 2 — Let the user choose a ticket
+
+  - If **multiple tickets** are found: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to present the ticket list and ask the user which one to work on. Include the ticket key and summary in each option label.
+  - If **exactly one ticket** is found: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to confirm with the user before proceeding.
+  - If **no tickets** are found: inform the user and stop.
+
+  Once the ticket key is confirmed, persist it so other JIRA prompts can reuse it without re-searching:
+  1. Call `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}", user_data: [{"name": "JIRA Ticket", "value": "<chosen-key>"}])`.
+  2. If it fails with a schema/unknown-attribute error, first call `mitto_workspace_update(self_id: "{{ .Session.ID }}", user_data_schema: [{"name": "JIRA Ticket", "description": "The JIRA ticket key for the current task", "type": "string"}], user_data_schema_merge: true)`, then retry step 1.
+
+  ## Step 3 — Fetch full ticket details
+
+  Using the selected ticket key, call all of the following in parallel:
+  - `jira_get_issue_jira` with `fields="*all"` to get description, acceptance criteria, priority, labels, components, fix version, sprint, and any custom fields.
+  - `jira_get_issue_jira` with `expand="renderedFields"` to get rendered (HTML/Markdown) description and comments.
+  - `jira_download_attachments_jira` to retrieve any attachments.
+  - `jira_get_issue_development_info_jira` to check linked PRs, branches, and commits.
+  - Follow any linked issues (`issuelinks`) and fetch their summaries.
+
+  Analyze all gathered context thoroughly: understand the problem statement, scope, constraints, acceptance criteria, and any prior discussion in comments.
+
+  ## Step 4 — Produce an implementation plan
+
+  Create a structured plan with the following sections:
+
+  ### Goal
+  One-paragraph summary of what needs to be built or fixed, and why.
+
+  ### Approach
+  High-level technical approach: which components are affected, what design decisions are involved, and why this approach was chosen.
+
+  ### Work Items
+  A numbered list of concrete, independently executable tasks. Each task must have:
+  - **Title**: short action-oriented name (e.g., "Add database migration for new column")
+  - **What to do**: a focused description of the work
+  - **Inputs / context needed**: what the task needs to know or have access to
+  - **Definition of done**: how to verify the task is complete
+
+  ### Open Questions & Risks
+  - Any ambiguities in the ticket that need clarification
+  - Technical risks or unknowns
+  - Dependencies on other teams or systems
+
+  ## Step 5 — Present the plan and iterate
+
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to show the plan summary to the user and ask: "Does this plan look correct? Shall I proceed with spawning work conversations?"
+
+  - If the user says **No** or provides feedback: revise the plan accordingly and present it again. Repeat until the user explicitly approves.
+  - If the user says **Yes**: proceed to Step 6.
+
+  ## Step 6 — Spawn one Mitto conversation per work item
+
+  For each work item in the approved plan:
+
+  1. Call `mitto_conversation_new_mitto` with `self_id: "{{ .Session.ID }}"` and:
+     - `title`: the work item title prefixed with the JIRA ticket key (e.g., `"CGW-1234 · Add database migration"`)
+     - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
+     - `initial_prompt`: a **self-contained** prompt that includes:
+       - The full JIRA ticket key, title, and description
+       - The acceptance criteria from the ticket
+       - The specific work item title and description
+       - The definition of done for this task
+       - Any relevant context from linked issues or comments
+       - Instruction to report back using `mitto_children_tasks_report_mitto` when done
+
+  2. Do **not** wait for each conversation to complete before spawning the next — spawn all conversations in parallel.
+
+  3. After all conversations are spawned, use `mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "<ticket-key>", timeout_seconds: 600)` to wait for all of them to report back, then summarise results to the user.

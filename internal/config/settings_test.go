@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/secrets"
 )
 
 func TestLoadSettings_CreatesDefaultSettings(t *testing.T) {
@@ -365,6 +367,7 @@ func TestLoadSettingsWithFallback_MergesWebAuthFromSettings(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
+	t.Cleanup(secrets.SetStoreForTest(secrets.NewFakeStore()))
 
 	// Create settings.json with auth configured
 	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
@@ -421,12 +424,17 @@ acp:
 	if cfg.Web.Auth.Simple.Username != "admin" {
 		t.Errorf("Web.Auth.Simple.Username = %q, want %q", cfg.Web.Auth.Simple.Username, "admin")
 	}
-	// Password might be loaded from keychain on macOS, or from settings on other platforms
-	// On non-macOS, it should be "test-password"
-	// On macOS, loadKeychainPassword might have been called, but since we're using
-	// test data (not real keychain), the password should remain as-is
+	// Secure migration must redact the settings file without clearing the
+	// password returned to the running process.
 	if cfg.Web.Auth.Simple.Password != "test-password" {
 		t.Errorf("Web.Auth.Simple.Password = %q, want %q", cfg.Web.Auth.Simple.Password, "test-password")
+	}
+	rawSettings, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawSettings), "test-password") {
+		t.Fatalf("settings.json retained migrated plaintext password: %s", rawSettings)
 	}
 
 	// Verify Host was merged from settings.json (external access enabled)
@@ -1172,5 +1180,374 @@ func TestSessionConfig_GetStartupResumeConcurrency(t *testing.T) {
 	cfg.StartupResumeConcurrency = 8
 	if got := cfg.GetStartupResumeConcurrency(); got != 8 {
 		t.Errorf("positive.GetStartupResumeConcurrency() = %d, want 8", got)
+	}
+}
+
+// TestLoadSettings_BeadsReadCacheTTL verifies that a settings.json with
+// web.beads.read_cache_ttl parses to the expected duration via
+// EffectiveReadCacheTTL (mitto-9ni).
+func TestLoadSettings_BeadsReadCacheTTL(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	customSettings := `{
+		"web": {
+			"beads": {
+				"read_cache_ttl": "5m"
+			}
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(customSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Beads == nil {
+		t.Fatal("Web.Beads should not be nil")
+	}
+	if got, want := cfg.Web.Beads.ReadCacheTTL, "5m"; got != want {
+		t.Errorf("ReadCacheTTL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Web.Beads.EffectiveReadCacheTTL(), 5*time.Minute; got != want {
+		t.Errorf("EffectiveReadCacheTTL() = %v, want %v", got, want)
+	}
+}
+
+// --- Shared bearer token resolution tests (mitto-7gta.26) ---
+//
+// LoadSettingsWithFallback (not LoadSettings) is the function actually called
+// at startup by the CLI (internal/cmd/root.go) and the macOS app
+// (cmd/mitto-app/main.go), so the resolution behaviour must be verified
+// against it directly -- testing LoadSettings alone would validate a path
+// with no production caller.
+
+// TestLoadSettingsWithFallback_SharedToken_EnvVar_NoRCFile verifies the env
+// var is resolved into the config when there is no RC file.
+func TestLoadSettingsWithFallback_SharedToken_EnvVar_NoRCFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir) // ensure no real ~/.mittorc is picked up
+	t.Setenv("MITTO_SHARED_TOKEN", "env-token-value")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	result, err := LoadSettingsWithFallback()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallback() failed: %v", err)
+	}
+	if result.Config.Web.Auth == nil {
+		t.Fatal("Web.Auth should not be nil")
+	}
+	if result.Config.Web.Auth.SharedToken != "env-token-value" {
+		t.Errorf("SharedToken = %q, want %q", result.Config.Web.Auth.SharedToken, "env-token-value")
+	}
+}
+
+// TestLoadSettingsWithFallback_SharedToken_EnvVar_WithRCFile verifies the env
+// var is still resolved and survives the RC-file merge (mitto-7gta.26 was
+// originally wired only into the unused LoadSettings function; this pins the
+// fix onto the actual RC-file merge path).
+func TestLoadSettingsWithFallback_SharedToken_EnvVar_WithRCFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("MITTO_SHARED_TOKEN", "env-token-value")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	rcPath := filepath.Join(tmpDir, ".mittorc")
+	rcContent := "acp:\n  - rc-server:\n      command: \"rc-cmd\"\n"
+	if err := os.WriteFile(rcPath, []byte(rcContent), 0644); err != nil {
+		t.Fatalf("failed to create .mittorc: %v", err)
+	}
+
+	result, err := LoadSettingsWithFallback()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallback() failed: %v", err)
+	}
+	if result.Config.Web.Auth == nil {
+		t.Fatal("Web.Auth should not be nil (RC-file merge must carry the resolved token)")
+	}
+	if result.Config.Web.Auth.SharedToken != "env-token-value" {
+		t.Errorf("SharedToken = %q, want %q", result.Config.Web.Auth.SharedToken, "env-token-value")
+	}
+}
+
+// TestLoadSettingsWithFallbackNoKeychain_SharedToken_NotResolved verifies the
+// headless/no-keychain variant never resolves the shared token either (not
+// even via the env var), matching its documented "must never touch web
+// authentication" contract.
+func TestLoadSettingsWithFallbackNoKeychain_SharedToken_NotResolved(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("MITTO_SHARED_TOKEN", "env-token-value")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	result, err := LoadSettingsWithFallbackNoKeychain()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallbackNoKeychain() failed: %v", err)
+	}
+	if result.Config.Web.Auth != nil && result.Config.Web.Auth.SharedToken != "" {
+		t.Errorf("SharedToken = %q, want empty (no-keychain variant must not resolve it)", result.Config.Web.Auth.SharedToken)
+	}
+}
+
+// TestLoadSettings_SharedToken_EnvVarTakesPrecedence verifies MITTO_SHARED_TOKEN
+// wins outright over any settings.json value. The fixture below also carries
+// a simple-auth password, which unconditionally triggers
+// migratePasswordToKeychain (mitto-klux) regardless of the shared-token env
+// var -- so this test redirects the secret store to an in-memory fake
+// (secrets.SetStoreForTest) to guarantee it never touches the real macOS
+// Keychain, while still exercising the real migration code path.
+func TestLoadSettings_SharedToken_EnvVarTakesPrecedence(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("MITTO_SHARED_TOKEN", "env-token-value")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	t.Cleanup(secrets.SetStoreForTest(secrets.NewFakeStore()))
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"},"shared_token":"settings-token-value"}}}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Auth == nil {
+		t.Fatal("Web.Auth should not be nil")
+	}
+	if cfg.Web.Auth.SharedToken != "env-token-value" {
+		t.Errorf("SharedToken = %q, want %q (env var must win)", cfg.Web.Auth.SharedToken, "env-token-value")
+	}
+}
+
+// TestLoadSettings_SharedToken_EnvVarNeverPersisted verifies the env-provided
+// token is never written back to settings.json.
+func TestLoadSettings_SharedToken_EnvVarNeverPersisted(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("MITTO_SHARED_TOKEN", "env-token-value")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	if _, err := LoadSettings(); err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read settings.json: %v", err)
+	}
+	if strings.Contains(string(raw), "env-token-value") {
+		t.Errorf("settings.json must never persist the env-provided token, got: %s", raw)
+	}
+}
+
+// TestLoadSettings_SharedToken_NotConfigured verifies the feature-off case:
+// no env var, no settings.json entry -> Web.Auth stays nil, no Keychain touched.
+func TestLoadSettings_SharedToken_NotConfigured(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("MITTO_SHARED_TOKEN", "")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	if err := os.WriteFile(settingsPath, []byte(`{}`), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Auth != nil && cfg.Web.Auth.SharedToken != "" {
+		t.Errorf("SharedToken = %q, want empty (feature off)", cfg.Web.Auth.SharedToken)
+	}
+}
+
+// TestLoadSettings_SharedToken_FromSettingsJSON verifies a token configured
+// directly in settings.json (no env var) is resolved into cfg.Web.Auth.SharedToken.
+//
+// On a platform where secrets.IsSupported() is true (macOS), loading also
+// triggers migrateSharedTokenToKeychain and (because the fixture also carries
+// a simple-auth password) migratePasswordToKeychain -- both of which write to
+// the production Keychain by default (mitto-klux). This test redirects the
+// secret store to an in-memory fake (secrets.SetStoreForTest) for the
+// duration of the test so neither migration ever touches the real Keychain,
+// while still exercising the real migration code paths end-to-end.
+func TestLoadSettings_SharedToken_FromSettingsJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("MITTO_SHARED_TOKEN", "")
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	t.Cleanup(secrets.SetStoreForTest(secrets.NewFakeStore()))
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"},"shared_token":"settings-token-value"}}}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Auth == nil {
+		t.Fatal("Web.Auth should not be nil")
+	}
+	// The in-memory cfg keeps the value regardless of migration, mirroring
+	// migratePasswordToKeychain's behaviour (only settings.json on disk is
+	// blanked; the already-converted cfg copy is untouched).
+	if cfg.Web.Auth.SharedToken != "settings-token-value" {
+		t.Errorf("SharedToken = %q, want %q", cfg.Web.Auth.SharedToken, "settings-token-value")
+	}
+
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read settings.json: %v", err)
+	}
+	if secrets.IsSupported() {
+		if strings.Contains(string(raw), "settings-token-value") {
+			t.Errorf("settings.json should have been blanked after keychain migration, got: %s", raw)
+		}
+	} else {
+		if !strings.Contains(string(raw), "settings-token-value") {
+			t.Errorf("settings.json should retain the token when secrets are unsupported, got: %s", raw)
+		}
+	}
+}
+
+// TestLoadSettings_PasswordMigration_UsesInjectedVault verifies plaintext
+// migration end-to-end without querying or modifying the host Keychain.
+func TestLoadSettings_PasswordMigration_UsesInjectedVault(t *testing.T) {
+	fake := secrets.NewFakeStore()
+	t.Cleanup(secrets.SetStoreForTest(fake))
+
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"}}}}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Web.Auth == nil || cfg.Web.Auth.Simple == nil || cfg.Web.Auth.Simple.Password != "pw" {
+		t.Fatalf("LoadSettings() did not retain the verified password in memory: %+v", cfg.Web.Auth)
+	}
+
+	if got, err := secrets.Resolve(secrets.GlobalCredential(secrets.AccountExternalAccess)); err != nil || got != "pw" {
+		t.Fatalf("Resolve(external access) = (%q, %v), want (\"pw\", nil)", got, err)
+	}
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"password":"pw"`) {
+		t.Fatalf("settings.json retained plaintext password: %s", raw)
+	}
+}
+
+type failingSecretStore struct{}
+
+func (failingSecretStore) Get(string, string) (string, error) { return "", secrets.ErrNotFound }
+func (failingSecretStore) Set(string, string, string) error   { return errors.New("write failed") }
+func (failingSecretStore) Delete(string, string) error        { return secrets.ErrNotFound }
+func (failingSecretStore) IsSupported() bool                  { return true }
+
+func TestLoadSettingsWithFallback_PasswordMigrationFailureRetainsPlaintext(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+	t.Cleanup(secrets.SetStoreForTest(failingSecretStore{}))
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsJSON := `{"web":{"auth":{"simple":{"username":"admin","password":"pw"}}}}`
+	if err := os.WriteFile(settingsPath, []byte(settingsJSON), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := LoadSettingsWithFallback()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallback() error = %v", err)
+	}
+	if result.Config.Web.Auth == nil || result.Config.Web.Auth.Simple == nil ||
+		result.Config.Web.Auth.Simple.Password != "pw" {
+		t.Fatalf("failed migration did not preserve in-memory password: %+v", result.Config.Web.Auth)
+	}
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"password":"pw"`) {
+		t.Fatalf("failed migration did not preserve settings password: %s", raw)
+	}
+}
+
+// TestWebBeadsConfig_EffectiveReadCacheTTL_Fallback verifies that empty,
+// invalid, zero, and negative durations all fall back to the mirror default,
+// and that a nil receiver is also safe (mitto-9ni).
+func TestWebBeadsConfig_EffectiveReadCacheTTL_Fallback(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *WebBeadsConfig
+	}{
+		{"nil receiver", nil},
+		{"empty string", &WebBeadsConfig{ReadCacheTTL: ""}},
+		{"unparseable", &WebBeadsConfig{ReadCacheTTL: "not-a-duration"}},
+		{"zero", &WebBeadsConfig{ReadCacheTTL: "0s"}},
+		{"negative", &WebBeadsConfig{ReadCacheTTL: "-5m"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.in.EffectiveReadCacheTTL()
+			if got != defaultBeadsReadCacheTTL {
+				t.Errorf("EffectiveReadCacheTTL() = %v, want default %v",
+					got, defaultBeadsReadCacheTTL)
+			}
+		})
 	}
 }

@@ -119,16 +119,59 @@ type QueueFile struct {
 }
 
 // Queue manages the message queue for a single session.
-// It is safe for concurrent use.
+// It is safe for concurrent use, including across independently-constructed
+// *Queue values that point at the same session directory: the mutex is
+// shared via queueLockFor, a process-wide registry keyed on the resolved
+// directory (mitto-pr0). Without this, two *Queue instances over the same
+// directory (e.g. from two calls to Store.Queue(sessionID), which does not
+// cache instances) would each guard their own private mutex, so Pop()'s
+// read-modify-write over queue.json could interleave across instances and
+// let two callers pop the SAME message.
 type Queue struct {
 	sessionDir string
-	mu         sync.Mutex
+	mu         *sync.Mutex
+}
+
+// queueLocksMu guards queueLocks.
+var queueLocksMu sync.Mutex
+
+// queueLocks maps a resolved session directory to the single *sync.Mutex
+// shared by every *Queue constructed for that directory in this process.
+var queueLocks = make(map[string]*sync.Mutex)
+
+// queueLockFor returns the process-wide mutex for sessionDir, creating one
+// on first use. Keyed on filepath.Clean so equivalent (if differently
+// spelled) paths still resolve to the same lock.
+func queueLockFor(sessionDir string) *sync.Mutex {
+	key := filepath.Clean(sessionDir)
+
+	queueLocksMu.Lock()
+	defer queueLocksMu.Unlock()
+
+	mu, ok := queueLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		queueLocks[key] = mu
+	}
+	return mu
+}
+
+// releaseQueueLock removes the process-wide mutex entry for sessionDir, if
+// any. Called when a session is deleted so the registry does not grow
+// unbounded over a long-lived process (mitto-pr0).
+func releaseQueueLock(sessionDir string) {
+	key := filepath.Clean(sessionDir)
+
+	queueLocksMu.Lock()
+	defer queueLocksMu.Unlock()
+	delete(queueLocks, key)
 }
 
 // NewQueue creates a new Queue for the given session directory.
 func NewQueue(sessionDir string) *Queue {
 	return &Queue{
 		sessionDir: sessionDir,
+		mu:         queueLockFor(sessionDir),
 	}
 }
 
@@ -167,9 +210,15 @@ func (q *Queue) readQueue() (*QueueFile, error) {
 }
 
 // writeQueue writes the queue file to disk atomically.
+//
+// Uses WriteJSONAtomicIfDirExists rather than WriteJSONAtomic so that a
+// write racing a concurrent session deletion fails instead of silently
+// recreating the (now-deleted) session directory containing only
+// queue.json — an orphan directory with no metadata.json/events.jsonl
+// (mitto-32ef).
 func (q *Queue) writeQueue(qf *QueueFile) error {
 	qf.UpdatedAt = time.Now()
-	if err := fileutil.WriteJSONAtomic(q.queuePath(), qf, 0644); err != nil {
+	if err := fileutil.WriteJSONAtomicIfDirExists(q.queuePath(), qf, 0644); err != nil {
 		return fmt.Errorf("failed to write queue file: %w", err)
 	}
 	return nil
