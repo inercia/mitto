@@ -1130,6 +1130,146 @@ if (isIsolatedComponentRun) {
       }
     });
 
+    test("mitto-yn5: renders a delivery-health warning badge and remediation hint fed by the initial connections fetch", async () => {
+      const longConnectedAt = new Date(
+        Date.now() - SLACK_DELIVERY_WARNING_GRACE_MS - 60_000,
+      ).toISOString();
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        if (url === "/api/slack/connections")
+          return json({
+            connections: [
+              {
+                app_id: "app-a",
+                state: "connected",
+                subscription_count: 1,
+                events_api_received: 0,
+                connected_at: longConnectedAt,
+              },
+            ],
+          });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () =>
+            container.querySelector(
+              '[data-testid="slack-delivery-warning-badge"]',
+            ),
+          container,
+          "delivery-health warning badge",
+        );
+        expect(
+          container.querySelector(
+            '[data-testid="slack-delivery-warning-badge"]',
+          ).textContent,
+        ).toBe("Connected, but 0 events received.");
+        const hint = container.querySelector(
+          '[data-testid="slack-delivery-warning-hint"]',
+        );
+        expect(hint.textContent).toContain("message.channels");
+        const link = container.querySelector(
+          '[data-testid="slack-delivery-troubleshooting-link"]',
+        );
+        expect(link.tagName).toBe("A");
+        link.click();
+        expect(window.open).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "#troubleshooting-connected-but-0-events-received",
+          ),
+          "_blank",
+          "noopener,noreferrer",
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("mitto-yn5: a healthy idle app (no onSlack subscriptions) shows no delivery-health warning", async () => {
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        if (url === "/api/slack/connections")
+          return json({
+            connections: [
+              {
+                app_id: "app-a",
+                state: "connected",
+                subscription_count: 0,
+                events_api_received: 0,
+              },
+            ],
+          });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () => container.textContent.includes("Connected"),
+          container,
+          "health badge",
+        );
+        expect(
+          container.querySelector(
+            '[data-testid="slack-delivery-warning-badge"]',
+          ),
+        ).toBeNull();
+        expect(
+          container.querySelector(
+            '[data-testid="slack-delivery-warning-hint"]',
+          ),
+        ).toBeNull();
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("mitto-yn5: live slack_connection_status window events update the warning without a refetch", async () => {
+      const { container } = await mount((url) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url.endsWith("/installations")) return json({ installations: [] });
+        if (url === "/api/slack/connections") return json({ connections: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      try {
+        await waitFor(
+          () => container.textContent.includes("Connected"),
+          container,
+          "initial health badge",
+        );
+        expect(
+          container.querySelector(
+            '[data-testid="slack-delivery-warning-badge"]',
+          ),
+        ).toBeNull();
+
+        const longConnectedAt = new Date(
+          Date.now() - SLACK_DELIVERY_WARNING_GRACE_MS - 60_000,
+        ).toISOString();
+        window.dispatchEvent(
+          new CustomEvent("mitto:slack_connection_status", {
+            detail: {
+              app_id: "app-a",
+              state: "connected",
+              subscription_count: 1,
+              events_api_received: 0,
+              connected_at: longConnectedAt,
+            },
+          }),
+        );
+        await waitFor(
+          () =>
+            container.querySelector(
+              '[data-testid="slack-delivery-warning-badge"]',
+            ),
+          container,
+          "live-updated delivery-health warning badge",
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+
     test("mitto-1afm: places the credential-storage note below the catalog", async () => {
       const { container } = await mount((url) => {
         if (url === "/api/slack/apps") return json({ apps: [appA] });

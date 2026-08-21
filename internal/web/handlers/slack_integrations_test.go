@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/slackbridge"
@@ -425,6 +427,145 @@ func TestSlackAppReferencesDeleteBroadcastsPartialSuccessOnError(t *testing.T) {
 	}
 	if broadcastLoops[0] == nil || broadcastLoops[0].Prompt != "inspect" {
 		t.Fatalf("broadcast loop = %#v, want the retained on-disk loop", broadcastLoops[0])
+	}
+}
+
+// connectionsTestCredentials is a minimal slackbridge.CredentialResolver that
+// always resolves the same app token, used only to let a FakeSource-backed
+// worker start.
+type connectionsTestCredentials struct{ token string }
+
+func (c connectionsTestCredentials) Resolve(secrets.CredentialRef) (string, error) {
+	return c.token, nil
+}
+
+// connectionsTestCatalog is a minimal slackbridge.Catalog resolving exactly
+// one installation, used only to arm one onSlack subscription.
+type connectionsTestCatalog map[string]slackcatalog.InstallationView
+
+func (c connectionsTestCatalog) GetInstallation(id string) (slackcatalog.InstallationView, error) {
+	installation, ok := c[id]
+	if !ok {
+		return slackcatalog.InstallationView{}, slackcatalog.ErrNotFound
+	}
+	return installation, nil
+}
+
+// connectionsTestRunner is a no-op slackbridge.ManagedLoopTriggerer: this test
+// only exercises the connection-status snapshot, not event dispatch.
+type connectionsTestRunner struct{}
+
+func (connectionsTestRunner) TriggerNowWithSlackEvents(string, bool, session.LoopTrigger, []conversation.PromptSlackEvent) error {
+	return nil
+}
+
+// connectionsTestSource is a slackbridge.Source that emits every queued event
+// and then blocks until ctx is cancelled, unlike slackbridge.FakeSource (which
+// returns immediately once its scripted events are exhausted). The manager
+// treats a Run() return as a disconnect and immediately cycles back to
+// "backoff", so a non-blocking source races the "connected" state this test
+// asserts on. Blocking after the last event keeps the connection healthy so
+// the status snapshot is deterministic.
+type connectionsTestSource struct {
+	events chan slackbridge.Event
+}
+
+func (s *connectionsTestSource) Run(ctx context.Context, emit func(slackbridge.Event)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case evt := <-s.events:
+			emit(evt)
+		}
+	}
+}
+
+func waitForConnectionStatus(t *testing.T, manager *slackbridge.Manager, condition func([]slackbridge.ConnectionStatus) bool) []slackbridge.ConnectionStatus {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if status := manager.Status(); condition(status) {
+			return status
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for connection status condition")
+	return nil
+}
+
+// TestHandleSlackConnectionsReturnsCredentialFreeSnapshot pins the mitto-yn5
+// acceptance criterion: GET /api/slack/connections surfaces the manager's
+// live, credential-free ConnectionStatus snapshot (used by Settings > Slack
+// to derive the "connected but 0 events received" delivery-health warning)
+// and never leaks the app token used to establish the connection.
+func TestHandleSlackConnectionsReturnsCredentialFreeSnapshot(t *testing.T) {
+	const canary = "xapp-connections-test-canary-token"
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Create(session.Metadata{SessionID: "watcher", ACPServer: "test", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	loop := &session.LoopPrompt{Prompt: "inspect", Enabled: true, Triggers: []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "install-1", ChannelID: "channel-1"}}}
+	if err := store.Loop("watcher").Set(loop); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog := connectionsTestCatalog{
+		"install-1": {Installation: slackcatalog.Installation{ID: "install-1", AppID: "app-1",
+			CredentialKind: slackcatalog.CredentialKindBot, TeamID: "team-1", BotID: "bot-1", BotUserID: "user-bot-1"}, TokenConfigured: true},
+	}
+	manager := slackbridge.NewManager(store, catalog, connectionsTestCredentials{token: canary}, connectionsTestRunner{}, nil)
+	t.Cleanup(manager.Close)
+	source := &connectionsTestSource{events: make(chan slackbridge.Event, 1)}
+	manager.SetSourceFactory(func(string, string) (slackbridge.Source, error) { return source, nil })
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	source.events <- slackbridge.Event{EventID: "event-1", TeamID: "team-1", ChannelID: "channel-1", AuthorID: "human", Kind: "message"}
+
+	waitForConnectionStatus(t, manager, func(status []slackbridge.ConnectionStatus) bool {
+		return len(status) == 1 && status[0].State == "connected" && status[0].EventsAPIReceived == 1
+	})
+
+	h := New(Deps{SlackManager: manager})
+	response := httptest.NewRecorder()
+	h.HandleSlackConnections(response, httptest.NewRequest(http.MethodGet, "/api/slack/connections", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Connections []slackbridge.ConnectionStatus `json:"connections"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Connections) != 1 {
+		t.Fatalf("connections = %#v", body.Connections)
+	}
+	got := body.Connections[0]
+	if got.AppID != "app-1" || got.State != "connected" || got.SubscriptionCount != 1 || got.EventsAPIReceived != 1 {
+		t.Fatalf("connection status = %#v", got)
+	}
+	if strings.Contains(response.Body.String(), canary) {
+		t.Fatalf("response leaked app token: %s", response.Body.String())
+	}
+}
+
+// TestHandleSlackConnectionsWithoutManagerReturnsEmptySnapshot pins the
+// documented nil-SlackManager fallback (event delivery unavailable, e.g. the
+// catalog path could not be resolved): the endpoint still returns 200 with an
+// empty connections array rather than erroring the Settings > Slack tab.
+func TestHandleSlackConnectionsWithoutManagerReturnsEmptySnapshot(t *testing.T) {
+	h := New(Deps{})
+	response := httptest.NewRecorder()
+	h.HandleSlackConnections(response, httptest.NewRequest(http.MethodGet, "/api/slack/connections", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"connections":[]`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
