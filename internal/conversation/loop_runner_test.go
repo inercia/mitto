@@ -5832,6 +5832,111 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	}
 }
 
+// slogRecordStringAttr returns the value of the named string attribute in r,
+// or "" plus ok=false if absent.
+func slogRecordStringAttr(r slog.Record, key string) (string, bool) {
+	var (
+		val string
+		ok  bool
+	)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			val = a.Value.String()
+			ok = true
+			return false
+		}
+		return true
+	})
+	return val, ok
+}
+
+// TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn is the
+// mitto-bfu regression test: an upstream provider outage (-32603 envelope whose
+// data.apiStatus is "unavailable", e.g. an Auggie backend HTTP 500) delivered
+// through handleDeliveryFailure must be classified distinctly — the WARN carries
+// failure_class=upstream_provider_unavailable — while the counter/backoff
+// behavior stays byte-for-byte identical to a generic failure (schedule is
+// deferred, not advanced; loop not auto-paused under the ceiling).
+func TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "bfu-upstream-outage"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+
+	// Exact mitto-bfu shape: -32603 envelope with an HTTP 500 whose
+	// data.apiStatus is "unavailable".
+	upstreamErr := fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":500,"apiStatus":"unavailable"}}`)
+
+	// Sanity: the classifier agrees this is an upstream outage.
+	if !mittoAcp.IsUpstreamUnavailableError(upstreamErr) {
+		t.Fatalf("test precondition failed: IsUpstreamUnavailableError(upstreamErr) = false, want true")
+	}
+
+	// One scheduled delivery failure — under the ceiling, so backoff only.
+	runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, upstreamErr, true, false, session.TriggerSchedule)
+
+	// The loop must NOT be auto-paused (single failure, under the ceiling) —
+	// backoff behavior is unchanged by the classification.
+	after, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !after.Enabled {
+		t.Fatalf("loop.Enabled = false after a single upstream-outage failure; " +
+			"want true (mitto-bfu: classification must not change backoff/ceiling behavior)")
+	}
+
+	// Exactly one WARN, carrying failure_class=upstream_provider_unavailable.
+	warns := handler.warnOrHigher()
+	if len(warns) != 1 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Fatalf("WARN-or-higher count = %d, want 1. records: %s", len(warns), strings.Join(msgs, "; "))
+	}
+	got, ok := slogRecordStringAttr(warns[0], "failure_class")
+	if !ok {
+		t.Fatalf("WARN record has no failure_class attribute (mitto-bfu)")
+	}
+	if got != "upstream_provider_unavailable" {
+		t.Errorf("failure_class = %q, want %q (mitto-bfu)", got, "upstream_provider_unavailable")
+	}
+
+	// A generic (non-upstream) failure must classify as "generic" — proving the
+	// distinction is real and not hard-coded.
+	handler2 := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner2 := NewLoopRunner(store, nil, slog.New(handler2))
+	genericErr := errors.New("Internal error: HTTP error: 404 Not Found")
+	runner2.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+	warns2 := handler2.warnOrHigher()
+	if len(warns2) != 1 {
+		t.Fatalf("generic-error WARN-or-higher count = %d, want 1", len(warns2))
+	}
+	if got, _ := slogRecordStringAttr(warns2[0], "failure_class"); got != "generic" {
+		t.Errorf("generic failure_class = %q, want %q (mitto-bfu)", got, "generic")
+	}
+}
+
 // TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling is the
 // regression test for mitto-aeb: handleDeliveryFailure's generic branch
 // (loop_runner.go, everything that is not a context-window/413 error)

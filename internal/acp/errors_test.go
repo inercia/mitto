@@ -707,3 +707,87 @@ func TestIsContextTooLargeError_mitto_2efc_UncorroboratedInvalidArgument(t *test
 		})
 	}
 }
+
+// TestIsUpstreamUnavailableError is the classifier truth table for the
+// upstream-provider-outage predicate, covering both the mitto-gbf5
+// network-level connect-timeout brownout and the mitto-bfu application-level
+// HTTP 5xx whose data.apiStatus is "unavailable". The authoritative marker is
+// apiStatus == "unavailable"; a bare 5xx lacking that marker must NOT match, so
+// it keeps flowing through the generic -32603 HTTP-status branch unchanged.
+func TestIsUpstreamUnavailableError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "mitto-gbf5 connect-timeout brownout (fetch failed + apiStatus unavailable)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: xlb.api.augmentcode.com:443, timeout: 10000ms))","data":{"apiStatus":"unavailable"}}`),
+			want: true,
+		},
+		{
+			name: "UND_ERR_CONNECT_TIMEOUT alone (no apiStatus marker)",
+			err:  errors.New("Internal error: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)"),
+			want: true,
+		},
+		{
+			name: "mitto-bfu HTTP 500 provider outage (apiStatus unavailable, no fetch failed)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":500,"apiStatus":"unavailable"}}`),
+			want: true,
+		},
+		{
+			name: "apiStatus unavailable with spaced JSON is matched (substring on lowered text)",
+			err:  fmt.Errorf(`{"code":-32603,"data":{"apistatus":"unavailable"}}`),
+			want: true,
+		},
+		{
+			name: "bare HTTP 500 without apiStatus marker is NOT an upstream outage",
+			err:  errors.New("Internal error: HTTP error: 500 Internal Server Error"),
+			want: false,
+		},
+		{
+			name: "invalidArgument 400 is NOT an upstream outage",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument"}}`),
+			want: false,
+		},
+		{
+			name: "unrelated generic error",
+			err:  errors.New("some other io failure"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsUpstreamUnavailableError(tt.err); got != tt.want {
+				t.Errorf("IsUpstreamUnavailableError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFormatACPError_UpstreamHTTP500_mitto_bfu reproduces mitto-bfu: an
+// application-level HTTP 500 provider outage delivered as a -32603 envelope
+// whose data.apiStatus is "unavailable" must be surfaced as a transient
+// provider outage (named for the user, framed as auto-retrying) rather than an
+// opaque agent-side internal error.
+func TestFormatACPError_UpstreamHTTP500_mitto_bfu(t *testing.T) {
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":500,"apiStatus":"unavailable"}}`)
+
+	got := FormatACPError(err)
+
+	if containsIgnoreCase(got, "encountered an internal error") {
+		t.Errorf("FormatACPError(err) = %q; upstream HTTP 500 provider outage must not be shaped as a generic internal error", got)
+	}
+	if !containsIgnoreCase(got, "unavailable") {
+		t.Errorf("FormatACPError(err) = %q; want a message naming the upstream provider outage (mitto-bfu)", got)
+	}
+	if !containsIgnoreCase(got, "retry") {
+		t.Errorf("FormatACPError(err) = %q; want the message to frame the outage as transient/auto-retrying (mitto-bfu)", got)
+	}
+}

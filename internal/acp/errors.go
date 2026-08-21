@@ -499,14 +499,24 @@ const (
 )
 
 // IsUpstreamUnavailableError reports whether err indicates the agent's
-// upstream API (e.g. xlb.api.augmentcode.com) was unreachable at the network
-// level — a connect-timeout brownout — rather than an application-level
-// error. Node's undici HTTP client surfaces this as
+// upstream API (e.g. xlb.api.augmentcode.com) was unavailable — either at the
+// network level (a connect-timeout brownout) or at the application level (an
+// HTTP 5xx chat-stream response) — rather than an agent-side internal error.
+//
+// Node's undici HTTP client surfaces the network-level case as
 // `UND_ERR_CONNECT_TIMEOUT` / "Connect Timeout Error" wrapped in a "fetch
-// failed" JSON-RPC -32603 envelope whose `data.apiStatus` is "unavailable".
-// The envelope carries no HTTP status code, so extractHTTPStatus finds
-// nothing and the generic -32603 branch would otherwise misreport this as an
-// opaque "internal error" (mitto-gbf5).
+// failed" JSON-RPC -32603 envelope; that envelope carries no HTTP status code,
+// so extractHTTPStatus finds nothing and the generic -32603 branch would
+// otherwise misreport it as an opaque "internal error" (mitto-gbf5).
+//
+// The application-level case is an HTTP 5xx from the backend (e.g. 500 during a
+// provider outage), delivered as a -32603 envelope whose `data.apiStatus` is
+// "unavailable" (mitto-bfu). In both cases Augment's authoritative
+// provider-outage marker is `apiStatus == "unavailable"`, so we match that
+// marker directly (rather than requiring a specific companion substring such as
+// "fetch failed"). A bare 5xx that lacks the marker is intentionally NOT
+// treated as an upstream outage here — it keeps flowing through the generic
+// -32603 HTTP-status branch of FormatACPError unchanged.
 func IsUpstreamUnavailableError(err error) bool {
 	if err == nil {
 		return false
@@ -516,8 +526,7 @@ func IsUpstreamUnavailableError(err error) bool {
 		strings.Contains(errMsgLower, "connect timeout error") {
 		return true
 	}
-	return strings.Contains(errMsgLower, "fetch failed") &&
-		strings.Contains(errMsgLower, `"apistatus":"unavailable"`)
+	return strings.Contains(errMsgLower, `"apistatus":"unavailable"`)
 }
 
 // FormatErrorHints carries optional corroborating context that lets
@@ -591,15 +600,17 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 		return "The agent is busy — please try again in a moment."
 	}
 
-	// Upstream API unreachable (network-level connect-timeout brownout, e.g.
-	// UND_ERR_CONNECT_TIMEOUT to xlb.api.augmentcode.com). Checked before the
-	// generic context-cancelled and -32603 branches so this is named for the
-	// user instead of surfacing as an opaque "internal error" or "request was
-	// cancelled" (mitto-gbf5).
+	// Upstream provider unavailable — either a network-level connect-timeout
+	// brownout (UND_ERR_CONNECT_TIMEOUT to xlb.api.augmentcode.com, mitto-gbf5)
+	// or an application-level HTTP 5xx whose data.apiStatus is "unavailable"
+	// (mitto-bfu). Checked before the generic context-cancelled and -32603
+	// branches so this transient provider outage is named for the user —
+	// distinct from an opaque agent "internal error", a "request was
+	// cancelled", or an auth/config problem — and framed as self-healing.
 	if IsUpstreamUnavailableError(err) {
-		return "The AI agent's API is unreachable right now (upstream connection " +
-			"timed out). This is usually a transient outage — please try again in " +
-			"a moment."
+		return "The AI agent's upstream API is temporarily unavailable (provider " +
+			"outage). This is transient and Mitto will retry automatically — " +
+			"please try again in a moment."
 	}
 
 	// Context cancelled (user cancelled or session closed)

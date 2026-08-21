@@ -2507,6 +2507,17 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
 	}
 
+	// Classify the failure so the operator can distinguish a transient upstream
+	// provider outage (Augment/Auggie backend 5xx or connect-timeout brownout,
+	// data.apiStatus:"unavailable") from a generic delivery failure or an
+	// auth/config error. This is purely a logging/surfacing signal — the counter
+	// and backoff behavior below is identical either way, so the already-correct
+	// exponential backoff is unchanged (mitto-bfu).
+	failureClass := "generic"
+	if mittoAcp.IsUpstreamUnavailableError(err) {
+		failureClass = "upstream_provider_unavailable"
+	}
+
 	// Trigger-agnostic ceiling (mitto-bmct): count this failure and compare
 	// against MaxLoopDeliveryFailures regardless of trigger/forced-ness.
 	r.deliveryFailuresMu.Lock()
@@ -2535,6 +2546,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 				"max_failures", MaxLoopDeliveryFailures,
 				"forced", forced,
 				"fired_by", firedBy,
+				"failure_class", failureClass,
 				"error", err)
 		}
 		if r.onLoopAutoStopped != nil {
@@ -2567,16 +2579,22 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 					"session_id", sessionID,
 					"session_name", sessionName,
 					"consecutive_failures", scheduleFailures,
+					"failure_class", failureClass,
 					"error", deferErr)
 			}
 		} else {
 			if r.logger != nil {
-				r.logger.Warn("Loop prompt failed, backing off next run",
+				backoffMsg := "Loop prompt failed, backing off next run"
+				if failureClass == "upstream_provider_unavailable" {
+					backoffMsg = "Loop delivery hit a transient upstream provider outage; backing off next run (auto-retrying, not a broken loop)"
+				}
+				r.logger.Warn(backoffMsg,
 					"session_id", sessionID,
 					"session_name", sessionName,
 					"consecutive_failures", scheduleFailures,
 					"max_failures", MaxLoopDeliveryFailures,
 					"backoff", delay,
+					"failure_class", failureClass,
 					"error", err)
 			}
 			if r.onLoopUpdated != nil {
@@ -2591,13 +2609,18 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	// Forced/event-driven fires must not push out the regular schedule, but
 	// still get the same trigger-agnostic failure accounting logged.
 	if r.logger != nil {
-		r.logger.Warn("Loop prompt failed, schedule not advanced",
+		notAdvancedMsg := "Loop prompt failed, schedule not advanced"
+		if failureClass == "upstream_provider_unavailable" {
+			notAdvancedMsg = "Loop delivery hit a transient upstream provider outage; schedule not advanced (auto-retrying, not a broken loop)"
+		}
+		r.logger.Warn(notAdvancedMsg,
 			"session_id", sessionID,
 			"session_name", sessionName,
 			"consecutive_failures", failures,
 			"max_failures", MaxLoopDeliveryFailures,
 			"forced", forced,
 			"fired_by", firedBy,
+			"failure_class", failureClass,
 			"error", err)
 	}
 }
