@@ -107,13 +107,27 @@ func (r *recorderObserver) OnNotification(UINotifyRequest)                {}
 func (r *recorderObserver) OnContextUsageUpdate(int, int)                 {}
 
 // newTestQueue creates a real *session.Queue backed by a temp dir for tests.
+//
+// The session directory MUST be created before Queue.Add() will work: since
+// mitto-32ef (d6483f86), Queue.writeQueue uses fileutil.WriteJSONAtomicIfDirExists
+// which refuses to create a missing parent (to prevent orphan session dirs from
+// post-delete sidecar writes). Match production semantics by calling
+// store.Create() so a Queue always belongs to a real session (mitto-e8ij).
 func newTestQueue(t *testing.T) *session.Queue {
 	t.Helper()
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	return store.Queue("test-session")
+	const sessionID = "test-session"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	return store.Queue(sessionID)
 }
 
 // --- hasImmediateQueued ---
