@@ -67,9 +67,16 @@ type Installation struct {
 	BotUserID       string         `json:"bot_user_id,omitempty"`
 	UserID          string         `json:"user_id,omitempty"`
 	OAuthAuthorized bool           `json:"oauth_authorized,omitempty"`
-	ValidatedAt     time.Time      `json:"validated_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	// GrantedUserScopes is the comma-separated delegated-user scope set minted
+	// at the most recent successful OAuth authorization (see delegatedUserScopes
+	// in oauth.go). Empty for installs predating this field, or created via
+	// manual bot-token entry, which is treated as an unknown baseline (fail
+	// open, never flagged as drifted). Scopes are not secret and are safe to
+	// serialize.
+	GrantedUserScopes string    `json:"granted_user_scopes,omitempty"`
+	ValidatedAt       time.Time `json:"validated_at"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type AppView struct {
@@ -81,6 +88,11 @@ type AppView struct {
 type InstallationView struct {
 	Installation
 	TokenConfigured bool `json:"token_configured"`
+	// NeedsReauthorization is derived (never persisted): true only when this is
+	// a delegated-user installation whose granted scope baseline is missing a
+	// currently-required scope AND the installation is referenced by an
+	// enabled, unarchived onSlack subscription. See Service.decorateReauth.
+	NeedsReauthorization bool `json:"needs_reauthorization"`
 }
 
 type InstallationIdentity struct {

@@ -24,6 +24,30 @@ type oauthFlow struct {
 	ExpiresAt                                                                  time.Time
 }
 
+// scopesDrifted reports whether the currently-required comma-separated scope
+// list contains a scope missing from the granted comma-separated baseline.
+// An empty granted baseline (pre-migration installs, or installs created via
+// manual token entry rather than OAuth) is an unknown quantity, not a known
+// drift, so it fails open and returns false. Pure and deterministic: no I/O,
+// no token values, safe to unit test directly.
+func scopesDrifted(granted, required string) bool {
+	if strings.TrimSpace(granted) == "" {
+		return false
+	}
+	have := make(map[string]bool)
+	for _, scope := range strings.Split(granted, ",") {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			have[scope] = true
+		}
+	}
+	for _, scope := range strings.Split(required, ",") {
+		if scope = strings.TrimSpace(scope); scope != "" && !have[scope] {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) ConfigureOAuthClient(appID, clientID, clientSecret string) (AppView, error) {
 	if err := validateResourceID(appID); err != nil {
 		return AppView{}, err
@@ -248,6 +272,10 @@ func (s *Service) commitOAuthInstallation(flow oauthFlow, identity OAuthIdentity
 		installation := &doc.Installations[idx]
 		applyInstallationIdentity(installation, identity.InstallationIdentity)
 		installation.OAuthAuthorized = true
+		// Capture the scope baseline granted by this authorization. Re-running
+		// this same flow (re-authorization) refreshes the baseline to the
+		// current constant, which self-clears any previously-detected drift.
+		installation.GrantedUserScopes = delegatedUserScopes
 		installation.ValidatedAt, installation.UpdatedAt = now, now
 		ref := secrets.SlackInstallationCredential(installation.ID, InstallationTokenCredential)
 		if err := s.commitCredentialAndDocument(ref, identity.AccessToken, doc); err != nil {

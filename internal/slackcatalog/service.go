@@ -282,12 +282,13 @@ func (s *Service) ListInstallations(appID string) ([]InstallationView, error) {
 		return nil, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	doc, err := s.store.Load()
 	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	if appIndex(doc, appID) < 0 {
+		s.mu.Unlock()
 		return nil, ErrNotFound
 	}
 	result := []InstallationView{}
@@ -297,16 +298,22 @@ func (s *Service) ListInstallations(appID string) ([]InstallationView, error) {
 		}
 		view, err := s.installationView(installation)
 		if err != nil {
+			s.mu.Unlock()
 			return nil, err
 		}
 		result = append(result, view)
 	}
+	references := s.references
+	s.mu.Unlock()
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Name == result[j].Name {
 			return result[i].ID < result[j].ID
 		}
 		return result[i].Name < result[j].Name
 	})
+	for i := range result {
+		result[i].NeedsReauthorization = decorateReauth(references, result[i])
+	}
 	return result, nil
 }
 
@@ -315,16 +322,24 @@ func (s *Service) GetInstallation(id string) (InstallationView, error) {
 		return InstallationView{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	doc, err := s.store.Load()
 	if err != nil {
+		s.mu.Unlock()
 		return InstallationView{}, err
 	}
 	idx := installationIndex(doc, id)
 	if idx < 0 {
+		s.mu.Unlock()
 		return InstallationView{}, ErrNotFound
 	}
-	return s.installationView(doc.Installations[idx])
+	view, err := s.installationView(doc.Installations[idx])
+	references := s.references
+	s.mu.Unlock()
+	if err != nil {
+		return InstallationView{}, err
+	}
+	view.NeedsReauthorization = decorateReauth(references, view)
+	return view, nil
 }
 
 // PoCImportTransaction keeps the pre-import catalog and credential state so a
@@ -979,6 +994,33 @@ func (s *Service) installationView(installation Installation) (InstallationView,
 		return InstallationView{}, fmt.Errorf("credential status: %w", err)
 	}
 	return InstallationView{Installation: installation, TokenConfigured: status.Configured}, nil
+}
+
+// decorateReauth derives InstallationView.NeedsReauthorization for the two
+// client-facing read paths (ListInstallations, GetInstallation). It is
+// intentionally NOT computed inside installationView() itself: GetInstallation
+// is also called internally by slackbridge.Manager.ReconcileSession, and
+// keeping the reference check confined to these two call sites avoids
+// running it on every reconcile pass. Fails open (returns false) on any
+// uncertainty: non-delegated-user credential, no recorded scope baseline
+// (pre-migration installs or manual token entry), or a reference-check
+// error, so a transient failure can never flip a healthy installation into
+// needing re-authorization.
+func decorateReauth(references ReferenceChecker, view InstallationView) bool {
+	if view.CredentialKind != CredentialKindUser {
+		return false
+	}
+	if !scopesDrifted(view.GrantedUserScopes, delegatedUserScopes) {
+		return false
+	}
+	if references == nil {
+		return false
+	}
+	refs, err := references.FindSlackReferences(context.Background(), view.AppID, []string{view.ID})
+	if err != nil {
+		return false
+	}
+	return len(refs) > 0
 }
 
 func (s *Service) deletePreviewLocked(ctx context.Context, doc document, appID, onlyInstallationID string) (DeletePreview, error) {

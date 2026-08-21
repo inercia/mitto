@@ -118,6 +118,29 @@ this compatibility period.
    member. Delegated-user mode will instead use channels visible to its user.
 7. Note the workspace's **Team ID** and the target **Channel ID**.
 
+### Re-authorization on scope drift
+
+Slack does not retroactively grant newly-added scopes to a token minted before
+those scopes existed on the app's manifest. A delegated-user (`xoxp`)
+installation can therefore show **Connected** — Socket Mode is up and the token
+still validates — while silently receiving zero events, because the token
+predates a user scope the current manifest now requires. A live connection is
+not proof of event delivery.
+
+Mitto detects this by comparing the delegated-user scope set granted at the
+installation's most recent OAuth authorization against the scopes currently
+required (the same set requested via **Authorize delegated user**). When a
+required scope is missing from the granted baseline, and the installation is
+still referenced by an enabled, unarchived onSlack subscription, the Slack
+settings UI shows a **Re-authorization required** badge next to the
+installation's status and highlights the existing **Authorize delegated user**
+button. Re-running that flow re-mints the token with the current scopes and
+clears the badge. Installations predating this detection, or created via
+manual token entry rather than OAuth, have no recorded baseline and are never
+flagged (fail open) — only newly-authorized delegated-user installations build
+up drift history. No token or scope value is logged; only the boolean
+re-authorization signal is exposed to the client.
+
 ## Legacy adapter runtime configuration
 
 The deprecated single-target adapter is configured via environment variables,

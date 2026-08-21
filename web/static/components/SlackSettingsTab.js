@@ -200,6 +200,13 @@ function StatusSummary({ record, attempt, identityLabel, identityValue }) {
       <span class="badge badge-sm badge-soft ${health.className}"
         >${health.label}</span
       >
+      ${record?.needs_reauthorization &&
+      html`<span
+        class="badge badge-sm badge-soft badge-warning"
+        data-testid="slack-needs-reauthorization"
+        title="A required delegated-user scope was added after this workspace was last authorized. Re-authorize to resume receiving events."
+        >Re-authorization required</span
+      >`}
       ${identityValue &&
       html`<span class="text-mitto-text-muted"
         >${identityLabel}: <code>${identityValue}</code></span
@@ -1774,7 +1781,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               </div>
                               <button
                                 type="button"
-                                class="btn btn-sm mt-2"
+                                class="btn btn-sm mt-2 ${selectedInstallation.needs_reauthorization &&
+                                !oauthFlowId
+                                  ? "btn-warning"
+                                  : ""}"
                                 disabled=${busy === "start-oauth" ||
                                 !!oauthFlowId ||
                                 !oauthConfig?.available ||
