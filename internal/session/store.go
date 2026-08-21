@@ -99,8 +99,54 @@ func NewStore(baseDir string) (*Store, error) {
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create session directory: %w", err)
 	}
+	cleanupOrphanSessionDirs(baseDir)
 	log.Debug("session store initialized", "base_dir", baseDir)
 	return &Store{baseDir: baseDir}, nil
+}
+
+// cleanupOrphanSessionDirs removes every immediate subdirectory of baseDir
+// that has neither metadata.json nor events.jsonl (mitto-32ef). Such
+// directories are invisible to session listing (metadata.json is
+// authoritative) and can only contain leftover sidecars — historically
+// created by a sidecar writer (processor_state.json, queue.json, ...)
+// racing a concurrent Store.Delete and recreating the just-removed
+// directory via WriteJSONAtomic's MkdirAll. That race is closed separately
+// (see fileutil.WriteJSONAtomicIfDirExists), so this is a one-shot sweep of
+// orphans accumulated before the fix, run once per process start.
+//
+// Fails open: a read or removal error for one entry is logged and does not
+// abort the sweep or NewStore.
+func cleanupOrphanSessionDirs(baseDir string) {
+	log := logging.Session()
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		log.Warn("orphan session dir cleanup: failed to list base dir", "error", err, "base_dir", baseDir)
+		return
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(baseDir, entry.Name())
+		_, metaErr := os.Stat(filepath.Join(dir, metadataFileName))
+		_, eventsErr := os.Stat(filepath.Join(dir, eventsFileName))
+		if !os.IsNotExist(metaErr) || !os.IsNotExist(eventsErr) {
+			// Has metadata.json and/or events.jsonl (or a stat error other
+			// than "not exist") — not an orphan, or unsafe to judge; skip.
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Warn("orphan session dir cleanup: failed to remove orphan", "error", err, "session_dir", dir)
+			continue
+		}
+		removed++
+		log.Info("orphan session dir cleanup: removed orphan directory (no metadata.json/events.jsonl)", "session_dir", dir)
+	}
+	if removed > 0 {
+		log.Info("orphan session dir cleanup: complete", "base_dir", baseDir, "removed", removed)
+	}
 }
 
 // RunMigrations runs any pending data migrations on the session store.

@@ -210,9 +210,15 @@ func (q *Queue) readQueue() (*QueueFile, error) {
 }
 
 // writeQueue writes the queue file to disk atomically.
+//
+// Uses WriteJSONAtomicIfDirExists rather than WriteJSONAtomic so that a
+// write racing a concurrent session deletion fails instead of silently
+// recreating the (now-deleted) session directory containing only
+// queue.json — an orphan directory with no metadata.json/events.jsonl
+// (mitto-32ef).
 func (q *Queue) writeQueue(qf *QueueFile) error {
 	qf.UpdatedAt = time.Now()
-	if err := fileutil.WriteJSONAtomic(q.queuePath(), qf, 0644); err != nil {
+	if err := fileutil.WriteJSONAtomicIfDirExists(q.queuePath(), qf, 0644); err != nil {
 		return fmt.Errorf("failed to write queue file: %w", err)
 	}
 	return nil
