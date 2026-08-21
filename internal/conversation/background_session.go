@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
@@ -1137,16 +1139,28 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 				// triggered a restart for the same death, this returns without
 				// starting another one.
 				if restartErr := config.SharedProcess.Restart(observedGen); restartErr != nil {
+					// mitto-ei81: a concurrent GC recycle may have closed this exact
+					// SharedProcess instance out from under us between the failed
+					// resume above and this restart attempt — that instance's
+					// process-lifetime context is permanently cancelled and can
+					// never be restarted. Record a dedicated cold-start outcome so
+					// this benign, self-resolving race (the caller retries with a
+					// fresh process) is separable from a genuine startup failure.
+					outcome := "shared_restart_failed"
+					if errors.Is(restartErr, acperrors.ErrProcessClosedConcurrently) {
+						outcome = "resume_racing_recycle"
+					}
 					if bs.logger != nil {
 						bs.logger.Warn("Failed to restart shared ACP process on resume",
 							"session_id", bs.persistedID,
+							"outcome", outcome,
 							"error", restartErr)
 					}
 					cancel()
 					if bs.recorder != nil {
 						bs.recorder.Suspend()
 					}
-					bs.finishColdTrace("shared_restart_failed", "error", restartErr.Error())
+					bs.finishColdTrace(outcome, "error", restartErr.Error())
 					return nil, fmt.Errorf("ACP process restart failed on resume: %w", restartErr)
 				}
 
@@ -1874,18 +1888,32 @@ func (bs *BackgroundSession) unregisterFromGlobalMCP() {
 	}
 }
 
-// startSessionMcpServer registers with the global MCP server.
-// We don't pass McpServers to ACP - the agent should have the MCP server
-// pre-configured globally (e.g., in ~/.augment/settings.json).
-// Returns empty McpServers slice.
+// startSessionMcpServer registers with the global MCP server and, when the
+// agent supports HTTP MCP, injects a per-conversation authenticated transport.
+// The globally configured endpoint remains the fallback for older agents.
 func (bs *BackgroundSession) startSessionMcpServer(
 	store *session.Store,
 	agentCapabilities acp.AgentCapabilities,
 ) []acp.McpServer {
-	// Register with the global MCP server
 	bs.registerWithGlobalMCP(store)
-	// Return empty - MCP is configured globally, not passed per-session
-	return []acp.McpServer{}
+	if bs.globalMcpServer == nil || !agentCapabilities.McpCapabilities.Http {
+		return []acp.McpServer{}
+	}
+	binding, ok := bs.globalMcpServer.SessionHTTPBinding(bs.persistedID)
+	if !ok {
+		return []acp.McpServer{}
+	}
+	return []acp.McpServer{{
+		Http: &acp.McpServerHttpInline{
+			Type: "http",
+			Name: "mitto",
+			Url:  binding.URL,
+			Headers: []acp.HttpHeader{{
+				Name:  binding.HeaderName,
+				Value: binding.HeaderValue,
+			}},
+		},
+	}}
 }
 
 // stopSessionMcpServer unregisters from global MCP server.

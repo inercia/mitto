@@ -59,6 +59,18 @@ var ErrProcessBusy = fmt.Errorf("%w: process busy (concurrent RPC load-shedding)
 // ErrSharedProcessSaturated for transition-era callers.
 var ErrMCPInitGated = fmt.Errorf("%w: process mcp-init gated", ErrSharedProcessSaturated)
 
+// ErrProcessClosedConcurrently is returned by SharedACPProcess.Restart when the
+// target instance has already been permanently retired by a concurrent Close()
+// (e.g. a GC Tier 5 saturated-idle recycle, mitto-13n.1) racing a resume's own
+// restart attempt (mitto-ei81). A SharedACPProcess's process-lifetime context is
+// cancelled exactly once, in Close(), and can never be un-cancelled — so once
+// that has happened, retrying Restart() on the SAME instance can never succeed;
+// every subsequent process-start attempt fails immediately with a generic
+// "context canceled" that misleadingly looks like a transient startup failure.
+// Callers hitting this sentinel must fetch a fresh process from the manager
+// (e.g. ACPProcessManager.GetOrCreateProcess) instead of retrying this instance.
+var ErrProcessClosedConcurrently = errors.New("shared ACP process was closed by a concurrent operation (e.g. GC recycle); a fresh process must be obtained")
+
 // IsAgentInternalDeadlineErr reports whether err is the agent's OWN internal
 // deadline firing on a session/new (or session/load) RPC — the auggie
 // "session/new wedge" signature. The agent's handler completes its own

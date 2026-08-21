@@ -2921,6 +2921,27 @@ func (p *SharedACPProcess) Restart(observedGen int) error {
 		return nil
 	}
 
+	// mitto-ei81: bail out here if this instance was already permanently
+	// retired by a concurrent Close() (e.g. a GC Tier 5 saturated-idle
+	// recycle) racing this very restart. Close() cancels p.ctx exactly once
+	// and it can never be un-cancelled, so proceeding to startProcess() below
+	// is doomed — exec.CommandContext(p.ctx, ...) fails immediately with a
+	// generic "context canceled" that looks like a transient startup failure
+	// rather than what it actually is: a lost race against a legitimate
+	// recycle. Detect it up front and return a distinguishable sentinel so
+	// the caller knows to fetch a fresh process instead of retrying this one.
+	select {
+	case <-p.ctx.Done():
+		p.mu.Unlock()
+		if p.logger != nil {
+			p.logger.Warn("Shared ACP process restart aborted: process was closed by a concurrent operation",
+				"command", p.config.ACPCommand,
+				"cwd", p.config.ACPCwd)
+		}
+		return acperrors.ErrProcessClosedConcurrently
+	default:
+	}
+
 	if p.logger != nil {
 		p.logger.Info("Restarting shared ACP process",
 			"restart_count", p.restartCount+1,

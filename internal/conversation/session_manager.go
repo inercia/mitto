@@ -2732,7 +2732,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
-	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+	cfg := BackgroundSessionConfig{
 		// CreationCtx is canceled by CloseSession when deletion invalidates this pending
 		// resume, allowing the handshake to abort before any load/new fallback.
 		CreationCtx:                    resumeCtx,
@@ -2843,7 +2843,25 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		OnSelfDestruct: func(sessionID string) {
 			sm.deleteSessionAndChildren(sessionID, "self_destructed")
 		},
-	})
+	}
+	bs, err := ResumeBackgroundSession(cfg)
+
+	// mitto-ei81: a concurrent GC recycle can close the shared process instance
+	// out from under this resume's own restart attempt (recycle-vs-resume race
+	// on the SAME workspace, same millisecond). That instance's process-lifetime
+	// context is permanently cancelled and can never be restarted, so retrying
+	// against it again would fail identically. The stale entry has already been
+	// removed from the process manager's map by the recycle's StopProcess, so
+	// getSharedProcess here is guaranteed to build a genuinely fresh instance
+	// rather than returning the same closed one. Retry exactly once.
+	if err != nil && errors.Is(err, acperrors.ErrProcessClosedConcurrently) {
+		if sm.logger != nil {
+			sm.logger.Info("Resume raced a concurrent shared-process recycle; retrying with a freshly-created process",
+				"session_id", sessionID)
+		}
+		cfg.SharedProcess = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+		bs, err = ResumeBackgroundSession(cfg)
+	}
 	// Release the startup semaphore now that the expensive ACP work is done.
 	// This happens on BOTH the success and error paths (both are immediately below).
 	// Releasing here (rather than at the end of the function) lets the next queued
@@ -2874,9 +2892,14 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		// attempt (interactive or MCP auto-resume) will succeed. Genuine permanent
 		// failures (missing binary, broken MCP server on a WARM process, etc.) still
 		// fall through to the counter/archive logic below.
-		if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) {
+		//
+		// mitto-ei81: acperrors.ErrProcessClosedConcurrently indicates the retry
+		// above (fresh getSharedProcess + ResumeBackgroundSession) also lost a race
+		// against a concurrent recycle — an unlucky double-race, not a genuine
+		// startup failure. Same treatment: don't count it, a later resume succeeds.
+		if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) {
 			if sm.logger != nil {
-				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout or shared-process saturation; not counting as hard failure (will retry when warm)",
+				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout, shared-process saturation, or a recycle race; not counting as hard failure (will retry)",
 					"session_id", sessionID,
 					"foreground", foreground)
 			}
