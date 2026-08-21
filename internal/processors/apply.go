@@ -1838,6 +1838,49 @@ type dispatchRetryLogState struct {
 	ordinaryRetryWarned bool
 }
 
+// dispatchAdmissionGates provides light admission control for prompt-mode
+// dispatch attempts, keyed by workspace UUID (mitto-hjx). Without it, a
+// "post-turn cluster" — several conversations in the same workspace ending
+// turns near-simultaneously — fires their dispatchWithRetry calls
+// concurrently via a bare `go` in dispatchPromptBatch, and every one of them
+// races the shared ACP process's threshold-1 proactive concurrent-RPC gate
+// (auxSessionCreateBusyRPCThreshold, internal/acpproc/acp_process_manager.go)
+// at once. Because acperrors.ErrProcessBusy is deliberately excluded from
+// isSaturationDispatchErr's long-wait policy (mitto-xhsj) — it is not
+// GC-recycle-shaped — every loser only gets the short ordinary retry budget
+// (dispatchPromptMaxRetries), which is far shorter than real saturation
+// bursts, so all-but-one dispatch exhausts its retries and is persisted to
+// the durable spool at ERROR, amplifying the burst instead of just queueing
+// behind it.
+//
+// This gate serializes actual RPC-attempt windows per workspace so a cluster
+// naturally queues instead of stampeding: each dispatch call, once it is its
+// turn, sees a freshly-idle process and succeeds (or fails/retries on its own
+// merits) rather than racing every sibling at once. It is process-global and
+// keyed by workspace UUID (not a *Manager field) because prompt-mode
+// dispatches for one workspace can run through independently-cloned Manager
+// instances — SessionManager.ApplyOnCloseProcessors clones a fresh *Manager
+// per close (internal/conversation/session_manager.go) — so a per-instance
+// mutex would not serialize across them.
+var (
+	dispatchAdmissionMu    sync.Mutex
+	dispatchAdmissionGates = make(map[string]*sync.Mutex)
+)
+
+// admitDispatch returns the admission gate for workspaceUUID, creating it on
+// first use. Callers must Unlock() the returned mutex once their dispatch
+// attempt (including its own internal retries) has completed.
+func admitDispatch(workspaceUUID string) *sync.Mutex {
+	dispatchAdmissionMu.Lock()
+	defer dispatchAdmissionMu.Unlock()
+	gate, ok := dispatchAdmissionGates[workspaceUUID]
+	if !ok {
+		gate = &sync.Mutex{}
+		dispatchAdmissionGates[workspaceUUID] = gate
+	}
+	return gate
+}
+
 // dispatchWithRetry invokes m.promptFunc for the given name/prompt. Ordinary
 // transient failures are retried up to dispatchPromptMaxRetries additional
 // times with exponential backoff. Shared-process-saturation failures
@@ -1886,8 +1929,17 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
 	}
 
+	// Admission control (mitto-hjx): serialize the actual RPC-issuing retry
+	// window per workspace so a post-turn cluster of concurrent dispatches
+	// queues behind the shared ACP process instead of stampeding its
+	// threshold-1 proactive concurrent-RPC gate all at once. See
+	// dispatchAdmissionGates for why this must be workspace-keyed and
+	// process-global rather than a *Manager field.
+	gate := admitDispatch(workspaceUUID)
+	gate.Lock()
 	completion, totalAttempts, waited, lastErr := m.runDispatchRetryLoopTracked(
 		workspaceUUID, name, entry.ID, prompt, timeout, skipLog, &dispatchRetryLogState{})
+	gate.Unlock()
 	if lastErr == nil {
 		if trackedPersisted {
 			if !m.acknowledgeCompletedDispatch(entry) {
