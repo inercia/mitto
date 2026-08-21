@@ -96,6 +96,12 @@ export const EVENTS: Readonly<{
     RUNNER_FALLBACK: "runner_fallback";
     MCP_TOOLS_AVAILABLE: "mcp_tools_available";
     /**
+     * Emitted whenever a Slack app's Socket Mode connection status changes
+     * (mitto-yn5). Carries the same credential-free `ConnectionStatus` shape
+     * returned by `GET /api/slack/connections`.
+     */
+    SLACK_CONNECTION_STATUS: "slack_connection_status";
+    /**
      * RESERVED — documented in the protocol spec's archive state diagram and
      * handled by the frontend's global-events switch, but not emitted by any
      * server code path today (see WSMsgTypeSessionArchivePending in
@@ -1323,6 +1329,49 @@ export type McpToolsAvailablePayload = {
      * - Discovered MCP tool descriptors.
      */
     tools: any[];
+};
+/**
+ * Payload of {@link EVENTS.SLACK_CONNECTION_STATUS} (`slack_connection_status`).
+ * Credential-free: no tokens or message content. Mirrors the Go
+ * `slackbridge.ConnectionStatus` struct.
+ */
+export type SlackConnectionStatusPayload = {
+    /**
+     * - Slack app profile this status belongs to.
+     */
+    app_id: string;
+    /**
+     * - Connection state (e.g. `"connected"`, `"backoff"`).
+     */
+    state: string;
+    /**
+     * - Active onSlack subscriptions referencing this app.
+     */
+    subscription_count: number;
+    /**
+     * - Total Events API envelopes received.
+     */
+    events_api_received: number;
+    /**
+     * - Envelopes accepted for dispatch.
+     */
+    accepted_count: number;
+    /**
+     * - Envelopes ignored (no matching subscription).
+     */
+    ignored_count: number;
+    /**
+     * - When the current connection was established, ISO 8601.
+     */
+    connected_at?: string;
+    /**
+     * - Last envelope received, ISO 8601.
+     */
+    last_envelope_at?: string;
+    /**
+     * - Failure classification, when in backoff.
+     */
+    error_class?: string;
 };
 /**
  * Payload of {@link EVENTS.MCP_TOOLS_UNAVAILABLE} (`mcp_tools_unavailable`).

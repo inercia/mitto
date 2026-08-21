@@ -3,6 +3,7 @@ export function createSlackResource(config: import("../core/config.js").Resolved
     environmentStatus: (opts: any) => Promise<any>;
     importEnvironment: (body: any, opts: any) => Promise<any>;
     listApps: (opts: any) => Promise<any>;
+    connections: (opts: any) => Promise<any>;
     createApp: (body: any, opts: any) => Promise<any>;
     getApp: (id: any, opts: any) => Promise<any>;
     renameApp: (id: any, name: any, opts: any) => Promise<any>;

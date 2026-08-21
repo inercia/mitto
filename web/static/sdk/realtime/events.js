@@ -93,6 +93,12 @@ export const EVENTS = Object.freeze({
   RUNNER_FALLBACK: "runner_fallback",
   MCP_TOOLS_AVAILABLE: "mcp_tools_available",
   /**
+   * Emitted whenever a Slack app's Socket Mode connection status changes
+   * (mitto-yn5). Carries the same credential-free `ConnectionStatus` shape
+   * returned by `GET /api/slack/connections`.
+   */
+  SLACK_CONNECTION_STATUS: "slack_connection_status",
+  /**
    * RESERVED — documented in the protocol spec's archive state diagram and
    * handled by the frontend's global-events switch, but not emitted by any
    * server code path today (see WSMsgTypeSessionArchivePending in
@@ -136,12 +142,18 @@ export const LEGACY_EVENTS = Object.freeze({
 
 /** True if `type` is a known backend->frontend event (current or legacy). */
 export function isKnownEventType(type) {
-  return Object.values(EVENTS).includes(type) || Object.values(LEGACY_EVENTS).includes(type);
+  return (
+    Object.values(EVENTS).includes(type) ||
+    Object.values(LEGACY_EVENTS).includes(type)
+  );
 }
 
 /** True if `type` is a known frontend->backend command (current or legacy). */
 export function isCommandType(type) {
-  return Object.values(COMMANDS).includes(type) || Object.values(LEGACY_EVENTS).includes(type);
+  return (
+    Object.values(COMMANDS).includes(type) ||
+    Object.values(LEGACY_EVENTS).includes(type)
+  );
 }
 
 // =============================================================================
@@ -734,6 +746,22 @@ export function isCommandType(type) {
  * @typedef {Object} McpToolsAvailablePayload
  * @property {string} workspace_uuid - Workspace whose tools were discovered.
  * @property {Object[]} tools - Discovered MCP tool descriptors.
+ */
+
+/**
+ * Payload of {@link EVENTS.SLACK_CONNECTION_STATUS} (`slack_connection_status`).
+ * Credential-free: no tokens or message content. Mirrors the Go
+ * `slackbridge.ConnectionStatus` struct.
+ * @typedef {Object} SlackConnectionStatusPayload
+ * @property {string} app_id - Slack app profile this status belongs to.
+ * @property {string} state - Connection state (e.g. `"connected"`, `"backoff"`).
+ * @property {number} subscription_count - Active onSlack subscriptions referencing this app.
+ * @property {number} events_api_received - Total Events API envelopes received.
+ * @property {number} accepted_count - Envelopes accepted for dispatch.
+ * @property {number} ignored_count - Envelopes ignored (no matching subscription).
+ * @property {string} [connected_at] - When the current connection was established, ISO 8601.
+ * @property {string} [last_envelope_at] - Last envelope received, ISO 8601.
+ * @property {string} [error_class] - Failure classification, when in backoff.
  */
 
 /**

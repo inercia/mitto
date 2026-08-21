@@ -22,6 +22,7 @@ export function createSlackResource(config) {
     importEnvironment: (body, opts) =>
       call("POST", "/api/slack/environment-import", { body, ...opts }),
     listApps: (opts) => call("GET", "/api/slack/apps", opts),
+    connections: (opts) => call("GET", "/api/slack/connections", opts),
     createApp: (body, opts) =>
       call("POST", "/api/slack/apps", { body, ...opts }),
     getApp: (id, opts) => call("GET", appPath(id), opts),

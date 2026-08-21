@@ -3615,6 +3615,18 @@ export function useWebSocket({
           );
         }
         break;
+
+      case "slack_connection_status":
+        // Live per-app Socket Mode connection status (mitto-yn5). Credential-free;
+        // relayed as-is for Settings > Slack to derive delivery-health warnings.
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:slack_connection_status", {
+              detail: msg.data,
+            }),
+          );
+        }
+        break;
     }
   }, []);
 

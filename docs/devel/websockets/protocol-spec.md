@@ -1319,6 +1319,29 @@ The pending `session/new`/`session/load` call was aborted with an actionable err
 }
 ```
 
+#### `slack_connection_status` — Slack app connection status changed
+
+Sent whenever a Slack app's Socket Mode connection status changes (mitto-yn5).
+Credential-free: no tokens or message content. The same shape is returned by
+`GET /api/slack/connections` for the initial page-load snapshot.
+
+```json
+{
+  "type": "slack_connection_status",
+  "data": {
+    "app_id": "...",
+    "state": "connected",
+    "subscription_count": 1,
+    "events_api_received": 0,
+    "accepted_count": 0,
+    "ignored_count": 0,
+    "connected_at": "2026-08-21T12:00:00Z",
+    "last_envelope_at": "",
+    "error_class": ""
+  }
+}
+```
+
 #### `required_tools_status` — Required tool pattern availability
 
 Sent progressively as retries discover newly-available tools.

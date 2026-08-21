@@ -253,6 +253,40 @@ must not. Reconnect should emit the sanitized `slackbridge: event source
 disconnected, reconnecting` message and deliver the next event. This adapter
 does not validate managed fan-out, durable busy recovery, or rotation.
 
+## Troubleshooting: connected but 0 events received
+
+Settings > Slack surfaces a "Connected, but 0 events received." warning
+(mitto-yn5) when an app's Socket Mode connection is `state=connected`, has at
+least one active `onSlack` loop subscription referencing it (so it is not
+simply idle by design), and `events_api_received` is still zero roughly 90
+seconds after `connected_at` (a short grace window so a freshly-connected app
+is not flagged before Slack could plausibly deliver a first envelope). The
+initial value comes from `GET /api/slack/connections`; live updates arrive via
+the `slack_connection_status` global-events broadcast (both value-free —
+see [Value-free results record](#value-free-results-record)).
+
+The most common root cause is a **delegated-user installation** whose Slack
+app is not actually subscribed to the events it needs: bot-token installations
+receive `bot_events`, but user-token (delegated-user) installations require
+`user_events` under Slack's "Subscribe to events on behalf of users" section.
+If that block is missing `message.channels` / `message.groups`, Slack never
+sends Events API envelopes for that identity even though the Socket Mode
+connection itself is healthy.
+
+To resolve:
+
+1. Open the app in [api.slack.com/apps](https://api.slack.com/apps) and check
+   **Event Subscriptions > Subscribe to events on behalf of users**.
+2. Add `message.channels` and `message.groups` (see the manifest in
+   [Slack app setup](#slack-app-setup)) if either is missing.
+3. Reinstall/reauthorize the workspace so the new user-scope subscriptions
+   take effect, then re-test with a synthetic message per the
+   [managed development-workspace smoke](#managed-development-workspace-smoke).
+
+If subscriptions are already correct, treat this the same as any other
+zero-envelope symptom in the smoke test above: reapply the manifest and
+reauthorize before debugging Mitto's own routing.
+
 ## Remaining gaps
 
 - **Legacy adapter limitations**: the environment path remains single-target

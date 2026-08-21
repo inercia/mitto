@@ -1398,7 +1398,7 @@ func NewServer(config Config) (*Server, error) {
 			}
 		})
 		s.slackManager.SetStatusCallback(func(status slackbridge.ConnectionStatus) {
-			s.eventsManager.Broadcast("slack_connection_status", status)
+			s.eventsManager.Broadcast(WSMsgTypeSlackConnectionStatus, status)
 		})
 	}
 	slackEnvConfig, slackEnvStatus := slackbridge.InspectEnvironment()
@@ -1427,6 +1427,7 @@ func NewServer(config Config) (*Server, error) {
 		Logger:                   logger,
 		SlackCatalog:             slackCatalog,
 		SlackEnvironment:         slackEnvironment,
+		SlackManager:             s.slackManager,
 		ConfigReadOnly:           config.ConfigReadOnly,
 		MittoConfig:              config.MittoConfig,
 		RCFilePath:               config.RCFilePath,

@@ -23,6 +23,8 @@ export const SLACK_APPS_URL = "https://api.slack.com/apps";
 export const SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1";
 export const SLACK_SETUP_URL =
   "https://github.com/inercia/mitto/blob/main/docs/devel/slack-bridge.md#slack-app-setup";
+export const SLACK_DELIVERY_TROUBLESHOOTING_URL =
+  "https://github.com/inercia/mitto/blob/main/docs/devel/slack-bridge.md#troubleshooting-connected-but-0-events-received";
 
 // Slack app manifest for "Create from an app manifest" (mitto-kqpl). Fields
 // mirror docs/devel/slack-bridge.md#slack-app-setup exactly: Socket Mode plus
@@ -119,6 +121,60 @@ export function slackHealth(record, attempt = "") {
   return { label: "Configured", className: "badge-info" };
 }
 
+// Grace window before a freshly-connected app can be flagged as not
+// delivering events: gives Slack a plausible chance to send a first
+// envelope before the UI second-guesses a healthy new connection.
+export const SLACK_DELIVERY_WARNING_GRACE_MS = 90 * 1000;
+
+// Derives a "connected, but 0 events received" delivery-health warning from a
+// live ConnectionStatus (mitto-yn5). Pure and deterministic given `now`, so
+// tests don't race the wall clock. Returns `null` when no warning applies:
+//   - state isn't "connected" (still starting up / backing off / stopped)
+//   - subscription_count is 0 (idle by design: no onSlack loop references
+//     this app, so zero events is expected, not broken)
+//   - at least one envelope has already arrived (events_api_received > 0,
+//     or last_envelope_at is set)
+//   - the connection is still within the fresh-connection grace window
+// Returns { message } (credential-free: no tokens or message content) when
+// the app is connected, has active subscriptions, and has received nothing
+// after the grace window — the delegated-user "forgot to subscribe on
+// behalf of users" failure mode this feature targets.
+export function deriveSlackDeliveryWarning(
+  status,
+  { now = new Date(), graceMs = SLACK_DELIVERY_WARNING_GRACE_MS } = {},
+) {
+  if (!status || status.state !== "connected") return null;
+  if (!status.subscription_count) return null;
+  if (status.events_api_received) return null;
+  // Go's encoding/json does not treat a zero-value time.Time as "empty" for
+  // `omitempty`, so an unset last_envelope_at still arrives as the
+  // "0001-01-01T00:00:00Z" sentinel rather than being absent — check the year,
+  // not mere presence.
+  if (status.last_envelope_at) {
+    const lastEnvelopeAt = new Date(status.last_envelope_at);
+    if (
+      Number.isFinite(lastEnvelopeAt.getTime()) &&
+      lastEnvelopeAt.getUTCFullYear() > 1
+    ) {
+      return null;
+    }
+  }
+  const connectedAt = status.connected_at
+    ? new Date(status.connected_at)
+    : null;
+  if (
+    connectedAt &&
+    Number.isFinite(connectedAt.getTime()) &&
+    connectedAt.getUTCFullYear() > 1
+  ) {
+    const reference = now instanceof Date ? now : new Date(now);
+    if (reference.getTime() - connectedAt.getTime() < graceMs) return null;
+  }
+  return {
+    message: "Connected, but 0 events received.",
+  };
+}
+
 export function slackCredentialKind(record) {
   return record?.credential_kind === "user"
     ? { label: "Delegated user", className: "badge-info" }
@@ -168,6 +224,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [busy, setBusy] = useState("");
   const [refreshApps, setRefreshApps] = useState(0);
   const [environmentStatus, setEnvironmentStatus] = useState(null);
+  const [connectionStatusByApp, setConnectionStatusByApp] = useState({});
   const [environmentImportOpen, setEnvironmentImportOpen] = useState(false);
   const [importAppMode, setImportAppMode] = useState("create");
   const [importInstallationMode, setImportInstallationMode] =
@@ -218,6 +275,13 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   );
   const selectedAppHealth = slackHealth(selectedApp, appValidation);
   const selectedCredentialKind = slackCredentialKind(selectedInstallation);
+  const selectedAppDeliveryWarning = useMemo(
+    () =>
+      deriveSlackDeliveryWarning(
+        selectedApp ? connectionStatusByApp[selectedApp.id] : null,
+      ),
+    [selectedApp, connectionStatusByApp],
+  );
 
   const notify = (message, style = "success") => {
     notifySlackIntegrationsUpdated();
@@ -266,6 +330,51 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     loadEnvironmentStatus(controller.signal);
     return () => controller.abort();
   }, [client]);
+
+  // Initial connection-status snapshot (mitto-yn5): the live feed below only
+  // fires on subsequent state changes, so fetch current state on first load.
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    client.slack
+      .connections({ signal: controller.signal })
+      .then((data) => {
+        if (cancelled) return;
+        const next = Array.isArray(data?.connections) ? data.connections : [];
+        setConnectionStatusByApp((prev) => {
+          const merged = { ...prev };
+          for (const status of next) {
+            if (status?.app_id) merged[status.app_id] = status;
+          }
+          return merged;
+        });
+      })
+      .catch((error) => {
+        if (!cancelled && !isAbortError(error)) {
+          // Non-fatal: the tab still works without delivery-health data.
+          console.warn("Slack connection status could not be loaded:", error);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [client]);
+
+  // Live connection-status updates, relayed from the global events WS.
+  useEffect(() => {
+    const onStatus = (event) => {
+      const status = event.detail;
+      if (!status?.app_id) return;
+      setConnectionStatusByApp((prev) => ({
+        ...prev,
+        [status.app_id]: status,
+      }));
+    };
+    window.addEventListener("mitto:slack_connection_status", onStatus);
+    return () =>
+      window.removeEventListener("mitto:slack_connection_status", onStatus);
+  }, []);
 
   useEffect(() => {
     if (typeof client.slack.oauthConfig !== "function") return;
@@ -1198,6 +1307,12 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             class="badge badge-sm badge-soft ${selectedAppHealth.className}"
                             >${selectedAppHealth.label}</span
                           >
+                          ${selectedAppDeliveryWarning &&
+                          html`<span
+                            class="badge badge-sm badge-soft badge-warning"
+                            data-testid="slack-delivery-warning-badge"
+                            >${selectedAppDeliveryWarning.message}</span
+                          >`}
                           <div class="ml-auto flex items-center gap-1">
                             <${Tooltip} tip="Open app settings in Slack">
                               <button
@@ -1265,6 +1380,31 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             )}</span
                           >
                         </p>
+                        ${selectedAppDeliveryWarning &&
+                        html`<p
+                          class="text-xs text-mitto-text-muted"
+                          data-testid="slack-delivery-warning-hint"
+                        >
+                          No Events API envelopes have arrived since this app
+                          connected. If this app uses a delegated-user
+                          installation, confirm it is subscribed to
+                          <code>message.channels</code> /
+                          <code>message.groups</code> under "Subscribe to events
+                          on behalf of users" in Slack's Event Subscriptions
+                          settings, then re-authorize the workspace.
+                          <a
+                            href=${SLACK_DELIVERY_TROUBLESHOOTING_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="link link-primary"
+                            data-testid="slack-delivery-troubleshooting-link"
+                            onClick=${(event) => {
+                              event.preventDefault();
+                              openURL(SLACK_DELIVERY_TROUBLESHOOTING_URL);
+                            }}
+                            >Troubleshooting guide</a
+                          >
+                        </p>`}
                       </div>
 
                       <div>

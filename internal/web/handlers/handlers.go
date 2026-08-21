@@ -64,6 +64,11 @@ type Deps struct {
 	// Nil means the compatibility migration surface is unavailable.
 	SlackEnvironment *slackbridge.EnvironmentMigration
 
+	// SlackManager owns live Socket Mode connections and their credential-free
+	// ConnectionStatus snapshots. Nil means Slack event delivery is unavailable
+	// (e.g. the catalog path could not be resolved).
+	SlackManager *slackbridge.Manager
+
 	// ConfigReadOnly mirrors Server.config.ConfigReadOnly: when true, the
 	// configuration was loaded from a custom --config file and must not be
 	// modified by write endpoints.

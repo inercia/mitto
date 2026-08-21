@@ -116,6 +116,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	routes = append(routes,
 		apiRoute{method: "GET", pattern: "/api/slack/environment-import", handler: http.HandlerFunc(s.apiHandlers.HandleSlackEnvironmentStatus)},
 		apiRoute{method: "POST", pattern: "/api/slack/environment-import", handler: http.HandlerFunc(s.apiHandlers.HandleSlackEnvironmentImport)},
+		apiRoute{method: "GET", pattern: "/api/slack/connections", handler: http.HandlerFunc(s.apiHandlers.HandleSlackConnections)},
 		apiRoute{method: "GET", pattern: "/api/slack/apps", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppsList)},
 		apiRoute{method: "POST", pattern: "/api/slack/apps", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppCreate)},
 		apiRoute{method: "GET", pattern: "/api/slack/apps/{appId}", handler: http.HandlerFunc(s.apiHandlers.HandleSlackAppGet)},

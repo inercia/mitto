@@ -281,6 +281,15 @@ const (
 	//         "reason": string, "expired": bool }.
 	WSMsgTypePrewarmPinAlert = "prewarm_pin_alert"
 
+	// WSMsgTypeSlackConnectionStatus notifies that a Slack app's Socket Mode
+	// connection status changed (mitto-yn5). Payload is the credential-free
+	// slackbridge.ConnectionStatus struct, safe to send to clients as-is:
+	// no tokens, message content, or raw SDK errors. Data: { "app_id": string,
+	// "state": string, "subscription_count": int, "events_api_received": uint64,
+	// "accepted_count": uint64, "ignored_count": uint64, "connected_at": string,
+	// "last_envelope_at": string, "error_class": string }.
+	WSMsgTypeSlackConnectionStatus = "slack_connection_status"
+
 	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
 	// Sent when messages are added, removed, or the queue is cleared.
 	// Data: { "queue_length": int, "action": string, "message_id": string }

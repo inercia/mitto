@@ -126,6 +126,19 @@ func writeSlackError(w http.ResponseWriter, err error) {
 	}
 }
 
+// HandleSlackConnections handles GET /api/slack/connections. It returns a
+// credential-free point-in-time snapshot of every app's live Socket Mode
+// connection status, so Settings > Slack has current delivery-health data on
+// first load (the live feed only arrives on subsequent state changes via the
+// slack_connection_status global-event broadcast).
+func (h *Handlers) HandleSlackConnections(w http.ResponseWriter, _ *http.Request) {
+	if h.deps.SlackManager == nil {
+		writeJSONOK(w, map[string]any{"connections": []slackbridge.ConnectionStatus{}})
+		return
+	}
+	writeJSONOK(w, map[string]any{"connections": h.deps.SlackManager.Status()})
+}
+
 func (h *Handlers) HandleSlackEnvironmentStatus(w http.ResponseWriter, _ *http.Request) {
 	if h.deps.SlackEnvironment == nil {
 		writeRetryableUnavailable(w, "Slack environment migration is unavailable", 5)
