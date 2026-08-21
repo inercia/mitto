@@ -354,7 +354,7 @@ type StateStore interface {
 
 | Implementation     | Used when  | Behavior                                                                         |
 | ------------------ | ---------- | -------------------------------------------------------------------------------- |
-| `FileStateStore`   | Production | Reads/writes `<session_dir>/processor_state.json` via `fileutil.WriteJSONAtomic` |
+| `FileStateStore`   | Production | Reads/writes `<session_dir>/processor_state.json` via `fileutil.WriteJSONAtomicIfDirExists` (skips the write if the session directory was concurrently deleted; mitto-32ef) |
 | `MemoryStateStore` | Tests      | In-memory map keyed by `sessionDir`; never hits disk                             |
 
 ### Persisted state shape (`ProcessorStateData`)
@@ -397,7 +397,11 @@ fakeNow = fakeNow.Add(10 * time.Minute)
 
 State is saved at the **end** of `ApplyAfter`. A crash mid-flight may lose one turn
 increment, which is acceptable — the cadence will fire one turn later at worst. Atomic
-writes via `fileutil.WriteJSONAtomic` prevent partial writes from corrupting the file.
+writes via `fileutil.WriteJSONAtomicIfDirExists` prevent partial writes from corrupting
+the file, and — since the helper stats the parent directory instead of creating it — a
+Save racing a concurrent `Store.Delete` is a benign no-op rather than resurrecting the
+just-removed session directory as an orphan containing only `processor_state.json`
+(mitto-32ef).
 
 ## Two-Phase Architecture
 

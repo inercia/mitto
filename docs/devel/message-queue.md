@@ -950,7 +950,7 @@ Named-prompt items persist `prompt_name` and `arguments`; `message` is empty. Th
 ### Design Decisions
 
 1. **Separate file**: Queue is transient (messages removed when processed), unlike append-only events
-2. **Atomic writes**: Uses `fileutil.WriteJSONAtomic()` to prevent corruption
+2. **Atomic writes**: Uses `fileutil.WriteJSONAtomicIfDirExists()` to prevent corruption AND to prevent a queue write racing a concurrent `Store.Delete` from resurrecting the deleted session directory as an orphan containing only `queue.json` (mitto-32ef)
 3. **Title in queue**: Stored with message for persistence across server restarts
 
 ## Automatic Queue Dequeuing
