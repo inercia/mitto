@@ -1314,7 +1314,7 @@ func NewServer(config Config) (*Server, error) {
 			sessionMgr.ApplyOnCloseProcessors(sessionID, string(session.ArchiveReasonInactivity))
 		}
 	})
-	s.loopRunner.SetOnLoopAutoStopped(s.BroadcastLoopUpdated)
+	s.loopRunner.SetOnLoopAutoStopped(s.handleLoopAutoStopped)
 	s.loopRunner.SetOnLoopUpdated(s.BroadcastLoopUpdated)
 
 	// Configure the global loop-iteration safeguard (user default, bounded by backstop).
@@ -1391,7 +1391,6 @@ func NewServer(config Config) (*Server, error) {
 				if err := s.slackManager.ReconcileAll(); err != nil {
 					logger.Warn("Failed to refresh Slack routing after catalog change", "error_class", "reconcile")
 				}
-				return
 			}
 			if change.Credential {
 				s.slackManager.RestartApp(change.AppID)
@@ -2367,6 +2366,44 @@ func (s *Server) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt
 			"loop_configured", configured, "loop_enabled", enabled,
 			"clients", s.eventsManager.ClientCount())
 	}
+}
+
+// handleLoopAutoStopped is the LoopRunner.SetOnLoopAutoStopped callback. It
+// preserves the existing sidebar websocket update (BroadcastLoopUpdated),
+// then — gated by BuildLoopAutoPauseNotification — surfaces a proactive
+// workspace-scoped toast/native notification so an operator does not have to
+// notice a loop went silent purely from the sidebar state (mitto-e4m).
+func (s *Server) handleLoopAutoStopped(sessionID string, loop *session.LoopPrompt) {
+	s.BroadcastLoopUpdated(sessionID, loop)
+
+	meta, err := s.store.GetMetadata(sessionID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("handleLoopAutoStopped: failed to load session metadata",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	req, ok := conversation.BuildLoopAutoPauseNotification(meta.Name, loop)
+	if !ok {
+		return
+	}
+
+	ws := s.sessionManager.GetWorkspaceByDirAndACP(meta.WorkingDir, meta.ACPServer)
+	if ws == nil {
+		ws = s.sessionManager.GetWorkspace(meta.WorkingDir)
+	}
+	var workspaceUUID, workspaceName string
+	if ws != nil {
+		workspaceUUID = ws.UUID
+		workspaceName = ws.Name
+	}
+	if meta.BeadsIssue != "" {
+		req.BeadsIssue = meta.BeadsIssue
+	}
+
+	s.sessionManager.BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, meta.WorkingDir, req)
 }
 
 // BroadcastSessionStreaming notifies all connected clients that a session's streaming state changed.

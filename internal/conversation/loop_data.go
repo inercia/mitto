@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/inercia/mitto/internal/session"
@@ -75,4 +76,39 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 	}
 
 	return data
+}
+
+// BuildLoopAutoPauseNotification builds a proactive operator toast for a loop
+// that was just auto-stopped, gated strictly on StoppedReasonPromptUnresolved
+// (mitto-e4m). This is the failure mode where the loop's configured prompt
+// name can no longer be resolved after MaxPromptResolveFailures consecutive
+// attempts — a silent auto-pause that otherwise only surfaces as a sidebar
+// websocket update (BuildLoopUpdatedData), easy for an operator to miss.
+//
+// Other auto-stop reasons (maxIterations, archived, pausedByUser,
+// contextWindowExceeded, deliveryFailures, ...) intentionally do NOT produce
+// a toast here — benign stops should stay silent, and the remaining failure
+// reasons are left as a natural future extension (out of scope for mitto-e4m).
+//
+// Returns ok=false (and a zero-value request) when loop is nil or the reason
+// does not match, so callers can skip broadcasting without extra branching.
+func BuildLoopAutoPauseNotification(sessionName string, loop *session.LoopPrompt) (UINotifyRequest, bool) {
+	if loop == nil || loop.StoppedReason != session.StoppedReasonPromptUnresolved {
+		return UINotifyRequest{}, false
+	}
+
+	name := sessionName
+	if name == "" {
+		name = "(unnamed conversation)"
+	}
+
+	return UINotifyRequest{
+		Title: "Loop conversation auto-paused",
+		Message: fmt.Sprintf(
+			"%q was auto-paused: its scheduled prompt %q could no longer be resolved after repeated attempts.",
+			name, loop.PromptName,
+		),
+		Style:  "warning",
+		Native: true,
+	}, true
 }
