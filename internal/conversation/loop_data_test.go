@@ -3,6 +3,7 @@ package conversation
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,5 +200,129 @@ func TestBuildLoopUpdatedData_PromptFields(t *testing.T) {
 				t.Errorf("loop_prompt_preview is empty, want non-empty")
 			}
 		})
+	}
+}
+
+// TestBuildLoopAutoPauseNotification verifies the proactive operator toast
+// (mitto-e4m) is emitted only for the promptUnresolved auto-stop reason, and
+// that its message names both the conversation and the unresolved prompt.
+func TestBuildLoopAutoPauseNotification(t *testing.T) {
+	tests := []struct {
+		name        string
+		sessionName string
+		loop        *session.LoopPrompt
+		wantOK      bool
+	}{
+		{
+			name:        "nil loop yields no notification",
+			sessionName: "My Loop",
+			loop:        nil,
+			wantOK:      false,
+		},
+		{
+			name:        "promptUnresolved reason yields a notification",
+			sessionName: "My Loop",
+			loop: &session.LoopPrompt{
+				PromptName:    "feature-driver",
+				StoppedReason: session.StoppedReasonPromptUnresolved,
+			},
+			wantOK: true,
+		},
+		{
+			name:        "maxIterations reason stays silent",
+			sessionName: "My Loop",
+			loop: &session.LoopPrompt{
+				StoppedReason: session.StoppedReasonMaxIterations,
+			},
+			wantOK: false,
+		},
+		{
+			name:        "archived reason stays silent",
+			sessionName: "My Loop",
+			loop: &session.LoopPrompt{
+				StoppedReason: session.StoppedReasonArchived,
+			},
+			wantOK: false,
+		},
+		{
+			name:        "pausedByUser reason stays silent",
+			sessionName: "My Loop",
+			loop: &session.LoopPrompt{
+				StoppedReason: session.StoppedReasonPausedByUser,
+			},
+			wantOK: false,
+		},
+		{
+			name:        "contextWindowExceeded reason stays silent (future extension)",
+			sessionName: "My Loop",
+			loop: &session.LoopPrompt{
+				StoppedReason: session.StoppedReasonContextWindowExceeded,
+			},
+			wantOK: false,
+		},
+		{
+			name:        "deliveryFailures reason stays silent (future extension)",
+			sessionName: "My Loop",
+			loop: &session.LoopPrompt{
+				StoppedReason: session.StoppedReasonDeliveryFailures,
+			},
+			wantOK: false,
+		},
+		{
+			name:        "empty StoppedReason (e.g. onLoopUpdated fired outside auto-stop) stays silent",
+			sessionName: "My Loop",
+			loop:        &session.LoopPrompt{},
+			wantOK:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, ok := BuildLoopAutoPauseNotification(tt.sessionName, tt.loop)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				if req != (UINotifyRequest{}) {
+					t.Errorf("req = %#v, want zero value when ok=false", req)
+				}
+				return
+			}
+			if req.Title == "" {
+				t.Error("Title is empty, want non-empty")
+			}
+			if req.Style != "warning" {
+				t.Errorf("Style = %q, want %q", req.Style, "warning")
+			}
+			if !req.Native {
+				t.Error("Native = false, want true")
+			}
+			if !strings.Contains(req.Message, tt.sessionName) {
+				t.Errorf("Message %q does not mention session name %q", req.Message, tt.sessionName)
+			}
+			if !strings.Contains(req.Message, tt.loop.PromptName) {
+				t.Errorf("Message %q does not mention prompt name %q", req.Message, tt.loop.PromptName)
+			}
+		})
+	}
+}
+
+// TestBuildLoopAutoPauseNotification_EmptySessionName verifies the fallback
+// placeholder is used when the session has no display name yet, so the
+// notification never renders an empty conversation label.
+func TestBuildLoopAutoPauseNotification_EmptySessionName(t *testing.T) {
+	loop := &session.LoopPrompt{
+		PromptName:    "feature-driver",
+		StoppedReason: session.StoppedReasonPromptUnresolved,
+	}
+	req, ok := BuildLoopAutoPauseNotification("", loop)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if strings.Contains(req.Message, `""`) {
+		t.Errorf("Message %q renders an empty conversation name", req.Message)
+	}
+	if !strings.Contains(req.Message, "(unnamed conversation)") {
+		t.Errorf("Message %q does not use the fallback placeholder", req.Message)
 	}
 }
