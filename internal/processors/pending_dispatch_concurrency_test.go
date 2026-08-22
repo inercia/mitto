@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -194,5 +195,93 @@ func TestFlushPendingDispatches_TerminalLogsIncludeAuditID(t *testing.T) {
 			}
 			t.Fatalf("missing log message %q", tt.wantLogMsg)
 		})
+	}
+}
+
+// TestFlushPendingDispatches_TransientTimeoutMustNotPermanentlyDropBatch
+// reproduces mitto-unc: a close-phase memory/user-data batch that fails ONLY
+// with a transient "auxiliary prompt cancelled ... context deadline
+// exceeded" error (never ErrProcessBusy, never "no shared process", never
+// saturation) is currently treated identically to a genuinely poisoned
+// batch. Once Attempts reaches pendingDispatchMaxAttempts,
+// FlushPendingDispatches Acknowledges (permanently removes) the entry from
+// the spool — even though every failure was transient and the auxiliary
+// process might have recovered moments later.
+//
+// This test asserts the EXPECTED (bug-free) behavior per mitto-unc's
+// acceptance criterion #1 — "A memory/user-data close-phase batch is not
+// silently discarded solely because the auxiliary process was transiently
+// unavailable across 3 attempts" — by requiring the entry to still be
+// recoverable from the store after exhausting the attempt ceiling on
+// purely-transient errors. Before the mitto-unc fix, FlushPendingDispatches
+// unconditionally Acknowledged (dropped) the entry once Attempts reached the
+// cap, regardless of whether every failure was transient; it now recognizes
+// isTransientAuxUnavailableDispatchErr and resets Attempts to
+// pendingDispatchTransientRetryAttempts instead of dropping, so the batch
+// keeps being retried (bounded only by pendingDispatchMaxAge) rather than
+// being permanently lost.
+func TestFlushPendingDispatches_TransientTimeoutMustNotPermanentlyDropBatch(t *testing.T) {
+	const wsUUID = "ws-transient-timeout-drop"
+	const memoryBatchName = "extract-memories-on-close+claude-update-memory+memorize-preferences+auggie-update-rules+curate-memories-on-close"
+	transientErr := errors.New("auxiliary prompt cancelled: {code:-32603, Internal error, data.error: context deadline exceeded}")
+
+	store := &FilePendingDispatchStore{BaseDir: t.TempDir()}
+	if _, err := store.Append(PendingDispatchEntry{
+		WorkspaceUUID: wsUUID, Name: memoryBatchName, Prompt: "memory batch prompt",
+		TimeoutSeconds: 1, SavedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	var promptAttempts int
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(context.Context, string, string, string) error {
+		promptAttempts++
+		return transientErr
+	})
+	var notifiedErr error
+	m.SetNotifyFunc(func(_, _ string, err error) { notifiedErr = err })
+
+	// Drive one flush per Attempts increment, mirroring separate flush
+	// opportunities (e.g. successive workspace-becomes-dispatchable events)
+	// rather than one flush retrying internally — FlushPendingDispatches
+	// itself performs a single dispatch attempt per entry per call (retries
+	// within runDispatchRetryLoopTracked are bounded by
+	// dispatchPromptMaxRetries and only cover ordinary in-call backoff, not
+	// the cross-flush Attempts counter that this bug is about).
+	origMaxRetries := dispatchPromptMaxRetries
+	dispatchPromptMaxRetries = 0
+	t.Cleanup(func() { dispatchPromptMaxRetries = origMaxRetries })
+
+	// The entry starts at Attempts=1 (Append's floor, mirroring the initial
+	// dispatchWithRetry failure that first spooled it), so it takes
+	// pendingDispatchMaxAttempts-1 subsequent flush cycles to reach today's
+	// drop threshold. Run a bounded number of extra cycles beyond that so a
+	// fixed implementation (which may keep retrying transient failures
+	// indefinitely, e.g. via longer backoff) still gets exercised without
+	// looping forever.
+	maxCycles := pendingDispatchMaxAttempts + 2
+	for i := 0; i < maxCycles; i++ {
+		m.FlushPendingDispatches(context.Background(), wsUUID)
+	}
+
+	if promptAttempts == 0 {
+		t.Fatal("promptFunc was never invoked; test did not exercise the transient-failure path")
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// EXPECTED (post-fix) behavior: a purely-transient failure history must
+	// not cause the batch to be permanently discarded from the spool.
+	if len(remaining) == 0 {
+		t.Fatalf("mitto-unc: transient-timeout batch was permanently dropped from the spool "+
+			"after %d dispatch attempts (all transient 'context deadline exceeded' errors) — "+
+			"acceptance criterion #1 requires it survive for later retry/dead-letter capture "+
+			"instead of being silently Acknowledged away; notifyFunc error was: %v",
+			promptAttempts, notifiedErr)
 	}
 }

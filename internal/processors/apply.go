@@ -1830,6 +1830,32 @@ func isSaturationDispatchErr(err error) bool {
 	return strings.Contains(err.Error(), "shared ACP process is saturated")
 }
 
+// isTransientAuxUnavailableDispatchErr reports whether err represents the
+// auxiliary ACP process being transiently unavailable — it simply did not
+// respond within its configured per-dispatch timeout — rather than a
+// genuinely poisoned batch (mitto-unc). Distinct from
+// isNonRetryableDispatchErr (the workspace itself stopped being dispatchable)
+// and isSaturationDispatchErr (which already has its own long-wait retry
+// policy): acpproc.ACPProcessManager wraps a cancelled-on-timeout auxiliary
+// prompt as "auxiliary prompt cancelled[ on retry]: %w"
+// (acp_process_manager.go), and the underlying JSON-RPC transport surfaces
+// the cause as a -32603 internal error whose data.error names "context
+// deadline exceeded". FlushPendingDispatches' cap-exhaustion path uses this
+// to keep retrying a purely-transient failure history instead of
+// permanently dropping it — the pendingDispatchMaxAge cutoff (checked at
+// Load/Claim time) remains the real bound for how long it can linger.
+func isTransientAuxUnavailableDispatchErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "auxiliary prompt cancelled") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
+
 // dispatchRetryLogState bounds ordinary transient retry warnings to one per
 // logical dispatch window. A pending-spool flush shares one state across its
 // nested retry-loop calls so repeated backpressure remains visible at DEBUG
@@ -2250,6 +2276,33 @@ flushEntries:
 		}
 
 		if entry.Attempts >= pendingDispatchMaxAttempts {
+			// mitto-unc: a failure history made up entirely of transient
+			// aux-unavailable errors (e.g. auxiliary process timeouts) must
+			// not be treated the same as a genuinely poisoned batch — keep
+			// retrying it instead of permanently discarding it. pendingDispatchMaxAge
+			// (enforced at Load/Claim time) remains the real bound on how
+			// long it can linger.
+			if isTransientAuxUnavailableDispatchErr(errors.New(entry.LastError)) {
+				if m.logger != nil {
+					m.logger.Warn("pending-dispatch flush: entry exceeded max attempts but last failure was transient; resetting attempts and retaining for retry",
+						"dispatch_id", entry.ID,
+						"workspace_uuid", workspaceUUID,
+						"name", entry.Name,
+						"attempts", entry.Attempts,
+						"last_error", entry.LastError,
+					)
+				}
+				if m.notifyFunc != nil {
+					m.notifyFunc(workspaceUUID, entry.Name, fmt.Errorf("auxiliary process transiently unavailable after %d attempts; still retrying: %s", entry.Attempts, entry.LastError))
+				}
+				// Reset the attempt counter so the NEXT flush actually
+				// re-dispatches instead of tripping this same guard forever;
+				// pendingDispatchMaxAge is the real bound on how long a
+				// purely-transient failure history may linger.
+				entry.Attempts = pendingDispatchTransientRetryAttempts
+				requeue = append(requeue, entry)
+				continue
+			}
 			if m.logger != nil {
 				m.logger.Error("pending-dispatch flush: dropping entry after exceeding max attempts",
 					"dispatch_id", entry.ID,
@@ -2347,6 +2400,31 @@ flushEntries:
 		entry.LastError = lastErr.Error()
 		entry.SavedAt = time.Now()
 		if entry.Attempts >= pendingDispatchMaxAttempts {
+			// mitto-unc: do not permanently drop a batch whose failure history
+			// is purely transient aux-unavailable errors — keep it spooled for
+			// a later flush instead of Acknowledge-ing it away. Genuinely
+			// poisoned batches (stable non-transient errors) still drop here.
+			if isTransientAuxUnavailableDispatchErr(lastErr) {
+				if m.logger != nil {
+					m.logger.Warn("pending-dispatch flush: entry failed again with a transient error and exceeded max attempts; retaining for retry",
+						"dispatch_id", entry.ID,
+						"workspace_uuid", workspaceUUID,
+						"name", entry.Name,
+						"attempts", entry.Attempts,
+						"error", lastErr,
+					)
+				}
+				if m.notifyFunc != nil {
+					m.notifyFunc(workspaceUUID, entry.Name, fmt.Errorf("auxiliary process transiently unavailable after %d attempts; still retrying: %w", entry.Attempts, lastErr))
+				}
+				// Reset the attempt counter so the NEXT flush actually
+				// re-dispatches instead of tripping this same guard forever;
+				// pendingDispatchMaxAge is the real bound on how long a
+				// purely-transient failure history may linger.
+				entry.Attempts = pendingDispatchTransientRetryAttempts
+				requeue = append(requeue, entry)
+				continue
+			}
 			if m.logger != nil {
 				m.logger.Error("pending-dispatch flush: entry failed again and exceeded max attempts; dropping",
 					"dispatch_id", entry.ID,

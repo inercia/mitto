@@ -20,6 +20,15 @@ import (
 // drops it, instead of blocking other entries indefinitely.
 const pendingDispatchMaxAttempts = 3
 
+// pendingDispatchTransientRetryAttempts is the Attempts value FlushPendingDispatches
+// resets a transient-failure-only entry to when it would otherwise be dropped
+// at pendingDispatchMaxAttempts (mitto-unc). Set to 1 (the same floor Append
+// uses for a brand-new entry) so a purely-transient failure history keeps
+// being retried on subsequent flushes — bounded by pendingDispatchMaxAge,
+// not by the attempt ceiling — instead of permanently discarding a batch
+// whose auxiliary process may have simply been slow or briefly unavailable.
+const pendingDispatchTransientRetryAttempts = 1
+
 // pendingDispatchMaxAge bounds how old a spooled entry may be before it is
 // discarded at load time (mitto-yfv8). A close-phase batch (e.g. memory
 // extraction) that is now this stale is no longer worth re-running.
