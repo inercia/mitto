@@ -132,6 +132,16 @@ export function promptResolveAsLoop(prompt, override) {
  *                    (labelled by display name, valued by absolute path).
  *                    Interactive, dialog-collected (like boolean/prompts): no
  *                    menu auto-supplies it and it never gates menu visibility.
+ *   slackChannel   — a Slack channel picker, rendered in the parameter dialog
+ *                    (mirrors the picker used in Loop settings). Interactive,
+ *                    dialog-collected (like workspaceFolder): no menu
+ *                    auto-supplies it and it never gates menu visibility.
+ *                    Emitted value is a Slack channel ID string (drop-in
+ *                    replacement for a bare `type: text` channel-ID param).
+ *                    The Slack installation used to look up channels is
+ *                    picker-local UI context only and is never saved as a
+ *                    companion argument. multiLine, options, and
+ *                    collectInnerArgs are not supported.
  *   acpServer      — an ACP server (agent) name
  *   text           — generic free-form text (catch-all)
  *   boolean        — a yes/no flag, rendered as a checkbox; supplied as the
@@ -163,6 +173,7 @@ export const KNOWN_PARAM_TYPES = [
   "childSessionId",
   "workspaceId",
   "workspaceFolder",
+  "slackChannel",
   "acpServer",
   "text",
   "boolean",
@@ -201,14 +212,15 @@ export function isOptionsPickerParam(p) {
  * no menu can auto-supply and that must always be collected via the parameter
  * dialog. Currently: `boolean` (checkbox), `prompts` (workspace-prompt picker),
  * `filename` (workspace-file dropdown), `dirname` (workspace-directory
- * dropdown), `workspaceFolder` (workspace-folder dropdown), and `text` with a
- * declared `options` array (dropdown picker — see isOptionsPickerParam).
+ * dropdown), `workspaceFolder` (workspace-folder dropdown), `slackChannel`
+ * (Slack channel picker), and `text` with a declared `options` array
+ * (dropdown picker — see isOptionsPickerParam).
  *
  * Rationale: these parameters carry values that no menu context has in scope
  * (a workspace-prompt name, a checkbox answer, a workspace-relative
- * file/directory path, a workspace folder, or a value from a fixed option
- * list). They behave like `boolean` for gating purposes — never gating menu
- * visibility (menuSatisfies) and always forcing the dialog open
+ * file/directory path, a workspace folder, a Slack channel, or a value from a
+ * fixed option list). They behave like `boolean` for gating purposes — never
+ * gating menu visibility (menuSatisfies) and always forcing the dialog open
  * (shouldOpenPromptDialog) regardless of `required` or the menu's
  * auto-supplied types. The dialog offers the picker unconditionally.
  */
@@ -219,6 +231,7 @@ export function isInteractivePickerParam(p) {
     p?.type === "filename" ||
     p?.type === "dirname" ||
     p?.type === "workspaceFolder" ||
+    p?.type === "slackChannel" ||
     isOptionsPickerParam(p)
   );
 }

@@ -172,6 +172,10 @@ describe("KNOWN_PARAM_TYPES", () => {
     expect(KNOWN_PARAM_TYPES).toContain("workspaceFolder");
   });
 
+  test("includes slackChannel", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("slackChannel");
+  });
+
   test("includes text", () => {
     expect(KNOWN_PARAM_TYPES).toContain("text");
   });
@@ -444,6 +448,10 @@ describe("isInteractivePickerParam", () => {
 
   test("returns true for workspaceFolder", () => {
     expect(isInteractivePickerParam({ type: "workspaceFolder" })).toBe(true);
+  });
+
+  test("returns true for slackChannel", () => {
+    expect(isInteractivePickerParam({ type: "slackChannel" })).toBe(true);
   });
 
   // mitto-cwz.1: type:text with a non-empty options array renders as a
