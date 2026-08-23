@@ -2968,6 +2968,35 @@ func TestIsKnownPromptParameterType(t *testing.T) {
 	if !IsKnownPromptParameterType("prompts") {
 		t.Error("IsKnownPromptParameterType(\"prompts\") = false, want true")
 	}
+	// slackChannel is a recognised type (rendered as a Slack channel picker in
+	// the parameter dialog) — mitto-uqq.1.
+	if !IsKnownPromptParameterType("slackChannel") {
+		t.Error("IsKnownPromptParameterType(\"slackChannel\") = false, want true")
+	}
+}
+
+// TestParsePromptFile_SlackChannelType pins mitto-uqq.1: a `type: slackChannel`
+// parameter parses successfully and round-trips its declared type, mirroring
+// TestParsePromptFile_WithParameters' workspaceFolder coverage.
+func TestParsePromptFile_SlackChannelType(t *testing.T) {
+	data := []byte(`name: "Notify"
+parameters:
+  - name: channel
+    type: slackChannel
+prompt: |
+  Post to ${channel}.
+`)
+
+	prompt, err := ParsePromptFile("notify.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 1 {
+		t.Fatalf("Parameters len = %d, want 1", len(prompt.Parameters))
+	}
+	if prompt.Parameters[0].Type != "slackChannel" {
+		t.Errorf("Parameters[0].Type = %q, want %q", prompt.Parameters[0].Type, "slackChannel")
+	}
 }
 
 func TestParsePromptFile_WithParameters(t *testing.T) {
@@ -3676,6 +3705,76 @@ func TestValidatePromptParameters(t *testing.T) {
 		err := ValidatePromptParameters("", []PromptParameter{{Name: "D", Type: "dirname", Options: []string{"a", "b"}}})
 		if err == nil {
 			t.Fatal("expected error, got nil")
+		}
+	})
+
+	// slackChannel param type — mitto-uqq.1.
+	t.Run("slackChannel param is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Chan", Type: "slackChannel"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("slackChannel param is OK in any menu (never gates)", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Chan", Type: "slackChannel"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
+		}
+	})
+
+	t.Run("multiLine on slackChannel type returns error mentioning multiLine and text", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Chan", Type: "slackChannel", MultiLine: true}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "multiLine") {
+			t.Errorf("error = %q, want it to contain 'multiLine'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "text") {
+			t.Errorf("error = %q, want it to contain 'text'", err.Error())
+		}
+	})
+
+	t.Run("options on slackChannel type returns error mentioning options and text", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Chan", Type: "slackChannel", Options: []string{"a", "b"}}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "options") {
+			t.Errorf("error = %q, want it to contain 'options'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "text") {
+			t.Errorf("error = %q, want it to contain 'text'", err.Error())
+		}
+	})
+
+	t.Run("collectInnerArgs on slackChannel type returns error mentioning collectInnerArgs and prompts", func(t *testing.T) {
+		no := false
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Chan", Type: "slackChannel", CollectInnerArgs: &no}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "collectInnerArgs") {
+			t.Errorf("error = %q, want it to contain 'collectInnerArgs'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "prompts") {
+			t.Errorf("error = %q, want it to contain 'prompts'", err.Error())
+		}
+	})
+
+	t.Run("dir on slackChannel type returns error mentioning dir and filename", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Chan", Type: "slackChannel", Dir: "docs"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "dir") {
+			t.Errorf("error = %q, want it to contain 'dir'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "filename") {
+			t.Errorf("error = %q, want it to contain 'filename'", err.Error())
 		}
 	})
 
