@@ -2999,6 +2999,59 @@ prompt: |
 	}
 }
 
+// TestBuiltinPrompts_SlackChannelParamsUseSlackChannelType pins mitto-uqq.5:
+// the 8 builtin prompts that accept a Slack channel ID/link parameter must
+// declare `type: slackChannel` (not the legacy `type: text`) so the parameter
+// dialog renders the unified Slack channel picker (mitto-uqq.1-.4) instead of
+// a bare text field. Each entry names the exact parameter (some files use
+// `SlackChannel`, most use `SlackChannelID` — see the mitto-uqq.5 plan
+// comment) so a future rename or reversion to `text` is caught file-by-file.
+func TestBuiltinPrompts_SlackChannelParamsUseSlackChannelType(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+
+	specs := []struct {
+		file      string
+		paramName string
+	}{
+		{file: "github/review-slack-prs.prompt.yaml", paramName: "SlackChannel"},
+		{file: "support/gather-info.prompt.yaml", paramName: "SlackChannelID"},
+		{file: "support/investigate.prompt.yaml", paramName: "SlackChannelID"},
+		{file: "support/continue-conversation.prompt.yaml", paramName: "SlackChannelID"},
+		{file: "support/watch-channel.prompt.yaml", paramName: "SlackChannelID"},
+		{file: "support/reply-to-user.prompt.yaml", paramName: "SlackChannelID"},
+		{file: "support/check-status.prompt.yaml", paramName: "SlackChannelID"},
+		{file: "on-call/watch-and-summarize.prompt.yaml", paramName: "SlackChannelID"},
+	}
+
+	for _, s := range specs {
+		t.Run(s.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, s.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(s.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", s.file, err)
+			}
+			var param *PromptParameter
+			for i := range prompt.Parameters {
+				if prompt.Parameters[i].Name == s.paramName {
+					param = &prompt.Parameters[i]
+					break
+				}
+			}
+			if param == nil {
+				t.Fatalf("%s: no parameter named %q found", s.file, s.paramName)
+			}
+			if param.Type != "slackChannel" {
+				t.Errorf("%s: parameter %q Type = %q, want %q", s.file, s.paramName, param.Type, "slackChannel")
+			}
+		})
+	}
+}
+
 func TestParsePromptFile_WithParameters(t *testing.T) {
 	reqTrue := true
 	data := []byte(`name: "Task Prompt"
