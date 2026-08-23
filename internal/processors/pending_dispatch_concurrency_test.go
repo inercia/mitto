@@ -285,3 +285,143 @@ func TestFlushPendingDispatches_TransientTimeoutMustNotPermanentlyDropBatch(t *t
 			promptAttempts, notifiedErr)
 	}
 }
+
+// TestFlushPendingDispatches_AgeCapDropsPurelyTransientBatchRegardlessOfClassification
+// reproduces mitto-unc's REOPENED (P1) recurrence gap #1: the fix above only
+// guards the max-attempts cap-exhaustion sites in FlushPendingDispatches. The
+// 24h age-cap enforced independently at Load/Claim time
+// (partitionPendingDispatchEntries, keyed purely on SavedAt vs
+// pendingDispatchMaxAge) has NO knowledge of isTransientAuxUnavailableDispatchErr
+// and silently discards a batch the instant it ages out — even when its
+// entire recorded failure history is transient-aux-unavailable. Production
+// evidence: dispatch_id 1707fab1 (workspace da4bafec) was permanently lost
+// this way after the max-attempts fix (147a4648) was already deployed,
+// because the age cap fired first.
+//
+// This test asserts the EXPECTED (post-recurrence-fix) behavior per
+// acceptance criterion #1 — "No close-phase memory batch is discarded while
+// its whole failure history is transient, within a reasonable extended
+// budget" — by requiring a purely-transient-failure entry to remain
+// claimable even once its SavedAt exceeds pendingDispatchMaxAge. Today the
+// age-cap drop is unconditional, so this fails.
+func TestFlushPendingDispatches_AgeCapDropsPurelyTransientBatchRegardlessOfClassification(t *testing.T) {
+	const wsUUID = "ws-agecap-transient-drop"
+	const memoryBatchName = "extract-memories-on-close+claude-update-memory+memorize-preferences+auggie-update-rules+curate-memories-on-close"
+	const transientErr = "auxiliary prompt cancelled: {code:-32603, Internal error, data.error: context deadline exceeded}"
+
+	store := &FilePendingDispatchStore{BaseDir: t.TempDir()}
+	staleSavedAt := time.Now().Add(-(pendingDispatchMaxAge + time.Hour))
+	if _, err := store.Append(PendingDispatchEntry{
+		WorkspaceUUID: wsUUID, Name: memoryBatchName, Prompt: "memory batch prompt",
+		TimeoutSeconds: 1, SavedAt: staleSavedAt, Attempts: 1, LastError: transientErr,
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	claim, err := store.Claim(wsUUID)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+
+	for _, expired := range claim.Expired {
+		if expired.Name == memoryBatchName {
+			t.Fatalf("mitto-unc (recurrence, gap #1): a purely-transient-failure memory batch "+
+				"(LastError=%q) was silently discarded at the 24h age-cap (SavedAt=%s, "+
+				"pendingDispatchMaxAge=%s) with no failure-classification gate — acceptance "+
+				"criterion #1 requires it survive (or at minimum a loud WARN/notify) within a "+
+				"reasonable extended budget instead of a silent, unconditional drop",
+				expired.LastError, staleSavedAt, pendingDispatchMaxAge)
+		}
+	}
+	if len(claim.Entries) != 1 {
+		t.Fatalf("claim.Entries = %d entries, want 1 (the transient-failure batch should remain "+
+			"claimable, not expired)", len(claim.Entries))
+	}
+}
+
+// TestFlushPendingDispatches_RequeueMustNotResurrectAlreadyExpiredEntry
+// reproduces mitto-unc's REOPENED (P1) recurrence gap #2 (double-drop): an
+// overlapping, slower flush pass captures an entry via an EARLIER Claim()
+// call — before it ages past pendingDispatchMaxAge — and later requeues its
+// in-memory copy unchanged (a failure path such as isNonRetryableDispatchErr
+// never refreshes SavedAt). If a SEPARATE, faster flush pass claims the spool
+// in between and finds the same entry already past pendingDispatchMaxAge, it
+// logs+removes it as expired — but Requeue() blindly merges whatever it is
+// given back onto disk with no staleness check, so the slower pass's stale
+// in-memory copy resurrects the very entry that was just dropped. The next
+// Claim() then finds it expired again and drops it a SECOND time. Production
+// evidence: dispatch_ids 28358948 / 7dfa9367 (workspace 736f40f8) were both
+// logged "dropping expired entry" at 08:05:38 AND again at 09:00:42, with a
+// "requeued unresolved entry" line for the same ids in between.
+//
+// This test asserts the EXPECTED (post-recurrence-fix) behavior per
+// acceptance criterion #2 — "Each expired entry is dropped exactly once" —
+// by driving the exact sequence above and requiring the second Claim() to
+// report nothing for the already-dropped dispatch_id. Today Requeue()
+// performs no staleness check, so this fails.
+func TestFlushPendingDispatches_RequeueMustNotResurrectAlreadyExpiredEntry(t *testing.T) {
+	const wsUUID = "ws-double-drop-resurrection"
+	const memoryBatchName = "extract-memories-on-close+memorize-preferences+auggie-update-rules"
+
+	store := &FilePendingDispatchStore{BaseDir: t.TempDir()}
+	appendResult, err := store.Append(PendingDispatchEntry{
+		WorkspaceUUID: wsUUID, Name: memoryBatchName, Prompt: "memory batch prompt",
+		TimeoutSeconds: 1,
+		// Fresh enough to have been claimable by an earlier, still-running
+		// (slower) flush pass, but already past pendingDispatchMaxAge by the
+		// time a separate, later flush pass claims the spool.
+		SavedAt:  time.Now().Add(-(pendingDispatchMaxAge + time.Minute)),
+		Attempts: 1,
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	staleEntry := appendResult.Entry
+
+	// Models the slower/overlapping flush pass: it claimed this exact entry
+	// via an earlier Claim() (not replayed here — its in-memory copy is
+	// `staleEntry`, still carrying the original stale SavedAt) and is about
+	// to requeue it unchanged after a non-retryable dispatch error, a path
+	// that never refreshes SavedAt.
+	slowFlushInMemoryCopy := staleEntry
+
+	// A separate, faster flush pass claims the spool first and finds the
+	// entry already past pendingDispatchMaxAge -> drop #1.
+	firstClaim, err := store.Claim(wsUUID)
+	if err != nil {
+		t.Fatalf("first Claim() error = %v", err)
+	}
+	if len(firstClaim.Expired) != 1 || firstClaim.Expired[0].ID != staleEntry.ID {
+		t.Fatalf("first Claim() Expired = %+v, want exactly the stale entry (setup invariant broken)",
+			firstClaim.Expired)
+	}
+	if remaining, loadErr := store.Load(wsUUID); loadErr != nil || len(remaining) != 0 {
+		t.Fatalf("entry should be gone from disk after the first (expiring) Claim(); remaining=%+v err=%v",
+			remaining, loadErr)
+	}
+
+	// The slower flush pass now finishes its already-doomed dispatch attempt
+	// and requeues its stale in-memory copy, unaware the entry was already
+	// dropped by the faster pass above.
+	if _, err := store.Requeue(wsUUID, []PendingDispatchEntry{slowFlushInMemoryCopy}); err != nil {
+		t.Fatalf("Requeue() error = %v", err)
+	}
+
+	secondClaim, err := store.Claim(wsUUID)
+	if err != nil {
+		t.Fatalf("second Claim() error = %v", err)
+	}
+	for _, expired := range secondClaim.Expired {
+		if expired.ID == staleEntry.ID {
+			t.Fatalf("mitto-unc (recurrence, gap #2): dispatch_id %s (%s) was dropped as expired "+
+				"TWICE — Requeue() resurrected an already-dropped entry using its stale SavedAt "+
+				"after an earlier Claim() had already removed it, so the next Claim() dropped it "+
+				"again (acceptance criterion #2: each expired entry must be dropped exactly once)",
+				expired.ID, expired.Name)
+		}
+	}
+	if len(secondClaim.Entries) != 0 || len(secondClaim.Expired) != 0 {
+		t.Fatalf("second Claim() = %+v, want nothing at all (nothing should have been resurrected)",
+			secondClaim)
+	}
+}

@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,19 @@ const pendingDispatchTransientRetryAttempts = 1
 // discarded at load time (mitto-yfv8). A close-phase batch (e.g. memory
 // extraction) that is now this stale is no longer worth re-running.
 const pendingDispatchMaxAge = 24 * time.Hour
+
+// pendingDispatchMaxAgeTransient extends the age budget for an entry whose
+// ENTIRE recorded failure history is transient-aux-unavailable (mitto-unc
+// recurrence gap #1). partitionPendingDispatchEntries (used by Load/Claim/
+// Requeue) previously enforced pendingDispatchMaxAge purely on SavedAt, with
+// no awareness of failure classification — a close-phase memory batch whose
+// auxiliary process was merely slow/briefly unavailable across every attempt
+// could age out and be silently discarded, even though the max-attempts
+// cap-exhaustion site (FlushPendingDispatches, mitto-unc's original fix)
+// already retains that exact failure pattern instead of dropping it. An
+// entry with a non-transient (or no) failure history still expires at the
+// ordinary pendingDispatchMaxAge.
+const pendingDispatchMaxAgeTransient = 7 * 24 * time.Hour
 
 // pendingDispatchMaxEntries caps the number of entries retained per
 // workspace spool (mitto-yfv8). Append drops the oldest entries first once
@@ -299,6 +313,20 @@ func (s *FilePendingDispatchStore) Requeue(workspaceUUID string, entries []Pendi
 	if len(entries) == 0 {
 		return nil, nil
 	}
+	// mitto-unc recurrence gap #2: an in-memory entry captured by a slower/
+	// overlapping flush pass before it aged out (e.g. via a failure path
+	// like isNonRetryableDispatchErr that never refreshes SavedAt) must not
+	// be blindly resurrected here if a separate, faster pass's Claim()
+	// already dropped it as expired in the meantime — production showed the
+	// exact double "dropping expired entry" log + removal this causes. Apply
+	// the same expiry classification Load/Claim use so an already-expired
+	// input entry is silently excluded from the merge instead of being
+	// written back to disk; it was already logged and dropped once by
+	// whichever Claim() actually removed it.
+	entries, _ = partitionPendingDispatchEntries(entries)
+	if len(entries) == 0 {
+		return nil, nil
+	}
 	ensurePendingDispatchIDs(entries)
 	for i := range entries {
 		entries[i].ClaimedBy = ""
@@ -416,9 +444,21 @@ func upsertPendingDispatchEntries(current, updates []PendingDispatchEntry) []Pen
 }
 
 func partitionPendingDispatchEntries(entries []PendingDispatchEntry) (fresh, expired []PendingDispatchEntry) {
-	cutoff := time.Now().Add(-pendingDispatchMaxAge)
+	now := time.Now()
+	cutoff := now.Add(-pendingDispatchMaxAge)
+	transientCutoff := now.Add(-pendingDispatchMaxAgeTransient)
 	for _, entry := range entries {
 		if entry.SavedAt.Before(cutoff) {
+			// mitto-unc recurrence gap #1: a purely-transient failure history
+			// earns the extended budget instead of the ordinary age cap — mirrors
+			// the max-attempts cap-exhaustion site's transient-retention logic
+			// (isTransientAuxUnavailableDispatchErr), so classification is
+			// consistent across both cap-enforcement points.
+			if entry.LastError != "" && isTransientAuxUnavailableDispatchErr(errors.New(entry.LastError)) &&
+				entry.SavedAt.After(transientCutoff) {
+				fresh = append(fresh, entry)
+				continue
+			}
 			expired = append(expired, entry)
 		} else {
 			fresh = append(fresh, entry)
