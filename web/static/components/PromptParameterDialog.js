@@ -9,7 +9,19 @@ import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { Modal } from "./Modal.js";
 import { getBasename } from "../lib.js";
-import { SlidersIcon } from "./Icons.js";
+import { SearchIcon, SlidersIcon } from "./Icons.js";
+// mitto-uqq.4: slackChannel ParamField branch reuses the same shared Slack
+// infra as SlackSubscriptionEditor.js (mitto-uqq.2/.3) — the installation
+// catalog hook, the extracted channel-picker modal, and the client-scoped
+// channel cache helpers.
+import { SlackChannelPickerModal } from "./slack/SlackChannelPickerModal.js";
+import { useSlackInstallationCatalog } from "../hooks/useSlackInstallationCatalog.js";
+import {
+  fetchAllChannelsInBackground,
+  installationLabel,
+  isDelegatedUserInstallation,
+  subscribeChannelCache,
+} from "../utils/slackChannels.js";
 // mitto-47y.6.1: recursive nested-picker helpers live under utils/ so they can
 // be unit-tested without hitting the `window.preact` module-load import gate.
 // See utils/promptNestedArgs.js for the full contract; MAX_NESTED_LEVEL stays
@@ -160,6 +172,125 @@ function hasUnmetNestedRequired(parameters, values, nestedValues, promptsList) {
     if (summary.missingRequired > 0) return true;
   }
   return false;
+}
+
+// mitto-uqq.4: renders the `slackChannel` control. Mounted ONLY from the
+// `slackChannel` branch of ParamField below, so `useSlackInstallationCatalog`
+// (and its SLACK_INTEGRATIONS_UPDATED_EVENT listener + cache-clearing) only
+// runs while a slackChannel param is actually present — no new gated
+// parent-level effect/state is needed in PromptParameterDialog, and the
+// catalog hook stays the single implementation (shared with
+// SlackSubscriptionEditor.js). The selected installation is picker-local UI
+// state only: it is never passed to `onChange`, so it can never leak into
+// the emitted args (only the channel ID string does, via the existing
+// string-param path in handleSubmit).
+function SlackChannelParamField({ name, value, onChange }) {
+  const client = getSdkClient();
+  const catalog = useSlackInstallationCatalog(client);
+  const [installationId, setInstallationId] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Forces a re-render when this installation's cached channels change (the
+  // channel-count/loading copy inside the modal reads the cache directly).
+  const [, forceRerender] = useState(0);
+
+  useEffect(() => {
+    if (!installationId) return undefined;
+    return subscribeChannelCache(client, installationId, () =>
+      forceRerender((count) => count + 1),
+    );
+  }, [client, installationId]);
+
+  useEffect(() => {
+    if (!installationId) return;
+    const installation = catalog.installations.find(
+      (item) => item.id === installationId,
+    );
+    if (installation?.token_configured === true) {
+      fetchAllChannelsInBackground(client, installationId);
+    }
+  }, [client, installationId, catalog.installations]);
+
+  const installation = catalog.installations.find(
+    (item) => item.id === installationId,
+  );
+  const usesDelegatedUser = isDelegatedUserInstallation(installation);
+  const channelCredentialMissing =
+    !!installation && installation.token_configured !== true;
+
+  if (!catalog.loading && catalog.installations.length === 0) {
+    // Graceful fallback: no configured installations at all — behave like a
+    // bare `type: text` channel-ID input (mirrors filename/acpServer's
+    // empty-list fallback).
+    return html`
+      <input
+        type="text"
+        class="input input-sm w-full"
+        value=${value}
+        onInput=${(e) => onChange(name, e.target.value)}
+        placeholder="C0123456789"
+        data-testid="slack-channel-param-input-${name}"
+      />
+    `;
+  }
+
+  return html`
+    <div class="flex flex-col gap-2">
+      ${catalog.loading &&
+      html`<span class="text-mitto-text-muted text-xs opacity-60">…</span>`}
+      ${!catalog.loading &&
+      html`
+        <select
+          class="select select-sm w-full"
+          value=${installationId}
+          onChange=${(e) => setInstallationId(e.target.value)}
+          data-testid="slack-channel-param-installation-${name}"
+        >
+          <option value="">Select a Slack workspace…</option>
+          ${catalog.installations.map(
+            (item) =>
+              html`<option key=${item.id} value=${item.id}>
+                ${installationLabel(item)}${item.token_configured &&
+                item.app_token_configured
+                  ? ""
+                  : " · credentials required"}
+              </option>`,
+          )}
+        </select>
+      `}
+      <div class="join w-full">
+        <input
+          type="text"
+          class="input input-sm join-item flex-1"
+          value=${value}
+          placeholder="C0123456789"
+          onInput=${(e) => onChange(name, e.target.value)}
+          data-testid="slack-channel-param-input-${name}"
+        />
+        <button
+          type="button"
+          class="btn btn-sm join-item btn-square"
+          aria-label="Search Slack channels"
+          title="Search Slack channels"
+          disabled=${!installationId || channelCredentialMissing}
+          onClick=${() => setPickerOpen(true)}
+          data-testid="slack-channel-param-search-${name}"
+        >
+          <${SearchIcon} className="w-4 h-4" />
+        </button>
+      </div>
+      <${SlackChannelPickerModal}
+        client=${client}
+        installationId=${installationId}
+        usesDelegatedUser=${usesDelegatedUser}
+        open=${pickerOpen}
+        onClose=${() => setPickerOpen(false)}
+        onSelect=${(channelId) => {
+          onChange(name, channelId);
+          setPickerOpen(false);
+        }}
+      />
+    </div>
+  `;
 }
 
 function ParamField({
@@ -448,6 +579,16 @@ function ParamField({
         </select>
       `;
     }
+  } else if (type === "slackChannel") {
+    // Value is a Slack channel ID string (drop-in replacement for a bare
+    // `type: text` channel-ID param). The selected Slack installation is
+    // picker-local UI state only — see SlackChannelParamField — and is
+    // never part of the emitted value.
+    control = html`<${SlackChannelParamField}
+      name=${name}
+      value=${value}
+      onChange=${onChange}
+    />`;
   } else if (type === "acpServer") {
     if (loadingWorkspaces) {
       control = html`<span class="text-mitto-text-muted text-xs opacity-60"
