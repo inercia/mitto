@@ -1917,6 +1917,22 @@ func admitDispatch(workspaceUUID string) *sync.Mutex {
 // much longer window than other transient errors (mitto-7q2). The
 // non-retryable "no shared process for workspace" sentinel stops immediate
 // retries but still flows through durable persistence for later delivery.
+//
+// acperrors.ErrProcessBusy gets a THIRD retry class (mitto-hjx facet B): it
+// is deliberately excluded from isSaturationDispatchErr (not GC-recycle-
+// shaped, see that function's doc), so a single runDispatchRetryLoopTracked
+// call only gives it the short ordinary retry budget. A sustained-but-
+// clearing busy window (e.g. one foreground user-facing RPC holding the
+// shared process's threshold-1 slot, auxSessionCreateBusyRPCThreshold, for
+// longer than that budget) would otherwise exhaust it every time and
+// persist the batch to the durable spool at ERROR. Mirroring
+// FlushPendingDispatches' own busyDeadline poll loop (below in this file),
+// dispatchWithRetry re-invokes the retry loop on a
+// pendingDispatchBusyRetryInterval cadence, bounded by a busyDeadline set
+// from this dispatch's own timeout, as long as the terminal error stays
+// ErrProcessBusy — riding out the busy window instead of giving up after
+// one short attempt.
+//
 // If retrying is exhausted,
 // the final error is logged at ERROR and, when a NotifyFunc is configured
 // (see SetNotifyFunc), surfaced to the user — previously such failures were
@@ -1963,8 +1979,46 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	// process-global rather than a *Manager field.
 	gate := admitDispatch(workspaceUUID)
 	gate.Lock()
-	completion, totalAttempts, waited, lastErr := m.runDispatchRetryLoopTracked(
-		workspaceUUID, name, entry.ID, prompt, timeout, skipLog, &dispatchRetryLogState{})
+	var completion PromptCompletion
+	var totalAttempts int
+	var waited time.Duration
+	var lastErr error
+	var busyDeadline time.Time
+	logState := &dispatchRetryLogState{}
+	for {
+		var attempts int
+		var callWaited time.Duration
+		completion, attempts, callWaited, lastErr = m.runDispatchRetryLoopTracked(
+			workspaceUUID, name, entry.ID, prompt, timeout, skipLog, logState)
+		totalAttempts += attempts
+		waited += callWaited
+		// mitto-hjx facet B: ride out a sustained-but-clearing ErrProcessBusy
+		// window instead of giving up after the short ordinary retry budget
+		// — mirrors FlushPendingDispatches' own busyDeadline loop, which
+		// already handles this correctly on the flush path.
+		if !errors.Is(lastErr, acperrors.ErrProcessBusy) {
+			break
+		}
+		if busyDeadline.IsZero() {
+			busyDeadline = time.Now().Add(timeout)
+			if m.logger != nil {
+				m.logger.Info("prompt-mode processor dispatch: shared process busy; waiting to continue",
+					"dispatch_id", entry.ID,
+					"workspace_uuid", workspaceUUID,
+					"name", name,
+					"deadline", busyDeadline,
+				)
+			}
+		}
+		if !time.Now().Before(busyDeadline) {
+			break
+		}
+		wait := pendingDispatchBusyRetryInterval
+		if remaining := time.Until(busyDeadline); wait > remaining {
+			wait = remaining
+		}
+		time.Sleep(wait)
+	}
 	gate.Unlock()
 	if lastErr == nil {
 		if trackedPersisted {
