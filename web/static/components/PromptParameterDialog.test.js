@@ -16,6 +16,10 @@ import {
   groupDialogParameters,
   unmetRequiredByGroup,
 } from "../utils/prompts.js";
+// mitto-uqq.4: installationLabel is a pure helper (no preact dependency), so
+// the slackChannel render-branch mirror below can call the real
+// implementation directly instead of re-deriving its label format.
+import { installationLabel } from "../utils/slackChannels.js";
 
 // =============================================================================
 // workspaceId render-branch logic
@@ -2726,5 +2730,169 @@ describe("workspace files/dirs per-param fetch flow (getSdkClient migration)", (
 
     const updater = setByParam.mock.calls[0][0];
     expect(updater({ other: [1] })).toEqual({ other: [1], p: [] });
+  });
+});
+
+// =============================================================================
+// mitto-uqq.4 — slackChannel render-branch logic
+// Duplicated from SlackChannelParamField in PromptParameterDialog.js — keep in
+// sync. Returns a plain descriptor (mirroring the workspaceFolder/acpServer/
+// filename descriptor-based tests above) rather than mounting the real
+// component, since PromptParameterDialog.js cannot be imported under jsdom
+// (module-load `window.preact` gate — see file header).
+// =============================================================================
+
+/**
+ * Mirrors SlackChannelParamField's top-level render decision:
+ *   { kind: "fallbackTextInput" | "picker", installationId?, channelCredentialMissing?, options? }
+ */
+function renderSlackChannelControl({ catalog, installationId }) {
+  if (!catalog.loading && catalog.installations.length === 0) {
+    // Graceful fallback: no configured installations at all — behave like a
+    // bare `type: text` channel-ID input.
+    return { kind: "fallbackTextInput", placeholder: "C0123456789" };
+  }
+  const installation = catalog.installations.find(
+    (item) => item.id === installationId,
+  );
+  const channelCredentialMissing =
+    !!installation && installation.token_configured !== true;
+  const options = catalog.installations.map((item) => ({
+    value: item.id,
+    label:
+      installationLabel(item) +
+      (item.token_configured && item.app_token_configured
+        ? ""
+        : " · credentials required"),
+  }));
+  return {
+    kind: "picker",
+    loading: catalog.loading,
+    options,
+    searchDisabled: !installationId || channelCredentialMissing,
+  };
+}
+
+describe("slackChannel render branch (mitto-uqq.4)", () => {
+  describe("no installations configured → text input fallback", () => {
+    test("renders fallback text input when catalog is empty and not loading", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations: [], loading: false, error: "" },
+        installationId: "",
+      });
+      expect(result.kind).toBe("fallbackTextInput");
+      expect(result.placeholder).toBe("C0123456789");
+    });
+
+    test("does NOT fall back while still loading, even with an empty list so far", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations: [], loading: true, error: "" },
+        installationId: "",
+      });
+      expect(result.kind).toBe("picker");
+      expect(result.loading).toBe(true);
+    });
+  });
+
+  describe("installations present → workspace select + channel input + search button", () => {
+    const installations = [
+      {
+        id: "inst-a",
+        name: "Workspace Alpha",
+        team_id: "TA",
+        app_name: "App Alpha",
+        token_configured: true,
+        app_token_configured: true,
+      },
+      {
+        id: "inst-b",
+        name: "Workspace Beta",
+        team_id: "TB",
+        app_name: "App Beta",
+        token_configured: false,
+        app_token_configured: true,
+      },
+    ];
+
+    test("renders one select option per installation, labelled via installationLabel", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations, loading: false, error: "" },
+        installationId: "",
+      });
+      expect(result.kind).toBe("picker");
+      expect(result.options).toHaveLength(2);
+      expect(result.options[0]).toEqual({
+        value: "inst-a",
+        label: installationLabel(installations[0]),
+      });
+    });
+
+    test("appends 'credentials required' hint when token is not configured", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations, loading: false, error: "" },
+        installationId: "",
+      });
+      expect(result.options[1].label).toBe(
+        `${installationLabel(installations[1])} · credentials required`,
+      );
+    });
+
+    test("search button is disabled when no installation is selected", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations, loading: false, error: "" },
+        installationId: "",
+      });
+      expect(result.searchDisabled).toBe(true);
+    });
+
+    test("search button is enabled once a fully-credentialed installation is selected", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations, loading: false, error: "" },
+        installationId: "inst-a",
+      });
+      expect(result.searchDisabled).toBe(false);
+    });
+
+    test("search button stays disabled when the selected installation is missing bot/user credentials", () => {
+      const result = renderSlackChannelControl({
+        catalog: { apps: [], installations, loading: false, error: "" },
+        installationId: "inst-b",
+      });
+      expect(result.searchDisabled).toBe(true);
+    });
+  });
+});
+
+describe("slackChannel onSelect emission (mitto-uqq.4)", () => {
+  // Mirrors SlackChannelPickerModal's onSelect wiring inside
+  // SlackChannelParamField: `onSelect=${(channelId) => { onChange(name,
+  // channelId); setPickerOpen(false); }}` — the installation id is captured
+  // only in closure-local state and is never part of the onChange call.
+  function handlePickerSelect(name, onChange, channelId) {
+    onChange(name, channelId);
+  }
+
+  test("selecting a channel calls onChange with exactly (name, channelId)", () => {
+    const onChange = jest.fn();
+    handlePickerSelect("SlackChannel", onChange, "C0123456789");
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith("SlackChannel", "C0123456789");
+  });
+
+  test("the installation id is never part of the onChange call", () => {
+    const onChange = jest.fn();
+    handlePickerSelect("SlackChannel", onChange, "C0123456789");
+    const [, emittedValue] = onChange.mock.calls[0];
+    expect(emittedValue).not.toBe("inst-a");
+    expect(emittedValue).toBe("C0123456789");
+  });
+
+  test("typing directly into the channel-id input also emits only the raw string", () => {
+    // Mirrors the text input's onInput=${(e) => onChange(name, e.target.value)}.
+    const onChange = jest.fn();
+    const name = "SlackChannel";
+    const fakeEvent = { target: { value: "C9876543210" } };
+    onChange(name, fakeEvent.target.value);
+    expect(onChange).toHaveBeenCalledWith("SlackChannel", "C9876543210");
   });
 });
