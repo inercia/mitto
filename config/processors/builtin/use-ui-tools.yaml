@@ -34,3 +34,6 @@ text: |
   - ❌ NEVER present numbered options and ask the user to respond with text
   - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
   - ❌ NEVER use plain text prompts when a UI tool would provide a better experience
+
+  Never assume or announce that these tools are unavailable — call the tool first;
+  only report unavailability if the tool call itself returns an error.
