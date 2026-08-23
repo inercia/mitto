@@ -3,7 +3,7 @@ name: 'GitHub: review PRs requests in slack'
 menus: prompts
 parameters:
   - name: SlackChannel
-    type: text
+    type: slackChannel
     description: Link (or ID) of the Slack channel to scan for PR review requests
   - name: CheckoutsRoot
     type: text

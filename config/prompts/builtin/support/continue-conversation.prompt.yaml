@@ -14,7 +14,7 @@ target:
     coalesce: true
 parameters:
   - name: SlackChannelID
-    type: text
+    type: slackChannel
     required: true
     description: 'The Slack channel ID to scan for conversations you are participating in (e.g. C0XXXXXXX).'
   - name: SlackWorkspaceURL
