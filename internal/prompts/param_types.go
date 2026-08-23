@@ -28,6 +28,15 @@ import (
 //     display name, valued by absolute path). Interactive, dialog-collected
 //     (like boolean/prompts): no menu auto-supplies it and it never gates menu
 //     visibility.
+//   - slackChannel   — a Slack channel picker, rendered in the parameter dialog
+//     (mirrors the picker already used in Loop settings). Interactive,
+//     dialog-collected (like workspaceFolder): no menu auto-supplies it and it
+//     never gates menu visibility. Emitted value is a Slack channel ID string
+//     (drop-in replacement for a bare `type: text` channel-ID param). The
+//     Slack installation used to look up channels is picker-local UI context
+//     only and is never saved as a companion argument. multiLine, options, and
+//     collectInnerArgs are not supported (rejected by the existing type-gated
+//     checks, same treatment as filename/workspaceFolder).
 //   - acpServer      — an ACP server (agent) name
 //   - text           — generic free-form text (the catch-all type)
 //   - boolean        — a yes/no flag, rendered as a checkbox; supplied as the
@@ -75,6 +84,7 @@ var KnownPromptParameterTypes = []string{
 	"childSessionId",
 	"workspaceId",
 	"workspaceFolder",
+	"slackChannel",
 	"acpServer",
 	"text",
 	"boolean",
