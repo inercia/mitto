@@ -49,6 +49,15 @@ import (
 const (
 	webReadHeaderTimeout = 10 * time.Second
 	webMaxHeaderBytes    = 1 << 20 // 1 MiB
+
+	// pendingDispatchSweepInterval bounds how often the periodic
+	// pending-dispatch spool sweep (mitto-lak) runs. The spool age cap
+	// (pendingDispatchMaxAge, 24h) is far coarser than this, so a sweep does
+	// not need GC-tier frequency — it exists only to guarantee an orphaned
+	// workspace's spool is eventually discovered and drained even though no
+	// live session for it will ever fire the event-driven flush triggers
+	// again.
+	pendingDispatchSweepInterval = 30 * time.Minute
 )
 
 // Config holds the web server configuration.
@@ -357,6 +366,12 @@ type Server struct {
 	// started in NewServer. Nil when the gauge was not started (test /
 	// MITTO_TEST_MODE paths, matching the ACP process GC gating above).
 	goroutineGaugeStop func()
+
+	// pendingDispatchSweepStop cancels the periodic pending-dispatch spool
+	// sweep (mitto-lak) started in NewServer. Nil when the sweep was not
+	// started (test / MITTO_TEST_MODE paths, matching the ACP process GC
+	// gating above).
+	pendingDispatchSweepStop func()
 }
 
 type serverLegacySlackController struct {
@@ -372,6 +387,76 @@ func (c *serverLegacySlackController) Stop() bool   { return c.server.stopLegacy
 // This is used by the frontend to construct API URLs.
 func (s *Server) APIPrefix() string {
 	return s.apiPrefix
+}
+
+// startPendingDispatchSweep starts a periodic goroutine that discovers and
+// drains every workspace's pending-processor-dispatch spool directly from
+// disk (mitto-lak), independent of any live/closing session for that
+// workspace. Returns a stop function; safe to call once from NewServer and
+// once (via the returned func) from Shutdown.
+//
+// The processors.Manager used for the sweep is built fresh here (mirroring
+// SessionManager.ApplyOnCloseProcessors' own close-phase manager) rather
+// than reused from sessionMgr.GetProcessorManager(), because a flush needs
+// only a PendingDispatchStore + prompt executor — no loaded processor
+// definitions — and building a minimal manager avoids racing the global
+// manager's workspace-scoped clones.
+func startPendingDispatchSweep(
+	ctx context.Context,
+	acpProcessMgr *acpproc.ACPProcessManager,
+	auxMgr *auxiliary.WorkspaceAuxiliaryManager,
+	spoolDir string,
+	logger *slog.Logger,
+) (stop func()) {
+	procMgr := processors.NewManager("", logger)
+	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{BaseDir: spoolDir})
+	if auxMgr != nil {
+		procMgr.SetPromptCompletionFunc(func(promptCtx context.Context, wsUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
+			saveCount, err := auxMgr.PromptProcessorTracked(promptCtx, wsUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
+		})
+	}
+
+	isDispatchable := func(workspaceUUID string) bool {
+		if acpProcessMgr == nil {
+			return false
+		}
+		return acpProcessMgr.HasLiveProcess(workspaceUUID)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(pendingDispatchSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				swept, err := processors.SweepPendingDispatchDir(procMgr, spoolDir, isDispatchable)
+				if err != nil {
+					if logger != nil {
+						logger.Warn("pending-dispatch sweep failed", "error", err)
+					}
+					continue
+				}
+				if swept > 0 && logger != nil {
+					logger.Debug("pending-dispatch sweep completed", "workspaces_discovered", swept)
+				}
+			}
+		}
+	}()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
 }
 
 // NewServer creates a new web server.
@@ -704,6 +789,30 @@ func NewServer(config Config) (*Server, error) {
 	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessMgr, logger)
 	sessionMgr.SetAuxiliaryManager(auxiliaryManager)
 
+	// Start the periodic pending-dispatch spool sweep (mitto-lak). Without
+	// this, a workspace's pending-processor-dispatch/<uuid>.json spool is
+	// only ever drained by two event-driven triggers — a live session being
+	// constructed/resumed, or that session's own close pipeline — both of
+	// which require the caller to already know the workspace UUID. A
+	// workspace that becomes orphaned (every conversation deleted/archived,
+	// or never reopened after a restart) never fires either trigger again,
+	// so its spool would otherwise linger on disk indefinitely past
+	// pendingDispatchMaxAge. The sweep enumerates every spool file on disk
+	// directly, flushing workspaces with a live process and letting the
+	// existing age cap prune/remove the rest. Gated the same as the ACP
+	// process GC above so tests and MITTO_TEST_MODE runs do not gain a
+	// background ticker.
+	var pendingDispatchSweepStop func()
+	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
+		if pendingDispatchDir, direrr := appdir.PendingProcessorDispatchDir(); direrr == nil {
+			pendingDispatchSweepStop = startPendingDispatchSweep(
+				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger,
+			)
+		} else {
+			logger.Warn("pending-dispatch sweep disabled: cannot resolve spool dir", "error", direrr)
+		}
+	}
+
 	// Persist the real-MCP-derived tools snapshot per workspace (mitto-sys.8)
 	// so a restart reuses it within the TTL instead of re-probing every server.
 	// Only deterministic results are written; the LLM fallback stays in-memory.
@@ -957,6 +1066,7 @@ func NewServer(config Config) (*Server, error) {
 		beads:                       beads.NewClient(),
 		mcpAvailable:                true,
 		goroutineGaugeStop:          goroutineGaugeStop,
+		pendingDispatchSweepStop:    pendingDispatchSweepStop,
 	}
 
 	// Remembered prompt-arguments store (mitto-x8v, mitto-47y.6.2). Resolved
@@ -2060,6 +2170,11 @@ func (s *Server) Shutdown() error {
 	// Stop the periodic goroutine gauge (mitto-x3x)
 	if s.goroutineGaugeStop != nil {
 		s.goroutineGaugeStop()
+	}
+
+	// Stop the periodic pending-dispatch spool sweep (mitto-lak)
+	if s.pendingDispatchSweepStop != nil {
+		s.pendingDispatchSweepStop()
 	}
 
 	// Shut down the HTTP server with a timeout so we don't hang indefinitely.

@@ -1,9 +1,11 @@
 package processors
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -463,4 +465,78 @@ func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDis
 		return fmt.Errorf("failed to restrict pending dispatch spool permissions: %w", err)
 	}
 	return nil
+}
+
+// SweepPendingDispatchDir discovers every workspace's pending-dispatch spool
+// purely from the files present in spoolDir — no advance knowledge of any
+// workspace UUID is required — and either flushes it (when isDispatchable
+// reports the workspace can currently receive a dispatch) or leaves it to
+// the existing pendingDispatchMaxAge cap (enforced by
+// FilePendingDispatchStore.Load) to prune expired entries and remove an
+// empty spool file (mitto-lak).
+//
+// This closes the gap left by FlushPendingDispatches' only two production
+// callers — BackgroundSession.wireProcessorPendingDispatch (fires only when
+// a live session for the workspace is constructed/resumed) and the
+// conversation-close pipeline (SessionManager.ApplyOnCloseProcessors) — both
+// of which require the caller to already know the workspace UUID in
+// advance and both of which are event-driven. A workspace that becomes
+// orphaned (every conversation deleted/archived, or the workspace never
+// reopened after a restart) never fires either trigger again, so without
+// this directory-wide sweep its spool file would linger on disk
+// indefinitely past pendingDispatchMaxAge.
+//
+// isDispatchable is called once per discovered workspace UUID; a nil value
+// is treated as "never dispatchable" (every discovered spool is only
+// age-pruned, never flushed). m may be nil, in which case dispatchable
+// workspaces are silently skipped (no flush) but age-pruning still runs —
+// callers should always pass a Manager wired with a PendingDispatchStore
+// rooted at spoolDir plus a prompt executor in production.
+//
+// Returns the number of workspace spool files discovered in spoolDir (not
+// the number actually flushed or pruned), or an error only when spoolDir
+// itself cannot be listed. A missing spoolDir (nothing spooled yet) is not
+// an error — it returns (0, nil).
+func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool) (int, error) {
+	dirEntries, err := os.ReadDir(spoolDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to read pending dispatch directory: %w", err)
+	}
+
+	ageStore := &FilePendingDispatchStore{BaseDir: spoolDir}
+	swept := 0
+	for _, dirEntry := range dirEntries {
+		if dirEntry.IsDir() {
+			continue
+		}
+		name := dirEntry.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		workspaceUUID := strings.TrimSuffix(name, ".json")
+		if workspaceUUID == "" {
+			continue
+		}
+		swept++
+
+		if isDispatchable != nil && isDispatchable(workspaceUUID) {
+			if m != nil {
+				m.FlushPendingDispatches(context.Background(), workspaceUUID)
+			}
+			continue
+		}
+
+		// Not currently dispatchable — most commonly an orphaned workspace
+		// that will never become dispatchable again. Do not attempt a flush;
+		// just let Load's age-cap enforcement prune expired entries and
+		// remove the spool file once nothing fresh remains.
+		if _, loadErr := ageStore.Load(workspaceUUID); loadErr != nil {
+			return swept, fmt.Errorf("failed to age-prune pending dispatch spool for workspace %s: %w", workspaceUUID, loadErr)
+		}
+	}
+
+	return swept, nil
 }
