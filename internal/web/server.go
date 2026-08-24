@@ -3478,10 +3478,14 @@ func (s *Server) resolvePromptFragments(workingDir string) (*configPkg.FragmentR
 func (s *Server) resolvePromptByName(promptName string, workingDir string) (string, error) {
 	// 1. Global file prompts
 	var globalFilePrompts []configPkg.WebPrompt
+	var promptsCacheErr error
 	if s.config.PromptsCache != nil {
 		gfp, err := s.config.PromptsCache.GetWebPrompts()
-		if err != nil && s.logger != nil {
-			s.logger.Warn("Failed to load global file prompts for prompt resolution", "error", err)
+		if err != nil {
+			promptsCacheErr = err
+			if s.logger != nil {
+				s.logger.Warn("Failed to load global file prompts for prompt resolution", "error", err)
+			}
 		}
 		globalFilePrompts = gfp
 	}
@@ -3509,8 +3513,13 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 	var serverPrompts []configPkg.WebPrompt
 	if acpServerType != "" && s.config.PromptsCache != nil {
 		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
-		if err != nil && s.logger != nil {
-			s.logger.Warn("Failed to load ACP-specific prompts for resolution", "error", err)
+		if err != nil {
+			if promptsCacheErr == nil {
+				promptsCacheErr = err
+			}
+			if s.logger != nil {
+				s.logger.Warn("Failed to load ACP-specific prompts for resolution", "error", err)
+			}
 		}
 		serverPrompts = sp
 	}
@@ -3574,6 +3583,20 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 					conversation.ErrPromptTransientCompileRace, promptName)
 			}
 		}
+	}
+
+	// mitto-ctf: a miss that coincides with a PromptsCache load/deployment
+	// error (most notably prompts.ErrDeploymentInProgress, returned with an
+	// EMPTY LoadErrors() while a `.mitto-prompts-deploying` marker is active,
+	// or on a never-warmed cache on a freshly reconnected session) carries no
+	// evidence the prompt is genuinely missing/renamed — it only proves the
+	// merged list was built from a stale/incomplete snapshot. Classify it the
+	// same as the fragment compile-race above so the loop-runner strike
+	// counter (mitto-8bg) does not auto-pause a healthy loop on a resolution
+	// race, and the next tick retries against a warm cache.
+	if promptsCacheErr != nil {
+		return "", fmt.Errorf("%w: prompt %q not found (prompts cache error: %v)",
+			conversation.ErrPromptTransientCompileRace, promptName, promptsCacheErr)
 	}
 
 	return "", fmt.Errorf("prompt %q not found", promptName)
