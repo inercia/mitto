@@ -43,6 +43,21 @@ func authorizedEventsAPIEvent(teamID, innerType string, data any, eventContext s
 	return event
 }
 
+// extSharedAuthorizedEventsAPIEvent is like authorizedEventsAPIEvent but marks
+// the envelope as an external-shared-channel event, whose inline authorizations
+// may be truncated and therefore cannot substitute for the API enumeration.
+func extSharedAuthorizedEventsAPIEvent(teamID, innerType string, data any, eventContext string, authorizations []EventAuthorization) socketmode.Event {
+	payload, _ := json.Marshal(struct {
+		EventID            string               `json:"event_id"`
+		EventContext       string               `json:"event_context,omitempty"`
+		Authorizations     []EventAuthorization `json:"authorizations"`
+		IsExtSharedChannel bool                 `json:"is_ext_shared_channel"`
+	}{EventID: "Ev1", EventContext: eventContext, Authorizations: authorizations, IsExtSharedChannel: true})
+	event := eventsAPIEvent(teamID, innerType, data)
+	event.Request.Payload = payload
+	return event
+}
+
 func TestSlackSource_HandleSocketEvent_PlainMessage_Emitted(t *testing.T) {
 	src := NewSlackSource(Config{}, nil, nil)
 	client := newTestSocketmodeClient()
@@ -98,7 +113,30 @@ func TestSlackSource_ResolvesCompleteAuthorizationScope(t *testing.T) {
 	}
 }
 
-func TestSlackSource_AuthorizationLookupFailureLeavesEnvelopeUnacknowledged(t *testing.T) {
+func TestSlackSource_AuthorizationLookupFailure_FallsBackToInline(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
+		return nil, errors.New("missing_scope")
+	}
+	acknowledgements, acceptCalls := 0, 0
+	src.ack = func(*socketmode.Client, *socketmode.Request) { acknowledgements++ }
+	var got Event
+	evt := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+		"1-message-T1-C1", []EventAuthorization{{UserID: "UDELEGATED", IsBot: false}})
+	err := src.handleSocketEventDurable(evt, newTestSocketmodeClient(), "U-SELF", func(e Event) error {
+		acceptCalls++
+		got = e
+		return nil
+	})
+	if err != nil || acknowledgements != 1 || acceptCalls != 1 {
+		t.Fatalf("fallback err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
+	}
+	if !got.AuthorizationScopeKnown || len(got.Authorizations) != 1 || got.Authorizations[0].UserID != "UDELEGATED" {
+		t.Fatalf("fallback event = %#v", got)
+	}
+}
+
+func TestSlackSource_AuthorizationLookupFailure_NoInline_LeavesUnacknowledged(t *testing.T) {
 	src := NewSlackSource(Config{}, nil, nil)
 	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
 		return nil, errors.New("revoked")
@@ -106,13 +144,31 @@ func TestSlackSource_AuthorizationLookupFailureLeavesEnvelopeUnacknowledged(t *t
 	acknowledgements, acceptCalls := 0, 0
 	src.ack = func(*socketmode.Client, *socketmode.Request) { acknowledgements++ }
 	evt := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
-		"1-message-T1-C1", []EventAuthorization{{UserID: "UBOT", IsBot: true}})
+		"1-message-T1-C1", []EventAuthorization{})
 	err := src.handleSocketEventDurable(evt, newTestSocketmodeClient(), "U-SELF", func(Event) error {
 		acceptCalls++
 		return nil
 	})
 	if !errors.Is(err, errEventAuthorizationLookup) || acknowledgements != 0 || acceptCalls != 0 {
-		t.Fatalf("lookup failure err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
+		t.Fatalf("no-inline drop err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
+	}
+}
+
+func TestSlackSource_AuthorizationLookupFailure_ExtSharedChannel_LeavesUnacknowledged(t *testing.T) {
+	src := NewSlackSource(Config{}, nil, nil)
+	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
+		return nil, errors.New("revoked")
+	}
+	acknowledgements, acceptCalls := 0, 0
+	src.ack = func(*socketmode.Client, *socketmode.Request) { acknowledgements++ }
+	evt := extSharedAuthorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+		"1-message-T1-C1", []EventAuthorization{{UserID: "UDELEGATED", IsBot: false}})
+	err := src.handleSocketEventDurable(evt, newTestSocketmodeClient(), "U-SELF", func(Event) error {
+		acceptCalls++
+		return nil
+	})
+	if !errors.Is(err, errEventAuthorizationLookup) || acknowledgements != 0 || acceptCalls != 0 {
+		t.Fatalf("ext-shared drop err=%v acknowledgements=%d acceptCalls=%d", err, acknowledgements, acceptCalls)
 	}
 }
 
@@ -148,11 +204,22 @@ func TestSlackSource_ObservedDiagnostics(t *testing.T) {
 	check([]SourceObservation{SourceEventsAPIEnvelope})
 
 	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
-		return nil, errors.New("revoked")
+		return nil, errors.New("missing_scope")
 	}
-	authorizationFailure := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+	// A lookup failure with a usable inline authorization set (non ext-shared)
+	// is recovered: the event is accepted, but the authorization error is still
+	// observed so the broken token stays visible.
+	authorizationFallback := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
 		"1-message-T1-C1", []EventAuthorization{{UserID: "UBOT", IsBot: true}})
-	err := src.handleObservedSocketEventDurableWithContext(context.Background(), authorizationFailure, client, "U-SELF", src.listEventAuthorizations, accept, observe)
+	if err := src.handleObservedSocketEventDurableWithContext(context.Background(), authorizationFallback, client, "U-SELF", src.listEventAuthorizations, accept, observe); err != nil {
+		t.Fatalf("authorization fallback err = %v", err)
+	}
+	check([]SourceObservation{SourceEventsAPIEnvelope, SourceAuthorizationError})
+
+	// A lookup failure with no usable inline set is left unacknowledged.
+	authorizationDrop := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+		"1-message-T1-C1", []EventAuthorization{})
+	err := src.handleObservedSocketEventDurableWithContext(context.Background(), authorizationDrop, client, "U-SELF", src.listEventAuthorizations, accept, observe)
 	if !errors.Is(err, errEventAuthorizationLookup) {
 		t.Fatalf("authorization error = %v", err)
 	}

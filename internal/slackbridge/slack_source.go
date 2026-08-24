@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"regexp"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -28,6 +30,20 @@ type SlackSource struct {
 }
 
 var errEventAuthorizationLookup = errors.New("slackbridge: event authorization lookup failed")
+
+// slackTokenPattern matches Slack token-shaped substrings (xoxb-/xoxp-/xapp-)
+// so they can be redacted from any error text before it reaches a log sink.
+var slackTokenPattern = regexp.MustCompile(`xox[bpe]-[A-Za-z0-9-]+|xapp-[A-Za-z0-9-]+`)
+
+// scrubSlackError renders an error as a string with any token-shaped substring
+// redacted. Slack API errors (e.g. not_allowed_token_type) are safe to log, but
+// this guards against a token ever leaking into the message.
+func scrubSlackError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return slackTokenPattern.ReplaceAllString(err.Error(), "[redacted]")
+}
 
 // NewSlackSource constructs a SlackSource. logger and onSelfIdentified may be nil.
 func NewSlackSource(cfg Config, logger *slog.Logger, onSelfIdentified func(userID string)) *SlackSource {
@@ -103,7 +119,8 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error, observe
 				if errors.Is(err, errEventAuthorizationLookup) {
 					errorClass = "authorization"
 				}
-				s.logger.Warn("slackbridge: event not acknowledged because durable acceptance failed", "error_class", errorClass)
+				s.logger.Warn("slackbridge: event not acknowledged because durable acceptance failed",
+					"error_class", errorClass, "error", scrubSlackError(err))
 			}
 		}
 	}
@@ -126,7 +143,7 @@ func (s *SlackSource) handleObservedSocketEventDurableWithContext(ctx context.Co
 		}
 		accepted = true
 		return nil
-	})
+	}, observe)
 	if errors.Is(err, errEventAuthorizationLookup) {
 		notifySourceObserver(observe, SourceAuthorizationError)
 	} else if err == nil && isEnvelope && !accepted {
@@ -152,11 +169,11 @@ func (s *SlackSource) handleSocketEvent(evt socketmode.Event, client *socketmode
 }
 
 func (s *SlackSource) handleSocketEventDurable(evt socketmode.Event, client *socketmode.Client, selfUserID string, accept func(Event) error) error {
-	return s.handleSocketEventDurableWithContext(context.Background(), evt, client, selfUserID, s.listEventAuthorizations, accept)
+	return s.handleSocketEventDurableWithContext(context.Background(), evt, client, selfUserID, s.listEventAuthorizations, accept, nil)
 }
 
 func (s *SlackSource) handleSocketEventDurableWithContext(ctx context.Context, evt socketmode.Event, client *socketmode.Client, selfUserID string,
-	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error), accept func(Event) error,
+	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error), accept func(Event) error, observe func(SourceObservation),
 ) error {
 	if evt.Type != socketmode.EventTypeEventsAPI {
 		return nil
@@ -204,7 +221,22 @@ func (s *SlackSource) handleSocketEventDurableWithContext(ctx context.Context, e
 	}
 	authorizations, known, err := resolveEventAuthorizations(ctx, metadata, listEventAuthorizations)
 	if err != nil {
-		return err
+		// For a non ext-shared channel the envelope's inline authorizations are
+		// complete, so a lookup failure (e.g. an app-level token missing the
+		// authorizations:read scope) need not drop a deliverable event: fall back
+		// to them and keep strict filtering (scope known). The authorization error
+		// is still observed so operators see the broken token while events flow.
+		// Only the genuinely-ambiguous cases — no inline set, or an ext-shared
+		// channel whose inline set may be truncated — are left unacknowledged.
+		if !canFallBackToInline(metadata) {
+			return err
+		}
+		if s.logger != nil {
+			s.logger.Warn("slackbridge: authorization lookup failed; using inline envelope authorizations",
+				"error", scrubSlackError(err))
+		}
+		notifySourceObserver(observe, SourceAuthorizationError)
+		authorizations, known = metadata.Authorizations, true
 	}
 	out.Authorizations = authorizations
 	out.AuthorizationScopeKnown = known
@@ -220,6 +252,10 @@ type socketEventMetadata struct {
 	EventContext          string
 	Authorizations        []EventAuthorization
 	AuthorizationsPresent bool
+	// IsExtSharedChannel mirrors the envelope's is_ext_shared_channel flag. When
+	// set, the inline authorizations array may be truncated, so the API
+	// enumeration cannot be safely replaced by the inline set.
+	IsExtSharedChannel bool
 }
 
 func extractEventMetadata(req *socketmode.Request) socketEventMetadata {
@@ -227,15 +263,16 @@ func extractEventMetadata(req *socketmode.Request) socketEventMetadata {
 		return socketEventMetadata{}
 	}
 	var envelope struct {
-		EventID        string          `json:"event_id"`
-		EventContext   string          `json:"event_context"`
-		Authorizations json.RawMessage `json:"authorizations"`
+		EventID            string          `json:"event_id"`
+		EventContext       string          `json:"event_context"`
+		Authorizations     json.RawMessage `json:"authorizations"`
+		IsExtSharedChannel bool            `json:"is_ext_shared_channel"`
 	}
 	if err := json.Unmarshal(req.Payload, &envelope); err != nil {
 		return socketEventMetadata{}
 	}
 	metadata := socketEventMetadata{EventID: envelope.EventID, EventContext: envelope.EventContext,
-		AuthorizationsPresent: envelope.Authorizations != nil}
+		AuthorizationsPresent: envelope.Authorizations != nil, IsExtSharedChannel: envelope.IsExtSharedChannel}
 	if !metadata.AuthorizationsPresent {
 		return metadata
 	}
@@ -254,13 +291,22 @@ func resolveEventAuthorizations(ctx context.Context, metadata socketEventMetadat
 	}
 	authorizations, err := listEventAuthorizations(ctx, metadata.EventContext)
 	if err != nil {
-		return nil, true, errEventAuthorizationLookup
+		return nil, true, fmt.Errorf("%w: %v", errEventAuthorizationLookup, err)
 	}
 	result := make([]EventAuthorization, 0, len(authorizations))
 	for _, authorization := range authorizations {
 		result = append(result, EventAuthorization{UserID: authorization.UserID, IsBot: authorization.IsBot})
 	}
 	return result, true, nil
+}
+
+// canFallBackToInline reports whether the envelope's inline authorizations may
+// substitute for a failed apps.event.authorizations.list call. They are
+// authoritative only for a non ext-shared channel that actually carried a
+// non-empty inline set; ext-shared channels may truncate the inline array and
+// genuinely require the API enumeration.
+func canFallBackToInline(metadata socketEventMetadata) bool {
+	return metadata.AuthorizationsPresent && len(metadata.Authorizations) > 0 && !metadata.IsExtSharedChannel
 }
 
 func (s *SlackSource) ackRequest(client *socketmode.Client, request *socketmode.Request) {
