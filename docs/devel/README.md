@@ -54,6 +54,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Session Resume Analysis](session-resume-analysis.md)** — ACP session resume support analysis, UNSTABLE API usage, implementation plan
 
+- **[Task Automation Manager](task-automation-manager.md)** — Design proposal to replace the `Loop processing tasks` supervisor prompt with a shared Go scheduler: hybrid architecture, deterministic vs semantic boundary, scheduling/fairness, migration plan, and open questions
+
 ### Debugging & Tools
 
 - **[MCP Servers](mcp.md)** — Global debug server, per-session MCP servers for ACP agents, advanced settings (feature flags)
@@ -100,6 +102,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Restricted runners        | [Restricted Runner Integration](restricted-runners.md) | Architecture, Runner Types, Config Hierarchy           |
 | Message processors        | [Message Processing Pipeline](processors.md)           | Pipeline, Processor Types, Variable Substitution       |
 | Session resume            | [Session Resume Analysis](session-resume-analysis.md)  | ACP resume support, UNSTABLE API, implementation plan  |
+| Task automation           | [Task Automation Manager](task-automation-manager.md)  | Hybrid arch, deterministic vs semantic, migration plan |
 
 ## Additional Documentation
 
