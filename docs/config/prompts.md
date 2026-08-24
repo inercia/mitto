@@ -1543,6 +1543,38 @@ in sync.
 > The single-pattern behavior is unchanged when the list has one entry; use
 > multiple entries to accept a union of extensions (e.g. `["**/*.md", "**/*.rst"]`).
 
+#### Unknown parameter types degrade to `text` (forward-compat, mitto-f8l)
+
+A parameter whose `type` is **non-empty but not in the registry above** does
+**not** fail prompt loading. It is degraded in place to the catch-all `text`
+type and a `WARN` is logged naming the prompt, its file path, the parameter, and
+the offending token:
+
+```
+parameter "SlackChannelID": unknown type "slackChannel" degraded to "text"
+```
+
+This gives prompt loading forward-compatibility across binary versions: when a
+newer build adds a parameter type and migrates a builtin to use it (as with
+`slackChannel`), an **older** running process that predates the type still loads
+the prompt as a plain text input instead of rejecting it outright (and, as a
+downstream casualty, auto-pausing any loop whose named prompt could no longer be
+resolved). The same mechanism applies to all three load paths — file-based
+builtins, top-level `settings.json`/`.yaml` inline prompts, and `.mittorc`
+inline prompts.
+
+- Only the **`type` axis** degrades this way — it is the one axis along which
+  builtins get forward-migrated as new types are added. Other parameter enums
+  (`remember`, `show`, `options`, …) stay fail-fast, since they do not evolve
+  the same way.
+- An **empty** `type` is left untouched: a missing type is an authoring mistake,
+  not a forward-migration, and is still rejected at load time.
+- Implemented by `DegradeUnknownParameterTypes` in
+  `internal/prompts/param_types.go`, mirroring the established precedent that a
+  lint-class field must not evict an otherwise-working prompt (see
+  [Menu Token Validation](#menu-token-validation) for the analogous `menus`
+  case).
+
 #### `filename` YAML example
 
 ```yaml
