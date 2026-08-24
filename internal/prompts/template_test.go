@@ -3021,18 +3021,19 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		"github/sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
 		"jira/sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
-		// Group C — optional / default:false (10).
-		"ci/check-ci.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
-		"misc/continue.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
-		"ci/fix-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"testing/run-tests.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
-		"ci/analyze-logs.prompt.yaml":             {mode: "optional", def: boolPtr(false)},
-		"docs/architectural-analysis.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"github/review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
-		"cso/investigation.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
-		"jira/status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
-		"jira/status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
-		"jira/work.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		// Group C — optional / default:false (11).
+		"ci/check-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"misc/continue.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
+		"ci/fix-ci.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
+		"testing/run-tests.prompt.yaml":             {mode: "optional", def: boolPtr(false)},
+		"ci/analyze-logs.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
+		"docs/architectural-analysis.prompt.yaml":   {mode: "optional", def: boolPtr(false)},
+		"github/review-slack-prs.prompt.yaml":       {mode: "optional", def: boolPtr(false)},
+		"on-call/watch-and-investigate.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"on-call/watch-and-summarize.prompt.yaml":   {mode: "optional", def: boolPtr(false)},
+		"jira/status-all-inprogress.prompt.yaml":    {mode: "optional", def: boolPtr(false)},
+		"jira/status-one-inprogress.prompt.yaml":    {mode: "optional", def: boolPtr(false)},
+		"jira/work.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
 	}
 
 	for file, w := range cases {
@@ -3111,12 +3112,29 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 	}
 }
 
-// TestCSOInvestigationBuiltinContract pins the builtin incident-response prompt's
-// discovery metadata, instruction-file parameters, Slack loop defaults, playbook
-// selection, generic no-playbook path, and required report shape.
-func TestCSOInvestigationBuiltinContract(t *testing.T) {
-	const name = "cso/investigation.prompt.yaml"
-	data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", name))
+// TestOnCallWatchAndInvestigateBuiltinContract pins the builtin Slack-watch
+// incident-response prompt's discovery metadata, instruction-file parameters,
+// Slack loop defaults, orchestrator methodology (beads epic + child dispatch),
+// and the shared playbook fragments' generic no-playbook paths and file
+// inlining (default and custom paths).
+func TestOnCallWatchAndInvestigateBuiltinContract(t *testing.T) {
+	const builtinDir = "../../config/prompts/builtin"
+	const name = "on-call/watch-and-investigate.prompt.yaml"
+
+	// The prompt pulls in on-call/shared/* fragments, so install the on-disk
+	// fragment registry before parsing/rendering. Restored on cleanup.
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	data, err := os.ReadFile(filepath.Join(builtinDir, name))
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", name, err)
 	}
@@ -3124,8 +3142,8 @@ func TestCSOInvestigationBuiltinContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePromptFile(%s): %v", name, err)
 	}
-	if prompt.Name != "CSO: investigation" || prompt.Group != "CSO" {
-		t.Errorf("prompt identity = (%q, %q), want (%q, %q)", prompt.Name, prompt.Group, "CSO: investigation", "CSO")
+	if prompt.Name != "On-Call: watch and investigate" || prompt.Group != "On-Call" {
+		t.Errorf("prompt identity = (%q, %q), want (%q, %q)", prompt.Name, prompt.Group, "On-Call: watch and investigate", "On-Call")
 	}
 	if prompt.Loop == nil || !prompt.Loop.hasTrigger("onSlack") {
 		t.Fatalf("Loop = %#v, want onSlack trigger", prompt.Loop)
@@ -3166,9 +3184,11 @@ func TestCSOInvestigationBuiltinContract(t *testing.T) {
 	for _, marker := range []string{
 		"No workspace-specific investigation playbook exists",
 		"If escalation is required and no workspace playbook exists",
-		"## Required investigation report",
-		"1. **Summary**", "2. **Timeline**", "3. **Findings**",
-		"4. **Hypotheses**", "5. **Next Steps**", "6. **Escalation Handoff**",
+		// Orchestrator methodology from the shared dispatch fragment.
+		"Create one child bead per sub-task",
+		"Dispatch one curious investigator per sub-task",
+		"mitto_children_tasks_wait",
+		"## Guardrails",
 	} {
 		if !strings.Contains(out, marker) {
 			t.Errorf("rendered prompt missing contract marker %q", marker)
