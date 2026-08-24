@@ -103,6 +103,10 @@ func TestManagerFanoutProgressIsIndependent(t *testing.T) {
 }
 
 func TestManagerPersistsNoRecipientTombstone(t *testing.T) {
+	// An event with zero recipients must never be journaled at all
+	// (mitto-d8y): permanent empty-recipient records are only reclaimed
+	// after the 24h retention window and can pin the journal's hard cap on a
+	// busy channel with no subscribed session.
 	runner := &durableRunner{}
 	manager := routedManager(t, runner)
 	event := Event{EventID: "unmatched", TeamID: "team", ChannelID: "elsewhere", AuthorID: "human", Kind: "message", Text: "discard"}
@@ -110,11 +114,11 @@ func TestManagerPersistsNoRecipientTombstone(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := readJournalDocument(t, manager.journal, "app")
-	if len(doc.Records) != 1 || len(doc.Records[0].Recipients) != 0 || doc.Records[0].Event.Text != "" {
-		t.Fatalf("no-recipient tombstone=%#v", doc.Records)
+	if len(doc.Records) != 0 {
+		t.Fatalf("no-recipient event was journaled=%#v", doc.Records)
 	}
-	if err := manager.routeEvent("app", nil, event); err != nil || len(readJournalDocument(t, manager.journal, "app").Records) != 1 {
-		t.Fatalf("duplicate unmatched event err=%v", err)
+	if err := manager.routeEvent("app", nil, event); err != nil || len(readJournalDocument(t, manager.journal, "app").Records) != 0 {
+		t.Fatalf("repeated unmatched event err=%v", err)
 	}
 }
 

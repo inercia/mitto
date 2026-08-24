@@ -365,8 +365,11 @@ func TestManagerAuthorizationLossFailsClosedAndErasesContent(t *testing.T) {
 	if err := manager.routeEvent("app", nil, event); err != nil {
 		t.Fatal(err)
 	}
+	// An authorization-loss event resolves to zero recipients, so it must not
+	// be journaled at all (mitto-d8y: zero-recipient records are never
+	// persisted, preventing them from pinning the journal's hard cap).
 	doc := readJournalDocument(t, manager.journal, "app")
-	if len(runner.snapshot()) != 0 || len(doc.Records) != 1 || len(doc.Records[0].Recipients) != 0 || doc.Records[0].Event.Text != "" {
+	if len(runner.snapshot()) != 0 || len(doc.Records) != 0 {
 		t.Fatalf("authorization-loss calls=%#v records=%#v", runner.snapshot(), doc.Records)
 	}
 }
@@ -677,5 +680,59 @@ func TestReconcileSessionLogsSkipReasonsAndZeroResolvedWarning(t *testing.T) {
 	}
 	if !strings.Contains(out, "level=WARN") {
 		t.Errorf("expected a WARN summary for an enabled, onSlack-armed session that resolved zero subscriptions (\"armed but not watching\"); got log output:\n%s", out)
+	}
+}
+
+// TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump reproduces the
+// fix for the INFO-log flood: emitStatusLocked must log at INFO only on a
+// meaningful state transition (or the first status for an app), and at DEBUG
+// when only counters/timestamps that don't reflect a state change move.
+func TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	manager := NewManager(nil, nil, nil, nil, logger)
+	t.Cleanup(manager.Close)
+
+	// First status for this app is always INFO.
+	manager.mu.Lock()
+	manager.emitStatusLocked(ConnectionStatus{AppID: "app", State: "connected", SubscriptionCount: 1})
+	manager.mu.Unlock()
+	out := buf.String()
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected level=INFO for the first status; got:\n%s", out)
+	}
+
+	// Pure counter bump: same State/SubscriptionCount/error fields, only
+	// EventsAPIReceived/IgnoredCount move -> DEBUG, not INFO.
+	buf.Reset()
+	manager.mu.Lock()
+	manager.emitStatusLocked(ConnectionStatus{
+		AppID:             "app",
+		State:             "connected",
+		SubscriptionCount: 1,
+		EventsAPIReceived: 1,
+		IgnoredCount:      1,
+	})
+	manager.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "level=DEBUG") || strings.Contains(out, "level=INFO") {
+		t.Errorf("expected level=DEBUG (not INFO) for a pure counter bump; got:\n%s", out)
+	}
+
+	// Real transition: State + ErrorClass change -> INFO.
+	buf.Reset()
+	manager.mu.Lock()
+	manager.emitStatusLocked(ConnectionStatus{
+		AppID:             "app",
+		State:             "backoff",
+		SubscriptionCount: 1,
+		EventsAPIReceived: 1,
+		IgnoredCount:      1,
+		ErrorClass:        "connection_failed",
+	})
+	manager.mu.Unlock()
+	out = buf.String()
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected level=INFO for a real state transition; got:\n%s", out)
 	}
 }

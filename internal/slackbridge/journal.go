@@ -125,6 +125,15 @@ func (j *FileJournal) prune(doc *journalDocument, now time.Time) (changes int) {
 	kept := doc.Records[:0]
 	for i := range doc.Records {
 		r := &doc.Records[i]
+		if len(r.Recipients) == 0 {
+			// Zero-recipient records (no session was subscribed to the
+			// channel the event arrived on) are vacuously "terminal" but
+			// were never useful -- there is no recipient to deliver to.
+			// Drop them immediately regardless of retention age so they
+			// cannot pin the hard cap for a full 24h window (mitto-d8y).
+			changes++
+			continue
+		}
 		if r.ExpiredAt.IsZero() && now.Sub(r.AcceptedAt) >= journalRetention {
 			expiredRecipient := false
 			for n := range r.Recipients {

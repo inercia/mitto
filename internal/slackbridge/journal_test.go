@@ -199,6 +199,31 @@ func TestFileJournalRejectsCapacityUntilTerminalRecordsPrune(t *testing.T) {
 	}
 }
 
+// TestFileJournalZeroRecipientEventsMustNotExhaustCapacity reproduces mitto-d8y:
+// a busy Slack channel with no subscribed session floods the journal with
+// empty-recipient records. Those records are vacuously "terminal"
+// (allRecipientsTerminal returns true for an empty slice) but prune only
+// drops terminal records once the 24h retention window has elapsed, so they
+// pin the 2000-record hard cap for a full day and reject every subsequent
+// event -- including ones that DO have a recipient.
+func TestFileJournalZeroRecipientEventsMustNotExhaustCapacity(t *testing.T) {
+	j, _ := newTestJournal(t)
+	for n := 0; n < journalMaxRecords+50; n++ {
+		if _, err := j.Accept("app", Event{EventID: fmt.Sprintf("empty-%d", n)}, nil); err != nil && !errors.Is(err, ErrJournalFull) {
+			t.Fatalf("unexpected Accept() error for zero-recipient event %d: %v", n, err)
+		}
+	}
+	doc := readJournalDocument(t, j, "app")
+	if len(doc.Records) >= journalMaxRecords {
+		t.Fatalf("zero-recipient events pinned the journal at/above cap: %d records (want a small/empty bound); "+
+			"a channel with no subscribed session must never exhaust journal capacity", len(doc.Records))
+	}
+	if _, err := j.Accept("app", Event{EventID: "with-recipient"}, []journalRecipient{{SessionID: "s"}}); err != nil {
+		t.Fatalf("event WITH a recipient was rejected after a zero-recipient flood: %v "+
+			"(journal must never reject real events because of empty-recipient noise)", err)
+	}
+}
+
 func TestFileJournalFullPersistsExpirationBeforeRejecting(t *testing.T) {
 	j, now := newTestJournal(t)
 	doc := &journalDocument{Version: journalVersion, AppID: "app", NextSequence: journalMaxRecords}
