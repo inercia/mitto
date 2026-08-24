@@ -32,6 +32,7 @@ type SessionMetadata struct {
 	SessionID               string          `json:"session_id"`
 	Name                    string          `json:"name,omitempty"`
 	NameIsFallback          bool            `json:"name_is_fallback,omitempty"`
+	NameExplicit            bool            `json:"name_explicit,omitempty"`
 	ACPServer               string          `json:"acp_server"`
 	ACPSessionID            string          `json:"acp_session_id,omitempty"`
 	WorkingDir              string          `json:"working_dir"`

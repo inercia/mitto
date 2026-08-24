@@ -84,6 +84,10 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 	err := store.UpdateMetadata(sessionID, func(meta *session.Metadata) {
 		if req.Name != nil {
 			meta.Name = *req.Name
+			// mitto-808: a non-empty explicit rename permanently suppresses
+			// auto-title generation; an empty rename (clear) re-enables it.
+			meta.NameExplicit = *req.Name != ""
+			meta.NameIsFallback = false
 		}
 		if req.Description != nil {
 			meta.Description = *req.Description

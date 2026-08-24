@@ -525,6 +525,10 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if input.Name != nil {
 		if err := store.UpdateMetadata(input.ConversationID, func(m *session.Metadata) {
 			m.Name = *input.Name
+			// mitto-808: a non-empty explicit rename permanently suppresses
+			// auto-title generation; an empty rename (clear) re-enables it.
+			m.NameExplicit = *input.Name != ""
+			m.NameIsFallback = false
 		}); err != nil {
 			return nil, ConversationUpdateOutput{
 				Success: false,

@@ -149,12 +149,17 @@ func claimTitleJob(store *session.Store, sessionID string) (release func(), ok b
 // A quick fallback title populated by GenerateAndSetTitle (marked via meta.NameIsFallback)
 // is treated as still needing generation so titleCoordinator.retryIfNeeded can upgrade
 // it to the real LLM-generated title on the next prompt_complete quiescence (mitto-ee3).
+// An explicit human/MCP rename (meta.NameExplicit) permanently suppresses auto-title
+// generation, even over a fallback title, so a rename is never clobbered (mitto-808).
 func SessionNeedsTitle(store *session.Store, sessionID string) bool {
 	if store == nil || sessionID == "" {
 		return false
 	}
 	meta, err := store.GetMetadata(sessionID)
 	if err != nil {
+		return false
+	}
+	if meta.NameExplicit {
 		return false
 	}
 	return meta.Name == "" || meta.NameIsFallback
@@ -387,6 +392,11 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		// Update session metadata in store
 		if cfg.Store != nil {
 			if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
+				// mitto-808: an explicit rename may have landed while this
+				// generation was in flight — never clobber it.
+				if m.NameExplicit {
+					return
+				}
 				m.Name = title
 				m.NameIsFallback = false // mitto-ee3: real title replaces the quick fallback
 			}); err != nil {

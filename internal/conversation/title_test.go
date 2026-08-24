@@ -125,6 +125,122 @@ func TestSessionNeedsTitle_FallbackTitleStillNeedsUpgrade(t *testing.T) {
 	}
 }
 
+// TestSessionNeedsTitle_ExplicitRenameSuppressesAutoTitle reproduces mitto-808:
+// an explicit rename (human or MCP mitto_conversation_update) must permanently
+// suppress auto-title generation, even over an existing fallback title.
+//
+// Sequence (mirrors internal/mcpserver/tools_conversation_lifecycle.go
+// handleConversationUpdate and internal/web/handlers/session_update.go
+// HandleUpdateSession, both of which set NameExplicit=true and clear
+// NameIsFallback on a non-empty rename after the mitto-808 fix):
+//  1. GenerateAndSetTitle step 1 sets a quick fallback title (Name=fallback,
+//     NameIsFallback=true) — see title.go:210-215.
+//  2. An explicit rename (human/MCP) sets Name to the user's chosen title and
+//     marks NameExplicit=true (clearing NameIsFallback), exactly as the two
+//     fixed rename handlers do.
+//  3. SessionNeedsTitle must now return false — the conversation has an
+//     explicit name and must never be auto-titled/clobbered again.
+//
+// Before the mitto-808 fix, the rename handlers only wrote meta.Name and
+// never cleared meta.NameIsFallback, so SessionNeedsTitle (which only checked
+// `meta.Name == "" || meta.NameIsFallback`) incorrectly kept reporting "needs
+// title" after a rename — letting the post-turn safety net
+// (title_coordinator.go:43-51) and the in-flight aux generator
+// (title.go:389-391) overwrite the explicit rename.
+func TestSessionNeedsTitle_ExplicitRenameSuppressesAutoTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-explicit-rename"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 1: GenerateAndSetTitle's quick fallback (title.go:210-215).
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Name = "Fix the login bug"
+		m.NameIsFallback = true
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (fallback) failed: %v", err)
+	}
+
+	// Step 2: explicit rename, mirroring the FIXED rename handlers
+	// (tools_conversation_lifecycle.go, session_update.go), which set
+	// NameExplicit=true and clear NameIsFallback on a non-empty rename.
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Name = "OCINC2573062"
+		m.NameExplicit = true
+		m.NameIsFallback = false
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (explicit rename) failed: %v", err)
+	}
+
+	// Step 3: an explicitly-renamed conversation must never be reported as
+	// still needing a title.
+	if SessionNeedsTitle(store, sessionID) {
+		t.Fatal("mitto-808: SessionNeedsTitle should return false after an explicit " +
+			"rename, but it returned true — auto-title generation stays eligible " +
+			"and will clobber the explicit rename (post-turn retryIfNeeded and/or " +
+			"the in-flight aux generator).")
+	}
+}
+
+// TestSessionNeedsTitle_EmptyRenameReenablesAutoTitle verifies the "clear
+// name" semantics of the mitto-808 fix: renaming to an empty string clears
+// NameExplicit (and NameIsFallback), so SessionNeedsTitle starts reporting
+// "needs title" again — auto-title is not permanently disabled once a name
+// is cleared.
+func TestSessionNeedsTitle_EmptyRenameReenablesAutoTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-session-empty-rename"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Explicit rename first.
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Name = "Explicit Name"
+		m.NameExplicit = true
+		m.NameIsFallback = false
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (explicit rename) failed: %v", err)
+	}
+	if SessionNeedsTitle(store, sessionID) {
+		t.Fatal("SessionNeedsTitle should return false right after an explicit rename")
+	}
+
+	// Clear the name, mirroring the fixed handlers' empty-rename branch.
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Name = ""
+		m.NameExplicit = false
+		m.NameIsFallback = false
+	}); err != nil {
+		t.Fatalf("UpdateMetadata (clear rename) failed: %v", err)
+	}
+	if !SessionNeedsTitle(store, sessionID) {
+		t.Fatal("mitto-808: clearing an explicit name should re-enable auto-title, " +
+			"but SessionNeedsTitle returned false")
+	}
+}
+
 func TestGenerateAndSetTitle_NilStore(t *testing.T) {
 	// Should not panic with nil store
 	GenerateAndSetTitle(TitleGenerationConfig{
