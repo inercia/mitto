@@ -64,6 +64,7 @@ Use the remaining Settings tabs to fine-tune Mitto:
 | 👥 **Auto-Children**        | [auto-children.md](auto-children.md) | Workspaces → Children tab   | Auto-spawn helper conversations                      |
 | 🔌 **MCP Server**           | [mcp.md](mcp.md)                     | Workspaces → MCP tab        | MCP server for AI agent integration                  |
 | 🔒 **Restricted Execution** | [restricted.md](restricted.md)       | Workspaces → Runner tab     | Sandbox agents for security                          |
+| 💬 **Slack Integration**    | [slack.md](slack.md)                 | Settings → Slack            | Trigger loops from Slack channels via Socket Mode    |
 
 ### Platform & Deployment
 
