@@ -141,8 +141,12 @@ installation/cursor/limit. Token replacement and deletion invalidate every page
 for that installation. A generation guard prevents an in-flight request using an
 old credential from repopulating the cache after invalidation.
 
-The app-level `xapp-...` Socket Mode token needs `connections:write` and is used
-only for transport. A bot credential needs `users:read` for the `bots.info` identity check, `channels:read` and
+The app-level `xapp-...` Socket Mode token needs `connections:write` for the
+transport and `authorizations:read` so `apps.event.authorizations.list` can
+resolve which installations each shared envelope belongs to; without the latter
+every envelope is dropped during the authorization lookup (see
+[slack-bridge.md](slack-bridge.md#troubleshooting-events-received-but-0-accepted-authorization-drops)).
+A bot credential needs `users:read` for the `bots.info` identity check, `channels:read` and
 `groups:read` for discovery, and `channels:history` plus `groups:history` for the
 default `message.channels` and `message.groups` bot events. Add
 `app_mentions:read` and the `app_mention` bot event only for mention mode.

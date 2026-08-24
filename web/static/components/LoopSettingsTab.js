@@ -15,7 +15,10 @@ import {
   presetConditionFor,
   resolveConditionPresetId,
 } from "../lib.js";
-import { promptDialogParameters } from "../utils/prompts.js";
+import {
+  promptDialogParameters,
+  unmetRequiredParams,
+} from "../utils/prompts.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import {
   errorMessage as sdkErrorMessage,
@@ -312,6 +315,18 @@ export function LoopSettingsTab({
     [selectedPrompt],
   );
 
+  // Required parameters of the selected named prompt that are not yet filled by
+  // the staged arguments. A loop prompt with required params may be picked from
+  // the selector even before its arguments are set, but the loop must not be
+  // enabled until every required parameter has a value — otherwise the runner
+  // would deliver the prompt with unresolved ${VAR} placeholders. Only relevant
+  // in "named" prompt mode; free-text loops have no declared parameters.
+  const unmetRequired = useMemo(() => {
+    if (!draft || draft.promptMode !== "named" || !selectedPrompt) return [];
+    return unmetRequiredParams(selectedPrompt, draft.arguments);
+  }, [draft?.promptMode, selectedPrompt, draft?.arguments]);
+  const hasUnmetRequired = unmetRequired.length > 0;
+
   const openArguments = useCallback(() => {
     if (
       !selectedPrompt ||
@@ -440,6 +455,21 @@ export function LoopSettingsTab({
   const requestSave = useCallback(() => {
     if (!draft || saving) return;
     const result = validateLoopDraft(draft);
+    // An enabled loop whose named prompt still has unmet required parameters
+    // must not be saved: the runner would deliver unresolved ${VAR}
+    // placeholders. validateLoopDraft has no access to the prompt list, so the
+    // parameter-completeness check is layered on here against the same field
+    // ("prompt") the selector already renders errors under.
+    if (draft.enabled && hasUnmetRequired) {
+      const names = unmetRequired.map((p) => p.name).join(", ");
+      const message = `Set the required parameter${
+        unmetRequired.length === 1 ? "" : "s"
+      } (${names}) before enabling this loop.`;
+      result.valid = false;
+      result.errors = [...(result.errors || []), { field: "prompt", message }];
+      if (!result.fieldErrors) result.fieldErrors = {};
+      if (!result.fieldErrors.prompt) result.fieldErrors.prompt = message;
+    }
     setValidation(result);
     if (!result.valid) return;
     const payload = buildLoopPatch(draft, { minDelaySeconds });
@@ -449,7 +479,14 @@ export function LoopSettingsTab({
       return;
     }
     continueSave(payload);
-  }, [draft, saving, minDelaySeconds, continueSave]);
+  }, [
+    draft,
+    saving,
+    minDelaySeconds,
+    continueSave,
+    hasUnmetRequired,
+    unmetRequired,
+  ]);
 
   const confirmDanger = useCallback(() => {
     setShowDangerDialog(false);
@@ -617,11 +654,34 @@ export function LoopSettingsTab({
           <legend class="fieldset-legend">General</legend>
           <${ToggleRow}
             label="Enabled"
-            description="Allow configured triggers to run this loop"
+            description=${
+              hasUnmetRequired && !draft.enabled
+                ? "Set the required prompt parameters before enabling this loop"
+                : "Allow configured triggers to run this loop"
+            }
             checked=${draft.enabled}
-            onChange=${(enabled) =>
-              stage((current) => ({ ...current, enabled }))}
+            disabled=${hasUnmetRequired && !draft.enabled}
+            onChange=${(enabled) => {
+              // Never let the loop be enabled while required params are unmet —
+              // even if a stale/racy toggle event slips through the disabled
+              // gate, coerce it back off.
+              if (enabled && hasUnmetRequired) return;
+              stage((current) => ({ ...current, enabled }));
+            }}
+            testId="loop-settings-enabled-toggle"
           />
+          ${
+            hasUnmetRequired &&
+            html`<span
+              class="label text-mitto-warning"
+              data-testid="loop-settings-unmet-required"
+              >Missing required
+              parameter${unmetRequired.length === 1 ? "" : "s"}:
+              ${unmetRequired.map((p) => p.name).join(", ")}. Open the
+              parameters dialog (sliders icon) to set
+              ${unmetRequired.length === 1 ? "it" : "them"}.</span
+            >`
+          }
           <${ToggleRow}
             label="Fresh context"
             description="Start every run with a clean agent context"

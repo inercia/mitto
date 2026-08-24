@@ -22,17 +22,20 @@ import {
 export const SLACK_APPS_URL = "https://api.slack.com/apps";
 export const SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1";
 export const SLACK_SETUP_URL =
-  "https://github.com/inercia/mitto/blob/main/docs/devel/slack-bridge.md#slack-app-setup";
+  "https://github.com/inercia/mitto/blob/main/docs/config/slack.md";
 export const SLACK_DELIVERY_TROUBLESHOOTING_URL =
-  "https://github.com/inercia/mitto/blob/main/docs/devel/slack-bridge.md#troubleshooting-connected-but-0-events-received";
+  "https://github.com/inercia/mitto/blob/main/docs/config/slack.md#troubleshooting-connected-but-0-events-received";
 
 // Slack app manifest for "Create from an app manifest" (mitto-kqpl). Fields
-// mirror docs/devel/slack-bridge.md#slack-app-setup exactly: Socket Mode plus
+// mirror docs/config/slack.md (Slack app setup) exactly: Socket Mode plus
 // bot and delegated-user scopes/events. Bot mention mode is optional but
 // included so one manifest covers message and mention routing. User scopes
 // pre-authorize delegated operation without implying backend support is active.
-// The app-level token (connections:write) is not part of the manifest schema
-// and must still be generated manually from the app's Basic Information page.
+// The app-level token (connections:write + authorizations:read) is not part of
+// the manifest schema and must still be generated manually from the app's Basic
+// Information page. authorizations:read is required so apps.event.authorizations
+// .list can resolve installations; without it every envelope is dropped during
+// the authorization lookup (see docs/config/slack.md#troubleshooting).
 export const SLACK_APP_MANIFEST_YAML = `display_information:
   name: Mitto
 features:
@@ -254,6 +257,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const [appValidation, setAppValidation] = useState("");
 
   const [showNewInstallation, setShowNewInstallation] = useState(false);
+  // Ephemeral, component-state-only: which add-path the user is using in the
+  // new-installation form (mitto — Bot token vs Delegated user). Never
+  // persisted; always reset to "bot" whenever the form is opened/closed.
+  const [newInstallationMode, setNewInstallationMode] = useState("bot");
   const [newInstallationName, setNewInstallationName] = useState("");
   const [newTeamId, setNewTeamId] = useState("");
   const [newBotToken, setNewBotToken] = useState("");
@@ -412,6 +419,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
     setAppValidation("");
     setActionError("");
     setShowNewInstallation(false);
+    setNewInstallationMode("bot");
     setNewBotToken("");
     setSelectedInstallationId("");
     setInstallations([]);
@@ -726,6 +734,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
         setNewInstallationName("");
         setNewTeamId("");
         setShowNewInstallation(false);
+        setNewInstallationMode("bot");
         setInstallations((current) => [...current, created]);
         selectedInstallationIdRef.current = created.id;
         setSelectedInstallationId(created.id);
@@ -1013,8 +1022,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                   openURL(SLACK_CREATE_APP_URL);
                 }}
               >Create a Slack app</a>, choose “From an app manifest,” and copy the
-              manifest below. Socket Mode also needs an app-level token:
-              ${" "}<code>connections:write</code>.
+              manifest below. Socket Mode also needs an app-level token with both
+              ${" "}<code>connections:write</code> and
+              ${" "}<code>authorizations:read</code> (the latter lets Mitto resolve
+              event authorizations; without it every event is dropped).
             </p>
             <p class="text-sm text-mitto-text-muted">
               <span class="font-medium text-mitto-text">1. Bot:</span>${" "}Use a
@@ -1518,8 +1529,10 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                           data-testid="slack-add-installation"
                           aria-label="Add Slack workspace"
                           title="Add Slack workspace"
-                          onClick=${() =>
-                            setShowNewInstallation((value) => !value)}
+                          onClick=${() => {
+                            setShowNewInstallation((value) => !value);
+                            setNewInstallationMode("bot");
+                          }}
                         >
                           <${PlusIcon} className="w-4 h-4" /> Add
                         </button>
@@ -1558,7 +1571,40 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               />
                             </fieldset>
                           </div>
-                          <fieldset class="fieldset">
+                          <fieldset
+                            class="fieldset"
+                            data-testid="slack-new-installation-mode"
+                          >
+                            <legend class="fieldset-legend">Add via</legend>
+                            <div class="flex flex-wrap gap-4">
+                              <label class="label cursor-pointer gap-2">
+                                <input
+                                  type="radio"
+                                  name="slack-new-installation-mode"
+                                  class="radio radio-sm"
+                                  data-testid="slack-new-installation-mode-bot"
+                                  checked=${newInstallationMode === "bot"}
+                                  onChange=${() =>
+                                    setNewInstallationMode("bot")}
+                                />
+                                Bot token
+                              </label>
+                              <label class="label cursor-pointer gap-2">
+                                <input
+                                  type="radio"
+                                  name="slack-new-installation-mode"
+                                  class="radio radio-sm"
+                                  data-testid="slack-new-installation-mode-user"
+                                  checked=${newInstallationMode === "user"}
+                                  onChange=${() =>
+                                    setNewInstallationMode("user")}
+                                />
+                                Delegated user
+                              </label>
+                            </div>
+                          </fieldset>
+                          ${newInstallationMode === "bot" &&
+                          html`<fieldset class="fieldset">
                             <legend class="fieldset-legend">
                               Installation credential
                             </legend>
@@ -1571,16 +1617,30 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               onInput=${(event) =>
                                 setNewBotToken(event.target.value)}
                             />
-                          </fieldset>
+                          </fieldset>`}
+                          ${newInstallationMode === "user" &&
+                          !selectedApp.oauth_client_secret_configured &&
+                          html`<div
+                            role="alert"
+                            class="alert alert-info alert-soft text-sm"
+                            data-testid="slack-new-installation-user-hint"
+                          >
+                            <span
+                              >Configure the Delegated-user OAuth client above
+                              first.</span
+                            >
+                          </div>`}
                           <div class="flex flex-wrap gap-2">
-                            <button
+                            ${newInstallationMode === "bot" &&
+                            html`<button
                               class="btn btn-sm"
                               disabled=${busy === "create-installation" ||
                               !newBotToken}
                             >
                               Save
-                            </button>
-                            <button
+                            </button>`}
+                            ${newInstallationMode === "user" &&
+                            html`<button
                               type="button"
                               class="btn btn-sm btn-primary"
                               disabled=${busy === "start-oauth" ||
@@ -1591,7 +1651,7 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                               onClick=${() => startOAuth()}
                             >
                               Authorize delegated user
-                            </button>
+                            </button>`}
                           </div>
                         </div>
                       </form>`}

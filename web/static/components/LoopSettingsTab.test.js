@@ -45,10 +45,14 @@ describe("LoopSettingsTab.js: imports and dependencies", () => {
     );
   });
 
-  test("imports promptDialogParameters from ../utils/prompts.js", () => {
-    expect(tabJs).toMatch(
-      /import \{ promptDialogParameters \} from "\.\.\/utils\/prompts\.js";/,
-    );
+  test("imports promptDialogParameters and unmetRequiredParams from ../utils/prompts.js", () => {
+    // The import was widened from a single named import to a multi-line block
+    // when unmetRequiredParams was added (loop Enabled-toggle gating). Assert
+    // both names are imported from the same module rather than pinning the
+    // exact single-line shape.
+    expect(tabJs).toMatch(/import \{[\s\S]*?\} from "\.\.\/utils\/prompts\.js";/);
+    expect(tabJs).toMatch(/promptDialogParameters/);
+    expect(tabJs).toMatch(/unmetRequiredParams/);
   });
 
   test("imports getSdkClient from ../utils/sdkClient.js", () => {
@@ -219,21 +223,24 @@ describe("LoopSettingsTab.js: validation and patch building", () => {
   test("calls validateLoopDraft before saving", () => {
     const requestSaveIdx = tabJs.indexOf("const requestSave");
     expect(requestSaveIdx).toBeGreaterThan(-1);
-    const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 500);
+    // Window widened from 500 to 1200: requestSave gained an unmet-required
+    // parameter guard (with an explanatory comment) between validateLoopDraft
+    // and buildLoopPatch/isDangerousUnboundedLoop.
+    const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 1200);
     expect(snippet).toMatch(/validateLoopDraft\(draft\)/);
   });
 
   test("calls buildLoopPatch to create the PATCH payload", () => {
     const requestSaveIdx = tabJs.indexOf("const requestSave");
     expect(requestSaveIdx).toBeGreaterThan(-1);
-    const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 500);
+    const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 1200);
     expect(snippet).toMatch(/buildLoopPatch\(draft/);
   });
 
   test("calls isDangerousUnboundedLoop to check for dangerous loops", () => {
     const requestSaveIdx = tabJs.indexOf("const requestSave");
     expect(requestSaveIdx).toBeGreaterThan(-1);
-    const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 500);
+    const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 1200);
     expect(snippet).toMatch(/isDangerousUnboundedLoop\(draft\)/);
   });
 });

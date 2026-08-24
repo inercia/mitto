@@ -855,7 +855,9 @@ if (isIsolatedComponentRun) {
         expect(guideCopy).toContain(
           "2. User delegation: Configure the OAuth client on the app profile",
         );
-        expect(guideCopy).toContain("app-level token: connections:write");
+        expect(guideCopy).toContain(
+          "app-level token with both connections:write and authorizations:read",
+        );
         expect(guideCopy).toContain("private channel");
         expect(guideCopy).toContain(
           "Existing app? Apply the current manifest and reauthorize it.",
@@ -1366,6 +1368,175 @@ if (isIsolatedComponentRun) {
       }
     });
 
+    test("new-installation add-via toggle defaults to Bot token, showing the token input + Save and hiding Authorize", async () => {
+      const { container } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        if (url === "/api/slack/oauth/config")
+          return json({ available: false });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        container
+          .querySelector('[data-testid="slack-add-installation"]')
+          .click();
+        await flushUI();
+        const form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        const toggle = form.querySelector(
+          '[data-testid="slack-new-installation-mode"]',
+        );
+        expect(toggle).not.toBeNull();
+        expect(
+          toggle.querySelector(
+            '[data-testid="slack-new-installation-mode-bot"]',
+          ).checked,
+        ).toBe(true);
+        expect(
+          toggle.querySelector(
+            '[data-testid="slack-new-installation-mode-user"]',
+          ).checked,
+        ).toBe(false);
+
+        expect(
+          form.querySelector('input[placeholder="Bot token"]'),
+        ).not.toBeNull();
+        expect(buttonByText(form, "Save")).not.toBeUndefined();
+        expect(buttonByText(form, "Authorize delegated user")).toBeUndefined();
+        expect(
+          form.querySelector(
+            '[data-testid="slack-new-installation-user-hint"]',
+          ),
+        ).toBeNull();
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("new-installation add-via toggle switches to Delegated user, hiding the token input + Save and showing Authorize", async () => {
+      const oauthApp = { ...appA, oauth_client_secret_configured: true };
+      const { container } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        if (url === "/api/slack/oauth/config")
+          return json({
+            available: true,
+            redirect_uri: "https://mitto.example/cb",
+          });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        container
+          .querySelector('[data-testid="slack-add-installation"]')
+          .click();
+        await flushUI();
+        const form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        form
+          .querySelector('[data-testid="slack-new-installation-mode-user"]')
+          .click();
+        await flushUI();
+
+        expect(form.querySelector('input[placeholder="Bot token"]')).toBeNull();
+        expect(buttonByText(form, "Save")).toBeUndefined();
+        expect(
+          buttonByText(form, "Authorize delegated user"),
+        ).not.toBeUndefined();
+        // OAuth client is configured on this fixture, so the hint is absent.
+        expect(
+          form.querySelector(
+            '[data-testid="slack-new-installation-user-hint"]',
+          ),
+        ).toBeNull();
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("new-installation Delegated-user mode shows a setup hint when the OAuth client secret is not yet configured", async () => {
+      const { container } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [appA] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        if (url === "/api/slack/oauth/config")
+          return json({ available: false });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        container
+          .querySelector('[data-testid="slack-add-installation"]')
+          .click();
+        await flushUI();
+        const form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        form
+          .querySelector('[data-testid="slack-new-installation-mode-user"]')
+          .click();
+        await flushUI();
+
+        const hint = form.querySelector(
+          '[data-testid="slack-new-installation-user-hint"]',
+        );
+        expect(hint).not.toBeNull();
+        expect(hint.textContent).toContain("Delegated-user OAuth client");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("new-installation add-via toggle resets to Bot token whenever the form is reopened", async () => {
+      const oauthApp = { ...appA, oauth_client_secret_configured: true };
+      const { container } = await mount((url, init) => {
+        if (url === "/api/slack/apps") return json({ apps: [oauthApp] });
+        if (url === "/api/slack/apps/app-a/installations")
+          return json({ installations: [] });
+        if (url === "/api/slack/oauth/config")
+          return json({
+            available: true,
+            redirect_uri: "https://mitto.example/cb",
+          });
+        throw new Error(`Unexpected request: ${init.method} ${url}`);
+      });
+      try {
+        const addButton = container.querySelector(
+          '[data-testid="slack-add-installation"]',
+        );
+        addButton.click();
+        await flushUI();
+        let form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        form
+          .querySelector('[data-testid="slack-new-installation-mode-user"]')
+          .click();
+        await flushUI();
+        expect(
+          form.querySelector('[data-testid="slack-new-installation-mode-user"]')
+            .checked,
+        ).toBe(true);
+
+        // Close then reopen the form.
+        addButton.click();
+        await flushUI();
+        addButton.click();
+        await flushUI();
+        form = container.querySelector(
+          '[data-testid="slack-new-installation-form"]',
+        );
+        expect(
+          form.querySelector('[data-testid="slack-new-installation-mode-bot"]')
+            .checked,
+        ).toBe(true);
+      } finally {
+        unmount(container);
+      }
+    });
+
     test("mitto-3od5.1: surfaces the safe OAuth-required message on a rejected delegated-user create instead of a generic error", async () => {
       const canary = "write-only-user-token-missing-app-id";
       const { container, fetchMock } = await mount((url, init) => {
@@ -1562,6 +1733,10 @@ if (isIsolatedComponentRun) {
         );
         inputValue(form.querySelector("input[required]"), "OAuth Team");
         inputValue(form.querySelector('input[placeholder="T…"]'), "T123");
+        form
+          .querySelector('[data-testid="slack-new-installation-mode-user"]')
+          .click();
+        await flushUI();
         const authorize = buttonByText(form, "Authorize delegated user");
         await waitFor(
           () => !authorize.disabled,
@@ -1721,6 +1896,10 @@ if (isIsolatedComponentRun) {
             '[data-testid="slack-new-installation-form"]',
           );
           inputValue(form.querySelector("input[required]"), "Workspace");
+          form
+            .querySelector('[data-testid="slack-new-installation-mode-user"]')
+            .click();
+          await flushUI();
           const authorize = buttonByText(form, "Authorize delegated user");
           await waitFor(
             () => !authorize.disabled,
@@ -1767,6 +1946,10 @@ if (isIsolatedComponentRun) {
           '[data-testid="slack-new-installation-form"]',
         );
         inputValue(form.querySelector("input[required]"), "Workspace");
+        form
+          .querySelector('[data-testid="slack-new-installation-mode-user"]')
+          .click();
+        await flushUI();
         expect(buttonByText(form, "Authorize delegated user").disabled).toBe(
           true,
         );
