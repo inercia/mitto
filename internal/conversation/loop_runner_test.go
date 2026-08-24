@@ -16,11 +16,15 @@ import (
 	"testing"
 	"time"
 
+	acp "github.com/coder/acp-go-sdk"
+
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -2668,6 +2672,176 @@ func TestLoopRunner_AutoStopResumeFailures_NoArchiveSkipsArchive(t *testing.T) {
 	}
 	if !stopped {
 		t.Error("onLoopAutoStopped callback should still fire so the UI badge reflects the loop being stopped")
+	}
+}
+
+// fakeSaturatedProcessManager is a minimal ProcessManager stub whose
+// GetOrCreateProcess returns a SharedProcess that fails every NewSession/
+// LoadSession/ResumeSession call with an error wrapping
+// acperrors.ErrSharedProcessSaturated — simulating a shared ACP process that
+// is persistently saturated/busy (mitto-hjx facet D repro). All other
+// ProcessManager methods are no-ops.
+type fakeSaturatedProcessManager struct{}
+
+func (fakeSaturatedProcessManager) GetOrCreateProcess(*config.WorkspaceSettings, string, string, map[string]string, *runner.Runner, bool) (SharedProcess, error) {
+	return &fakeSaturatedSharedProcess{}, nil
+}
+func (fakeSaturatedProcessManager) EnsurePrewarmed(string, *slog.Logger) {}
+func (fakeSaturatedProcessManager) ClearGCSuspended(string)              {}
+func (fakeSaturatedProcessManager) IsGCSuspended(string) bool            { return false }
+func (fakeSaturatedProcessManager) StopGC()                              {}
+func (fakeSaturatedProcessManager) Close()                               {}
+func (fakeSaturatedProcessManager) ProcessCount() int                    { return 1 }
+func (fakeSaturatedProcessManager) ColdProcessCount() int                { return 0 }
+func (fakeSaturatedProcessManager) PinWorkspace(string, string, time.Duration, int) bool {
+	return true
+}
+func (fakeSaturatedProcessManager) HasLiveProcess(string) bool { return true }
+
+// fakeSaturatedSharedProcess implements SharedProcess; every session-
+// establishing RPC fails with an error wrapping
+// acperrors.ErrSharedProcessSaturated — the umbrella sentinel that all three
+// aux-session bail paths (and the shared-process resume path,
+// session_manager.go's "Resume hit transient cold-start ... saturation"
+// branch) recognize as transient.
+type fakeSaturatedSharedProcess struct{}
+
+func (fakeSaturatedSharedProcess) Capabilities() *acp.AgentCapabilities {
+	return &acp.AgentCapabilities{}
+}
+func (fakeSaturatedSharedProcess) ProcessDone() <-chan struct{} { return make(chan struct{}) }
+func (fakeSaturatedSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
+	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
+}
+func (fakeSaturatedSharedProcess) LoadSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
+}
+func (fakeSaturatedSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
+}
+func (fakeSaturatedSharedProcess) RegisterSession(acp.SessionId, *SessionCallbacks) {}
+func (fakeSaturatedSharedProcess) UnregisterSession(acp.SessionId)                  {}
+func (fakeSaturatedSharedProcess) Cancel(context.Context, acp.SessionId) error      { return nil }
+func (fakeSaturatedSharedProcess) SetSessionMode(context.Context, acp.SessionId, string) error {
+	return nil
+}
+func (fakeSaturatedSharedProcess) SetSessionModel(context.Context, acp.SessionId, string) error {
+	return nil
+}
+func (fakeSaturatedSharedProcess) Done() <-chan struct{} { return make(chan struct{}) }
+func (fakeSaturatedSharedProcess) Prompt(context.Context, acp.SessionId, []acp.ContentBlock) (acp.PromptResponse, error) {
+	return acp.PromptResponse{}, nil
+}
+func (fakeSaturatedSharedProcess) Generation() int                           { return 0 }
+func (fakeSaturatedSharedProcess) Restart(int) error                         { return nil }
+func (fakeSaturatedSharedProcess) RecommendedLoadTimeout(bool) time.Duration { return 0 }
+func (fakeSaturatedSharedProcess) MCPInitDone() bool                         { return true }
+func (fakeSaturatedSharedProcess) WaitForMCPInit(context.Context) bool       { return true }
+
+// TestLoopRunner_ResumeFailures_TransientSaturation_DoesNotArchiveHealthyLoop
+// reproduces mitto-hjx Facet D: a healthy loop whose ResumeSession fails
+// because the shared ACP process is transiently saturated (the exact
+// production incident — "SCMS Log Review" archived after 3 consecutive
+// resume failures caused by an MCP-init timeout under saturation, auto-
+// unarchived ~1h later) must NOT be auto-archived. consecutiveFailures
+// counting (loop_runner.go, toward MaxLoopResumeFailures) is not
+// saturation-aware: it treats a transient, auto-recovering saturation
+// failure identically to a genuine unrecoverable one.
+//
+// This mirrors the resumeSessionWithConstraint carve-out that already exists
+// for the ACP-start-failure counter (session_manager.go: "Resume hit
+// transient cold-start MCP-init timeout, shared-process saturation, or a
+// recycle race; not counting as hard failure") — that carve-out protects
+// ACPStartFailureCount, but LoopRunner's own consecutiveFailures counter
+// (which drives auto-archive) has no equivalent guard.
+//
+// Acceptance (mitto-hjx facet D): MaxLoopResumeFailures consecutive
+// saturation-classified ResumeSession failures must NOT archive the session
+// or stop the loop. This test FAILS today because loop_runner.go increments
+// consecutiveFailures and archives regardless of the failure's cause.
+func TestLoopRunner_ResumeFailures_TransientSaturation_DoesNotArchiveHealthyLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sid = "sess-transient-saturation"
+	const wsUUID = "ws-transient-saturation"
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(sid)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	// Force the loop due now.
+	got, _ := loopStore.Get()
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	got.NextScheduledAt = &past
+	loopPath := store.SessionDir(sid) + "/loop.json"
+	if err := writeTestLoopFile(loopPath, got); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: wsUUID, WorkingDir: workingDir, ACPServer: "test-server"},
+		},
+	})
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "test-server", Command: "echo hello"},
+		},
+	})
+	sm.SetACPProcessManager(fakeSaturatedProcessManager{})
+
+	runner := NewLoopRunner(store, sm, nil)
+
+	var stopped bool
+	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) { stopped = true })
+
+	for i := 0; i < MaxLoopResumeFailures; i++ {
+		runner.RunOnce()
+	}
+
+	updatedMeta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Errorf("bug reproduced (mitto-hjx facet D): a healthy loop was auto-archived after %d consecutive "+
+			"ResumeSession failures whose cause was transient shared-process saturation "+
+			"(acperrors.ErrSharedProcessSaturated) — consecutiveFailures counting is not saturation-aware, so a "+
+			"heavy-but-transient burst archives a perfectly healthy loop instead of being excluded from the "+
+			"archive counter (mirroring the existing ACPStartFailureCount carve-out in session_manager.go)",
+			MaxLoopResumeFailures)
+	}
+
+	finalLoop, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !finalLoop.Enabled {
+		t.Errorf("bug reproduced (mitto-hjx facet D): loop was stopped (Enabled=false, StoppedReason=%q) after "+
+			"%d consecutive transient-saturation resume failures; want the loop to remain enabled since the "+
+			"failure cause is transient and will clear on its own",
+			finalLoop.StoppedReason, MaxLoopResumeFailures)
+	}
+	if stopped {
+		t.Error("bug reproduced (mitto-hjx facet D): onLoopAutoStopped fired for transient-saturation resume failures")
 	}
 }
 

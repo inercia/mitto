@@ -1907,6 +1907,53 @@ func admitDispatch(workspaceUUID string) *sync.Mutex {
 	return gate
 }
 
+// dispatchSustainedBusySince tracks, per workspace, when the CURRENT
+// sustained acperrors.ErrProcessBusy window was first observed by ANY
+// dispatch against that workspace (mitto-hjx facet C). Process-global and
+// workspace-keyed for the same reason as dispatchAdmissionGates: prompt-mode
+// dispatches for one workspace can run through independently-cloned Manager
+// instances, so a per-instance field would not be shared across them.
+var (
+	dispatchSustainedBusyMu    sync.Mutex
+	dispatchSustainedBusySince = make(map[string]time.Time)
+)
+
+// observeSustainedBusy returns the start time of the current sustained-busy
+// window for workspaceUUID, establishing it (as now) on first observation.
+// The admission gate (admitDispatch) already serializes concurrent same-
+// workspace dispatches into a queue; without this, each queued dispatch that
+// reaches the front independently computes its own busyDeadline as
+// time.Now()+timeout and rides out a FULL window before giving up, so
+// aggregate wall-clock for N queued dispatches against a persistently-busy
+// process scales ~linearly with N (mitto-hjx facet C). By anchoring every
+// dispatch's deadline to the SAME since timestamp (the moment the sustained
+// window first began, not the moment each individual dispatch happened to
+// reach the front of the gate), a dispatch that reaches the gate after the
+// window has already run past `timeout` computes an already-elapsed deadline
+// and short-circuits immediately instead of independently re-riding the full
+// window — coalescing N ride-outs into one shared wait.
+func observeSustainedBusy(workspaceUUID string) time.Time {
+	dispatchSustainedBusyMu.Lock()
+	defer dispatchSustainedBusyMu.Unlock()
+	since, ok := dispatchSustainedBusySince[workspaceUUID]
+	if !ok {
+		since = time.Now()
+		dispatchSustainedBusySince[workspaceUUID] = since
+	}
+	return since
+}
+
+// clearSustainedBusy clears the sustained-busy marker for workspaceUUID once
+// a dispatch against it succeeds or observes a non-busy terminal condition,
+// so a LATER genuine busy window is anchored to its own fresh start time
+// instead of being short-circuited by a stale one from an unrelated,
+// long-past busy period.
+func clearSustainedBusy(workspaceUUID string) {
+	dispatchSustainedBusyMu.Lock()
+	defer dispatchSustainedBusyMu.Unlock()
+	delete(dispatchSustainedBusySince, workspaceUUID)
+}
+
 // dispatchWithRetry invokes m.promptFunc for the given name/prompt. Ordinary
 // transient failures are retried up to dispatchPromptMaxRetries additional
 // times with exponential backoff. Shared-process-saturation failures
@@ -1932,6 +1979,17 @@ func admitDispatch(workspaceUUID string) *sync.Mutex {
 // from this dispatch's own timeout, as long as the terminal error stays
 // ErrProcessBusy — riding out the busy window instead of giving up after
 // one short attempt.
+//
+// mitto-hjx facet C: the busyDeadline above is anchored to
+// observeSustainedBusy's shared "since" timestamp rather than this call's own
+// time.Now(), so concurrent same-workspace dispatches queued behind the
+// admission gate COALESCE their ride-outs. The first dispatch to observe a
+// sustained (non-clearing) busy window establishes the shared since; a
+// sibling dispatch that reaches the gate only after that window has already
+// run past `timeout` computes an already-elapsed deadline and short-circuits
+// immediately instead of independently burning its own full-timeout ride-out
+// — bounding the aggregate wall-clock for N queued dispatches near ONE
+// dispatch's ride-out budget instead of scaling ~linearly with N.
 //
 // If retrying is exhausted,
 // the final error is logged at ERROR and, when a NotifyFunc is configured
@@ -1997,10 +2055,22 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		// — mirrors FlushPendingDispatches' own busyDeadline loop, which
 		// already handles this correctly on the flush path.
 		if !errors.Is(lastErr, acperrors.ErrProcessBusy) {
+			// Non-busy terminal (success or a different error): this
+			// dispatch is no longer part of any sustained-busy window, so
+			// clear the shared marker (mitto-hjx facet C) — a later busy
+			// window must anchor to its own fresh start time, not a stale
+			// one from an unrelated, long-past busy period.
+			clearSustainedBusy(workspaceUUID)
 			break
 		}
 		if busyDeadline.IsZero() {
-			busyDeadline = time.Now().Add(timeout)
+			// mitto-hjx facet C: anchor to the shared since timestamp
+			// (established by whichever dispatch against this workspace
+			// first observed the sustained window) rather than this call's
+			// own time.Now(), so dispatches queued behind the admission
+			// gate coalesce their ride-outs instead of each independently
+			// burning a full-timeout window.
+			busyDeadline = observeSustainedBusy(workspaceUUID).Add(timeout)
 			if m.logger != nil {
 				m.logger.Info("prompt-mode processor dispatch: shared process busy; waiting to continue",
 					"dispatch_id", entry.ID,

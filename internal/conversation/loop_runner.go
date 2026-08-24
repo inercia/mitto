@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
@@ -2028,6 +2029,24 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 		var err error
 		bs, err = r.sessionManager.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
 		if err != nil {
+			// mitto-hjx facet D: a ResumeSession failure caused by transient
+			// shared-ACP-process saturation (cold-start MCP-init timeout, a
+			// saturation bail, or a concurrent recycle race) must NOT count
+			// toward the archive threshold below — a later resume attempt
+			// succeeds once the shared process's saturation clears. This
+			// mirrors the identical carve-out in session_manager.go's
+			// resumeSessionWithConstraint for the ACPStartFailureCount
+			// counter. Without it, a heavy-but-transient saturation burst
+			// archives (and disables) an otherwise perfectly healthy loop.
+			if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) {
+				if r.logger != nil {
+					r.logger.Warn("Resume hit transient shared-process saturation for loop prompt; not counting toward archive threshold (will retry)",
+						"session_id", sessionID,
+						"error", err)
+				}
+				return 0, 0, 1
+			}
+
 			r.consecutiveFailuresMu.Lock()
 			r.consecutiveFailures[sessionID]++
 			failures := r.consecutiveFailures[sessionID]
