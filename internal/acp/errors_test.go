@@ -791,3 +791,32 @@ func TestFormatACPError_UpstreamHTTP500_mitto_bfu(t *testing.T) {
 		t.Errorf("FormatACPError(err) = %q; want the message to frame the outage as transient/auto-retrying (mitto-bfu)", got)
 	}
 }
+
+// TestFormatACPError_AgentInternalJSError_mitto_3sc reproduces mitto-3sc: an
+// agent-internal (Auggie) minified-JS TypeError ("n.map is not a function")
+// returned as the result of the session/prompt RPC at turn completion,
+// wrapped in a JSON-RPC -32603 "Internal error" envelope. This is neither an
+// upstream provider outage (no apiStatus:"unavailable" marker) nor a bare
+// HTTP-status 5xx (no httpStatus field at all) — it currently falls through
+// to the generic -32603 catch-all, which tells the user to "simplify your
+// request if the problem persists". That advice is actively misleading: a
+// minified agent-side TypeError cannot be fixed by simplifying the prompt.
+// This test is expected to FAIL until a dedicated agent-internal-error
+// classifier is added ahead of the generic -32603 branch (mitto-3sc Fix
+// phase), mirroring the mitto-bfu / mitto-gbf5 precedent above.
+func TestFormatACPError_AgentInternalJSError_mitto_3sc(t *testing.T) {
+	// Exact payload observed in failed session 20260823-214437-fab60e72 at
+	// 21:48:24.002, ~3m47s after the loop prompt was delivered, immediately
+	// after the agent streamed a complete final turn (see the mitto-3sc
+	// Investigation comment for full log evidence).
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"details":"n.map is not a function"}}`)
+
+	got := FormatACPError(err)
+
+	if containsIgnoreCase(got, "simplify your request") {
+		t.Errorf("FormatACPError(err) = %q; an agent-internal JS TypeError must not tell the user to simplify their request — that advice cannot fix it (mitto-3sc)", got)
+	}
+	if !containsIgnoreCase(got, "agent") {
+		t.Errorf("FormatACPError(err) = %q; want a message naming this as an agent-internal defect (mitto-3sc)", got)
+	}
+}

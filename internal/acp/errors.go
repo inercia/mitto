@@ -529,6 +529,37 @@ func IsUpstreamUnavailableError(err error) bool {
 	return strings.Contains(errMsgLower, `"apistatus":"unavailable"`)
 }
 
+// IsAgentInternalError reports whether err is an agent-internal (not
+// Mitto-side) JavaScript runtime error surfaced through a JSON-RPC -32603
+// "Internal error" envelope — e.g. a minified TypeError such as "n.map is
+// not a function" (mitto-3sc). Auggie's turn-finalization code can throw
+// this when an internal value it expects to be an array is not; the
+// exception was observed as the RESULT of the session/prompt RPC at turn
+// completion, AFTER a full turn had already streamed successfully — not as
+// a rejection of a malformed prompt payload on delivery. Because the
+// offending code is agent-internal (minified, external to Mitto), there is
+// no local call site to guard; the corresponding fix is purely a
+// classification/wording change so the user is not told to "simplify their
+// request", which cannot fix an agent-side defect.
+//
+// Checked in FormatACPErrorWithContext before the generic -32603 catch-all,
+// but after IsUpstreamUnavailableError and IsHandshakeQueryClosedError so it
+// only claims -32603 envelopes those more specific classifiers don't.
+func IsAgentInternalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "-32603") || !strings.Contains(errMsg, "Internal error") {
+		return false
+	}
+	errMsgLower := strings.ToLower(errMsg)
+	return strings.Contains(errMsgLower, "is not a function") ||
+		strings.Contains(errMsgLower, "cannot read propert") ||
+		strings.Contains(errMsgLower, "is not iterable") ||
+		strings.Contains(errMsgLower, "undefined is not")
+}
+
 // FormatErrorHints carries optional corroborating context that lets
 // FormatACPErrorWithContext refine its message beyond what the raw error
 // string alone can tell. Zero value means "no additional context" and
@@ -661,6 +692,18 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 			"process automatically. If it keeps happening, check that the CLI is " +
 			"authenticated (e.g. `claude auth login` for Claude Code, or `auggie auth login` " +
 			"for Auggie)."
+	}
+
+	// Agent-internal JS runtime error (mitto-3sc) — a minified TypeError (e.g.
+	// "n.map is not a function") raised inside the agent's own turn-finalization
+	// code, surfaced as a -32603 envelope at turn completion. This is neither an
+	// upstream provider outage nor an HTTP-status error, so it must be checked
+	// before the generic -32603 catch-all below; simplifying the prompt cannot
+	// fix an agent-side defect, so that advice is deliberately omitted here.
+	if IsAgentInternalError(err) {
+		return "The AI agent hit an internal error while finishing its response. " +
+			"This is a defect in the agent itself, not your request — it is usually " +
+			"transient. Please try again."
 	}
 
 	// JSON-RPC internal error (-32603) — try to extract HTTP status for better messages.
