@@ -72,6 +72,16 @@ visibility. The prompt appears in any menu regardless of whether that menu can
 supply the type. When the menu _can_ supply the type the argument is auto-filled;
 when it cannot, the parameter is silently omitted (no blocking form is shown).
 
+**`beadsList` exception.** The shortcut-resolver path
+`fetchBeadsListPromptsForWorkspace` in
+`web/static/hooks/useBeadsIntegration.js` intentionally skips `menuSatisfies`
+for the `beadsList` menu: the dispatch path (`handleRunBeadsListPrompt`)
+already opens the parameter dialog for anything it cannot auto-fill, so
+type-based hiding would only surface as disabled "Prompt … not found"
+shortcut buttons. The backend's `enabledWhen` gate still filters the list;
+the shortcut button remains disabled only when the shortcut's configured
+prompt name does not exist in the workspace prompt registry at all.
+
 ## 2. One endpoint feeds every menu
 
 All menus fetch from `GET /api/workspace-prompts`
@@ -105,7 +115,9 @@ The **evaluation context differs by caller** — this is the subtle part:
   row gate itself (e.g. hide **Start work** on closed issues).
 
 After fetching, the client filters once more by
-`promptMenus(p).includes(<menu>) && menuSatisfies(p, <menu>)`.
+`promptMenus(p).includes(<menu>) && menuSatisfies(p, <menu>)`. The
+`beadsList` shortcut resolver is the one exception: it skips `menuSatisfies`
+(see "`beadsList` exception" above).
 
 **All of those call sites go through one shared client-side cache**
 (`fetchWorkspacePromptsCached` in `web/static/utils/promptsCache.js`, mitto-8x9).
