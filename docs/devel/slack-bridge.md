@@ -92,10 +92,15 @@ this compatibility period.
    Mitto's Slack settings. For an existing app, apply the current manifest, then
    reinstall or reauthorize it so newly-added bot and user scopes are granted.
 2. **App-level token**: enable Socket Mode and separately generate an `xapp-...`
-   token with `connections:write` and `authorizations:read`. The latter permits
-   `apps.event.authorizations.list` to resolve every installation that may see
-   one shared Events API envelope. This token is not an OAuth bot or user token
-   and cannot be declared in the Slack manifest.
+   token with **both** `connections:write` and `authorizations:read`. The latter
+   permits `apps.event.authorizations.list` to resolve every installation that
+   may see one shared Events API envelope; without it, Mitto receives envelopes
+   but drops every one during the authorization lookup (see
+   [Troubleshooting: events received but 0 accepted](#troubleshooting-events-received-but-0-accepted-authorization-drops)).
+   Slack does not add a scope to an existing token retroactively, so a token
+   minted before `authorizations:read` was present must be regenerated. This
+   token is not an OAuth bot or user token and cannot be declared in the Slack
+   manifest.
 3. **Bot token**: the manifest requests `users:read` for app identity validation,
    `channels:read` and `groups:read` for discovery, and `channels:history` plus
    `groups:history` for message flows. `app_mentions:read` supports optional
@@ -309,6 +314,57 @@ To resolve:
 If subscriptions are already correct, treat this the same as any other
 zero-envelope symptom in the smoke test above: reapply the manifest and
 reauthorize before debugging Mitto's own routing.
+
+## Troubleshooting: events received but 0 accepted (authorization drops)
+
+A different, later-stage failure looks like progress but still delivers nothing
+to your loops. Here Slack **is** pushing envelopes — `events_api_received`
+climbs on every message — yet `accepted_count` stays at `0`, `ignored_count`
+climbs in lockstep, and the log repeats:
+
+```
+slackbridge: event not acknowledged because durable acceptance failed error_class=authorization
+```
+
+This means the envelope reached Mitto but the **authorization lookup** failed.
+For each Events API envelope carrying an `event_context`, Mitto calls Slack's
+`apps.event.authorizations.list` (using the app-level `xapp-...` token) to
+resolve which installations the event belongs to. If that call fails, the
+envelope is deliberately left **unacknowledged** so Slack redelivers it — which
+is why `events_api_received` races upward while nothing is accepted.
+
+The confirmed root cause is an **app-level token missing the
+`authorizations:read` scope**. `apps.event.authorizations.list` requires that
+scope on the `xapp-...` token; a token minted before the scope was added to the
+app silently rejects every lookup. Slack returns **`missing_scope`**, which now
+appears verbatim in the WARN line's `error=` field:
+
+```
+error_class=authorization error="slackbridge: event authorization lookup failed: missing_scope"
+```
+
+This is especially visible on **bot-less delegated-user installs**, where there
+is no bot token to fall back on.
+
+To resolve:
+
+1. Open the app in [api.slack.com/apps](https://api.slack.com/apps) and go to
+   **Basic Information > App-Level Tokens**.
+2. Confirm the token used by Mitto has **both** `connections:write` and
+   `authorizations:read` (see [Slack app setup](#slack-app-setup) step 2). Slack
+   does not add a scope to an existing token retroactively.
+3. If `authorizations:read` is missing, **generate a new app-level token** with
+   both scopes, update Mitto's Slack settings with the new `xapp-...` token, and
+   restart the bridge.
+4. Re-test with a synthetic message. The `missing_scope` WARN stops and
+   `accepted_count` advances in lockstep with `events_api_received` — that is
+   the definitive signal the fix is live and events are being routed to loops.
+
+If the token already carries `authorizations:read` and lookups still fail,
+capture the exact Slack rejection: the WARN line above includes a token-scrubbed
+`error=` field with the underlying Slack error string (e.g.
+`not_allowed_token_type`), which identifies whether the problem is the token
+type, a workspace restriction, or a transient Slack error.
 
 ## Remaining gaps
 
