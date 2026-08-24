@@ -1,0 +1,100 @@
+{{/*
+  on-call/shared/prior-reports — treats the daily CSO report folder (ReportsDir,
+  written one-file-per-day by "On-Call: watch and summarize") as a shared
+  knowledge base of past incidents, reused across the On-Call group so triage
+  and playbook-authoring can learn from prior art.
+
+  The block is emitted ONLY when the folder actually exists on disk
+  (`DirExists`); when ReportsDir is unset or points at a nonexistent path the
+  fragment renders to nothing, so callers keep their previous behaviour with no
+  extra guards of their own.
+
+  Two modes select the wording (the DirExists gate is identical in both):
+
+    - "search"  — for an incident coordinator ("On-Call: I have been paged").
+                  Emits a "### Consult prior CSO reports" step that spawns ONE
+                  child conversation to mine ReportsDir for similar past
+                  incidents and report the matching solutions back via the
+                  standard child-report mechanism.
+    - "consult" — for a maintenance/authoring prompt ("On-Call: update
+                  investigation instructions") that must NOT spawn children.
+                  Emits an inline instruction to read the past reports directly
+                  for investigation *technique* (useful queries, dashboards,
+                  common pitfalls) while updating the playbook.
+
+  Usage — pass the full prompt context plus the resolved folder and mode:
+
+      {{ template "on-call/shared/prior-reports"
+           (dict "Ctx" . "ReportsDir" $reportsDir "Mode" "search") }}
+*/ -}}
+{{- $ctx := .Ctx -}}
+{{- $reportsDir := .ReportsDir -}}
+{{- $mode := .Mode -}}
+{{- if and $reportsDir (DirExists $reportsDir) -}}
+{{- if eq $mode "search" }}
+### Consult prior CSO reports for similar incidents
+
+A folder of past daily CSO reports exists at `{{ $reportsDir }}` (one
+`YYYY-MM-DD.md` file per calendar day, written by `On-Call: watch and
+summarize`). These reports are prior art: a symptom you are triaging now may
+have been seen — and mitigated — before. Mine them **in a child conversation**
+so this step runs in parallel with the ingest/decomposition work and does not
+block the coordinator.
+
+Spawn one prior-art searcher (reuse an **idle** existing child —
+`{{ Default "(none)" $ctx.Children.MCPText }}` — if one matches; otherwise
+create fresh):
+
+`mitto_conversation_new(self_id: "{{ $ctx.Session.ID }}", title: "Search prior CSO reports", initial_prompt: <see below>)`.
+
+The searcher's initial prompt MUST:
+
+- State the current incident's title and the strongest symptom signals from the
+  ingest pass (affected services, error signatures, dashboards, timeline
+  window) so it knows what to match against.
+- Instruct it to enumerate `{{ $reportsDir }}/*.md` (the daily reports), read
+  the most relevant ones (prefer recent + keyword-matched files; it does **not**
+  need to read every file), and identify past incidents whose **symptoms,
+  affected services, or root causes** overlap the current one.
+- For each match, extract: the report date/file, the matching symptoms, the
+  identified root cause (if any), and — most importantly — the
+  **solution / mitigation that was applied** and whether it worked.
+- Be honest: report "no similar prior incident found" rather than forcing a weak
+  match. Do NOT propose or execute any mitigation itself — it only surfaces
+  prior art for the coordinator to weigh.
+- Report back via
+  `mitto_children_tasks_report(self_id: <own id>, task_id: "prior-reports", status: "completed" | "partial" | "failed", summary: "<N matches / none>", details: "<per-match: file, symptoms, root cause, applied solution, outcome, report link>")`.
+
+Do not block the whole flow on this searcher. Collect its findings when you
+synthesize (Step 5 / round-1 synthesis) by including its conversation id in the
+`mitto_children_tasks_wait` call alongside the investigators, and fold any
+matching prior solution into the ranked hypotheses as **corroborating prior
+art** (clearly labelled as historical, not a current finding).
+{{- else if eq $mode "consult" }}
+### Consult prior CSO reports for investigation technique
+
+A folder of past daily CSO reports exists at `{{ $reportsDir }}` (one
+`YYYY-MM-DD.md` file per calendar day, written by `On-Call: watch and
+summarize`). Before writing the auto-generated sections, **read a sample of
+these reports directly in this conversation** (do NOT spawn a child — this is an
+authoring task). Prefer the most recent files and any whose incidents resemble
+the source material you just gathered.
+
+Mine them for *how the team actually investigated*, and let that shape the
+investigation instructions you write:
+
+- **Useful queries & dashboards** — the specific Splunk/Grafana/Datadog queries,
+  dashboard links, or log filters that repeatedly proved decisive.
+- **Effective techniques** — diagnostic steps that consistently narrowed the
+  root cause fast (e.g. "check CoreDNS resolution latency first for 5xx spikes").
+- **Common pitfalls** — false leads, misleading signals, or dead-ends that
+  recurred across incidents, so the playbook can warn future investigators.
+- **Recurring failure modes** — symptom → root-cause patterns seen more than
+  once; these deserve a dedicated playbook section.
+
+Incorporate these as concrete guidance in the auto-generated block (attributing
+"observed across past reports in `{{ $reportsDir }}`" where useful). If the
+folder holds no relevant reports, skip this silently — do not fabricate
+techniques.
+{{- end }}
+{{- end -}}

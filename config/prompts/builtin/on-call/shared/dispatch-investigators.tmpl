@@ -1,0 +1,86 @@
+{{/*
+  on-call/shared/dispatch-investigators — the shared "create one bead per
+  sub-task, spawn one curious investigator per bead, wait, synthesise" machinery
+  used by both On-Call orchestrator prompts. Keeps the beads/child-dispatch flow
+  identical across "On-Call: I have been paged" and
+  "On-Call: watch and investigate".
+
+  Renumber the headings in your body to fit; this fragment emits three "###"
+  sub-steps under whatever "## Step N" heading the caller precedes it with.
+
+  Usage — pass the full prompt context (needs .Session.ID and .Children):
+
+      {{ template "on-call/shared/dispatch-investigators" . }}
+*/ -}}
+### Create one child bead per sub-task
+
+For every approved sub-task, create a child bead depending on the epic (so
+`Loop processing tasks` can pick them up later if the operator ever enables it):
+
+```bash
+bd create "<sub-task title>" \
+  --type task \
+  --priority 1 \
+  --label on-call,incident,investigation \
+  --parent <EPIC_ID> \
+  --body-file /tmp/subtask-<n>.md
+```
+
+Record every returned bead ID; call them `<SUB_IDS>`.
+
+### Dispatch one curious investigator per sub-task
+
+For each `<SUB_ID>`, spawn a child conversation
+`mitto_conversation_new(self_id: "{{ .Session.ID }}", beads_issue: "<SUB_ID>", title: "Investigate <sub-task title>", initial_prompt: <see below>)`.
+Reuse **idle** existing children (`{{ Default "(none)" .Children.MCPText }}`) if
+any match; otherwise create fresh. Cap at **4 parallel** investigators — if the
+approved list has more sub-tasks than that, queue the overflow by asking
+`mitto_ui_options` whether to dispatch the top-4 now and queue the rest, or
+reduce the list.
+
+The initial prompt for each investigator MUST:
+
+- State the incident title, the parent `<EPIC_ID>`, and the child's own
+  `<SUB_ID>`, and remind the child to keep its bead updated (`bd update`,
+  `bd comment`) as it works. Bead comments should follow markdown conventions.
+- Instruct the child to attach itself to its bead first:
+  `mitto_conversation_update(self_id: <own id>, conversation_id: "self", beads_issue: "<SUB_ID>")`.
+- Give the child the consolidated situation summary so it does not re-ingest.
+- **Inline the investigation playbook** you loaded above verbatim (between `---`
+  fences) so the child follows the same runbook — do NOT paraphrase or summarise
+  it. If the playbook cites a specific section relevant to this sub-task, call it
+  out: *"This sub-task maps to §<section> of the playbook — start there."*
+- Set the child's mindset explicitly: **"You are a curious, inquisitive
+  investigator. Ask 'why?' at every layer, follow evidence rather than
+  assumptions, distinguish observation from hypothesis, and report both
+  dead-ends and leads."**
+- Tell the child, at the end of the initial prompt, to report via
+  `mitto_children_tasks_report(self_id: <own id>, task_id: "investigate", status: "completed" | "partial" | "failed", summary: "<findings>", details: "<evidence, commands run, links, open questions>")`
+  **and** to write its full findings back to its `<SUB_ID>` bead as comments
+  before reporting.
+
+### Wait, synthesize, and hand back to the operator
+
+Block on the investigators:
+
+```
+mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [<SUB conversation ids>], task_id: "investigate", timeout_seconds: 3600)
+```
+
+Then:
+
+1. Read every sub-bead's fresh comments (`bd comments <SUB_ID>`) alongside the
+   child reports.
+2. Merge findings by hypothesis, flag conflicts / gaps / open questions, and rank
+   the surviving hypotheses.
+3. Append a **"Round-1 synthesis"** comment to `<EPIC_ID>` with the ranked
+   hypotheses, the strongest supporting evidence, and the next investigation moves.
+4. Notify the operator:
+   `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Round-1 triage complete", message: "<EPIC_ID>: <N> sub-tasks investigated — see the epic for the synthesis.", style: "success", beads_issue: "<EPIC_ID>")`.
+5. Ask via `mitto_ui_options` whether to (a) dispatch a follow-up round based on
+   the surviving hypotheses, (b) hand back to the operator, or (c) stop.
+
+If the operator picks (a), loop back to the decomposition step (a new
+decomposition based on the surviving hypotheses — the playbook is still in your
+context, no need to reload it); otherwise stop — do NOT propose or execute
+mitigation. Mitigation is a human decision.

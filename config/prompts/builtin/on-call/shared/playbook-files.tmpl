@@ -1,0 +1,44 @@
+{{/*
+  on-call/shared/playbook-files — the canonical, folder-remembered file
+  parameters for the investigation and escalation playbooks, shared by every
+  On-Call prompt that inlines a runbook. Extracted so the parameter names,
+  defaults, and folder-scoped `remember` semantics stay identical across
+  "On-Call: I have been paged" and "On-Call: watch and investigate" — a path
+  picked in one carries into the other because both key the remembered value on
+  the same parameter name.
+
+  This fragment defines NO body text; it only documents the shared parameter
+  contract for maintainers. The parameters themselves live in each prompt's
+  `parameters:` block (YAML front-matter cannot be templated), but they MUST be
+  copied verbatim from the contract below so the two prompts stay in sync:
+
+      parameters:
+        - name: InvestigationInstructions
+          type: filename
+          required: false
+          default: .mitto/cso/investigation.md
+          dir: .mitto/cso
+          glob:
+            - "*.md"
+          remember: folder
+          description: >-
+            Workspace-relative primary investigation playbook, inlined verbatim
+            into every child investigator's prompt. Defaults to
+            `.mitto/cso/investigation.md`.
+        - name: EscalationInstructions
+          type: filename
+          required: false
+          default: .mitto/cso/escalation.md
+          dir: .mitto/cso
+          glob:
+            - "*.md"
+          remember: folder
+          description: >-
+            Workspace-relative escalation playbook, consulted when a credible
+            mitigation cannot be found. Defaults to `.mitto/cso/escalation.md`.
+
+  Callers resolve the effective paths at the top of their body with:
+
+      {{ $investigationFile := Arg "InvestigationInstructions" ".mitto/cso/investigation.md" }}
+      {{ $escalationFile := Arg "EscalationInstructions" ".mitto/cso/escalation.md" }}
+*/ -}}

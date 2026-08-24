@@ -10,21 +10,40 @@ preferredModels:
 parameters:
   - name: InvestigationInstructions
     type: filename
-    group: Advanced
-    glob:
-      - "**/*.md"
-    remember: folder
     required: false
-    description: 'The instructions file to create or update. Same parameter (and folder-scoped remembered value) used by ''On-Call: I have been paged'' — pick the same path there and it stays in sync. If empty, the prompt offers a default under docs/on-call/.'
+    default: .mitto/cso/investigation.md
+    dir: .mitto/cso
+    glob:
+      - "*.md"
+    remember: folder
+    description: >-
+      Workspace-relative primary investigation playbook, inlined verbatim into
+      every child investigator's prompt. Defaults to `.mitto/cso/investigation.md`.
   - name: SourceType
     type: text
+    options:
+      - slack
+      - directory
     required: true
-    description: 'One of `slack` or `directory`. `slack` mines a Slack channel''s incident history; `directory` catalogs a documentation tree. Any other value is rejected.'
+    description: '`slack` mines a Slack channel''s incident history; `directory` catalogs a documentation tree. Any other value is rejected.'
   - name: SourceArg
     type: text
     required: true
     description: 'Depends on SourceType. For `slack`, a Slack channel ID (e.g. `C0123456789`). For `directory`, a path (absolute or relative to the workspace root) to a directory to catalog.'
+  - name: ReportsDir
+    type: text
+    group: Advanced
+    required: false
+    default: reports
+    remember: folder
+    description: >-
+      Workspace-relative folder holding one report file per calendar day, named
+      `<ReportsDir>/YYYY-MM-DD.md`. Shared with `On-Call: watch and summarize`
+      (kept in sync). When the folder exists, its past reports are consulted for
+      effective investigation techniques while updating the playbook. Defaults
+      to `reports`.
 prompt: |-
+  {{ $reportsDir := Arg "ReportsDir" "reports" -}}
   {{ template "_shared/session-context" . }}
 
   # On-Call: Update Investigation Instructions
@@ -75,7 +94,7 @@ prompt: |-
   If `$FILE` already exists, **do not overwrite it**. Read it into memory so you can locate (or add) the relevant auto-marker block in Step 3.
 
   ## Step 2 — Gather source material
-
+  {{ template "on-call/shared/prior-reports" (dict "Ctx" . "ReportsDir" $reportsDir "Mode" "consult") }}
   Which branch runs depends on `SourceType`:
 
   ### Branch A — SourceType == `slack`

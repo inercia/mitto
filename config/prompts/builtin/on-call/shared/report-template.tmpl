@@ -1,0 +1,47 @@
+{{/*
+  on-call/shared/report-template — inlines the workspace report template
+  verbatim when the resolved file exists, otherwise emits a generic incident
+  status-report structure. Used by "On-Call: watch and summarize" so the
+  template-loading behaviour and the generic fallback structure live in one
+  place, mirroring on-call/shared/investigation-playbook.
+
+  Usage — pass the already-resolved file path as `.File`:
+
+      {{ template "on-call/shared/report-template" (dict "File" $reportTemplateFile) }}
+*/ -}}
+{{- $reportTemplateFile := .File -}}
+{{ if FileExists $reportTemplateFile -}}
+A workspace-specific report template exists at `{{ $reportTemplateFile }}`. Its
+structure is authoritative — **follow it exactly**. The template may contain
+HTML comments with per-section guidance; read them, fill each section
+accordingly, and **remove all HTML comments** from the final saved output.
+
+--- BEGIN WORKSPACE ON-CALL REPORT TEMPLATE ---
+{{ ReadFile $reportTemplateFile }}
+--- END WORKSPACE ON-CALL REPORT TEMPLATE ---
+{{- else -}}
+No workspace-specific report template exists at `{{ $reportTemplateFile }}`.
+Use this generic incident status-report structure:
+
+## Incident Status Report — {DATE}
+
+> _Updates since previous report: {BRIEF_DIFF_SUMMARY}_
+
+### 🔴 Active Incidents
+Ordered by severity (highest first), then by date (newest first). If none:
+**✅ No active incidents.** For each active incident include: title, onset date,
+severity, affected services/regions, current status, brief description, known or
+suspected root cause, key responders, relevant dashboards, and at least one
+Slack link. Flag any incident with no thread updates in 24h+ as **stale**.
+
+### 🟡 Monitoring
+Mitigated but not fully resolved — one entry each with the verifying signal
+still being watched.
+
+### 🟢 Recently Resolved
+Newest first, compact format. Note the resolution and any follow-up owed.
+
+### 📊 Analysis & Trends
+Recurring patterns, correlations between incidents, and systemic themes carried
+forward from previous reports, with current status.
+{{- end }}

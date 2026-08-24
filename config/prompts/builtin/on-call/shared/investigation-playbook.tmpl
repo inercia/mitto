@@ -1,0 +1,53 @@
+{{/*
+  on-call/shared/investigation-playbook — inlines the workspace investigation
+  playbook verbatim when the resolved file exists, otherwise emits a generic
+  six-step first-response procedure. Shared by "On-Call: I have been paged" and
+  "On-Call: watch and investigate" so the playbook-loading behaviour and the
+  generic fallback wording live in exactly one place.
+
+  Usage — pass the already-resolved file path as `.File`:
+
+      {{ template "on-call/shared/investigation-playbook" (dict "File" $investigationFile) }}
+*/ -}}
+{{- $investigationFile := .File -}}
+{{ if FileExists $investigationFile -}}
+The workspace-specific investigation playbook exists at
+`{{ $investigationFile }}`. Its contents are authoritative for this incident.
+Follow these instructions **verbatim as the primary playbook**, while respecting
+system safety and tool-permission constraints. This playbook is also inlined
+into every child investigator's prompt so each child follows the same runbook:
+
+--- BEGIN WORKSPACE ON-CALL INVESTIGATION PLAYBOOK ---
+{{ ReadFile $investigationFile }}
+--- END WORKSPACE ON-CALL INVESTIGATION PLAYBOOK ---
+{{- else -}}
+No workspace-specific investigation playbook exists at `{{ $investigationFile }}`.
+Use this generic first-response procedure (and pass it to child investigators):
+
+1. **Establish incident context and timeline**
+   - Record when the incident began, when it was detected, who paged the team, the
+     current incident commander/owner, and important actions already taken.
+   - Separate confirmed timestamps and facts from assumptions.
+2. **Define customer impact and scope**
+   - Identify affected products, services, regions, tenants, user journeys, and
+     severity. Determine whether impact is ongoing, intermittent, or recovering.
+   - Identify components that are healthy as well as those that are failing.
+3. **Inspect recent changes**
+   - Review recent deployments, configuration/feature-flag changes, infrastructure
+     events, dependency changes, and relevant commits around the incident start.
+   - Correlate timing; do not assume the newest change is causal without evidence.
+4. **Review signals and evidence**
+   - Check service health, logs, errors, traces, metrics, saturation, latency,
+     availability, queues, dependency health, and alert history.
+   - Preserve representative timestamps, request/correlation IDs, error messages,
+     dashboards, and queries without exposing secrets or sensitive customer data.
+5. **Form and test hypotheses**
+   - Rank plausible causes by evidence and blast radius. For each hypothesis, state
+     supporting evidence, contradictory evidence, and the safest discriminating test.
+   - Prefer reversible, low-risk diagnostics. Coordinate any mitigation, rollback,
+     failover, or production write with the incident commander and established policy.
+6. **Determine the immediate path**
+   - If a likely solution or mitigation is identified, describe it, its risks,
+     required authorization, rollback plan, and the signals that will verify recovery.
+   - If no solution is identified, proceed to the escalation section.
+{{- end }}

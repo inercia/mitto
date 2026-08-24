@@ -1,0 +1,208 @@
+icon: file-text
+name: 'On-Call: watch and summarize'
+description: 'Read one or more Slack channels and generate a comprehensive incident status report, saved to a configurable reports folder. Fetch phases use fast child conversations; synthesis uses the current model. Not a Slack watcher by default — runs on a 24h schedule (opt-in), or on demand.'
+group: On-Call
+backgroundColor: '#C8E6C9'
+enabledWhen: '!Session.IsChild && Tools.HasAnyPattern(["slack_*", "*_slack"])'
+preferredModels:
+  - modelTag: Coding
+parameters:
+  - name: SlackChannelID
+    type: slackChannel
+    required: true
+    description: >-
+      Slack channel ID to read incident updates from (e.g. C0XXXXXXX). This is
+      the channel scanned for recent incidents each run.
+  - name: SlackWorkspaceURL
+    type: text
+    required: true
+    description: >-
+      Base Slack workspace URL used to build message permalinks (e.g.
+      https://yourteam.slack.com). No trailing slash.
+  - name: ReportsDir
+    type: text
+    required: false
+    default: reports
+    remember: folder
+    description: >-
+      Workspace-relative folder holding one report file per calendar day, named
+      `<ReportsDir>/YYYY-MM-DD.md`. Same-day re-runs update that day's file in
+      place rather than creating a new one. Defaults to `reports`.
+  - name: LookbackDays
+    type: text
+    group: Advanced
+    required: false
+    description: >-
+      How many days of channel history to summarize, and — on the very first
+      run when no reports exist yet — the maximum number of past daily report
+      files to backfill (one per calendar day within the window). Default 3.
+  - name: RetentionDays
+    type: text
+    group: Advanced
+    required: false
+    description: >-
+      Retention window for pruning old daily reports: after saving, any
+      `<ReportsDir>/YYYY-MM-DD.md` file older than this many days is deleted.
+      Leave empty (default) to keep all reports forever — no pruning. Must be
+      greater than or equal to `LookbackDays` so a run never deletes reports it
+      just backfilled.
+  - name: ReportTemplate
+    type: filename
+    group: Advanced
+    required: false
+    default: .mitto/cso/report-template.md
+    dir: .mitto/cso
+    glob:
+      - "*.md"
+    remember: folder
+    description: >-
+      Workspace-relative report template followed verbatim when it exists.
+      Defaults to `.mitto/cso/report-template.md`; a generic structure is used
+      when absent.
+  - name: ReportInstructions
+    type: filename
+    group: Advanced
+    required: false
+    default: .mitto/cso/report-instructions.md
+    dir: .mitto/cso
+    glob:
+      - "*.md"
+    remember: folder
+    description: >-
+      Optional workspace-relative extra guidance (site-specific link formats,
+      cluster naming, ticket conventions, dashboards) inlined when present.
+      Skipped when absent. Defaults to `.mitto/cso/report-instructions.md`.
+loop:
+  trigger: [schedule]
+  schedule:
+    value: 1
+    unit: days
+    at: "09:00"
+  mode: optional
+  default: false
+prompt: |-
+  {{ $channel := .Args.SlackChannelID -}}
+  {{ $ws := .Args.SlackWorkspaceURL -}}
+  {{ $reportsDir := Arg "ReportsDir" "reports" -}}
+  {{ $days := Arg "LookbackDays" "3" -}}
+  {{ $retention := Arg "RetentionDays" "" -}}
+  {{ $reportTemplateFile := Arg "ReportTemplate" ".mitto/cso/report-template.md" -}}
+  {{ $reportInstructionsFile := Arg "ReportInstructions" ".mitto/cso/report-instructions.md" -}}
+  {{ template "_shared/session-context" . }}
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  Existing children: `{{ Default "(none)" .Children.MCPText }}`
+
+  # On-Call: Watch and Summarize
+
+  Read the recent messages from the Slack channel **`{{ $channel }}`** (at least
+  the last **{{ $days }} days**) and maintain a comprehensive incident status
+  report. Output is **one report file per calendar day**
+  (`{{ $reportsDir }}/YYYY-MM-DD.md`): if today's file already exists you
+  **update it in place**, never creating a new file per run. You act as the
+  **coordinator**: fan out data-fetching to fast child conversations, then
+  synthesize and format the report yourself.
+
+  {{ template "_shared/interaction-mode" . }}
+
+  ## Multi-Model Orchestration
+
+  Prefer a `fast`/`cheap`-tagged server for parallel data fetching and the
+  current (synthesis) model for categorization and analysis. **Never** configure
+  spawned conversations as loops — each is a one-off fetch of a single source.
+
+  | Phase | Task | Model |
+  |-------|------|-------|
+  | 1 | Parallel: fetch Slack `{{ $channel }}` history + list `{{ $reportsDir }}/*.md` to find today's file (if any) and the most recent prior report | Fast children |
+  | 2 | Categorize incidents, identify trends, diff against today's existing report (or the most recent prior one) | Current |
+  | 3 | Write **today's** daily report file — updating it in place if it already exists — following the template | Current (or fast child) |
+
+  Use `mitto_children_tasks_wait` to synchronize between phases, and clean up
+  child conversations when done.
+
+  ## Step 1 — Report template
+
+  {{ template "on-call/shared/report-template" (dict "File" $reportTemplateFile) }}
+  {{ if FileExists $reportInstructionsFile }}
+  ### Site-specific report instructions
+
+  Additional workspace guidance exists at `{{ $reportInstructionsFile }}` —
+  follow it for link formats, cluster naming, ticket conventions, and dashboards:
+
+  --- BEGIN WORKSPACE REPORT INSTRUCTIONS ---
+  {{ ReadFile $reportInstructionsFile }}
+  --- END WORKSPACE REPORT INSTRUCTIONS ---
+  {{ end }}
+  ## Step 2 — Slack links
+
+  **Every incident entry MUST have at least one Slack link** — to a war-room
+  channel or to the originating message in `{{ $channel }}`. Build links from the
+  workspace base URL **`{{ $ws }}`**:
+
+  - **Channel / war room**: `[<CHANNEL_ID>]({{ $ws }}/archives/<CHANNEL_ID>)`
+  - **Specific message**: `[<CHANNEL_ID> - HH:MM UTC]({{ $ws }}/archives/<CHANNEL_ID>/p<ts>)`
+    where `<ts>` is the message `ts` with the dot removed and a `p` prefix
+    (e.g. `1770802214.391359` → `p1770802214391359`).
+
+  ## Step 3 — Save the report (one file per calendar day)
+
+  There is exactly **one report file per calendar day**, named by date only:
+  `{{ $reportsDir }}/YYYY-MM-DD.md` (no time component). Obtain today's date with
+  `date +%Y-%m-%d` and create the `{{ $reportsDir }}` folder if needed.
+
+  Decide what to write based on what already exists in `{{ $reportsDir }}`:
+
+  1. **Today's file already exists** (`{{ $reportsDir }}/<today>.md`) — this is a
+     same-day re-invocation. **Update it in place**: `ReadFile` the current
+     contents, merge the new findings into the existing sections (add/refresh
+     incidents, move resolved items to 🟢, refresh timestamps and the
+     _"Updates since previous report"_ line), and overwrite the **same** file.
+     Do **not** create a second file for today and do **not** append an
+     ever-growing new section — reconcile into the existing structure so the
+     file stays a single coherent daily snapshot.
+
+  2. **No today's file, but prior daily reports exist** — write a fresh
+     `{{ $reportsDir }}/<today>.md`, diffing against the most recent prior daily
+     report for the _"Updates since previous report"_ summary. Leave older daily
+     files untouched.
+
+  3. **No reports exist at all (first-ever run) — bounded backfill.** Using the
+     Slack history you fetched (up to **{{ $days }} days**), generate historical
+     daily reports **one file per calendar day**, `{{ $reportsDir }}/<date>.md`,
+     for each day that has activity **within the last {{ $days }} days only**.
+     `{{ $days }}` is a hard cap: never create a report dated more than
+     {{ $days }} days before today, and never fabricate a report for a day with
+     no channel activity. Order the backfill oldest→newest so each day's
+     _"Updates since previous report"_ can diff against the day before it.
+
+  Each saved file should include the inline report plus any verbose detail
+  unsuitable for the conversation (full thread transcripts, query URLs, extended
+  timelines, dashboard links, ticket references). At the end, print the relative
+  path(s) of the file(s) written this run:
+
+  ```
+  📄 Report saved to: {{ $reportsDir }}/YYYY-MM-DD.md
+  ```
+  {{ if $retention }}
+  ## Step 4 — Prune old reports (retention {{ $retention }} days)
+
+  After today's report is saved, delete stale daily reports so the folder does
+  not grow without bound. Compute the cutoff date as **{{ $retention }} days
+  before today** (`date -v-{{ $retention }}d +%Y-%m-%d` on macOS, or
+  `date -d "{{ $retention }} days ago" +%Y-%m-%d` on Linux) and delete every
+  `{{ $reportsDir }}/YYYY-MM-DD.md` whose date in the filename is **strictly
+  older than the cutoff**. Only remove files matching the `YYYY-MM-DD.md`
+  pattern in `{{ $reportsDir }}` — never touch today's file, the template, or
+  any unrelated files. List each deleted path so the pruning is auditable:
+
+  ```
+  🗑️ Pruned old report: {{ $reportsDir }}/YYYY-MM-DD.md
+  ```
+  {{ else }}
+  Report pruning is disabled (no `RetentionDays` set) — all daily reports are
+  kept. Set `RetentionDays` to automatically delete reports older than N days.
+  {{ end }}
+  In a silent scheduled run, keep the inline output concise (summary + file path)
+  and send a `mitto_ui_notify` summarizing status; if there are active 🔴
+  incidents, send an additional `style: "warning"`, `sound: true` notification.
+
+  {{ template "on-call/shared/guardrails" . }}

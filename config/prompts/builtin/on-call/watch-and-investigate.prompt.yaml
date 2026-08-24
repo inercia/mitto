@@ -1,0 +1,141 @@
+icon: eye
+name: 'On-Call: watch and investigate'
+description: 'Watch one or more Slack channels and, when an incident is reported, orchestrate triage — create a beads epic, ingest the Slack context, decompose into sub-tasks, and dispatch a curious child investigator per sub-task. Same beads-anchored methodology as "On-Call: I have been paged", but Slack-triggered instead of form-driven.'
+group: On-Call
+backgroundColor: '#FFCDD2'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && Permissions.CanStartConversation'
+preferredModels:
+  - modelTag: Coding
+parameters:
+  - name: InvestigationInstructions
+    type: filename
+    required: false
+    default: .mitto/cso/investigation.md
+    dir: .mitto/cso
+    glob:
+      - "*.md"
+    remember: folder
+    description: >-
+      Workspace-relative primary investigation playbook, inlined verbatim into
+      every child investigator's prompt. Defaults to `.mitto/cso/investigation.md`.
+  - name: EscalationInstructions
+    type: filename
+    required: false
+    default: .mitto/cso/escalation.md
+    dir: .mitto/cso
+    glob:
+      - "*.md"
+    remember: folder
+    description: >-
+      Workspace-relative escalation playbook, consulted when a credible
+      mitigation cannot be found. Defaults to `.mitto/cso/escalation.md`.
+loop:
+  trigger: [onSlack]
+  onSlack:
+    eventMode: anyHumanMessage
+    threadPolicy: any
+  mode: optional
+  default: false
+prompt: |-
+  {{ $investigationFile := Arg "InvestigationInstructions" ".mitto/cso/investigation.md" -}}
+  {{ $escalationFile := Arg "EscalationInstructions" ".mitto/cso/escalation.md" -}}
+  {{ template "_shared/session-context" . }}
+  Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
+  Existing children: `{{ Default "(none)" .Children.MCPText }}`
+
+  # On-Call: Watch and Investigate
+
+  You are watching one or more Slack channels for reported incidents. When an
+  incident surfaces, you orchestrate the opening minutes exactly like the
+  **"On-Call: I have been paged"** flow — open a tracker epic, ingest the Slack
+  context, decompose into sub-tasks, and dispatch one curious child investigator
+  per sub-task. You act as the **coordinator**; real digging happens in the
+  children. Act with urgency, preserve evidence, and avoid speculative or
+  destructive production changes.
+
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  {{ template "on-call/shared/slack-batch-context" . }}
+
+  ## Step 1 — Decide whether this is an incident
+
+  Using the Slack batch above (and any channel history you fetched), judge whether
+  a **real incident** is being reported — an outage, degradation, sev, page, or a
+  credible customer-impacting problem. Ignore banter, questions without impact,
+  and routine chatter.
+
+  - If this is **not** an incident, do nothing further: `mitto_ui_notify(self_id:
+    "{{ .Session.ID }}", title: "No incident", message: "Watched channel activity
+    was not incident-related — no epic created.", style: "info")` and stop.
+  - If it **is** an incident, continue.
+
+  ## Step 2 — Create the tracking epic in beads
+
+  Compose an epic body from the Slack evidence — a one-line title, a "Reported at"
+  timestamp, the triggering channel(s)/permalink(s), and the raw message text
+  verbatim. Create the epic with `bd`:
+
+  ```bash
+  bd create "<short incident title>" \
+    --type epic \
+    --priority 1 \
+    --label on-call,incident \
+    --body-file /tmp/on-call-epic-body.md
+  ```
+
+  Capture the returned bead ID (`<EPIC_ID>`) and attach this conversation to it:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<EPIC_ID>")
+  ```
+
+  Surface progress: `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Incident epic created", message: "<EPIC_ID> — ingesting context…", style: "info", beads_issue: "<EPIC_ID>")`.
+
+  ## Step 3 — Ingest and consolidate context (in this conversation)
+
+  Do **not** spawn children for this step. Read the triggering Slack thread(s) in
+  full (parent + replies), and follow any ticket / dashboard / runbook links found
+  inside them — one URL at a time, preferring the specialised MCP tool (Slack,
+  JIRA, GitHub) and falling back to `web-fetch` / Playwright. Do not retry a
+  failing URL more than twice, and do not abort because one link is unreachable.
+
+  Consolidate all findings into a single Markdown document with these sections:
+  **Ingested sources** (each tagged `[ok]`/`[failed: <reason>]`), **Situation
+  summary**, **Timeline so far** (`HH:MM UTC — <event>`), **Actions already
+  taken**, **Open questions & gaps**, **Cross-references**. Keep observations
+  separate from hypotheses. Write it to `/tmp/on-call-ingest-<EPIC_ID>.md` and
+  append it to the epic (use `--file`, never a backtick heredoc):
+
+  ```bash
+  bd comment <EPIC_ID> --file /tmp/on-call-ingest-<EPIC_ID>.md
+  ```
+
+  ## Step 4 — Investigation playbook
+
+  {{ template "on-call/shared/investigation-playbook" (dict "File" $investigationFile) }}
+
+  ## Step 5 — Synthesize context and decompose the epic
+
+  Read the epic's fresh comments (`bd comments <EPIC_ID>`) and cross-reference the
+  symptoms (Step 3) against the playbook (Step 4). Produce, inline:
+
+  1. A **consolidated situation summary** (5–10 bullets: symptoms, blast radius,
+     timeline, current hypotheses, gaps).
+  2. A **sub-task list** — 2–5 **disjoint** investigation angles, each grounded in
+     a specific playbook section when possible. Do NOT include remediation here.
+
+  Present the sub-task list as a Markdown table (columns: `#`, `Title`,
+  `Investigation angle`, `Playbook section`, `Data sources to consult`). Since this
+  is a watch trigger and the operator may not be present, ask via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 180)` whether to
+  "Dispatch all", "Edit list first", or "Cancel". **On timeout, dispatch the list
+  as-is** (the point of watching is unattended first response) — but never dispatch
+  more than 4 investigators; queue any overflow.
+
+  ## Step 6 — Dispatch investigators and synthesize
+
+  {{ template "on-call/shared/dispatch-investigators" . }}
+
+  {{ template "on-call/shared/escalation-playbook" (dict "File" $escalationFile) }}
+
+  {{ template "on-call/shared/guardrails" . }}

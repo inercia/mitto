@@ -1,0 +1,36 @@
+{{/*
+  on-call/shared/escalation-playbook — inlines the workspace escalation playbook
+  verbatim when the resolved file exists, otherwise emits a generic escalation
+  procedure. Shared by the On-Call prompts so escalation guidance lives in one
+  place. Emits its own "## Escalation" heading.
+
+  Usage — pass the already-resolved escalation file path as `.File`:
+
+      {{ template "on-call/shared/escalation-playbook" (dict "File" $escalationFile) }}
+*/ -}}
+{{- $escalationFile := .File -}}
+## Escalation when no solution is identified
+
+Escalate only if a credible solution or mitigation cannot be identified, required
+access or expertise is unavailable, or the incident is worsening beyond the
+current responders' ability to contain it.
+
+{{ if FileExists $escalationFile -}}
+The workspace-specific escalation playbook exists at `{{ $escalationFile }}`.
+Follow these instructions **verbatim** when escalation is required:
+
+--- BEGIN WORKSPACE ON-CALL ESCALATION PLAYBOOK ---
+{{ ReadFile $escalationFile }}
+--- END WORKSPACE ON-CALL ESCALATION PLAYBOOK ---
+{{- else -}}
+If escalation is required and no workspace playbook exists:
+
+1. Summarize confirmed impact, scope, current status, and the investigation timeline.
+2. List completed checks and mitigations, with their outcomes and supporting evidence.
+3. State the leading hypotheses, unresolved unknowns, blockers, and access gaps.
+4. Identify the next appropriate escalation contacts or owning teams based on the
+   affected components and dependencies; do not invent names or contact details.
+5. Prepare a concise handoff containing incident links, relevant dashboards/queries,
+   correlation IDs, recent changes, risks, and the exact help or decision requested.
+6. Maintain an explicit communication cadence until ownership is acknowledged.
+{{- end }}
