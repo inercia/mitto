@@ -103,6 +103,35 @@ func IsKnownPromptParameterType(t string) bool {
 	return false
 }
 
+// DegradeUnknownParameterTypes gives prompt loading forward-compatibility across
+// binary versions (mitto-f8l): a parameter whose Type is non-empty but not in
+// KnownPromptParameterTypes is rewritten in place to the catch-all "text" type,
+// instead of the whole prompt failing to load. This mirrors the established
+// precedent that a lint-class field must not evict an otherwise-working prompt
+// (see collectUnknownPromptKeys in prompts.go for the analogous top-level-key
+// case). Only the "type" axis degrades this way — it is the one axis along
+// which builtins get forward-migrated over time as new parameter types are
+// added; other parameter enums (remember, show, options, ...) intentionally
+// stay fail-fast (mitto-x8v) since they do not evolve the same way.
+//
+// An empty Type is left untouched: a missing type is an authoring mistake, not
+// a forward-migration, and ValidatePromptParameters still rejects it.
+//
+// Returns one human-readable warning per degraded parameter, in declaration
+// order, for callers to log and/or surface to the user.
+func DegradeUnknownParameterTypes(params []PromptParameter) []string {
+	var warnings []string
+	for i := range params {
+		t := params[i].Type
+		if t == "" || IsKnownPromptParameterType(t) {
+			continue
+		}
+		params[i].Type = "text"
+		warnings = append(warnings, fmt.Sprintf("parameter %q: unknown type %q degraded to \"text\"", params[i].Name, t))
+	}
+	return warnings
+}
+
 // Remember* constants enumerate the accepted values of PromptParameter.Remember.
 // An empty string is treated as RememberNever (default: do not persist).
 //

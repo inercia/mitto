@@ -1715,6 +1715,15 @@ func Parse(data []byte) (*Config, error) {
 		if p.Prompt == "" && !isDisabled {
 			continue
 		}
+		// Degrade any parameter with an unrecognised (but non-empty) type to
+		// "text" before validation, so a settings.json/settings.yaml inline
+		// prompt forward-migrated to a newer parameter type still loads (as
+		// text) instead of being silently dropped (mitto-f8l).
+		if warnings := DegradeUnknownParameterTypes(p.Parameters); len(warnings) > 0 {
+			for _, w := range warnings {
+				slog.Warn("prompt parameter has unrecognised type; degraded to text", "prompt", p.Name, "source", "settings", "detail", w)
+			}
+		}
 		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
 			continue
 		}

@@ -69,6 +69,7 @@ const MenuInternal = prompts.MenuInternal
 var (
 	IsKnownPromptParameterType                = prompts.IsKnownPromptParameterType
 	ValidatePromptParameters                  = prompts.ValidatePromptParameters
+	DegradeUnknownParameterTypes              = prompts.DegradeUnknownParameterTypes
 	DeprecatedMittoVars                       = prompts.DeprecatedMittoVars
 	DeprecatedMittoVarReplacement             = prompts.DeprecatedMittoVarReplacement
 	WarnDeprecatedMittoVars                   = prompts.WarnDeprecatedMittoVars

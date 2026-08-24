@@ -1426,6 +1426,17 @@ func parsePromptFileData(path string, data []byte, modTime time.Time, fragments 
 		prompt.Name = name
 	}
 
+	// Degrade any parameter with an unrecognised (but non-empty) type to the
+	// catch-all "text" type before validation, so a prompt forward-migrated to
+	// a newer parameter type still loads (as text) on an older binary instead
+	// of being evicted wholesale (mitto-f8l).
+	if warnings := DegradeUnknownParameterTypes(prompt.Parameters); len(warnings) > 0 {
+		for _, w := range warnings {
+			slog.Warn("prompt parameter has unrecognised type; degraded to text", "path", path, "detail", w)
+		}
+		prompt.Warnings = append(prompt.Warnings, warnings...)
+	}
+
 	// Validate parameters block.
 	if err := ValidatePromptParameters(prompt.Menus, prompt.Parameters); err != nil {
 		return nil, migrated, result, fmt.Errorf("prompt file %s: %w", path, err)
