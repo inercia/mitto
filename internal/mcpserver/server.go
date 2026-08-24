@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/inercia/mitto/internal/beads"
 	beadswatcher "github.com/inercia/mitto/internal/beads/watcher"
@@ -137,6 +138,21 @@ type Server struct {
 	// Canonical nested lock order is sessionsMu -> reaperMu -> mcpSessionMapMu.
 	mcpSessionMapMu sync.RWMutex
 	mcpSessionMap   map[string]string
+
+	// resolveSelfIDSF collapses concurrent resolveSelfIDWithMCP calls that
+	// share one MCP protocol session (keyed by req.Session.ID()) into a
+	// single resolution (mitto-b9q). Without this, N parallel tool calls
+	// (e.g. several mitto_conversation_new spawns) racing on the same
+	// not-yet-cached protocol session all miss the Phase-1 cache and pile
+	// into WaitForPendingRequest; only one consumes the single registered
+	// pending-request entry, and the remaining N-1 each block the full
+	// pendingRequestTimeout before failing. Since associateMCPSessionID
+	// enforces one owner per protocol session, every concurrent resolve for
+	// the same mcpSessionID is guaranteed to converge on the same Mitto
+	// session, so sharing one leader's result across all followers is
+	// correctness-preserving, not just a perf optimization. Mirrors the
+	// singleflight.Group pattern in internal/beads/cache.go.
+	resolveSelfIDSF singleflight.Group
 
 	// Parent-child task coordination.
 	// Maps parent_session_id -> *childReportCollector for collecting children's progress reports.
@@ -1573,7 +1589,35 @@ func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRe
 	// Phase 2: Correlation lookup - wait for ACP to register the mapping.
 	// This is needed for the genuine first get_current correlation race where the
 	// ACP layer intercepts the tool call and registers the session ID mapping.
-	realSessionID := s.WaitForPendingRequest(inputSessionID)
+	//
+	// Collapsed via singleflight, keyed by (mcpSessionID, inputSessionID)
+	// (mitto-b9q): N concurrent tool calls sharing one not-yet-cached MCP
+	// protocol session (e.g. several mitto_conversation_new spawns from a
+	// single Auggie conversation, which has no HTTP MCP capability and so
+	// always uses this legacy path) all miss Phase 1 simultaneously and, pre-
+	// fix, thundering-herd into WaitForPendingRequest. Only one registered
+	// pending-request entry is typically available within the window, so a
+	// single caller would consume it and resolve instantly while every other
+	// caller exhausts the full pendingRequestTimeout before failing. Since
+	// RegisterPendingRequest only accepts requestID == sessionID (the real,
+	// stable session ID — see its ambiguous_self_id guard), every concurrent
+	// caller sharing one mcpSessionID legitimately passes the identical
+	// self_id here, so sharing one leader's wait result across all followers
+	// is correctness-preserving, not just a perf optimization. The
+	// inputSessionID is included in the key (not just mcpSessionID) so a
+	// caller that ever passed a different self_id on the same protocol
+	// session cannot be handed another caller's resolution.
+	sfKey := mcpSessionID + "\x00" + inputSessionID
+	v, _, _ := s.resolveSelfIDSF.Do(sfKey, func() (any, error) {
+		// Re-check the cache: a sibling resolution for this session may have
+		// completed and warmed it between this goroutine's Phase-1 miss and
+		// acquiring singleflight leadership.
+		if cached := s.lookupMCPSession(mcpSessionID); cached != "" {
+			return cached, nil
+		}
+		return s.WaitForPendingRequest(inputSessionID), nil
+	})
+	realSessionID, _ := v.(string)
 	if realSessionID != "" {
 		if !s.associateMCPSession(req, realSessionID) {
 			return ""
