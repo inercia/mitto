@@ -3228,6 +3228,11 @@ func TestToWebPrompt_RoundTripsTags(t *testing.T) {
 	}
 }
 
+// TestParsePromptFile_UnknownParameterType pins mitto-f8l: a parameter whose
+// declared type is non-empty but not in KnownPromptParameterTypes must NOT
+// evict the whole prompt. Instead it degrades to the catch-all "text" type
+// and the degradation is recorded as a warning, so a prompt forward-migrated
+// to a newer parameter type still loads (as text) on an older binary.
 func TestParsePromptFile_UnknownParameterType(t *testing.T) {
 	data := []byte(`name: "Bad Prompt"
 parameters:
@@ -3237,9 +3242,80 @@ prompt: |
   body
 `)
 
-	_, err := ParsePromptFile("bad.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("bad.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile should degrade unknown parameter type instead of failing, got error: %v", err)
+	}
+	if len(prompt.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(prompt.Parameters))
+	}
+	if prompt.Parameters[0].Type != "text" {
+		t.Errorf("Parameters[0].Type = %q, want degraded to %q", prompt.Parameters[0].Type, "text")
+	}
+	if len(prompt.Warnings) == 0 {
+		t.Fatal("prompt.Warnings is empty, want a degradation warning recorded")
+	}
+	found := false
+	for _, w := range prompt.Warnings {
+		if strings.Contains(w, "foo") && strings.Contains(w, "notAType") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want an entry mentioning parameter %q and type %q", prompt.Warnings, "foo", "notAType")
+	}
+}
+
+// TestParsePromptFile_ForwardParameterTypeDegradesToText is a second
+// regression for mitto-f8l using a name shaped like a plausible future type
+// (as opposed to an obviously-bogus one), confirming the same graceful
+// degradation and that a KNOWN type declared alongside it is left untouched.
+func TestParsePromptFile_ForwardParameterTypeDegradesToText(t *testing.T) {
+	data := []byte(`name: "Forward Type Prompt"
+parameters:
+  - name: channel
+    type: someFutureType
+  - name: id
+    type: beadsId
+prompt: |
+  body
+`)
+
+	prompt, err := ParsePromptFile("forward.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+	if prompt.Parameters[0].Type != "text" {
+		t.Errorf("Parameters[0] (channel).Type = %q, want degraded to %q", prompt.Parameters[0].Type, "text")
+	}
+	if prompt.Parameters[1].Type != "beadsId" {
+		t.Errorf("Parameters[1] (id).Type = %q, want unchanged %q", prompt.Parameters[1].Type, "beadsId")
+	}
+	if len(prompt.Warnings) != 1 {
+		t.Errorf("Warnings = %v, want exactly 1 entry (only the unknown type degrades)", prompt.Warnings)
+	}
+}
+
+// TestParsePromptFile_EmptyParameterTypeStillErrors pins the other half of
+// the mitto-f8l contract: an EMPTY type is an authoring mistake, not a
+// forward-migration, and must remain a hard error — DegradeUnknownParameterTypes
+// leaves it untouched so ValidatePromptParameters still rejects it.
+func TestParsePromptFile_EmptyParameterTypeStillErrors(t *testing.T) {
+	data := []byte(`name: "Bad Prompt"
+parameters:
+  - name: foo
+    type: ""
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("empty-type.prompt.yaml", data, time.Now())
 	if err == nil {
-		t.Fatal("ParsePromptFile should fail for unknown parameter type, got nil error")
+		t.Fatal("ParsePromptFile should fail for empty parameter type, got nil error")
 	}
 	if !strings.Contains(err.Error(), "unknown type") {
 		t.Errorf("error = %q, want it to mention 'unknown type'", err.Error())
