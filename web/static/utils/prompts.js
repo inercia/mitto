@@ -460,6 +460,34 @@ export function unmetRequiredByGroup(groups, values) {
 }
 
 /**
+ * Returns the list of a prompt's REQUIRED parameters that are not yet filled by
+ * the given arguments map — i.e. required, non-boolean, non-`show: never`
+ * parameters whose value is missing or an empty/whitespace-only string. Boolean
+ * parameters are excluded because an unchecked checkbox is a valid answer
+ * (false), mirroring the predicate used by PromptParameterDialog's canSave and
+ * unmetRequiredByGroup.
+ *
+ * Used to gate a loop's "Enabled" state: a loop prompt may appear in the loop
+ * selector even when it declares required plain-text parameters, but the loop
+ * must not be enabled until every required parameter has a value supplied via
+ * the arguments dialog.
+ *
+ * @param {Object} prompt   - Prompt object with optional `parameters` array
+ * @param {Object} argsMap  - current { [paramName]: value } map
+ * @returns {Array} unmet required parameter descriptors (declared order)
+ */
+export function unmetRequiredParams(prompt, argsMap) {
+  const vals = argsMap || {};
+  return promptParameters(prompt).filter((p) => {
+    if (!p || !p.required || isBooleanParam(p) || isNeverShownParam(p)) {
+      return false;
+    }
+    const v = vals[p.name];
+    return typeof v !== "string" || v.trim() === "";
+  });
+}
+
+/**
  * Returns true if the parameter dialog should OPEN for `prompt` under `menu`
  * — the open axis, independent of what gets rendered (see
  * promptDialogParameters). `cachedNames` (a Set or array of parameter names

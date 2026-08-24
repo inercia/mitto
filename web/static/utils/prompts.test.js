@@ -41,6 +41,7 @@ import {
   currentModelName,
   groupDialogParameters,
   unmetRequiredByGroup,
+  unmetRequiredParams,
 } from "./prompts.js";
 
 // =============================================================================
@@ -1484,6 +1485,21 @@ describe("loop prompt filter logic (union + exclusion)", () => {
   test("prompt with no menus field IS in loop selector (defaults to prompts)", () => {
     expect(isLoopPrompt({})).toBe(true);
   });
+
+  // Regression: the loop selector has NO menuSatisfies gate. A prompt that
+  // declares a required plain-text parameter (which the one-shot dropup hides)
+  // must still appear in the loop selector — arguments are configured after
+  // selection and the loop's "Enabled" toggle is what gates on completeness.
+  test("prompt with a required text param IS in loop selector (no menuSatisfies gate)", () => {
+    const p = {
+      menus: "prompts",
+      parameters: [{ name: "SlackChannelID", type: "text", required: true }],
+    };
+    expect(isLoopPrompt(p)).toBe(true);
+    // And it is deliberately NOT satisfied by the one-shot dropup, proving the
+    // loop selector's inclusion is the relaxation being tested.
+    expect(menuSatisfies(p, "prompts")).toBe(false);
+  });
 });
 
 // =============================================================================
@@ -1921,5 +1937,76 @@ describe("unmetRequiredByGroup", () => {
   test("handles empty/undefined groups and values without throwing", () => {
     expect(unmetRequiredByGroup([], undefined)).toEqual(new Set());
     expect(unmetRequiredByGroup(undefined, undefined)).toEqual(new Set());
+  });
+});
+
+describe("unmetRequiredParams", () => {
+  const names = (params) => params.map((p) => p.name);
+
+  test("returns a required, unfilled text param", () => {
+    const prompt = {
+      parameters: [{ name: "SlackChannelID", type: "text", required: true }],
+    };
+    expect(names(unmetRequiredParams(prompt, {}))).toEqual(["SlackChannelID"]);
+  });
+
+  test("treats empty/whitespace-only strings as unfilled", () => {
+    const prompt = {
+      parameters: [{ name: "A", type: "text", required: true }],
+    };
+    expect(names(unmetRequiredParams(prompt, { A: "" }))).toEqual(["A"]);
+    expect(names(unmetRequiredParams(prompt, { A: "   " }))).toEqual(["A"]);
+  });
+
+  test("returns nothing when every required param is filled", () => {
+    const prompt = {
+      parameters: [
+        { name: "A", type: "text", required: true },
+        { name: "B", type: "text", required: true },
+      ],
+    };
+    expect(unmetRequiredParams(prompt, { A: "x", B: "y" })).toEqual([]);
+  });
+
+  test("ignores non-required params", () => {
+    const prompt = {
+      parameters: [
+        { name: "A", type: "text", required: false },
+        { name: "B", type: "text" },
+      ],
+    };
+    expect(unmetRequiredParams(prompt, {})).toEqual([]);
+  });
+
+  test("ignores boolean params even when required and unfilled", () => {
+    const prompt = {
+      parameters: [{ name: "flag", type: "boolean", required: true }],
+    };
+    expect(unmetRequiredParams(prompt, {})).toEqual([]);
+  });
+
+  test("ignores show:never params even when required and unfilled", () => {
+    const prompt = {
+      parameters: [
+        { name: "hidden", type: "text", required: true, show: "never" },
+        { name: "visible", type: "text", required: true },
+      ],
+    };
+    expect(names(unmetRequiredParams(prompt, {}))).toEqual(["visible"]);
+  });
+
+  test("preserves declared order across multiple unmet params", () => {
+    const prompt = {
+      parameters: [
+        { name: "A", type: "text", required: true },
+        { name: "B", type: "text", required: true },
+      ],
+    };
+    expect(names(unmetRequiredParams(prompt, {}))).toEqual(["A", "B"]);
+  });
+
+  test("handles a prompt with no parameters and a missing args map", () => {
+    expect(unmetRequiredParams({}, undefined)).toEqual([]);
+    expect(unmetRequiredParams(undefined, undefined)).toEqual([]);
   });
 });

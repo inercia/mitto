@@ -206,12 +206,14 @@ testWithCleanup.describe("Tasks-view shortcut button — prompt arguments", () =
   // `prompt` field, and `parameters` describes the interactive-picker (boolean)
   // field so PromptParameterDialog renders a checkbox.
   //
-  // Why boolean and not text? The tasksList menu can auto-supply NO parameter
-  // types (MENU_PARAM_TYPES.beadsList === []), so any `text: required` param
-  // would fail menuSatisfies() and the prompt would be filtered out of the
-  // shortcut resolver map entirely (button greyed as "not found"). Interactive
-  // picker params (boolean, prompts) bypass that gate — see
-  // web/static/utils/prompts.js: isInteractivePickerParam.
+  // Historical note: this fixture used a boolean because the previous
+  // menuSatisfies() rule filtered non-picker text params out of the
+  // beadsList shortcut resolver map (button greyed as "not found"). That
+  // filter has been removed from `fetchBeadsListPromptsForWorkspace` — a
+  // beadsList prompt with a plain `type: text, required: true` param will now
+  // also render as an enabled shortcut and open the parameter dialog on
+  // click. The boolean is kept here only for UI-assertion continuity (the
+  // checkbox is easy to interact with in Playwright).
   const LIST_PARAM_PROMPT_OBJ = {
     name: LIST_PARAM_PROMPT,
     description:

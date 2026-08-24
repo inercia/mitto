@@ -12,7 +12,6 @@ import {
   promptMenus,
   promptMenuExcludes,
   promptMenuIncludes,
-  menuSatisfies,
 } from "../utils/prompts.js";
 
 /** Debounce window (ms) for the mitto:prompts_changed event fan-out. The
@@ -63,20 +62,26 @@ export function useWorkspacePrompts({
   // prompts available in the selector while letting authors target a prompt
   // ONLY at the loop selector via `menus: promptsLoop`.
   //
+  // No menuSatisfies gate: unlike the one-shot dropup, the loop selector is a
+  // configure-then-enable flow — a prompt that declares required parameters
+  // the loop menu cannot auto-fill (e.g. a required `type: text` field) is
+  // still shown so the operator can pick it, set the arguments via the
+  // parameter dialog, and only then enable the loop (LoopSettingsTab gates the
+  // "Enabled" toggle on all required params being filled). This mirrors the
+  // per-menu fetch path below, which likewise drops the gate because every
+  // parameter can be user-filled.
+  //
   // Exclusion: `!promptsLoop` in a prompt's `menus` field suppresses it
   // from the loop selector even when it would otherwise be included via
   // the union (e.g. a one-shot prompt with `menus: prompts, !promptsLoop`).
-  // The exclusion is applied BEFORE the satisfaction check so it always wins.
+  // The exclusion is applied BEFORE the union so it always wins.
   const loopPrompts = useMemo(
     () =>
       workspacePrompts.filter((p) => {
         // Explicit exclusion takes precedence over the union rule.
         if (promptMenuExcludes(p).has("promptsLoop")) return false;
         const menus = promptMenus(p);
-        return (
-          (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
-          (menus.includes("promptsLoop") && menuSatisfies(p, "promptsLoop"))
-        );
+        return menus.includes("prompts") || menus.includes("promptsLoop");
       }),
     [workspacePrompts],
   );

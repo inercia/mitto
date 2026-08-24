@@ -394,4 +394,32 @@ describe("fetchBeadsListPromptsForWorkspace", () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
+
+  // Regression: the beadsList shortcut resolver must NOT drop prompts whose
+  // parameters the menu cannot auto-supply. The dispatch path
+  // (handleRunBeadsListPrompt) opens the parameter dialog for anything it
+  // cannot auto-fill, so applying menuSatisfies() here only hid usable
+  // prompts (the original "Loop processing tasks" shortcut symptom).
+  test("keeps beadsList prompts whose non-picker text params are not required-false", async () => {
+    global.fetch = immediateOkFetch({
+      prompts: [
+        {
+          name: "Loop processing tasks",
+          menus: "beadsList",
+          parameters: [
+            // Plain type:text, no options, no required:false. Under the old
+            // menuSatisfies() rule this failed the filter for the beadsList
+            // menu (which auto-supplies no types); the shortcut resolver
+            // then reported "Prompt … not found" and rendered a disabled
+            // button.
+            { name: "FromBranch", type: "text", default: "main" },
+          ],
+        },
+      ],
+    });
+    const bundle = mountBundle();
+
+    const result = await bundle.fetchBeadsListPromptsForWorkspace("/w");
+    expect(result.map((p) => p.name)).toEqual(["Loop processing tasks"]);
+  });
 });

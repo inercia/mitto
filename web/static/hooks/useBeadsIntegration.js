@@ -13,7 +13,6 @@
 import { fetchWorkspacePromptsCached } from "../utils/index.js";
 import {
   promptMenuIncludes,
-  menuSatisfies,
   collectPromptArguments,
   shouldOpenPromptDialog,
   promptDialogParameters,
@@ -236,6 +235,18 @@ export function useBeadsIntegration({
   // wrong (mitto-kvot). enabled_context=workspace tells the server to evaluate
   // the full enabledWhen gates against session-less workspace defaults
   // (Session.IsChild=false, Permissions.CanStartConversation=true).
+  // The `menuSatisfies(p, "beadsList")` filter is intentionally NOT applied
+  // here (mitto-cwf5.follow-up). Historically, prompts whose parameters the
+  // `beadsList` menu could not auto-supply (i.e. any plain `type: text` that
+  // was not `required: false`) were dropped, so a shortcut button configured
+  // for such a prompt rendered as a greyed "Prompt … not found" button. That
+  // conflates "menu can auto-fill this param" with "menu can dispatch this
+  // prompt" — the dispatch path (`handleRunBeadsListPrompt`) already opens
+  // the parameter dialog via `shouldOpenPromptDialog(prompt, "beadsList")`
+  // for anything it cannot auto-fill, so the extra client-side filter only
+  // hid usable prompts. The backend's `enabledWhen` gate still filters the
+  // list, and the shortcut resolver still shows a disabled button when a
+  // configured shortcut names a prompt that does not exist in the workspace.
   const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
     if (!workingDir) return [];
     try {
@@ -245,12 +256,7 @@ export function useBeadsIntegration({
       });
       const all = data?.prompts || [];
       return all
-        .filter(
-          (p) =>
-            p &&
-            promptMenuIncludes(p, "beadsList") &&
-            menuSatisfies(p, "beadsList"),
-        )
+        .filter((p) => p && promptMenuIncludes(p, "beadsList"))
         .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     } catch (err) {
       console.error("Failed to fetch beads list prompts for workspace:", err);
