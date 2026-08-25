@@ -63,6 +63,13 @@ records older than 24 hours become content-free expired/dead-letter tombstones,
 and Slack text is erased immediately once every snapshotted recipient is
 terminal. Files are bounded to 2,000 records and 8 MiB per app profile and are
 stored with mode `0600` under Mitto's app-data `slack-event-journal` directory.
+To keep a high-traffic channel from exhausting that cap, accepting a new event
+coalesces away any older still-`pending` record that shares the same
+`(recipient, ChannelID, ThreadTimestamp)` surface, keeping only the newest —
+so the journal is bounded by active conversation surface area rather than raw
+message volume. Only `pending` entries are superseded (`delivering`,
+`delivered`, `failed`, and `expired` are left untouched), and a pending
+`app_mention` is never coalesced away by a later plain message.
 
 Delivery is **at least once**. A process can crash after the loop dispatch is
 accepted but before the journal records `delivered`; startup recovery retries
