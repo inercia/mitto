@@ -12,7 +12,14 @@
 // Jest is not injected as a global under --experimental-vm-modules (ESM); we
 // must import it explicitly. testGlobals.js re-exports the lifecycle globals
 // and `jest` from whichever runner is active (Jest or bun:test).
-import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
+import {
+  describe,
+  test,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "../utils/testing/testGlobals.js";
 
 // =============================================================================
 // Render-branch logic (visibility of the Flush button)
@@ -694,5 +701,260 @@ describe("handleImprovePrompt — AbortError detection through SDK wrapping", ()
     wrapped.name = "MittoNetworkError";
     wrapped.cause = cause;
     expect(isImprovePromptTimeout(wrapped)).toBe(false);
+  });
+});
+
+// =============================================================================
+// mitto-47l: mobile scroll-driven compact composer.
+// Duplicated from ChatInput.js:1801-1806 (isScrollCompact derivation),
+// ChatInput.js:488-510 (debounced isScrollCollapsed effect), and
+// ChatInput.js:2486-2493 (compact class + render-gate independence) — keep
+// in sync with the source, per the file-level note above.
+// =============================================================================
+
+// Duplicated from ChatInput.js:1801-1806:
+//   const isScrollCompact = isMobile && isScrollCollapsed && !loopConfigured &&
+//     !mcpUIBlocking && !isTextareaFocused;
+function computeIsScrollCompact({
+  isMobile,
+  isScrollCollapsed,
+  loopConfigured = false,
+  mcpUIBlocking = false,
+  isTextareaFocused = false,
+}) {
+  return (
+    isMobile &&
+    isScrollCollapsed &&
+    !loopConfigured &&
+    !mcpUIBlocking &&
+    !isTextareaFocused
+  );
+}
+
+// Duplicated from ChatInput.js:488-510: the debounced effect that derives
+// isScrollCollapsed from the isAtBottom prop. Expansion is immediate/snappy;
+// collapse is delayed by COLLAPSE_DELAY_MS to avoid flicker near the scroll
+// threshold. Mirrors the timeoutRef-based cleanup pattern so re-running the
+// "effect" (simulating a dependency change) cancels any pending timer first,
+// exactly like React would on cleanup between effect runs.
+const SCROLL_COLLAPSE_DELAY_MS = 150;
+
+function runScrollCollapseEffect({ isAtBottom, setIsScrollCollapsed, timeoutRef }) {
+  if (timeoutRef.current) {
+    clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+  }
+  if (isAtBottom) {
+    setIsScrollCollapsed(false);
+    return () => {};
+  }
+  timeoutRef.current = setTimeout(() => {
+    setIsScrollCollapsed(true);
+  }, SCROLL_COLLAPSE_DELAY_MS);
+  return () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+}
+
+// Duplicated from ChatInput.js:2486-2493: the compact class applied to the
+// (always-mounted) .chat-input-container wrapper.
+function computeChatInputContainerClass(isScrollCompact) {
+  return `max-w-4xl mx-auto chat-input-container ${
+    isScrollCompact ? "chat-input-container--compact" : ""
+  }`;
+}
+
+describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
+  describe("isScrollCompact derivation", () => {
+    test("compact only when mobile + scroll-collapsed + no competing gate is active", () => {
+      expect(
+        computeIsScrollCompact({ isMobile: true, isScrollCollapsed: true }),
+      ).toBe(true);
+    });
+
+    test("not compact on desktop even if scroll-collapsed", () => {
+      expect(
+        computeIsScrollCompact({ isMobile: false, isScrollCollapsed: true }),
+      ).toBe(false);
+    });
+
+    test("not compact while not scroll-collapsed (at bottom)", () => {
+      expect(
+        computeIsScrollCompact({ isMobile: true, isScrollCollapsed: false }),
+      ).toBe(false);
+    });
+
+    test("loopConfigured takes priority: loop's own hide semantics win", () => {
+      expect(
+        computeIsScrollCompact({
+          isMobile: true,
+          isScrollCollapsed: true,
+          loopConfigured: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("mcpUIBlocking takes priority: a blocking MCP UI prompt wins", () => {
+      expect(
+        computeIsScrollCompact({
+          isMobile: true,
+          isScrollCollapsed: true,
+          mcpUIBlocking: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("an active textarea focus always forces expanded (not compact)", () => {
+      expect(
+        computeIsScrollCompact({
+          isMobile: true,
+          isScrollCollapsed: true,
+          isTextareaFocused: true,
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe("isScrollCollapsed debounce/hysteresis effect", () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test("scrolling to the bottom expands immediately (snappy), with no pending timer", () => {
+      const setIsScrollCollapsed = jest.fn();
+      const timeoutRef = { current: null };
+      runScrollCollapseEffect({
+        isAtBottom: true,
+        setIsScrollCollapsed,
+        timeoutRef,
+      });
+      expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
+      expect(timeoutRef.current).toBeNull();
+    });
+
+    test("scrolling away from the bottom does NOT collapse before the debounce elapses", () => {
+      const setIsScrollCollapsed = jest.fn();
+      const timeoutRef = { current: null };
+      runScrollCollapseEffect({
+        isAtBottom: false,
+        setIsScrollCollapsed,
+        timeoutRef,
+      });
+      expect(setIsScrollCollapsed).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(SCROLL_COLLAPSE_DELAY_MS - 1);
+      expect(setIsScrollCollapsed).not.toHaveBeenCalled();
+    });
+
+    test("scrolling away from the bottom collapses once the debounce elapses", () => {
+      const setIsScrollCollapsed = jest.fn();
+      const timeoutRef = { current: null };
+      runScrollCollapseEffect({
+        isAtBottom: false,
+        setIsScrollCollapsed,
+        timeoutRef,
+      });
+      jest.advanceTimersByTime(SCROLL_COLLAPSE_DELAY_MS);
+      expect(setIsScrollCollapsed).toHaveBeenCalledWith(true);
+    });
+
+    test("hysteresis: scrolling back to the bottom before the debounce elapses cancels the pending collapse", () => {
+      const setIsScrollCollapsed = jest.fn();
+      const timeoutRef = { current: null };
+      // Scroll away — arms the 150ms collapse timer.
+      const cleanup1 = runScrollCollapseEffect({
+        isAtBottom: false,
+        setIsScrollCollapsed,
+        timeoutRef,
+      });
+      jest.advanceTimersByTime(80);
+      // Dependency change: back at the bottom before the timer fired. React
+      // runs the previous effect's cleanup, then the new effect body.
+      cleanup1();
+      runScrollCollapseEffect({
+        isAtBottom: true,
+        setIsScrollCollapsed,
+        timeoutRef,
+      });
+      // Advance well past the original 150ms mark — the stale timer must
+      // never fire (no flicker back to collapsed).
+      jest.advanceTimersByTime(200);
+      expect(setIsScrollCollapsed).not.toHaveBeenCalledWith(true);
+      expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
+    });
+
+    test("unmount cleanup cancels a pending collapse timer", () => {
+      const setIsScrollCollapsed = jest.fn();
+      const timeoutRef = { current: null };
+      const cleanup = runScrollCollapseEffect({
+        isAtBottom: false,
+        setIsScrollCollapsed,
+        timeoutRef,
+      });
+      cleanup();
+      jest.advanceTimersByTime(SCROLL_COLLAPSE_DELAY_MS);
+      expect(setIsScrollCollapsed).not.toHaveBeenCalled();
+      expect(timeoutRef.current).toBeNull();
+    });
+  });
+
+  describe("compact class + mount-preservation invariant", () => {
+    test("compact adds the modifier class alongside the base classes (element stays the same node)", () => {
+      expect(computeChatInputContainerClass(true)).toBe(
+        "max-w-4xl mx-auto chat-input-container chat-input-container--compact",
+      );
+    });
+
+    test("non-compact renders the base classes only", () => {
+      expect(computeChatInputContainerClass(false)).toBe(
+        "max-w-4xl mx-auto chat-input-container ",
+      );
+    });
+
+    // The composition area's mount/unmount render gate (shouldShowCompositionArea,
+    // mitto-9l8) is `!mcpUIBlocking && !(isPromptCollapsed && loopConfigured)` —
+    // it does not reference isScrollCompact/isScrollCollapsed at all. This
+    // proves the scroll-driven compact state is purely a CSS-class toggle on
+    // an already-mounted node: draft text, pendingImages, and pendingFiles
+    // (owned by state further up the same component, never gated on
+    // isScrollCompact) are never unmounted by scrolling, unlike the
+    // isPromptCollapsed && loopConfigured path which fully unmounts the box.
+    test("the composition area stays mounted while scroll-compact (not gated by isPromptCollapsed/loopConfigured)", () => {
+      const isScrollCompact = computeIsScrollCompact({
+        isMobile: true,
+        isScrollCollapsed: true,
+      });
+      expect(isScrollCompact).toBe(true);
+      expect(
+        shouldShowCompositionArea({
+          isPromptCollapsed: false,
+          loopConfigured: false,
+          hasActiveUIPrompt: false,
+          promptType: undefined,
+        }),
+      ).toBe(true);
+    });
+
+    test("mcpUIBlocking still unmounts the composition area even while scroll-compact would otherwise apply", () => {
+      const isScrollCompact = computeIsScrollCompact({
+        isMobile: true,
+        isScrollCollapsed: true,
+        mcpUIBlocking: true,
+      });
+      expect(isScrollCompact).toBe(false);
+      expect(
+        shouldShowCompositionArea({
+          isPromptCollapsed: false,
+          loopConfigured: false,
+          hasActiveUIPrompt: true,
+          promptType: "options",
+        }),
+      ).toBe(false);
+    });
   });
 });
