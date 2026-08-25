@@ -383,12 +383,12 @@ prompt: |-
       title: "Investigate <id>: <short summary>",
       beads_issue: "<id>",
       prompt_name: "Support: investigate",
-      arguments: { "IssueID": "<id>", "SlackChannelID": "{{ $channel }}" },
+      arguments: { "IssueID": "<id>" },
       acp_server: <prefer a "coding" or "fast" tagged server>)
     ```
-    Passing `SlackChannelID` here lets the child inline the channel's playbook fragments at
-    prompt-render time (no runtime file read); it is also carried through into the child's
-    bead metadata via its own Step 2.
+    The child derives the Slack channel from the bead's `metadata.slack_channel` at render
+    time (set when the bead was created, per the Beads tracking model above), so no channel
+    argument is needed here.
     The child runs "Support: investigate" end-to-end on that bead: it gathers the answer from the
     channel's playbook fragments under **`.mitto/support/{{ $channel }}/`** (owning
     `investigation.md`, `resources.md`, `escalation.md`, and optionally `redirects.md`), records

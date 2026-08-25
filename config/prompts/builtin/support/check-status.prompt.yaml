@@ -3,7 +3,7 @@ description: 'Refresh a tracked support question from Slack, update its bead, an
 group: Support
 backgroundColor: '#E1BEE7'
 icon: sync
-menus: beadsIssues, conversation, prompts
+menus: beadsIssues, conversation
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
 tags:
 - support
@@ -16,20 +16,13 @@ parameters:
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
     required: false
     type: beadsId
-  - name: SlackChannelID
-    type: slackChannel
-    required: false
-    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
 prompt: |-
   {{- $bead := .Session.BeadsIssue -}}
   {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
-  {{- $channel := Arg "SlackChannelID" "" -}}
-  {{- if eq $channel "" -}}
-  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
-  {{- end -}}
+  {{- $channel := BeadMetadata $bead "slack_channel" -}}
   # Support — Check Status
 
   {{ template "_shared/session-context" . }}

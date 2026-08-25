@@ -336,8 +336,12 @@ func TestChannelToneDefaultFallback(t *testing.T) {
 	}
 
 	// A real tone.md remains authoritative and suppresses the fallback.
-	tmpDir := t.TempDir()
+	// `Support: reply to user` derives the channel from the linked bead's
+	// `metadata.slack_channel` (no SlackChannelID param), so wire the custom
+	// channel through a fake bead rather than an explicit arg.
 	channel := "C0CUSTOMTONE"
+	installFakeBdForRender(t, `[{"id":"mitto-1","status":"open","labels":["support-question"],"metadata":{"slack_channel":"`+channel+`"}}]`)
+	tmpDir := t.TempDir()
 	fragmentDir := filepath.Join(tmpDir, ".mitto", "support", channel)
 	if err := os.MkdirAll(fragmentDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -348,7 +352,7 @@ func TestChannelToneDefaultFallback(t *testing.T) {
 	customCtx := &cel.PromptEnabledContext{
 		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
 		Workspace: cel.WorkspaceContext{Folder: tmpDir},
-		Args:      map[string]string{"SlackChannelID": channel},
+		Args:      map[string]string{"IssueID": "mitto-1"},
 	}
 	out := renderSupportPrompt(t, "Support: reply to user", customCtx)
 	if !strings.Contains(out, "CUSTOM-TONE-SENTINEL") {
@@ -1205,51 +1209,6 @@ func TestBeadMetadataFallbackLegacyBeadStillReadsAtRuntime(t *testing.T) {
 			}
 			if strings.Contains(out, "C0DERIVED") {
 				t.Errorf("legacy bead render unexpectedly contains 'C0DERIVED' — tests are aliasing via cache or fake-bd is leaking across cases")
-			}
-		})
-	}
-}
-
-// TestBeadMetadataFallbackExplicitSlackChannelIDWins (mitto-09k) verifies the
-// argument-wins semantics: when the caller passes an explicit `SlackChannelID`
-// (as the loop-spawned `Support: continue conversation` and `Support:
-// investigate` paths do), the fallback must NOT overwrite it — even if the
-// bead's `metadata.slack_channel` would have resolved to a different value.
-// This is the "Arg wins" branch of `{{- if eq $channel "" -}}`.
-//
-// Setup:
-//   - Fake `bd show` returns metadata.slack_channel = C0METADATA (deliberately
-//     different from the caller-supplied value).
-//   - Caller passes SlackChannelID = C0EXPLICIT.
-//
-// Assertions:
-//   - Rendered output contains "C0EXPLICIT" (caller-supplied value wins).
-//   - Rendered output does NOT contain "C0METADATA" (fallback did not fire).
-func TestBeadMetadataFallbackExplicitSlackChannelIDWins(t *testing.T) {
-	installFakeBdForRender(t, `[{"id":"mitto-1","status":"open","labels":["support-question"],"metadata":{"slack_channel":"C0METADATA"}}]`)
-	tmpDir := t.TempDir()
-
-	ctx := &cel.PromptEnabledContext{
-		Session:   cel.SessionContext{ID: "s", Name: "N", HasMessages: true},
-		Workspace: cel.WorkspaceContext{Folder: tmpDir},
-		Args: map[string]string{
-			"IssueID":        "mitto-1",
-			"SlackChannelID": "C0EXPLICIT",
-		},
-	}
-	consumers := []string{
-		"Support: check status",
-		"Support: reply to user",
-		"Support: gather more information",
-	}
-	for _, name := range consumers {
-		t.Run(name, func(t *testing.T) {
-			out := renderSupportPrompt(t, name, ctx)
-			if !strings.Contains(out, "C0EXPLICIT") {
-				t.Errorf("caller-supplied SlackChannelID=C0EXPLICIT not present in render — the explicit arg did not flow through")
-			}
-			if strings.Contains(out, "C0METADATA") {
-				t.Errorf("render unexpectedly contains 'C0METADATA' — BeadMetadata fallback overwrote a non-empty caller-supplied $channel")
 			}
 		})
 	}

@@ -3,7 +3,7 @@ description: 'Review and post our draft to a tracked support question (bead in s
 group: Support
 backgroundColor: '#B3E5FC'
 icon: chat-bubble
-menus: beadsIssues, conversation, prompts
+menus: beadsIssues, conversation
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels && "state:drafting" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")))'
 tags:
 - support
@@ -16,17 +16,10 @@ parameters:
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
     required: false
     type: beadsId
-  - name: SlackChannelID
-    type: slackChannel
-    required: false
-    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the prompt auto-derives it from the linked bead''s `metadata.slack_channel` field (via `BeadMetadata`); if that is also empty, the fragment reader falls back to instructing the agent to read the file at runtime.'
 prompt: |-
   {{- $bead := .Session.BeadsIssue -}}
   {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
-  {{- $channel := Arg "SlackChannelID" "" -}}
-  {{- if eq $channel "" -}}
-  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
-  {{- end -}}
+  {{- $channel := BeadMetadata $bead "slack_channel" -}}
   # Support — Reply to User
 
   {{ template "_shared/session-context" . }}

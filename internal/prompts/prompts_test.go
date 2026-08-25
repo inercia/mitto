@@ -3000,12 +3000,21 @@ prompt: |
 }
 
 // TestBuiltinPrompts_SlackChannelParamsUseSlackChannelType pins mitto-uqq.5:
-// the 8 builtin prompts that accept a Slack channel ID/link parameter must
+// the builtin prompts that accept a Slack channel ID/link parameter must
 // declare `type: slackChannel` (not the legacy `type: text`) so the parameter
 // dialog renders the unified Slack channel picker (mitto-uqq.1-.4) instead of
 // a bare text field. Each entry names the exact parameter (some files use
 // `SlackChannel`, most use `SlackChannelID` — see the mitto-uqq.5 plan
 // comment) so a future rename or reversion to `text` is caught file-by-file.
+//
+// The bead-gated support prompts `support/check-status.prompt.yaml`,
+// `support/investigate.prompt.yaml`, `support/gather-info.prompt.yaml`, and
+// `support/reply-to-user.prompt.yaml` deliberately have NO Slack channel
+// parameter: they only ever run with a support bead in context, and that bead
+// always carries the channel, so they derive it from
+// `BeadMetadata $bead "slack_channel"` instead of accepting a picker argument.
+// The prompts that remain below are channel *discovery* entry points (no bead
+// exists yet) and so keep the picker parameter.
 func TestBuiltinPrompts_SlackChannelParamsUseSlackChannelType(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
@@ -3015,12 +3024,8 @@ func TestBuiltinPrompts_SlackChannelParamsUseSlackChannelType(t *testing.T) {
 		paramName string
 	}{
 		{file: "github/review-slack-prs.prompt.yaml", paramName: "SlackChannel"},
-		{file: "support/gather-info.prompt.yaml", paramName: "SlackChannelID"},
-		{file: "support/investigate.prompt.yaml", paramName: "SlackChannelID"},
 		{file: "support/continue-conversation.prompt.yaml", paramName: "SlackChannelID"},
 		{file: "support/watch-channel.prompt.yaml", paramName: "SlackChannelID"},
-		{file: "support/reply-to-user.prompt.yaml", paramName: "SlackChannelID"},
-		{file: "support/check-status.prompt.yaml", paramName: "SlackChannelID"},
 		{file: "on-call/watch-and-summarize.prompt.yaml", paramName: "SlackChannelID"},
 	}
 

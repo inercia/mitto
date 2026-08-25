@@ -3,7 +3,7 @@ description: 'Investigate a tracked support question internally using the channe
 group: Support
 backgroundColor: '#D1C4E9'
 icon: search
-menus: beadsIssues, conversation, prompts
+menus: beadsIssues, conversation
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
 tags:
 - support
@@ -16,17 +16,10 @@ parameters:
     description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
     required: false
     type: beadsId
-  - name: SlackChannelID
-    type: slackChannel
-    required: false
-    description: 'The Slack channel ID (e.g. C0XXXXXXX). Optional; when set at spawn time it is used to inline channel playbook fragments at render time. When omitted, the fragment reader falls back to instructing the agent to read the file at runtime using the bead metadata slack_channel field.'
 prompt: |-
   {{- $bead := .Session.BeadsIssue -}}
   {{- if eq $bead "" -}}{{ $bead = Arg "IssueID" "" }}{{- end -}}
-  {{- $channel := Arg "SlackChannelID" "" -}}
-  {{- if eq $channel "" -}}
-  {{-   $channel = BeadMetadata $bead "slack_channel" -}}
-  {{- end -}}
+  {{- $channel := BeadMetadata $bead "slack_channel" -}}
   # Support — Investigate
 
   {{ template "_shared/session-context" . }}
