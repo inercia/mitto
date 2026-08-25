@@ -61,17 +61,17 @@ Blocks](#existing-building-blocks)).
 
 The design reuses, rather than reinvents, the following:
 
-| Capability | Existing component |
-| --- | --- |
-| Watch `.beads` across all workspaces | single shared `BeadsWatcher` |
-| Event coalescing, startup recovery, retries | `LoopRunner` (`internal/conversation/loop_runner.go`) |
-| Per-workspace concurrency cap + semaphore | `tryReserveWorkspaceSlot` / `releaseWorkspaceSlot`, `DefaultLoopWorkspaceConcurrency` |
-| onTasks diffing against a baseline | `loop_runner_tasks.go` |
-| Per-folder Beads settings store | `folders.json` / `BeadsFolderSettings` |
-| Folder-level config UI surface | Tasks/Beads settings tab |
-| Resolve default workspace/ACP server for a folder | `SessionManager` |
-| Formal issue↔conversation ownership | `beads_issue` link |
-| `bd` CLI access from Go | `internal/beads/beads.go` |
+| Capability                                        | Existing component                                                                    |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Watch `.beads` across all workspaces              | single shared `BeadsWatcher`                                                          |
+| Event coalescing, startup recovery, retries       | `LoopRunner` (`internal/conversation/loop_runner.go`)                                 |
+| Per-workspace concurrency cap + semaphore         | `tryReserveWorkspaceSlot` / `releaseWorkspaceSlot`, `DefaultLoopWorkspaceConcurrency` |
+| onTasks diffing against a baseline                | `loop_runner_tasks.go`                                                                |
+| Per-folder Beads settings store                   | `folders.json` / `BeadsFolderSettings`                                                |
+| Folder-level config UI surface                    | Tasks/Beads settings tab                                                              |
+| Resolve default workspace/ACP server for a folder | `SessionManager`                                                                      |
+| Formal issue↔conversation ownership               | `beads_issue` link                                                                    |
+| `bd` CLI access from Go                           | `internal/beads/beads.go`                                                             |
 
 ## Architecture Overview
 
@@ -137,7 +137,7 @@ them into code makes them **testable rather than eliminated**:
 - Atomic claim-and-spawn without a time-of-check/time-of-use race.
 - Crash recovery between claiming a bead and creating its worker.
 - Stale/malformed claim reconciliation.
-- Reopen episodes: deciding whether terminal labels belong to the *current*
+- Reopen episodes: deciding whether terminal labels belong to the _current_
   episode or a prior one.
 - Worker cleanup that does not kill a legitimate long-running turn.
 - Undefer detection from comment or description changes.
@@ -213,6 +213,135 @@ default.** Likely per-folder policy fields:
 - Additional instructions.
 - Optional process-wide worker cap.
 
+## Customizable Inner-Loop Sequence
+
+Distinct from replacing the supervisor: a frequently-requested capability is
+letting a user **customize the ordered steps an agent takes to solve one bead**
+(the "inner loop", e.g. `investigate → reproduce → fix`). This is a separate,
+smaller deliverable that can ship independently of — and before — the
+`TaskAutomationManager`.
+
+### Where the inner loop lives today
+
+The inner loop is **not a Go construct**. It is a **label-encoded state machine
+implemented entirely in prompt YAML bodies**:
+
+| Layer           | File(s)                                                                                             | Role                                                                                                                                                                                |
+| --------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Driver          | `beads-issues/loop-fixing-bug.prompt.yaml`                                                          | `onCompletion` loop; reads live bead labels, dispatches the next phase prompt **by name** via `mitto_conversation_send_prompt` (self-send), self-terminates once `fixed` is reached |
+| Phases          | `fix-phase-investigate.prompt.yaml`, `fix-phase-reproduce.prompt.yaml`, `fix-phase-fix.prompt.yaml` | Each does one stage, declares its own `preferredModels` tier, appends its terminal label (`researched` / `reproduced` / `fixed`)                                                    |
+| Shared partials | `beads-issues/shared/*.tmpl`                                                                        | `target-bead-header-strict`, `tier-check`, `additional-instructions` — reused across phases                                                                                         |
+
+The **sequence itself is implicit**: it is the hardcoded label ordering
+(`researched → reproduced → fixed`) plus the driver's branch logic. There is no
+structured "sequence" object anywhere. The `LoopRunner` knows nothing about
+phases; it only knows "re-fire this one prompt on completion." Changing the
+sequence today requires forking the driver prompt and every phase prompt.
+
+### Feasibility
+
+Feasible and architecturally well-supported, because the primitives already
+exist and just aren't composed into a first-class sequence:
+
+- **Phase prompts are already named, discrete, self-contained units** with their
+  own model tier and label contract — exactly the granularity a sequence needs.
+- **Per-phase model tiering already works** via `preferredModels` +
+  `setActiveModelOnly()` (transient, no baseline mutation).
+- **Config layering already supports global-default + folder-override**
+  (`settings.json` ↔ `.mittorc` / `folders.json` via `ApplyFolderDefaults`,
+  `LoadWorkspaceRC`). A "sequence" is just another orderable list at those two
+  levels — structurally identical to the **Models tab** (ordered, add / remove /
+  reorder, order = priority) and the folder **Beads tab** (per-folder overrides
+  of a global default).
+- **Dispatch is already name-based.** "Pick next phase" generalizes to "walk the
+  configured list, find the first entry whose terminal label is absent, dispatch
+  it."
+
+Two viable implementation tiers:
+
+- **Tier A (prompt-data, low risk, recommended):** the sequence lives in config
+  and is injected into the driver prompt's template context (like
+  `.ACP.AvailableText` / `.Children.MCPText` today). The driver iterates it.
+  `LoopRunner` is untouched. This is a pure superset of today's behavior.
+- **Tier B (Go-native, high risk):** sequencing moves into Go (the
+  `TaskAutomationManager`), phases dispatched programmatically. This is the
+  larger effort scoped by the rest of this document and should **not** be
+  conflated with "make the sequence customizable."
+
+### Complexity estimate (Tier A)
+
+- **Backend (config + injection) — Medium.** New `PhaseSequence []PhaseStep`
+  where `PhaseStep{PromptName, TerminalLabel, ModelTag}` — mirror the
+  `ModelProfile` / `ShortcutButton` pattern. Add to `Settings` (global default)
+  and `WorkspaceRC` / `FolderSettings` (override) with `ApplyFolderDefaults`
+  precedence. Seed today's flows as hardcoded Go defaults (the
+  `DefaultModelProfiles()` pattern) **and** a first-install-only
+  `config.default.yaml` seed, so it resolves even for pre-existing
+  `settings.json`. Inject the resolved sequence into the driver's template
+  context. New REST `GET/PUT /api/global/phase-sequences` + folder equivalent,
+  mirroring `global_shortcuts.go` / `folder_pin.go` (read-modify-write
+  preserving unrelated settings; broadcast a `phase_sequences_updated` event).
+- **Frontend (Settings + folder tab) — Medium.** A reorderable list editor in
+  the Settings dialog — the **Models tab is a near-exact template**. Each row: a
+  phase-prompt picker (populated from `menus:internal` phase prompts, like the
+  upstream-prompt selectors in `WorkspaceFolderBeadsTab.js`), a terminal-label
+  input, and an optional `ModelTagSelect`. A folder-level override in
+  `WorkspaceFolderBeadsTab.js` (append/override toggle like `FolderListEditor`).
+  Refresh via a `mitto:phase_sequences_updated` window event.
+- **Prompts — Medium-High (the real work).** Rewrite `loop-fixing-bug` (and the
+  feature driver) to **iterate an injected sequence** instead of hardcoding
+  label branches. The driver's phase-detection preamble, the "advance exactly
+  one stage per run" invariant, `freshContext`, and the self-terminate
+  condition all currently assume the fixed 3-label ladder. Generalizing to
+  "first step whose terminal label is absent; terminate when the last configured
+  label is present" must preserve those invariants. Phase prompts can stay
+  as-is when reused; **arbitrary user phases** need a documented contract (a
+  phase MUST append exactly its terminal label and be idempotent) — this
+  contract does not exist in writing today and is the main correctness hazard.
+
+### Risks & open questions (inner-loop customization)
+
+1. **Backwards compatibility.** The default sequence must reproduce today's
+   behavior byte-for-byte. Mitigation: hardcoded Go defaults + first-install
+   YAML seed. Live loops mid-flight tolerate a sequence change between fires
+   **only if** terminal-label meanings are unchanged (the driver re-reads bead
+   state every fire).
+2. **Label contract for user phases.** Nothing enforces "one terminal label per
+   run, idempotent on re-run." A malformed custom phase could loop forever or
+   skip stages. Needs a validated contract + the existing `maxIterations: 20`
+   backstop.
+3. **Per-type sequences.** Bug vs feature vs chore flows differ. Per-bead-type
+   sequences, or one global sequence with type gates? Unresolved UX decision.
+4. **Multi-trigger interaction.** The supervisor forwards
+   `AdditionalInstructions` down the chain; a custom sequence must be forwarded
+   / resolved consistently across supervisor → driver → phase (mind the
+   `arguments` vs `loop_arguments` mirroring trap in `31-loop-prompts.md`).
+5. **Model-tag validity.** Custom `modelTag` entries must pass
+   `make check-model-tags` / `CanonicalModelTags()` or silently no-op.
+6. **UX ambiguity.** Users can already edit prompts. A separate "sequence"
+   editor risks two overlapping mental models. Frame the sequence as the
+   _ladder_ and phases as the _rungs_.
+7. **Discoverability.** Phase prompts are `menus:internal` (hidden); the picker
+   must surface them without exposing them in the normal prompt menu.
+
+### Recommended next steps (inner-loop customization)
+
+1. **Commit to Tier A**; defer Tier B to the `TaskAutomationManager` epic —
+   these are separate deliverables.
+2. **Prototype the data model** — `PhaseStep` / `PhaseSequence` in
+   `internal/config`, hardcoded Go default reproducing the bug flow, plus a
+   `config.default.yaml` seed. No UI yet.
+3. **Rewrite one driver** (`loop-fixing-bug`) to iterate the injected sequence
+   behind an unchanged default; verify behavior is byte-identical via the
+   existing bug-flow integration/loop tests.
+4. **Write the phase contract doc** (terminal-label idempotency, one label per
+   run) and add a builtin-prompt lint test asserting each phase declares its
+   terminal label — before exposing custom phases.
+5. **Add the Settings editor** cloning the Models tab, then the folder override
+   in the Beads tab.
+6. **Scope per-type sequences** as a follow-up once the single-flow path is
+   proven.
+
 ## Migration Plan
 
 **Hard constraint:** the programmatic scheduler and existing supervisor loops
@@ -242,7 +371,7 @@ Suggested staged rollout:
 2. **Worker→manager metadata channel.** How do workers report structured
    results (verified-landed, `work_paths`, deferral cause)? Via child task
    reports, bead comments with a reserved namespace, or a new sidecar?
-3. **Crash-window recovery.** Exact reconciliation for a crash *between* lease
+3. **Crash-window recovery.** Exact reconciliation for a crash _between_ lease
    acquisition and worker spawn — heartbeat TTL vs. explicit orphan sweep.
 4. **Reopen-episode boundary.** Deterministic rule for attributing terminal
    labels to the current vs a prior episode without semantic inspection.
@@ -259,6 +388,14 @@ Suggested staged rollout:
 
 - Current supervisor:
   `config/prompts/builtin/beads-issues/loop-processing.prompt.yaml`
+- Inner-loop driver + phases (customizable-sequence analysis):
+  `config/prompts/builtin/beads-issues/loop-fixing-bug.prompt.yaml`,
+  `config/prompts/builtin/beads-issues/fix-phase-{investigate,reproduce,fix}.prompt.yaml`
+- Config layering + folder overrides: `internal/config/workspace_rc.go`,
+  `internal/config/folders.go`, `internal/config/settings.go`
+- Settings/folder UI templates for the sequence editor:
+  `web/static/components/SettingsDialog.js` (Models tab),
+  `web/static/components/WorkspaceFolderBeadsTab.js`
 - Loop dispatch machinery: [Message Queue](message-queue.md)
 - Ownership model: [Session Management](session-management.md)
 - Loop trigger internals: `internal/conversation/loop_runner.go`,
