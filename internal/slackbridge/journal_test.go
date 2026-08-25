@@ -281,3 +281,197 @@ func TestFileJournalDeliveredTombstoneRetainsFromDeliveryTime(t *testing.T) {
 		t.Fatalf("delivered tombstone retained beyond 24h from delivery: stats=%+v err=%v", stats, err)
 	}
 }
+
+// findRecord returns the record with the given EventID, or nil.
+func findRecord(doc *journalDocument, eventID string) *journalRecord {
+	for i := range doc.Records {
+		if doc.Records[i].Event.EventID == eventID {
+			return &doc.Records[i]
+		}
+	}
+	return nil
+}
+
+// recipientByID returns the recipient with the given SessionID within
+// recipients, or nil.
+func recipientByID(recipients []journalRecipient, sessionID string) *journalRecipient {
+	for i := range recipients {
+		if recipients[i].SessionID == sessionID {
+			return &recipients[i]
+		}
+	}
+	return nil
+}
+
+// TestCoalesceSupersededBurstKeepsOnlyNewestPending covers the primary
+// mitto-7vk acceptance criterion: a burst of N plain "message" events in one
+// thread for one subscribed session leaves at most ONE pending record for
+// that (session, channel, thread), and the retained record is the NEWEST.
+func TestCoalesceSupersededBurstKeepsOnlyNewestPending(t *testing.T) {
+	j, _ := newTestJournal(t)
+	for n := 0; n < 50; n++ {
+		if _, err := j.Accept("app", Event{EventID: fmt.Sprintf("m%02d", n), ChannelID: "c1", ThreadTimestamp: "t1",
+			Kind: "message", Text: "x"}, []journalRecipient{{SessionID: "s"}}); err != nil {
+			t.Fatalf("Accept(m%02d) err=%v", n, err)
+		}
+	}
+	doc := readJournalDocument(t, j, "app")
+	if len(doc.Records) != 1 {
+		t.Fatalf("records=%#v, want exactly one surviving record after burst coalescing", doc.Records)
+	}
+	if doc.Records[0].Event.EventID != "m49" {
+		t.Fatalf("retained record=%q, want newest event m49", doc.Records[0].Event.EventID)
+	}
+	if len(doc.Records[0].Recipients) != 1 || doc.Records[0].Recipients[0].State != recipientPending {
+		t.Fatalf("retained record recipients=%#v, want one pending recipient", doc.Records[0].Recipients)
+	}
+}
+
+// TestCoalesceNeverDropsPendingAppMention covers the mention carve-out: a
+// pending app_mention must never be superseded by a later plain message in
+// the same thread, while later plain messages still coalesce among
+// themselves.
+func TestCoalesceNeverDropsPendingAppMention(t *testing.T) {
+	j, _ := newTestJournal(t)
+	if _, err := j.Accept("app", Event{EventID: "mention", ChannelID: "c1", ThreadTimestamp: "t1",
+		Kind: "app_mention", Text: "@bot help"}, []journalRecipient{{SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	for n := 0; n < 5; n++ {
+		if _, err := j.Accept("app", Event{EventID: fmt.Sprintf("m%02d", n), ChannelID: "c1", ThreadTimestamp: "t1",
+			Kind: "message", Text: "x"}, []journalRecipient{{SessionID: "s"}}); err != nil {
+			t.Fatalf("Accept(m%02d) err=%v", n, err)
+		}
+	}
+	doc := readJournalDocument(t, j, "app")
+	mention := findRecord(doc, "mention")
+	if mention == nil {
+		t.Fatal("pending app_mention was dropped by a later plain message")
+	}
+	if len(mention.Recipients) != 1 || mention.Recipients[0].State != recipientPending || mention.Event.Text != "@bot help" {
+		t.Fatalf("mention record mutated by coalescing: %#v", *mention)
+	}
+	newest := findRecord(doc, "m04")
+	if newest == nil {
+		t.Fatal("newest message m04 missing")
+	}
+	if len(doc.Records) != 2 {
+		t.Fatalf("records=%#v, want exactly [mention, newest message]", doc.Records)
+	}
+}
+
+// TestCoalesceDistinctThreadNotCoalesced covers thread isolation: events
+// sharing a channel and session but with distinct ThreadTimestamp values
+// must not coalesce with each other.
+func TestCoalesceDistinctThreadNotCoalesced(t *testing.T) {
+	j, _ := newTestJournal(t)
+	if _, err := j.Accept("app", Event{EventID: "e1", ChannelID: "c1", ThreadTimestamp: "t1", Kind: "message"},
+		[]journalRecipient{{SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Accept("app", Event{EventID: "e2", ChannelID: "c1", ThreadTimestamp: "t2", Kind: "message"},
+		[]journalRecipient{{SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	doc := readJournalDocument(t, j, "app")
+	if len(doc.Records) != 2 {
+		t.Fatalf("records=%#v, want both threads' events preserved uncoalesced", doc.Records)
+	}
+	for _, id := range []string{"e1", "e2"} {
+		r := findRecord(doc, id)
+		if r == nil || len(r.Recipients) != 1 || r.Recipients[0].State != recipientPending {
+			t.Fatalf("record %q=%#v, want a surviving pending recipient", id, r)
+		}
+	}
+}
+
+// TestCoalesceSessionIndependenceAsymmetricRecipients covers per-recipient
+// coalescing: two sessions subscribed to the same channel/thread each retain
+// their own pending event, and coalescing triggered by one session's newer
+// event must not affect a different session's still-pending entry sharing
+// the same older record (asymmetric recipient sets).
+func TestCoalesceSessionIndependenceAsymmetricRecipients(t *testing.T) {
+	j, _ := newTestJournal(t)
+	if _, err := j.Accept("app", Event{EventID: "e1", ChannelID: "c1", ThreadTimestamp: "t1", Kind: "message"},
+		[]journalRecipient{{SessionID: "a"}, {SessionID: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	// e2 supersedes only session "a"'s pending entry in e1; session "b" is
+	// not a recipient of e2 and must keep its own pending delivery of e1.
+	if _, err := j.Accept("app", Event{EventID: "e2", ChannelID: "c1", ThreadTimestamp: "t1", Kind: "message"},
+		[]journalRecipient{{SessionID: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	doc := readJournalDocument(t, j, "app")
+	e1 := findRecord(doc, "e1")
+	if e1 == nil {
+		t.Fatal("e1 was dropped entirely, but session b's pending delivery must survive")
+	}
+	if len(e1.Recipients) != 1 || e1.Recipients[0].SessionID != "b" || e1.Recipients[0].State != recipientPending {
+		t.Fatalf("e1 recipients=%#v, want only session b still pending", e1.Recipients)
+	}
+	e2 := findRecord(doc, "e2")
+	if e2 == nil || len(e2.Recipients) != 1 || e2.Recipients[0].SessionID != "a" || e2.Recipients[0].State != recipientPending {
+		t.Fatalf("e2 recipients=%#v, want session a pending", e2)
+	}
+}
+
+// TestCoalesceNeverDropsNonPendingRecipients covers the state-protection
+// invariant: delivering/delivered/failed/expired recipient entries are never
+// dropped by coalescing, even when a newer event shares the same
+// (session, channel, thread) surface -- coalescing must not race an
+// in-flight claim or discard delivery bookkeeping.
+func TestCoalesceNeverDropsNonPendingRecipients(t *testing.T) {
+	for _, state := range []string{recipientDelivering, recipientDelivered, recipientFailed, recipientExpired} {
+		t.Run(state, func(t *testing.T) {
+			j, now := newTestJournal(t)
+			doc := &journalDocument{Version: journalVersion, AppID: "app", NextSequence: 1, Records: []journalRecord{{
+				Sequence:   1,
+				Event:      Event{EventID: "old", ChannelID: "c1", ThreadTimestamp: "t1", Kind: "message", Text: "keep"},
+				Recipients: []journalRecipient{{SessionID: "s", State: state, UpdatedAt: *now}},
+				AcceptedAt: *now,
+			}}}
+			path, _ := j.path("app")
+			if err := j.writeLocked(path, doc); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := j.Accept("app", Event{EventID: "new", ChannelID: "c1", ThreadTimestamp: "t1", Kind: "message"},
+				[]journalRecipient{{SessionID: "s"}}); err != nil {
+				t.Fatal(err)
+			}
+			persisted := readJournalDocument(t, j, "app")
+			old := findRecord(persisted, "old")
+			if old == nil {
+				t.Fatalf("record in non-pending state %q was dropped by coalescing", state)
+			}
+			recipient := recipientByID(old.Recipients, "s")
+			if recipient == nil || recipient.State != state {
+				t.Fatalf("recipient state mutated by coalescing: got %#v, want state=%q untouched", recipient, state)
+			}
+			if findRecord(persisted, "new") == nil {
+				t.Fatal("new event was not accepted")
+			}
+		})
+	}
+}
+
+// TestCoalesceFirehosePreventsJournalFull covers the capacity acceptance
+// criterion: a single-thread firehose that would previously have hit the
+// journalMaxRecords cap must never return ErrJournalFull once superseded
+// pending records are coalesced away as they arrive.
+func TestCoalesceFirehosePreventsJournalFull(t *testing.T) {
+	j, _ := newTestJournal(t)
+	for n := 0; n < journalMaxRecords+50; n++ {
+		if _, err := j.Accept("app", Event{EventID: fmt.Sprintf("f%d", n), ChannelID: "c1", ThreadTimestamp: "t1", Kind: "message"},
+			[]journalRecipient{{SessionID: "s"}}); err != nil {
+			t.Fatalf("Accept(f%d) unexpected error (want no ErrJournalFull for a coalesced single-thread firehose): %v", n, err)
+		}
+	}
+	doc := readJournalDocument(t, j, "app")
+	if len(doc.Records) != 1 {
+		t.Fatalf("records=%#v, want the firehose bounded to a single surviving record", doc.Records)
+	}
+	if doc.Records[0].Event.EventID != fmt.Sprintf("f%d", journalMaxRecords+49) {
+		t.Fatalf("retained record=%q, want the newest event", doc.Records[0].Event.EventID)
+	}
+}
