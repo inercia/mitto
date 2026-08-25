@@ -141,6 +141,16 @@ Combine Mitto's authentication with tunnel-level auth:
 - Cloudflare: Cloudflare Access
 - Tailscale: Tailnet ACLs
 
+### Consider Passkey (WebAuthn) Authentication
+
+If your `external_address` is a **stable https URL** (a fixed domain, not a
+per-restart random tunnel address), you can additionally enable passkey login —
+see [Passkey (WebAuthn) Authentication](web/README.md#passkey-webauthn-authentication)
+for setup, how the Relying Party ID/origin are derived from `external_address`,
+browser support for auto-enroll, and the origin-match caveat (a passkey scoped to
+the external domain will not work when accessing via `localhost`). Username/password
+remains the universal fallback either way.
+
 ### Monitor Access
 
 Enable debug logging to monitor external connections:
@@ -153,9 +163,10 @@ mitto web --debug
 
 ## Related Documentation
 
-| Topic             | Location                                              |
-| ----------------- | ----------------------------------------------------- |
-| Web Configuration | [web/README.md](web/README.md)                        |
-| Authentication    | [web/README.md](web/README.md#authentication)         |
-| Lifecycle Hooks   | [web/README.md](web/README.md#lifecycle-hooks)        |
-| Security Settings | [web/README.md](web/README.md#security-configuration) |
+| Topic              | Location                                                       |
+| ------------------ | ---------------------------------------------------------------- |
+| Web Configuration  | [web/README.md](web/README.md)                                   |
+| Authentication     | [web/README.md](web/README.md#authentication)                    |
+| Passkey (WebAuthn) | [web/README.md](web/README.md#passkey-webauthn-authentication)   |
+| Lifecycle Hooks    | [web/README.md](web/README.md#lifecycle-hooks)                   |
+| Security Settings  | [web/README.md](web/README.md#security-configuration)            |

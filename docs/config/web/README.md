@@ -220,6 +220,51 @@ everywhere instead of leaving the server and the file disagreeing.
   exported `MITTO_TOKEN` values — is rejected immediately and must re-read
   `instance.json`.
 
+### Passkey (WebAuthn) Authentication
+
+Passkeys are an **additive** login method — always alongside `simple`/`cloudflare`,
+never a replacement. Enable with:
+
+```yaml
+web:
+  auth:
+    webauthn:
+      enabled: true
+      # rp_id: mitto.example.com         # optional override; auto-derived otherwise
+      # rp_origin: https://mitto.example.com
+      # rp_display_name: Mitto           # shown to the user during registration/login (default: "Mitto")
+```
+
+**Relying Party (RP) derivation.** By default, the RP ID (host) and RP origin
+(`scheme://host`) are derived from
+[`web.hooks.external_address`](../ext-access.md#built-in-external-listener), which
+must be a **stable https URL** — an ephemeral/random tunnel address (e.g. a fresh
+quick-tunnel URL generated on every restart) must not be used, since the RP would
+change on restart and invalidate existing passkeys. `rp_id`/`rp_origin` override the
+derived value for their respective piece; if both are set, `external_address` is not
+consulted at all. If passkeys are enabled but no https `external_address` (or
+override) can be resolved, saving the configuration is rejected with a clear error.
+
+**Availability.** `GET /api/auth-info` reports a `passkey` boolean alongside
+`simple`/`cloudflare` so the login page and Settings UI can adapt.
+
+**Register / login.** Once enabled, users can register a passkey and log in with it
+via the browser's native `navigator.credentials.create()`/`get()` APIs. Registered
+credentials can be listed and revoked from Settings.
+
+**Auto-enroll (Conditional Create).** After a successful password login, supporting
+browsers may silently offer to create a passkey without an extra prompt
+("Conditional Create"). This is **best-effort and browser-limited** — today: Chrome +
+Google Password Manager on desktop, Chrome Android 142+, and partial Safari support —
+and requires a recently-used saved password; unsupported browsers simply skip it.
+Username/password always remains the universal fallback, and passkey login is never
+the sole authentication method.
+
+**Origin-match constraint.** A passkey is scoped to the RP ID it was registered with.
+A passkey registered against `mitto.example.com` will **not** validate when the same
+server is reached via `localhost` or any other address — this is inherent WebAuthn
+behavior, not a Mitto limitation.
+
 ### Rate Limiting
 
 Authentication includes automatic rate limiting:

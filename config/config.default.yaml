@@ -180,15 +180,21 @@ web:
   #       - ::1
   #       - 192.168.0.0/24
   #
-  #   # Passkey (WebAuthn) authentication, additive to simple/Cloudflare login.
+  #   # Passkey (WebAuthn) authentication, additive to simple/Cloudflare login
+  #   # (username/password always remains the universal fallback).
   #   # Requires web.hooks.external_address to be set to a stable https URL —
   #   # its host/origin become the Relying Party ID/origin (rp_id/rp_origin
-  #   # below override the derived values; leave unset to auto-derive).
+  #   # below override the derived values; leave unset to auto-derive). A
+  #   # passkey registered against that domain will not validate when the
+  #   # server is instead reached via localhost or another address.
+  #   # After a password login, supporting browsers (Chrome desktop/Android,
+  #   # partial Safari) may silently offer to auto-enroll a passkey
+  #   # ("Conditional Create"); this is best-effort and browser-limited.
   #   webauthn:
   #     enabled: true
   #     # rp_id: mitto.example.com
   #     # rp_origin: https://mitto.example.com
-  #     # rp_display_name: Mitto
+  #     # rp_display_name: Mitto  # shown during registration/login (default: "Mitto")
 
   # security:
   #   # Trusted reverse proxies - only trust X-Forwarded-For from these IPs
