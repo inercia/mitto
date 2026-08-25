@@ -140,12 +140,16 @@ type AuthManager struct {
 
 	// webAuthn is non-nil when passkey (WebAuthn) support is enabled and its
 	// Relying Party ID/origin were successfully derived (see ConfigurePasskey).
-	// Endpoints/UI that consume it are out of scope for this increment
-	// (mitto-4mz.2); this only constructs and exposes availability.
 	webAuthn *webauthn.WebAuthn
 	// passkeyStore lazily holds the persisted credential store (mitto-4mz.1)
 	// once passkeys are configured.
 	passkeyStore *PasskeyStore
+	// pendingRegMu guards pendingRegistrations (mitto-4mz.3).
+	pendingRegMu sync.Mutex
+	// pendingRegistrations stashes in-flight WebAuthn registration ceremonies'
+	// SessionData, keyed by the caller's authenticated session token, between
+	// HandleRegisterBegin and HandleRegisterFinish. See webauthn_register.go.
+	pendingRegistrations map[string]*pendingRegistration
 
 	// splitIPWarnMu guards splitIPWarnSeen (dedup for the Split-IP login WARN).
 	splitIPWarnMu   sync.Mutex
@@ -159,13 +163,14 @@ type AuthManager struct {
 // NewAuthManager creates a new auth manager.
 func NewAuthManager(authConfig *config.WebAuth) *AuthManager {
 	am := &AuthManager{
-		config:          authConfig,
-		authority:       sessionAuthorityFor(authConfig),
-		sessions:        make(map[string]*AuthSession),
-		rateLimiter:     NewAuthRateLimiter(),
-		splitIPWarnSeen: make(map[string]time.Time),
-		stopCleanup:     make(chan struct{}),
-		cleanupDone:     make(chan struct{}),
+		config:               authConfig,
+		authority:            sessionAuthorityFor(authConfig),
+		sessions:             make(map[string]*AuthSession),
+		rateLimiter:          NewAuthRateLimiter(),
+		splitIPWarnSeen:      make(map[string]time.Time),
+		stopCleanup:          make(chan struct{}),
+		cleanupDone:          make(chan struct{}),
+		pendingRegistrations: make(map[string]*pendingRegistration),
 	}
 
 	// Parse the allow list
@@ -512,6 +517,7 @@ func (a *AuthManager) cleanupExpiredSessions() {
 	}
 
 	a.pruneSplitIPWarnSeen()
+	a.prunePendingRegistrations()
 }
 
 // shouldWarnSplitIP reports whether the Split-IP login WARN should be emitted

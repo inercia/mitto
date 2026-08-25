@@ -25,6 +25,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		routes = append(routes,
 			apiRoute{pattern: "/api/login", handler: http.HandlerFunc(authMgr.HandleLogin)},
 			apiRoute{pattern: "/api/logout", handler: http.HandlerFunc(authMgr.HandleLogout)},
+			// Passkey (WebAuthn) registration (mitto-4mz.3). Handlers return 404
+			// when passkeys are not enabled/derivable, and independently require
+			// an authenticated mitto_session cookie (not just the shared token
+			// or an IP-allowlist bypass) to enroll a credential.
+			apiRoute{method: "POST", pattern: "/api/webauthn/register/begin", handler: http.HandlerFunc(authMgr.HandleRegisterBegin)},
+			apiRoute{method: "POST", pattern: "/api/webauthn/register/finish", handler: http.HandlerFunc(authMgr.HandleRegisterFinish)},
 		)
 	}
 
