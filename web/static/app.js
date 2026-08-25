@@ -771,6 +771,22 @@ function App() {
     initUIPreferences();
   }, []);
 
+  // One-shot success toast for a passkey auto-enrolled during login
+  // (mitto-4mz.7): auth.js sets this sessionStorage flag right after a
+  // silent Conditional-Create ceremony, then redirects here. Read+clear on
+  // mount so the toast fires exactly once and never reappears on a later
+  // reload of the same browser session.
+  useEffect(() => {
+    if (sessionStorage.getItem("mitto_passkey_autoenrolled") === "1") {
+      sessionStorage.removeItem("mitto_passkey_autoenrolled");
+      showToast({
+        style: "success",
+        title: "Passkey created",
+        message: "You can now sign in with a passkey next time.",
+      });
+    }
+  }, [showToast]);
+
   // Clear swipe direction after animation completes
   useEffect(() => {
     if (swipeDirection) {

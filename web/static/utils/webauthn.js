@@ -18,6 +18,29 @@ export function isWebAuthnSupported() {
   );
 }
 
+/**
+ * True when the browser supports Conditional Create (mitto-4mz.7): silently
+ * offering `navigator.credentials.create({publicKey, mediation:"conditional"})`
+ * without a modal prompt, so a passkey can be auto-enrolled right after a
+ * password sign-in. Feature-guarded: browsers without the
+ * `PublicKeyCredential.getClientCapabilities()` static (or that report
+ * `conditionalCreate` as anything but `true`) resolve to `false` so callers
+ * can silently skip and fall back to an explicit "Create a passkey" button.
+ * @returns {Promise<boolean>}
+ */
+export async function supportsConditionalCreate() {
+  if (!isWebAuthnSupported()) return false;
+  if (typeof window.PublicKeyCredential.getClientCapabilities !== "function") {
+    return false;
+  }
+  try {
+    const capabilities = await window.PublicKeyCredential.getClientCapabilities();
+    return capabilities?.conditionalCreate === true;
+  } catch (_err) {
+    return false;
+  }
+}
+
 /** Decodes a base64url string (no padding) into an ArrayBuffer. */
 export function base64urlToBuffer(value) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");

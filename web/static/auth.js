@@ -7,15 +7,86 @@
 // from /api/login is the expected "bad password" outcome, not a session
 // expiry). Kept as its own module rather than importing sdkClient.js,
 // preserving the pre-auth/authenticated boundary.
-import { createClient, browserEnv, MittoApiError, MittoNetworkError } from "./sdk/index.js";
+import {
+  createClient,
+  browserEnv,
+  browserCookieAuth,
+  browserCookieReader,
+  MittoApiError,
+  MittoNetworkError,
+} from "./sdk/index.js";
 import {
   isWebAuthnSupported,
   decodeRequestOptions,
   serializeAssertion,
+  decodeCreationOptions,
+  serializeCreatedCredential,
+  supportsConditionalCreate,
 } from "./utils/webauthn.js";
+
+// One-shot flag (mitto-4mz.7): set here right after a successful
+// Conditional-Create auto-enroll, read+cleared by app.js on mount to show a
+// non-intrusive success toast. sessionStorage (not localStorage) so it only
+// survives the single redirect from this page to "/", not future sessions.
+const PASSKEY_AUTOENROLLED_FLAG = "mitto_passkey_autoenrolled";
 
 function getApiPrefix() {
   return window.mittoApiPrefix || "";
+}
+
+/**
+ * Best-effort, silent passkey auto-enroll (mitto-4mz.7) run right after a
+ * successful password sign-in, before redirecting to the main app. Gated on
+ * the browser supporting Conditional Create; all failures are swallowed so a
+ * slow/broken authenticator never blocks or delays the login redirect. The
+ * ceremony mirrors SettingsDialog.createPasskey's explicit "Create a
+ * passkey" flow, adding `mediation: "conditional"` so it never shows a
+ * modal prompt.
+ *
+ * Registration (`/api/webauthn/register/begin|finish`) requires an
+ * authenticated session AND a CSRF token, unlike this page's default
+ * `noneAuth` client — so a separate CSRF-aware client is built here, reusing
+ * the same `browserCookieAuth` adapter the authenticated app uses (see
+ * utils/sdkClient.js), now that login() has just set the session cookie.
+ *
+ * No pending Conditional-Get autofill request exists on this page today (the
+ * passkey button uses a modal `get()`), so there is nothing to abort before
+ * `create()`. This is a documented no-op, not an omission: a future
+ * Conditional-Get autofill addition should abort its controller here first.
+ */
+async function attemptConditionalCreate(client) {
+  if (!(await supportsConditionalCreate())) return;
+
+  // Reuse `client`'s already-resolved fetch (see the module header comment:
+  // this file must never reference the bare `fetch` identifier itself,
+  // since it is off the SDK boundary allowlist).
+  const csrfClient = createClient({
+    ...browserEnv(),
+    apiPrefix: getApiPrefix(),
+    auth: browserCookieAuth({
+      getCookie: browserCookieReader(),
+      fetch: client.config.fetch,
+      csrfTokenUrl: getApiPrefix() + "/api/csrf-token",
+    }),
+  });
+
+  try {
+    const options = await csrfClient.misc.webauthn.registerBegin();
+    const publicKey = decodeCreationOptions(options);
+    const credential = await navigator.credentials.create({
+      publicKey,
+      mediation: "conditional",
+    });
+    if (!credential) return; // no discoverable state to enroll from
+    await csrfClient.misc.webauthn.registerFinish(
+      serializeCreatedCredential(credential),
+    );
+    sessionStorage.setItem(PASSKEY_AUTOENROLLED_FLAG, "1");
+  } catch (_err) {
+    // Best-effort: silently skip on any failure (cancelled, unsupported,
+    // not armed server-side, network error, etc). The explicit "Create a
+    // passkey" button in Settings remains the fallback.
+  }
 }
 
 function initAuthPage() {
@@ -119,6 +190,11 @@ function initAuthPage() {
 
     try {
       await client.misc.login({ username: username, password: password });
+      // Best-effort passkey auto-enroll (mitto-4mz.7): awaited so the flag
+      // is set before redirecting, but never allowed to block/fail the
+      // login itself — attemptConditionalCreate() swallows all its own
+      // errors and resolves immediately when unsupported.
+      await attemptConditionalCreate(client);
       // Redirect to main app
       window.location.href = "/";
     } catch (err) {
