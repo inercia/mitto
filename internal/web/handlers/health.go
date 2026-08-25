@@ -62,12 +62,14 @@ func (h *Handlers) HandleAuthInfo(w http.ResponseWriter, r *http.Request) {
 	info := map[string]bool{
 		"simple":     false,
 		"cloudflare": false,
+		"passkey":    false,
 	}
 
 	if h.deps.AuthInfo != nil {
-		simple, cloudflare := h.deps.AuthInfo()
+		simple, cloudflare, passkey := h.deps.AuthInfo()
 		info["simple"] = simple
 		info["cloudflare"] = cloudflare
+		info["passkey"] = passkey
 	}
 
 	writeJSONOK(w, info)

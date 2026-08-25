@@ -401,11 +401,14 @@ type Deps struct {
 	IsShutdown func() bool
 
 	// AuthInfo mirrors the auth-manager state read by HandleAuthInfo: it returns
-	// whether simple credential auth and Cloudflare Access are configured. It is a
-	// closure (rather than exposing *middleware.AuthManager) so handlers need not
-	// import the web/middleware package and to capture the late-initialized manager.
-	// May be nil; the auth-info handler then reports both as false.
-	AuthInfo func() (simple bool, cloudflare bool)
+	// whether simple credential auth, Cloudflare Access, and passkey (WebAuthn)
+	// support are configured/available. It is a closure (rather than exposing
+	// *middleware.AuthManager) so handlers need not import the web/middleware
+	// package and to capture the late-initialized manager. May be nil; the
+	// auth-info handler then reports all three as false. passkey reflects
+	// EFFECTIVE availability (enabled AND RP derivation succeeded), not just
+	// the config toggle.
+	AuthInfo func() (simple bool, cloudflare bool, passkey bool)
 
 	// RotateSharedToken rotates the shared bearer token (mitto-pscc.9):
 	// generates a new token, installs it on the running AuthManager, and

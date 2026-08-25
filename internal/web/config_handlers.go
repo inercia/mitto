@@ -184,8 +184,9 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		// Update auth settings
 		hasSimple := req.Web.Auth != nil && req.Web.Auth.Simple != nil
 		hasCloudflare := req.Web.Auth != nil && req.Web.Auth.Cloudflare != nil
+		hasWebauthn := req.Web.Auth != nil && req.Web.Auth.Webauthn != nil
 
-		if hasSimple || hasCloudflare {
+		if hasSimple || hasCloudflare || hasWebauthn {
 			newWebConfig.Auth = &configPkg.WebAuth{}
 
 			// Simple auth (username/password)
@@ -223,6 +224,16 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 				newWebConfig.Auth.Cloudflare = &configPkg.CloudflareAuth{
 					TeamDomain: req.Web.Auth.Cloudflare.TeamDomain,
 					Audience:   req.Web.Auth.Cloudflare.Audience,
+				}
+			}
+
+			// WebAuthn (passkey) config toggle + optional RP overrides
+			if hasWebauthn {
+				newWebConfig.Auth.Webauthn = &configPkg.WebAuthnConfig{
+					Enabled:       req.Web.Auth.Webauthn.Enabled,
+					RPID:          req.Web.Auth.Webauthn.RPID,
+					RPOrigin:      req.Web.Auth.Webauthn.RPOrigin,
+					RPDisplayName: req.Web.Auth.Webauthn.RPDisplayName,
 				}
 			}
 		} else {
@@ -473,6 +484,31 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 	// Handle auth manager and external listener changes (use runtimeWebConfig with actual password).
 	// Capture any warning so we can propagate it to the HTTP response.
 	warning := s.applyAuthChanges(oldAuthEnabled, newAuthEnabled, runtimeWebConfig.Auth)
+
+	// Re-derive the WebAuthn (passkey) Relying Party config from the (possibly
+	// updated) external_address / webauthn block. validateConfigRequest already
+	// rejects an enabled-but-undeliverable RP at the API boundary; this call
+	// keeps the running AuthManager's derived RP in sync on every save and is
+	// the only path for dynamic re-derivation when external_address changes
+	// without the webauthn block itself changing. A derivation failure only
+	// disables passkeys — it does not override an existing external-access warning.
+	if s.authManager != nil {
+		var webauthnCfg *configPkg.WebAuthnConfig
+		if runtimeWebConfig.Auth != nil {
+			webauthnCfg = runtimeWebConfig.Auth.Webauthn
+		}
+		if err := s.authManager.ConfigurePasskey(webauthnCfg, runtimeWebConfig.Hooks.ExternalAddress); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("WebAuthn passkey support unavailable", "error", err)
+			}
+			if warning == nil {
+				warning = &ExternalAccessWarning{
+					Reason:  err.Error(),
+					Message: fmt.Sprintf("Passkey (WebAuthn) support could not be enabled: %s", err.Error()),
+				}
+			}
+		}
+	}
 
 	// Reconcile the health monitor AFTER auth/listener changes have settled, so it
 	// only starts when the external listener is actually up. Running it earlier (in

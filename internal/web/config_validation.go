@@ -140,6 +140,25 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		}
 	}
 
+	// Validate WebAuthn (passkey) config: when enabled, the Relying Party
+	// ID/origin must be derivable from an https external_address (or explicit
+	// rp_id/rp_origin overrides) — reject the save outright rather than
+	// silently disabling, mirroring the password validation above.
+	if req.Web != nil && req.Web.Auth != nil && req.Web.Auth.Webauthn != nil && req.Web.Auth.Webauthn.Enabled {
+		externalAddr := ""
+		if req.Web.Hooks != nil {
+			externalAddr = req.Web.Hooks.ExternalAddress
+		} else if s.config.MittoConfig != nil {
+			externalAddr = s.config.MittoConfig.Web.Hooks.ExternalAddress
+		}
+		if _, _, err := configPkg.DeriveWebAuthnRP(externalAddr, req.Web.Auth.Webauthn.RPID, req.Web.Auth.Webauthn.RPOrigin); err != nil {
+			return &configValidationError{
+				StatusCode: http.StatusBadRequest,
+				Message:    "Passkey (WebAuthn) requires an https external_address (or explicit rp_id/rp_origin overrides): " + err.Error(),
+			}
+		}
+	}
+
 	if req.MCP != nil {
 		if err := configPkg.ValidateMCPHost(req.MCP.Host); err != nil {
 			return &configValidationError{

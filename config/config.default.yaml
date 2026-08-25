@@ -179,6 +179,16 @@ web:
   #       - 127.0.0.1
   #       - ::1
   #       - 192.168.0.0/24
+  #
+  #   # Passkey (WebAuthn) authentication, additive to simple/Cloudflare login.
+  #   # Requires web.hooks.external_address to be set to a stable https URL —
+  #   # its host/origin become the Relying Party ID/origin (rp_id/rp_origin
+  #   # below override the derived values; leave unset to auto-derive).
+  #   webauthn:
+  #     enabled: true
+  #     # rp_id: mitto.example.com
+  #     # rp_origin: https://mitto.example.com
+  #     # rp_display_name: Mitto
 
   # security:
   #   # Trusted reverse proxies - only trust X-Forwarded-For from these IPs

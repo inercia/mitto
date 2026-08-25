@@ -331,6 +331,26 @@ type WebAuth struct {
 	// It does NOT by itself enable authentication (see AuthManager.IsEnabled) — it
 	// is only consulted once auth is already enabled via Simple or Cloudflare.
 	SharedToken string `json:"shared_token,omitempty" yaml:"shared_token,omitempty"`
+	// Webauthn enables WebAuthn (passkey) authentication. Its Relying Party ID/origin
+	// are derived from Web.Hooks.ExternalAddress unless explicitly overridden (see
+	// DeriveWebAuthnRP).
+	Webauthn *WebAuthnConfig `json:"webauthn,omitempty" yaml:"webauthn,omitempty"`
+}
+
+// WebAuthnConfig configures WebAuthn (passkey) authentication for the web
+// interface. RPID and RPOrigin are optional overrides; when empty, they are
+// derived from Web.Hooks.ExternalAddress (see DeriveWebAuthnRP), which
+// requires an https URL — passkeys must never be armed for ephemeral,
+// randomly-addressed deployments (e.g. quick tunnels).
+type WebAuthnConfig struct {
+	// Enabled turns on passkey (WebAuthn) support.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// RPID optionally overrides the derived Relying Party ID (host).
+	RPID string `json:"rp_id,omitempty" yaml:"rp_id,omitempty"`
+	// RPOrigin optionally overrides the derived Relying Party origin (scheme://host).
+	RPOrigin string `json:"rp_origin,omitempty" yaml:"rp_origin,omitempty"`
+	// RPDisplayName is shown to the user during registration/login. Defaults to "Mitto".
+	RPDisplayName string `json:"rp_display_name,omitempty" yaml:"rp_display_name,omitempty"`
 }
 
 // HasCloudflareAuth returns true if Cloudflare Access authentication is configured and valid.
@@ -1467,6 +1487,12 @@ type rawConfig struct {
 				IPs []string `yaml:"ips"`
 			} `yaml:"allow"`
 			SharedToken string `yaml:"shared_token"`
+			Webauthn    *struct {
+				Enabled       bool   `yaml:"enabled"`
+				RPID          string `yaml:"rp_id"`
+				RPOrigin      string `yaml:"rp_origin"`
+				RPDisplayName string `yaml:"rp_display_name"`
+			} `yaml:"webauthn"`
 		} `yaml:"auth"`
 		Security *struct {
 			TrustedProxies      []string `yaml:"trusted_proxies"`
@@ -1792,6 +1818,14 @@ func Parse(data []byte) (*Config, error) {
 			}
 		}
 		cfg.Web.Auth.SharedToken = raw.Web.Auth.SharedToken
+		if raw.Web.Auth.Webauthn != nil {
+			cfg.Web.Auth.Webauthn = &WebAuthnConfig{
+				Enabled:       raw.Web.Auth.Webauthn.Enabled,
+				RPID:          raw.Web.Auth.Webauthn.RPID,
+				RPOrigin:      raw.Web.Auth.Webauthn.RPOrigin,
+				RPDisplayName: raw.Web.Auth.Webauthn.RPDisplayName,
+			}
+		}
 	}
 
 	// Populate security config

@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-webauthn/webauthn/webauthn"
+
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
@@ -135,6 +137,15 @@ type AuthManager struct {
 	apiPrefix   string           // API prefix for URL matching (e.g., "/mitto")
 
 	cfVerifier *oidc.IDTokenVerifier // Cloudflare Access JWT verifier (nil if not configured)
+
+	// webAuthn is non-nil when passkey (WebAuthn) support is enabled and its
+	// Relying Party ID/origin were successfully derived (see ConfigurePasskey).
+	// Endpoints/UI that consume it are out of scope for this increment
+	// (mitto-4mz.2); this only constructs and exposes availability.
+	webAuthn *webauthn.WebAuthn
+	// passkeyStore lazily holds the persisted credential store (mitto-4mz.1)
+	// once passkeys are configured.
+	passkeyStore *PasskeyStore
 
 	// splitIPWarnMu guards splitIPWarnSeen (dedup for the Split-IP login WARN).
 	splitIPWarnMu   sync.Mutex
@@ -358,6 +369,64 @@ func (a *AuthManager) revokeSessionsLocked(reason string) {
 // This must be called before the middleware is used.
 func (a *AuthManager) SetAPIPrefix(prefix string) {
 	a.apiPrefix = prefix
+}
+
+// ConfigurePasskey (re-)configures WebAuthn (passkey) support from cfg,
+// deriving the Relying Party ID/origin from externalAddress (Web.Hooks.
+// ExternalAddress) unless cfg overrides them (see config.DeriveWebAuthnRP).
+//
+// When cfg is nil or cfg.Enabled is false, passkey support is disabled
+// (HasPasskeyEnabled reports false) and nil is returned. When enabled but the
+// RP cannot be derived (e.g. no https external address configured), passkey
+// support is left/set disabled and the derivation error is returned so the
+// caller can surface it (e.g. via the ExternalAccessWarning path) without
+// this package needing to know about that type. Safe to call at server init
+// and again on every dynamic config save so it re-derives.
+func (a *AuthManager) ConfigurePasskey(cfg *config.WebAuthnConfig, externalAddress string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if cfg == nil || !cfg.Enabled {
+		a.webAuthn = nil
+		return nil
+	}
+
+	rpID, rpOrigin, err := config.DeriveWebAuthnRP(externalAddress, cfg.RPID, cfg.RPOrigin)
+	if err != nil {
+		a.webAuthn = nil
+		return err
+	}
+
+	displayName := cfg.RPDisplayName
+	if displayName == "" {
+		displayName = "Mitto"
+	}
+
+	wa, err := webauthn.New(&webauthn.Config{
+		RPID:          rpID,
+		RPDisplayName: displayName,
+		RPOrigins:     []string{rpOrigin},
+	})
+	if err != nil {
+		a.webAuthn = nil
+		return err
+	}
+
+	a.webAuthn = wa
+	if a.passkeyStore == nil {
+		a.passkeyStore = NewPasskeyStore()
+	}
+	return nil
+}
+
+// HasPasskeyEnabled reports whether passkey (WebAuthn) support is currently
+// enabled and its Relying Party configuration was successfully derived. Used
+// to surface effective availability (not just the config toggle) via
+// GET /api/auth-info.
+func (a *AuthManager) HasPasskeyEnabled() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.webAuthn != nil
 }
 
 // UpdateConfig updates the auth configuration dynamically.

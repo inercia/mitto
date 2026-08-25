@@ -666,6 +666,15 @@ func NewServer(config Config) (*Server, error) {
 	if config.MittoConfig != nil && config.MittoConfig.Web.Auth != nil {
 		authMgr = middleware.NewAuthManager(config.MittoConfig.Web.Auth)
 		logger.Info("Authentication enabled", "type", "simple")
+
+		// Construct the WebAuthn (passkey) Relying Party config, if enabled.
+		// A derivation failure (e.g. no https external_address) only disables
+		// passkeys; it must not prevent the server from starting.
+		if err := authMgr.ConfigurePasskey(config.MittoConfig.Web.Auth.Webauthn, config.MittoConfig.Web.Hooks.ExternalAddress); err != nil {
+			logger.Warn("WebAuthn passkey support unavailable", "error", err)
+		} else if authMgr.HasPasskeyEnabled() {
+			logger.Info("WebAuthn passkey support enabled")
+		}
 	}
 
 	// Initialize security components from config
@@ -1664,11 +1673,11 @@ func NewServer(config Config) (*Server, error) {
 			return s.acpProcessManager.HasLiveProcess
 		}(),
 		IsShutdown: s.IsShutdown,
-		AuthInfo: func() (bool, bool) {
+		AuthInfo: func() (bool, bool, bool) {
 			if s.authManager == nil {
-				return false, false
+				return false, false, false
 			}
-			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess()
+			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess(), s.authManager.HasPasskeyEnabled()
 		},
 		RotateSharedToken: s.rotateSharedToken,
 		ImprovePrompt: func() func(context.Context, string, string) (string, error) {

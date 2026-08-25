@@ -55,6 +55,12 @@ type ConfigSaveRequest struct {
 				TeamDomain string `json:"team_domain"`
 				Audience   string `json:"audience"`
 			} `json:"cloudflare,omitempty"`
+			Webauthn *struct {
+				Enabled       bool   `json:"enabled"`
+				RPID          string `json:"rp_id,omitempty"`
+				RPOrigin      string `json:"rp_origin,omitempty"`
+				RPDisplayName string `json:"rp_display_name,omitempty"`
+			} `json:"webauthn,omitempty"`
 		} `json:"auth,omitempty"`
 		Hooks     *configPkg.WebHooks        `json:"hooks,omitempty"`
 		AccessLog *configPkg.AccessLogConfig `json:"access_log,omitempty"`
