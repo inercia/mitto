@@ -42,7 +42,10 @@ func TestFileJournalAcceptDeduplicatesAndPersistsOrderedRecipients(t *testing.T)
 	if err != nil || !duplicate {
 		t.Fatalf("duplicate Accept() duplicate=%v err=%v", duplicate, err)
 	}
-	if _, err := j.Accept("app", Event{EventID: "e2"}, recipients[:1]); err != nil {
+	// Distinct ChannelID: e2 is an unrelated event on a different
+	// conversation surface, so it must not coalesce with e1's recipients
+	// (see coalesceSupersededLocked, mitto-7vk).
+	if _, err := j.Accept("app", Event{EventID: "e2", ChannelID: "other"}, recipients[:1]); err != nil {
 		t.Fatal(err)
 	}
 	doc := readJournalDocument(t, j, "app")
@@ -70,8 +73,12 @@ func TestFileJournalAcceptDeduplicatesAndPersistsOrderedRecipients(t *testing.T)
 func TestFileJournalBatchLimitsPreserveIngestOrder(t *testing.T) {
 	j, _ := newTestJournal(t)
 	recipient := []journalRecipient{{SessionID: "s", InstallationID: "i"}}
+	// Distinct ChannelID per event: these are 25 unrelated conversation
+	// surfaces, so none should coalesce with another (see
+	// coalesceSupersededLocked, mitto-7vk) -- this test exercises
+	// ClaimBatch's count/order limits, not coalescing.
 	for n := 0; n < 25; n++ {
-		if _, err := j.Accept("count", Event{EventID: fmt.Sprintf("e%02d", n), Text: "x"}, recipient); err != nil {
+		if _, err := j.Accept("count", Event{EventID: fmt.Sprintf("e%02d", n), ChannelID: fmt.Sprintf("c%02d", n), Text: "x"}, recipient); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,8 +94,9 @@ func TestFileJournalBatchLimitsPreserveIngestOrder(t *testing.T) {
 		t.Fatalf("overflow batch=%#v err=%v", next.Events, err)
 	}
 
+	// Distinct ChannelID per event, same reasoning as above.
 	for n := 0; n < 10; n++ {
-		if _, err := j.Accept("bytes", Event{EventID: fmt.Sprintf("b%02d", n), Text: strings.Repeat("x", 4000)}, recipient); err != nil {
+		if _, err := j.Accept("bytes", Event{EventID: fmt.Sprintf("b%02d", n), ChannelID: fmt.Sprintf("c%02d", n), Text: strings.Repeat("x", 4000)}, recipient); err != nil {
 			t.Fatal(err)
 		}
 	}

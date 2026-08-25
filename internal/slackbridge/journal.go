@@ -179,6 +179,65 @@ func allRecipientsTerminal(recipients []journalRecipient) bool {
 	return true
 }
 
+// coalesceSupersededLocked drops OLDER still-pending recipient entries that
+// are superseded by a newer event sharing the same conversation surface --
+// (recipient SessionID, ChannelID, ThreadTimestamp) -- so a high-traffic
+// channel/thread is bounded by conversation surface area rather than raw
+// message volume (mitto-7vk). Coalescing is per-recipient: a journalRecord
+// holds one Event plus a recipient list (one entry per subscribed session),
+// so only the matching recipient entries are dropped, never a whole record --
+// this avoids dropping a pending delivery owed to a different session that
+// happens to share the same record.
+//
+// Kind carve-out: an app_mention is a direct call to action and must never
+// be superseded by a later plain message. Records are matched only when
+// both share the same "mention class" (Kind == "app_mention"), so a later
+// plain message can never coalesce away an older pending @mention, while a
+// later mention still supersedes an older pending mention in the same
+// thread.
+//
+// Only "pending" recipient entries are eligible to be dropped; delivering,
+// delivered, failed, and expired entries are left untouched so coalescing
+// never races an in-flight claim. Called under j.mu, before the incoming
+// event is appended to doc.Records, so every existing record is strictly
+// older -- dropping their superseded pending entries always leaves the
+// about-to-be-appended event as the newest surviving record for that
+// surface. A record that loses its last recipient is dropped entirely (its
+// Text goes with it, so no separate scrub is needed).
+func coalesceSupersededLocked(doc *journalDocument, event Event, incoming []journalRecipient) (changes int) {
+	if len(incoming) == 0 {
+		return 0
+	}
+	supersede := make(map[string]bool, len(incoming))
+	for _, recipient := range incoming {
+		supersede[recipient.SessionID] = true
+	}
+	newMention := event.Kind == "app_mention"
+	kept := doc.Records[:0]
+	for i := range doc.Records {
+		r := &doc.Records[i]
+		if r.Event.ChannelID != event.ChannelID || r.Event.ThreadTimestamp != event.ThreadTimestamp || (r.Event.Kind == "app_mention") != newMention {
+			kept = append(kept, *r)
+			continue
+		}
+		survivors := r.Recipients[:0]
+		for _, recipient := range r.Recipients {
+			if recipient.State == recipientPending && supersede[recipient.SessionID] {
+				changes++
+				continue
+			}
+			survivors = append(survivors, recipient)
+		}
+		r.Recipients = survivors
+		if len(r.Recipients) == 0 {
+			continue
+		}
+		kept = append(kept, *r)
+	}
+	doc.Records = kept
+	return changes
+}
+
 func (j *FileJournal) Accept(appID string, event Event, recipients []journalRecipient) (bool, error) {
 	if appID == "" || event.EventID == "" {
 		return false, errors.New("slack journal acceptance requires app_id and event_id")
@@ -198,6 +257,9 @@ func (j *FileJournal) Accept(appID string, event Event, recipients []journalReci
 			}
 			return true, err
 		}
+	}
+	if coalesceSupersededLocked(doc, event, recipients) > 0 {
+		changed = true
 	}
 	if len(doc.Records) >= journalMaxRecords {
 		if changed {

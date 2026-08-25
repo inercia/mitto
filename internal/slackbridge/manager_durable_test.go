@@ -151,8 +151,13 @@ func TestManagerSettlesAndDrainsBoundedOrderedBatches(t *testing.T) {
 	runner := &durableRunner{}
 	manager := routedManager(t, runner, "s")
 	manager.settle = time.Hour
+	// Distinct ThreadTimestamp per event: these are 25 unrelated threads in
+	// the channel, so none should coalesce with another (see
+	// coalesceSupersededLocked, mitto-7vk) -- this test exercises settle/
+	// drain batch windowing and ordering, not coalescing.
 	for n := 0; n < 25; n++ {
-		event := Event{EventID: fmt.Sprintf("e%02d", n), TeamID: "team", ChannelID: "channel", AuthorID: "human", Kind: "message", Text: "x"}
+		event := Event{EventID: fmt.Sprintf("e%02d", n), TeamID: "team", ChannelID: "channel", AuthorID: "human", Kind: "message",
+			ThreadTimestamp: fmt.Sprintf("t%02d", n), Text: "x"}
 		if err := manager.routeEvent("app", nil, event); err != nil {
 			t.Fatal(err)
 		}
