@@ -30,7 +30,23 @@ function buildDom() {
     '<input id="username" />' +
     '<input id="password" />' +
     '<button id="submitBtn" type="submit">Sign In</button>' +
-    "</form>";
+    "</form>" +
+    '<button id="passkeyBtn" style="display: none;">Sign in with a passkey</button>';
+}
+
+/** Makes isWebAuthnSupported() (utils/webauthn.js) return true for the
+ *  duration of the test: a secure context + a stubbed PublicKeyCredential. */
+function stubWebAuthnSupported() {
+  const orig = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+  Object.defineProperty(window, "isSecureContext", {
+    value: true,
+    configurable: true,
+  });
+  window.PublicKeyCredential = function () {};
+  return () => {
+    delete window.PublicKeyCredential;
+    if (orig) Object.defineProperty(window, "isSecureContext", orig);
+  };
 }
 
 async function flush() {
@@ -173,6 +189,156 @@ describe("auth.js — pre-auth login page (mitto-7gta.19.1)", () => {
       expect(btn.textContent).toBe("Signing in...");
       resolveLogin();
       await flush();
+    });
+  });
+
+  describe("passkey login (mitto-4mz.6)", () => {
+    let restoreWebAuthn;
+    let originalCredentials;
+
+    beforeEach(() => {
+      originalCredentials = navigator.credentials;
+    });
+
+    afterEach(() => {
+      if (restoreWebAuthn) restoreWebAuthn();
+      restoreWebAuthn = undefined;
+      Object.defineProperty(navigator, "credentials", {
+        value: originalCredentials,
+        configurable: true,
+      });
+    });
+
+    test("stays hidden when the browser does not support WebAuthn, even if armed", async () => {
+      globalThis.fetch = async () =>
+        fakeResponse({ body: { simple: true, passkey: true } });
+      await loadAuthPage();
+      expect(document.getElementById("passkeyBtn").style.display).toBe(
+        "none",
+      );
+    });
+
+    test("stays hidden when supported but auth-info reports passkey:false", async () => {
+      restoreWebAuthn = stubWebAuthnSupported();
+      globalThis.fetch = async () =>
+        fakeResponse({ body: { simple: true, passkey: false } });
+      await loadAuthPage();
+      expect(document.getElementById("passkeyBtn").style.display).toBe(
+        "none",
+      );
+    });
+
+    test("shown when armed (passkey:true) and the browser supports WebAuthn", async () => {
+      restoreWebAuthn = stubWebAuthnSupported();
+      globalThis.fetch = async () =>
+        fakeResponse({ body: { simple: true, passkey: true } });
+      await loadAuthPage();
+      expect(document.getElementById("passkeyBtn").style.display).toBe("");
+    });
+
+    test("successful get() ceremony posts the assertion and redirects to /", async () => {
+      restoreWebAuthn = stubWebAuthnSupported();
+      const assertion = {
+        id: "AQID",
+        rawId: new Uint8Array([1, 2, 3]).buffer,
+        type: "public-key",
+        response: {
+          clientDataJSON: new Uint8Array([4]).buffer,
+          authenticatorData: new Uint8Array([5]).buffer,
+          signature: new Uint8Array([6]).buffer,
+          userHandle: null,
+        },
+      };
+      Object.defineProperty(navigator, "credentials", {
+        value: { get: jest.fn(async () => assertion) },
+        configurable: true,
+      });
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        if (u.includes("/api/webauthn/login/finish"))
+          return fakeResponse({ body: { success: true } });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      document.getElementById("passkeyBtn").click();
+      await flush();
+      expect(navigator.credentials.get).toHaveBeenCalledTimes(1);
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+    });
+
+    test("user cancel (NotAllowedError) resets the button without an error message", async () => {
+      restoreWebAuthn = stubWebAuthnSupported();
+      Object.defineProperty(navigator, "credentials", {
+        value: {
+          get: jest.fn(async () => {
+            throw Object.assign(new Error("cancelled"), {
+              name: "NotAllowedError",
+            });
+          }),
+        },
+        configurable: true,
+      });
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      const btn = document.getElementById("passkeyBtn");
+      btn.click();
+      await flush();
+      expect(document.getElementById("error").classList.contains("hidden")).toBe(
+        true,
+      );
+      expect(btn.disabled).toBe(false);
+    });
+
+    test("a 429 from login/finish shows a rate-limited message", async () => {
+      restoreWebAuthn = stubWebAuthnSupported();
+      Object.defineProperty(navigator, "credentials", {
+        value: {
+          get: jest.fn(async () => ({
+            id: "AQID",
+            rawId: new Uint8Array([1]).buffer,
+            type: "public-key",
+            response: {
+              clientDataJSON: new Uint8Array([1]).buffer,
+              authenticatorData: new Uint8Array([1]).buffer,
+              signature: new Uint8Array([1]).buffer,
+              userHandle: null,
+            },
+          })),
+        },
+        configurable: true,
+      });
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        if (u.includes("/api/webauthn/login/finish"))
+          return fakeResponse({
+            status: 429,
+            body: { error: "Too many attempts. Please try again later." },
+          });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      document.getElementById("passkeyBtn").click();
+      await flush();
+      const errorDiv = document.getElementById("error");
+      expect(errorDiv.classList.contains("hidden")).toBe(false);
+      expect(errorDiv.textContent).toBe(
+        "Too many attempts. Please try again later.",
+      );
     });
   });
 

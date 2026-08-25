@@ -969,6 +969,207 @@ describe("SettingsDialog post-delete workspaces refresh", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// mitto-4mz.6 — Manage Passkeys create/list/delete (SettingsDialog.js
+// createPasskey/deletePasskey, ~lines 3389/3422). Duplicated here per this
+// file's header-comment convention (the component reads window.preact
+// globals at module load and cannot be imported directly under jsdom/bun).
+// decodeCreationOptions/serializeCreatedCredential are the REAL utils/
+// webauthn.js helpers (pure functions, safe to import), matching what the
+// component actually calls; only navigator.credentials.create() and the SDK
+// client are injected/mocked.
+// ---------------------------------------------------------------------------
+import {
+  decodeCreationOptions,
+  serializeCreatedCredential,
+} from "../utils/webauthn.js";
+
+async function createPasskey(client, credentialsCreate, setters) {
+  const { setPasskeyCreating, setPasskeyCredentials, showToast } = setters;
+  setPasskeyCreating(true);
+  try {
+    const options = await client.misc.webauthn.registerBegin();
+    const publicKey = decodeCreationOptions(options);
+    const credential = await credentialsCreate({ publicKey });
+    await client.misc.webauthn.registerFinish(
+      serializeCreatedCredential(credential),
+    );
+    const creds = await client.misc.webauthn.list();
+    setPasskeyCredentials(Array.isArray(creds) ? creds : []);
+    showToast?.({
+      style: "success",
+      title: "Passkey created",
+      message: "A new passkey was registered for this account.",
+    });
+  } catch (err) {
+    if (err && err.name === "NotAllowedError") {
+      // User cancelled the platform prompt; not worth alarming over.
+    } else {
+      showToast?.({
+        style: "error",
+        title: "Failed to create passkey",
+        message: errorMessage(err, "Failed to create passkey"),
+      });
+    }
+  } finally {
+    setPasskeyCreating(false);
+  }
+}
+
+async function deletePasskey(client, id, setters) {
+  const { setPasskeyDeletingId, setPasskeyCredentials, showToast } = setters;
+  setPasskeyDeletingId(id);
+  try {
+    await client.misc.webauthn.delete(id);
+    setPasskeyCredentials((prev) => prev.filter((c) => c.id !== id));
+    showToast?.({
+      style: "success",
+      title: "Passkey removed",
+      message: "The passkey was removed from this account.",
+    });
+  } catch (err) {
+    showToast?.({
+      style: "error",
+      title: "Failed to remove passkey",
+      message: errorMessage(err, "Failed to remove passkey"),
+    });
+  } finally {
+    setPasskeyDeletingId(null);
+  }
+}
+
+describe("SettingsDialog.createPasskey", () => {
+  const creationOptions = {
+    publicKey: { challenge: "AQID", user: { id: "AQID" } },
+  };
+  const fakeCredential = {
+    id: "AQID",
+    rawId: new Uint8Array([1, 2, 3]).buffer,
+    type: "public-key",
+    response: {
+      clientDataJSON: new Uint8Array([4]).buffer,
+      attestationObject: new Uint8Array([5]).buffer,
+    },
+  };
+
+  test("success: begin -> create() -> finish -> refreshes the list and toasts", async () => {
+    const client = {
+      misc: {
+        webauthn: {
+          registerBegin: jest.fn(() => Promise.resolve(creationOptions)),
+          registerFinish: jest.fn(() => Promise.resolve({ success: true })),
+          list: jest.fn(() => Promise.resolve([{ id: "AQID" }])),
+        },
+      },
+    };
+    const credentialsCreate = jest.fn(() => Promise.resolve(fakeCredential));
+    const setPasskeyCreating = jest.fn();
+    const setPasskeyCredentials = jest.fn();
+    const showToast = jest.fn();
+    await createPasskey(client, credentialsCreate, {
+      setPasskeyCreating,
+      setPasskeyCredentials,
+      showToast,
+    });
+
+    expect(client.misc.webauthn.registerBegin).toHaveBeenCalledTimes(1);
+    expect(credentialsCreate).toHaveBeenCalledWith({
+      publicKey: expect.objectContaining({ challenge: expect.any(ArrayBuffer) }),
+    });
+    expect(client.misc.webauthn.registerFinish).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "AQID", type: "public-key" }),
+    );
+    expect(setPasskeyCredentials).toHaveBeenCalledWith([{ id: "AQID" }]);
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ style: "success" }),
+    );
+    expect(setPasskeyCreating).toHaveBeenNthCalledWith(1, true);
+    expect(setPasskeyCreating).toHaveBeenNthCalledWith(2, false);
+  });
+
+  test("user cancel (NotAllowedError) is silent: no error toast", async () => {
+    const client = {
+      misc: {
+        webauthn: {
+          registerBegin: jest.fn(() => Promise.resolve(creationOptions)),
+        },
+      },
+    };
+    const credentialsCreate = jest.fn(() =>
+      Promise.reject(Object.assign(new Error("cancelled"), { name: "NotAllowedError" })),
+    );
+    const showToast = jest.fn();
+    await createPasskey(client, credentialsCreate, {
+      setPasskeyCreating: jest.fn(),
+      setPasskeyCredentials: jest.fn(),
+      showToast,
+    });
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  test("a non-cancel failure shows an error toast via errorMessage()", async () => {
+    const client = {
+      misc: {
+        webauthn: {
+          registerBegin: jest.fn(() => Promise.reject(new Error("boom"))),
+        },
+      },
+    };
+    const showToast = jest.fn();
+    await createPasskey(client, jest.fn(), {
+      setPasskeyCreating: jest.fn(),
+      setPasskeyCredentials: jest.fn(),
+      showToast,
+    });
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ style: "error", title: "Failed to create passkey" }),
+    );
+  });
+});
+
+describe("SettingsDialog.deletePasskey", () => {
+  test("success: deletes, optimistically filters the list, and toasts", async () => {
+    const client = {
+      misc: { webauthn: { delete: jest.fn(() => Promise.resolve({ success: true })) } },
+    };
+    const setPasskeyCredentials = jest.fn((updater) =>
+      updater([{ id: "AQID" }, { id: "other" }]),
+    );
+    const showToast = jest.fn();
+    await deletePasskey(client, "AQID", {
+      setPasskeyDeletingId: jest.fn(),
+      setPasskeyCredentials,
+      showToast,
+    });
+    expect(client.misc.webauthn.delete).toHaveBeenCalledWith("AQID");
+    expect(setPasskeyCredentials).toHaveBeenCalledTimes(1);
+    expect(setPasskeyCredentials.mock.calls[0][0]([{ id: "AQID" }, { id: "other" }])).toEqual([
+      { id: "other" },
+    ]);
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ style: "success" }),
+    );
+  });
+
+  test("failure shows an error toast and still clears the deleting-id spinner", async () => {
+    const client = {
+      misc: { webauthn: { delete: jest.fn(() => Promise.reject(new Error("boom"))) } },
+    };
+    const setPasskeyDeletingId = jest.fn();
+    const showToast = jest.fn();
+    await deletePasskey(client, "AQID", {
+      setPasskeyDeletingId,
+      setPasskeyCredentials: jest.fn(),
+      showToast,
+    });
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ style: "error", title: "Failed to remove passkey" }),
+    );
+    expect(setPasskeyDeletingId).toHaveBeenNthCalledWith(1, "AQID");
+    expect(setPasskeyDeletingId).toHaveBeenNthCalledWith(2, null);
+  });
+});
+
 describe("SettingsDialog Slack tab wiring (mitto-37nx.6)", () => {
   test("registers and renders the extracted SlackSettingsTab", () => {
     const source = readFileSync(

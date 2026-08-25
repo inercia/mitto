@@ -265,6 +265,88 @@ describe("misc resource", () => {
     });
   });
 
+  // mitto-4mz.6: passkey (WebAuthn) credential management + login.
+  describe("webauthn", () => {
+    test("registerBegin() calls POST /api/webauthn/register/begin", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({ body: { publicKey: { challenge: "AQID" } } }),
+      );
+      const result = await misc.webauthn.registerBegin();
+      expect(calls[0].url).toBe("/api/webauthn/register/begin");
+      expect(calls[0].init.method).toBe("POST");
+      expect(result).toEqual({ publicKey: { challenge: "AQID" } });
+    });
+
+    test("registerFinish(credential) POSTs the credential body untouched", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { success: true } }));
+      const credential = { id: "AQID", rawId: "AQID", type: "public-key" };
+      await misc.webauthn.registerFinish(credential);
+      expect(calls[0].url).toBe("/api/webauthn/register/finish");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify(credential));
+    });
+
+    test("list() calls GET /api/webauthn/register/list", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          body: [{ id: "AQID", created_at: "2024-01-01T00:00:00Z" }],
+        }),
+      );
+      const result = await misc.webauthn.list();
+      expect(calls[0].url).toBe("/api/webauthn/register/list");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result).toEqual([
+        { id: "AQID", created_at: "2024-01-01T00:00:00Z" },
+      ]);
+    });
+
+    test("delete(id) calls DELETE /api/webauthn/register/{id}, URI-encoded", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { success: true } }));
+      await misc.webauthn.delete("AQ ID/x");
+      expect(calls[0].url).toBe(
+        `/api/webauthn/register/${encodeURIComponent("AQ ID/x")}`,
+      );
+      expect(calls[0].init.method).toBe("DELETE");
+    });
+
+    test("loginBegin() calls POST /api/webauthn/login/begin", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({ body: { publicKey: { challenge: "AQID" } } }),
+      );
+      await misc.webauthn.loginBegin();
+      expect(calls[0].url).toBe("/api/webauthn/login/begin");
+      expect(calls[0].init.method).toBe("POST");
+    });
+
+    test("loginFinish(assertion) POSTs the assertion body untouched", async () => {
+      const { misc, calls, respondWith } = mk();
+      respondWith(() => fakeResponse({ body: { success: true } }));
+      const assertion = { id: "AQID", rawId: "AQID", type: "public-key" };
+      await misc.webauthn.loginFinish(assertion);
+      expect(calls[0].url).toBe("/api/webauthn/login/finish");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify(assertion));
+    });
+
+    test("a 404 (passkeys not armed) surfaces as MittoApiError", async () => {
+      const { misc, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          status: 404,
+          body: { error: { code: "not_found", message: "not found" } },
+        }),
+      );
+      await expect(misc.webauthn.list()).rejects.toBeInstanceOf(
+        MittoApiError,
+      );
+    });
+  });
+
   describe("delegated discovery endpoints (mitto-7gta.10)", () => {
     test("advancedFlags/externalStatus/supportedRunners/runnerDefaults are the same function objects as serverConfig's", () => {
       const { misc, serverConfig } = mk();
