@@ -158,6 +158,16 @@ Send `session_gone` (NOT generic error — clients stop reconnecting on `session
 
 Loop runner (`LoopRunner.maybeRunPrompt()`) auto-pauses the loop session after `MaxPromptResolveFailures` (default 5) consecutive resolution errors. This prevents endless retry loops when a prompt cannot be resolved (e.g., missing variable, invalid prompt name). The session can be manually resumed via UI.
 
+### Saturation-Aware Resume Carve-Out (mitto-hjx facet D)
+
+`LoopRunner.checkSession` classifies `ResumeSession` errors before incrementing `r.consecutiveFailures[sessionID]`. Transient shared-ACP-process saturation shapes MUST be excluded from the counter so a healthy loop is not auto-archived by a self-healing burst:
+
+- `mittoAcp.IsMCPInitTimeout(err)` — cold-start MCP-init handshake timed out under load
+- `errors.Is(err, acperrors.ErrSharedProcessSaturated)` — aux-session saturation bail (mitto-z70)
+- `errors.Is(err, acperrors.ErrProcessClosedConcurrently)` — Tier-5 recycle vs. Restart race (mitto-ei81)
+
+Mirrors the identical carve-out in `session_manager.go`'s `resumeSessionWithConstraint` for `ACPStartFailureCount`. Any new auto-archive-on-failure counter added to the loop runner or session manager MUST classify errors the same way — an unclassified counter re-introduces the "healthy loop archived by transient saturation" bug.
+
 ## Auto-Resume Guard (Race Condition)
 
 GC-closed sessions become `SessionStatusCompleted` but are NOT archived. Always check BOTH conditions before auto-resume:

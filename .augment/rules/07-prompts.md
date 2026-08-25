@@ -170,6 +170,8 @@ Shared body text can be factored into **fragments** invoked from any `.prompt.ya
 
 All menus (prompts, beadsIssues, beadsList) send `prompt_name` only — never the full body. Frontend helpers in `useConversationSeeding.js`: `seedConversationWithPrompt()` (existing session), `startConversationWithPrompt()` (new ± loop), `makeLoopNow()` (convert to loop). Backend resolves name at dispatch via `resolvePromptByName()` in target workspace context; the body is then **Go-template rendered** (if it contains `{{`) before `${VAR}` substitution. **Anti-pattern**: never POST resolved text to `/api/sessions/{id}/queue` — send `prompt_name` instead.
 
+**Transient-vs-durable classification (mitto-ctf, mitto-8bg)**: `resolvePromptByName` must wrap prompt-name misses as `conversation.ErrPromptTransientCompileRace` whenever the underlying `PromptsCache.GetWebPrompts()` / `GetWebPromptsSpecificToACP()` call returned a load error (notably `prompts.ErrDeploymentInProgress` during a builtin-prompt deployment window, or a cold/never-warmed cache right after a staggered reconnect) — not the plain durable `prompt %q not found`. Same carve-out as the mitto-8bg fragment-compile-race path. Any new resolution branch that surfaces a cache load error must route through the transient classification, otherwise the loop-runner strike counter (`MaxPromptResolveFailures`) will silently auto-pause healthy loops on transient windows. Regression pinned by `TestResolvePromptByName_DeploymentInProgress_ShouldBeTransient` (`internal/web/server_prompt_resolve_deployment_race_test.go`).
+
 ## MCP Prompt Tools
 
 - `mitto_prompt_list` — List merged prompts (metadata)
