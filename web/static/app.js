@@ -2546,6 +2546,79 @@ function App() {
         : null,
     [allSessions, activeSessionId],
   );
+
+  // ----- Header title inline editing (click title to rename, mitto-dpd) -----
+  // Mirrors the inline-rename pattern in ConversationPropertiesPanel.js /
+  // SessionPanel.js, but click-only (no pencil) per the header-specific UX
+  // decision, and available whenever a conversation is active (including the
+  // "New conversation" placeholder) — not just when a name is already set.
+  const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
+  const [editedHeaderTitle, setEditedHeaderTitle] = useState("");
+  const [isSavingHeaderTitle, setIsSavingHeaderTitle] = useState(false);
+  const headerTitleInputRef = useRef(null);
+
+  const handleStartEditHeaderTitle = useCallback(() => {
+    if (!activeSessionId) return;
+    setEditedHeaderTitle(sessionInfo?.name || "");
+    setIsEditingHeaderTitle(true);
+  }, [activeSessionId, sessionInfo?.name]);
+
+  const handleSaveHeaderTitle = useCallback(async () => {
+    if (!activeSessionId || isSavingHeaderTitle) return;
+    const newTitle = editedHeaderTitle.trim();
+    // Unlike the side-panel handlers, an empty title is NOT blocked here: the
+    // backend already treats an empty name as "clear NameExplicit" (re-enable
+    // auto-title), and the bead's acceptance criteria require that path to
+    // work from the header too. Only skip the network round-trip when nothing
+    // actually changed.
+    if (newTitle === (sessionInfo?.name || "")) {
+      setIsEditingHeaderTitle(false);
+      return;
+    }
+    setIsSavingHeaderTitle(true);
+    try {
+      await renameSession(activeSessionId, newTitle);
+      setIsEditingHeaderTitle(false);
+    } catch (err) {
+      console.error("Failed to save header title:", err);
+    } finally {
+      setIsSavingHeaderTitle(false);
+    }
+  }, [
+    activeSessionId,
+    editedHeaderTitle,
+    sessionInfo?.name,
+    renameSession,
+    isSavingHeaderTitle,
+  ]);
+
+  const handleHeaderTitleKeyDown = useCallback(
+    (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleSaveHeaderTitle();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setIsEditingHeaderTitle(false);
+      }
+    },
+    [handleSaveHeaderTitle],
+  );
+
+  // Focus + select the input when entering edit mode (matches the side panel).
+  useEffect(() => {
+    if (isEditingHeaderTitle && headerTitleInputRef.current) {
+      headerTitleInputRef.current.focus();
+      headerTitleInputRef.current.select();
+    }
+  }, [isEditingHeaderTitle]);
+
+  // Cancel any in-progress header title edit when switching conversations so
+  // a stale edit buffer can't leak across sessions.
+  useEffect(() => {
+    setIsEditingHeaderTitle(false);
+  }, [activeSessionId]);
+
   // A conversation is "spawned" (a child) when it has a parent and is not itself
   // a parent of other conversations — mirrors SessionList's row classification.
   const activeHasChildren = useMemo(
@@ -3560,23 +3633,54 @@ function App() {
                       </button>
                     <//>
                     <div class="flex-1 min-w-0 flex flex-col justify-center">
-                      <h1
-                        class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
-                          ? "text-mitto-text-muted"
-                          : connected
-                            ? ""
-                            : "text-mitto-text-muted"}"
-                        data-tip=${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : ""}
-                        aria-label=${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : ""}
-                      >
-                        ${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : "No Active Session"}
-                      </h1>
+                      ${isEditingHeaderTitle
+                        ? html`<input
+                            ref=${headerTitleInputRef}
+                            type="text"
+                            class="input input-sm font-bold text-xl w-full min-w-0"
+                            value=${editedHeaderTitle}
+                            onInput=${(e) =>
+                              setEditedHeaderTitle(e.target.value)}
+                            onKeyDown=${handleHeaderTitleKeyDown}
+                            onBlur=${() => {
+                              // Delay so a Save-button click (if ever added)
+                              // wouldn't be swallowed by the blur; matches the
+                              // side panel's guard even though the header has
+                              // no separate Save control today.
+                              setTimeout(() => {
+                                if (
+                                  isEditingHeaderTitle &&
+                                  !isSavingHeaderTitle
+                                ) {
+                                  setIsEditingHeaderTitle(false);
+                                }
+                              }, 150);
+                            }}
+                            disabled=${isSavingHeaderTitle}
+                            aria-label="Conversation title"
+                          />`
+                        : html`<h1
+                            class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
+                              ? "text-mitto-text-muted"
+                              : connected
+                                ? ""
+                                : "text-mitto-text-muted"} ${activeSessionId
+                              ? "cursor-pointer hover:text-mitto-accent transition-colors"
+                              : ""}"
+                            data-tip=${activeSessionId
+                              ? sessionInfo?.name || "New conversation"
+                              : ""}
+                            aria-label=${activeSessionId
+                              ? sessionInfo?.name || "New conversation"
+                              : ""}
+                            onClick=${activeSessionId
+                              ? handleStartEditHeaderTitle
+                              : undefined}
+                          >
+                            ${activeSessionId
+                              ? sessionInfo?.name || "New conversation"
+                              : "No Active Session"}
+                          </h1>`}
                       ${activeSessionId &&
                       (headerAcpServer ||
                         headerNextScheduledAt ||
