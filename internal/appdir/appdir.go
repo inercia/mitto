@@ -65,6 +65,10 @@ const (
 	// AuthSessionsFileName is the name of the auth sessions file.
 	AuthSessionsFileName = "auth_sessions.json"
 
+	// WebAuthnCredentialsFileName is the name of the WebAuthn (passkey)
+	// credentials file for the single External Access user.
+	WebAuthnCredentialsFileName = "webauthn_credentials.json"
+
 	// UIPreferencesFileName is the name of the UI preferences file.
 	// This stores client-side UI state like grouping mode and expanded groups.
 	UIPreferencesFileName = "ui_preferences.json"
@@ -436,6 +440,18 @@ func AuthSessionsPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, AuthSessionsFileName), nil
+}
+
+// WebAuthnCredentialsPath returns the full path to the webauthn_credentials.json
+// file. This file stores the WebAuthn (passkey) credentials and stable user
+// handle for the single External Access user, persisting them across server
+// restarts.
+func WebAuthnCredentialsPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, WebAuthnCredentialsFileName), nil
 }
 
 // UIPreferencesPath returns the full path to the ui_preferences.json file.
