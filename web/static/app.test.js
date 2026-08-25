@@ -218,3 +218,107 @@ describe("app.js: SDK migration — dashboard/misc/remainder handlers (mitto-7gt
     );
   });
 });
+
+describe("app.js: header title inline editing (click title to rename, mitto-dpd)", () => {
+  test("handleStartEditHeaderTitle: no-ops without an active session; otherwise seeds the draft from sessionInfo.name and enters edit mode", () => {
+    const idx = appJs.indexOf(
+      "const handleStartEditHeaderTitle = useCallback(",
+    );
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 300);
+    expect(snippet).toMatch(/if \(!activeSessionId\) return;/);
+    expect(snippet).toMatch(
+      /setEditedHeaderTitle\(sessionInfo\?\.name \|\| ""\);/,
+    );
+    expect(snippet).toMatch(/setIsEditingHeaderTitle\(true\);/);
+  });
+
+  test("handleSaveHeaderTitle: saves via renameSession, skips the round-trip when unchanged, and does NOT early-return on an empty title (auto-title re-enable)", () => {
+    const idx = appJs.indexOf("const handleSaveHeaderTitle = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 900);
+
+    // Guard clause only checks activeSessionId/isSavingHeaderTitle — no
+    // emptiness check on the trimmed title anywhere before the save call.
+    expect(snippet).toMatch(
+      /if \(!activeSessionId \|\| isSavingHeaderTitle\) return;/,
+    );
+    const trimIdx = snippet.indexOf(
+      "const newTitle = editedHeaderTitle.trim();",
+    );
+    expect(trimIdx).toBeGreaterThan(-1);
+
+    // Unchanged-value short-circuit compares against the current name, not
+    // against an empty string, so clearing the title is never treated as a
+    // no-op unless the name was already empty.
+    expect(snippet).toMatch(
+      /if \(newTitle === \(sessionInfo\?\.name \|\| ""\)\) \{\s*\n\s*setIsEditingHeaderTitle\(false\);\s*\n\s*return;\s*\n\s*\}/,
+    );
+
+    // The actual save call always fires with whatever newTitle resolved to
+    // (including ""), unlike the side-panel handlers which block empty saves.
+    const saveCallIdx = snippet.indexOf(
+      "await renameSession(activeSessionId, newTitle);",
+    );
+    expect(saveCallIdx).toBeGreaterThan(trimIdx);
+    expect(snippet).toMatch(
+      /\} catch \(err\) \{\s*\n\s*console\.error\("Failed to save header title:", err\);\s*\n\s*\} finally \{\s*\n\s*setIsSavingHeaderTitle\(false\);\s*\n\s*\}/,
+    );
+  });
+
+  test("handleHeaderTitleKeyDown: Enter saves, Escape cancels without saving", () => {
+    const idx = appJs.indexOf("const handleHeaderTitleKeyDown = useCallback(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 400);
+    expect(snippet).toMatch(
+      /if \(e\.key === "Enter"\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*handleSaveHeaderTitle\(\);/,
+    );
+    expect(snippet).toMatch(
+      /\} else if \(e\.key === "Escape"\) \{\s*\n\s*e\.preventDefault\(\);\s*\n\s*setIsEditingHeaderTitle\(false\);/,
+    );
+  });
+
+  test("focus+select effect fires when entering edit mode; a separate effect cancels an in-progress edit on conversation switch", () => {
+    const focusIdx = appJs.indexOf(
+      "if (isEditingHeaderTitle && headerTitleInputRef.current) {",
+    );
+    expect(focusIdx).toBeGreaterThan(-1);
+    const focusSnippet = appJs.slice(focusIdx, focusIdx + 200);
+    expect(focusSnippet).toMatch(/headerTitleInputRef\.current\.focus\(\);/);
+    expect(focusSnippet).toMatch(/headerTitleInputRef\.current\.select\(\);/);
+
+    const switchIdx = appJs.indexOf(
+      "// Cancel any in-progress header title edit when switching conversations",
+    );
+    expect(switchIdx).toBeGreaterThan(-1);
+    const switchSnippet = appJs.slice(switchIdx, switchIdx + 300);
+    expect(switchSnippet).toMatch(/setIsEditingHeaderTitle\(false\);/);
+    expect(switchSnippet).toMatch(/\}, \[activeSessionId\]\);/);
+  });
+
+  test("header JSX: renders the input only while editing, wires onClick to start editing only when a session is active", () => {
+    const idx = appJs.indexOf("${isEditingHeaderTitle\n");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 2200);
+
+    // Editing branch: input carries the ref, value, handlers and is disabled
+    // while a save is in flight — never blocks on emptiness.
+    expect(snippet).toMatch(/ref=\$\{headerTitleInputRef\}/);
+    expect(snippet).toMatch(/value=\$\{editedHeaderTitle\}/);
+    expect(snippet).toMatch(/onKeyDown=\$\{handleHeaderTitleKeyDown\}/);
+    expect(snippet).toMatch(/disabled=\$\{isSavingHeaderTitle\}/);
+
+    // Non-editing branch: clicking the h1 only starts editing when a
+    // conversation is active ("New conversation" placeholder included,
+    // since the ternary only checks activeSessionId, not sessionInfo?.name).
+    const onClickIdx = appJs.indexOf(
+      "onClick=${activeSessionId\n                              ? handleStartEditHeaderTitle",
+    );
+    expect(onClickIdx).toBeGreaterThan(idx);
+    expect(onClickIdx).toBeLessThan(idx + 2600);
+    const onClickSnippet = appJs.slice(onClickIdx, onClickIdx + 140);
+    expect(onClickSnippet).toMatch(
+      /onClick=\$\{activeSessionId\s*\n\s*\? handleStartEditHeaderTitle\s*\n\s*: undefined\}/,
+    );
+  });
+});
