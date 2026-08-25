@@ -4,9 +4,16 @@
 // ACP start/permanent errors, hook failures, and generic notifications), plus the
 // cleanup of native notifications for the active conversation on focus.
 // Side-effect only: returns nothing.
-const { useEffect } = window.preact;
+const { useEffect, useRef } = window.preact;
 
 import { playAgentCompletedSound } from "../utils/index.js";
+
+// Minimum interval between "Slack journal rejecting" toasts for the same
+// Slack app (mitto-mfd). The journal re-emits its connection-status feed on
+// every rejected event, and the mitto-d8y incident produced ~52k rejections
+// in 13h, so this keeps a sustained rejection storm to one toast per window
+// instead of flooding the UI.
+const SLACK_JOURNAL_TOAST_THROTTLE_MS = 5 * 60 * 1000;
 
 /**
  * Wires the background notification window-event listeners.
@@ -310,6 +317,42 @@ export function useBackgroundNotifications({
     window.addEventListener("mitto:hook_failed", handleHookFailed);
     return () => {
       window.removeEventListener("mitto:hook_failed", handleHookFailed);
+    };
+  }, [showToast]);
+
+  // Listen for Slack durable-journal-rejecting events (mitto-mfd): the
+  // journal has started rejecting Accept() calls (e.g. it hit its hard cap)
+  // for a Slack app while still connected — the exact condition that
+  // eventually makes Slack auto-disable event delivery. Throttled per app so
+  // a rejection storm surfaces one toast per window (see
+  // SLACK_JOURNAL_TOAST_THROTTLE_MS) instead of flooding the UI.
+  const slackJournalToastAtRef = useRef({});
+  useEffect(() => {
+    const handleSlackJournalRejecting = (event) => {
+      const data = event.detail;
+      const appId = data?.app_id;
+      if (!appId) return;
+      const now = Date.now();
+      const last = slackJournalToastAtRef.current[appId] || 0;
+      if (now - last < SLACK_JOURNAL_TOAST_THROTTLE_MS) return;
+      slackJournalToastAtRef.current[appId] = now;
+      showToast({
+        style: "warning",
+        title: "Slack event journal rejecting events",
+        message:
+          "The durable event journal is rejecting events for a Slack app. Delivery may be automatically disabled by Slack if this continues — check Settings > Slack.",
+        duration: 10000,
+      });
+    };
+    window.addEventListener(
+      "mitto:slack_journal_rejecting",
+      handleSlackJournalRejecting,
+    );
+    return () => {
+      window.removeEventListener(
+        "mitto:slack_journal_rejecting",
+        handleSlackJournalRejecting,
+      );
     };
   }, [showToast]);
 

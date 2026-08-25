@@ -178,6 +178,20 @@ export function deriveSlackDeliveryWarning(
   };
 }
 
+// Derives an actionable "durable journal is rejecting events" warning from a
+// live ConnectionStatus (mitto-mfd). The backend only sets error_class to
+// "journal" while the journal is actively rejecting Accept() calls (e.g. it
+// hit its hard cap) and clears it back to "" once acceptance succeeds again,
+// so this warning is live and self-clearing — surfaced before sustained
+// rejections make Slack auto-disable event delivery.
+export function deriveSlackJournalWarning(status) {
+  if (!status || status.error_class !== "journal") return null;
+  return {
+    message:
+      "The durable event journal is rejecting events. Slack may automatically disable event delivery for this app if this continues.",
+  };
+}
+
 export function slackCredentialKind(record) {
   return record?.credential_kind === "user"
     ? { label: "Delegated user", className: "badge-info" }
@@ -292,6 +306,13 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
   const selectedAppDeliveryWarning = useMemo(
     () =>
       deriveSlackDeliveryWarning(
+        selectedApp ? connectionStatusByApp[selectedApp.id] : null,
+      ),
+    [selectedApp, connectionStatusByApp],
+  );
+  const selectedAppJournalWarning = useMemo(
+    () =>
+      deriveSlackJournalWarning(
         selectedApp ? connectionStatusByApp[selectedApp.id] : null,
       ),
     [selectedApp, connectionStatusByApp],
@@ -1423,6 +1444,19 @@ export function SlackSettingsTab({ showToast, client: clientOverride }) {
                             >Troubleshooting guide</a
                           >
                         </p>`}
+                        ${selectedAppJournalWarning &&
+                        html`<div
+                          role="alert"
+                          class="alert alert-warning alert-soft text-sm"
+                          data-testid="slack-journal-warning"
+                        >
+                          <span
+                            >${selectedAppJournalWarning.message} Check
+                            Mitto's logs for "journal operation failed" and
+                            consider reducing event volume or restarting this
+                            app's Slack connection.</span
+                          >
+                        </div>`}
                       </div>
 
                       <div>

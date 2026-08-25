@@ -617,6 +617,7 @@ func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 		m.logJournalFailure(appID, "accept")
 		return err
 	}
+	m.noteJournalAccepted(appID)
 	m.refreshJournalStatus(appID)
 	if duplicate {
 		return nil
@@ -725,12 +726,36 @@ func (m *Manager) logJournalFailure(appID, class string) {
 			status.State = "disconnected"
 		}
 		status.LastJournalErrorAt = time.Now().UTC()
+		// mitto-mfd: surface a first-class, frontend-visible signal (not just a
+		// timestamp) the moment the journal starts rejecting operations —
+		// notably ErrJournalFull on Accept — so an operator can intervene
+		// before sustained ack failures make Slack auto-disable delivery.
+		status.ErrorClass = "journal"
 		m.emitStatusLocked(status)
 		m.mu.Unlock()
 	}
 	if m.logger != nil {
 		m.logger.Warn("slackbridge: journal operation failed", "app_id", appID, "error_class", class)
 	}
+}
+
+// noteJournalAccepted clears a previously-set "journal" ErrorClass once the
+// durable journal accepts an event again (mitto-mfd), so the warning is
+// self-clearing rather than sticky across an entire connection's lifetime.
+// Only Accept success clears it: a successful Stats/PendingSessions read
+// (refreshJournalStatus) does not imply Accept itself has recovered.
+func (m *Manager) noteJournalAccepted(appID string) {
+	if appID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	status, ok := m.statuses[appID]
+	if !ok || status.ErrorClass != "journal" {
+		return
+	}
+	status.ErrorClass = ""
+	m.emitStatusLocked(status)
 }
 
 func (m *Manager) observeSource(appID string, observation SourceObservation) {

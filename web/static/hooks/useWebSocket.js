@@ -3625,6 +3625,18 @@ export function useWebSocket({
               detail: msg.data,
             }),
           );
+          // mitto-mfd: the durable event journal just started rejecting this
+          // app's events (error_class "journal"). Fire a dedicated event so a
+          // background hook can surface a throttled toast even when Settings
+          // > Slack isn't open — before Slack's own sustained-failure
+          // auto-disable kicks in.
+          if (msg.data.error_class === "journal") {
+            window.dispatchEvent(
+              new CustomEvent("mitto:slack_journal_rejecting", {
+                detail: msg.data,
+              }),
+            );
+          }
         }
         break;
     }
