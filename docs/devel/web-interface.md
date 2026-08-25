@@ -94,12 +94,19 @@ These endpoints do **not** require a session cookie.
 
 ### External Access — Passkeys
 
-WebAuthn passkey registration (mitto-4mz.3). Both endpoints require an already-authenticated session (a valid `mitto_session` cookie **and** a CSRF token — they are **not** CSRF-exempt) and return `404` when passkeys are not armed (no https `web.hooks.external_address` RP, or the feature is disabled). Called directly by the browser's `navigator.credentials.*` APIs, not through either SDK.
+WebAuthn passkey registration (mitto-4mz.3). Both registration endpoints require an already-authenticated session (a valid `mitto_session` cookie **and** a CSRF token — they are **not** CSRF-exempt) and return `404` when passkeys are not armed (no https `web.hooks.external_address` RP, or the feature is disabled). Called directly by the browser's `navigator.credentials.*` APIs, not through either SDK.
 
 | Path                             | Method(s) | Description                                                                                              |
 | -------------------------------- | --------- | ------------------------------------------------------------------------------------------------------- |
 | `/api/webauthn/register/begin`   | POST      | Start enrollment: returns `PublicKeyCredentialCreationOptions` (resident-key required, UV preferred) and stashes the ceremony `SessionData` server-side (5-min TTL) |
 | `/api/webauthn/register/finish`  | POST      | Verify the authenticator attestation against the stashed `SessionData` and persist the new credential   |
+
+WebAuthn passkey login (mitto-4mz.4). Unlike registration, both endpoints are **pre-auth** (public — no `mitto_session` cookie exists yet) and **CSRF-exempt** (there is no session-tied CSRF token to expect, and a WebAuthn assertion over a server-issued challenge is inherently CSRF-resistant — same rationale as `/api/login`). They use discoverable (usernameless) login, reuse the same rate-limiter as password login, and return `404` when passkeys are not armed. Because login is pre-auth, the ceremony `SessionData` is stashed keyed by a short-lived HttpOnly `mitto_webauthn_login` cookie (5-min TTL) rather than by the session token. On success, finish mints the **same** `mitto_session` cookie the password flow issues (via `AuthManager.CreateSession`/`SetSessionCookie`), so the rest of the stack is unchanged; password login remains fully functional as a fallback.
+
+| Path                             | Method(s) | Description                                                                                              |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| `/api/webauthn/login/begin`      | POST      | Start a discoverable login: returns `PublicKeyCredentialRequestOptions` (empty `allowCredentials`) and stashes the ceremony `SessionData` server-side (5-min TTL), keyed by the `mitto_webauthn_login` cookie |
+| `/api/webauthn/login/finish`     | POST      | Verify the authenticator assertion against the stashed `SessionData` (resolving the single configured user via a `DiscoverableUserHandler`), persist the updated sign count, and mint the `mitto_session` cookie |
 
 ---
 
