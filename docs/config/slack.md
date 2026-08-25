@@ -21,9 +21,9 @@ You need:
 
 Mitto supports two ways to receive messages:
 
-| Mode | Token | Use when |
-| --- | --- | --- |
-| **Bot** | Bot token (`xoxb-…`) | You want a dedicated bot identity; invite it to each channel. |
+| Mode               | Token                 | Use when                                                                         |
+| ------------------ | --------------------- | -------------------------------------------------------------------------------- |
+| **Bot**            | Bot token (`xoxb-…`)  | You want a dedicated bot identity; invite it to each channel.                    |
 | **Delegated user** | User OAuth (`xoxp-…`) | You want Mitto to see the channels a specific user can already see, with no bot. |
 
 Both modes also require one **app-level token** (`xapp-…`) for the Socket Mode
@@ -110,17 +110,17 @@ See [Prompts → Loop Prompts](prompts.md) for loop configuration details.
 
 <a id="troubleshooting-connected-but-0-events-received"></a>
 
-| Symptom | Likely cause | Fix |
-| --- | --- | --- |
-| **Connected, but 0 events received** | The app isn't subscribed to the events for your identity — most often a delegated-user install missing `message.channels` / `message.groups` under *Subscribe to events on behalf of users*. | Reapply the manifest, then **reauthorize** so the new user-event subscriptions take effect. |
-| **Events received, but 0 accepted** (log repeats `error_class=authorization` / `missing_scope`) | The app-level `xapp-…` token is missing `authorizations:read`, so Mitto can't resolve the event's installation and drops every message. | Generate a **new** app-level token with both `connections:write` **and** `authorizations:read`, update it in Settings, and restart. `accepted_count` should then climb with `events_api_received`. |
-| **Private channel not selectable / no messages** | The bot hasn't joined the channel (bot mode), or the channel isn't visible to the authorizing user (delegated mode). | Invite the bot (`/invite @Mitto`), or reauthorize as a user who is a member. |
-| **Nothing happens after a valid message** | The message subtype is filtered (edits, joins, bot messages, DMs are ignored by design), or the loop is paused/archived. | Post a plain human message in a subscribed channel and confirm the loop is enabled. |
+| Symptom                                                                                         | Likely cause                                                                                                                                                                                 | Fix                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Connected, but 0 events received**                                                            | The app isn't subscribed to the events for your identity — most often a delegated-user install missing `message.channels` / `message.groups` under _Subscribe to events on behalf of users_. | Reapply the manifest, then **reauthorize** so the new user-event subscriptions take effect.                                                                                                        |
+| **Events received, but 0 accepted** (log repeats `error_class=authorization` / `missing_scope`) | The app-level `xapp-…` token is missing `authorizations:read`, so Mitto can't resolve the event's installation and drops every message.                                                      | Generate a **new** app-level token with both `connections:write` **and** `authorizations:read`, update it in Settings, and restart. `accepted_count` should then climb with `events_api_received`. |
+| **Private channel not selectable / no messages**                                                | The bot hasn't joined the channel (bot mode), or the channel isn't visible to the authorizing user (delegated mode).                                                                         | Invite the bot (`/invite @Mitto`), or reauthorize as a user who is a member.                                                                                                                       |
+| **Nothing happens after a valid message**                                                       | The message subtype is filtered (edits, joins, bot messages, DMs are ignored by design), or the loop is paused/archived.                                                                     | Post a plain human message in a subscribed channel and confirm the loop is enabled.                                                                                                                |
 
 To verify event delivery in the Slack app, open **Event Subscriptions**. With
 Socket Mode enabled you do **not** need a Request URL; confirm that
-`message.channels` / `message.groups` appear under *Subscribe to bot events*
-and/or *Subscribe to events on behalf of users*.
+`message.channels` / `message.groups` appear under _Subscribe to bot events_
+and/or _Subscribe to events on behalf of users_.
 
 ![Slack Event Subscriptions page with Socket Mode enabled and no Request URL required](screenshots/slack-3.png)
 

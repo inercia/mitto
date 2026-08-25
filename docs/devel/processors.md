@@ -352,10 +352,10 @@ type StateStore interface {
 }
 ```
 
-| Implementation     | Used when  | Behavior                                                                         |
-| ------------------ | ---------- | -------------------------------------------------------------------------------- |
+| Implementation     | Used when  | Behavior                                                                                                                                                                    |
+| ------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FileStateStore`   | Production | Reads/writes `<session_dir>/processor_state.json` via `fileutil.WriteJSONAtomicIfDirExists` (skips the write if the session directory was concurrently deleted; mitto-32ef) |
-| `MemoryStateStore` | Tests      | In-memory map keyed by `sessionDir`; never hits disk                             |
+| `MemoryStateStore` | Tests      | In-memory map keyed by `sessionDir`; never hits disk                                                                                                                        |
 
 ### Persisted state shape (`ProcessorStateData`)
 

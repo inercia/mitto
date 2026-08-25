@@ -105,12 +105,12 @@ messages rather than decoder, provider, or credential text.
 | `DELETE`                 | `/api/slack/installations/{installationId}/references`     | Remove matching `onSlack` conversation references    |
 | `GET`                    | `/api/slack/installations/{installationId}/channels`       | Discover public and visible private channels         |
 | `GET`, `POST`            | `/api/slack/environment-import`                            | Inspect or import the deprecated environment adapter |
-| `GET`                    | `/api/slack/oauth/config`                                  | Read callback availability and redirect URI           |
-| `PUT`                    | `/api/slack/apps/{appId}/oauth-client`                     | Store client ID and write-only client secret          |
-| `POST`                   | `/api/slack/apps/{appId}/oauth/start`                      | Start delegated-user installation authorization       |
-| `POST`                   | `/api/slack/installations/{installationId}/oauth/start`    | Start delegated-user replacement authorization        |
-| `GET`                    | `/api/slack/oauth/flows/{flowId}`                          | Poll value-free authorization status                  |
-| `GET`                    | `/api/slack/oauth/callback`                                | Public Slack redirect protected by one-time state     |
+| `GET`                    | `/api/slack/oauth/config`                                  | Read callback availability and redirect URI          |
+| `PUT`                    | `/api/slack/apps/{appId}/oauth-client`                     | Store client ID and write-only client secret         |
+| `POST`                   | `/api/slack/apps/{appId}/oauth/start`                      | Start delegated-user installation authorization      |
+| `POST`                   | `/api/slack/installations/{installationId}/oauth/start`    | Start delegated-user replacement authorization       |
+| `GET`                    | `/api/slack/oauth/flows/{flowId}`                          | Poll value-free authorization status                 |
+| `GET`                    | `/api/slack/oauth/callback`                                | Public Slack redirect protected by one-time state    |
 
 Errors use the canonical Mitto JSON envelope: malformed input is `400`, missing
 records are `404`, duplicate identities, identity mismatches, and active references
