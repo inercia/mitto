@@ -738,6 +738,27 @@ describe("shouldOpenPromptDialog", () => {
     expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(false);
   });
 
+  // Regression pin: an interactive picker (slackChannel) that would otherwise
+  // force the dialog open is suppressed by show:never, because the
+  // isNeverShownParam short-circuit precedes the isInteractivePickerParam branch
+  // in shouldOpenPromptDialog. This lets an optional picker param opt out of the
+  // otherwise-forced dialog while still accepting a value from a menu/default.
+  test("show:never suppresses an interactive picker (slackChannel) from opening the dialog", () => {
+    const prompt = {
+      parameters: [
+        {
+          name: "SlackChannelID",
+          type: "slackChannel",
+          required: false,
+          show: "never",
+        },
+      ],
+    };
+    expect(shouldOpenPromptDialog(prompt, "prompts")).toBe(false);
+    expect(shouldOpenPromptDialog(prompt, "conversation")).toBe(false);
+    expect(shouldOpenPromptDialog(prompt, "beadsIssues")).toBe(false);
+  });
+
   test("show:always on a menu-supplied param still forces the dialog open", () => {
     const prompt = {
       parameters: [
