@@ -424,6 +424,9 @@ func (a *AuthManager) ConfigurePasskey(cfg *config.WebAuthnConfig, externalAddre
 // to surface effective availability (not just the config toggle) via
 // GET /api/auth-info.
 func (a *AuthManager) HasPasskeyEnabled() bool {
+	if a == nil {
+		return false
+	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.webAuthn != nil

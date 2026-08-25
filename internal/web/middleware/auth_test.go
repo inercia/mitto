@@ -6,6 +6,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -2122,4 +2123,129 @@ func TestAuthManager_SharedToken_ConcurrentRotateAndValidate_Race(t *testing.T) 
 	}
 
 	wg.Wait()
+}
+
+// --- ConfigurePasskey / HasPasskeyEnabled (mitto-4mz.2) ---
+
+func TestAuthManager_ConfigurePasskey_NilConfigDisables(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	if err := am.ConfigurePasskey(nil, "https://mitto.example.com"); err != nil {
+		t.Fatalf("ConfigurePasskey(nil, ...) error = %v, want nil", err)
+	}
+	if am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = true, want false for nil webauthn config")
+	}
+}
+
+func TestAuthManager_ConfigurePasskey_DisabledConfigDisables(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	if err := am.ConfigurePasskey(&config.WebAuthnConfig{Enabled: false}, "https://mitto.example.com"); err != nil {
+		t.Fatalf("ConfigurePasskey(disabled, ...) error = %v, want nil", err)
+	}
+	if am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = true, want false for Enabled: false")
+	}
+}
+
+func TestAuthManager_ConfigurePasskey_EnabledWithValidHTTPSAddress(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	if err := am.ConfigurePasskey(&config.WebAuthnConfig{Enabled: true}, "https://mitto.example.com"); err != nil {
+		t.Fatalf("ConfigurePasskey() error = %v, want nil", err)
+	}
+	if !am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = false, want true after successful RP derivation")
+	}
+}
+
+func TestAuthManager_ConfigurePasskey_EnabledWithoutHTTPSAddressFails(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	err := am.ConfigurePasskey(&config.WebAuthnConfig{Enabled: true}, "")
+	if !errors.Is(err, config.ErrWebAuthnRPUnavailable) {
+		t.Fatalf("ConfigurePasskey() error = %v, want ErrWebAuthnRPUnavailable", err)
+	}
+	if am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = true, want false after derivation failure")
+	}
+}
+
+func TestAuthManager_ConfigurePasskey_EnabledWithNonHTTPSAddressFails(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	err := am.ConfigurePasskey(&config.WebAuthnConfig{Enabled: true}, "http://mitto.example.com")
+	if !errors.Is(err, config.ErrWebAuthnRPUnavailable) {
+		t.Fatalf("ConfigurePasskey() error = %v, want ErrWebAuthnRPUnavailable", err)
+	}
+	if am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = true, want false after derivation failure")
+	}
+}
+
+func TestAuthManager_ConfigurePasskey_ReDeriveDisablesOnSubsequentFailure(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	// First save: valid https address, passkeys become enabled.
+	if err := am.ConfigurePasskey(&config.WebAuthnConfig{Enabled: true}, "https://mitto.example.com"); err != nil {
+		t.Fatalf("first ConfigurePasskey() error = %v, want nil", err)
+	}
+	if !am.HasPasskeyEnabled() {
+		t.Fatal("HasPasskeyEnabled() = false after first successful derivation")
+	}
+
+	// Second save: external_address changed to something invalid (e.g. ephemeral
+	// tunnel torn down); must re-derive and disable rather than keep stale state.
+	err := am.ConfigurePasskey(&config.WebAuthnConfig{Enabled: true}, "")
+	if !errors.Is(err, config.ErrWebAuthnRPUnavailable) {
+		t.Fatalf("second ConfigurePasskey() error = %v, want ErrWebAuthnRPUnavailable", err)
+	}
+	if am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = true, want false after re-derivation failure")
+	}
+}
+
+func TestAuthManager_ConfigurePasskey_ExplicitRPOverridesSkipExternalAddress(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	cfg := &config.WebAuthnConfig{
+		Enabled:  true,
+		RPID:     "override.example.com",
+		RPOrigin: "https://override.example.com",
+	}
+	// external_address is empty/invalid, but both overrides are set so it must
+	// not be consulted.
+	if err := am.ConfigurePasskey(cfg, ""); err != nil {
+		t.Fatalf("ConfigurePasskey() error = %v, want nil", err)
+	}
+	if !am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() = false, want true when RP is fully overridden")
+	}
+}
+
+func TestAuthManager_HasPasskeyEnabled_NilReceiver(t *testing.T) {
+	var am *AuthManager
+	if am.HasPasskeyEnabled() {
+		t.Error("HasPasskeyEnabled() on nil receiver = true, want false")
+	}
 }

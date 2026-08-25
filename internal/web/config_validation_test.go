@@ -375,6 +375,107 @@ func TestValidateConfigRequest_OmittedWebNoExistingAuth(t *testing.T) {
 	}
 }
 
+// webauthnConfigBody is a minimal valid config save request (one workspace +
+// matching ACP server) carrying a webauthn block with the given enabled flag
+// and optional external_address / RP overrides.
+func webauthnConfigBody(enabled bool, externalAddress, rpID, rpOrigin string) *ConfigSaveRequest {
+	hooksField := ""
+	if externalAddress != "" {
+		hooksField = `, "hooks": {"external_address": "` + externalAddress + `"}`
+	}
+	overrides := ""
+	if rpID != "" {
+		overrides += `, "rp_id": "` + rpID + `"`
+	}
+	if rpOrigin != "" {
+		overrides += `, "rp_origin": "` + rpOrigin + `"`
+	}
+	body := `{
+		"workspaces": [{"working_dir": "/tmp", "acp_server": "test"}],
+		"acp_servers": [{"name": "test", "command": "cmd"}],
+		"web": {"auth": {"webauthn": {"enabled": ` + fmt.Sprintf("%v", enabled) + overrides + `}}` + hooksField + `}
+	}`
+	var req ConfigSaveRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		panic(err)
+	}
+	return &req
+}
+
+// Passkeys enabled with a valid https external_address are accepted.
+func TestValidateConfigRequest_WebauthnEnabledValidHTTPSAccepted(t *testing.T) {
+	server := &Server{}
+	req := webauthnConfigBody(true, "https://mitto.example.com", "", "")
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Passkeys enabled with no external_address at all (neither in the request nor
+// on the existing server config) must be rejected.
+func TestValidateConfigRequest_WebauthnEnabledNoAddressRejected(t *testing.T) {
+	server := &Server{}
+	req := webauthnConfigBody(true, "", "", "")
+	err := server.validateConfigRequest(req)
+	if err == nil {
+		t.Fatal("expected error for webauthn enabled without an https external_address")
+	}
+	if err.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d", err.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// Passkeys enabled with a non-https external_address must be rejected.
+func TestValidateConfigRequest_WebauthnEnabledNonHTTPSRejected(t *testing.T) {
+	server := &Server{}
+	req := webauthnConfigBody(true, "http://mitto.example.com", "", "")
+	err := server.validateConfigRequest(req)
+	if err == nil {
+		t.Fatal("expected error for webauthn enabled with a non-https external_address")
+	}
+	if err.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d", err.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// Passkeys enabled with explicit rp_id/rp_origin overrides are accepted even
+// when the request omits hooks.external_address entirely.
+func TestValidateConfigRequest_WebauthnEnabledExplicitOverridesAccepted(t *testing.T) {
+	server := &Server{}
+	req := webauthnConfigBody(true, "", "override.example.com", "https://override.example.com")
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Passkeys enabled with no external_address in the request but a valid https
+// address already persisted on the server fall back to the existing config
+// (the settings dialog may save auth without touching hooks).
+func TestValidateConfigRequest_WebauthnEnabledFallsBackToExistingAddress(t *testing.T) {
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Web: config.WebConfig{
+					Hooks: config.WebHooks{ExternalAddress: "https://mitto.example.com"},
+				},
+			},
+		},
+	}
+	req := webauthnConfigBody(true, "", "", "")
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error falling back to existing external_address: %v", err)
+	}
+}
+
+// Passkeys disabled must never trigger RP validation, regardless of address.
+func TestValidateConfigRequest_WebauthnDisabledSkipsValidation(t *testing.T) {
+	server := &Server{}
+	req := webauthnConfigBody(false, "", "", "")
+	if err := server.validateConfigRequest(req); err != nil {
+		t.Fatalf("unexpected error for disabled webauthn: %v", err)
+	}
+}
+
 // mcpConfigBody is a minimal valid config save request carrying an MCP section
 // with the given port. A nil port means the "mcp" section omits the port field
 // entirely (so MCPConfig.Port stays nil, i.e. "use the default").

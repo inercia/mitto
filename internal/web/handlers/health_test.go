@@ -94,3 +94,64 @@ func TestHandleHealthCheck_Shutdown(t *testing.T) {
 		t.Errorf("status = %v, want %q", response["status"], "unhealthy")
 	}
 }
+
+// --- HandleAuthInfo (mitto-4mz.2: passkey availability) ---
+
+func TestHandleAuthInfo_NilAuthInfoReportsAllFalse(t *testing.T) {
+	h := New(Deps{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth-info", nil)
+	rr := httptest.NewRecorder()
+	h.HandleAuthInfo(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var info map[string]bool
+	if err := json.Unmarshal(rr.Body.Bytes(), &info); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	want := map[string]bool{"simple": false, "cloudflare": false, "passkey": false}
+	for k, v := range want {
+		if info[k] != v {
+			t.Errorf("info[%q] = %v, want %v", k, info[k], v)
+		}
+	}
+}
+
+func TestHandleAuthInfo_ReportsAllThreeMethods(t *testing.T) {
+	h := New(Deps{
+		AuthInfo: func() (bool, bool, bool) { return true, false, true },
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth-info", nil)
+	rr := httptest.NewRecorder()
+	h.HandleAuthInfo(rr, req)
+
+	var info map[string]bool
+	if err := json.Unmarshal(rr.Body.Bytes(), &info); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if !info["simple"] {
+		t.Error("info[simple] = false, want true")
+	}
+	if info["cloudflare"] {
+		t.Error("info[cloudflare] = true, want false")
+	}
+	if !info["passkey"] {
+		t.Error("info[passkey] = false, want true")
+	}
+}
+
+func TestHandleAuthInfo_MethodNotAllowed(t *testing.T) {
+	h := New(Deps{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth-info", nil)
+	rr := httptest.NewRecorder()
+	h.HandleAuthInfo(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	}
+}
