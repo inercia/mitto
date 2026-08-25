@@ -3954,6 +3954,7 @@ function App() {
                       disabled=${!connected || !activeSessionId}
                       isStreaming=${isStreaming}
                       isRunning=${isRunning}
+                      isAtBottom=${isUserAtBottom}
                       isReadOnly=${sessionInfo?.isReadOnly}
                       isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}

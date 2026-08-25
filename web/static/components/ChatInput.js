@@ -140,6 +140,7 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.isStreaming - Whether agent is currently streaming
  * @param {boolean} props.isReadOnly - Whether session is read-only
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
+ * @param {boolean} [props.isAtBottom] - Whether the messages view is scrolled to the bottom (from useScrollManagement). On mobile, scrolling away from the bottom collapses the composer to a compact affordance; returning to the bottom (or focusing the textarea) restores it.
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
  * @param {Object} props.inputRef - Ref for external focus control
@@ -171,6 +172,7 @@ export function ChatInput({
   isRunning = true,
   isReadOnly,
   isArchived = false,
+  isAtBottom = true,
   isArchivePending = false,
   predefinedPrompts = [],
   inputRef,
@@ -454,6 +456,58 @@ export function ChatInput({
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // Mobile-only scroll-driven compact collapse (mitto-47l): shrink the
+  // composer to a single-line affordance while the user has scrolled away
+  // from the bottom of the conversation, and restore it once they scroll
+  // back to the bottom or focus the textarea. Reuses the same mobile
+  // breakpoint string as app.js's drawer/sidebar mobile checks
+  // ("(max-width: 767.98px)"), made reactive here via a matchMedia change
+  // listener (desktop is completely unaffected). Kept separate from
+  // isPromptCollapsed, which is a manual/one-shot flag whose loop path fully
+  // unmounts the composition box — this compact state instead only toggles a
+  // CSS class, so the textarea/draft/attachments stay mounted and no state
+  // is lost.
+  const MOBILE_MEDIA_QUERY = "(max-width: 767.98px)";
+  const [isMobile, setIsMobile] = useState(
+    () => window.matchMedia?.(MOBILE_MEDIA_QUERY).matches ?? false,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia?.(MOBILE_MEDIA_QUERY);
+    if (!mql) return undefined;
+    const handleChange = (e) => setIsMobile(e.matches);
+    // Safari <14 only supports addListener/removeListener; feature-detect.
+    if (mql.addEventListener) {
+      mql.addEventListener("change", handleChange);
+      return () => mql.removeEventListener("change", handleChange);
+    }
+    mql.addListener(handleChange);
+    return () => mql.removeListener(handleChange);
+  }, []);
+
+  const [isScrollCollapsed, setIsScrollCollapsed] = useState(false);
+  const scrollCollapseTimeoutRef = useRef(null);
+  useEffect(() => {
+    if (scrollCollapseTimeoutRef.current) {
+      clearTimeout(scrollCollapseTimeoutRef.current);
+      scrollCollapseTimeoutRef.current = null;
+    }
+    if (isAtBottom) {
+      // Expand immediately (snappy) when back at the bottom.
+      setIsScrollCollapsed(false);
+      return undefined;
+    }
+    // Collapse after a light debounce to avoid flicker near the threshold.
+    scrollCollapseTimeoutRef.current = setTimeout(() => {
+      setIsScrollCollapsed(true);
+    }, 150);
+    return () => {
+      if (scrollCollapseTimeoutRef.current) {
+        clearTimeout(scrollCollapseTimeoutRef.current);
+        scrollCollapseTimeoutRef.current = null;
+      }
+    };
+  }, [isAtBottom]);
 
   // Clear pending images/files and sending state when session changes
   // Note: improving state is tracked per-session in improvingSessionsRef and persists
@@ -1740,6 +1794,17 @@ export function ChatInput({
   const mcpUIBlocking =
     hasActiveUIPrompt && activeUIPrompt.promptType !== "permission";
 
+  // Effective mobile compact presentation (mitto-47l): only on mobile, only
+  // while scrolled away from the bottom, and never while the loop's own hide
+  // gate, an MCP UI prompt, or an active textarea focus already claim the
+  // composition area's visibility/attention.
+  const isScrollCompact =
+    isMobile &&
+    isScrollCollapsed &&
+    !loopConfigured &&
+    !mcpUIBlocking &&
+    !isTextareaFocused;
+
   // Handle UI prompt answer click
   const handleUIPromptAnswer = useCallback(
     (optionId, label, freeText = "") => {
@@ -2418,7 +2483,14 @@ ${activeUIPrompt.text || ""}</textarea
       ${!mcpUIBlocking &&
       !(isPromptCollapsed && loopConfigured) &&
       html`
-        <div class="max-w-4xl mx-auto chat-input-container">
+        <div
+          class="max-w-4xl mx-auto chat-input-container ${isScrollCompact
+            ? "chat-input-container--compact"
+            : ""}"
+          onClick=${
+            isScrollCompact ? () => setIsScrollCollapsed(false) : undefined
+          }
+        >
           <div class="chat-input-box" ref=${dropupRef}>
             <!-- Slash command picker - expands from bottom of the box -->
             <${SlashCommandPicker}
@@ -2432,7 +2504,7 @@ ${activeUIPrompt.text || ""}</textarea
             />
 
             <!-- Textarea - borderless, transparent background; relative wrapper for improving overlay -->
-            <div class="relative">
+            <div class="relative chat-input-textarea-wrapper">
               <textarea
                 ref=${textareaRef}
                 autocorrect=${isNativeApp() ? "off" : "on"}
@@ -2481,7 +2553,7 @@ ${activeUIPrompt.text || ""}</textarea
             <!-- Pending images preview -->
             ${hasPendingImages &&
             html`
-              <div class="px-4 pt-2 pb-1">
+              <div class="chat-input-attachments-preview px-4 pt-2 pb-1">
                 <div class="flex flex-wrap gap-2">
                   ${pendingImages.map(
                     (img) => html`
@@ -2554,7 +2626,7 @@ ${activeUIPrompt.text || ""}</textarea
             <!-- Pending files preview -->
             ${hasPendingFiles &&
             html`
-              <div class="px-4 pt-1 pb-1">
+              <div class="chat-input-attachments-preview px-4 pt-1 pb-1">
                 <div class="flex flex-wrap gap-2">
                   ${pendingFiles.map(
                     (file) => html`

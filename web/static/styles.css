@@ -2003,6 +2003,61 @@ mitto-action {
   position: relative;
 }
 
+/* Mobile-only scroll-driven compact composer (mitto-47l): while the user has
+   scrolled away from the bottom of the conversation, shrink the composer to
+   a single-line affordance instead of hiding it entirely — the textarea
+   stays visible (just shorter) so draft text and the tap target remain, and
+   only the secondary rows (attachments preview, bottom toolbar) collapse.
+   Scoped to the same breakpoint as the rest of the mobile-only layout
+   (matches the reactive matchMedia check in ChatInput.js and app.js's
+   drawer/sidebar checks) so >= md layout is completely unaffected. */
+@media (max-width: 767.98px) {
+  .chat-input-attachments-preview,
+  .chat-input-bottom-bar {
+    overflow: hidden;
+    max-height: 500px;
+    opacity: 1;
+    transition:
+      max-height 0.2s ease-out,
+      opacity 0.15s ease-out;
+  }
+
+  .chat-input-textarea-wrapper .chat-input-textarea {
+    transition: min-height 0.2s ease-out;
+  }
+
+  .chat-input-container--compact .chat-input-attachments-preview,
+  .chat-input-container--compact .chat-input-bottom-bar {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* !important is required: the textarea's live-resize min-height is set as
+     an inline style (see ChatInput.js textareaMinHeight), which otherwise
+     always wins over this class. The transition above still animates the
+     change. */
+  .chat-input-container--compact .chat-input-textarea {
+    min-height: 44px !important;
+  }
+}
+
+/* Respect reduced-motion preferences for the compact transition, matching
+   the existing .reduce-animations / prefers-reduced-motion handling below. */
+.reduce-animations .chat-input-attachments-preview,
+.reduce-animations .chat-input-bottom-bar,
+.reduce-animations .chat-input-textarea-wrapper .chat-input-textarea {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-input-attachments-preview,
+  .chat-input-bottom-bar,
+  .chat-input-textarea-wrapper .chat-input-textarea {
+    transition: none;
+  }
+}
+
 /* GitHub-style contained chat input box */
 .chat-input-box {
   position: relative;
