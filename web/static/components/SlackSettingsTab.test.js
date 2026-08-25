@@ -24,6 +24,7 @@ const {
   slackAppSettingsURL,
   slackHealth,
   deriveSlackDeliveryWarning,
+  deriveSlackJournalWarning,
   SLACK_DELIVERY_WARNING_GRACE_MS,
 } = slackModule;
 window.preact = previousPreact;
@@ -288,6 +289,31 @@ describe("SlackSettingsTab helpers", () => {
 
     // No status at all (e.g. app not yet reported): no warning.
     expect(deriveSlackDeliveryWarning(null, { now })).toBeNull();
+  });
+
+  // mitto-mfd: pins deriveSlackJournalWarning() — the banner must surface iff
+  // the backend has set the first-class error_class="journal" signal, and must
+  // clear (return null) once that signal is absent (i.e. once a later Accept
+  // succeeds and noteJournalAccepted resets ErrorClass to "").
+  test('surfaces a journal-rejection warning only while error_class is "journal"', () => {
+    // Rejecting: error_class exactly "journal" -> actionable message.
+    expect(deriveSlackJournalWarning({ error_class: "journal" })).toEqual({
+      message:
+        "The durable event journal is rejecting events. Slack may automatically disable event delivery for this app if this continues.",
+    });
+
+    // Recovered: ErrorClass cleared back to "" after a successful Accept.
+    expect(deriveSlackJournalWarning({ error_class: "" })).toBeNull();
+
+    // A different, unrelated error class (e.g. a connection-level problem)
+    // must NOT render the journal banner.
+    expect(
+      deriveSlackJournalWarning({ error_class: "credentials" }),
+    ).toBeNull();
+
+    // Missing error_class and no status at all: no warning.
+    expect(deriveSlackJournalWarning({})).toBeNull();
+    expect(deriveSlackJournalWarning(null)).toBeNull();
   });
 });
 
