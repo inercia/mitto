@@ -1762,6 +1762,21 @@ var dispatchPromptRetryBaseDelay = 2 * time.Second
 // var (not const) so tests can keep the async-slot lifecycle deterministic.
 var pendingDispatchBusyRetryInterval = 100 * time.Millisecond
 
+// dispatchBusyMaxAttempts bounds the TOTAL number of RPC attempts
+// dispatchWithRetry's busy ride-out loop (mitto-hjx facet B/C) will make
+// while riding out a sustained acperrors.ErrProcessBusy window, independent
+// of the wall-clock busyDeadline. Before mitto-qvs, the ride-out was bounded
+// ONLY by wall-clock (timeout), so a persistently-busy shared process (e.g.
+// a sustained multi-workspace RPC burst that never drops below the
+// threshold-1 concurrency gate) let a single close-phase dispatch churn
+// dozens of attempts — 63 attempts over 7m6s was observed in production for
+// a 300s close-phase memory batch — before finally giving up. This
+// attempt-count circuit breaker fails fast (and spools for later retry, same
+// as the wall-clock give-up path already did) once a reasonable number of
+// attempts have been made, regardless of how much of the wall-clock budget
+// remains. var (not const) so tests can shrink it.
+var dispatchBusyMaxAttempts = 10
+
 const pendingDispatchAckMaxAttempts = 3
 
 var pendingDispatchAckRetryDelay = 25 * time.Millisecond
@@ -1991,6 +2006,16 @@ func clearSustainedBusy(workspaceUUID string) {
 // — bounding the aggregate wall-clock for N queued dispatches near ONE
 // dispatch's ride-out budget instead of scaling ~linearly with N.
 //
+// mitto-qvs: the ride-out is ALSO bounded by dispatchBusyMaxAttempts, a
+// circuit breaker on the total number of RPC attempts made across every
+// runDispatchRetryLoopTracked call in the loop below. Without it, the
+// wall-clock busyDeadline was the only bound, and for a large-timeout batch
+// (e.g. the 300s close-phase memory batches) a persistently-busy process let
+// the loop churn dozens of attempts (63 attempts / 7m6s observed in
+// production) before the wall-clock finally expired. The attempt cap fails
+// fast well before that, exactly like the wall-clock give-up path already
+// did (falls through to the same spool-for-later-retry handling below).
+//
 // If retrying is exhausted,
 // the final error is logged at ERROR and, when a NotifyFunc is configured
 // (see SetNotifyFunc), surfaced to the user — previously such failures were
@@ -2081,6 +2106,20 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			}
 		}
 		if !time.Now().Before(busyDeadline) {
+			break
+		}
+		// mitto-qvs: attempt-count circuit breaker, independent of the
+		// wall-clock busyDeadline above — see dispatchBusyMaxAttempts.
+		if totalAttempts >= dispatchBusyMaxAttempts {
+			if m.logger != nil {
+				m.logger.Warn("prompt-mode processor dispatch: shared process busy; giving up after max attempts",
+					"dispatch_id", entry.ID,
+					"workspace_uuid", workspaceUUID,
+					"name", name,
+					"attempts", totalAttempts,
+					"max_attempts", dispatchBusyMaxAttempts,
+				)
+			}
 			break
 		}
 		wait := pendingDispatchBusyRetryInterval
