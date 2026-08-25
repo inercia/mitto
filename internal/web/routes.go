@@ -37,6 +37,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 			// passkeys are not enabled/derivable.
 			apiRoute{method: "POST", pattern: "/api/webauthn/login/begin", handler: http.HandlerFunc(authMgr.HandleLoginBegin)},
 			apiRoute{method: "POST", pattern: "/api/webauthn/login/finish", handler: http.HandlerFunc(authMgr.HandleLoginFinish)},
+			// Passkey (WebAuthn) credential management (mitto-4mz.6): list and
+			// delete registered credentials for the Settings "Manage passkeys"
+			// UI. Same gates as register/begin+finish (authenticated session,
+			// 404 when passkeys are not enabled/derivable).
+			apiRoute{method: "GET", pattern: "/api/webauthn/register/list", handler: http.HandlerFunc(authMgr.HandleListCredentials)},
+			apiRoute{method: "DELETE", pattern: "/api/webauthn/register/{id}", handler: http.HandlerFunc(authMgr.HandleDeleteCredential)},
 		)
 	}
 

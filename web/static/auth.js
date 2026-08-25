@@ -8,6 +8,11 @@
 // expiry). Kept as its own module rather than importing sdkClient.js,
 // preserving the pre-auth/authenticated boundary.
 import { createClient, browserEnv, MittoApiError, MittoNetworkError } from "./sdk/index.js";
+import {
+  isWebAuthnSupported,
+  decodeRequestOptions,
+  serializeAssertion,
+} from "./utils/webauthn.js";
 
 function getApiPrefix() {
   return window.mittoApiPrefix || "";
@@ -18,6 +23,7 @@ function initAuthPage() {
   const errorDiv = document.getElementById("error");
   const submitBtn = document.getElementById("submitBtn");
   const cloudflareMsg = document.getElementById("cloudflare-message");
+  const passkeyBtn = document.getElementById("passkeyBtn");
 
   if (!form || !errorDiv || !submitBtn) {
     console.error("Required form elements not found");
@@ -50,11 +56,55 @@ function initAuthPage() {
         form.style.display = "none";
       }
       // If info.simple is true, show the normal login form (default state)
+
+      if (info.passkey && isWebAuthnSupported() && passkeyBtn) {
+        passkeyBtn.style.display = "";
+      }
     })
     .catch(function (err) {
       console.warn("Failed to fetch auth info:", err);
       // On error, keep the login form visible so the user can still try
     });
+
+  if (passkeyBtn) {
+    passkeyBtn.addEventListener("click", async function () {
+      passkeyBtn.disabled = true;
+      const originalText = passkeyBtn.textContent;
+      passkeyBtn.textContent = "Waiting for passkey...";
+      errorDiv.classList.add("hidden");
+
+      try {
+        const options = await client.misc.webauthn.loginBegin();
+        const publicKey = decodeRequestOptions(options);
+        const assertion = await navigator.credentials.get({ publicKey });
+        await client.misc.webauthn.loginFinish(
+          serializeAssertion(assertion),
+        );
+        window.location.href = "/";
+      } catch (err) {
+        if (err && err.name === "NotAllowedError") {
+          // User cancelled the platform prompt; not an error worth alarming over.
+        } else if (err instanceof MittoApiError) {
+          if (err.status === 429) {
+            errorDiv.textContent =
+              err.message || "Too many attempts. Please try again later.";
+          } else {
+            errorDiv.textContent = err.message || "Passkey sign-in failed.";
+          }
+          errorDiv.classList.remove("hidden");
+        } else if (err instanceof MittoNetworkError) {
+          errorDiv.textContent = "Network error. Please try again.";
+          errorDiv.classList.remove("hidden");
+        } else {
+          errorDiv.textContent = "Passkey sign-in failed.";
+          errorDiv.classList.remove("hidden");
+        }
+      } finally {
+        passkeyBtn.disabled = false;
+        passkeyBtn.textContent = originalText;
+      }
+    });
+  }
 
   form.addEventListener("submit", async function (e) {
     e.preventDefault();

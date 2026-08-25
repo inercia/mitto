@@ -11,7 +11,3 @@
 /api/logout  # cookie-login logout is Go-SDK-only (pkg/api.Client.Logout); the JS SDK never implements interactive password login (browserCookieAuth reads an existing server-set cookie, it does not perform the login/logout POST dance) — see doc.go's Authentication section.
 /api/callback/  # public webhook trigger endpoint (prefix route, token in path segment); invoked by external callers via a generated URL, not through either client SDK.
 GET /api/slack/oauth/callback  # Slack invokes this public one-time-state callback after authorization; clients start and poll the flow but never call the provider redirect endpoint directly.
-POST /api/webauthn/register/begin  # mitto-4mz.3: passkey registration endpoints are called directly by browser navigator.credentials WebAuthn JS, not through either SDK; frontend UI is a separate, not-yet-scheduled increment.
-POST /api/webauthn/register/finish  # mitto-4mz.3: see /api/webauthn/register/begin rationale above.
-POST /api/webauthn/login/begin  # mitto-4mz.4: passkey login endpoints are called directly by browser navigator.credentials WebAuthn JS, not through either SDK; frontend UI is a separate, not-yet-scheduled increment.
-POST /api/webauthn/login/finish  # mitto-4mz.4: see /api/webauthn/login/begin rationale above.

@@ -13,6 +13,11 @@ import {
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorMessage, errorStatus } from "../utils/sdkErrors.js";
 import {
+  isWebAuthnSupported,
+  decodeCreationOptions,
+  serializeCreatedCredential,
+} from "../utils/webauthn.js";
+import {
   setPromptSortMode as savePromptSortMode,
   getDashboardHiddenCharts,
   setDashboardHiddenCharts,
@@ -2141,6 +2146,14 @@ export function SettingsDialog({
   const [hookDownCommand, setHookDownCommand] = useState("");
   const [hookExternalAddress, setHookExternalAddress] = useState("");
 
+  // Passkey (WebAuthn) management (mitto-4mz.6). Shown only when the
+  // backend reports passkeys armed (auth-info) and the browser supports
+  // WebAuthn; independent of mitto-4mz.5's "Enable passkey" toggle.
+  const [passkeyArmed, setPasskeyArmed] = useState(false);
+  const [passkeyCredentials, setPasskeyCredentials] = useState([]);
+  const [passkeyCreating, setPasskeyCreating] = useState(false);
+  const [passkeyDeletingId, setPasskeyDeletingId] = useState(null);
+
   // MCP server settings (the server is always enabled; only host/port are configurable)
   const [mcpHost, setMcpHost] = useState("");
   const [mcpPort, setMcpPort] = useState(""); // string for the number input
@@ -2564,6 +2577,22 @@ export function SettingsDialog({
       setCfEnabled(!!hasCfAuth);
       setCfTeamDomain(config.web?.auth?.cloudflare?.team_domain || "");
       setCfAudience(config.web?.auth?.cloudflare?.audience || "");
+
+      // Passkey (WebAuthn) management: only relevant when armed server-side
+      // AND the browser supports WebAuthn.
+      try {
+        const authInfo = await getSdkClient().misc.authInfo();
+        const armed = !!authInfo.passkey && isWebAuthnSupported();
+        setPasskeyArmed(armed);
+        if (armed) {
+          const creds = await getSdkClient().misc.webauthn.list();
+          setPasskeyCredentials(Array.isArray(creds) ? creds : []);
+        }
+      } catch (err) {
+        if (errorStatus(err) === undefined) {
+          console.warn("Failed to load passkey info:", err);
+        }
+      }
 
       // Load external port setting (0 or empty = random)
       const extPort = config.web?.external_port;
@@ -3352,6 +3381,62 @@ export function SettingsDialog({
       setError(
         errorMessage(err, `Failed to prepare deletion of "${serverName}"`),
       );
+    }
+  };
+
+  // createPasskey — registration ceremony (mitto-4mz.6): begin -> browser
+  // navigator.credentials.create() -> finish -> refresh the list.
+  const createPasskey = async () => {
+    setPasskeyCreating(true);
+    try {
+      const options = await getSdkClient().misc.webauthn.registerBegin();
+      const publicKey = decodeCreationOptions(options);
+      const credential = await navigator.credentials.create({ publicKey });
+      await getSdkClient().misc.webauthn.registerFinish(
+        serializeCreatedCredential(credential),
+      );
+      const creds = await getSdkClient().misc.webauthn.list();
+      setPasskeyCredentials(Array.isArray(creds) ? creds : []);
+      showToast?.({
+        style: "success",
+        title: "Passkey created",
+        message: "A new passkey was registered for this account.",
+      });
+    } catch (err) {
+      if (err && err.name === "NotAllowedError") {
+        // User cancelled the platform prompt; not worth alarming over.
+      } else {
+        showToast?.({
+          style: "error",
+          title: "Failed to create passkey",
+          message: errorMessage(err, "Failed to create passkey"),
+        });
+      }
+    } finally {
+      setPasskeyCreating(false);
+    }
+  };
+
+  // deletePasskey — removes a registered credential and updates the list
+  // optimistically once the server confirms.
+  const deletePasskey = async (id) => {
+    setPasskeyDeletingId(id);
+    try {
+      await getSdkClient().misc.webauthn.delete(id);
+      setPasskeyCredentials((prev) => prev.filter((c) => c.id !== id));
+      showToast?.({
+        style: "success",
+        title: "Passkey removed",
+        message: "The passkey was removed from this account.",
+      });
+    } catch (err) {
+      showToast?.({
+        style: "error",
+        title: "Failed to remove passkey",
+        message: errorMessage(err, "Failed to remove passkey"),
+      });
+    } finally {
+      setPasskeyDeletingId(null);
     }
   };
 
@@ -5187,6 +5272,80 @@ export function SettingsDialog({
                             `}
                           </div>
                         </div>
+
+                        <!-- Manage passkeys (mitto-4mz.6): shown only when
+                             the backend reports passkeys armed AND this
+                             browser supports WebAuthn. Independent of the
+                             "Enable passkey" toggle above. -->
+                        ${passkeyArmed &&
+                        html`
+                          <div class="p-4 space-y-3">
+                            <div
+                              class="flex items-center justify-between gap-2"
+                            >
+                              <h5
+                                class="text-sm font-medium text-mitto-text-secondary"
+                              >
+                                Manage Passkeys
+                              </h5>
+                              <button
+                                type="button"
+                                class="btn btn-sm btn-ghost"
+                                disabled=${passkeyCreating}
+                                onClick=${createPasskey}
+                              >
+                                ${passkeyCreating
+                                  ? html`<${SpinnerIcon}
+                                      className="w-4 h-4 animate-spin"
+                                    />`
+                                  : html`<${PlusIcon} className="w-3 h-3" />`}
+                                Create a passkey
+                              </button>
+                            </div>
+                            ${passkeyCredentials.length === 0
+                              ? html`<p
+                                  class="text-xs text-mitto-text-muted"
+                                >
+                                  No passkeys registered yet.
+                                </p>`
+                              : html`
+                                  <div class="space-y-2">
+                                    ${passkeyCredentials.map(
+                                      (cred) => html`
+                                        <div
+                                          key=${cred.id}
+                                          class="flex items-center justify-between gap-2 text-sm p-2 bg-mitto-input rounded"
+                                        >
+                                          <span
+                                            class="font-mono text-xs text-mitto-text-muted truncate"
+                                          >
+                                            ${cred.id.slice(0, 16)}... ·
+                                            created
+                                            ${new Date(
+                                              cred.created_at,
+                                            ).toLocaleDateString()}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick=${() =>
+                                              deletePasskey(cred.id)}
+                                            disabled=${passkeyDeletingId ===
+                                            cred.id}
+                                            class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
+                                            data-tip="Remove passkey"
+                                            aria-label="Remove passkey"
+                                          >
+                                            <${TrashIcon}
+                                              className="w-4 h-4"
+                                            />
+                                          </button>
+                                        </div>
+                                      `,
+                                    )}
+                                  </div>
+                                `}
+                          </div>
+                        `}
 
                         <!-- Lifecycle Hooks -->
                         <div class="p-4 space-y-3">

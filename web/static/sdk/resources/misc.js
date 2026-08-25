@@ -110,5 +110,47 @@ export function createMiscResource(config, configResource) {
     externalStatus: configResource.externalStatus,
     supportedRunners: configResource.supportedRunners,
     runnerDefaults: configResource.runnerDefaults,
+
+    // Passkey (WebAuthn) credential management (mitto-4mz.6). Registration
+    // is authenticated (session cookie + CSRF); login is pre-auth (see
+    // auth.js, which uses its own noAuth client instead of this one). All
+    // return 404 when passkeys are not enabled/derivable server-side.
+    webauthn: {
+      /** POST /api/webauthn/register/begin — starts a registration
+       *  ceremony; returns PublicKeyCredentialCreationOptions JSON. */
+      registerBegin: (opts) =>
+        call("POST", "/api/webauthn/register/begin", opts),
+      /** POST /api/webauthn/register/finish — completes the ceremony.
+       *  @param {object} credential - serialized PublicKeyCredential (see
+       *    utils/webauthn.js's serializeCreatedCredential) */
+      registerFinish: (credential, opts) =>
+        call("POST", "/api/webauthn/register/finish", {
+          body: credential,
+          ...opts,
+        }),
+      /** GET /api/webauthn/register/list.
+       *  @returns {Promise<Array<{id: string, created_at: string, last_used_at: string}>>} */
+      list: (opts) => call("GET", "/api/webauthn/register/list", opts),
+      /** DELETE /api/webauthn/register/{id} — id is the base64url credential id.
+       *  @param {string} id */
+      delete: (id, opts) =>
+        call("DELETE", `/api/webauthn/register/${encodeURIComponent(id)}`, opts),
+      /** POST /api/webauthn/login/begin — pre-auth, CSRF-exempt; starts a
+       *  discoverable login ceremony. Sets an HttpOnly ceremony cookie, so
+       *  callers must use a client whose fetch sends credentials
+       *  same-origin (both auth.js's noAuth client and getSdkClient()
+       *  qualify). Returns PublicKeyCredentialRequestOptions JSON. */
+      loginBegin: (opts) => call("POST", "/api/webauthn/login/begin", opts),
+      /** POST /api/webauthn/login/finish — pre-auth, CSRF-exempt; completes
+       *  the ceremony and mints the same mitto_session cookie password
+       *  login issues.
+       *  @param {object} assertion - serialized PublicKeyCredential (see
+       *    utils/webauthn.js's serializeAssertion) */
+      loginFinish: (assertion, opts) =>
+        call("POST", "/api/webauthn/login/finish", {
+          body: assertion,
+          ...opts,
+        }),
+    },
   };
 }

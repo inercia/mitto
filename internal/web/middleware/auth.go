@@ -977,6 +977,7 @@ var publicStaticPaths = map[string]bool{
 	"/icon-192x192.png":        true, // PWA icon
 	"/icon-512x512.png":        true, // PWA icon
 	"/robots.txt":              true, // Bots must read without auth
+	"/utils/webauthn.js":       true, // mitto-4mz.6: auth.js imports this for the passkey login ceremony; same exposure class as the SDK tree (client-shipped code, no secrets).
 }
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
