@@ -14,7 +14,7 @@
 */ -}}
 ### Create one child bead per sub-task
 
-For every approved sub-task, create a child bead depending on the epic (so
+For every sub-task, create a child bead depending on the epic (so
 `Loop processing tasks` can pick them up later if the operator ever enables it):
 
 ```bash
@@ -28,15 +28,51 @@ bd create "<sub-task title>" \
 
 Record every returned bead ID; call them `<SUB_IDS>`.
 
+### Check each sub-task's prerequisites before spawning anything
+
+Do **not** fire off children like a headless chicken. Before you spawn *any*
+investigator, go through the sub-task list one row at a time and ask, for each:
+**"What does this investigation depend on knowing?"** Every sub-task has
+prerequisites — the specific facts, identifiers, or context a child needs up
+front to do useful work (e.g. the affected service name, the pod/host, the exact
+error signature, the time window, a dashboard URL, a dependency's endpoint, a
+credential-free way to reach a data source). For each sub-task, list those
+prerequisites explicitly, then classify the sub-task into exactly one bucket:
+
+- **Ready** — every prerequisite is already known (from Step 3 ingest, the epic,
+  or the playbook). Spawn it.
+- **Blocked-but-recoverable** — a prerequisite is missing but *you* can obtain it
+  cheaply and quickly right here in this conversation (a `bd` lookup, a single
+  read-only MCP/`web-fetch` call, resolving a Slack channel to an ID, reading a
+  config value). **Gather the missing prerequisite yourself first**, fold it into
+  the child's initial prompt, and only then spawn. Do the gathering inline — do
+  not spawn a child just to fetch a prerequisite for another child.
+- **Blocked-unobtainable** — a prerequisite is missing and cannot be obtained
+  now (needs a credential you don't have, a human decision, a system that's down,
+  or information that simply doesn't exist yet). **Do NOT spawn this
+  investigator.** Leave its bead open, add a `bd comment` on it stating exactly
+  which prerequisite is missing and why it can't be obtained, and record it in
+  your status update as **"deferred — awaiting <prerequisite>"** so the operator
+  can see the gap. A child launched without what it needs will flail, burn tokens,
+  and report noise — refusing to spawn it is the correct move.
+
+Only sub-tasks that end up **Ready** (including those you just unblocked) proceed
+to the dispatch loop below. In your status update, show each sub-task's bucket so
+it is clear which were spawned, which you unblocked first, and which were
+deferred.
+
 ### Dispatch one curious investigator per sub-task
 
 For each `<SUB_ID>`, spawn a child conversation
 `mitto_conversation_new(self_id: "{{ .Session.ID }}", beads_issue: "<SUB_ID>", title: "Investigate <sub-task title>", initial_prompt: <see below>)`.
-Reuse **idle** existing children (`{{ Default "(none)" .Children.MCPText }}`) if
-any match; otherwise create fresh. Cap at **4 parallel** investigators — if the
-approved list has more sub-tasks than that, queue the overflow by asking
-`mitto_ui_options` whether to dispatch the top-4 now and queue the rest, or
-reduce the list.
+Spawn **only the Ready sub-tasks** from the prerequisite check above (never a
+sub-task still missing a prerequisite). Reuse **idle** existing children
+(`{{ Default "(none)" .Children.MCPText }}`) if any match; otherwise create
+fresh. Do this automatically — do NOT ask the operator to confirm before
+spawning. Cap at **4 parallel** investigators — if more than 4 sub-tasks are
+Ready, dispatch the top 4 now and queue the remaining Ready beads (they are
+already created and depend on the epic, so they can be picked up in a follow-up
+round); note in your status update which beads were queued.
 
 The initial prompt for each investigator MUST:
 

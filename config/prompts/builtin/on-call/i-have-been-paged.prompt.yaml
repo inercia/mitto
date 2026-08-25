@@ -73,6 +73,14 @@ prompt: |-
 
   You are helping an on-call engineer triage a live incident. This prompt orchestrates the opening minutes: parse the incident sources, open a tracker epic, ingest context in parallel, decompose the epic into sub-tasks, and dispatch one curious child investigator per sub-task. You act as the **coordinator** — real digging happens in the children.
 
+  ## Communication style
+
+  This is a live Ops incident — the operator is under pressure and scanning fast. Communicate accordingly throughout every step below:
+
+  - **Be concise.** Prioritize short, focused answers over comprehensive explanations. Direct language, no filler, no over-explaining, no restating the obvious. If one line will do, use one line.
+  - **Format for scannability.** Lead with the key fact. Use **bold** for the signal that matters (bead IDs, symptoms, decisions, blockers), and lean on lists, tables, code blocks, and short headings so the operator can absorb your output at a glance rather than reading prose.
+  - **Narrate progress.** Before and between significant actions (ingesting a source, creating the epic, dispatching investigators), post a brief status update saying **what you're doing and why** — never disappear into silent long-running work. Keep each update to a sentence or two.
+
   {{ template "beads-issues/shared/bootstrap" . }}
 
   ## Step 1 — Parse the incident sources
@@ -84,6 +92,20 @@ prompt: |-
   ```
   {{ $title }}
   ```
+
+  {{ if $title -}}
+  **First, rename this conversation to the incident title** so it is easy to spot in the conversation list — do this immediately, before anything else:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", name: "{{ $title }}")
+  ```
+  {{- else -}}
+  The `Title` parameter is empty, so defer renaming this conversation until you have derived a concise incident title below. As soon as you have that derived title, rename this conversation to it (before Step 2):
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", name: "<derived incident title>")
+  ```
+  {{- end }}
 
   **Incident sources (from the `Sources` parameter, one entry per line):**
 
@@ -167,19 +189,42 @@ prompt: |-
   Read the epic's fresh comments (`bd comments <EPIC_ID>`) — the ingest document you wrote in Step 3 is now on the epic. Cross-reference the incident's symptoms (from Step 3) against the playbook you loaded in Step 4: the playbook's failure-mode sections tell you which components/data-sources to interrogate for the symptoms you saw. Produce, inline in this conversation:
 
   1. A **consolidated situation summary** (5–10 bullets: symptoms, blast radius, timeline, current hypotheses, gaps).
-  2. A **sub-task list** — 2–5 independent investigation angles you would pursue in parallel, each grounded in a specific playbook section when possible (e.g. "Symptom = intermittent 5xx from service-X + Playbook §DNS → sub-task: verify CoreDNS health and resolution latency for service-X's dependencies"). Each sub-task must be **disjoint** (different services / dashboards / hypotheses) so multiple children can work at once without stepping on each other. Do NOT include remediation or mitigation actions here — this prompt only opens investigation angles.
+  2. A **sub-task list** — 2–5 independent investigation angles you would pursue in parallel, each grounded in a specific playbook section when possible (e.g. "Symptom = intermittent 5xx from service-X + Playbook §DNS → sub-task: verify CoreDNS health and resolution latency for service-X's dependencies"). Each sub-task must be **disjoint** (different services / dashboards / hypotheses) so multiple children can work at once without stepping on each other. Do NOT include remediation or mitigation actions here — this prompt only opens investigation angles. For **each** sub-task, also record its **prerequisites** — the specific facts/identifiers a child would need up front to investigate it (service name, pod/host, exact error signature, time window, dashboard URL, dependency endpoint, etc.) — and mark whether each prerequisite is already known from Step 3 or still missing. A sub-task whose prerequisites you cannot satisfy is not a viable child yet.
 
-  Present the sub-task list as a Markdown table (columns: `#`, `Title`, `Investigation angle`, `Playbook section` (cite the runbook heading, or `—` if none), `Data sources to consult`). Show it to the operator and ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 180)`:
-
-  - **Question**: "Dispatch these N investigation sub-tasks now?"
-  - **Options**: `[{label: "Yes — dispatch all"}, {label: "Edit list first"}, {label: "Cancel"}]`.
-
-  On "Edit list first", use `mitto_ui_textbox` to let the operator edit the raw table, then re-parse and re-confirm. On "Cancel" or timeout, stop (but leave the epic open).
+  Present the sub-task list as a Markdown table (columns: `#`, `Title`, `Investigation angle`, `Playbook section` (cite the runbook heading, or `—` if none), `Prerequisites` (what the child must know up front, and whether it is known), `Data sources to consult`), then proceed to Step 6. Do **not** blindly spawn every row: Step 6 first checks each sub-task's prerequisites and only dispatches the ones that are ready (gathering any cheaply-obtainable missing prerequisite inline first, and deferring any sub-task whose prerequisites cannot be obtained). Do NOT ask the operator to confirm before spawning the ready ones — this is a live incident and the investigators are read-only, non-destructive information gatherers, so opening the ready ones automatically is safe and saves the operator's attention for decisions that actually need it. Post the table as a status update (so the operator can see what you are spawning, unblocking, and deferring).
 
   ## Step 6 — Dispatch investigators and synthesize
 
   {{ template "on-call/shared/dispatch-investigators" . }}
 
   {{ template "on-call/shared/escalation-playbook" (dict "File" $escalationFile) }}
+
+  ## Step 7 — Self-reflection and playbook improvement
+
+  Once the investigation angles have been dispatched and their findings synthesized, step back and reflect on **the triage process itself** — not the incident. The goal is to turn each incident into a lesson that sharpens the next one.
+
+  Think honestly through:
+
+  - **What went well** — which steps flowed smoothly, which sources were quick to ingest, which playbook sections pointed you straight at the right components, which sub-task decomposition proved accurate.
+  - **What went badly** — where you stalled, backtracked, or chased a dead end; which sources were hard to reach or ambiguous; where the sub-tasks overlapped or missed an obvious angle.
+  - **Instructions quality** — which parts of *this* prompt and the investigation playbook (`{{ $investigationFile }}`) were **accurate and helpful**, which were **confusing, misleading, ambiguous, or outdated**, and which were **missing** (a technique, query, dashboard, or failure mode you needed but the playbook did not cover).
+
+  Write a concise **Self-reflection summary** (5–10 bullets) covering the above, and append it to the epic so it travels with the incident record:
+
+  ```bash
+  bd comment <EPIC_ID> --file /tmp/on-call-reflection-<EPIC_ID>.md
+  ```
+
+  (Use `--file`, never a backtick heredoc.)
+
+  Then, **only if the reflection surfaced clear, concrete improvements** to the investigation rules, propose them:
+
+  - If the investigation playbook exists at `{{ $investigationFile }}`, draft a precise, minimal patch (which section to add/edit, the exact wording, and *why* — grounded in what you just observed this incident). Present the proposed change to the operator via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 180)` with **Question**: "Apply this improvement to the investigation playbook?" and **Options**: `[{label: "Yes — apply the edit"}, {label: "Edit the proposal first"}, {label: "No — just record it"}]`.
+    - On **"Yes"**, apply the edit to `{{ $investigationFile }}` and note it in the reflection summary.
+    - On **"Edit the proposal first"**, use `mitto_ui_textbox` to let the operator revise the wording, then apply the revised version.
+    - On **"No"** or timeout, record the proposed improvement in the reflection summary only (do not modify the file).
+  - If the playbook does **not** exist, record any recurring gaps in the reflection summary as a recommendation to create one — do not create the file unprompted.
+
+  Keep proposals surgical: only suggest a change when the incident gave you concrete evidence that the current instructions were wrong, confusing, or incomplete. If nothing clear emerged, state that explicitly ("No playbook changes warranted this incident") and move on.
 
   {{ template "on-call/shared/guardrails" . }}

@@ -123,14 +123,25 @@ prompt: |-
      timeline, current hypotheses, gaps).
   2. A **sub-task list** — 2–5 **disjoint** investigation angles, each grounded in
      a specific playbook section when possible. Do NOT include remediation here.
+     For **each** sub-task, also record its **prerequisites** — the specific
+     facts/identifiers a child needs up front (service name, pod/host, exact error
+     signature, time window, dashboard URL, dependency endpoint, etc.) — and mark
+     whether each is already known from Step 3 or still missing. A sub-task whose
+     prerequisites you cannot satisfy is not a viable child yet.
 
   Present the sub-task list as a Markdown table (columns: `#`, `Title`,
-  `Investigation angle`, `Playbook section`, `Data sources to consult`). Since this
-  is a watch trigger and the operator may not be present, ask via
-  `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 180)` whether to
-  "Dispatch all", "Edit list first", or "Cancel". **On timeout, dispatch the list
-  as-is** (the point of watching is unattended first response) — but never dispatch
-  more than 4 investigators; queue any overflow.
+  `Investigation angle`, `Playbook section`, `Prerequisites` (what the child must
+  know up front, and whether it is known), `Data sources to consult`), then
+  proceed to Step 6. Do **not** blindly spawn every row: Step 6 first checks each
+  sub-task's prerequisites and only dispatches the ones that are ready (gathering
+  any cheaply-obtainable missing prerequisite inline first, and deferring any
+  sub-task whose prerequisites cannot be obtained). Do NOT ask the operator to
+  confirm before spawning the ready ones — this is a watch trigger, the operator
+  may not be present, the point of watching is an unattended first response, and
+  the investigators are read-only, non-destructive information gatherers, so
+  opening the ready ones automatically is safe. Post the table as a status update
+  (so the operator can see what you are spawning, unblocking, and deferring) — but
+  never dispatch more than 4 investigators; queue any overflow.
 
   ## Step 6 — Dispatch investigators and synthesize
 
