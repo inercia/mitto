@@ -2146,6 +2146,19 @@ export function SettingsDialog({
   const [hookDownCommand, setHookDownCommand] = useState("");
   const [hookExternalAddress, setHookExternalAddress] = useState("");
 
+  // "Enable passkey login" toggle (mitto-4mz.5): bound to web.auth.webauthn.enabled.
+  // Greyed out below unless the External Address URL is a stable https:// URL,
+  // since that URL is reused as the WebAuthn Relying Party.
+  const [webauthnEnabled, setWebauthnEnabled] = useState(false);
+  // Server-reported passkey availability from GET /api/auth-info, independent of
+  // browser support — shown as a small "currently armed" confirmation note.
+  const [webauthnServerArmed, setWebauthnServerArmed] = useState(false);
+  // Derived on every render: mirrors the backend's DeriveWebAuthnRP https gate so
+  // the toggle can't be enabled for a URL the backend would reject.
+  const externalAddrIsHttps = /^https:\/\/[^/]+/i.test(
+    hookExternalAddress.trim(),
+  );
+
   // Passkey (WebAuthn) management (mitto-4mz.6). Shown only when the
   // backend reports passkeys armed (auth-info) and the browser supports
   // WebAuthn; independent of mitto-4mz.5's "Enable passkey" toggle.
@@ -2578,10 +2591,16 @@ export function SettingsDialog({
       setCfTeamDomain(config.web?.auth?.cloudflare?.team_domain || "");
       setCfAudience(config.web?.auth?.cloudflare?.audience || "");
 
+      // Passkey (WebAuthn) login toggle (mitto-4mz.5): reflects the persisted
+      // web.auth.webauthn.enabled config flag.
+      setWebauthnEnabled(!!config.web?.auth?.webauthn?.enabled);
+
       // Passkey (WebAuthn) management: only relevant when armed server-side
       // AND the browser supports WebAuthn.
       try {
         const authInfo = await getSdkClient().misc.authInfo();
+        // Server-reported availability (mitto-4mz.5), independent of browser support.
+        setWebauthnServerArmed(!!authInfo.passkey);
         const armed = !!authInfo.passkey && isWebAuthnSupported();
         setPasskeyArmed(armed);
         if (armed) {
@@ -2896,6 +2915,10 @@ export function SettingsDialog({
                     },
                   }
                 : {}),
+              // Always send the passkey (WebAuthn) toggle (mitto-4mz.5) so the
+              // backend can both arm and disarm it. RP id/origin overrides are
+              // out of scope; the backend derives them from external_address.
+              webauthn: { enabled: webauthnEnabled },
             }
           : null,
       };
@@ -5276,7 +5299,8 @@ export function SettingsDialog({
                         <!-- Manage passkeys (mitto-4mz.6): shown only when
                              the backend reports passkeys armed AND this
                              browser supports WebAuthn. Independent of the
-                             "Enable passkey" toggle above. -->
+                             "Enable passkey login" toggle below (mitto-4mz.5,
+                             next to the External Address URL field). -->
                         ${passkeyArmed &&
                         html`
                           <div class="p-4 space-y-3">
@@ -5410,6 +5434,44 @@ export function SettingsDialog({
                             If set, Mitto monitors this URL and restarts hooks
                             if unreachable.
                           </p>
+
+                          <!-- "Enable passkey login" toggle (mitto-4mz.5):
+                               bound to web.auth.webauthn.enabled. Placed here
+                               because its availability depends on the
+                               External Address URL above being a stable
+                               https:// URL (reused as the WebAuthn Relying
+                               Party). -->
+                          <label
+                            class="flex items-center gap-3 mt-3 ${externalAddrIsHttps
+                              ? "cursor-pointer"
+                              : "cursor-not-allowed opacity-50"}"
+                          >
+                            <input
+                              type="checkbox"
+                              checked=${webauthnEnabled}
+                              disabled=${!externalAddrIsHttps}
+                              onChange=${(e) =>
+                                setWebauthnEnabled(e.target.checked)}
+                              class="checkbox checkbox-sm checkbox-primary"
+                            />
+                            <div>
+                              <div class="font-medium text-sm">
+                                Enable passkey login
+                              </div>
+                              <div class="text-xs text-mitto-text-muted">
+                                ${externalAddrIsHttps
+                                  ? "Adds WebAuthn passkey sign-in, reusing the External Address URL above as the Relying Party. Username/password login always remains available as a fallback."
+                                  : "Requires the External Address URL above to be set to a stable https:// URL (reused as the WebAuthn Relying Party) before it can be enabled."}
+                              </div>
+                              ${webauthnEnabled && webauthnServerArmed
+                                ? html`<div
+                                    class="text-xs text-mitto-accent mt-0.5"
+                                  >
+                                    Currently armed on the server.
+                                  </div>`
+                                : ""}
+                            </div>
+                          </label>
                         </div>
                       `}
                     </div>
