@@ -1170,6 +1170,169 @@ describe("SettingsDialog.deletePasskey", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// mitto-4mz.5 — "Enable passkey login" toggle (External Access tab). Duplicated
+// from SettingsDialog.js per this file's header-comment convention (the
+// component reads window.preact globals at module load and cannot be
+// imported directly under jsdom/bun).
+// ---------------------------------------------------------------------------
+
+/**
+ * Duplicated from SettingsDialog.js (~line 2158): mirrors the backend's
+ * DeriveWebAuthnRP https gate (internal/web/config_validation.go) so the
+ * "Enable passkey login" checkbox can't be enabled for a URL the backend
+ * would reject on save.
+ */
+const externalAddrIsHttps = (raw) => /^https:\/\/[^/]+/i.test(raw.trim());
+
+/**
+ * Duplicated from SettingsDialog.js loadConfig (~line 2596): populates the
+ * webauthnEnabled toggle from the persisted config flag.
+ */
+const loadWebauthnEnabled = (config) => !!config.web?.auth?.webauthn?.enabled;
+
+/**
+ * Duplicated from SettingsDialog.js loadConfig (~line 2603): populates the
+ * "currently armed on the server" note from the already-fetched auth-info,
+ * independent of browser WebAuthn support.
+ */
+const loadWebauthnServerArmed = (authInfo) => !!authInfo.passkey;
+
+/**
+ * Duplicated from SettingsDialog.js handleSave (~lines 2896-2923): the shape
+ * of the `auth` object sent to the backend, isolating the webauthn slice
+ * this ticket added. Always includes `webauthn: { enabled }` when auth is
+ * enabled, so a save can both arm and disarm passkeys.
+ */
+const buildAuthSavePayload = ({ authEnabled, webauthnEnabled }) =>
+  authEnabled ? { webauthn: { enabled: webauthnEnabled } } : null;
+
+describe("mitto-4mz.5: externalAddrIsHttps (WebAuthn RP https gate)", () => {
+  test("a stable https:// URL with a host passes the gate", () => {
+    expect(externalAddrIsHttps("https://mitto.example.com")).toBe(true);
+  });
+
+  test("a https URL with surrounding whitespace still passes (trimmed)", () => {
+    expect(externalAddrIsHttps("  https://mitto.example.com  ")).toBe(true);
+  });
+
+  test("uppercase scheme (HTTPS://) still passes (case-insensitive)", () => {
+    expect(externalAddrIsHttps("HTTPS://mitto.example.com")).toBe(true);
+  });
+
+  test("an http:// (non-tls) URL fails the gate", () => {
+    expect(externalAddrIsHttps("http://mitto.example.com")).toBe(false);
+  });
+
+  test("an empty string fails the gate", () => {
+    expect(externalAddrIsHttps("")).toBe(false);
+  });
+
+  test("whitespace-only string fails the gate", () => {
+    expect(externalAddrIsHttps("   ")).toBe(false);
+  });
+
+  test("a bare https:// with no host fails the gate", () => {
+    expect(externalAddrIsHttps("https://")).toBe(false);
+  });
+
+  test("a non-URL string fails the gate", () => {
+    expect(externalAddrIsHttps("not a url")).toBe(false);
+  });
+});
+
+describe("mitto-4mz.5: loadWebauthnEnabled / loadWebauthnServerArmed", () => {
+  test("loads enabled=true from config.web.auth.webauthn.enabled", () => {
+    expect(
+      loadWebauthnEnabled({ web: { auth: { webauthn: { enabled: true } } } }),
+    ).toBe(true);
+  });
+
+  test("loads enabled=false from config.web.auth.webauthn.enabled", () => {
+    expect(
+      loadWebauthnEnabled({ web: { auth: { webauthn: { enabled: false } } } }),
+    ).toBe(false);
+  });
+
+  test("missing webauthn block defaults to false (no crash on undefined chain)", () => {
+    expect(loadWebauthnEnabled({ web: { auth: {} } })).toBe(false);
+    expect(loadWebauthnEnabled({})).toBe(false);
+  });
+
+  test("auth-info passkey:true marks the server as currently armed", () => {
+    expect(loadWebauthnServerArmed({ passkey: true })).toBe(true);
+  });
+
+  test("auth-info passkey:false/absent marks the server as not armed", () => {
+    expect(loadWebauthnServerArmed({ passkey: false })).toBe(false);
+    expect(loadWebauthnServerArmed({})).toBe(false);
+  });
+});
+
+describe("mitto-4mz.5: handleSave auth payload — webauthn slice", () => {
+  test("authEnabled + webauthnEnabled=true sends webauthn.enabled=true", () => {
+    expect(
+      buildAuthSavePayload({ authEnabled: true, webauthnEnabled: true }),
+    ).toEqual({ webauthn: { enabled: true } });
+  });
+
+  test("authEnabled + webauthnEnabled=false still sends the flag (arms AND disarms)", () => {
+    expect(
+      buildAuthSavePayload({ authEnabled: true, webauthnEnabled: false }),
+    ).toEqual({ webauthn: { enabled: false } });
+  });
+
+  test("authEnabled=false sends a null auth object regardless of the toggle", () => {
+    expect(
+      buildAuthSavePayload({ authEnabled: false, webauthnEnabled: true }),
+    ).toBeNull();
+  });
+});
+
+describe("mitto-4mz.5: SettingsDialog.js source wiring — Enable passkey login toggle", () => {
+  const source = readFileSync(
+    new URL("./SettingsDialog.js", import.meta.url),
+    "utf8",
+  );
+
+  test("declares webauthnEnabled and webauthnServerArmed state", () => {
+    expect(source).toContain(
+      "const [webauthnEnabled, setWebauthnEnabled] = useState(false);",
+    );
+    expect(source).toContain(
+      "const [webauthnServerArmed, setWebauthnServerArmed] = useState(false);",
+    );
+  });
+
+  test("loadConfig populates webauthnEnabled from config.web.auth.webauthn.enabled", () => {
+    expect(source).toContain(
+      "setWebauthnEnabled(!!config.web?.auth?.webauthn?.enabled);",
+    );
+  });
+
+  test("loadConfig populates webauthnServerArmed from auth-info.passkey", () => {
+    expect(source).toContain("setWebauthnServerArmed(!!authInfo.passkey);");
+  });
+
+  test("handleSave always includes webauthn.enabled in the auth object", () => {
+    expect(source).toContain("webauthn: { enabled: webauthnEnabled },");
+  });
+
+  test("the toggle checkbox is bound to webauthnEnabled and gated by externalAddrIsHttps", () => {
+    expect(source).toContain("Enable passkey login");
+    expect(source).toContain("checked=${webauthnEnabled}");
+    expect(source).toContain("disabled=${!externalAddrIsHttps}");
+    expect(source).toContain(
+      "onChange=${(e) =>\n                                setWebauthnEnabled(e.target.checked)}",
+    );
+  });
+
+  test("shows the 'currently armed' note only when enabled AND server-armed", () => {
+    expect(source).toContain("${webauthnEnabled && webauthnServerArmed");
+    expect(source).toContain("Currently armed on the server.");
+  });
+});
+
 describe("SettingsDialog Slack tab wiring (mitto-37nx.6)", () => {
   test("registers and renders the extracted SlackSettingsTab", () => {
     const source = readFileSync(
