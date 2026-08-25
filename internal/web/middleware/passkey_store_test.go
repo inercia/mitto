@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"os"
 	"testing"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -56,6 +57,28 @@ func TestPasskeyStore_UserHandle_StableAndPersisted(t *testing.T) {
 	}
 	if !bytes.Equal(h1, h3) {
 		t.Fatalf("UserHandle() not persisted across reload: %x != %x", h1, h3)
+	}
+}
+
+// TestPasskeyStore_PersistedFileMode0600 asserts the acceptance criterion that
+// webauthn_credentials.json is written with 0600 permissions (owner read/write
+// only), matching the auth_sessions.json / secrets-vault pattern.
+func TestPasskeyStore_PersistedFileMode0600(t *testing.T) {
+	s := newTestPasskeyStore(t)
+
+	// Any mutation triggers a persist via fileutil.WriteJSONAtomic(..., 0600).
+	s.Add(webauthn.Credential{ID: []byte("cred-a"), PublicKey: []byte("pub-a")})
+
+	path, err := appdir.WebAuthnCredentialsPath()
+	if err != nil {
+		t.Fatalf("WebAuthnCredentialsPath() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", path, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Fatalf("webauthn_credentials.json mode = %o, want 0600", perm)
 	}
 }
 
