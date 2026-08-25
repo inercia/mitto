@@ -2845,6 +2845,254 @@ func TestLoopRunner_ResumeFailures_TransientSaturation_DoesNotArchiveHealthyLoop
 	}
 }
 
+// fakeClassifiedErrSharedProcess is a SharedProcess whose NewSession/
+// LoadSession/ResumeSession all fail with the error produced by mkErr.
+// Shared by the mitto-hjx -32603 classification-gap regression tests below
+// so each wedge shape (agent-internal-deadline, query-closed) does not need
+// its own duplicated SharedProcess boilerplate (mirrors
+// fakeSaturatedSharedProcess above, parameterized on the failure).
+type fakeClassifiedErrSharedProcess struct {
+	mkErr func() error
+}
+
+func (f *fakeClassifiedErrSharedProcess) Capabilities() *acp.AgentCapabilities {
+	return &acp.AgentCapabilities{}
+}
+func (f *fakeClassifiedErrSharedProcess) ProcessDone() <-chan struct{} { return make(chan struct{}) }
+func (f *fakeClassifiedErrSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
+	return nil, f.mkErr()
+}
+func (f *fakeClassifiedErrSharedProcess) LoadSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+	return nil, f.mkErr()
+}
+func (f *fakeClassifiedErrSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+	return nil, f.mkErr()
+}
+func (f *fakeClassifiedErrSharedProcess) RegisterSession(acp.SessionId, *SessionCallbacks) {}
+func (f *fakeClassifiedErrSharedProcess) UnregisterSession(acp.SessionId)                  {}
+func (f *fakeClassifiedErrSharedProcess) Cancel(context.Context, acp.SessionId) error      { return nil }
+func (f *fakeClassifiedErrSharedProcess) SetSessionMode(context.Context, acp.SessionId, string) error {
+	return nil
+}
+func (f *fakeClassifiedErrSharedProcess) SetSessionModel(context.Context, acp.SessionId, string) error {
+	return nil
+}
+func (f *fakeClassifiedErrSharedProcess) Done() <-chan struct{} { return make(chan struct{}) }
+func (f *fakeClassifiedErrSharedProcess) Prompt(context.Context, acp.SessionId, []acp.ContentBlock) (acp.PromptResponse, error) {
+	return acp.PromptResponse{}, nil
+}
+func (f *fakeClassifiedErrSharedProcess) Generation() int                           { return 0 }
+func (f *fakeClassifiedErrSharedProcess) Restart(int) error                         { return nil }
+func (f *fakeClassifiedErrSharedProcess) RecommendedLoadTimeout(bool) time.Duration { return 0 }
+func (f *fakeClassifiedErrSharedProcess) MCPInitDone() bool                         { return true }
+func (f *fakeClassifiedErrSharedProcess) WaitForMCPInit(context.Context) bool       { return true }
+
+// fakeClassifiedErrProcessManager is a minimal ProcessManager stub whose
+// GetOrCreateProcess returns a fakeClassifiedErrSharedProcess wired to mkErr.
+type fakeClassifiedErrProcessManager struct {
+	mkErr func() error
+}
+
+func (f fakeClassifiedErrProcessManager) GetOrCreateProcess(*config.WorkspaceSettings, string, string, map[string]string, *runner.Runner, bool) (SharedProcess, error) {
+	return &fakeClassifiedErrSharedProcess{mkErr: f.mkErr}, nil
+}
+func (fakeClassifiedErrProcessManager) EnsurePrewarmed(string, *slog.Logger) {}
+func (fakeClassifiedErrProcessManager) ClearGCSuspended(string)              {}
+func (fakeClassifiedErrProcessManager) IsGCSuspended(string) bool            { return false }
+func (fakeClassifiedErrProcessManager) StopGC()                              {}
+func (fakeClassifiedErrProcessManager) Close()                               {}
+func (fakeClassifiedErrProcessManager) ProcessCount() int                    { return 1 }
+func (fakeClassifiedErrProcessManager) ColdProcessCount() int                { return 0 }
+func (fakeClassifiedErrProcessManager) PinWorkspace(string, string, time.Duration, int) bool {
+	return true
+}
+func (fakeClassifiedErrProcessManager) HasLiveProcess(string) bool { return true }
+
+// mitto32603AgentDeadlineErr reproduces the exact error chain shape
+// production sees for the agent-internal-deadline wedge (mitto-y1g): a
+// JSON-RPC -32603 "Internal error" whose data carries "context deadline
+// exceeded", wrapped by shared_session_handshaker.go:606's
+// `fmt.Errorf("failed to create session on shared process: %w", err)`. The
+// %w preserves the typed *acp.RequestError so acperrors.IsAgentInternalDeadlineErr
+// can traverse the chain via errors.As — pinning that the classification gap
+// is in the carve-out conditions, not in error-chain preservation.
+func mitto32603AgentDeadlineErr() error {
+	re := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    map[string]string{"details": "context deadline exceeded"},
+	}
+	return fmt.Errorf("failed to create session on shared process: %w", re)
+}
+
+// mitto32603QueryClosedErr reproduces the exact error chain shape production
+// sees for the query-closed wedge (mitto-aoo): a JSON-RPC -32603 "Internal
+// error" whose data carries "query closed before response received",
+// wrapped identically to mitto32603AgentDeadlineErr above.
+func mitto32603QueryClosedErr() error {
+	re := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    map[string]string{"details": "query closed before response received"},
+	}
+	return fmt.Errorf("failed to create session on shared process: %w", re)
+}
+
+// newClassifiedErrResumeTestFixture builds the store/loop/SessionManager
+// scaffolding shared by the two -32603 classification-gap regression tests
+// below (mirrors TestLoopRunner_ResumeFailures_TransientSaturation_
+// DoesNotArchiveHealthyLoop's setup exactly, parameterized on the failure).
+func newClassifiedErrResumeTestFixture(t *testing.T, sid, wsUUID string, mkErr func() error) (*session.Store, *session.LoopStore, *LoopRunner) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	workingDir := t.TempDir()
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	loopStore := store.Loop(sid)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+	// Force the loop due now.
+	got, _ := loopStore.Get()
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	got.NextScheduledAt = &past
+	loopPath := store.SessionDir(sid) + "/loop.json"
+	if err := writeTestLoopFile(loopPath, got); err != nil {
+		t.Fatalf("writeTestLoopFile() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: wsUUID, WorkingDir: workingDir, ACPServer: "test-server"},
+		},
+	})
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "test-server", Command: "echo hello"},
+		},
+	})
+	sm.SetACPProcessManager(fakeClassifiedErrProcessManager{mkErr: mkErr})
+
+	runner := NewLoopRunner(store, sm, nil)
+	return store, loopStore, runner
+}
+
+// TestLoopRunner_ResumeFailures_AgentInternalDeadline_DoesNotArchiveHealthyLoop
+// reproduces the mitto-hjx classification-gap escape (recurrence of facet D):
+// a healthy loop whose ResumeSession fails with the agent's OWN internal
+// -32603 "context deadline exceeded" wedge (mitto-y1g) must NOT be
+// auto-archived. Verified in the investigate phase: this error shape
+// preserves the typed *acp.RequestError via %w end-to-end on the shared
+// resume path (shared_session_handshaker.go:606 -> shared_acp_process.go:
+// 2012/1959), so acperrors.IsAgentInternalDeadlineErr CAN classify it via
+// errors.As — but loop_runner.go:2041 does not call that predicate, so the
+// wedge falls through into LoopRunner's own consecutiveFailures counter,
+// which drives the archive directly. (Note: session_manager.go:2900's
+// sibling carve-out is NOT reachable from this fixture — loop sessions are
+// unconditionally exempt from ACPStartFailureCount by a separate guard,
+// session_manager.go's isLoopSession check at line ~2918 (mitto-wub Defect
+// 2); that carve-out's own -32603 gap is covered separately by
+// TestSessionManager_ResumeSession_AgentInternalDeadline_DoesNotCountAsHardFailure
+// using a non-loop session.) FAILS today; passes once loop_runner.go's
+// carve-out adds the IsAgentInternalDeadlineErr/IsAgentQueryClosedErr checks.
+func TestLoopRunner_ResumeFailures_AgentInternalDeadline_DoesNotArchiveHealthyLoop(t *testing.T) {
+	const sid = "sess-agent-internal-deadline"
+	const wsUUID = "ws-agent-internal-deadline"
+	store, loopStore, runner := newClassifiedErrResumeTestFixture(t, sid, wsUUID, mitto32603AgentDeadlineErr)
+
+	var stopped bool
+	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) { stopped = true })
+
+	for i := 0; i < MaxLoopResumeFailures; i++ {
+		runner.RunOnce()
+	}
+
+	updatedMeta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Errorf("bug reproduced (mitto-hjx classification gap): a healthy loop was auto-archived after %d "+
+			"consecutive ResumeSession failures whose cause was the agent's own -32603 internal-deadline wedge "+
+			"(acperrors.IsAgentInternalDeadlineErr) — loop_runner.go:2041's carve-out does not classify this shape",
+			MaxLoopResumeFailures)
+	}
+
+	finalLoop, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !finalLoop.Enabled {
+		t.Errorf("bug reproduced (mitto-hjx classification gap): loop was stopped (Enabled=false, StoppedReason=%q) "+
+			"after %d consecutive agent-internal-deadline resume failures; want the loop to remain enabled since the "+
+			"failure cause is transient and will clear on its own",
+			finalLoop.StoppedReason, MaxLoopResumeFailures)
+	}
+	if stopped {
+		t.Error("bug reproduced (mitto-hjx classification gap): onLoopAutoStopped fired for agent-internal-deadline resume failures")
+	}
+}
+
+// TestLoopRunner_ResumeFailures_AgentQueryClosed_DoesNotArchiveHealthyLoop is
+// the companion to the internal-deadline test above for the second -32603
+// wedge shape observed in production (mitto-aoo): "query closed before
+// response received". See that test's doc comment for the full rationale;
+// the only difference here is the error message classified by
+// acperrors.IsAgentQueryClosedErr instead of IsAgentInternalDeadlineErr.
+func TestLoopRunner_ResumeFailures_AgentQueryClosed_DoesNotArchiveHealthyLoop(t *testing.T) {
+	const sid = "sess-agent-query-closed"
+	const wsUUID = "ws-agent-query-closed"
+	store, loopStore, runner := newClassifiedErrResumeTestFixture(t, sid, wsUUID, mitto32603QueryClosedErr)
+
+	var stopped bool
+	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) { stopped = true })
+
+	for i := 0; i < MaxLoopResumeFailures; i++ {
+		runner.RunOnce()
+	}
+
+	updatedMeta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if updatedMeta.Archived {
+		t.Errorf("bug reproduced (mitto-hjx classification gap): a healthy loop was auto-archived after %d "+
+			"consecutive ResumeSession failures whose cause was the agent's own -32603 query-closed wedge "+
+			"(acperrors.IsAgentQueryClosedErr) — loop_runner.go:2041's carve-out does not classify this shape",
+			MaxLoopResumeFailures)
+	}
+
+	finalLoop, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !finalLoop.Enabled {
+		t.Errorf("bug reproduced (mitto-hjx classification gap): loop was stopped (Enabled=false, StoppedReason=%q) "+
+			"after %d consecutive query-closed resume failures; want the loop to remain enabled since the failure "+
+			"cause is transient and will clear on its own",
+			finalLoop.StoppedReason, MaxLoopResumeFailures)
+	}
+	if stopped {
+		t.Error("bug reproduced (mitto-hjx classification gap): onLoopAutoStopped fired for query-closed resume failures")
+	}
+}
+
 // TestLoopRunner_RecoverStalledOnCompletion_MaxDuration_AutoStops verifies that
 // recoverStalledOnCompletion now routes through autoStopIfMaxDurationReached when the
 // cap is exceeded, ending with Enabled=false and StoppedReason=maxDuration.

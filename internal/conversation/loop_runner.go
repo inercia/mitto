@@ -2038,7 +2038,14 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 			// resumeSessionWithConstraint for the ACPStartFailureCount
 			// counter. Without it, a heavy-but-transient saturation burst
 			// archives (and disables) an otherwise perfectly healthy loop.
-			if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) {
+			//
+			// mitto-hjx (recurrence): the agent's OWN internal -32603 wedges
+			// (IsAgentInternalDeadlineErr's "context deadline exceeded" and
+			// IsAgentQueryClosedErr's "query closed before response received")
+			// are equally transient and equally self-clearing, but were not
+			// classified here, so a saturation storm producing these specific
+			// shapes still archived a healthy loop.
+			if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) || acperrors.IsAgentInternalDeadlineErr(err) || acperrors.IsAgentQueryClosedErr(err) {
 				if r.logger != nil {
 					r.logger.Warn("Resume hit transient shared-process saturation for loop prompt; not counting toward archive threshold (will retry)",
 						"session_id", sessionID,

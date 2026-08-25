@@ -2897,7 +2897,14 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		// above (fresh getSharedProcess + ResumeBackgroundSession) also lost a race
 		// against a concurrent recycle — an unlucky double-race, not a genuine
 		// startup failure. Same treatment: don't count it, a later resume succeeds.
-		if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) {
+		//
+		// mitto-hjx (recurrence): the agent's OWN internal -32603 wedges
+		// (IsAgentInternalDeadlineErr's "context deadline exceeded" and
+		// IsAgentQueryClosedErr's "query closed before response received")
+		// are equally transient and equally self-clearing, but were not
+		// classified here, so a saturation storm producing these specific
+		// shapes still counted toward the hard ACP-start failure threshold.
+		if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) || acperrors.IsAgentInternalDeadlineErr(err) || acperrors.IsAgentQueryClosedErr(err) {
 			if sm.logger != nil {
 				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout, shared-process saturation, or a recycle race; not counting as hard failure (will retry)",
 					"session_id", sessionID,

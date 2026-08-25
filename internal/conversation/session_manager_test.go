@@ -3247,3 +3247,123 @@ func TestSessionManager_ResumeSession_ACPStartFailureThreshold_SkipsArchiveForNo
 		t.Error("NoArchive session should NOT be auto-archived after reaching ACPStartFailureThreshold")
 	}
 }
+
+// TestSessionManager_ResumeSession_AgentInternalDeadline_DoesNotCountAsHardFailure
+// reproduces the mitto-hjx classification-gap escape for the ACPStartFailureCount
+// carve-out at session_manager.go:2900 directly (a NON-loop session, since loop
+// sessions are unconditionally exempt from this counter via the separate
+// isLoopSession guard a few lines below — see
+// TestLoopRunner_ResumeFailures_AgentInternalDeadline_DoesNotArchiveHealthyLoop
+// for the sibling LoopRunner.consecutiveFailures carve-out at loop_runner.go:2041).
+//
+// The shared-process resume path preserves the typed *acp.RequestError via %w
+// end-to-end (shared_session_handshaker.go:606 -> shared_acp_process.go's
+// NewSession), so acperrors.IsAgentInternalDeadlineErr CAN classify a -32603
+// "context deadline exceeded" wedge via errors.As — but the carve-out at
+// session_manager.go:2900 does not call that predicate, so the wedge falls
+// through into ACPStartFailureCount like a genuine unrecoverable failure.
+// FAILS today (ACPStartFailureCount ends up >= 1); passes once the carve-out
+// adds the IsAgentInternalDeadlineErr check.
+func TestSessionManager_ResumeSession_AgentInternalDeadline_DoesNotCountAsHardFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const wsUUID = "ws-agent-internal-deadline-nonloop"
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: wsUUID, WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+	sm.SetACPProcessManager(fakeClassifiedErrProcessManager{mkErr: mitto32603AgentDeadlineErr})
+
+	meta := session.Metadata{
+		SessionID:  "agent-internal-deadline-nonloop",
+		ACPServer:  "agent-a",
+		WorkingDir: "/tmp",
+		Name:       "Agent Internal Deadline",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, _ = sm.ResumeSession("agent-internal-deadline-nonloop", "Agent Internal Deadline", "/tmp")
+
+	updated, err := store.GetMetadata("agent-internal-deadline-nonloop")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPStartFailureCount != 0 {
+		t.Errorf("bug reproduced (mitto-hjx classification gap): ACPStartFailureCount = %d, want 0 — "+
+			"session_manager.go:2900's carve-out does not classify the agent's own -32603 internal-deadline wedge "+
+			"(acperrors.IsAgentInternalDeadlineErr) as transient", updated.ACPStartFailureCount)
+	}
+	if updated.Archived {
+		t.Error("bug reproduced (mitto-hjx classification gap): session was auto-archived after a single " +
+			"transient agent-internal-deadline resume failure")
+	}
+}
+
+// TestSessionManager_ResumeSession_AgentQueryClosed_DoesNotCountAsHardFailure is
+// the companion to the internal-deadline test above for the second -32603 wedge
+// shape observed in production (mitto-aoo): "query closed before response
+// received". See that test's doc comment for the full rationale; the only
+// difference here is the error message classified by
+// acperrors.IsAgentQueryClosedErr instead of IsAgentInternalDeadlineErr.
+func TestSessionManager_ResumeSession_AgentQueryClosed_DoesNotCountAsHardFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const wsUUID = "ws-agent-query-closed-nonloop"
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: wsUUID, WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+	sm.SetACPProcessManager(fakeClassifiedErrProcessManager{mkErr: mitto32603QueryClosedErr})
+
+	meta := session.Metadata{
+		SessionID:  "agent-query-closed-nonloop",
+		ACPServer:  "agent-a",
+		WorkingDir: "/tmp",
+		Name:       "Agent Query Closed",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, _ = sm.ResumeSession("agent-query-closed-nonloop", "Agent Query Closed", "/tmp")
+
+	updated, err := store.GetMetadata("agent-query-closed-nonloop")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPStartFailureCount != 0 {
+		t.Errorf("bug reproduced (mitto-hjx classification gap): ACPStartFailureCount = %d, want 0 — "+
+			"session_manager.go:2900's carve-out does not classify the agent's own -32603 query-closed wedge "+
+			"(acperrors.IsAgentQueryClosedErr) as transient", updated.ACPStartFailureCount)
+	}
+	if updated.Archived {
+		t.Error("bug reproduced (mitto-hjx classification gap): session was auto-archived after a single " +
+			"transient query-closed resume failure")
+	}
+}
