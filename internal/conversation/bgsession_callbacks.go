@@ -451,6 +451,22 @@ func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, gen
 // re-resumes the child via the SessionManager — a fresh BackgroundSession
 // re-applies startup constraints from scratch against the replacement
 // process — rather than depending on this disposable goroutine surviving.
+//
+// Rebind-failure retry (mitto-qy0j, deployed-runtime recurrence 2026-08-24):
+// a single failed restartACPProcessFromGeneration attempt used to abandon
+// recovery outright ("Startup model recovery failed to rebind after ACP
+// replacement", logged then returned), stranding the queued turn forever
+// whenever the FIRST rebind attempt hit a transient failure — e.g. during a
+// bulk-restart storm where the replacement process is itself momentarily
+// saturated by sibling sessions racing to rebind at once. Such a failure is
+// no different from an ordinary crash-restart failure elsewhere in the
+// codebase, which always retries with backoff rather than giving up after
+// one attempt. This loop now does the same: it keeps retrying against the
+// current generation until the session's own restart circuit breaker trips
+// (canRestartACP() — permanent error or the MaxACPTotalRestarts lifetime
+// cap) or the session is closed. restartACPProcessFromGeneration already
+// applies its own escalating backoff via procCtl.recentRestartCount(), so
+// this does not hot-loop against a still-unhealthy process.
 func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}) {
 	defer func() {
 		bs.startupConstraintRecovery.Store(false)
@@ -469,7 +485,15 @@ func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGenerati
 				bs.logger.Warn("Startup model recovery failed to rebind after ACP replacement",
 					"session_id", bs.persistedID, "generation", failedGeneration, "error", err)
 			}
-			return
+			if bs.ctx.Err() != nil || !bs.canRestartACP() {
+				return
+			}
+			// Retry against the current generation: failedProcessDone is already
+			// closed (permanently) from the wait above, so looping back to the
+			// top select re-enters immediately and the next attempt is paced
+			// solely by restartACPProcessFromGeneration's own backoff.
+			failedGeneration = bs.sharedProcess.Generation()
+			continue
 		}
 
 		bs.waitForStartupConfigConstraints()

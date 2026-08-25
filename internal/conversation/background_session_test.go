@@ -900,6 +900,112 @@ func TestStartupConstraintFailureRecoversAfterSharedProcessReplacement(t *testin
 	t.Fatal("model-gated session did not rebind and retry after shared-process replacement")
 }
 
+// TestStartupConstraintRecovery_RetriesTransientRebindFailure reproduces the
+// 2026-08-24 deployed-runtime recurrence of mitto-qy0j: a single failed
+// restartACPProcessFromGeneration attempt inside recoverStartupConstraintAfterRestart
+// used to log "Startup model recovery failed to rebind after ACP replacement"
+// and give up permanently, stranding the queued turn even when the rebind
+// failure was transient (e.g. the replacement process itself momentarily
+// saturated by sibling sessions racing to rebind during a bulk-restart
+// storm). The fix retries against the current generation until the restart
+// circuit breaker trips or the session closes. This test makes the FIRST
+// rebind attempt fail, then lets it succeed, and asserts recovery completes
+// via a second attempt rather than giving up after the first.
+func TestStartupConstraintRecovery_RetriesTransientRebindFailure(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+
+	shared := newFakeSharedProcess()
+	shared.caps.LoadSession = true
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		acpID:         "acp-session-old",
+		sharedProcess: shared,
+		workingDir:    "/tmp/test",
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+		configOptions: []SessionConfigOption{{
+			ID: ConfigOptionCategoryModel, Category: ConfigOptionCategoryModel, CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{{Value: "m-1", Name: "Model 1"}, {Value: "m-2", Name: "Model 2"}},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+		observers: make(map[SessionObserver]struct{}),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+
+	shared.mu.Lock()
+	oldDone := shared.processDone
+	shared.generation++
+	shared.processDone = make(chan struct{})
+	// The first rebind attempt fails entirely — both the LoadSession probe and
+	// its session/new fallback — simulating a transient failure such as the
+	// replacement process itself being momentarily saturated by sibling
+	// sessions during a bulk-restart storm.
+	shared.loadSessionErr = fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot")
+	shared.newSessionErr = fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot")
+	shared.mu.Unlock()
+	close(oldDone)
+
+	// Wait for the first (doomed) rebind attempt to be made.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		shared.mu.Lock()
+		attempted := len(shared.loadSessionCalls) > 0
+		shared.mu.Unlock()
+		if attempted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	shared.mu.Lock()
+	if len(shared.loadSessionCalls) == 0 {
+		shared.mu.Unlock()
+		t.Fatal("expected the first rebind attempt to have been made")
+	}
+	// Clear the transient failure so the retry succeeds via LoadSession.
+	shared.loadSessionErr = nil
+	shared.newSessionErr = nil
+	shared.loadSessionHandle = &SessionHandle{
+		SessionID: "acp-session-new",
+		Models: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+	}
+	shared.mu.Unlock()
+
+	// Second attempt is paced by restartACPProcessFromGeneration's own
+	// escalating backoff (base ~3s ± jitter for the first retry), so allow a
+	// generous window before declaring the recovery goroutine gave up.
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		shared.mu.Lock()
+		loadCalls := len(shared.loadSessionCalls)
+		shared.mu.Unlock()
+		if loadCalls > 1 && bs.startupConfigConstraintsReady() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("recovery goroutine gave up after one failed rebind attempt instead of retrying")
+}
+
 // TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
 // in-memory flag and IsSelfDestructRequested reflects it. The flag drives the
 // deferred deletion triggered at the end of a turn in PromptWithMeta.
