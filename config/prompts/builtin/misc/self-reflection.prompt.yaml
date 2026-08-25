@@ -1,0 +1,40 @@
+icon: magic-wand
+name: Self-reflection
+menus: prompts, conversation
+description: Reflect on this conversation — what went well, what went poorly, and concrete improvements
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: 'Session.HasMessages && !Session.IsLoopConversation'
+prompt: |
+  Step back and perform a structured self-reflection on this conversation so far. Be
+  honest and specific — cite concrete moments, decisions, and tool calls rather than
+  generic platitudes. Keep it concise.
+
+  ## 1. What went well
+
+  Successful decisions, smooth interactions, and effective tool usage. What choices
+  moved the work forward efficiently?
+
+  ## 2. What went poorly
+
+  Mistakes, wrong turns, wasted effort, and misunderstandings. Where did you get
+  something wrong, backtrack, or misread the intent?
+
+  ## 3. Smooth vs. friction points
+
+  Where the workflow flowed naturally versus where it stalled, needed rework, or
+  required repeated attempts. Name the specific friction points.
+
+  ## 4. What could be improved
+
+  Concrete, actionable suggestions — not vague aspirations. Each should be something
+  a future run could actually do differently.
+
+  ## 5. How to implement those improvements
+
+  For each suggestion above, give a specific next step: e.g. an update to an Augment
+  rule, a builtin prompt, tooling, or the working process. Where relevant, point at
+  the exact file or mechanism that would carry the change.
+
+  Present the reflection directly in this conversation. Do not create files or make
+  code changes unless the user asks you to act on a specific improvement.

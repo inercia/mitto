@@ -1,0 +1,122 @@
+icon: sliders
+name: Improve agent rules
+menus: prompts, !promptsLoop
+description: Audit and improve this workspace's agent rules files — remove stale content, condense, and sharpen them for agent use
+group: Agents & Mitto
+backgroundColor: '#B3E5FC'
+enabledWhen: '!Session.IsLoopConversation && (DirExists(".augment/rules") || DirExists(".claude/rules") || DirExists(".agents/rules") || FileExists("CLAUDE.md"))'
+preferredModels:
+  - modelTag: Reasoning
+target:
+  title: 'Improve agent rules'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  Audit and improve the **agent rules files** for this workspace so they are
+  accurate, concise, coherent, and easy for an agent to follow. This is an
+  **audit + surgical-edit** pass on existing files — preserve intent; do not
+  regenerate rules from scratch or drop guidance just because it is long.
+
+  ## Step 1 — Detect YOUR rules location
+
+  Different agents read rules from different places. Detect which agent you are
+  and operate **only** on the matching location that actually exists in this
+  workspace:
+
+  - **Auggie / Augment** → `.augment/rules/`
+  - **Claude Code** → `.claude/rules/` (or the single-file `CLAUDE.md` if no
+    `.claude/rules/` directory exists)
+  - **Generic / other agents** → `.agents/rules/`
+
+  Presence check for this workspace (only operate on directories that exist):
+
+  - `.augment/rules/` — {{ if DirExists ".augment/rules" }}**present**{{ else }}absent{{ end }}
+  - `.claude/rules/` — {{ if DirExists ".claude/rules" }}**present**{{ else }}absent{{ end }}
+  - `.agents/rules/` — {{ if DirExists ".agents/rules" }}**present**{{ else }}absent{{ end }}
+  - `CLAUDE.md` — {{ if FileExists "CLAUDE.md" }}**present**{{ else }}absent{{ end }}
+  - `AGENTS.md` — {{ if FileExists "AGENTS.md" }}**present**{{ else }}absent{{ end }}
+
+  Pick the one that matches the agent running this prompt. If your matching
+  location does not exist, stop with a brief note — do **not** create a rules
+  directory for a different agent, and do **not** edit another agent's files.
+  If both a per-agent directory (e.g. `.claude/rules/`) and a shared root file
+  (e.g. `CLAUDE.md`/`AGENTS.md`) exist, prefer the directory and treat the root
+  file as read-only context unless it clearly holds rules of its own.
+
+  ## Step 2 — Read and inventory
+
+  Read every rules file in the detected location in full. Build a table:
+  `file | lines | what it covers | agent-actionable? (yes/no)`. Note any
+  cross-references between files and any overlap or duplication.
+
+  ## Step 3 — Verify against the current codebase
+
+  Before removing anything as "stale", **verify it against the current repo** —
+  read the referenced code, run the referenced command, or grep for the symbol.
+  Only content you can confirm is obsolete may be deleted. For anything you
+  cannot verify, mark it `suspected stale — needs confirmation` and keep it.
+
+  Look for:
+
+  - **Outdated / obsolete** — references to code, APIs, paths, commands, or
+    patterns that no longer exist in the codebase.
+  - **Contradictory** — rules that conflict with each other or with the code.
+  - **Verbose clutter** — long prose that can be condensed without losing any
+    actionable instruction.
+  - **Weak phrasing** — vague or passive guidance that should become concrete,
+    imperative, and unambiguous with a clear trigger ("when doing X, do Y").
+  - **Discoverability** — files that should be merged (fragmentary/overlapping)
+    or split (one file covering several unrelated concerns).
+  - **Trigger metadata** — whether each file/section uses the rules mechanism's
+    own features (frontmatter `description`/globs, "apply when…" headers, or
+    equivalent) so the agent knows **when** to load it. Add or sharpen these.
+
+  ## Step 4 — Plan and confirm
+
+  Present a **change plan** — one bullet per edit, in apply order, shaped as
+  `<file>: <what changes> — <why> — <finding it addresses>`. Then pause for
+  approval via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "How would you like to proceed?", options: [{"label": "Apply the whole plan"}, {"label": "Apply a subset I will pick"}, {"label": "Report only — do not edit"}, {"label": "Cancel"}])`.
+
+  Mark anything ambiguous (a rule that may or may not be obsolete, two plausible
+  resolutions) as `NEEDS OPERATOR DECISION`, skip it in Step 5, and report it.
+
+  ## Step 5 — Apply
+
+  Apply only the approved edits, using file-editing tools — never `sed`, never a
+  blind full-file rewrite. When editing, make rules easier to follow:
+
+  - **One rule per bullet.** Promote invariants and gotchas out of prose.
+  - **Imperative and specific**: real commands, real paths, real file names.
+  - **Consistent tone, structure, and terminology** across all files.
+  - **Clear triggers** — each rule states the situation it applies to.
+  - **Condense, don't gut** — shrink wording while preserving every actionable
+    instruction. Deprecate-with-a-dated-note over deleting when an item is only
+    *suspected* stale.
+  - When merging or splitting files, move content (never duplicate it) and
+    update every cross-reference plus any trigger/description metadata.
+
+  ## Step 6 — Report
+
+  Notify with
+  `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Agent rules improved", style: "success")`
+  and print a summary:
+
+  - **Location operated on** and the agent it matched.
+  - **Files modified**, each with size before → after (lines).
+  - **Removed** — what was cut, with the verified finding that justified it.
+  - **Condensed** — sections shortened (and roughly by how much).
+  - **Merged / split** — any structural changes, with the new trigger metadata.
+  - **Deferred** — every `NEEDS OPERATOR DECISION` and `suspected stale` item.
+
+  ## Guardrails
+
+  - **Preserve intent.** Never drop a rule just because it is long — only remove
+    content that is genuinely stale (verified), redundant, or unhelpful.
+  - **Stay in your lane.** Edit only the detected agent's rules location; leave
+    other agents' rules files untouched.
+  - **Verify before deleting.** No removal without checking the current codebase.
+  - **No git mutations.** Do not run `git add` / `git commit` / `git push` — the
+    operator reviews and commits the diff.
+  - **Do not spawn child conversations** — this is an in-place authoring task.
