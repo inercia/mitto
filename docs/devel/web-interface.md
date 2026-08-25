@@ -92,6 +92,17 @@ These endpoints do **not** require a session cookie.
 
 ---
 
+### External Access — Passkeys
+
+WebAuthn passkey registration (mitto-4mz.3). Both endpoints require an already-authenticated session (a valid `mitto_session` cookie **and** a CSRF token — they are **not** CSRF-exempt) and return `404` when passkeys are not armed (no https `web.hooks.external_address` RP, or the feature is disabled). Called directly by the browser's `navigator.credentials.*` APIs, not through either SDK.
+
+| Path                             | Method(s) | Description                                                                                              |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| `/api/webauthn/register/begin`   | POST      | Start enrollment: returns `PublicKeyCredentialCreationOptions` (resident-key required, UV preferred) and stashes the ceremony `SessionData` server-side (5-min TTL) |
+| `/api/webauthn/register/finish`  | POST      | Verify the authenticator attestation against the stashed `SessionData` and persist the new credential   |
+
+---
+
 ### Workspaces
 
 Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/workspace-*` paths are being migrated; see the mid-migration note above.
