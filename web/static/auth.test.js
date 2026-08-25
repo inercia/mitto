@@ -49,8 +49,25 @@ function stubWebAuthnSupported() {
   };
 }
 
+/** Makes supportsConditionalCreate() (utils/webauthn.js) resolve true: a
+ *  secure context + PublicKeyCredential.getClientCapabilities() reporting
+ *  conditionalCreate. Builds on stubWebAuthnSupported(). */
+function stubConditionalCreateSupported() {
+  const restoreSupported = stubWebAuthnSupported();
+  window.PublicKeyCredential.getClientCapabilities = async () => ({
+    conditionalCreate: true,
+  });
+  return restoreSupported;
+}
+
 async function flush() {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  // 50 microtask ticks: the passkey auto-enroll chain (mitto-4mz.7) chains
+  // considerably more sequential awaits than a plain login (supportsConditional
+  // Create -> registerBegin fetch+decode -> credentials.create() ->
+  // registerFinish fetch+decode) — 10 ticks left it unsettled by assertion
+  // time, so the leftover promise chain resolved during a LATER test and
+  // leaked its sessionStorage flag across tests.
+  for (let i = 0; i < 50; i++) await Promise.resolve();
 }
 
 function submitLogin(username, password) {
@@ -339,6 +356,210 @@ describe("auth.js — pre-auth login page (mitto-7gta.19.1)", () => {
       expect(errorDiv.textContent).toBe(
         "Too many attempts. Please try again later.",
       );
+    });
+  });
+
+  describe("passkey auto-enroll (Conditional Create, mitto-4mz.7)", () => {
+    let restoreConditionalCreate;
+
+    function setCsrfCookie(token = "csrf-test-token") {
+      document.cookie = `mitto_csrf=${token}; path=/`;
+    }
+
+    function clearCsrfCookie() {
+      document.cookie = "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    }
+
+    beforeEach(() => {
+      setCsrfCookie();
+    });
+
+    afterEach(() => {
+      if (restoreConditionalCreate) restoreConditionalCreate();
+      restoreConditionalCreate = undefined;
+      clearCsrfCookie();
+    });
+
+    /** Fetch mock covering auth-info/login plus register/begin+finish. */
+    function mockFetchWithRegister({
+      registerBeginBody = { publicKey: { challenge: "AQID", user: { id: "AQID" } } },
+      registerBeginStatus = 200,
+      registerFinishStatus = 200,
+      registerFinishBody = { success: true },
+      onRegisterBegin,
+      onRegisterFinish,
+    } = {}) {
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/login"))
+          return fakeResponse({ status: 200, body: { success: true } });
+        if (u.includes("/api/webauthn/register/begin")) {
+          onRegisterBegin?.(init);
+          return fakeResponse({
+            status: registerBeginStatus,
+            body: registerBeginBody,
+          });
+        }
+        if (u.includes("/api/webauthn/register/finish")) {
+          onRegisterFinish?.(init);
+          return fakeResponse({
+            status: registerFinishStatus,
+            body: registerFinishBody,
+          });
+        }
+        throw new Error("unexpected url " + u);
+      };
+    }
+
+    function stubCredentialsCreate(impl) {
+      const original = navigator.credentials;
+      Object.defineProperty(navigator, "credentials", {
+        value: { ...original, create: jest.fn(impl) },
+        configurable: true,
+      });
+      return () => {
+        Object.defineProperty(navigator, "credentials", {
+          value: original,
+          configurable: true,
+        });
+      };
+    }
+
+    const fakeCredential = {
+      id: "AQID",
+      rawId: new Uint8Array([1, 2, 3]).buffer,
+      type: "public-key",
+      response: {
+        clientDataJSON: new Uint8Array([4]).buffer,
+        attestationObject: new Uint8Array([5]).buffer,
+      },
+    };
+
+    test("unsupported browser: skips the ceremony entirely, still redirects, no flag set", async () => {
+      // isWebAuthnSupported() stays false (no PublicKeyCredential stub).
+      mockFetchWithRegister({
+        onRegisterBegin: () => {
+          throw new Error("register/begin should not be called");
+        },
+      });
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBeNull();
+    });
+
+    test("supported + armed: runs create() with mediation:'conditional', posts to register/finish, sets the flag, redirects", async () => {
+      restoreConditionalCreate = stubConditionalCreateSupported();
+      const restoreCredentials = stubCredentialsCreate(async () => fakeCredential);
+      let beginCsrfHeader;
+      let finishBody;
+      mockFetchWithRegister({
+        onRegisterBegin: (init) => {
+          beginCsrfHeader = init.headers?.["X-CSRF-Token"];
+        },
+        onRegisterFinish: (init) => {
+          finishBody = JSON.parse(init.body);
+        },
+      });
+
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+
+      expect(navigator.credentials.create).toHaveBeenCalledTimes(1);
+      const callArgs = navigator.credentials.create.mock.calls[0][0];
+      expect(callArgs.mediation).toBe("conditional");
+      expect(callArgs.publicKey.challenge).toBeInstanceOf(ArrayBuffer);
+      expect(beginCsrfHeader).toBe("csrf-test-token");
+      expect(finishBody.id).toBe("AQID");
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBe("1");
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+
+      sessionStorage.removeItem("mitto_passkey_autoenrolled");
+      restoreCredentials();
+    });
+
+    test("capability check false (e.g. conditionalCreate:false): never calls register/begin, no flag set", async () => {
+      restoreConditionalCreate = stubWebAuthnSupported();
+      window.PublicKeyCredential.getClientCapabilities = async () => ({
+        conditionalCreate: false,
+      });
+      mockFetchWithRegister({
+        onRegisterBegin: () => {
+          throw new Error("register/begin should not be called");
+        },
+      });
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBeNull();
+    });
+
+    test("null credential (no discoverable state): skips register/finish and the flag, still redirects", async () => {
+      restoreConditionalCreate = stubConditionalCreateSupported();
+      const restoreCredentials = stubCredentialsCreate(async () => null);
+      let finishCalled = false;
+      mockFetchWithRegister({
+        onRegisterFinish: () => {
+          finishCalled = true;
+        },
+      });
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+      expect(finishCalled).toBe(false);
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBeNull();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      restoreCredentials();
+    });
+
+    test("registerBegin failure is swallowed: login still redirects, no flag set", async () => {
+      restoreConditionalCreate = stubConditionalCreateSupported();
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/login"))
+          return fakeResponse({ status: 200, body: { success: true } });
+        if (u.includes("/api/webauthn/register/begin"))
+          return fakeResponse({ status: 500, body: { error: "boom" } });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBeNull();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+    });
+
+    test("navigator.credentials.create() rejection (e.g. user cancel) is swallowed: login still redirects", async () => {
+      restoreConditionalCreate = stubConditionalCreateSupported();
+      const restoreCredentials = stubCredentialsCreate(async () => {
+        throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
+      });
+      mockFetchWithRegister();
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBeNull();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      restoreCredentials();
+    });
+
+    test("registerFinish failure is swallowed: no flag set, login still redirects", async () => {
+      restoreConditionalCreate = stubConditionalCreateSupported();
+      const restoreCredentials = stubCredentialsCreate(async () => fakeCredential);
+      mockFetchWithRegister({ registerFinishStatus: 500, registerFinishBody: { error: "boom" } });
+      await loadAuthPage();
+      submitLogin("alice", "hunter2");
+      await flush();
+      expect(sessionStorage.getItem("mitto_passkey_autoenrolled")).toBeNull();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      restoreCredentials();
     });
   });
 

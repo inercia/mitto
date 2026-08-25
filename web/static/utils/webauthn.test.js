@@ -7,6 +7,7 @@
 import { describe, test, expect } from "./testing/testGlobals.js";
 import {
   isWebAuthnSupported,
+  supportsConditionalCreate,
   base64urlToBuffer,
   bufferToBase64url,
   decodeCreationOptions,
@@ -14,6 +15,21 @@ import {
   serializeCreatedCredential,
   serializeAssertion,
 } from "./webauthn.js";
+
+/** Stubs isWebAuthnSupported() to true (secure context + a bare
+ *  PublicKeyCredential constructor, no getClientCapabilities). */
+function stubWebAuthnSupported() {
+  const orig = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+  Object.defineProperty(window, "isSecureContext", {
+    value: true,
+    configurable: true,
+  });
+  window.PublicKeyCredential = function () {};
+  return () => {
+    delete window.PublicKeyCredential;
+    if (orig) Object.defineProperty(window, "isSecureContext", orig);
+  };
+}
 
 describe("isWebAuthnSupported", () => {
   test("true when secure context + PublicKeyCredential are both present", () => {
@@ -49,6 +65,60 @@ describe("isWebAuthnSupported", () => {
     delete window.PublicKeyCredential;
     expect(isWebAuthnSupported()).toBe(false);
     if (orig) Object.defineProperty(window, "isSecureContext", orig);
+  });
+});
+
+describe("supportsConditionalCreate (mitto-4mz.7)", () => {
+  test("false when isWebAuthnSupported() is false (no PublicKeyCredential)", async () => {
+    const orig = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", {
+      value: true,
+      configurable: true,
+    });
+    delete window.PublicKeyCredential;
+    await expect(supportsConditionalCreate()).resolves.toBe(false);
+    if (orig) Object.defineProperty(window, "isSecureContext", orig);
+  });
+
+  test("false when PublicKeyCredential.getClientCapabilities is not a function", async () => {
+    const restore = stubWebAuthnSupported();
+    // window.PublicKeyCredential is a bare constructor with no static.
+    await expect(supportsConditionalCreate()).resolves.toBe(false);
+    restore();
+  });
+
+  test("true when getClientCapabilities() resolves conditionalCreate: true", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.getClientCapabilities = async () => ({
+      conditionalCreate: true,
+    });
+    await expect(supportsConditionalCreate()).resolves.toBe(true);
+    restore();
+  });
+
+  test("false when getClientCapabilities() resolves conditionalCreate: false", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.getClientCapabilities = async () => ({
+      conditionalCreate: false,
+    });
+    await expect(supportsConditionalCreate()).resolves.toBe(false);
+    restore();
+  });
+
+  test("false when getClientCapabilities() resolves without a conditionalCreate key", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.getClientCapabilities = async () => ({});
+    await expect(supportsConditionalCreate()).resolves.toBe(false);
+    restore();
+  });
+
+  test("false (swallowed) when getClientCapabilities() rejects", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.getClientCapabilities = async () => {
+      throw new Error("boom");
+    };
+    await expect(supportsConditionalCreate()).resolves.toBe(false);
+    restore();
   });
 });
 

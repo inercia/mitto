@@ -219,6 +219,33 @@ describe("app.js: SDK migration — dashboard/misc/remainder handlers (mitto-7gt
   });
 });
 
+describe("app.js: passkey auto-enroll success toast (mitto-4mz.7)", () => {
+  test("one-shot mount effect reads+clears the sessionStorage flag and shows a success toast", () => {
+    const idx = appJs.indexOf(
+      'if (sessionStorage.getItem("mitto_passkey_autoenrolled") === "1") {',
+    );
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = appJs.slice(idx, idx + 400);
+
+    // Cleared before the toast fires, so a re-render/re-mount never re-shows it.
+    const removeIdx = snippet.indexOf(
+      'sessionStorage.removeItem("mitto_passkey_autoenrolled");',
+    );
+    const toastIdx = snippet.indexOf("showToast({");
+    expect(removeIdx).toBeGreaterThan(-1);
+    expect(toastIdx).toBeGreaterThan(removeIdx);
+    expect(snippet).toMatch(/style: "success",/);
+    expect(snippet).toMatch(/title: "Passkey created",/);
+
+    // Wired as its own effect (dependency array [showToast]), independent of
+    // the initCSRF/initUIPreferences mount effect.
+    const effectStart = appJs.lastIndexOf("useEffect(() => {", idx);
+    expect(effectStart).toBeGreaterThan(-1);
+    const effectSnippet = appJs.slice(effectStart, idx + 500);
+    expect(effectSnippet).toMatch(/\}, \[showToast\]\);/);
+  });
+});
+
 describe("app.js: header title inline editing (click title to rename, mitto-dpd)", () => {
   test("handleStartEditHeaderTitle: no-ops without an active session; otherwise seeds the draft from sessionInfo.name and enters edit mode", () => {
     const idx = appJs.indexOf(
