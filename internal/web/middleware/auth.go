@@ -151,6 +151,14 @@ type AuthManager struct {
 	// HandleRegisterBegin and HandleRegisterFinish. See webauthn_register.go.
 	pendingRegistrations map[string]*pendingRegistration
 
+	// pendingLoginMu guards pendingLogins (mitto-4mz.4).
+	pendingLoginMu sync.Mutex
+	// pendingLogins stashes in-flight WebAuthn discoverable-login ceremonies'
+	// SessionData, keyed by a server-set ceremony cookie (login is pre-auth,
+	// so there is no session token to key by), between HandleLoginBegin and
+	// HandleLoginFinish. See webauthn_login.go.
+	pendingLogins map[string]*pendingLogin
+
 	// splitIPWarnMu guards splitIPWarnSeen (dedup for the Split-IP login WARN).
 	splitIPWarnMu   sync.Mutex
 	splitIPWarnSeen map[string]time.Time
@@ -171,6 +179,7 @@ func NewAuthManager(authConfig *config.WebAuth) *AuthManager {
 		stopCleanup:          make(chan struct{}),
 		cleanupDone:          make(chan struct{}),
 		pendingRegistrations: make(map[string]*pendingRegistration),
+		pendingLogins:        make(map[string]*pendingLogin),
 	}
 
 	// Parse the allow list
@@ -518,6 +527,7 @@ func (a *AuthManager) cleanupExpiredSessions() {
 
 	a.pruneSplitIPWarnSeen()
 	a.prunePendingRegistrations()
+	a.prunePendingLogins()
 }
 
 // shouldWarnSplitIP reports whether the Split-IP login WARN should be emitted
@@ -971,12 +981,14 @@ var publicStaticPaths = map[string]bool{
 
 // publicAPIPaths are API paths (without prefix) that don't require authentication.
 var publicAPIPaths = map[string]bool{
-	"/api/login":                true,
-	"/api/csrf-token":           true, // CSRF token endpoint must be accessible before login
-	"/api/supported-runners":    true, // Platform information endpoint (no sensitive data)
-	"/api/auth-info":            true, // Auth info endpoint must be accessible before login (used by login page)
-	"/api/health":               true, // Health check must be accessible without auth for tunnel monitoring
-	"/api/slack/oauth/callback": true, // Slack validates one-time OAuth state instead of a Mitto session
+	"/api/login":                 true,
+	"/api/csrf-token":            true, // CSRF token endpoint must be accessible before login
+	"/api/supported-runners":     true, // Platform information endpoint (no sensitive data)
+	"/api/auth-info":             true, // Auth info endpoint must be accessible before login (used by login page)
+	"/api/health":                true, // Health check must be accessible without auth for tunnel monitoring
+	"/api/slack/oauth/callback":  true, // Slack validates one-time OAuth state instead of a Mitto session
+	"/api/webauthn/login/begin":  true, // Passkey login is pre-auth (mitto-4mz.4): no session exists yet
+	"/api/webauthn/login/finish": true, // See /api/webauthn/login/begin — same pre-auth rationale
 }
 
 // isPublicPath checks if a path is public (no auth required).

@@ -218,7 +218,9 @@ func isStateChangingMethod(method string) bool {
 // Note: login is exempt because it has its own rate limiting and uses
 // credentials for authentication. WebSocket upgrades are also exempt.
 var csrfExemptAPIPaths = map[string]bool{
-	"/api/login": true, // Login has rate limiting, no session yet
+	"/api/login":                 true, // Login has rate limiting, no session yet
+	"/api/webauthn/login/begin":  true, // Pre-auth (mitto-4mz.4); the WebAuthn assertion itself is CSRF-resistant
+	"/api/webauthn/login/finish": true, // See /api/webauthn/login/begin — same pre-auth rationale
 }
 
 // isCSRFExemptPath checks if a path is exempt from CSRF protection.

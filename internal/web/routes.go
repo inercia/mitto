@@ -31,6 +31,12 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 			// or an IP-allowlist bypass) to enroll a credential.
 			apiRoute{method: "POST", pattern: "/api/webauthn/register/begin", handler: http.HandlerFunc(authMgr.HandleRegisterBegin)},
 			apiRoute{method: "POST", pattern: "/api/webauthn/register/finish", handler: http.HandlerFunc(authMgr.HandleRegisterFinish)},
+			// Passkey (WebAuthn) login (mitto-4mz.4): discoverable/usernameless
+			// login that mints the same mitto_session cookie the password flow
+			// issues. Pre-auth (public + CSRF-exempt); handlers return 404 when
+			// passkeys are not enabled/derivable.
+			apiRoute{method: "POST", pattern: "/api/webauthn/login/begin", handler: http.HandlerFunc(authMgr.HandleLoginBegin)},
+			apiRoute{method: "POST", pattern: "/api/webauthn/login/finish", handler: http.HandlerFunc(authMgr.HandleLoginFinish)},
 		)
 	}
 
