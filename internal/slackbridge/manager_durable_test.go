@@ -231,3 +231,66 @@ func TestManagerStatusReportsExpiredDeadLetters(t *testing.T) {
 		t.Fatalf("status=%#v", status)
 	}
 }
+
+// TestManagerJournalRejectionSurfacesErrorClass exercises the mitto-mfd fix:
+// when the durable journal starts rejecting Accept() calls (here, its hard
+// record cap), routeEvent must both propagate ErrJournalFull AND surface a
+// first-class ConnectionStatus.ErrorClass="journal" signal — not just bump
+// LastJournalErrorAt — so the frontend/warning-toast pipeline can react.
+func TestManagerJournalRejectionSurfacesErrorClass(t *testing.T) {
+	runner := &durableRunner{}
+	manager := routedManager(t, runner, "s")
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	manager.journal.now = func() time.Time { return now }
+
+	// Seed the on-disk journal at its hard cap with fresh (non-expirable)
+	// terminal records, mirroring TestFileJournalRejectsCapacityUntilTerminalRecordsPrune:
+	// AcceptedAt=now means the 24h retention prune cannot reclaim space, so
+	// the next Accept() is guaranteed to observe ErrJournalFull.
+	doc := &journalDocument{Version: journalVersion, AppID: "app", NextSequence: journalMaxRecords}
+	for n := 0; n < journalMaxRecords; n++ {
+		doc.Records = append(doc.Records, journalRecord{Sequence: uint64(n + 1), Event: Event{EventID: fmt.Sprintf("e%d", n)},
+			Recipients: []journalRecipient{{SessionID: "s", State: recipientDelivered, UpdatedAt: now}}, AcceptedAt: now})
+	}
+	path, err := manager.journal.path("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.journal.writeLocked(path, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	event := Event{EventID: "overflow", TeamID: "team", ChannelID: "channel", AuthorID: "human", Kind: "message"}
+	if err := manager.routeEvent("app", nil, event); !errors.Is(err, ErrJournalFull) {
+		t.Fatalf("routeEvent() error=%v, want ErrJournalFull", err)
+	}
+	status := manager.Status()
+	if len(status) != 1 || status[0].AppID != "app" || status[0].ErrorClass != "journal" {
+		t.Fatalf("status=%#v, want a single \"app\" status with ErrorClass=\"journal\"", status)
+	}
+}
+
+// TestManagerJournalAcceptClearsErrorClass exercises noteJournalAccepted: once
+// the durable journal accepts an event again after a prior rejection, the
+// "journal" ErrorClass must self-clear back to "" (mitto-mfd) — the warning
+// must not stay sticky once the underlying condition has recovered.
+func TestManagerJournalAcceptClearsErrorClass(t *testing.T) {
+	runner := &durableRunner{}
+	manager := routedManager(t, runner, "s")
+
+	// Simulate a prior rejection having already set the warning, exactly as
+	// the accept-failure branch of routeEvent does via logJournalFailure.
+	manager.logJournalFailure("app", "accept")
+	if status := manager.Status(); len(status) != 1 || status[0].ErrorClass != "journal" {
+		t.Fatalf("precondition: status=%#v, want ErrorClass=\"journal\" before recovery", status)
+	}
+
+	event := Event{EventID: "recovered", TeamID: "team", ChannelID: "channel", AuthorID: "human", Kind: "message"}
+	if err := manager.routeEvent("app", nil, event); err != nil {
+		t.Fatal(err)
+	}
+	status := manager.Status()
+	if len(status) != 1 || status[0].AppID != "app" || status[0].ErrorClass != "" {
+		t.Fatalf("status=%#v, want ErrorClass cleared to \"\" after a successful Accept", status)
+	}
+}
