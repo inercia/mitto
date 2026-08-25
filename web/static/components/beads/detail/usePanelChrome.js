@@ -51,6 +51,7 @@ import {
   CollapseIcon,
   CloseIcon,
   LightningIcon,
+  getPromptIcon,
   getPromptIconOrDefault,
 } from "../../Icons.js";
 
@@ -87,9 +88,17 @@ export function usePanelChrome({
   // the list toolbar's tasksList shortcuts, but keyed to the open issue).
   const [issueShortcuts, setIssueShortcuts] = useState([]);
   // Map from prompt name → prompt object, resolved from the beadsIssues menu.
+  // Populated from the *gated* fetch (enabled_context=workspace + item.*), so a
+  // prompt present here is currently ENABLED for the open issue.
   const [issueShortcutPromptMap, setIssueShortcutPromptMap] = useState(
     new Map(),
   );
+  // Map from prompt name → prompt object, resolved from the *ungated* fetch (no
+  // enabledWhen filter). A prompt present here EXISTS in the workspace even when
+  // its enabledWhen gate excludes it for the open issue. This lets a gated-off
+  // shortcut render with its real icon (greyed + disabled) instead of the
+  // generic lightning "not found" fallback, which looked broken (user report).
+  const [issueShortcutMetaMap, setIssueShortcutMetaMap] = useState(new Map());
   // Phone detection drives the panel width. We deliberately use the user agent
   // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
   // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
@@ -247,13 +256,20 @@ export function usePanelChrome({
   // Load per-folder beadsIssue-section shortcut buttons for the detail toolbar.
   // Mirrors BeadsView's tasksList loader: fetch section entries, then resolve
   // each entry's prompt name against the beadsIssues menu via onFetchPrompts.
+  // The open issue (`data`) is passed to onFetchPrompts so item.*-gated
+  // enabledWhen expressions are evaluated against THIS issue — otherwise an
+  // item-gated prompt (e.g. one that requires a "support-question" label) is
+  // filtered out under the empty workspace context and its shortcut renders
+  // greyed/disabled even when it applies to the open issue (mirrors the kebab
+  // "Run a prompt" menu, which already prefetches with the issue).
   // `isStale` lets the mount effect below cancel a stale in-flight fetch when
-  // the folder changes mid-request.
+  // the folder or issue changes mid-request.
   const loadIssueShortcuts = useCallback(
     async (isStale) => {
       if (!workingDir) {
         setIssueShortcuts([]);
         setIssueShortcutPromptMap(new Map());
+        setIssueShortcutMetaMap(new Map());
         return;
       }
       try {
@@ -275,20 +291,42 @@ export function usePanelChrome({
         if (isStale && isStale()) return;
         setIssueShortcuts(list);
         if (list.length > 0 && onFetchPrompts) {
-          const prompts = await onFetchPrompts(workingDir);
+          // Two resolutions in parallel:
+          //  * gated  — onFetchPrompts(workingDir, data) runs the full
+          //    enabledWhen evaluation against THIS issue; a prompt in this list
+          //    is enabled for the open issue.
+          //  * ungated — the raw workspace-prompts list (no enabled_context
+          //    gate) tells us the prompt EXISTS and carries its real icon, so a
+          //    gated-off shortcut can render greyed with its true icon instead
+          //    of the generic lightning "not found" fallback.
+          const [prompts, allPrompts] = await Promise.all([
+            onFetchPrompts(workingDir, data),
+            getSdkClient()
+              .prompts.list({ working_dir: workingDir })
+              .then((d) => d?.prompts || [])
+              .catch(() => []),
+          ]);
           if (isStale && isStale()) return;
           const map = new Map((prompts || []).map((p) => [p.name, p]));
+          const metaMap = new Map((allPrompts || []).map((p) => [p.name, p]));
           setIssueShortcutPromptMap(map);
+          setIssueShortcutMetaMap(metaMap);
         } else {
           setIssueShortcutPromptMap(new Map());
+          setIssueShortcutMetaMap(new Map());
         }
       } catch (_err) {
         if (isStale && isStale()) return;
         setIssueShortcuts([]);
         setIssueShortcutPromptMap(new Map());
+        setIssueShortcutMetaMap(new Map());
       }
     },
-    [workingDir, onFetchPrompts],
+    // `data` is intentionally omitted in favour of `issueKey` (a stable
+    // primitive over the item.*-gated fields), so the resolver only re-runs
+    // when a field that actually affects the server's enabledWhen evaluation
+    // changes — not on every parent re-render that recreates the object.
+    [workingDir, onFetchPrompts, issueKey],
   );
 
   // Initial load (and reload on folder switch), with stale-fetch cancellation.
@@ -345,12 +383,41 @@ export function usePanelChrome({
   // buttons (separated), a spacer, then fullscreen at the right edge.
   const headerToolbarItems = useMemo(() => {
     if (!data) return [];
-    // Per-folder shortcut buttons (beadsIssue section). A missing linked prompt
-    // is shown greyed/disabled, mirroring the list toolbar's tasksList shortcuts.
+    // Per-folder shortcut buttons (beadsIssue section). Three states:
+    //  1. enabled — prompt passed its enabledWhen gate for the open issue:
+    //     rendered with its real icon, clickable.
+    //  2. gated off — prompt EXISTS in the workspace but its enabledWhen gate
+    //     excludes it for this issue: rendered with its real icon, greyed and
+    //     non-clickable (a tooltip explains it does not apply here). This avoids
+    //     the misleading generic-lightning "not found" look for a prompt that is
+    //     simply not applicable to the current issue (user report).
+    //  3. missing — no prompt of that name exists at all (misconfigured
+    //     shortcut): the lightning fallback + "not found" tooltip is kept.
     const issueShortcutItems = issueShortcuts.map((sc, i) => {
-      const prompt = issueShortcutPromptMap.get(sc.prompt);
-      const found = !!prompt;
-      const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+      const enabledPrompt = issueShortcutPromptMap.get(sc.prompt);
+      const metaPrompt = issueShortcutMetaMap.get(sc.prompt);
+      const enabled = !!enabledPrompt;
+      const exists = enabled || !!metaPrompt;
+      // Prefer an explicit shortcut icon, then the resolved prompt's own icon
+      // (from either the gated or ungated resolution). Only a truly-missing
+      // prompt (neither map) falls back to the default lightning icon.
+      const iconName =
+        sc.icon ||
+        (enabledPrompt && enabledPrompt.icon) ||
+        (metaPrompt && metaPrompt.icon);
+      const Icon = exists
+        ? getPromptIcon(iconName) || LightningIcon
+        : getPromptIconOrDefault(sc.icon);
+      const tip = enabled
+        ? sc.prompt
+        : exists
+          ? `${sc.prompt} — not available for this issue`
+          : `Prompt "${sc.prompt}" not found`;
+      const ariaLabel = enabled
+        ? `Run "${sc.prompt}"`
+        : exists
+          ? `"${sc.prompt}" not available for this issue`
+          : `Prompt "${sc.prompt}" not found`;
       return {
         kind: "button",
         testId: `beads-issue-shortcut-btn-${i}`,
@@ -358,12 +425,11 @@ export function usePanelChrome({
         // hidden (see .mitto-shortcut-extra in styles-v2.css) to avoid overflow.
         className: i > 0 ? "mitto-shortcut-extra" : undefined,
         icon: html`<${Icon} className="w-4 h-4" />`,
-        tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
-        ariaLabel: found
-          ? `Run "${sc.prompt}"`
-          : `Prompt "${sc.prompt}" not found`,
-        disabled: !found,
-        onClick: () => found && onRunPrompt && onRunPrompt(prompt, data),
+        tip,
+        ariaLabel,
+        disabled: !enabled,
+        onClick: () =>
+          enabled && onRunPrompt && onRunPrompt(enabledPrompt, data),
       };
     });
     return [
@@ -444,6 +510,7 @@ export function usePanelChrome({
     onRunPrompt,
     issueShortcuts,
     issueShortcutPromptMap,
+    issueShortcutMetaMap,
     handleClose,
   ]);
 
