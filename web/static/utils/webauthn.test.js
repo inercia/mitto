@@ -8,6 +8,7 @@ import { describe, test, expect } from "./testing/testGlobals.js";
 import {
   isWebAuthnSupported,
   supportsConditionalCreate,
+  isConditionalMediationAvailable,
   base64urlToBuffer,
   bufferToBase64url,
   decodeCreationOptions,
@@ -118,6 +119,51 @@ describe("supportsConditionalCreate (mitto-4mz.7)", () => {
       throw new Error("boom");
     };
     await expect(supportsConditionalCreate()).resolves.toBe(false);
+    restore();
+  });
+});
+
+describe("isConditionalMediationAvailable (mitto-ykm)", () => {
+  test("false when isWebAuthnSupported() is false (no PublicKeyCredential)", async () => {
+    const orig = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", {
+      value: true,
+      configurable: true,
+    });
+    delete window.PublicKeyCredential;
+    await expect(isConditionalMediationAvailable()).resolves.toBe(false);
+    if (orig) Object.defineProperty(window, "isSecureContext", orig);
+  });
+
+  test("false when PublicKeyCredential.isConditionalMediationAvailable is not a function", async () => {
+    const restore = stubWebAuthnSupported();
+    // window.PublicKeyCredential is a bare constructor with no static.
+    await expect(isConditionalMediationAvailable()).resolves.toBe(false);
+    restore();
+  });
+
+  test("true when isConditionalMediationAvailable() resolves true", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.isConditionalMediationAvailable = async () =>
+      true;
+    await expect(isConditionalMediationAvailable()).resolves.toBe(true);
+    restore();
+  });
+
+  test("false when isConditionalMediationAvailable() resolves false", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.isConditionalMediationAvailable = async () =>
+      false;
+    await expect(isConditionalMediationAvailable()).resolves.toBe(false);
+    restore();
+  });
+
+  test("false (swallowed) when isConditionalMediationAvailable() rejects", async () => {
+    const restore = stubWebAuthnSupported();
+    window.PublicKeyCredential.isConditionalMediationAvailable = async () => {
+      throw new Error("boom");
+    };
+    await expect(isConditionalMediationAvailable()).resolves.toBe(false);
     restore();
   });
 });

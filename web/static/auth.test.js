@@ -60,6 +60,16 @@ function stubConditionalCreateSupported() {
   return restoreSupported;
 }
 
+/** Makes isConditionalMediationAvailable() (utils/webauthn.js) resolve
+ *  true: a secure context + PublicKeyCredential.isConditionalMediationAvailable()
+ *  resolving true. Builds on stubWebAuthnSupported(). */
+function stubConditionalMediationAvailable() {
+  const restoreSupported = stubWebAuthnSupported();
+  window.PublicKeyCredential.isConditionalMediationAvailable = async () =>
+    true;
+  return restoreSupported;
+}
+
 async function flush() {
   // 50 microtask ticks: the passkey auto-enroll chain (mitto-4mz.7) chains
   // considerably more sequential awaits than a plain login (supportsConditional
@@ -396,6 +406,222 @@ describe("auth.js — pre-auth login page (mitto-7gta.19.1)", () => {
       expect(errorDiv.textContent).toBe(
         "Too many attempts. Please try again later.",
       );
+    });
+  });
+
+  describe("passkey conditional mediation autofill (mitto-ykm)", () => {
+    let restoreConditionalMediation;
+
+    afterEach(() => {
+      if (restoreConditionalMediation) restoreConditionalMediation();
+      restoreConditionalMediation = undefined;
+    });
+
+    test("conditional mediation available: starts a background get() with mediation:'conditional' and a signal, posts the assertion, and redirects to / without ever revealing passkeyBtn", async () => {
+      restoreConditionalMediation = stubConditionalMediationAvailable();
+      const assertion = {
+        id: "AQID",
+        rawId: new Uint8Array([1, 2, 3]).buffer,
+        type: "public-key",
+        response: {
+          clientDataJSON: new Uint8Array([4]).buffer,
+          authenticatorData: new Uint8Array([5]).buffer,
+          signature: new Uint8Array([6]).buffer,
+          userHandle: null,
+        },
+      };
+      const getMock = jest.fn(async () => assertion);
+      Object.defineProperty(navigator, "credentials", {
+        value: { get: getMock },
+        configurable: true,
+      });
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        if (u.includes("/api/webauthn/login/finish"))
+          return fakeResponse({ body: { success: true } });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      expect(getMock).toHaveBeenCalledTimes(1);
+      const callArgs = getMock.mock.calls[0][0];
+      expect(callArgs.mediation).toBe("conditional");
+      expect(callArgs.signal).toBeInstanceOf(AbortSignal);
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      // The explicit button is the degradation fallback only; it must never
+      // be revealed when the browser offers conditional mediation.
+      expect(document.getElementById("passkeyBtn").style.display).toBe(
+        "none",
+      );
+    });
+
+    test("conditional mediation unavailable: falls back to revealing #passkeyBtn, no background get() is attempted", async () => {
+      // stubWebAuthnSupported() alone leaves PublicKeyCredential without an
+      // isConditionalMediationAvailable static, so isConditionalMediationAvailable()
+      // resolves false and the degradation fallback (the explicit button) applies.
+      restoreConditionalMediation = stubWebAuthnSupported();
+      const getMock = jest.fn(async () => {
+        throw new Error("background get() should not be called");
+      });
+      Object.defineProperty(navigator, "credentials", {
+        value: { get: getMock },
+        configurable: true,
+      });
+      globalThis.fetch = async () =>
+        fakeResponse({ body: { simple: true, passkey: true } });
+      await loadAuthPage();
+      expect(getMock).not.toHaveBeenCalled();
+      expect(document.getElementById("passkeyBtn").style.display).toBe("");
+    });
+
+    test("AbortError/NotAllowedError from the background get() is swallowed silently (no error shown)", async () => {
+      restoreConditionalMediation = stubConditionalMediationAvailable();
+      Object.defineProperty(navigator, "credentials", {
+        value: {
+          get: jest.fn(async () => {
+            throw Object.assign(new Error("dismissed"), {
+              name: "NotAllowedError",
+            });
+          }),
+        },
+        configurable: true,
+      });
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      expect(document.getElementById("error").classList.contains("hidden")).toBe(
+        true,
+      );
+      // The password form must remain fully usable, untouched by the failed
+      // background ceremony.
+      expect(document.getElementById("submitBtn").disabled).toBe(false);
+    });
+
+    test("a 429 from the background get()'s login/finish surfaces a rate-limited message without disrupting the password form", async () => {
+      restoreConditionalMediation = stubConditionalMediationAvailable();
+      Object.defineProperty(navigator, "credentials", {
+        value: {
+          get: jest.fn(async () => ({
+            id: "AQID",
+            rawId: new Uint8Array([1]).buffer,
+            type: "public-key",
+            response: {
+              clientDataJSON: new Uint8Array([1]).buffer,
+              authenticatorData: new Uint8Array([1]).buffer,
+              signature: new Uint8Array([1]).buffer,
+              userHandle: null,
+            },
+          })),
+        },
+        configurable: true,
+      });
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        if (u.includes("/api/webauthn/login/finish"))
+          return fakeResponse({
+            status: 429,
+            body: { error: "Too many attempts. Please try again later." },
+          });
+        throw new Error("unexpected url " + u);
+      };
+      await loadAuthPage();
+      const errorDiv = document.getElementById("error");
+      expect(errorDiv.classList.contains("hidden")).toBe(false);
+      expect(errorDiv.textContent).toBe(
+        "Too many attempts. Please try again later.",
+      );
+      expect(document.getElementById("submitBtn").disabled).toBe(false);
+    });
+
+    test("abort-before-create ordering: a password login aborts the pending conditional get() before starting its own conditional create()", async () => {
+      restoreConditionalMediation = stubConditionalMediationAvailable();
+      // Also arm Conditional Create so attemptConditionalCreate() proceeds
+      // to its own create() ceremony after the password login succeeds.
+      window.PublicKeyCredential.getClientCapabilities = async () => ({
+        conditionalCreate: true,
+      });
+      document.cookie = "mitto_csrf=csrf-test-token; path=/";
+
+      const order = [];
+      const fakeCredential = {
+        id: "AQID",
+        rawId: new Uint8Array([1, 2, 3]).buffer,
+        type: "public-key",
+        response: {
+          clientDataJSON: new Uint8Array([4]).buffer,
+          attestationObject: new Uint8Array([5]).buffer,
+        },
+      };
+      Object.defineProperty(navigator, "credentials", {
+        value: {
+          get: jest.fn(
+            (opts) =>
+              new Promise((_resolve, reject) => {
+                order.push("get-called");
+                opts.signal.addEventListener("abort", () => {
+                  order.push("get-aborted");
+                  reject(
+                    Object.assign(new Error("aborted"), {
+                      name: "AbortError",
+                    }),
+                  );
+                });
+              }),
+          ),
+          create: jest.fn(async () => {
+            order.push("create-called");
+            return fakeCredential;
+          }),
+        },
+        configurable: true,
+      });
+
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes("/api/auth-info"))
+          return fakeResponse({ body: { simple: true, passkey: true } });
+        if (u.includes("/api/login"))
+          return fakeResponse({ status: 200, body: { success: true } });
+        if (u.includes("/api/webauthn/login/begin"))
+          return fakeResponse({ body: { publicKey: { challenge: "AQID" } } });
+        if (u.includes("/api/webauthn/register/begin"))
+          return fakeResponse({
+            body: {
+              publicKey: { challenge: "AQID", user: { id: "AQID" } },
+            },
+          });
+        if (u.includes("/api/webauthn/register/finish"))
+          return fakeResponse({ status: 200, body: { success: true } });
+        throw new Error("unexpected url " + u);
+      };
+
+      await loadAuthPage();
+      // The background get() must be pending (started on page load) before
+      // the password login runs.
+      expect(order).toEqual(["get-called"]);
+
+      submitLogin("alice", "hunter2");
+      await flush();
+
+      expect(order).toEqual(["get-called", "get-aborted", "create-called"]);
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+
+      sessionStorage.removeItem("mitto_passkey_autoenrolled");
+      document.cookie =
+        "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     });
   });
 
