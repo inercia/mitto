@@ -140,6 +140,46 @@ describe("auth.js — pre-auth login page (mitto-7gta.19.1)", () => {
     });
   });
 
+  // mitto-4mz: on the loopback/internal listener (native macOS app) the
+  // backend bypasses auth, so the login page must never be shown. The server
+  // injects window.mittoIsExternal === false there; auth.js redirects straight
+  // back to the app instead of rendering the form. This unsticks a WKWebView
+  // that restored a stale /auth.html URL across relaunch. External access
+  // (true) and the plain browser/test default (undefined) still show the form.
+  describe("loopback/native-app guard (window.mittoIsExternal === false)", () => {
+    afterEach(() => {
+      delete window.mittoIsExternal;
+    });
+
+    test("mittoIsExternal === false: redirects to / and never fetches auth-info", async () => {
+      let fetched = false;
+      globalThis.fetch = async () => {
+        fetched = true;
+        return fakeResponse({ body: { simple: true } });
+      };
+      window.mittoIsExternal = false;
+      await loadAuthPage();
+      expect(window.location.href).toBe(new URL("/", originalHref).href);
+      expect(fetched).toBe(false);
+    });
+
+    test("mittoIsExternal === false honors the API prefix", async () => {
+      globalThis.fetch = async () => fakeResponse({ body: { simple: true } });
+      window.mittoApiPrefix = "/mitto";
+      window.mittoIsExternal = false;
+      await loadAuthPage();
+      expect(window.location.href).toBe(new URL("/mitto/", originalHref).href);
+    });
+
+    test("mittoIsExternal === true (external access): still renders the login form", async () => {
+      globalThis.fetch = async () =>
+        fakeResponse({ body: { simple: true, cloudflare: false } });
+      window.mittoIsExternal = true;
+      await loadAuthPage();
+      expect(document.getElementById("loginForm").style.display).not.toBe("none");
+    });
+  });
+
   describe("login submit", () => {
     function mockFetch({ loginStatus = 200, loginBody = { success: true } } = {}) {
       globalThis.fetch = async (url) => {

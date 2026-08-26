@@ -17,8 +17,13 @@
     <link rel="stylesheet" href="./tailwind.css" />
 
     <!-- API prefix for all API calls -->
+    <!-- mittoIsExternal (server-injected): false on the loopback/internal
+         listener (native macOS app), true on the external listener. auth.js
+         reads it to skip the login page entirely on loopback, where the
+         backend bypasses auth (see auth.js initAuthPage). -->
     <script nonce="{{CSP_NONCE}}">
       window.mittoApiPrefix = "{{API_PREFIX}}";
+      window.mittoIsExternal = {{IS_EXTERNAL}};
     </script>
     <style>
       /* Dark theme CSS variables - matches index.html */

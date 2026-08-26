@@ -90,6 +90,20 @@ async function attemptConditionalCreate(client) {
 }
 
 function initAuthPage() {
+  // Loopback/native-app guard (mitto-4mz): the backend bypasses auth entirely
+  // for the internal 127.0.0.1 listener, so the login page must never be shown
+  // there. WKWebView persists and restores its last-navigated URL across
+  // relaunches, so once the app ever landed on /auth.html (e.g. from an old
+  // pre-fix redirect) it would reopen straight to this login form and sit
+  // there forever ("nothing happens"). The server injects
+  // window.mittoIsExternal === false on the loopback page (true on the
+  // external listener); an explicit false means "local app, auth bypassed" —
+  // redirect back to the app instead of rendering the form.
+  if (window.mittoIsExternal === false) {
+    window.location.replace(getApiPrefix() + "/");
+    return;
+  }
+
   const form = document.getElementById("loginForm");
   const errorDiv = document.getElementById("error");
   const submitBtn = document.getElementById("submitBtn");
