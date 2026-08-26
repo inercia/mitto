@@ -237,13 +237,23 @@ func (s *FilePendingDispatchStore) append(entry PendingDispatchEntry, claimed bo
 // FlushPendingDispatches, so its file would linger on disk indefinitely
 // despite the age cap.
 func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatchEntry, error) {
+	fresh, _, err := s.LoadWithExpired(workspaceUUID)
+	return fresh, err
+}
+
+// LoadWithExpired behaves exactly like Load but also returns the entries
+// pruned by the pendingDispatchMaxAge cap, so a caller that has no other way
+// to observe the drop (mitto-f81: SweepPendingDispatchDir's non-dispatchable
+// branch, which never calls FlushPendingDispatches/Claim for an orphaned
+// workspace) can audit-log it instead of the drop being completely silent.
+func (s *FilePendingDispatchStore) LoadWithExpired(workspaceUUID string) (fresh, expired []PendingDispatchEntry, err error) {
 	if workspaceUUID == "" {
-		return nil, fmt.Errorf("pending dispatch load missing workspace UUID")
+		return nil, nil, fmt.Errorf("pending dispatch load missing workspace UUID")
 	}
 
 	path, err := s.spoolPath(workspaceUUID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mu := pendingDispatchLockFor(path)
 	mu.Lock()
@@ -251,16 +261,16 @@ func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatch
 
 	entries, IDsAdded, readErr := s.readLocked(path)
 	if readErr != nil {
-		return nil, readErr
+		return nil, nil, readErr
 	}
-	fresh, expired := partitionPendingDispatchEntries(entries)
+	fresh, expired = partitionPendingDispatchEntries(entries)
 	// Persist the pruned set best-effort: a write failure only means the
 	// stale entries are re-pruned on the next Load, never that a fresh
 	// entry is lost, so the caller still gets the fresh set.
 	if IDsAdded || len(expired) > 0 {
 		_ = s.writeLocked(path, fresh)
 	}
-	return fresh, nil
+	return fresh, expired, nil
 }
 
 // Claim implements PendingDispatchStore. Claimed entries remain on disk until
@@ -572,9 +582,28 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 		// Not currently dispatchable — most commonly an orphaned workspace
 		// that will never become dispatchable again. Do not attempt a flush;
 		// just let Load's age-cap enforcement prune expired entries and
-		// remove the spool file once nothing fresh remains.
-		if _, loadErr := ageStore.Load(workspaceUUID); loadErr != nil {
+		// remove the spool file once nothing fresh remains. Unlike
+		// FlushPendingDispatches' own age-cap enforcement (Claim, whose
+		// Expired field is already logged at mitto-3421's original site),
+		// this path never previously surfaced what it dropped — an orphaned
+		// workspace's close-phase memory batch (extract-memories-on-close,
+		// memorize-preferences, etc.) aged out with zero audit trail
+		// (mitto-f81). Use LoadWithExpired so that gap is closed here too.
+		_, expired, loadErr := ageStore.LoadWithExpired(workspaceUUID)
+		if loadErr != nil {
 			return swept, fmt.Errorf("failed to age-prune pending dispatch spool for workspace %s: %w", workspaceUUID, loadErr)
+		}
+		if m != nil && m.logger != nil {
+			for _, entry := range expired {
+				m.logger.Warn("pending-dispatch sweep: dropping expired entry for non-dispatchable workspace",
+					"workspace_uuid", workspaceUUID,
+					"dispatch_id", entry.ID,
+					"name", entry.Name,
+					"saved_at", entry.SavedAt,
+					"age", time.Since(entry.SavedAt),
+					"max_age", pendingDispatchMaxAge,
+				)
+			}
 		}
 	}
 
