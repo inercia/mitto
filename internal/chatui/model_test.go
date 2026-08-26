@@ -386,6 +386,45 @@ func TestModel_PromptReceivedThenComplete_TogglesInFlight(t *testing.T) {
 	}
 }
 
+// --- user_prompt must set inFlight (mitto-plm) -------------------------------
+//
+// The backend's real online turn-start signal is user_prompt, carrying
+// is_prompting:true (internal/web/session_ws.go:2786, "Signal frontend to
+// show Stop button immediately"). prompt_received is only emitted on the
+// offline enqueue-during-coldstart branch (session_ws.go:982) and is never
+// sent on a normal online turn. handleEvent must therefore treat
+// EventUserPrompt as a turn-start signal too, mirroring the web frontend's
+// is_prompting contract — today it only mutates the transcript and leaves
+// inFlight untouched, so the "◆ working" cue never lights on a real turn.
+
+func TestModel_UserPrompt_OtherClient_SetsInFlight(t *testing.T) {
+	m := newTestModel(t, true)
+
+	m.Update(eventMsg{event: api.Event{Kind: api.EventUserPrompt, SenderID: "other", Message: "from the web UI"}})
+
+	if !m.inFlight {
+		t.Error("mitto-plm: user_prompt from another client should set inFlight = true")
+	}
+	if got := m.status.Render(); !strings.Contains(got, "◆ working") {
+		t.Errorf("mitto-plm: status after user_prompt = %q, want visible working cue", got)
+	}
+}
+
+func TestModel_UserPrompt_OwnEcho_StillSetsInFlight(t *testing.T) {
+	m := newTestModel(t, true)
+	m.clientIDFn = func() string { return "me" }
+
+	// Our own echo is still dropped from the transcript (already appended
+	// optimistically by handleKey), but the turn has genuinely started, so
+	// inFlight must still light — sending a prompt from this CLI must show
+	// the working indicator for the whole turn.
+	m.Update(eventMsg{event: api.Event{Kind: api.EventUserPrompt, SenderID: "me", Message: "hello agent"}})
+
+	if !m.inFlight {
+		t.Error("mitto-plm: our own user_prompt echo should still set inFlight = true (turn started)")
+	}
+}
+
 // --- acp_stopped / acp_started status transitions ----------------------------
 
 func TestModel_ACPStoppedThenStarted_TogglesConnectionStatus(t *testing.T) {

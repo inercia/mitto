@@ -441,6 +441,14 @@ func (m *Model) handleEvent(ev api.Event) (tea.Model, tea.Cmd) {
 		m.inFlight = false
 		m.status.SetInFlight(false)
 	case api.EventUserPrompt:
+		// user_prompt is the real online turn-start signal (mitto-plm): the
+		// backend broadcasts it with is_prompting:true on every normal turn
+		// (internal/web/session_ws.go:2786), while prompt_received is only
+		// sent on the offline enqueue-during-coldstart branch. Set inFlight
+		// here, before the own-echo dedup below, so both our own prompts and
+		// prompts from other clients light the "◆ working" cue.
+		m.inFlight = true
+		m.status.SetInFlight(true)
 		// The server broadcasts user_prompt to every observer including the
 		// sender (internal/web/session_ws.go OnUserPrompt: "Always deliver
 		// user_prompt to the client"), so our own prompts echo back after
