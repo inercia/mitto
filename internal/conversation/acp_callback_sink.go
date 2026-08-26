@@ -249,6 +249,15 @@ func (acpCallbackSink) onToolCall(d acpCallbackDeps, seq int64, id, title, statu
 	})
 }
 
+// mittoSelfIDInitSentinel is the placeholder self_id agents are told to use
+// (via the "[Session Context] ... your self_id" boilerplate) before they have
+// resolved their real session ID. It is not a usable correlation key: unlike
+// a per-conversation stable ID it is shared across every concurrent session
+// that hasn't yet substituted it, so treating it literally lets
+// RegisterPendingRequest's requestID != sessionID guard reject it forever
+// (mitto-220) instead of falling back to the stable session ID.
+const mittoSelfIDInitSentinel = "init"
+
 // onMittoToolCall is called when any mitto_* tool call is detected.
 // It registers a correlation ID (requestID) with the global MCP server to associate
 // MCP tool requests with this ACP session. This enables session-aware tool behavior
@@ -258,10 +267,11 @@ func (acpCallbackSink) onMittoToolCall(d acpCallbackDeps, requestID string) {
 	if d.cbIsClosed() {
 		return
 	}
-	if requestID == "" {
-		// Some agents omit RawInput from ACP tool_call events. The conversation's
-		// stable ID is the only safe legacy correlation key; shared placeholders
-		// such as "init" can cross-wire concurrent callers.
+	if requestID == "" || requestID == mittoSelfIDInitSentinel {
+		// Some agents omit RawInput from ACP tool_call events, and others send
+		// the literal "init" sentinel before resolving their real self_id. The
+		// conversation's stable ID is the only safe legacy correlation key;
+		// shared placeholders such as "init" can cross-wire concurrent callers.
 		requestID = d.cbSessionID()
 	}
 

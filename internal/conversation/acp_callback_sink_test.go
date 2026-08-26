@@ -337,6 +337,32 @@ func TestCallbackSink_MittoToolCall_EmptyKeyUsesSessionID(t *testing.T) {
 	}
 }
 
+// TestCallbackSink_MittoToolCall_InitSentinelUsesSessionID reproduces mitto-220:
+// when an agent's mitto_* tool_call RawInput carries the literal self_id="init"
+// sentinel (sent before the agent has resolved its real session ID — e.g. from
+// the "[Session Context] ... your self_id" boilerplate), extractMittoSelfID
+// returns the non-empty string "init", so onMittoToolCall's `requestID == ""`
+// fallback (which correctly substitutes the stable session ID) is skipped and
+// the ambiguous "init" key is registered verbatim instead.
+//
+// Downstream, mcpserver.RegisterPendingRequest rejects requestID != sessionID
+// as reason=ambiguous_self_id (server.go), so the legacy ACP-observed
+// correlation entry is never created and every mitto_* call on that
+// conversation fails permanently (associated=0 for the session's lifetime).
+//
+// Just like the empty-RawInput case above, the "init" sentinel must be treated
+// as "no usable self-reported id" and replaced with the conversation's own
+// stable session ID. This test currently FAILS: onMittoToolCall forwards
+// "init" unchanged instead of substituting "conversation-one".
+func TestCallbackSink_MittoToolCall_InitSentinelUsesSessionID(t *testing.T) {
+	s := acpCallbackSink{}
+	d := &fakeCallbackDeps{mcpAvailable: true, sessionID: "conversation-one"}
+	s.onMittoToolCall(d, "init")
+	if !reflect.DeepEqual(d.mcpRequests, []string{"conversation-one"}) {
+		t.Fatalf("mitto-220: \"init\" sentinel correlation key was not replaced with session ID: %v", d.mcpRequests)
+	}
+}
+
 func TestCallbackSink_AvailableCommands_SortsAndStores(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{}
