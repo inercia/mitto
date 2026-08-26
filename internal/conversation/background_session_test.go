@@ -893,11 +893,114 @@ func TestStartupConstraintFailureRecoversAfterSharedProcessReplacement(t *testin
 		loadCalls := len(shared.loadSessionCalls)
 		shared.mu.Unlock()
 		if loadCalls > 0 && bs.startupConfigConstraintsReady() {
+			// Wait for the recovery goroutine to fully exit (its deferred
+			// startupConstraintRecovery.Store(false)) before returning, so
+			// it can no longer read the package-level modelSwitchWarmRetryDelay
+			// var this test mutates and restores — avoids a data race against
+			// a concurrent run of this test (or a sibling test) under `go test
+			// -count` (mitto-3ml).
+			for bs.startupConstraintRecovery.Load() {
+				time.Sleep(time.Millisecond)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("model-gated session did not rebind and retry after shared-process replacement")
+}
+
+// TestStartupConstraintRecovery_StuckWhenProcessStaysAliveButSaturated is the
+// mitto-3ml reproduction: beginStartupConstraintRecovery /
+// recoverStartupConstraintAfterRestart (bgsession_callbacks.go) only re-drives
+// the startup model constraint (and therefore releases the queue-gate via
+// TryProcessQueuedMessage) when the shared ACP process is REPLACED — it
+// blocks on sharedProcess.ProcessDone(), a channel that is only closed when
+// the OS process exits.
+//
+// During the boot resume herd (mitto-3ml), a losing session can hit set_model
+// saturation while the shared process stays ALIVE (merely rate-limited by the
+// serialization-slot saturation guard, never restarted). In that case
+// ProcessDone() never fires, so the recovery goroutine blocks forever and the
+// session's queued prompt is never released — even once the underlying
+// saturation condition would allow a retry to succeed.
+//
+// This test simulates exactly that: SetSessionModel fails twice (enough to
+// exhaust applyConfigConstraints' own single warm retry) with a retryable
+// error, then would SUCCEED on any further call (as it would once the
+// saturation cooldown elapses) — but the shared process is never replaced
+// (processDone is never closed). It currently FAILS: startupConfigConstraintsReady()
+// never becomes true within the bounded window because
+// recoverStartupConstraintAfterRestart has no path to retry set_model without
+// a process replacement.
+func TestStartupConstraintRecovery_StuckWhenProcessStaysAliveButSaturated(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+	origLiveRetry := startupConstraintLiveRetryInterval
+	startupConstraintLiveRetryInterval = 0
+	defer func() { startupConstraintLiveRetryInterval = origLiveRetry }()
+
+	shared := newFakeSharedProcess()
+	// Exhaust applyConfigConstraints' own single warm retry with two
+	// retryable failures; any SUBSEQUENT SetSessionModel call would succeed
+	// (fakeSharedProcess returns nil once setModelErr is drained) — modeling
+	// a saturation window that has since cleared.
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		acpID:         "acp-session-alive",
+		sharedProcess: shared,
+		workingDir:    "/tmp/test",
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+		configOptions: []SessionConfigOption{{
+			ID: ConfigOptionCategoryModel, Category: ConfigOptionCategoryModel, CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{{Value: "m-1", Name: "Model 1"}, {Value: "m-2", Name: "Model 2"}},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+		observers: make(map[SessionObserver]struct{}),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+
+	// Simulate the shared process's saturation clearing WITHOUT the process
+	// ever being replaced: processDone stays open (process is alive), and
+	// further SetSessionModel calls would now succeed (setModelErr is
+	// drained). Give the recovery goroutine a generous bounded window to
+	// notice and retry.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if bs.startupConfigConstraintsReady() {
+			// Wait for the recovery goroutine to fully exit (its deferred
+			// startupConstraintRecovery.Store(false)) before returning, so
+			// it can no longer read the package-level retry-interval vars
+			// this test mutates and restores — avoids a data race against
+			// a concurrent run of this test under `go test -count`.
+			for bs.startupConstraintRecovery.Load() {
+				time.Sleep(time.Millisecond)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("mitto-3ml: startup model constraint stayed stuck forever on a live-but-saturated shared process — " +
+		"recoverStartupConstraintAfterRestart only retries after ProcessDone() fires (process replacement), " +
+		"so a herd loser whose process merely recovered from saturation (without being restarted) never gets " +
+		"its queued turn released")
 }
 
 // TestStartupConstraintRecovery_RetriesTransientRebindFailure reproduces the
@@ -999,6 +1102,15 @@ func TestStartupConstraintRecovery_RetriesTransientRebindFailure(t *testing.T) {
 		loadCalls := len(shared.loadSessionCalls)
 		shared.mu.Unlock()
 		if loadCalls > 1 && bs.startupConfigConstraintsReady() {
+			// Wait for the recovery goroutine to fully exit (its deferred
+			// startupConstraintRecovery.Store(false)) before returning, so
+			// it can no longer read the package-level modelSwitchWarmRetryDelay
+			// var this test mutates and restores — avoids a data race against
+			// a concurrent run of this test (or a sibling test) under `go test
+			// -count` (mitto-3ml).
+			for bs.startupConstraintRecovery.Load() {
+				time.Sleep(time.Millisecond)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

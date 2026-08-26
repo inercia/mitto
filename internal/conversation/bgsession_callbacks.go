@@ -430,8 +430,19 @@ func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, gen
 		bs.startupConstraintRecovery.Store(false)
 		return
 	}
+	// Capture startupConstraintLiveRetryInterval ONCE here, synchronously,
+	// rather than re-reading the package var on every loop iteration inside
+	// recoverStartupConstraintAfterRestart. This call runs-before the
+	// enclosing cbApplyConfigConstraintsAsync goroutine's
+	// startupConstraintWG.Done(), which happens-before any caller's
+	// waitForStartupConfigConstraints() returns — so the read is properly
+	// synchronized with a test's setup mutation. Without this, a recovery
+	// goroutine that outlives its originating test (e.g. one whose
+	// failedProcessDone never closes) could re-read the var much later and
+	// race against an unrelated later test's own mutation of it (mitto-3ml).
+	retryInterval := startupConstraintLiveRetryInterval
 	bs.signalResponseStateChanged()
-	go bs.recoverStartupConstraintAfterRestart(generation, failedProcessDone)
+	go bs.recoverStartupConstraintAfterRestart(generation, failedProcessDone, retryInterval)
 }
 
 // recoverStartupConstraintAfterRestart keeps a model-gated queued turn alive
@@ -467,44 +478,82 @@ func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, gen
 // cap) or the session is closed. restartACPProcessFromGeneration already
 // applies its own escalating backoff via procCtl.recentRestartCount(), so
 // this does not hot-loop against a still-unhealthy process.
-func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}) {
+//
+// Live-but-saturated retry (mitto-3ml): failedProcessDone only ever fires
+// when the OS process is REPLACED. A resume-storm herd loser can instead hit
+// set_model saturation on a shared process that stays alive (the saturation
+// guard merely rate-limits it, never restarts it) — in that case
+// failedProcessDone never closes and, without the timer branch below, this
+// goroutine would block forever, leaving the queued turn stranded even after
+// the saturation cooldown elapses and a retry would succeed. The retryTimer
+// races a direct (no-restart) retry of the constraint against
+// failedProcessDone/ctx.Done() every startupConstraintLiveRetryInterval — a
+// cooldown window kept independent of modelSwitchWarmRetryDelay (see its
+// doc) so tests exercising the process-replacement path don't also perturb
+// this timer — so a saturation window that clears without a process
+// replacement still unblocks the queue.
+func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}, retryInterval time.Duration) {
 	defer func() {
 		bs.startupConstraintRecovery.Store(false)
 		bs.signalResponseStateChanged()
 	}()
 
 	for {
+		retryTimer := time.NewTimer(retryInterval)
 		select {
 		case <-failedProcessDone:
-		case <-bs.ctx.Done():
-			return
-		}
+			retryTimer.Stop()
 
-		if err := bs.restartACPProcessFromGeneration(mittoAcp.RestartReasonResumeFailure, failedGeneration); err != nil {
-			if bs.logger != nil {
-				bs.logger.Warn("Startup model recovery failed to rebind after ACP replacement",
-					"session_id", bs.persistedID, "generation", failedGeneration, "error", err)
+			if err := bs.restartACPProcessFromGeneration(mittoAcp.RestartReasonResumeFailure, failedGeneration); err != nil {
+				if bs.logger != nil {
+					bs.logger.Warn("Startup model recovery failed to rebind after ACP replacement",
+						"session_id", bs.persistedID, "generation", failedGeneration, "error", err)
+				}
+				if bs.ctx.Err() != nil || !bs.canRestartACP() {
+					return
+				}
+				// Retry against the current generation: failedProcessDone is already
+				// closed (permanently) from the wait above, so looping back to the
+				// top select re-enters immediately and the next attempt is paced
+				// solely by restartACPProcessFromGeneration's own backoff.
+				failedGeneration = bs.sharedProcess.Generation()
+				continue
 			}
-			if bs.ctx.Err() != nil || !bs.canRestartACP() {
+
+			bs.waitForStartupConfigConstraints()
+			if bs.startupConfigConstraintsReady() {
+				bs.TryProcessQueuedMessage()
 				return
 			}
-			// Retry against the current generation: failedProcessDone is already
-			// closed (permanently) from the wait above, so looping back to the
-			// top select re-enters immediately and the next attempt is paced
-			// solely by restartACPProcessFromGeneration's own backoff.
+
 			failedGeneration = bs.sharedProcess.Generation()
-			continue
-		}
+			failedProcessDone = bs.sharedProcess.ProcessDone()
+			if failedProcessDone == nil {
+				return
+			}
 
-		bs.waitForStartupConfigConstraints()
-		if bs.startupConfigConstraintsReady() {
-			bs.TryProcessQueuedMessage()
-			return
-		}
+		case <-retryTimer.C:
+			// The process has NOT been replaced (failedProcessDone hasn't
+			// fired) — retry the constraint directly, without restarting, in
+			// case the shared process merely recovered from saturation on
+			// its own (mitto-3ml).
+			if err := bs.applyConfigConstraints(ConfigOptionCategoryModel); err == nil {
+				bs.startupConstraintMu.Lock()
+				// Only clear the sticky failure if no newer generation has
+				// since begun its own attempt (mitto-qori generation guard,
+				// mirroring finishStartupConstraintAttempt).
+				if failedGeneration == bs.startupConstraintGen {
+					bs.startupConstraintFailed.Store(false)
+				}
+				bs.startupConstraintMu.Unlock()
+				if bs.startupConfigConstraintsReady() {
+					bs.TryProcessQueuedMessage()
+					return
+				}
+			}
 
-		failedGeneration = bs.sharedProcess.Generation()
-		failedProcessDone = bs.sharedProcess.ProcessDone()
-		if failedProcessDone == nil {
+		case <-bs.ctx.Done():
+			retryTimer.Stop()
 			return
 		}
 	}
@@ -547,6 +596,14 @@ func (bs *BackgroundSession) finishStartupConstraintAttempt(generation int, gene
 // cold agent still lands the switch, but capped so the goroutine does not
 // linger indefinitely on a stuck ACP.
 var initialModelApplyBudget = 90 * time.Second
+
+// startupConstraintLiveRetryInterval paces recoverStartupConstraintAfterRestart's
+// live-but-saturated retry branch (mitto-3ml): how often it retries the
+// startup model constraint directly (no process restart) while waiting for
+// failedProcessDone. Deliberately a separate var from modelSwitchWarmRetryDelay
+// so tests can shrink one without perturbing the other's timing assertions.
+// A var so tests can shrink it.
+var startupConstraintLiveRetryInterval = 30 * time.Second
 
 // cbMaybeApplyInitialModelAsync applies the per-workspace initial-model
 // preference (WorkspaceSettings → Initial Model) as the session's persistent
