@@ -74,16 +74,81 @@ export function useScrollManagement({
 
   // Scroll to bottom handler
   // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
+  //
+  // mitto-47l flicker fix: setting isUserAtBottom(true) causes the mobile
+  // ChatInput to expand its composer, which is a flex sibling of this
+  // scrollable container. That expansion shrinks the container's clientHeight
+  // (raising maxScroll = scrollHeight - clientHeight), moving the "true bottom"
+  // further down AFTER we kicked off the scroll to the old bottom. Intermediate
+  // scroll events then report scrollTop < maxScroll - threshold → isUserAtBottom
+  // flips back to false → the composer collapses again (and no further scroll
+  // event fires to correct it). To break the feedback loop, re-clamp to the
+  // new scrollHeight while the composer expansion keeps growing maxScroll, and
+  // re-assert isUserAtBottom so the composer stays expanded (see the rePin loop
+  // below — it self-terminates as soon as the layout stops shifting so a normal
+  // smooth scroll is never converted into an instant jump).
+  const rePinFramesRef = useRef(null);
   const scrollToBottom = useCallback((smooth = true) => {
     const container = messagesContainerRef.current;
-    if (container) {
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: smooth ? "smooth" : "auto",
-      });
-      setIsUserAtBottom(true);
-      setHasNewMessages(false);
+    if (!container) return;
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: smooth ? "smooth" : "auto",
+    });
+    setIsUserAtBottom(true);
+    setHasNewMessages(false);
+
+    // Cancel any in-flight re-pin loop before starting a new one.
+    if (rePinFramesRef.current) {
+      cancelAnimationFrame(rePinFramesRef.current);
+      rePinFramesRef.current = null;
     }
+    // Re-pin each frame ONLY while the container's maxScroll is still growing,
+    // i.e. while the composer is actually mid-expansion and moving the bottom.
+    // In the common case (desktop, or already-expanded composer) maxScroll is
+    // stable from the first frame, so the loop exits after one settle-check and
+    // the smooth animation kicked off above is left to run untouched. When the
+    // composer IS expanding (mobile, was collapsed), maxScroll increases each
+    // frame; we re-clamp to the new scrollHeight and re-assert at-bottom until
+    // it stabilizes (bounded by RE_PIN_MAX_MS so a jittery layout can't loop
+    // forever). This is what breaks the flicker feedback loop without turning
+    // every normal scroll-to-bottom into an instant jump.
+    const RE_PIN_MAX_MS = 400;
+    const now = () =>
+      typeof performance !== "undefined" && performance.now
+        ? performance.now()
+        : Date.now();
+    const startTs = now();
+    let prevMaxScroll = container.scrollHeight - container.clientHeight;
+    let stableFrames = 0;
+    const rePin = () => {
+      const c = messagesContainerRef.current;
+      if (!c) {
+        rePinFramesRef.current = null;
+        return;
+      }
+      const maxScroll = c.scrollHeight - c.clientHeight;
+      const grew = maxScroll > prevMaxScroll + 0.5;
+      prevMaxScroll = maxScroll;
+      if (grew) {
+        // Layout is still shifting (composer expanding): re-clamp to the new
+        // bottom and hold at-bottom so the composer stays expanded.
+        c.scrollTop = c.scrollHeight;
+        setIsUserAtBottom(true);
+        setHasNewMessages(false);
+        stableFrames = 0;
+      } else {
+        stableFrames += 1;
+      }
+      // Stop once the layout has been stable for a couple of frames, or the
+      // safety budget elapses.
+      if (stableFrames < 2 && now() - startTs < RE_PIN_MAX_MS) {
+        rePinFramesRef.current = requestAnimationFrame(rePin);
+      } else {
+        rePinFramesRef.current = null;
+      }
+    };
+    rePinFramesRef.current = requestAnimationFrame(rePin);
   }, []);
 
   // Position the messages container at the visual bottom instantly (bypassing CSS
@@ -165,12 +230,17 @@ export function useScrollManagement({
       container.removeEventListener("scroll", onScroll);
   });
 
-  // Detach the scroll listener when the hook unmounts.
+  // Detach the scroll listener (and cancel any in-flight scroll-to-bottom
+  // re-pin loop) when the hook unmounts.
   useEffect(() => {
     return () => {
       if (detachScrollRef.current) {
         detachScrollRef.current();
         detachScrollRef.current = null;
+      }
+      if (rePinFramesRef.current) {
+        cancelAnimationFrame(rePinFramesRef.current);
+        rePinFramesRef.current = null;
       }
     };
   }, []);
