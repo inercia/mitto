@@ -1,18 +1,20 @@
 /**
  * CodeMirror 6 Lazy Loader
  *
- * The core editor, One Dark theme, and Markdown language are loaded from a
- * locally bundled file (web/static/vendor/codemirror/codemirror.js, produced by
- * `npm run vendor:codemirror`). This works offline and avoids the CDN entirely.
+ * The core editor, One Dark theme, and the common @codemirror/lang-* language
+ * packages are loaded from a locally bundled file
+ * (web/static/vendor/codemirror/codemirror.js, produced by
+ * `npm run vendor:codemirror`). This works offline, avoids the CDN entirely,
+ * and — critically — guarantees every language extension shares the single
+ * @codemirror/state / @codemirror/language instance bundled locally.
+ * CodeMirror's facet/instanceof checks silently ignore extensions built
+ * against a different instance (mitto-2a3), which is why non-bundled
+ * languages must not be loaded as standalone modules from esm.sh.
  *
- * Other languages are still loaded from the esm.sh CDN on demand. NOTE: those
- * esm.sh language packages pull their own copies of @codemirror/state and
- * @codemirror/language, which are different instances than the local bundle's.
- * Non-legacy languages built that way (e.g. lang-javascript) may not apply
- * correctly because CodeMirror requires a single shared instance. Legacy modes
- * are wrapped with the local bundle's StreamLanguage below to stay consistent.
- * Bundle the remaining languages locally (the full plan) if other file types
- * ever need editing. All modules are cached after first load.
+ * Legacy stream-parser modes (shell/toml/dockerfile/diff) still fetch their
+ * instance-agnostic mode spec from esm.sh, but are wrapped with the local
+ * bundle's StreamLanguage below, so they stay consistent with the single
+ * shared instance. All modules are cached after first load.
  */
 
 const ESM_BASE = "https://esm.sh";
@@ -72,62 +74,66 @@ export async function loadDarkTheme() {
 
 /**
  * Extension → CodeMirror language package mapping.
- * Maps file extensions to @codemirror/lang-* packages.
+ *
+ * `bundleKey` names the corresponding export in the local bundle
+ * (scripts/codemirror/entry.js) — these languages are resolved from
+ * loadBundle() and never touch the CDN. Entries without `bundleKey` (none
+ * currently) would fall back to a standalone esm.sh import via `pkg`/`fn`.
  */
 const LANG_MAP = {
   // JavaScript/TypeScript
-  js: { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
-  mjs: { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
-  cjs: { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
+  js: { bundleKey: "langJavascript", fn: "javascript" },
+  mjs: { bundleKey: "langJavascript", fn: "javascript" },
+  cjs: { bundleKey: "langJavascript", fn: "javascript" },
   ts: {
-    pkg: "@codemirror/lang-javascript@6",
+    bundleKey: "langJavascript",
     fn: "javascript",
     opts: { typescript: true },
   },
   tsx: {
-    pkg: "@codemirror/lang-javascript@6",
+    bundleKey: "langJavascript",
     fn: "javascript",
     opts: { typescript: true, jsx: true },
   },
   jsx: {
-    pkg: "@codemirror/lang-javascript@6",
+    bundleKey: "langJavascript",
     fn: "javascript",
     opts: { jsx: true },
   },
 
   // Python
-  py: { pkg: "@codemirror/lang-python@6", fn: "python" },
+  py: { bundleKey: "langPython", fn: "python" },
 
   // Go
-  go: { pkg: "@codemirror/lang-go@6", fn: "go" },
+  go: { bundleKey: "langGo", fn: "go" },
 
   // Rust
-  rs: { pkg: "@codemirror/lang-rust@6", fn: "rust" },
+  rs: { bundleKey: "langRust", fn: "rust" },
 
   // Web
-  html: { pkg: "@codemirror/lang-html@6", fn: "html" },
-  htm: { pkg: "@codemirror/lang-html@6", fn: "html" },
-  css: { pkg: "@codemirror/lang-css@6", fn: "css" },
-  scss: { pkg: "@codemirror/lang-css@6", fn: "css" },
-  less: { pkg: "@codemirror/lang-css@6", fn: "css" },
+  html: { bundleKey: "langHtml", fn: "html" },
+  htm: { bundleKey: "langHtml", fn: "html" },
+  css: { bundleKey: "langCss", fn: "css" },
+  scss: { bundleKey: "langCss", fn: "css" },
+  less: { bundleKey: "langCss", fn: "css" },
 
   // Data formats
-  json: { pkg: "@codemirror/lang-json@6", fn: "json" },
-  yaml: { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
-  yml: { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
+  json: { bundleKey: "langJson", fn: "json" },
+  yaml: { bundleKey: "langYaml", fn: "yaml" },
+  yml: { bundleKey: "langYaml", fn: "yaml" },
 
   // Markup (markdown is bundled locally — handled in loadLanguage, not here)
-  xml: { pkg: "@codemirror/lang-xml@6", fn: "xml" },
+  xml: { bundleKey: "langXml", fn: "xml" },
 
   // Other languages
-  java: { pkg: "@codemirror/lang-java@6", fn: "java" },
-  cpp: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  cc: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  c: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  h: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  hpp: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  php: { pkg: "@codemirror/lang-php@6", fn: "php" },
-  sql: { pkg: "@codemirror/lang-sql@6", fn: "sql" },
+  java: { bundleKey: "langJava", fn: "java" },
+  cpp: { bundleKey: "langCpp", fn: "cpp" },
+  cc: { bundleKey: "langCpp", fn: "cpp" },
+  c: { bundleKey: "langCpp", fn: "cpp" },
+  h: { bundleKey: "langCpp", fn: "cpp" },
+  hpp: { bundleKey: "langCpp", fn: "cpp" },
+  php: { bundleKey: "langPhp", fn: "php" },
+  sql: { bundleKey: "langSql", fn: "sql" },
 
   // Shell (legacy modes)
   sh: {
@@ -208,7 +214,11 @@ export async function loadLanguage(ext) {
       return null;
     }
 
-    const langMod = await importCached(entry.pkg);
+    // Non-legacy languages are resolved from the local bundle so they share
+    // the single @codemirror/state / @codemirror/language instance (mitto-2a3).
+    const langMod = entry.bundleKey
+      ? (await loadBundle())[entry.bundleKey]
+      : await importCached(entry.pkg);
     const langFn = langMod[entry.fn];
     if (typeof langFn === "function") {
       return langFn(entry.opts || {});

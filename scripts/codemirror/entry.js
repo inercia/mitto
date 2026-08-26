@@ -8,8 +8,12 @@
  * instance of @codemirror/state and @codemirror/language — CodeMirror relies
  * on this (facets / instanceof checks) and breaks with duplicate instances.
  *
- * Scope: markdown-only. The core, One Dark theme, and Markdown language are
- * bundled locally. Other languages still load from esm.sh (see editor-loader.js).
+ * The core, One Dark theme, and the common @codemirror/lang-* language
+ * packages below are bundled locally so every language shares that single
+ * instance (mitto-2a3). Uncommon/legacy languages still load their
+ * instance-agnostic stream-parser spec from esm.sh (see editor-loader.js),
+ * which is safe because those specs are wrapped with this bundle's
+ * StreamLanguage before use.
  *
  * To regenerate: `npm run vendor:codemirror` (or `make vendor-codemirror`).
  */
@@ -22,3 +26,16 @@ export * as search from "@codemirror/search";
 export * as lint from "@codemirror/lint";
 export * as themeOneDark from "@codemirror/theme-one-dark";
 export * as langMarkdown from "@codemirror/lang-markdown";
+export * as langJavascript from "@codemirror/lang-javascript";
+export * as langPython from "@codemirror/lang-python";
+export * as langGo from "@codemirror/lang-go";
+export * as langRust from "@codemirror/lang-rust";
+export * as langHtml from "@codemirror/lang-html";
+export * as langCss from "@codemirror/lang-css";
+export * as langJson from "@codemirror/lang-json";
+export * as langYaml from "@codemirror/lang-yaml";
+export * as langXml from "@codemirror/lang-xml";
+export * as langJava from "@codemirror/lang-java";
+export * as langCpp from "@codemirror/lang-cpp";
+export * as langPhp from "@codemirror/lang-php";
+export * as langSql from "@codemirror/lang-sql";
