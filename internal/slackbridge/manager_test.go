@@ -683,6 +683,74 @@ func TestReconcileSessionLogsSkipReasonsAndZeroResolvedWarning(t *testing.T) {
 	}
 }
 
+// TestManagerOnSlackEventLostAfterBootCredentialRace reproduces mitto-lue:
+// onSlack loops are not resumed/re-subscribed after a restart when the boot
+// reconcile races ahead of the installation credential becoming available.
+// ReconcileSession silently resolves ZERO subscriptions for an enabled,
+// onSlack-armed loop when TokenConfigured is false at that instant (as can
+// happen while secrets are still loading from the keychain at boot -- see
+// server.go Start() -> slackManager.Start() -> ReconcileAll()). Once the
+// credential becomes available moments later, nothing re-triggers
+// ReconcileAll/ReconcileSession for that session -- so a subsequent Slack
+// event that matches the loop's declared channel subscription is silently
+// dropped (zero recipients resolved, never journaled, no drain, no dispatch),
+// and the loop's session is never auto-resumed. This currently FAILS because
+// TriggerNowWithSlackEvents is invoked 0 times when the fix should make it
+// fire once, after the credential becomes available and a matching event
+// arrives.
+func TestManagerOnSlackEventLostAfterBootCredentialRace(t *testing.T) {
+	store := newManagerStore(t)
+	addSlackLoop(t, store, "cgw-support", true, false,
+		session.SlackSubscription{InstallationID: "install-1", ChannelID: "channel-1"})
+
+	// Simulate the boot-time race: at the instant ReconcileAll runs (server
+	// boot), the installation's token has not yet been loaded from the
+	// keychain (TokenConfigured=false) even though the installation itself is
+	// already known to the catalog.
+	catalog := managerCatalog{
+		"install-1": {Installation: slackcatalog.Installation{
+			ID: "install-1", AppID: "app-1", CredentialKind: slackcatalog.CredentialKindBot,
+			TeamID: "team-1", BotID: "bot-1", BotUserID: "user-bot-1",
+		}, TokenConfigured: false},
+	}
+	runner := &managerRunner{}
+	manager := NewManager(store, catalog, &managerCredentials{token: "vault-token"}, runner, nil)
+	t.Cleanup(manager.Close)
+
+	if err := manager.ReconcileAll(); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	_, present := manager.sessions["cgw-support"]
+	manager.mu.Unlock()
+	if present {
+		t.Fatalf("expected zero resolved subscriptions while TokenConfigured=false, got a sessions entry")
+	}
+
+	// The credential becomes available moments after boot (e.g. keychain
+	// unlocked, secret loaded asynchronously) -- but nothing in the manager
+	// re-reconciles this session automatically in response.
+	catalog["install-1"] = slackcatalog.InstallationView{
+		Installation: slackcatalog.Installation{
+			ID: "install-1", AppID: "app-1", CredentialKind: slackcatalog.CredentialKindBot,
+			TeamID: "team-1", BotID: "bot-1", BotUserID: "user-bot-1",
+		}, TokenConfigured: true,
+	}
+
+	// A genuine Slack event for the subscribed channel arrives.
+	event := Event{EventID: "evt-1", TeamID: "team-1", ChannelID: "channel-1", AuthorID: "human", Kind: "message", Text: "are you there?"}
+	if err := manager.routeEvent("app-1", nil, event); err != nil {
+		t.Fatal(err)
+	}
+
+	// BUG: the event is silently dropped -- zero recipients were resolved at
+	// ReconcileAll time and nothing re-resolved them once the credential
+	// became available, so the loop's session is never triggered/auto-resumed.
+	if calls := runner.snapshot(); len(calls) != 1 || calls[0].sessionID != "cgw-support" {
+		t.Fatalf("expected the onSlack loop to receive the event once credentials became available, got calls=%#v", calls)
+	}
+}
+
 // TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump reproduces the
 // fix for the INFO-log flood: emitStatusLocked must log at INFO only on a
 // meaningful state transition (or the first status for an app), and at DEBUG

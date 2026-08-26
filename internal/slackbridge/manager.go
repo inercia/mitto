@@ -93,19 +93,28 @@ type statusNotification struct {
 // Manager owns one Socket Mode worker per referenced Slack app profile and an
 // idempotent, process-local loop-subscription index.
 type Manager struct {
-	mu           sync.Mutex
-	store        *session.Store
-	catalog      Catalog
-	credentials  CredentialResolver
-	runner       ManagedLoopTriggerer
-	factory      SourceFactory
-	logger       *slog.Logger
-	grace        time.Duration
-	settle       time.Duration
-	journal      *FileJournal
-	ctx          context.Context
-	cancel       context.CancelFunc
-	sessions     map[string][]resolvedSubscription
+	mu          sync.Mutex
+	store       *session.Store
+	catalog     Catalog
+	credentials CredentialResolver
+	runner      ManagedLoopTriggerer
+	factory     SourceFactory
+	logger      *slog.Logger
+	grace       time.Duration
+	settle      time.Duration
+	journal     *FileJournal
+	ctx         context.Context
+	cancel      context.CancelFunc
+	sessions    map[string][]resolvedSubscription
+	// unresolved tracks sessions that are armed for onSlack (enabled,
+	// non-archived, IsOnSlack) but resolved zero subscriptions the last time
+	// they were reconciled -- typically because a Slack installation's
+	// credential/token had not finished loading yet (a boot-time race between
+	// slackManager.Start()'s ReconcileAll and async credential availability,
+	// mitto-lue). Without this, such a session stays silently deaf forever:
+	// nothing re-reconciles it once the credential becomes available. Entries
+	// are retried (re-resolved) the next time an event is routed.
+	unresolved   map[string]bool
 	workers      map[string]*appWorker
 	statuses     map[string]ConnectionStatus
 	onStatus     func(ConnectionStatus)
@@ -137,7 +146,8 @@ func NewManager(store *session.Store, catalog Catalog, credentials CredentialRes
 	}
 	m := &Manager{store: store, catalog: catalog, credentials: credentials, runner: runner, logger: logger,
 		grace: defaultUnusedGrace, ctx: ctx, cancel: cancel, sessions: make(map[string][]resolvedSubscription),
-		workers: make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{}),
+		unresolved: make(map[string]bool),
+		workers:    make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{}),
 		journal: NewFileJournal(journalDir), drainTimers: make(map[string]*time.Timer), journalTemp: journalTemp}
 	m.statusCond = sync.NewCond(&m.mu)
 	m.factory = func(_ string, token string) (Source, error) {
@@ -216,6 +226,11 @@ func (m *Manager) ReconcileAll() error {
 			delete(m.sessions, id)
 		}
 	}
+	for id := range m.unresolved {
+		if !seen[id] {
+			delete(m.unresolved, id)
+		}
+	}
 	m.reconcileWorkersLocked()
 	m.mu.Unlock()
 	return nil
@@ -266,8 +281,18 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 	m.mu.Lock()
 	if len(resolved) == 0 {
 		delete(m.sessions, sessionID)
+		// Remember that this session is armed-but-unresolved so a later event
+		// for it triggers a retry instead of being silently dropped forever
+		// (mitto-lue): the installation's credential may simply not have
+		// finished loading yet when this reconcile ran.
+		if armed {
+			m.unresolved[sessionID] = true
+		} else {
+			delete(m.unresolved, sessionID)
+		}
 	} else {
 		m.sessions[sessionID] = resolved
+		delete(m.unresolved, sessionID)
 	}
 	m.reconcileWorkersLocked()
 	m.mu.Unlock()
@@ -278,6 +303,7 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 func (m *Manager) RemoveSession(sessionID string) {
 	m.mu.Lock()
 	delete(m.sessions, sessionID)
+	delete(m.unresolved, sessionID)
 	m.reconcileWorkersLocked()
 	m.mu.Unlock()
 }
@@ -559,10 +585,38 @@ func classifyWorkerError(err error) string {
 	return "connection_failed"
 }
 
+// retryUnresolvedSessions re-reconciles every session that previously armed
+// for onSlack but resolved zero subscriptions (mitto-lue). This closes the
+// boot-time race where a Slack installation's credential/token has not
+// finished loading yet when the initial ReconcileAll runs: without a retry,
+// such a session stays silently deaf to matching events forever, because
+// nothing else re-reconciles it once the credential becomes available. Retry
+// opportunistically on every routed event (cheap: bounded by the number of
+// sessions previously flagged unresolved, typically zero in steady state)
+// rather than requiring a dedicated credential-change hook.
+func (m *Manager) retryUnresolvedSessions() {
+	m.mu.Lock()
+	if len(m.unresolved) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	pending := make([]string, 0, len(m.unresolved))
+	for sessionID := range m.unresolved {
+		pending = append(pending, sessionID)
+	}
+	m.mu.Unlock()
+	for _, sessionID := range pending {
+		if err := m.ReconcileSession(sessionID); err != nil && m.logger != nil {
+			m.logger.Debug("slackbridge: retry reconcile failed", "session_id", sessionID, "error_class", "reconcile")
+		}
+	}
+}
+
 func (m *Manager) routeEvent(appID string, _ *appWorker, evt Event) error {
 	if evt.EventID == "" {
 		return errors.New("slack event has no event_id")
 	}
+	m.retryUnresolvedSessions()
 	m.mu.Lock()
 	var candidates []resolvedSubscription
 	for _, subs := range m.sessions {
