@@ -121,7 +121,7 @@
               id="username"
               name="username"
               required
-              autocomplete="username"
+              autocomplete="username webauthn"
               class="w-full px-4 py-3 border border-mitto-border rounded-lg placeholder:text-mitto-text-secondary focus:outline-none focus:ring-2 focus:ring-mitto-accent-500 focus:border-transparent"
               placeholder="Enter your username"
             />
@@ -154,7 +154,11 @@
           </button>
         </form>
 
-        <!-- Passkey login (hidden until auth-info reports it's armed + the browser supports WebAuthn) -->
+        <!-- Passkey login fallback (mitto-ykm): shown only when auth-info
+             reports it's armed, the browser supports WebAuthn, AND the
+             browser lacks Conditional Mediation (autofill) — capable
+             browsers get the passkey suggested inline in the username field
+             above instead (see auth.js). -->
         <button
           type="button"
           id="passkeyBtn"

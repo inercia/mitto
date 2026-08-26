@@ -22,6 +22,7 @@ import {
   decodeCreationOptions,
   serializeCreatedCredential,
   supportsConditionalCreate,
+  isConditionalMediationAvailable,
 } from "./utils/webauthn.js";
 
 // One-shot flag (mitto-4mz.7): set here right after a successful
@@ -29,6 +30,12 @@ import {
 // non-intrusive success toast. sessionStorage (not localStorage) so it only
 // survives the single redirect from this page to "/", not future sessions.
 const PASSKEY_AUTOENROLLED_FLAG = "mitto_passkey_autoenrolled";
+
+// AbortController for the background Conditional-Get ceremony (passkey
+// autofill, mitto-ykm) started by startConditionalGet() on page load. Module
+// scope so attemptConditionalCreate() can abort it before starting its own
+// conditional mediation ceremony — only one may be pending at a time.
+let conditionalGetController = null;
 
 function getApiPrefix() {
   return window.mittoApiPrefix || "";
@@ -49,13 +56,21 @@ function getApiPrefix() {
  * the same `browserCookieAuth` adapter the authenticated app uses (see
  * utils/sdkClient.js), now that login() has just set the session cookie.
  *
- * No pending Conditional-Get autofill request exists on this page today (the
- * passkey button uses a modal `get()`), so there is nothing to abort before
- * `create()`. This is a documented no-op, not an omission: a future
- * Conditional-Get autofill addition should abort its controller here first.
+ * Only one WebAuthn "conditional" mediation ceremony may be pending at a
+ * time (mitto-ykm): the background Conditional-Get autofill started by
+ * startConditionalGet() on page load must be aborted before this function's
+ * own conditional `create()`, otherwise the browser rejects the new request
+ * ("operation already pending"/AbortError).
  */
 async function attemptConditionalCreate(client) {
   if (!(await supportsConditionalCreate())) return;
+
+  // Abort the pending conditional get() (autofill), if any, before starting
+  // a new conditional mediation ceremony — see the header comment above.
+  if (conditionalGetController) {
+    conditionalGetController.abort();
+    conditionalGetController = null;
+  }
 
   // Reuse `client`'s already-resolved fetch (see the module header comment:
   // this file must never reference the bare `fetch` identifier itself,
@@ -124,10 +139,54 @@ function initAuthPage() {
     apiPrefix: getApiPrefix(),
   });
 
+  /**
+   * Starts a background Conditional-Get ceremony (mitto-ykm): the browser
+   * surfaces a matching passkey as an inline autofill suggestion in the
+   * username field (no modal), and this promise only settles once the user
+   * picks the suggestion or the ceremony is aborted/fails. Runs concurrently
+   * with the password form, which stays fully usable while this is pending
+   * — never awaited by the caller. Stores its AbortController at module
+   * scope so attemptConditionalCreate() can abort it before its own
+   * conditional create() (see that function's header comment).
+   */
+  async function startConditionalGet(client) {
+    conditionalGetController = new AbortController();
+    try {
+      const options = await client.misc.webauthn.loginBegin();
+      const publicKey = decodeRequestOptions(options);
+      const assertion = await navigator.credentials.get({
+        publicKey,
+        mediation: "conditional",
+        signal: conditionalGetController.signal,
+      });
+      await client.misc.webauthn.loginFinish(serializeAssertion(assertion));
+      window.location.href = "/";
+    } catch (err) {
+      if (
+        err &&
+        (err.name === "AbortError" || err.name === "NotAllowedError")
+      ) {
+        // Aborted (a password login ran attemptConditionalCreate() instead)
+        // or the user dismissed the autofill suggestion; not worth
+        // alarming over.
+        return;
+      }
+      if (err instanceof MittoApiError && err.status === 429) {
+        errorDiv.textContent =
+          err.message || "Too many attempts. Please try again later.";
+        errorDiv.classList.remove("hidden");
+      }
+      // Other failures (network errors, unsupported browser, etc.) are
+      // swallowed: the password form is the fallback and must not be
+      // disrupted by a background ceremony the user never explicitly
+      // started.
+    }
+  }
+
   // Fetch auth info to adapt the UI before showing the form
   client.misc
     .authInfo()
-    .then(function (info) {
+    .then(async function (info) {
       if (!info.simple && info.cloudflare) {
         // Only Cloudflare auth configured: hide login form, show message
         form.style.display = "none";
@@ -142,8 +201,16 @@ function initAuthPage() {
       }
       // If info.simple is true, show the normal login form (default state)
 
-      if (info.passkey && isWebAuthnSupported() && passkeyBtn) {
-        passkeyBtn.style.display = "";
+      if (info.passkey && isWebAuthnSupported()) {
+        if (await isConditionalMediationAvailable()) {
+          // Conditional Mediation available: offer the passkey inline via
+          // autofill in the background; no explicit button needed.
+          startConditionalGet(client);
+        } else if (passkeyBtn) {
+          // Degradation fallback (mitto-ykm): no autofill entry point on
+          // this browser, so keep the explicit passkey button.
+          passkeyBtn.style.display = "";
+        }
       }
     })
     .catch(function (err) {

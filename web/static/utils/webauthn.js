@@ -41,6 +41,31 @@ export async function supportsConditionalCreate() {
   }
 }
 
+/**
+ * True when the browser supports Conditional Mediation (passkey autofill,
+ * mitto-ykm): silently offering
+ * `navigator.credentials.get({publicKey, mediation:"conditional"})` so a
+ * matching passkey surfaces as an inline autofill suggestion in the username
+ * field, with no modal prompt. Feature-guarded: browsers without the
+ * `PublicKeyCredential.isConditionalMediationAvailable()` static resolve to
+ * `false` so callers can fall back to an explicit passkey button.
+ * @returns {Promise<boolean>}
+ */
+export async function isConditionalMediationAvailable() {
+  if (!isWebAuthnSupported()) return false;
+  if (
+    typeof window.PublicKeyCredential.isConditionalMediationAvailable !==
+    "function"
+  ) {
+    return false;
+  }
+  try {
+    return await window.PublicKeyCredential.isConditionalMediationAvailable();
+  } catch (_err) {
+    return false;
+  }
+}
+
 /** Decodes a base64url string (no padding) into an ArrayBuffer. */
 export function base64urlToBuffer(value) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
