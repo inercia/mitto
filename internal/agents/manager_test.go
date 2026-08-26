@@ -517,6 +517,72 @@ func TestClaudeCode_MCPInstall_UsesClaudeMcpAdd(t *testing.T) {
 	}
 }
 
+// TestGitHubCopilot_StatusDetection verifies that the real
+// config/agents/builtin/github-copilot/cmds/status.sh script detects the
+// GitHub Copilot CLI, which installs as the `copilot` binary (not
+// `github-copilot`), and reports the correct MCP config path
+// (~/.copilot/mcp-config.json, matching mcp-list.sh) rather than the wrong
+// ~/.github-copilot/settings.json. Regression coverage for mitto-8ux: today
+// status.sh looks for a `github-copilot` binary that has never existed, so
+// `installed` is always false and Copilot never appears as available in
+// Settings > Discover Agents.
+func TestGitHubCopilot_StatusDetection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+
+	// Point the manager at the REAL builtin agents dir so we exercise the
+	// production script, not a fixture.
+	builtinDir := builtinAgentsDirForTest(t)
+	agentsDir := filepath.Dir(builtinDir)
+	scriptPath := filepath.Join(builtinDir, "github-copilot", "cmds", "status.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real github-copilot status.sh not found: %v", err)
+	}
+
+	// Shim `copilot` (the actual installed binary name) on PATH.
+	binDir := t.TempDir()
+	shim := "#!/bin/bash\necho 'v0.0.423'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "copilot"), []byte(shim), 0755); err != nil {
+		t.Fatalf("failed to write copilot shim: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Isolate HOME and seed the MCP config at the path the fixed script is
+	// expected to check: ~/.copilot/mcp-config.json (matching mcp-list.sh).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	copilotDir := filepath.Join(home, ".copilot")
+	if err := os.MkdirAll(copilotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mcpConfigPath := filepath.Join(copilotDir, "mcp-config.json")
+	if err := os.WriteFile(mcpConfigPath, []byte(`{"mcpServers":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	status, err := m.GetStatus(context.Background(), "github-copilot")
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+
+	// mitto-8ux: status.sh looks for `github-copilot`, not `copilot`, so
+	// today Installed is always false even though the shim is on PATH.
+	if !status.Installed {
+		t.Errorf("mitto-8ux: status.Installed = false, want true (status.sh should detect the `copilot` binary, not `github-copilot`); status=%+v", status)
+	}
+	if status.Command != "copilot" {
+		t.Errorf("mitto-8ux: status.Command = %q, want %q", status.Command, "copilot")
+	}
+	if !status.MCPConfigFound {
+		t.Errorf("mitto-8ux: status.MCPConfigFound = false, want true (status.sh should check ~/.copilot/mcp-config.json like mcp-list.sh does); status=%+v", status)
+	}
+	if status.MCPConfigPath != mcpConfigPath {
+		t.Errorf("mitto-8ux: status.MCPConfigPath = %q, want %q", status.MCPConfigPath, mcpConfigPath)
+	}
+}
+
 // TestAgentMetadataDefaults_Parse verifies that a metadata.yaml with a `defaults` block
 // is parsed correctly into AgentMetadata.Defaults.
 func TestAgentMetadataDefaults_Parse(t *testing.T) {

@@ -10,8 +10,8 @@ fi
 
 npm install -g @github/copilot >&2 2>&1
 
-if command -v github-copilot &> /dev/null; then
-    VERSION=$(github-copilot --version 2>/dev/null | head -1 | tr -d '\n')
+if command -v copilot &> /dev/null; then
+    VERSION=$(copilot --version 2>/dev/null | head -1 | tr -d '\n')
     echo "{\"success\": true, \"message\": \"GitHub Copilot CLI installed successfully\", \"version\": \"$VERSION\"}"
 else
     echo '{"success": false, "message": "Installation completed", "version": ""}'

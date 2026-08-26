@@ -2,9 +2,9 @@
 # Status check for GitHub Copilot
 # Outputs JSON with agent installation and configuration status
 
-COMMAND="github-copilot"
+COMMAND="copilot"
 VERSION_FLAG="--version"
-MCP_CONFIG_PATH="${HOME}/.github-copilot/settings.json"
+MCP_CONFIG_PATH="${HOME}/.copilot/mcp-config.json"
 
 # Check if installed
 INSTALLED=false
