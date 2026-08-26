@@ -266,6 +266,39 @@ describe("sdkClient", () => {
       }
     });
 
+    // mitto-4mz: in the native/local app the server injects
+    // window.mittoIsExternal === false and bypasses auth on loopback, so a 401
+    // (e.g. from /api/webauthn/register/list) must NOT bounce the whole app to
+    // a Sign In page. redirectToLogin() becomes a no-op in that case; external
+    // access (true) and the test-default (undefined) still redirect.
+    test("redirectToLogin is a no-op in the local app (window.mittoIsExternal === false)", () => {
+      const originalHref = window.location.href;
+      try {
+        getSdkClient();
+        window.mittoIsExternal = false;
+        redirectToLogin();
+        expect(window.location.href).toBe(originalHref);
+        expect(window.location.href).not.toContain("/auth.html");
+      } finally {
+        delete window.mittoIsExternal;
+        window.location.href = originalHref;
+      }
+    });
+
+    test("redirectToLogin still redirects for external access (window.mittoIsExternal === true), honoring the API prefix", () => {
+      const originalHref = window.location.href;
+      try {
+        window.mittoApiPrefix = "/mitto";
+        window.mittoIsExternal = true;
+        getSdkClient();
+        redirectToLogin();
+        expect(window.location.href).toContain("/mitto/auth.html");
+      } finally {
+        delete window.mittoIsExternal;
+        window.location.href = originalHref;
+      }
+    });
+
     test("redirectToLogin is a no-op-safe call before getSdkClient() has ever run", () => {
       // _resetSdkClientForTests() (afterEach, outer describe) clears both
       // the client and the captured auth adapter — this must not throw.

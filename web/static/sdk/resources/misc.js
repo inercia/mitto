@@ -115,26 +115,45 @@ export function createMiscResource(config, configResource) {
     // is authenticated (session cookie + CSRF); login is pre-auth (see
     // auth.js, which uses its own noAuth client instead of this one). All
     // return 404 when passkeys are not enabled/derivable server-side.
+    //
+    // The four management calls default `suppressUnauthorizedRedirect: true`
+    // (mitto-4mz): a 401 here means "no External Access session" — always the
+    // case in the native/local app, which never authenticates — and must NOT
+    // bounce the whole app to the login page. The 401 is still thrown so the
+    // caller (e.g. SettingsDialog) handles it inline. Callers may override via
+    // `opts` if they ever want the redirect. Login ceremonies below are
+    // pre-auth and intentionally keep the default (no suppression needed).
     webauthn: {
       /** POST /api/webauthn/register/begin — starts a registration
        *  ceremony; returns PublicKeyCredentialCreationOptions JSON. */
       registerBegin: (opts) =>
-        call("POST", "/api/webauthn/register/begin", opts),
+        call("POST", "/api/webauthn/register/begin", {
+          suppressUnauthorizedRedirect: true,
+          ...opts,
+        }),
       /** POST /api/webauthn/register/finish — completes the ceremony.
        *  @param {object} credential - serialized PublicKeyCredential (see
        *    utils/webauthn.js's serializeCreatedCredential) */
       registerFinish: (credential, opts) =>
         call("POST", "/api/webauthn/register/finish", {
+          suppressUnauthorizedRedirect: true,
           body: credential,
           ...opts,
         }),
       /** GET /api/webauthn/register/list.
        *  @returns {Promise<Array<{id: string, created_at: string, last_used_at: string}>>} */
-      list: (opts) => call("GET", "/api/webauthn/register/list", opts),
+      list: (opts) =>
+        call("GET", "/api/webauthn/register/list", {
+          suppressUnauthorizedRedirect: true,
+          ...opts,
+        }),
       /** DELETE /api/webauthn/register/{id} — id is the base64url credential id.
        *  @param {string} id */
       delete: (id, opts) =>
-        call("DELETE", `/api/webauthn/register/${encodeURIComponent(id)}`, opts),
+        call("DELETE", `/api/webauthn/register/${encodeURIComponent(id)}`, {
+          suppressUnauthorizedRedirect: true,
+          ...opts,
+        }),
       /** POST /api/webauthn/login/begin — pre-auth, CSRF-exempt; starts a
        *  discoverable login ceremony. Sets an HttpOnly ceremony cookie, so
        *  callers must use a client whose fetch sends credentials

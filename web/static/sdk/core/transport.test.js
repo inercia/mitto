@@ -423,6 +423,31 @@ describe("request — errors", () => {
     expect(received).toBeInstanceOf(MittoAuthError);
   });
 
+  test("401 with suppressUnauthorizedRedirect skips config.onUnauthorized but still fires auth.onUnauthorized and throws (mitto-4mz)", async () => {
+    const order = [];
+    const config = configWithFetch(
+      async () => fakeResponse({ status: 401, text: "" }),
+      {
+        auth: {
+          async authorize() {
+            return {};
+          },
+          onUnauthorized: () => order.push("auth"),
+        },
+        onUnauthorized: () => order.push("config"),
+      },
+    );
+    await expect(
+      request(config, {
+        method: "GET",
+        path: "/x",
+        suppressUnauthorizedRedirect: true,
+      }),
+    ).rejects.toBeInstanceOf(MittoAuthError);
+    // auth adapter's cleanup still runs; the app-level redirect does NOT.
+    expect(order).toEqual(["auth"]);
+  });
+
   test("401 calls auth.onUnauthorized before config.onUnauthorized (mitto-7gta.5)", async () => {
     const order = [];
     const config = configWithFetch(

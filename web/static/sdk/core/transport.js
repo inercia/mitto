@@ -165,6 +165,13 @@ async function decodeBody(response) {
  *   pass `raw: true` alongside this to get the untouched `Response`.
  * @property {boolean} [retryUnavailable] - retry one canonical 503
  *   `unavailable` response, honoring `Retry-After` up to 30 seconds
+ * @property {boolean} [suppressUnauthorizedRedirect] - when true, a 401
+ *   response still calls the auth adapter's own `onUnauthorized` (CSRF state
+ *   cleanup) and still throws a `MittoAuthError`, but does NOT invoke
+ *   `config.onUnauthorized` (the app-level redirect-to-login side effect).
+ *   For probes whose 401 is an expected, non-session-expiry answer the caller
+ *   handles inline — e.g. passkey-management reads in the native/local app,
+ *   which never holds an External Access session (mitto-4mz).
  */
 
 /**
@@ -230,7 +237,9 @@ export async function request(config, options) {
       }
       if (response.status === 401) {
         config.auth.onUnauthorized?.(error);
-        config.onUnauthorized(error);
+        if (!options.suppressUnauthorizedRedirect) {
+          config.onUnauthorized(error);
+        }
       }
       throw error;
     }

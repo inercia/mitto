@@ -4,8 +4,12 @@
  * Mirrors sessions.test.js's style: every call is driven by an injected
  * `config.fetch` stub — never global fetch.
  */
-import { MittoApiError } from "../core/errors.js";
-import { fakeResponse, resourceMounter } from "../testing/fake-server.js";
+import { MittoApiError, MittoAuthError } from "../core/errors.js";
+import {
+  fakeResponse,
+  resourceMounter,
+  authFailure,
+} from "../testing/fake-server.js";
 import { createConfigResource } from "./config.js";
 import { createMiscResource } from "./misc.js";
 
@@ -311,6 +315,46 @@ describe("misc resource", () => {
         `/api/webauthn/register/${encodeURIComponent("AQ ID/x")}`,
       );
       expect(calls[0].init.method).toBe("DELETE");
+    });
+
+    // mitto-4mz: the four management calls must NOT trigger the app-level
+    // redirect-to-login on a 401 (which is the expected "no External Access
+    // session" answer in the native/local app). The 401 still throws so the
+    // caller handles it inline; only the redirect side effect is suppressed.
+    describe("management 401s suppress the redirect-to-login side effect", () => {
+      for (const invoke of [
+        { name: "list", run: (misc) => misc.webauthn.list() },
+        { name: "registerBegin", run: (misc) => misc.webauthn.registerBegin() },
+        {
+          name: "registerFinish",
+          run: (misc) => misc.webauthn.registerFinish({ id: "AQID" }),
+        },
+        { name: "delete", run: (misc) => misc.webauthn.delete("AQID") },
+      ]) {
+        test(`${invoke.name}() 401 throws MittoAuthError but does NOT call onUnauthorized`, async () => {
+          let redirects = 0;
+          const { misc, respondWith } = mk({
+            onUnauthorized: () => {
+              redirects++;
+            },
+          });
+          respondWith(authFailure());
+          await expect(invoke.run(misc)).rejects.toBeInstanceOf(MittoAuthError);
+          expect(redirects).toBe(0);
+        });
+      }
+    });
+
+    test("a non-suppressed call (authInfo) still fires onUnauthorized on 401", async () => {
+      let redirects = 0;
+      const { misc, respondWith } = mk({
+        onUnauthorized: () => {
+          redirects++;
+        },
+      });
+      respondWith(authFailure());
+      await expect(misc.authInfo()).rejects.toBeInstanceOf(MittoAuthError);
+      expect(redirects).toBe(1);
     });
 
     test("loginBegin() calls POST /api/webauthn/login/begin", async () => {

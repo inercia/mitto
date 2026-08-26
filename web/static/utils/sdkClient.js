@@ -111,10 +111,25 @@ export async function getCSRFToken() {
  * Redirect to the login page. Clears the CSRF adapter's in-flight token
  * fetch state (if any) before redirecting, e.g. on 401 (see onUnauthorized
  * above) or on explicit logout.
+ *
+ * Native/local-app guard (mitto-4mz): the backend bypasses auth entirely for
+ * loopback (127.0.0.1) listeners, so the native macOS app / local browser
+ * never has (nor needs) an External Access session. A 401 there is expected
+ * for the few session-scoped endpoints that don't honor the loopback bypass
+ * (e.g. /api/webauthn/register/list) — it must NEVER bounce the whole app to a
+ * Sign In page. The server injects `window.mittoIsExternal = false` into the
+ * loopback-served index.html (and `true` for the external listener), so we
+ * treat an explicit `false` as "local app, redirect is never correct" and
+ * make this a no-op. External access (true) and the test env (undefined) keep
+ * the original redirect. The CSRF in-flight state is still cleared either way.
  */
 export function redirectToLogin() {
   _auth?.onUnauthorized();
-  window.location.href = "/auth.html";
+  if (window.mittoIsExternal === false) {
+    // Local/native app: auth is bypassed on loopback; do not navigate away.
+    return;
+  }
+  window.location.href = getApiPrefix() + "/auth.html";
 }
 
 /**
