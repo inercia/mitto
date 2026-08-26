@@ -705,11 +705,15 @@ describe("handleImprovePrompt — AbortError detection through SDK wrapping", ()
 });
 
 // =============================================================================
-// mitto-47l: mobile scroll-driven compact composer.
+// mitto-47l (REOPENED v2): mobile scroll-driven compact composer.
 // Duplicated from ChatInput.js:1801-1806 (isScrollCompact derivation),
-// ChatInput.js:488-510 (debounced isScrollCollapsed effect), and
-// ChatInput.js:2486-2493 (compact class + render-gate independence) — keep
-// in sync with the source, per the file-level note above.
+// ChatInput.js:488-510 (debounced isScrollCollapsed effect),
+// ChatInput.js:2527-2533 (chat-input-container compact class + render-gate
+// independence), ChatInput.js:2362-2369 (chat-input-actionbuttons compact
+// class — the follow-up/action buttons block, which lives OUTSIDE
+// .chat-input-container, collapses off the SAME isScrollCompact signal), and
+// ChatInput.js:2325-2353 (the restore affordance's render gate + tap
+// handler) — keep in sync with the source, per the file-level note above.
 // =============================================================================
 
 // Duplicated from ChatInput.js:1801-1806:
@@ -759,12 +763,40 @@ function runScrollCollapseEffect({ isAtBottom, setIsScrollCollapsed, timeoutRef 
   };
 }
 
-// Duplicated from ChatInput.js:2486-2493: the compact class applied to the
-// (always-mounted) .chat-input-container wrapper.
+// Duplicated from ChatInput.js:2527-2533: the compact class applied to the
+// (always-mounted) .chat-input-container wrapper (the textarea box).
 function computeChatInputContainerClass(isScrollCompact) {
   return `max-w-4xl mx-auto chat-input-container ${
     isScrollCompact ? "chat-input-container--compact" : ""
   }`;
+}
+
+// Duplicated from ChatInput.js:2362-2369: the compact class applied to the
+// (always-mounted, conditionally-rendered-on-hasActionButtons) follow-up/
+// action buttons wrapper. This block lives OUTSIDE .chat-input-container
+// (it is a sibling in the same <form>), so it needs its own class/modifier
+// pair driven by the SAME isScrollCompact signal — no separate scroll
+// listener or derived state.
+function computeActionButtonsClass(isScrollCompact) {
+  return `max-w-4xl mx-auto mb-3 chat-input-actionbuttons ${
+    isScrollCompact ? "chat-input-actionbuttons--compact" : ""
+  }`;
+}
+
+// Duplicated from ChatInput.js:2325: the restore affordance is the only
+// piece of the collapse UI that is conditionally mounted (it carries no
+// state of its own — unlike the composition box and action buttons, which
+// always stay mounted so draft/attachments/props are never lost).
+function shouldShowRestorePill(isScrollCompact) {
+  return !!isScrollCompact;
+}
+
+// Duplicated from ChatInput.js:2330-2333: the restore pill's onClick handler
+// expands the composer and schedules a focus of the textarea once it's
+// visible again.
+function handleRestorePillTap({ setIsScrollCollapsed, focusTextarea }) {
+  setIsScrollCollapsed(false);
+  focusTextarea();
 }
 
 describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
@@ -953,6 +985,89 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
           loopConfigured: false,
           hasActiveUIPrompt: true,
           promptType: "options",
+        }),
+      ).toBe(false);
+    });
+  });
+
+  // REOPENED v2: the first implementation only shrunk the textarea
+  // min-height and left the follow-up/action buttons block (which renders
+  // OUTSIDE .chat-input-container) untouched. These tests cover the fix:
+  // the action buttons block collapses off the same isScrollCompact signal,
+  // the composition box collapses in full (not just min-height — see the
+  // CSS-level assertions in styles.test.js), and a dedicated restore
+  // affordance appears only while collapsed.
+  describe("full-area collapse: action buttons + restore affordance", () => {
+    test("action buttons wrapper gets the compact modifier when scroll-compact", () => {
+      expect(computeActionButtonsClass(true)).toBe(
+        "max-w-4xl mx-auto mb-3 chat-input-actionbuttons chat-input-actionbuttons--compact",
+      );
+    });
+
+    test("action buttons wrapper renders base classes only when not compact", () => {
+      expect(computeActionButtonsClass(false)).toBe(
+        "max-w-4xl mx-auto mb-3 chat-input-actionbuttons ",
+      );
+    });
+
+    test("the action buttons block and the composition box collapse off the SAME isScrollCompact signal (no separate scroll listener)", () => {
+      const isScrollCompact = computeIsScrollCompact({
+        isMobile: true,
+        isScrollCollapsed: true,
+      });
+      expect(computeChatInputContainerClass(isScrollCompact)).toContain(
+        "chat-input-container--compact",
+      );
+      expect(computeActionButtonsClass(isScrollCompact)).toContain(
+        "chat-input-actionbuttons--compact",
+      );
+    });
+
+    test("desktop stays unaffected: both compact modifiers are absent when isMobile is false", () => {
+      const isScrollCompact = computeIsScrollCompact({
+        isMobile: false,
+        isScrollCollapsed: true,
+      });
+      expect(isScrollCompact).toBe(false);
+      expect(computeChatInputContainerClass(isScrollCompact)).not.toContain(
+        "--compact",
+      );
+      expect(computeActionButtonsClass(isScrollCompact)).not.toContain(
+        "--compact",
+      );
+    });
+
+    test("restore affordance is only rendered while scroll-compact", () => {
+      expect(shouldShowRestorePill(true)).toBe(true);
+      expect(shouldShowRestorePill(false)).toBe(false);
+    });
+
+    test("tapping the restore affordance expands the composer and focuses the textarea", () => {
+      const setIsScrollCollapsed = jest.fn();
+      const focusTextarea = jest.fn();
+      handleRestorePillTap({ setIsScrollCollapsed, focusTextarea });
+      expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
+      expect(focusTextarea).toHaveBeenCalledTimes(1);
+    });
+
+    // Cross-checks the two other restore paths required by the bead (scroll-
+    // to-bottom and textarea focus) against the shared derivation/effect
+    // helpers already covered above, so this describe block documents all
+    // three restore triggers together.
+    test("scroll-to-bottom restores (via the debounce effect) and focus restores (via isScrollCompact)", () => {
+      const setIsScrollCollapsed = jest.fn();
+      runScrollCollapseEffect({
+        isAtBottom: true,
+        setIsScrollCollapsed,
+        timeoutRef: { current: null },
+      });
+      expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
+
+      expect(
+        computeIsScrollCompact({
+          isMobile: true,
+          isScrollCollapsed: true,
+          isTextareaFocused: true,
         }),
       ).toBe(false);
     });

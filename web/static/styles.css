@@ -2003,57 +2003,88 @@ mitto-action {
   position: relative;
 }
 
-/* Mobile-only scroll-driven compact composer (mitto-47l): while the user has
-   scrolled away from the bottom of the conversation, shrink the composer to
-   a single-line affordance instead of hiding it entirely — the textarea
-   stays visible (just shorter) so draft text and the tap target remain, and
-   only the secondary rows (attachments preview, bottom toolbar) collapse.
+/* Mobile-only scroll-driven compact composer (mitto-47l — REOPENED v2):
+   while the user has scrolled away from the bottom of the conversation,
+   collapse the ENTIRE composition area — the follow-up/action buttons
+   block AND the textarea box (with its own attachments/toolbar rows) —
+   down to nothing, and show a small "Tap to compose" restore affordance
+   instead (see .chat-input-restore-pill below). The collapse is CSS-only
+   (max-height + opacity, mirroring the existing .session-children pattern)
+   so both blocks stay mounted: draft text, pending images/files, and the
+   action buttons themselves are never unmounted or reset by scrolling.
    Scoped to the same breakpoint as the rest of the mobile-only layout
    (matches the reactive matchMedia check in ChatInput.js and app.js's
    drawer/sidebar checks) so >= md layout is completely unaffected. */
 @media (max-width: 767.98px) {
-  .chat-input-attachments-preview,
-  .chat-input-bottom-bar {
+  .chat-input-container,
+  .chat-input-actionbuttons {
     overflow: hidden;
-    max-height: 500px;
+    /* Large enough to never clip real content (long draft text, several
+       pending image/file attachments) in the expanded state — this is a
+       cap for the transition's "from" value, not a real layout limit. Falls
+       back to 100vh for browsers without dvh support. */
+    max-height: 100vh;
+    max-height: 100dvh;
     opacity: 1;
     transition:
-      max-height 0.2s ease-out,
-      opacity 0.15s ease-out;
+      max-height 0.25s ease-out,
+      opacity 0.15s ease-out,
+      margin 0.25s ease-out;
   }
 
-  .chat-input-textarea-wrapper .chat-input-textarea {
-    transition: min-height 0.2s ease-out;
-  }
-
-  .chat-input-container--compact .chat-input-attachments-preview,
-  .chat-input-container--compact .chat-input-bottom-bar {
+  /* !important on the margins is required: the action-buttons wrapper
+     carries a Tailwind mb-3 utility class, which would otherwise leave a
+     residual gap even at max-height: 0. */
+  .chat-input-container--compact,
+  .chat-input-actionbuttons--compact {
     max-height: 0;
     opacity: 0;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
     pointer-events: none;
   }
+}
 
-  /* !important is required: the textarea's live-resize min-height is set as
-     an inline style (see ChatInput.js textareaMinHeight), which otherwise
-     always wins over this class. The transition above still animates the
-     change. */
-  .chat-input-container--compact .chat-input-textarea {
-    min-height: 44px !important;
-  }
+/* Restore affordance shown only while the composition area is scroll-
+   collapsed (mitto-47l). Rendered as a normal-flow element (not fixed or
+   floating) so it naturally sits above the existing safe-area-inset-bottom
+   padding on .bg-mitto-input — no extra safe-area math needed, and the
+   padding itself is left untouched. */
+.chat-input-restore-pill {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  border: 1px solid #334155;
+  background: rgba(15, 23, 42, 0.8);
+  color: #94a3b8;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.chat-input-restore-pill:active {
+  background: rgba(15, 23, 42, 0.95);
+}
+
+.light .chat-input-restore-pill {
+  border-color: #e2e8f0;
+  background: rgba(248, 250, 252, 0.9);
+  color: #475569;
 }
 
 /* Respect reduced-motion preferences for the compact transition, matching
    the existing .reduce-animations / prefers-reduced-motion handling below. */
-.reduce-animations .chat-input-attachments-preview,
-.reduce-animations .chat-input-bottom-bar,
-.reduce-animations .chat-input-textarea-wrapper .chat-input-textarea {
+.reduce-animations .chat-input-container,
+.reduce-animations .chat-input-actionbuttons {
   transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-input-attachments-preview,
-  .chat-input-bottom-bar,
-  .chat-input-textarea-wrapper .chat-input-textarea {
+  .chat-input-container,
+  .chat-input-actionbuttons {
     transition: none;
   }
 }

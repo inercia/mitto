@@ -440,3 +440,66 @@ describe("mitto-2fx.5 — no always-mounted loading-spinner on steady surfaces",
     expect(staticGlyphs.length).toBeGreaterThanOrEqual(10);
   });
 });
+
+/**
+ * mitto-47l (REOPENED v2): the mobile scroll-driven compact composer now
+ * collapses the ENTIRE composition area (follow-up/action buttons block +
+ * the textarea box) down to nothing, replacing the original implementation's
+ * weaker "shrink the textarea min-height to 44px, hide only the secondary
+ * rows" compromise — and the action buttons block (which lives OUTSIDE
+ * .chat-input-container) now collapses too. Pin the CSS shape, the restore
+ * affordance, the untouched safe-area padding, and reduced-motion parity so a
+ * regression cannot silently reintroduce the older, narrower collapse.
+ */
+describe("styles.css — mitto-47l composer full collapse (REOPENED v2)", () => {
+  const chatInputJs = readFileSync(
+    resolve(__dirname, "components/ChatInput.js"),
+    "utf8",
+  );
+
+  test(".chat-input-container--compact and .chat-input-actionbuttons--compact fully collapse (max-height/opacity), not just a min-height shrink", () => {
+    expect(stylesCss).toMatch(
+      /\.chat-input-container--compact,\s*\.chat-input-actionbuttons--compact\s*\{[^}]*max-height:\s*0[^}]*opacity:\s*0/,
+    );
+  });
+
+  test("the old min-height-only compact hack on .chat-input-textarea is gone", () => {
+    expect(stylesCss).not.toMatch(
+      /chat-input-container--compact[^{]*\{[^}]*min-height:\s*44px/,
+    );
+  });
+
+  test(".chat-input-restore-pill affordance rule exists", () => {
+    expect(stylesCss).toMatch(/\.chat-input-restore-pill\s*\{/);
+  });
+
+  test("safe-area padding on .bg-mitto-input is untouched by the compact collapse", () => {
+    expect(stylesCss).toMatch(
+      /\.bg-mitto-input\s*\{\s*padding-bottom:\s*max\(1rem,\s*env\(safe-area-inset-bottom\)\)/,
+    );
+  });
+
+  test(".reduce-animations disables the compact transition for both collapsible blocks", () => {
+    expect(stylesCss).toMatch(
+      /\.reduce-animations \.chat-input-container,\s*\.reduce-animations \.chat-input-actionbuttons\s*\{[^}]*transition:\s*none/,
+    );
+  });
+
+  test("@media (prefers-reduced-motion: reduce) disables the compact transition for both collapsible blocks", () => {
+    expect(stylesCss).toMatch(
+      /@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)\s*\{[\s\S]*?\.chat-input-container,\s*\.chat-input-actionbuttons\s*\{[^}]*transition:\s*none/,
+    );
+  });
+
+  test("ChatInput.js: action buttons wrapper carries the chat-input-actionbuttons marker + compact modifier", () => {
+    expect(chatInputJs).toMatch(
+      /mb-3 chat-input-actionbuttons \$\{isScrollCompact[\s\S]{0,80}chat-input-actionbuttons--compact/,
+    );
+  });
+
+  test("ChatInput.js: restore pill is only rendered while isScrollCompact and restores + focuses on tap", () => {
+    expect(chatInputJs).toMatch(/\$\{isScrollCompact &&\s*\n\s*html`/);
+    expect(chatInputJs).toMatch(/chat-input-restore-pill/);
+    expect(chatInputJs).toMatch(/setIsScrollCollapsed\(false\);\s*\n\s*requestAnimationFrame\(\(\) => textareaRef\.current\?\.focus\(\)\);/);
+  });
+});

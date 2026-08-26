@@ -457,17 +457,18 @@ export function ChatInput({
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Mobile-only scroll-driven compact collapse (mitto-47l): shrink the
-  // composer to a single-line affordance while the user has scrolled away
-  // from the bottom of the conversation, and restore it once they scroll
-  // back to the bottom or focus the textarea. Reuses the same mobile
-  // breakpoint string as app.js's drawer/sidebar mobile checks
-  // ("(max-width: 767.98px)"), made reactive here via a matchMedia change
-  // listener (desktop is completely unaffected). Kept separate from
+  // Mobile-only scroll-driven compact collapse (mitto-47l — REOPENED v2):
+  // collapse the ENTIRE composition area (follow-up/action buttons block +
+  // the textarea box) down to nothing while the user has scrolled away from
+  // the bottom of the conversation, and restore it once they scroll back to
+  // the bottom, tap the restore affordance, or focus the textarea. Reuses
+  // the same mobile breakpoint string as app.js's drawer/sidebar mobile
+  // checks ("(max-width: 767.98px)"), made reactive here via a matchMedia
+  // change listener (desktop is completely unaffected). Kept separate from
   // isPromptCollapsed, which is a manual/one-shot flag whose loop path fully
-  // unmounts the composition box — this compact state instead only toggles a
-  // CSS class, so the textarea/draft/attachments stay mounted and no state
-  // is lost.
+  // unmounts the composition box — this compact state instead only toggles
+  // CSS classes (max-height/opacity), so the textarea/draft/attachments and
+  // the action buttons stay mounted and no state is lost.
   const MOBILE_MEDIA_QUERY = "(max-width: 767.98px)";
   const [isMobile, setIsMobile] = useState(
     () => window.matchMedia?.(MOBILE_MEDIA_QUERY).matches ?? false,
@@ -2315,6 +2316,42 @@ ${activeUIPrompt.text || ""}</textarea
         />
       </div>
 
+      <!-- Restore affordance (mitto-47l): shown only while the composition
+           area is collapsed due to scrolling away from the bottom. Tapping
+           it expands the composer and focuses the textarea. This is the
+           only piece of the collapse UI that is conditionally mounted —
+           it carries no state of its own, unlike the composition box below,
+           which always stays mounted so draft/attachments are preserved. -->
+      ${isScrollCompact &&
+      html`
+        <div class="max-w-4xl mx-auto">
+          <button
+            type="button"
+            onClick=${() => {
+              setIsScrollCollapsed(false);
+              requestAnimationFrame(() => textareaRef.current?.focus());
+            }}
+            class="chat-input-restore-pill"
+            aria-label="Expand composer"
+          >
+            <svg
+              class="w-4 h-4 shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M5 15l7-7 7 7"
+              />
+            </svg>
+            <span>Tap to compose</span>
+          </button>
+        </div>
+      `}
+
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
@@ -2322,7 +2359,11 @@ ${activeUIPrompt.text || ""}</textarea
       !loopConfigured &&
       !isResuming &&
       html`
-        <div class="max-w-4xl mx-auto mb-3">
+        <div
+          class="max-w-4xl mx-auto mb-3 chat-input-actionbuttons ${isScrollCompact
+            ? "chat-input-actionbuttons--compact"
+            : ""}"
+        >
           <div class="mitto-carousel gap-2 py-0.5" data-mitto-no-swipe>
             ${actionButtons.map(
               (btn, idx) => html`
