@@ -1375,7 +1375,7 @@ function App() {
   // instant positioning on session switch, and prepend scroll restoration.
   // messagesContainerRef and scrollPreservationRef are owned by App (shared with
   // the render, useInfiniteScroll, and handleLoadMore) and passed in.
-  const { isUserAtBottom, hasNewMessages, scrollToBottom } =
+  const { isUserAtBottom, hasNewMessages, isScrolledUp, scrollToBottom } =
     useScrollManagement({
       messages,
       activeSessionId,
@@ -3970,7 +3970,7 @@ function App() {
                       disabled=${!connected || !activeSessionId}
                       isStreaming=${isStreaming}
                       isRunning=${isRunning}
-                      isAtBottom=${isUserAtBottom}
+                      isScrolledUp=${isScrolledUp}
                       isReadOnly=${sessionInfo?.isReadOnly}
                       isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}

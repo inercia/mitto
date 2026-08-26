@@ -707,7 +707,8 @@ describe("handleImprovePrompt — AbortError detection through SDK wrapping", ()
 // =============================================================================
 // mitto-47l (REOPENED v2): mobile scroll-driven compact composer.
 // Duplicated from ChatInput.js:1801-1806 (isScrollCompact derivation),
-// ChatInput.js:488-510 (debounced isScrollCollapsed effect),
+// ChatInput.js:491-499 (isScrollCollapsed = isScrolledUp direct mapping;
+// hysteresis moved up into useScrollManagement.js),
 // ChatInput.js:2527-2533 (chat-input-container compact class + render-gate
 // independence), ChatInput.js:2362-2369 (chat-input-actionbuttons compact
 // class — the follow-up/action buttons block, which lives OUTSIDE
@@ -735,32 +736,30 @@ function computeIsScrollCompact({
   );
 }
 
-// Duplicated from ChatInput.js:488-510: the debounced effect that derives
-// isScrollCollapsed from the isAtBottom prop. Expansion is immediate/snappy;
-// collapse is delayed by COLLAPSE_DELAY_MS to avoid flicker near the scroll
-// threshold. Mirrors the timeoutRef-based cleanup pattern so re-running the
-// "effect" (simulating a dependency change) cancels any pending timer first,
-// exactly like React would on cleanup between effect runs.
-const SCROLL_COLLAPSE_DELAY_MS = 150;
+// Duplicated from ChatInput.js:491-499: isScrollCollapsed now mirrors the
+// isScrolledUp prop DIRECTLY. The former local 150ms debounce (and its
+// scroll-to-bottom re-pin workaround) were removed — the flicker/"stuck
+// scroll" fix moved the anti-oscillation logic UP into useScrollManagement as
+// asymmetric distance hysteresis (see computeIsScrolledUpHysteresis below),
+// so the composer's collapse state can track the already-debounced signal 1:1.
+function runScrollCollapseEffect({ isScrolledUp, setIsScrollCollapsed }) {
+  setIsScrollCollapsed(isScrolledUp);
+}
 
-function runScrollCollapseEffect({ isAtBottom, setIsScrollCollapsed, timeoutRef }) {
-  if (timeoutRef.current) {
-    clearTimeout(timeoutRef.current);
-    timeoutRef.current = null;
-  }
-  if (isAtBottom) {
-    setIsScrollCollapsed(false);
-    return () => {};
-  }
-  timeoutRef.current = setTimeout(() => {
-    setIsScrollCollapsed(true);
-  }, SCROLL_COLLAPSE_DELAY_MS);
-  return () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-  };
+// Duplicated from useScrollManagement.js: the asymmetric-hysteresis state
+// machine that decides whether the user has "deliberately scrolled up" (which
+// drives the mobile composer collapse). Cross into scrolled-up only past the
+// large COLLAPSE_DISTANCE_PX; cross back only within the small
+// EXPAND_DISTANCE_PX; hold the previous state in the dead-band between them so
+// a moving bottom (streaming / composer expansion) cannot toggle it. Keep
+// these constants in sync with the hook.
+const COLLAPSE_DISTANCE_PX = 160;
+const EXPAND_DISTANCE_PX = 60;
+
+function computeIsScrolledUpHysteresis(prev, distanceFromBottom) {
+  if (!prev && distanceFromBottom > COLLAPSE_DISTANCE_PX) return true;
+  if (prev && distanceFromBottom < EXPAND_DISTANCE_PX) return false;
+  return prev;
 }
 
 // Duplicated from ChatInput.js:2527-2533: the compact class applied to the
@@ -850,88 +849,62 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
     });
   });
 
-  describe("isScrollCollapsed debounce/hysteresis effect", () => {
-    beforeEach(() => {
-      jest.useFakeTimers();
-    });
-    afterEach(() => {
-      jest.useRealTimers();
-    });
-
-    test("scrolling to the bottom expands immediately (snappy), with no pending timer", () => {
+  describe("isScrollCollapsed mirrors isScrolledUp directly", () => {
+    test("collapses when the user is scrolled up", () => {
       const setIsScrollCollapsed = jest.fn();
-      const timeoutRef = { current: null };
-      runScrollCollapseEffect({
-        isAtBottom: true,
-        setIsScrollCollapsed,
-        timeoutRef,
-      });
-      expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
-      expect(timeoutRef.current).toBeNull();
-    });
-
-    test("scrolling away from the bottom does NOT collapse before the debounce elapses", () => {
-      const setIsScrollCollapsed = jest.fn();
-      const timeoutRef = { current: null };
-      runScrollCollapseEffect({
-        isAtBottom: false,
-        setIsScrollCollapsed,
-        timeoutRef,
-      });
-      expect(setIsScrollCollapsed).not.toHaveBeenCalled();
-      jest.advanceTimersByTime(SCROLL_COLLAPSE_DELAY_MS - 1);
-      expect(setIsScrollCollapsed).not.toHaveBeenCalled();
-    });
-
-    test("scrolling away from the bottom collapses once the debounce elapses", () => {
-      const setIsScrollCollapsed = jest.fn();
-      const timeoutRef = { current: null };
-      runScrollCollapseEffect({
-        isAtBottom: false,
-        setIsScrollCollapsed,
-        timeoutRef,
-      });
-      jest.advanceTimersByTime(SCROLL_COLLAPSE_DELAY_MS);
+      runScrollCollapseEffect({ isScrolledUp: true, setIsScrollCollapsed });
       expect(setIsScrollCollapsed).toHaveBeenCalledWith(true);
     });
 
-    test("hysteresis: scrolling back to the bottom before the debounce elapses cancels the pending collapse", () => {
+    test("expands when the user is not scrolled up", () => {
       const setIsScrollCollapsed = jest.fn();
-      const timeoutRef = { current: null };
-      // Scroll away — arms the 150ms collapse timer.
-      const cleanup1 = runScrollCollapseEffect({
-        isAtBottom: false,
-        setIsScrollCollapsed,
-        timeoutRef,
-      });
-      jest.advanceTimersByTime(80);
-      // Dependency change: back at the bottom before the timer fired. React
-      // runs the previous effect's cleanup, then the new effect body.
-      cleanup1();
-      runScrollCollapseEffect({
-        isAtBottom: true,
-        setIsScrollCollapsed,
-        timeoutRef,
-      });
-      // Advance well past the original 150ms mark — the stale timer must
-      // never fire (no flicker back to collapsed).
-      jest.advanceTimersByTime(200);
-      expect(setIsScrollCollapsed).not.toHaveBeenCalledWith(true);
+      runScrollCollapseEffect({ isScrolledUp: false, setIsScrollCollapsed });
       expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
     });
+  });
 
-    test("unmount cleanup cancels a pending collapse timer", () => {
-      const setIsScrollCollapsed = jest.fn();
-      const timeoutRef = { current: null };
-      const cleanup = runScrollCollapseEffect({
-        isAtBottom: false,
-        setIsScrollCollapsed,
-        timeoutRef,
-      });
-      cleanup();
-      jest.advanceTimersByTime(SCROLL_COLLAPSE_DELAY_MS);
-      expect(setIsScrollCollapsed).not.toHaveBeenCalled();
-      expect(timeoutRef.current).toBeNull();
+  describe("useScrollManagement asymmetric hysteresis (the flicker fix)", () => {
+    test("does NOT collapse until the user scrolls up past COLLAPSE_DISTANCE_PX", () => {
+      // Just inside the dead-band from the bottom: stays expanded.
+      expect(
+        computeIsScrolledUpHysteresis(false, COLLAPSE_DISTANCE_PX - 1),
+      ).toBe(false);
+    });
+
+    test("collapses once the user scrolls up past COLLAPSE_DISTANCE_PX", () => {
+      expect(
+        computeIsScrolledUpHysteresis(false, COLLAPSE_DISTANCE_PX + 1),
+      ).toBe(true);
+    });
+
+    test("stays collapsed while inside the dead-band (moving bottom does not toggle)", () => {
+      // Distance between EXPAND and COLLAPSE thresholds: hold previous state.
+      const mid = (COLLAPSE_DISTANCE_PX + EXPAND_DISTANCE_PX) / 2;
+      expect(computeIsScrolledUpHysteresis(true, mid)).toBe(true);
+    });
+
+    test("does NOT expand until the user is back within EXPAND_DISTANCE_PX", () => {
+      // Still above the expand threshold: stays collapsed.
+      expect(
+        computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1),
+      ).toBe(true);
+    });
+
+    test("expands once the user returns within EXPAND_DISTANCE_PX of the bottom", () => {
+      expect(
+        computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX - 1),
+      ).toBe(false);
+    });
+
+    test("dead-band prevents oscillation: a nearly-at-bottom moving target holds state both ways", () => {
+      // Expanded state persists just inside the collapse threshold...
+      expect(
+        computeIsScrolledUpHysteresis(false, COLLAPSE_DISTANCE_PX - 1),
+      ).toBe(false);
+      // ...and collapsed state persists just above the expand threshold.
+      expect(
+        computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1),
+      ).toBe(true);
     });
   });
 
@@ -1054,13 +1027,11 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
     // to-bottom and textarea focus) against the shared derivation/effect
     // helpers already covered above, so this describe block documents all
     // three restore triggers together.
-    test("scroll-to-bottom restores (via the debounce effect) and focus restores (via isScrollCompact)", () => {
+    test("scroll-to-bottom restores (via the direct isScrolledUp mapping) and focus restores (via isScrollCompact)", () => {
       const setIsScrollCollapsed = jest.fn();
-      runScrollCollapseEffect({
-        isAtBottom: true,
-        setIsScrollCollapsed,
-        timeoutRef: { current: null },
-      });
+      // Returning to the bottom clears isScrolledUp (hysteresis in the hook),
+      // which the composer mirrors directly to expand.
+      runScrollCollapseEffect({ isScrolledUp: false, setIsScrollCollapsed });
       expect(setIsScrollCollapsed).toHaveBeenCalledWith(false);
 
       expect(

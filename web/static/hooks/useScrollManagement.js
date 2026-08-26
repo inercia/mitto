@@ -21,7 +21,7 @@ const { useState, useRef, useEffect, useLayoutEffect, useCallback } =
  * @param {boolean} deps.isLoadingMore - Whether older messages are loading (prepend).
  * @param {Object} deps.messagesContainerRef - Ref to the scrollable container.
  * @param {Object} deps.scrollPreservationRef - Ref holding pre-load scroll metrics.
- * @returns {{ isUserAtBottom: boolean, hasNewMessages: boolean, scrollToBottom: Function }}
+ * @returns {{ isUserAtBottom: boolean, hasNewMessages: boolean, isScrolledUp: boolean, scrollToBottom: Function }}
  */
 export function useScrollManagement({
   messages,
@@ -34,6 +34,18 @@ export function useScrollManagement({
 }) {
   const [isUserAtBottom, setIsUserAtBottom] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  // Separate, hysteresis-driven "the user has deliberately scrolled up" signal
+  // that drives the mobile composer collapse (mitto-47l). This is intentionally
+  // NOT the inverse of isUserAtBottom: isUserAtBottom uses a tight threshold (so
+  // the scroll-to-bottom button and streaming auto-scroll react promptly), but
+  // during streaming/composer-expansion the bottom is a MOVING target, so
+  // collapsing the composer off that tight signal caused flicker/"stuck" scroll
+  // artifacts. Instead we only mark the user as scrolled-up once they are a
+  // meaningful distance from the bottom (COLLAPSE_DISTANCE_PX), and only clear
+  // it once they are back very close to the bottom (EXPAND_DISTANCE_PX). The gap
+  // between the two thresholds is a dead-band that prevents oscillation when the
+  // bottom keeps moving underneath a nearly-at-bottom viewport.
+  const [isScrolledUp, setIsScrolledUp] = useState(false);
 
   const prevMessagesLengthRef = useRef(0);
 
@@ -42,6 +54,15 @@ export function useScrollManagement({
   // For smaller ranges, use 25% of maxScroll to ensure the button can appear
   const SCROLL_THRESHOLD_PX = 50;
   const SCROLL_THRESHOLD_PERCENT = 0.25;
+
+  // Asymmetric hysteresis thresholds (in px from the visual bottom) for the
+  // composer-collapse gesture. Collapse only after the user scrolls up past
+  // COLLAPSE_DISTANCE_PX (several lines of reading); restore once they are back
+  // within EXPAND_DISTANCE_PX of the bottom. COLLAPSE must be > EXPAND so there
+  // is a dead-band; EXPAND is a touch larger than the auto-scroll settle jitter
+  // so returning to the bottom reliably restores the composer.
+  const COLLAPSE_DISTANCE_PX = 160;
+  const EXPAND_DISTANCE_PX = 60;
 
   // Check if the user is at the bottom of the messages container
   // With flex-col-reverse on the INNER wrapper (not the scrollable container):
@@ -74,20 +95,6 @@ export function useScrollManagement({
 
   // Scroll to bottom handler
   // With flex-col-reverse on inner wrapper, scrollHeight is the visual bottom
-  //
-  // mitto-47l flicker fix: setting isUserAtBottom(true) causes the mobile
-  // ChatInput to expand its composer, which is a flex sibling of this
-  // scrollable container. That expansion shrinks the container's clientHeight
-  // (raising maxScroll = scrollHeight - clientHeight), moving the "true bottom"
-  // further down AFTER we kicked off the scroll to the old bottom. Intermediate
-  // scroll events then report scrollTop < maxScroll - threshold → isUserAtBottom
-  // flips back to false → the composer collapses again (and no further scroll
-  // event fires to correct it). To break the feedback loop, re-clamp to the
-  // new scrollHeight while the composer expansion keeps growing maxScroll, and
-  // re-assert isUserAtBottom so the composer stays expanded (see the rePin loop
-  // below — it self-terminates as soon as the layout stops shifting so a normal
-  // smooth scroll is never converted into an instant jump).
-  const rePinFramesRef = useRef(null);
   const scrollToBottom = useCallback((smooth = true) => {
     const container = messagesContainerRef.current;
     if (!container) return;
@@ -97,58 +104,11 @@ export function useScrollManagement({
     });
     setIsUserAtBottom(true);
     setHasNewMessages(false);
-
-    // Cancel any in-flight re-pin loop before starting a new one.
-    if (rePinFramesRef.current) {
-      cancelAnimationFrame(rePinFramesRef.current);
-      rePinFramesRef.current = null;
-    }
-    // Re-pin each frame ONLY while the container's maxScroll is still growing,
-    // i.e. while the composer is actually mid-expansion and moving the bottom.
-    // In the common case (desktop, or already-expanded composer) maxScroll is
-    // stable from the first frame, so the loop exits after one settle-check and
-    // the smooth animation kicked off above is left to run untouched. When the
-    // composer IS expanding (mobile, was collapsed), maxScroll increases each
-    // frame; we re-clamp to the new scrollHeight and re-assert at-bottom until
-    // it stabilizes (bounded by RE_PIN_MAX_MS so a jittery layout can't loop
-    // forever). This is what breaks the flicker feedback loop without turning
-    // every normal scroll-to-bottom into an instant jump.
-    const RE_PIN_MAX_MS = 400;
-    const now = () =>
-      typeof performance !== "undefined" && performance.now
-        ? performance.now()
-        : Date.now();
-    const startTs = now();
-    let prevMaxScroll = container.scrollHeight - container.clientHeight;
-    let stableFrames = 0;
-    const rePin = () => {
-      const c = messagesContainerRef.current;
-      if (!c) {
-        rePinFramesRef.current = null;
-        return;
-      }
-      const maxScroll = c.scrollHeight - c.clientHeight;
-      const grew = maxScroll > prevMaxScroll + 0.5;
-      prevMaxScroll = maxScroll;
-      if (grew) {
-        // Layout is still shifting (composer expanding): re-clamp to the new
-        // bottom and hold at-bottom so the composer stays expanded.
-        c.scrollTop = c.scrollHeight;
-        setIsUserAtBottom(true);
-        setHasNewMessages(false);
-        stableFrames = 0;
-      } else {
-        stableFrames += 1;
-      }
-      // Stop once the layout has been stable for a couple of frames, or the
-      // safety budget elapses.
-      if (stableFrames < 2 && now() - startTs < RE_PIN_MAX_MS) {
-        rePinFramesRef.current = requestAnimationFrame(rePin);
-      } else {
-        rePinFramesRef.current = null;
-      }
-    };
-    rePinFramesRef.current = requestAnimationFrame(rePin);
+    // Returning to the bottom clears the "scrolled up" gesture state, so the
+    // mobile composer expands (see isScrolledUp + the scroll handler's
+    // hysteresis below). Kept in sync here because a programmatic scroll may
+    // not fire a scroll event if the position does not actually change.
+    setIsScrolledUp(false);
   }, []);
 
   // Position the messages container at the visual bottom instantly (bypassing CSS
@@ -215,6 +175,23 @@ export function useScrollManagement({
       if (atBottom) {
         setHasNewMessages(false);
       }
+
+      // Composer-collapse gesture with asymmetric hysteresis (mitto-47l).
+      // Uses raw distance-from-bottom rather than the tight isUserAtBottom
+      // signal so a moving bottom (streaming / composer expansion) does not
+      // toggle the collapse. Only cross into "scrolled up" past the large
+      // COLLAPSE threshold, only cross back once within the small EXPAND
+      // threshold; hold state in the dead-band between them.
+      const c = messagesContainerRef.current;
+      if (c) {
+        const distanceFromBottom =
+          c.scrollHeight - c.clientHeight - c.scrollTop;
+        setIsScrolledUp((prev) => {
+          if (!prev && distanceFromBottom > COLLAPSE_DISTANCE_PX) return true;
+          if (prev && distanceFromBottom < EXPAND_DISTANCE_PX) return false;
+          return prev;
+        });
+      }
     };
 
     // Check initial scroll position on mount
@@ -230,17 +207,12 @@ export function useScrollManagement({
       container.removeEventListener("scroll", onScroll);
   });
 
-  // Detach the scroll listener (and cancel any in-flight scroll-to-bottom
-  // re-pin loop) when the hook unmounts.
+  // Detach the scroll listener when the hook unmounts.
   useEffect(() => {
     return () => {
       if (detachScrollRef.current) {
         detachScrollRef.current();
         detachScrollRef.current = null;
-      }
-      if (rePinFramesRef.current) {
-        cancelAnimationFrame(rePinFramesRef.current);
-        rePinFramesRef.current = null;
       }
     };
   }, []);
@@ -395,7 +367,8 @@ export function useScrollManagement({
   useEffect(() => {
     setIsUserAtBottom(true);
     setHasNewMessages(false);
+    setIsScrolledUp(false);
   }, [activeSessionId]);
 
-  return { isUserAtBottom, hasNewMessages, scrollToBottom };
+  return { isUserAtBottom, hasNewMessages, isScrolledUp, scrollToBottom };
 }

@@ -140,7 +140,7 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.isStreaming - Whether agent is currently streaming
  * @param {boolean} props.isReadOnly - Whether session is read-only
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
- * @param {boolean} [props.isAtBottom] - Whether the messages view is scrolled to the bottom (from useScrollManagement). On mobile, scrolling away from the bottom collapses the composer to a compact affordance; returning to the bottom (or focusing the textarea) restores it.
+ * @param {boolean} [props.isScrolledUp] - Whether the user has deliberately scrolled UP away from the bottom (hysteresis-driven signal from useScrollManagement: true only after scrolling up several lines, cleared only once back near the bottom). On mobile this collapses the composer to a compact affordance; returning to the bottom, tapping the affordance, or focusing the textarea restores it. The asymmetric thresholds live in the hook so a moving bottom (streaming/expansion) does not toggle the collapse.
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
  * @param {Object} props.inputRef - Ref for external focus control
@@ -172,7 +172,7 @@ export function ChatInput({
   isRunning = true,
   isReadOnly,
   isArchived = false,
-  isAtBottom = true,
+  isScrolledUp = false,
   isArchivePending = false,
   predefinedPrompts = [],
   inputRef,
@@ -487,28 +487,16 @@ export function ChatInput({
   }, []);
 
   const [isScrollCollapsed, setIsScrollCollapsed] = useState(false);
-  const scrollCollapseTimeoutRef = useRef(null);
   useEffect(() => {
-    if (scrollCollapseTimeoutRef.current) {
-      clearTimeout(scrollCollapseTimeoutRef.current);
-      scrollCollapseTimeoutRef.current = null;
-    }
-    if (isAtBottom) {
-      // Expand immediately (snappy) when back at the bottom.
-      setIsScrollCollapsed(false);
-      return undefined;
-    }
-    // Collapse after a light debounce to avoid flicker near the threshold.
-    scrollCollapseTimeoutRef.current = setTimeout(() => {
-      setIsScrollCollapsed(true);
-    }, 150);
-    return () => {
-      if (scrollCollapseTimeoutRef.current) {
-        clearTimeout(scrollCollapseTimeoutRef.current);
-        scrollCollapseTimeoutRef.current = null;
-      }
-    };
-  }, [isAtBottom]);
+    // isScrolledUp already carries asymmetric-hysteresis semantics from
+    // useScrollManagement (collapse only after scrolling up several lines,
+    // expand only once back near the bottom), so the composer's collapse state
+    // can mirror it directly. The earlier local debounce that fought a moving
+    // "at bottom" target — and its re-pin workaround — are gone: the dead-band
+    // now lives in the scroll handler, which is what fixed the streaming
+    // "stuck scroll" flicker (mitto-47l).
+    setIsScrollCollapsed(isScrolledUp);
+  }, [isScrolledUp]);
 
   // Clear pending images/files and sending state when session changes
   // Note: improving state is tracked per-session in improvingSessionsRef and persists
