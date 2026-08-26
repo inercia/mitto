@@ -751,8 +751,11 @@ function runScrollCollapseEffect({ isScrolledUp, setIsScrollCollapsed }) {
 // drives the mobile composer collapse). Cross into scrolled-up only past the
 // large COLLAPSE_DISTANCE_PX; cross back only within the small
 // EXPAND_DISTANCE_PX; hold the previous state in the dead-band between them so
-// a moving bottom (streaming / composer expansion) cannot toggle it. Keep
-// these constants in sync with the hook.
+// a moving bottom (streaming / composer expansion) cannot toggle it. On top of
+// this steady-state decision, the COLLAPSE (hide) transition is DEBOUNCED (see
+// createDebouncedCollapseModel below) so a transient long-chunk streaming jump
+// past COLLAPSE_DISTANCE_PX that self-corrects never flickers the composer.
+// Keep these constants in sync with the hook.
 const COLLAPSE_DISTANCE_PX = 160;
 const EXPAND_DISTANCE_PX = 60;
 
@@ -760,6 +763,70 @@ function computeIsScrolledUpHysteresis(prev, distanceFromBottom) {
   if (!prev && distanceFromBottom > COLLAPSE_DISTANCE_PX) return true;
   if (prev && distanceFromBottom < EXPAND_DISTANCE_PX) return false;
   return prev;
+}
+
+// Duplicated from useScrollManagement.js handleScroll: the DEBOUNCED collapse
+// state machine (mitto-47l flicker fix). The collapse (hide) transition is not
+// committed on the scroll event that first crosses COLLAPSE_DISTANCE_PX; it is
+// deferred behind a timer that re-reads the LIVE distance when it fires, so a
+// transient streaming jump that self-corrects (auto-scroll re-pin, or the user
+// scrolling back down) never collapses the composer. Expand stays immediate and
+// cancels any pending collapse. This tiny scheduler models that behavior with
+// an injectable clock so tests can drive it deterministically.
+//
+// Usage: create a scheduler, feed it scroll observations via observe(prev,
+// distanceFromBottom), advance the fake clock, and read committed transitions.
+function createDebouncedCollapseModel({ collapseDelayMs = 250 } = {}) {
+  let timer = null; // { fireAt, prevAtArm } | null
+  const events = []; // committed { type: "collapse"|"expand" }
+  const cancelPending = () => {
+    timer = null;
+  };
+  // Returns the immediately-committed next state (expand is synchronous; a
+  // pending collapse leaves state unchanged until the timer fires).
+  const observe = (prev, distanceFromBottom, nowMs) => {
+    if (prev) {
+      if (distanceFromBottom < EXPAND_DISTANCE_PX) {
+        cancelPending();
+        events.push({ type: "expand" });
+        return false;
+      }
+      return prev;
+    }
+    if (distanceFromBottom > COLLAPSE_DISTANCE_PX) {
+      if (!timer) timer = { fireAt: nowMs + collapseDelayMs };
+    } else {
+      cancelPending();
+    }
+    return prev;
+  };
+  // A streaming re-pin (scrollToBottom) cancels any armed collapse and forces
+  // the expanded state, exactly like the hook's scrollToBottom.
+  const rePin = () => {
+    cancelPending();
+    return false;
+  };
+  // Advance the clock; if a collapse timer is due, re-check the live distance
+  // (supplied by the caller) before committing — mirroring the hook's timer
+  // callback which reads the container again.
+  const advanceTo = (nowMs, liveDistanceFromBottom) => {
+    if (timer && nowMs >= timer.fireAt) {
+      timer = null;
+      if (liveDistanceFromBottom > COLLAPSE_DISTANCE_PX) {
+        events.push({ type: "collapse" });
+        return true;
+      }
+      return false;
+    }
+    return undefined; // nothing committed
+  };
+  return {
+    observe,
+    rePin,
+    advanceTo,
+    hasPending: () => timer !== null,
+    events: () => events.slice(),
+  };
 }
 
 // Duplicated from ChatInput.js:2527-2533: the compact class applied to the
@@ -905,6 +972,73 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
       expect(
         computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1),
       ).toBe(true);
+    });
+  });
+
+  describe("useScrollManagement debounced collapse (streaming long-chunk flicker fix)", () => {
+    test("a transient jump past COLLAPSE that self-corrects before the delay never collapses", () => {
+      const m = createDebouncedCollapseModel({ collapseDelayMs: 250 });
+      // Long streamed chunk momentarily pushes us far from the (new) bottom.
+      m.observe(false, COLLAPSE_DISTANCE_PX + 400, 0);
+      expect(m.hasPending()).toBe(true);
+      // Auto-scroll re-pins to the new bottom (scrollToBottom) BEFORE the timer.
+      expect(m.rePin()).toBe(false);
+      expect(m.hasPending()).toBe(false);
+      // Even after the original delay elapses, nothing is committed.
+      expect(m.advanceTo(300, /* live */ 0)).toBe(undefined);
+      expect(m.events()).toEqual([]);
+    });
+
+    test("scrolling back down before the delay cancels the pending collapse", () => {
+      const m = createDebouncedCollapseModel({ collapseDelayMs: 250 });
+      m.observe(false, COLLAPSE_DISTANCE_PX + 200, 0);
+      expect(m.hasPending()).toBe(true);
+      // User scrolls back within the dead-band (below COLLAPSE): timer cancelled.
+      m.observe(false, EXPAND_DISTANCE_PX + 10, 100);
+      expect(m.hasPending()).toBe(false);
+      expect(m.advanceTo(300, EXPAND_DISTANCE_PX + 10)).toBe(undefined);
+      expect(m.events()).toEqual([]);
+    });
+
+    test("a genuine sustained scroll-up DOES collapse after the delay", () => {
+      const m = createDebouncedCollapseModel({ collapseDelayMs: 250 });
+      m.observe(false, COLLAPSE_DISTANCE_PX + 300, 0);
+      expect(m.hasPending()).toBe(true);
+      // Still far from the bottom when the timer fires → commit collapse.
+      expect(m.advanceTo(250, COLLAPSE_DISTANCE_PX + 300)).toBe(true);
+      expect(m.events()).toEqual([{ type: "collapse" }]);
+      expect(m.hasPending()).toBe(false);
+    });
+
+    test("timer re-checks the LIVE distance: fires but self-cancels if back near bottom", () => {
+      const m = createDebouncedCollapseModel({ collapseDelayMs: 250 });
+      m.observe(false, COLLAPSE_DISTANCE_PX + 300, 0);
+      // By the time the timer fires the view has settled at the bottom (a
+      // scroll event that did not itself cross the expand threshold cancels via
+      // observe, but this guards the race where no such event arrived).
+      expect(m.advanceTo(250, /* live */ 5)).toBe(false);
+      expect(m.events()).toEqual([]);
+    });
+
+    test("expand is immediate and cancels any armed collapse", () => {
+      const m = createDebouncedCollapseModel({ collapseDelayMs: 250 });
+      // Arm a collapse from the expanded state...
+      m.observe(false, COLLAPSE_DISTANCE_PX + 100, 0);
+      expect(m.hasPending()).toBe(true);
+      // ...then, already-collapsed, a return within EXPAND expands immediately.
+      expect(m.observe(true, EXPAND_DISTANCE_PX - 1, 50)).toBe(false);
+      expect(m.events()).toEqual([{ type: "expand" }]);
+      expect(m.hasPending()).toBe(false);
+    });
+
+    test("only ONE timer is armed across repeated past-COLLAPSE scroll events", () => {
+      const m = createDebouncedCollapseModel({ collapseDelayMs: 250 });
+      m.observe(false, COLLAPSE_DISTANCE_PX + 500, 0);
+      m.observe(false, COLLAPSE_DISTANCE_PX + 480, 30);
+      m.observe(false, COLLAPSE_DISTANCE_PX + 460, 60);
+      // The first arm's deadline (0 + 250) still governs — not re-extended.
+      expect(m.advanceTo(250, COLLAPSE_DISTANCE_PX + 460)).toBe(true);
+      expect(m.events()).toEqual([{ type: "collapse" }]);
     });
   });
 

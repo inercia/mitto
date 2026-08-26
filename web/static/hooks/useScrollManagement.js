@@ -64,6 +64,24 @@ export function useScrollManagement({
   const COLLAPSE_DISTANCE_PX = 160;
   const EXPAND_DISTANCE_PX = 60;
 
+  // Debounce ONLY the collapse (hide) transition (mitto-47l). When the agent
+  // streams a long chunk at once, scrollHeight can jump past COLLAPSE_DISTANCE_PX
+  // in a single layout update, momentarily reporting the viewport far from the
+  // (new) bottom BEFORE the auto-scroll effect re-pins. Committing the collapse
+  // on that transient scroll event flickered the composer away and back. Instead
+  // we arm a short timer; if the view settles back near the bottom (streaming
+  // re-pin via scrollToBottom, or the user scrolls back down) the timer is
+  // cancelled and no collapse happens. The expand (restore) transition stays
+  // immediate so returning to the bottom always feels responsive.
+  const COLLAPSE_DELAY_MS = 250;
+  const collapseTimerRef = useRef(null);
+  const cancelPendingCollapse = useCallback(() => {
+    if (collapseTimerRef.current) {
+      clearTimeout(collapseTimerRef.current);
+      collapseTimerRef.current = null;
+    }
+  }, []);
+
   // Check if the user is at the bottom of the messages container
   // With flex-col-reverse on the INNER wrapper (not the scrollable container):
   // - scrollTop=0 means we're at the visual TOP (oldest messages)
@@ -108,8 +126,12 @@ export function useScrollManagement({
     // mobile composer expands (see isScrolledUp + the scroll handler's
     // hysteresis below). Kept in sync here because a programmatic scroll may
     // not fire a scroll event if the position does not actually change.
+    // Also cancel any pending (debounced) collapse: a streaming re-pin means
+    // the transient large jump that armed it has already self-corrected, so the
+    // composer must NOT collapse.
+    cancelPendingCollapse();
     setIsScrolledUp(false);
-  }, []);
+  }, [cancelPendingCollapse]);
 
   // Position the messages container at the visual bottom instantly (bypassing CSS
   // scroll-behavior: smooth) and mark the user as at-bottom. Shared by the
@@ -182,13 +204,44 @@ export function useScrollManagement({
       // toggle the collapse. Only cross into "scrolled up" past the large
       // COLLAPSE threshold, only cross back once within the small EXPAND
       // threshold; hold state in the dead-band between them.
+      //
+      // The collapse (hide) transition is additionally DEBOUNCED: a long
+      // streamed chunk can momentarily push distanceFromBottom past COLLAPSE
+      // before auto-scroll re-pins, so we only commit the collapse if the view
+      // is still past the threshold after COLLAPSE_DELAY_MS. Any expand-side
+      // condition (back within EXPAND, or a streaming re-pin via scrollToBottom)
+      // cancels the pending timer. Expand stays immediate.
       const c = messagesContainerRef.current;
       if (c) {
         const distanceFromBottom =
           c.scrollHeight - c.clientHeight - c.scrollTop;
         setIsScrolledUp((prev) => {
-          if (!prev && distanceFromBottom > COLLAPSE_DISTANCE_PX) return true;
-          if (prev && distanceFromBottom < EXPAND_DISTANCE_PX) return false;
+          if (prev) {
+            // Already collapsed: restore immediately once back near the bottom.
+            if (distanceFromBottom < EXPAND_DISTANCE_PX) {
+              cancelPendingCollapse();
+              return false;
+            }
+            return prev;
+          }
+          // Not yet collapsed. If we're past the collapse threshold, arm the
+          // debounced collapse (re-checking the live distance when it fires so
+          // a transient jump that self-corrects never commits). Otherwise make
+          // sure no stale collapse is pending.
+          if (distanceFromBottom > COLLAPSE_DISTANCE_PX) {
+            if (!collapseTimerRef.current) {
+              collapseTimerRef.current = setTimeout(() => {
+                collapseTimerRef.current = null;
+                const live = messagesContainerRef.current;
+                if (!live) return;
+                const dist =
+                  live.scrollHeight - live.clientHeight - live.scrollTop;
+                if (dist > COLLAPSE_DISTANCE_PX) setIsScrolledUp(true);
+              }, COLLAPSE_DELAY_MS);
+            }
+          } else {
+            cancelPendingCollapse();
+          }
           return prev;
         });
       }
@@ -207,15 +260,17 @@ export function useScrollManagement({
       container.removeEventListener("scroll", onScroll);
   });
 
-  // Detach the scroll listener when the hook unmounts.
+  // Detach the scroll listener (and cancel any pending debounced collapse)
+  // when the hook unmounts.
   useEffect(() => {
     return () => {
       if (detachScrollRef.current) {
         detachScrollRef.current();
         detachScrollRef.current = null;
       }
+      cancelPendingCollapse();
     };
-  }, []);
+  }, [cancelPendingCollapse]);
 
   // Track the active session to detect when we switch sessions
   const prevActiveSessionIdRef = useRef(activeSessionId);
@@ -367,8 +422,9 @@ export function useScrollManagement({
   useEffect(() => {
     setIsUserAtBottom(true);
     setHasNewMessages(false);
+    cancelPendingCollapse();
     setIsScrolledUp(false);
-  }, [activeSessionId]);
+  }, [activeSessionId, cancelPendingCollapse]);
 
   return { isUserAtBottom, hasNewMessages, isScrolledUp, scrollToBottom };
 }
