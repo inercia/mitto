@@ -362,6 +362,36 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 // so we use the original password from req for runtime auth configuration.
 // Returns a non-nil *ExternalAccessWarning when the save results in the external
 // listener not running even though external access was intended to be on.
+// mergeRuntimeAuth builds the RUNNING WebAuth for a simple-auth save, injecting
+// the real (keychain-resolved) password into Simple while carrying every other
+// WebAuth field forward. Rebuilding a fresh WebAuth{Simple: ...} here used to
+// silently drop the sibling fields from the running config — notably disabling
+// passkeys after any save that included simple auth (mitto-4mz): the subsequent
+// ConfigurePasskey re-derivation then saw a nil Webauthn and cleared the armed
+// Relying Party, so /api/auth-info reported passkey:false even though
+// settings.json still had webauthn.enabled=true.
+//
+// savedAuth is the settings-derived auth (populated by buildNewSettings; it
+// carries the authoritative Cloudflare and Webauthn from the save request).
+// existingAuth is the current running auth (source of Allow and SharedToken,
+// which are not part of the config-save request body). Either may be nil.
+func mergeRuntimeAuth(savedAuth, existingAuth *configPkg.WebAuth, username, password string) *configPkg.WebAuth {
+	runtimeAuth := &configPkg.WebAuth{}
+	if savedAuth != nil {
+		runtimeAuth.Cloudflare = savedAuth.Cloudflare
+		runtimeAuth.Webauthn = savedAuth.Webauthn
+	}
+	if existingAuth != nil {
+		runtimeAuth.Allow = existingAuth.Allow
+		runtimeAuth.SharedToken = existingAuth.SharedToken
+	}
+	runtimeAuth.Simple = &configPkg.SimpleAuth{
+		Username: username,
+		Password: password,
+	}
+	return runtimeAuth
+}
+
 func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.Settings) *ExternalAccessWarning {
 	// Build ACP server list for internal config (including per-server prompts)
 	newACPServers := make([]configPkg.ACPServer, len(settings.ACPServers))
@@ -392,12 +422,14 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		if password == "" && oldAuthEnabled && s.config.MittoConfig.Web.Auth.Simple != nil {
 			password = s.config.MittoConfig.Web.Auth.Simple.Password
 		}
-		runtimeWebConfig.Auth = &configPkg.WebAuth{
-			Simple: &configPkg.SimpleAuth{
-				Username: req.Web.Auth.Simple.Username,
-				Password: password,
-			},
+		var existingAuth *configPkg.WebAuth
+		if s.config.MittoConfig != nil {
+			existingAuth = s.config.MittoConfig.Web.Auth
 		}
+		runtimeWebConfig.Auth = mergeRuntimeAuth(
+			settings.Web.Auth, existingAuth,
+			req.Web.Auth.Simple.Username, password,
+		)
 	}
 
 	// Update ACP servers, prompts, web config, UI config, session config, and conversations config

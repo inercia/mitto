@@ -939,3 +939,109 @@ func TestBuildNewSettings_ModelsFiltersBlankNames(t *testing.T) {
 		}
 	}
 }
+
+// TestMergeRuntimeAuth_PreservesWebauthnAndCloudflare is a regression test for
+// mitto-4mz: a settings save that carries simple auth must NOT drop the sibling
+// Webauthn (passkey) or Cloudflare config from the RUNNING WebAuth. Previously
+// the runtime-auth rebuild produced a fresh WebAuth{Simple: ...}, so the later
+// ConfigurePasskey re-derivation saw a nil Webauthn and silently cleared the
+// armed Relying Party — /api/auth-info then reported passkey:false even though
+// settings.json still had webauthn.enabled=true.
+func TestMergeRuntimeAuth_PreservesWebauthnAndCloudflare(t *testing.T) {
+	// savedAuth mirrors what buildNewSettings produces from the save request:
+	// authoritative Cloudflare + Webauthn, a redacted (empty) Simple password.
+	savedAuth := &config.WebAuth{
+		Simple:     &config.SimpleAuth{Username: "user", Password: ""},
+		Cloudflare: &config.CloudflareAuth{TeamDomain: "team", Audience: "aud"},
+		Webauthn:   &config.WebAuthnConfig{Enabled: true},
+	}
+	// existingAuth is the running config: source of Allow + SharedToken, which
+	// are not part of the save-request body.
+	existingAuth := &config.WebAuth{
+		Simple:      &config.SimpleAuth{Username: "user", Password: "realpass"},
+		Allow:       &config.AuthAllow{IPs: []string{"10.0.0.0/8"}},
+		SharedToken: "tok-123",
+		Webauthn:    &config.WebAuthnConfig{Enabled: true},
+	}
+
+	got := mergeRuntimeAuth(savedAuth, existingAuth, "user", "realpass")
+
+	if got.Webauthn == nil || !got.Webauthn.Enabled {
+		t.Error("mergeRuntimeAuth dropped Webauthn (regression: mitto-4mz)")
+	}
+	if got.Cloudflare == nil || got.Cloudflare.TeamDomain != "team" {
+		t.Error("mergeRuntimeAuth dropped Cloudflare")
+	}
+	if got.Allow == nil || len(got.Allow.IPs) != 1 {
+		t.Error("mergeRuntimeAuth dropped Allow (should be preserved from existing runtime auth)")
+	}
+	if got.SharedToken != "tok-123" {
+		t.Error("mergeRuntimeAuth dropped SharedToken (should be preserved from existing runtime auth)")
+	}
+	if got.Simple == nil || got.Simple.Password != "realpass" {
+		t.Errorf("mergeRuntimeAuth Simple password = %q, want realpass", func() string {
+			if got.Simple == nil {
+				return "<nil>"
+			}
+			return got.Simple.Password
+		}())
+	}
+}
+
+// TestMergeRuntimeAuth_NilInputs verifies the helper tolerates nil saved/existing
+// auth (e.g. a first-time simple-auth enable) and still produces a Simple block.
+func TestMergeRuntimeAuth_NilInputs(t *testing.T) {
+	got := mergeRuntimeAuth(nil, nil, "user", "pw")
+	if got == nil || got.Simple == nil {
+		t.Fatal("mergeRuntimeAuth(nil, nil, ...) must still return a WebAuth with Simple set")
+	}
+	if got.Webauthn != nil || got.Cloudflare != nil {
+		t.Error("mergeRuntimeAuth(nil, nil, ...) must not fabricate Webauthn/Cloudflare")
+	}
+}
+
+// TestApplyConfigChanges_SimpleAuthSaveArmsPasskey exercises the full save path
+// (buildNewSettings + ConfigurePasskey re-derivation) against a live AuthManager
+// to prove passkeys stay armed after a simple-auth save. It stubs the
+// SessionManager collaborator that applyConfigChanges also touches.
+func TestApplyConfigChanges_SimpleAuthSaveArmsPasskey(t *testing.T) {
+	const externalAddr = "https://mitto.example.com"
+
+	oldAuth := &config.WebAuth{
+		Simple:   &config.SimpleAuth{Username: "user", Password: "oldpass"},
+		Webauthn: &config.WebAuthnConfig{Enabled: true},
+	}
+
+	settings := &config.Settings{
+		Web: config.WebConfig{
+			ExternalPort: -1,
+			Auth: &config.WebAuth{
+				Simple:   &config.SimpleAuth{Username: "user", Password: ""},
+				Webauthn: &config.WebAuthnConfig{Enabled: true},
+			},
+			Hooks: config.WebHooks{ExternalAddress: externalAddr},
+		},
+	}
+
+	authMgr := middleware.NewAuthManager(oldAuth)
+	// Verify precondition: derivation is valid for this address.
+	if err := authMgr.ConfigurePasskey(oldAuth.Webauthn, externalAddr); err != nil {
+		t.Fatalf("precondition: ConfigurePasskey failed: %v", err)
+	}
+	if !authMgr.HasPasskeyEnabled() {
+		t.Fatal("precondition: passkeys should be armed before the save")
+	}
+
+	runtimeAuth := mergeRuntimeAuth(settings.Web.Auth, oldAuth, "user", "oldpass")
+	// Re-run the same ConfigurePasskey call applyConfigChanges makes after the merge.
+	var webauthnCfg *config.WebAuthnConfig
+	if runtimeAuth != nil {
+		webauthnCfg = runtimeAuth.Webauthn
+	}
+	if err := authMgr.ConfigurePasskey(webauthnCfg, externalAddr); err != nil {
+		t.Fatalf("ConfigurePasskey after merge failed: %v", err)
+	}
+	if !authMgr.HasPasskeyEnabled() {
+		t.Fatal("HasPasskeyEnabled() = false after simple-auth save; passkeys were silently disabled (regression: mitto-4mz)")
+	}
+}
