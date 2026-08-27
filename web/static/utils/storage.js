@@ -917,11 +917,13 @@ const CATEGORY_FILTER_KEY = "mitto_category_filter";
 
 /**
  * Default category filter: all categories visible.
- * Shape: { regular, loop, archived, tasks } (all booleans).
+ * Shape: { regular, loopRunning, loopIdle, loopPaused, archived, tasks } (all booleans).
  */
 export const DEFAULT_CATEGORY_FILTER = {
   regular: true,
-  loop: true,
+  loopRunning: true,
+  loopIdle: true,
+  loopPaused: true,
   archived: true,
   tasks: true,
 };
@@ -930,7 +932,7 @@ export const DEFAULT_CATEGORY_FILTER = {
  * Read the category filter from sessionStorage (browser-session scope; resets
  * in a fresh browser session). Returns the all-visible default when unset or
  * invalid.
- * @returns {{regular: boolean, loop: boolean, archived: boolean, tasks: boolean}}
+ * @returns {{regular: boolean, loopRunning: boolean, loopIdle: boolean, loopPaused: boolean, archived: boolean, tasks: boolean}}
  */
 export function getCategoryFilter() {
   try {
@@ -939,7 +941,9 @@ export function getCategoryFilter() {
     const parsed = JSON.parse(value);
     return {
       regular: parsed.regular !== false,
-      loop: parsed.loop !== false,
+      loopRunning: parsed.loopRunning !== false,
+      loopIdle: parsed.loopIdle !== false,
+      loopPaused: parsed.loopPaused !== false,
       archived: parsed.archived !== false,
       tasks: parsed.tasks !== false,
     };
@@ -951,14 +955,16 @@ export function getCategoryFilter() {
 
 /**
  * Persist the category filter to sessionStorage (browser-session scope).
- * @param {{regular: boolean, loop: boolean, archived: boolean, tasks: boolean}} state
+ * @param {{regular: boolean, loopRunning: boolean, loopIdle: boolean, loopPaused: boolean, archived: boolean, tasks: boolean}} state
  */
 export function setCategoryFilter(state) {
   try {
     const s = state || {};
     const normalized = {
       regular: s.regular !== false,
-      loop: s.loop !== false,
+      loopRunning: s.loopRunning !== false,
+      loopIdle: s.loopIdle !== false,
+      loopPaused: s.loopPaused !== false,
       archived: s.archived !== false,
       tasks: s.tasks !== false,
     };
