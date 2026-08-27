@@ -122,6 +122,51 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 	}
 }
 
+// TestGCTier1_SkipsStartupRecoveryPendingSession reproduces mitto-69t: a
+// batch-spawned child mid startup model-switch/constraint recovery is not
+// IsPrompting (its queued prompt is gated behind the constraint) and has no
+// observers yet. Once the recently-resumed grace period elapses, Tier 1 must
+// still not close it while StartupRecoveryPending is true — otherwise the
+// idle-GC interrupts bounded startup recovery and the queued prompt is lost
+// (see the investigation comment on mitto-69t for the full mechanism).
+func TestGCTier1_SkipsStartupRecoveryPendingSession(t *testing.T) {
+	resumedLongAgo := time.Now().Add(-time.Hour) // well past the 30s Interval grace
+
+	sessions := map[string][]conversation.SessionInfo{
+		"ws-1": {
+			{
+				SessionID:              "sess-startup-recovery",
+				WorkspaceUUID:          "ws-1",
+				IsPrompting:            false,
+				HasObservers:           false,
+				QueueLength:            0,
+				ResumedAt:              resumedLongAgo,
+				StartupRecoveryPending: true,
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if closed["sess-startup-recovery"] {
+		t.Errorf("Tier 1 GC must not close a session with StartupRecoveryPending=true; it interrupts in-flight startup model-switch recovery (mitto-69t)")
+	}
+}
+
 // TestGCTier1_ClosesSessionWithDistantLoop verifies that a session whose
 // next loop prompt is far in the future (beyond 2×interval) is still
 // considered idle and is closed by Tier 1.

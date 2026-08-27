@@ -323,6 +323,23 @@ gcTier1:
 				}
 				continue
 			}
+			// Skip sessions with an in-flight startup model-switch/constraint
+			// recovery (mitto-69t): a freshly-spawned batch child gated behind
+			// the constraint is neither IsPrompting nor guaranteed to have a
+			// non-empty queue (the prompt may not be enqueued yet, or is
+			// momentarily popped during a duplicate-skip window), so without
+			// this guard idle-GC can close it mid-recovery and its queued
+			// prompt is lost. Tier 6's degraded-process recycle is left
+			// unguarded — a confirmed-degraded process is not self-healing and
+			// that recycle is the intended wedge-escape recovery hands off to.
+			if s.StartupRecoveryPending {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (startup recovery pending)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID)
+				}
+				continue
+			}
 
 			// Determine if this is a loop session eligible for suspension.
 			// A loop session qualifies when:

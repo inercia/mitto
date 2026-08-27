@@ -51,4 +51,11 @@ type SessionInfo struct {
 	// the past, the pin is EXPIRED and must NOT be honoured — the session then
 	// falls through to the normal GC checks. nil means no expiry.
 	PinExpiry *time.Time
+	// StartupRecoveryPending mirrors BackgroundSession.StartupRecoveryPending():
+	// true while a startup model-switch/constraint is still pending or its
+	// recovery retry is in flight. Used by GC Tier 1 (idle) to avoid closing a
+	// freshly-spawned session whose queued prompt is gated behind the
+	// constraint (and therefore neither IsPrompting nor QueueLength>0 protect
+	// it) — see mitto-69t.
+	StartupRecoveryPending bool
 }

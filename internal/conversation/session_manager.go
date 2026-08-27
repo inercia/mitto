@@ -3537,6 +3537,7 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			LastActivityAt:         bs.LastActivityAt(),
 			LastResponseCompleteAt: bs.GetLastResponseCompleteTime(),
 			LastStreamActivityAt:   bs.LastStreamActivityAt(),
+			StartupRecoveryPending: bs.StartupRecoveryPending(),
 		})
 	}
 	return result
