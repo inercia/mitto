@@ -76,3 +76,69 @@ describe("SessionList.js: sidebar toolbar bottom gap", () => {
     expect(snippet).not.toMatch(/pb-8/);
   });
 });
+
+describe("SessionList.js: category-filter dropdown Loops subsection (mitto-k53.3)", () => {
+  test("anyCategoryHidden gates on all six toggles: regular, archived, tasks, loopRunning, loopIdle, loopPaused", () => {
+    const idx = listJs.indexOf("const anyCategoryHidden =");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = listJs.slice(idx, idx + 250);
+    expect(snippet).toMatch(/!categoryFilter\.regular/);
+    expect(snippet).toMatch(/!categoryFilter\.archived/);
+    expect(snippet).toMatch(/!categoryFilter\.tasks/);
+    expect(snippet).toMatch(/!categoryFilter\.loopRunning/);
+    expect(snippet).toMatch(/!categoryFilter\.loopIdle/);
+    expect(snippet).toMatch(/!categoryFilter\.loopPaused/);
+    // The old single "loop" toggle must be gone from this predicate.
+    expect(snippet).not.toMatch(/!categoryFilter\.loop[^RIP]/);
+  });
+
+  test("dropdown descriptor array replaces the single Loop checkbox with a Loops title + three indented toggles", () => {
+    const idx = listJs.indexOf(
+      '<li class="menu-title text-xs">Show categories</li>',
+    );
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = listJs.slice(idx, idx + 2000);
+
+    // Top-level toggles unchanged.
+    expect(snippet).toMatch(/\{ key: "regular", label: "Regular" \}/);
+    expect(snippet).toMatch(/\{ key: "archived", label: "Archived" \}/);
+    expect(snippet).toMatch(/\{ key: "tasks", label: "Tasks" \}/);
+
+    // The old single "Loop" checkbox descriptor must be gone.
+    expect(snippet).not.toMatch(/\{ key: "loop", label: "Loop" \}/);
+
+    // Section title marker for the Loops subsection.
+    expect(snippet).toMatch(/\{ title: "Loops" \}/);
+
+    // Three loop toggles, each with an explicit hyphenated testId and indent flag.
+    expect(snippet).toMatch(
+      /key: "loopRunning",\s*\n\s*label: "Running",\s*\n\s*testId: "category-filter-loop-running",\s*\n\s*indent: true,/,
+    );
+    expect(snippet).toMatch(
+      /key: "loopIdle",\s*\n\s*label: "Idle",\s*\n\s*testId: "category-filter-loop-idle",\s*\n\s*indent: true,/,
+    );
+    expect(snippet).toMatch(
+      /key: "loopPaused",\s*\n\s*label: "Paused",\s*\n\s*testId: "category-filter-loop-paused",\s*\n\s*indent: true,/,
+    );
+
+    // The .map branches on opt.title to render a plain menu-title <li> for
+    // section headers (not a toggle), vs a checkbox <li> for everything else.
+    expect(snippet).toMatch(/opt\.title\s*\n\s*\? html`/);
+    expect(snippet).toMatch(
+      /<li key=\$\{opt\.title\} class="menu-title text-xs">/,
+    );
+
+    // Toggle rendering: checked/onInput bound generically by key; explicit
+    // testId used when present, defaulting to category-filter-${key}.
+    expect(snippet).toMatch(/checked=\$\{categoryFilter\[opt\.key\]\}/);
+    expect(snippet).toMatch(
+      /onInput=\$\{\(\) => handleCategoryToggle\(opt\.key\)\}/,
+    );
+    expect(snippet).toMatch(
+      /data-testid=\$\{opt\.testId \?\?\s*\n\s*`category-filter-\$\{opt\.key\}`\}/,
+    );
+
+    // Indented rows get a pl-2 class on the label.
+    expect(snippet).toMatch(/opt\.indent\s*\n\s*\? "pl-2"/);
+  });
+});

@@ -471,9 +471,18 @@ test.describe("Hierarchical Session Grouping", () => {
     // Open the dropdown
     await filterBtn.click();
 
-    // All four category checkboxes must be visible and checked by default
-    for (const key of ["regular", "loop", "archived", "tasks"]) {
-      const cb = page.locator(`[data-testid="category-filter-${key}"]`);
+    // Regular/Archived/Tasks toggles plus the three Loops subsection
+    // toggles (Running/Idle/Paused, mitto-k53.3) must all be visible and
+    // checked by default.
+    for (const testId of [
+      "category-filter-regular",
+      "category-filter-archived",
+      "category-filter-tasks",
+      "category-filter-loop-running",
+      "category-filter-loop-idle",
+      "category-filter-loop-paused",
+    ]) {
+      const cb = page.locator(`[data-testid="${testId}"]`);
       await expect(cb).toBeVisible({ timeout: 3000 });
       await expect(cb).toBeChecked();
     }
