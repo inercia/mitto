@@ -4,6 +4,27 @@ const { html } = window.preact;
 
 import { SpinnerIcon, TrashIcon } from "./Icons.js";
 
+// Preset swatches for the anchored color-picker popover (mitto-19m). A native
+// color-type input hands popover positioning entirely to the OS/browser
+// (macOS NSColorPanel via WKWebView), which detaches it from the swatch inside
+// the constrained Settings modal — this fixed palette keeps the picker fully
+// Mitto-rendered and anchored via a daisyUI CSS dropdown (IconPicker.js
+// pattern) instead.
+const TASK_LABEL_COLOR_PRESETS = [
+  "#ef4444", // red
+  "#f97316", // orange
+  "#f59e0b", // amber
+  "#eab308", // yellow
+  "#84cc16", // lime
+  "#22c55e", // green
+  "#14b8a6", // teal
+  "#06b6d4", // cyan
+  "#3b82f6", // blue
+  "#6366f1", // indigo
+  "#a855f7", // purple
+  "#ec4899", // pink
+];
+
 export function TaskLabelColorsEditor({
   entries = [],
   loading = false,
@@ -42,15 +63,54 @@ export function TaskLabelColorsEditor({
                 aria-label="Task label"
                 class="input input-sm join-item flex-1"
               />
-              <input
-                type="color"
-                value=${/^#[0-9a-fA-F]{6}$/.test(entry.color)
-                  ? entry.color
-                  : "#ef4444"}
-                onInput=${(e) => onUpdate(idx, { color: e.target.value })}
-                aria-label="Choose task title background color"
-                class="join-item w-6 h-6 rounded border-0 cursor-pointer p-0"
-              />
+              <div class="dropdown join-item">
+                <div
+                  tabindex="0"
+                  role="button"
+                  data-testid="task-label-color-swatch-${idx}"
+                  aria-label="Choose task title background color"
+                  aria-haspopup="true"
+                  class="w-6 h-6 rounded border border-mitto-border-2 cursor-pointer"
+                  style="background-color: ${/^#[0-9a-fA-F]{6}$/.test(
+                    entry.color,
+                  )
+                    ? entry.color
+                    : "#ef4444"}"
+                ></div>
+                <div
+                  tabindex="0"
+                  class="dropdown-content z-50 p-2 w-48 bg-base-200 rounded-box shadow-xl"
+                  role="listbox"
+                  aria-label="Preset colors"
+                >
+                  <div class="flex flex-wrap gap-1">
+                    ${TASK_LABEL_COLOR_PRESETS.map((hex) => {
+                      const isSelected =
+                        (entry.color || "").toLowerCase() === hex;
+                      return html`
+                        <button
+                          key=${hex}
+                          type="button"
+                          role="option"
+                          aria-selected=${isSelected}
+                          aria-label=${hex}
+                          title=${hex}
+                          onClick=${(e) => {
+                            onUpdate(idx, { color: hex });
+                            e.currentTarget.blur();
+                            if (document.activeElement)
+                              document.activeElement.blur();
+                          }}
+                          class="w-6 h-6 rounded border ${isSelected
+                            ? "ring-2 ring-mitto-accent"
+                            : "border-mitto-border-2"}"
+                          style="background-color: ${hex}"
+                        ></button>
+                      `;
+                    })}
+                  </div>
+                </div>
+              </div>
               <input
                 type="text"
                 value=${entry.color}
