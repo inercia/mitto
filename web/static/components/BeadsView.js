@@ -847,6 +847,7 @@ function BeadsIssueRow({
   issue,
   bgTone,
   borderTone,
+  labelBackground,
   onSelect,
   onContextMenu,
   onClose,
@@ -918,7 +919,11 @@ function BeadsIssueRow({
             : html`<${CheckIcon} className="w-5 h-5 text-white" />`}
         </button>
       </div>
-      <!-- Swipeable content (the original list-row card) -->
+      <!-- Swipeable content (the original list-row card). When a task-label
+      color is configured, it is applied as the whole card's background here
+      (inline, so it takes precedence over the bgTone/hover Tailwind
+      utilities — the label color intentionally wins) rather than just
+      behind the title text. -->
       <div
         data-has-context-menu
         onClick=${handleClick}
@@ -926,7 +931,9 @@ function BeadsIssueRow({
         class="list-row cursor-pointer select-none ${bgTone} ${borderTone} ${isSwiping
           ? ""
           : "transition-all duration-200"}"
-        style="transform: translateX(${swipeOffset}px);"
+        style="transform: translateX(${swipeOffset}px);${labelBackground
+          ? ` background-color: ${labelBackground};`
+          : ""}"
       >
         ${children}
       </div>
@@ -2486,7 +2493,7 @@ export function BeadsView({
     const childCount = childCountById[issue.id] || 0;
     const isEpic = issue.issue_type === "epic" || childCount > 0;
     const showChevron = epicExpanded !== null;
-    const titleBackground = taskTitleBackground(issue, taskLabelColors);
+    const labelBackground = taskTitleBackground(issue, taskLabelColors);
     const bgTone = isSelected
       ? isStreamingIssue
         ? "bg-mitto-surface-3/30 beads-row-streaming"
@@ -2578,13 +2585,7 @@ export function BeadsView({
             : null}
         </div>
         <div class="text-sm text-mitto-text wrap-break-word">
-          <span
-            data-testid="beads-issue-title"
-            style=${titleBackground
-              ? { backgroundColor: titleBackground }
-              : undefined}
-            >${issue.title}</span
-          >
+          <span data-testid="beads-issue-title">${issue.title}</span>
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0 self-center">
@@ -2628,6 +2629,7 @@ export function BeadsView({
         issue=${issue}
         bgTone=${bgTone}
         borderTone=${borderTone}
+        labelBackground=${labelBackground}
         onSelect=${() => selectIssue(issue)}
         onContextMenu=${(e) => handleRowContextMenu(e, issue)}
         onClose=${() => handleToggleStatus(issue)}
