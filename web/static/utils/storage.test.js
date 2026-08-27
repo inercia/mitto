@@ -659,7 +659,9 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     const result = getCategoryFilter();
     expect(result).toEqual(DEFAULT_CATEGORY_FILTER);
     expect(result.regular).toBe(true);
-    expect(result.loop).toBe(true);
+    expect(result.loopRunning).toBe(true);
+    expect(result.loopIdle).toBe(true);
+    expect(result.loopPaused).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
   });
@@ -667,13 +669,17 @@ describe("getCategoryFilter / setCategoryFilter", () => {
   test("round-trips: setCategoryFilter then getCategoryFilter", () => {
     setCategoryFilter({
       regular: false,
-      loop: true,
+      loopRunning: true,
+      loopIdle: false,
+      loopPaused: true,
       archived: true,
       tasks: false,
     });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
-    expect(result.loop).toBe(true);
+    expect(result.loopRunning).toBe(true);
+    expect(result.loopIdle).toBe(false);
+    expect(result.loopPaused).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(false);
   });
@@ -690,9 +696,32 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
-    expect(result.loop).toBe(true);
+    expect(result.loopRunning).toBe(true);
+    expect(result.loopIdle).toBe(true);
+    expect(result.loopPaused).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
+  });
+
+  test("old stored shape with a stray 'loop' key from a previous browser session does not throw and falls back to all-visible for the new fields", () => {
+    sessionMockStore["mitto_category_filter"] = JSON.stringify({
+      regular: false,
+      loop: false,
+      archived: true,
+      tasks: true,
+    });
+    let result;
+    expect(() => {
+      result = getCategoryFilter();
+    }).not.toThrow();
+    expect(result.regular).toBe(false);
+    expect(result.loopRunning).toBe(true);
+    expect(result.loopIdle).toBe(true);
+    expect(result.loopPaused).toBe(true);
+    expect(result.archived).toBe(true);
+    expect(result.tasks).toBe(true);
+    // The old field is not surfaced on the returned shape.
+    expect(result.loop).toBeUndefined();
   });
 });
 
