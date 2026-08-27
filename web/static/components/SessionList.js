@@ -752,9 +752,11 @@ export function SessionList({
   }, []);
   const anyCategoryHidden =
     !categoryFilter.regular ||
-    !categoryFilter.loop ||
     !categoryFilter.archived ||
-    !categoryFilter.tasks;
+    !categoryFilter.tasks ||
+    !categoryFilter.loopRunning ||
+    !categoryFilter.loopIdle ||
+    !categoryFilter.loopPaused;
   const filteredTree = useMemo(
     () => filterUnifiedTree(unifiedTree, categoryFilter),
     [unifiedTree, categoryFilter],
@@ -2007,24 +2009,53 @@ export function SessionList({
                   <li class="menu-title text-xs">Show categories</li>
                   ${[
                     { key: "regular", label: "Regular" },
-                    { key: "loop", label: "Loop" },
                     { key: "archived", label: "Archived" },
                     { key: "tasks", label: "Tasks" },
-                  ].map(
-                    (opt) => html`
-                      <li key=${opt.key}>
-                        <label class="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            class="checkbox checkbox-sm"
-                            checked=${categoryFilter[opt.key]}
-                            onInput=${() => handleCategoryToggle(opt.key)}
-                            data-testid=${`category-filter-${opt.key}`}
-                          />
-                          <span class="text-sm">${opt.label}</span>
-                        </label>
-                      </li>
-                    `,
+                    { title: "Loops" },
+                    {
+                      key: "loopRunning",
+                      label: "Running",
+                      testId: "category-filter-loop-running",
+                      indent: true,
+                    },
+                    {
+                      key: "loopIdle",
+                      label: "Idle",
+                      testId: "category-filter-loop-idle",
+                      indent: true,
+                    },
+                    {
+                      key: "loopPaused",
+                      label: "Paused",
+                      testId: "category-filter-loop-paused",
+                      indent: true,
+                    },
+                  ].map((opt) =>
+                    opt.title
+                      ? html`
+                          <li key=${opt.title} class="menu-title text-xs">
+                            ${opt.title}
+                          </li>
+                        `
+                      : html`
+                          <li key=${opt.key}>
+                            <label
+                              class="flex items-center gap-2 cursor-pointer ${opt.indent
+                                ? "pl-2"
+                                : ""}"
+                            >
+                              <input
+                                type="checkbox"
+                                class="checkbox checkbox-sm"
+                                checked=${categoryFilter[opt.key]}
+                                onInput=${() => handleCategoryToggle(opt.key)}
+                                data-testid=${opt.testId ??
+                                `category-filter-${opt.key}`}
+                              />
+                              <span class="text-sm">${opt.label}</span>
+                            </label>
+                          </li>
+                        `,
                   )}
                 </ul>
               `,
