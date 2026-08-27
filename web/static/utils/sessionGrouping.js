@@ -17,6 +17,14 @@ import { getFilterTabForSession, FILTER_TAB } from "./storage.js";
  * every time the agent sends a message chunk. Only structural changes (new
  * sessions, renames, parent changes, archival) trigger a rebuild.
  *
+ * Exception: for loop-configured sessions (s.loop_configured), isStreaming IS
+ * included. Loop rows have a three-state gate (Running/Idle/Paused, see
+ * filterUnifiedTree) where Running<->Idle depends on isStreaming, so the
+ * fingerprint must change when a loop's run starts/stops or the filtered tree
+ * would not recompute and the sidebar would show a stale bucket. Regular
+ * (non-loop) sessions are unaffected — their token streaming still never
+ * changes the fingerprint.
+ *
  * @param {Array} filteredSessions - Sessions currently visible in the active tab
  * @param {string} groupingMode    - Current grouping mode ('none'|'server'|'folder'|'workspace')
  * @returns {string}
@@ -28,7 +36,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
     filteredSessions
       .map(
         (s) =>
-          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.loop_enabled || false}|${s.loop_configured || false}|${s.pinned || false}|${s.name || ""}`,
+          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.loop_enabled || false}|${s.loop_configured || false}|${s.pinned || false}|${s.name || ""}|${s.loop_configured ? s.isStreaming || false : ""}`,
       )
       .sort()
       .join("\n")
@@ -397,35 +405,43 @@ export function computeFolderGroupSections(folders) {
  * Filter the unified tree by category visibility (mitto-1er.10).
  *
  * Pure predicate applied to the unified tree (after grouping/nesting), before
- * render. Category derives from each conversation node's `category`
- * (getFilterTabForSession): conversations→regular, loop→loop,
- * archived→archived. Per-folder Tasks nodes are the 'tasks' category.
+ * render. Non-archived conversation nodes are gated as follows: loop-
+ * configured nodes (node.loop_configured) get a three-state gate —
+ * running (loop_enabled && isStreaming), idle (loop_enabled && !isStreaming),
+ * or paused (!loop_enabled) — matched against the loopRunning/loopIdle/
+ * loopPaused toggles; all other nodes are gated on the regular toggle.
+ * Archived nodes are gated solely by the archived toggle (the archived array
+ * is kept as-is, including archived loops, when archived is true).
  *
  * Hiding a parent conversation hides its children too (the whole subtree is
  * dropped). A folder with no visible conversations, no visible archived, and
  * Tasks hidden is pruned entirely.
  *
  * @param {{folders: Array}} tree - from computeUnifiedTree
- * @param {{regular: boolean, loop: boolean, archived: boolean, tasks: boolean}} filter
+ * @param {{regular: boolean, loopRunning: boolean, loopIdle: boolean, loopPaused: boolean, archived: boolean, tasks: boolean}} filter
  * @returns {{folders: Array}} new tree; each folder gains showTasks
  */
 export function filterUnifiedTree(tree, filter) {
   if (!tree) return { folders: [] };
   const f = filter || {};
   const regular = f.regular !== false;
-  const loop = f.loop !== false;
+  const loopRunning = f.loopRunning !== false;
+  const loopIdle = f.loopIdle !== false;
+  const loopPaused = f.loopPaused !== false;
   const archived = f.archived !== false;
   const tasks = f.tasks !== false;
 
-  const categoryEnabled = (category) => {
-    if (category === FILTER_TAB.LOOP) return loop;
-    if (category === FILTER_TAB.ARCHIVED) return archived;
+  const nodeVisible = (node) => {
+    if (node.loop_configured) {
+      if (!node.loop_enabled) return loopPaused;
+      return node.isStreaming ? loopRunning : loopIdle;
+    }
     return regular;
   };
 
   const filterNodes = (nodes) =>
     (nodes || [])
-      .filter((node) => categoryEnabled(node.category))
+      .filter((node) => nodeVisible(node))
       .map((node) => ({
         ...node,
         children: filterNodes(node.children || []),
@@ -435,7 +451,7 @@ export function filterUnifiedTree(tree, filter) {
     .map((folder) => ({
       ...folder,
       conversations: filterNodes(folder.conversations),
-      archived: archived ? filterNodes(folder.archived) : [],
+      archived: archived ? folder.archived || [] : [],
       showTasks: tasks,
     }))
     .filter(

@@ -470,6 +470,7 @@ describe("filterUnifiedTree", () => {
   function makeLoop(overrides = {}) {
     return makeSession({
       session_id: `p-${Math.random()}`,
+      loop_configured: true,
       loop_enabled: true,
       ...overrides,
     });
@@ -515,7 +516,9 @@ describe("filterUnifiedTree", () => {
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: false,
-      loop: true,
+      loopRunning: true,
+      loopIdle: true,
+      loopPaused: true,
       archived: true,
       tasks: true,
     });
@@ -531,12 +534,14 @@ describe("filterUnifiedTree", () => {
     expect(totalLoop).toBeGreaterThanOrEqual(1);
   });
 
-  test("loop:false → loop nodes removed", () => {
+  test("loopRunning/loopIdle/loopPaused:false → loop nodes removed", () => {
     const sessions = [makeRegular(), makeLoop()];
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      loop: false,
+      loopRunning: false,
+      loopIdle: false,
+      loopPaused: false,
       archived: true,
       tasks: true,
     });
@@ -597,7 +602,9 @@ describe("filterUnifiedTree", () => {
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      loop: false,
+      loopRunning: false,
+      loopIdle: false,
+      loopPaused: false,
       archived: true,
       tasks: true,
     });
