@@ -1389,12 +1389,17 @@ describe("task label title backgrounds (mitto-ggs6)", () => {
     expect(taskTitleBackground(issue, mappings.slice(1))).toBe("");
   });
 
-  test("BeadsView applies the derived color to the title span only", () => {
+  test("BeadsView applies the derived color to the whole card, not the title span", () => {
     const source = readFileSync(BEADS_VIEW_PATH, "utf8");
-    expect(source).toMatch(
-      /<span\s+data-testid="beads-issue-title"\s+style=\$\{titleBackground\s*\?\s*\{ backgroundColor: titleBackground \}\s*:\s*undefined\}/,
+    // The title span must no longer carry an inline background color.
+    expect(source).not.toMatch(
+      /<span\s+data-testid="beads-issue-title"\s+style=/,
     );
-    expect(source).not.toMatch(/BeadsIssueRow[\s\S]{0,300}backgroundColor/);
+    // The row wrapper (BeadsIssueRow's div.list-row) must apply the label
+    // color as its background, taking precedence over bgTone/hover.
+    expect(source).toMatch(
+      /class="list-row[\s\S]{0,200}style="transform: translateX\(\$\{swipeOffset\}px\);\$\{labelBackground/,
+    );
   });
 
   test("an open BeadsView refetches mappings when the global event arrives", () => {
