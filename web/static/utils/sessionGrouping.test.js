@@ -93,6 +93,36 @@ describe("computeSessionFingerprint", () => {
     expect(fp1).toBe(fp2);
   });
 
+  test("isStreaming change DOES change fingerprint for loop_configured sessions", () => {
+    const s1 = makeSession({
+      session_id: "a",
+      loop_configured: true,
+      isStreaming: false,
+    });
+    const s2 = makeSession({
+      session_id: "a",
+      loop_configured: true,
+      isStreaming: true,
+    });
+    const fp1 = computeSessionFingerprint([s1], "folder");
+    const fp2 = computeSessionFingerprint([s2], "folder");
+    expect(fp1).not.toBe(fp2);
+  });
+
+  test("isStreaming toggling on a NON-loop session still does NOT change fingerprint even when other loop-configured sessions are present", () => {
+    const loopSession = makeSession({
+      session_id: "loop-1",
+      loop_configured: true,
+      loop_enabled: true,
+      isStreaming: false,
+    });
+    const regA = makeSession({ session_id: "reg-1", isStreaming: false });
+    const regB = makeSession({ session_id: "reg-1", isStreaming: true });
+    const fp1 = computeSessionFingerprint([loopSession, regA], "folder");
+    const fp2 = computeSessionFingerprint([loopSession, regB], "folder");
+    expect(fp1).toBe(fp2);
+  });
+
   test("name change changes fingerprint", () => {
     const s1 = makeSession({ session_id: "a", name: "old" });
     const s2 = makeSession({ session_id: "a", name: "new" });
@@ -616,6 +646,184 @@ describe("filterUnifiedTree", () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Three-state loop gating (mitto-k53.2): running / idle / paused
+  // -------------------------------------------------------------------------
+
+  function makeRunningLoop(overrides = {}) {
+    return makeLoop({
+      session_id: `running-${Math.random()}`,
+      loop_enabled: true,
+      isStreaming: true,
+      ...overrides,
+    });
+  }
+  function makeIdleLoop(overrides = {}) {
+    return makeLoop({
+      session_id: `idle-${Math.random()}`,
+      loop_enabled: true,
+      isStreaming: false,
+      ...overrides,
+    });
+  }
+  function makePausedLoop(overrides = {}) {
+    return makeLoop({
+      session_id: `paused-${Math.random()}`,
+      loop_enabled: false,
+      isStreaming: false,
+      ...overrides,
+    });
+  }
+
+  function findNode(result, sessionId) {
+    for (const folder of result.folders) {
+      const hit = folder.conversations.find((n) => n.session_id === sessionId);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  test("three-state classification: all toggles on → running/idle/paused loops all visible", () => {
+    const running = makeRunningLoop({ session_id: "running-1" });
+    const idle = makeIdleLoop({ session_id: "idle-1" });
+    const paused = makePausedLoop({ session_id: "paused-1" });
+    const sessions = [running, idle, paused];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, {
+      regular: true,
+      loopRunning: true,
+      loopIdle: true,
+      loopPaused: true,
+      archived: true,
+      tasks: true,
+    });
+    expect(findNode(result, "running-1")).toBeDefined();
+    expect(findNode(result, "idle-1")).toBeDefined();
+    expect(findNode(result, "paused-1")).toBeDefined();
+  });
+
+  test("loopPaused:false hides paused loops but keeps running/idle loops and regular conversations", () => {
+    const running = makeRunningLoop({ session_id: "running-2" });
+    const idle = makeIdleLoop({ session_id: "idle-2" });
+    const paused = makePausedLoop({ session_id: "paused-2" });
+    const regular = makeRegular({ session_id: "regular-2" });
+    const sessions = [running, idle, paused, regular];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, {
+      regular: true,
+      loopRunning: true,
+      loopIdle: true,
+      loopPaused: false,
+      archived: true,
+      tasks: true,
+    });
+    expect(findNode(result, "running-2")).toBeDefined();
+    expect(findNode(result, "idle-2")).toBeDefined();
+    expect(findNode(result, "paused-2")).toBeUndefined();
+    expect(findNode(result, "regular-2")).toBeDefined();
+  });
+
+  test("loopRunning:false hides only running loops; idle/paused stay visible", () => {
+    const running = makeRunningLoop({ session_id: "running-3" });
+    const idle = makeIdleLoop({ session_id: "idle-3" });
+    const paused = makePausedLoop({ session_id: "paused-3" });
+    const sessions = [running, idle, paused];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, {
+      regular: true,
+      loopRunning: false,
+      loopIdle: true,
+      loopPaused: true,
+      archived: true,
+      tasks: true,
+    });
+    expect(findNode(result, "running-3")).toBeUndefined();
+    expect(findNode(result, "idle-3")).toBeDefined();
+    expect(findNode(result, "paused-3")).toBeDefined();
+  });
+
+  test("loopIdle:false hides only idle loops; running/paused stay visible", () => {
+    const running = makeRunningLoop({ session_id: "running-4" });
+    const idle = makeIdleLoop({ session_id: "idle-4" });
+    const paused = makePausedLoop({ session_id: "paused-4" });
+    const sessions = [running, idle, paused];
+    const tree = computeUnifiedTree(sessions, WS);
+    const result = filterUnifiedTree(tree, {
+      regular: true,
+      loopRunning: true,
+      loopIdle: false,
+      loopPaused: true,
+      archived: true,
+      tasks: true,
+    });
+    expect(findNode(result, "running-4")).toBeDefined();
+    expect(findNode(result, "idle-4")).toBeUndefined();
+    expect(findNode(result, "paused-4")).toBeDefined();
+  });
+
+  test("toggling isStreaming flips a loop node between the Running and Idle buckets on recompute", () => {
+    const base = makeLoop({
+      session_id: "flip-1",
+      loop_enabled: true,
+      isStreaming: false,
+    });
+    const treeIdle = computeUnifiedTree([base], WS);
+    const idleFilter = {
+      regular: true,
+      loopRunning: false,
+      loopIdle: true,
+      loopPaused: true,
+      archived: true,
+      tasks: true,
+    };
+    const runningFilter = {
+      ...idleFilter,
+      loopRunning: true,
+      loopIdle: false,
+    };
+    // Initially isStreaming=false → classified as idle: visible under idle
+    // filter, hidden under running-only filter.
+    expect(
+      findNode(filterUnifiedTree(treeIdle, idleFilter), "flip-1"),
+    ).toBeDefined();
+    expect(
+      findNode(filterUnifiedTree(treeIdle, runningFilter), "flip-1"),
+    ).toBeUndefined();
+
+    // Flip isStreaming → recompute the tree; now classified as running.
+    const streaming = { ...base, isStreaming: true };
+    const treeRunning = computeUnifiedTree([streaming], WS);
+    expect(
+      findNode(filterUnifiedTree(treeRunning, runningFilter), "flip-1"),
+    ).toBeDefined();
+    expect(
+      findNode(filterUnifiedTree(treeRunning, idleFilter), "flip-1"),
+    ).toBeUndefined();
+  });
+
+  test("archived loop stays under Archived regardless of loop toggles", () => {
+    const archivedLoop = makeLoop({
+      session_id: "archived-loop-1",
+      archived: true,
+      loop_enabled: false,
+    });
+    const tree = computeUnifiedTree([archivedLoop], WS);
+    const result = filterUnifiedTree(tree, {
+      regular: true,
+      loopRunning: false,
+      loopIdle: false,
+      loopPaused: false,
+      archived: true,
+      tasks: true,
+    });
+    const archivedIds = result.folders.flatMap((f) =>
+      f.archived.map((n) => n.session_id),
+    );
+    expect(archivedIds).toContain("archived-loop-1");
+    // And it's not duplicated into conversations.
+    expect(findNode(result, "archived-loop-1")).toBeUndefined();
+  });
+
   test("null/undefined tree → { folders: [] }", () => {
     expect(filterUnifiedTree(null, {})).toEqual({
       folders: [],
@@ -1098,9 +1306,9 @@ describe("computeUnifiedTree – pinned empty folders", () => {
     expect(names).toContain("development");
     expect(names).toContain("personal");
     const personal = sections.find((sec) => sec.name === "personal");
-    expect(
-      personal.folders.some((f) => f.workingDir === "/dirs/pinned"),
-    ).toBe(true);
+    expect(personal.folders.some((f) => f.workingDir === "/dirs/pinned")).toBe(
+      true,
+    );
   });
 
   test("group-then-label sort applies to pinned empty folders", () => {
