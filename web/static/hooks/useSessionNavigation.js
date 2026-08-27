@@ -71,6 +71,17 @@ export function useSessionNavigation({
   // Static nodes (Tasks) are excluded by the flattener.
   // In VISIBLE_GROUPS cycling mode, also skip entries whose folder is collapsed
   // — defaults mirror the sidebar: folders expanded.
+  //
+  // Three-state loop filtering (mitto-k53.4): categoryFilterForNav carries the
+  // loopRunning/loopIdle/loopPaused toggles alongside regular/archived/tasks
+  // (see getCategoryFilter()/DEFAULT_CATEGORY_FILTER in utils/storage.js), and
+  // filterUnifiedTree() already gates loop-configured nodes on those three
+  // toggles via node.loop_enabled/isStreaming. This memo recomputes correctly
+  // when a loop transitions Running<->Idle WITHOUT needing isStreaming in its
+  // own deps below: isStreaming lives on the session objects inside
+  // allSessions, and every streaming-status update (events WebSocket) does an
+  // immutable setSessions/setStoredSessions update, so allSessions itself gets
+  // a new array reference — which IS already a dep here.
   const navigableSessions = useMemo(() => {
     const tree = filterUnifiedTree(
       computeUnifiedTree(allSessions, workspaces),
@@ -238,6 +249,10 @@ export function useSessionNavigation({
       });
     };
     const handleCategoryFilterChanged = (e) => {
+      // Store the whole filter object verbatim (no per-field destructuring),
+      // so new fields — e.g. the loopRunning/loopIdle/loopPaused three-state
+      // toggles (mitto-k53.4) — pass through unchanged without this hook
+      // needing to know their shape.
       if (e.detail && e.detail.filter) {
         setCategoryFilterForNav(e.detail.filter);
       }
