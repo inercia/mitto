@@ -52,7 +52,7 @@ export function TaskLabelColorsEditor({
           (entry, idx) => html`
             <div
               key=${idx}
-              class="join w-full"
+              class="flex items-center gap-2 w-full"
               data-testid="task-label-color-row-${idx}"
             >
               <input
@@ -61,90 +61,94 @@ export function TaskLabelColorsEditor({
                 onInput=${(e) => onUpdate(idx, { label: e.target.value })}
                 placeholder="needs-human"
                 aria-label="Task label"
-                class="input input-sm join-item flex-1"
+                class="input input-sm flex-1"
               />
-              <div class="dropdown join-item">
-                <div
-                  tabindex="0"
-                  role="button"
-                  data-testid="task-label-color-swatch-${idx}"
-                  aria-label="Choose task title background color"
-                  aria-haspopup="true"
-                  class="w-6 h-6 rounded border border-mitto-border-2 cursor-pointer"
-                  style="background-color: ${/^#[0-9a-fA-F]{6}$/.test(
-                    entry.color,
-                  )
-                    ? entry.color
-                    : "#ef4444"}"
-                ></div>
-                <div
-                  tabindex="0"
-                  class="dropdown-content z-50 p-2 w-48 bg-base-200 rounded-box shadow-xl"
-                  role="listbox"
-                  aria-label="Preset colors"
-                >
-                  <div class="flex flex-wrap gap-1">
-                    ${TASK_LABEL_COLOR_PRESETS.map((hex) => {
-                      const isSelected =
-                        (entry.color || "").toLowerCase() === hex;
-                      return html`
-                        <button
-                          key=${hex}
-                          type="button"
-                          role="option"
-                          aria-selected=${isSelected}
-                          aria-label=${hex}
-                          title=${hex}
-                          onClick=${(e) => {
-                            onUpdate(idx, { color: hex });
-                            e.currentTarget.blur();
-                            if (document.activeElement)
-                              document.activeElement.blur();
-                          }}
-                          class="w-6 h-6 rounded border ${isSelected
-                            ? "ring-2 ring-mitto-accent"
-                            : "border-mitto-border-2"}"
-                          style="background-color: ${hex}"
-                        ></button>
-                      `;
-                    })}
+              <div class="join">
+                <div class="dropdown join-item">
+                  <div
+                    tabindex="0"
+                    role="button"
+                    data-testid="task-label-color-swatch-${idx}"
+                    aria-label="Choose task title background color"
+                    aria-haspopup="true"
+                    class="h-8 w-8 rounded border border-mitto-border-2 cursor-pointer"
+                    style="background-color: ${/^#[0-9a-fA-F]{6}$/.test(
+                      entry.color,
+                    )
+                      ? entry.color
+                      : "#ef4444"}"
+                  ></div>
+                  <div
+                    tabindex="0"
+                    class="dropdown-content z-50 p-2 w-48 bg-base-200 rounded-box shadow-xl"
+                    role="listbox"
+                    aria-label="Preset colors"
+                  >
+                    <div class="flex flex-wrap gap-1">
+                      ${TASK_LABEL_COLOR_PRESETS.map((hex) => {
+                        const isSelected =
+                          (entry.color || "").toLowerCase() === hex;
+                        return html`
+                          <button
+                            key=${hex}
+                            type="button"
+                            role="option"
+                            aria-selected=${isSelected}
+                            aria-label=${hex}
+                            title=${hex}
+                            onClick=${(e) => {
+                              onUpdate(idx, { color: hex });
+                              e.currentTarget.blur();
+                              if (document.activeElement)
+                                document.activeElement.blur();
+                            }}
+                            class="w-6 h-6 rounded border ${isSelected
+                              ? "ring-2 ring-mitto-accent"
+                              : "border-mitto-border-2"}"
+                            style="background-color: ${hex}"
+                          ></button>
+                        `;
+                      })}
+                    </div>
                   </div>
                 </div>
+                <input
+                  type="text"
+                  value=${entry.color}
+                  onInput=${(e) => onUpdate(idx, { color: e.target.value })}
+                  placeholder="#ef4444"
+                  aria-label="Task title background hex color"
+                  class="input input-sm join-item w-28 font-mono"
+                />
               </div>
-              <input
-                type="text"
-                value=${entry.color}
-                onInput=${(e) => onUpdate(idx, { color: e.target.value })}
-                placeholder="#ef4444"
-                aria-label="Task title background hex color"
-                class="input input-sm join-item flex-1 font-mono"
-              />
-              <button
-                type="button"
-                class="btn btn-ghost btn-square btn-sm join-item"
-                disabled=${idx === 0}
-                onClick=${() => onMove(idx, -1)}
-                aria-label="Move up"
-              >
-                ↑
-              </button>
-              <button
-                type="button"
-                class="btn btn-ghost btn-square btn-sm join-item"
-                disabled=${idx === entries.length - 1}
-                onClick=${() => onMove(idx, 1)}
-                aria-label="Move down"
-              >
-                ↓
-              </button>
-              <button
-                type="button"
-                class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
-                onClick=${() => onRemove(idx)}
-                aria-label="Remove"
-              >
-                <${TrashIcon} className="w-4 h-4" />
-              </button>
+              <div class="flex items-center">
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-square btn-sm"
+                  disabled=${idx === 0}
+                  onClick=${() => onMove(idx, -1)}
+                  aria-label="Move up"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-square btn-sm"
+                  disabled=${idx === entries.length - 1}
+                  onClick=${() => onMove(idx, 1)}
+                  aria-label="Move down"
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-square btn-sm text-mitto-danger"
+                  onClick=${() => onRemove(idx)}
+                  aria-label="Remove"
+                >
+                  <${TrashIcon} className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           `,
         )}
