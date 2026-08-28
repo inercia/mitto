@@ -414,6 +414,31 @@ func IsContextTooLargeError(err error) bool {
 	return false
 }
 
+// IsChatStreamOversizedArgumentError returns true if err carries the bare
+// Augment chat-stream `httpStatus:400` / `apiStatus:"invalidArgument"` pair,
+// WITHOUT requiring the token/length corroboration that IsContextTooLargeError
+// demands (mitto-2efc). It is deliberately narrower in scope than a general
+// context-size predicate: callers MUST additionally corroborate with their own
+// independent oversized-context signal before treating a match as
+// context-too-large — using this alone would reintroduce the mitto-2efc false
+// positive (a deferred model-switch race or any other malformed-request 400
+// unrelated to context size also matches this pair).
+//
+// mitto-5se: the loop runner's handleDeliveryFailure uses this predicate
+// together with the session's own measured acpContextTurnsSinceReset() (an
+// independent, loop-scoped size proxy) to reclassify a bare 400 as
+// oversized_context only when the loop's own context was already large at
+// dispatch — leaving acp.IsContextTooLargeError itself untouched so its
+// anti-false-positive guarantee for all other callers is preserved.
+func IsChatStreamOversizedArgumentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsgLower := strings.ToLower(err.Error())
+	return strings.Contains(errMsgLower, `"httpstatus":400`) &&
+		strings.Contains(errMsgLower, `"apistatus":"invalidargument"`)
+}
+
 // isAgentBusyError reports whether err is a saturated/overloaded shared ACP
 // process fail-fast error (mitto-13ck.2). These errors wrap context.DeadlineExceeded
 // but represent a BUSY agent, not a cancellation, so they must be classified

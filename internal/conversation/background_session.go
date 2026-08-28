@@ -1312,6 +1312,19 @@ func (bs *BackgroundSession) noteACPTurnDispatched() {
 // the unknown sentinel, so resumed/loaded sessions always fail safe to "not empty".
 func (bs *BackgroundSession) acpContextIsEmpty() bool { return bs.acpContextTurns.Load() == 0 }
 
+// acpContextTurnsSinceReset returns the number of ACP turns dispatched on the
+// current session since it was last known to be empty (fresh-create or clear).
+// Returns contextTurnsUnknown (-1) when virginity cannot be asserted (a
+// resumed/loaded session may already hold agent-side history Go cannot see).
+// Used by the loop runner (mitto-5se) as a reset-aware proxy for accumulated
+// context size: a proactive fresh-context guard forces FreshContext once this
+// exceeds LoopFreshContextTurnThreshold, and the delivery-failure classifier
+// uses it to corroborate a bare 400/invalidArgument as oversized-context
+// without loosening the global acp.IsContextTooLargeError predicate
+// (mitto-2efc). Callers MUST treat a negative return as "cannot assert large"
+// (fail safe), not as zero.
+func (bs *BackgroundSession) acpContextTurnsSinceReset() int64 { return bs.acpContextTurns.Load() }
+
 // StartedAt returns when this session was started or resumed.
 // Used by the GC to apply a grace period to freshly started sessions.
 func (bs *BackgroundSession) StartedAt() time.Time {

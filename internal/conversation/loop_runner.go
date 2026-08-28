@@ -74,6 +74,23 @@ const (
 	// must not be retried forever (mitto-aeb).
 	MaxLoopDeliveryFailures = 8
 
+	// LoopFreshContextTurnThreshold bounds unbounded context growth in a
+	// long-running onCompletion/schedule loop that does NOT already opt into
+	// loop_fresh_context (mitto-5se). When a session's turns-since-last-reset
+	// (BackgroundSession.acpContextTurnsSinceReset) reaches this value,
+	// deliverPrompt proactively forces this dispatch's PromptMeta.FreshContext
+	// to true — even though loop.FreshContext is false — so the loop resets
+	// before its accumulated history grows large enough to exceed the model's
+	// input limit and the backend rejects it with a bare HTTP 400
+	// invalidArgument. Deliberately conservative: most loops that need
+	// bounded context already set loop_fresh_context (see
+	// loop-fixing-bug.prompt.yaml / loop-implementing-feature.prompt.yaml);
+	// this is a safety net for loops that don't. A resumed/loaded session
+	// reports contextTurnsUnknown (negative) and is intentionally NOT covered
+	// by this guard — virginity cannot be asserted there, so the
+	// handleDeliveryFailure classifier below is the fallback signal.
+	LoopFreshContextTurnThreshold = 60
+
 	// loopScheduleBackoffBase is the initial delay applied to NextScheduledAt
 	// after the first scheduled loop delivery failure. It doubles with each
 	// consecutive failure, capped at loopScheduleBackoffCap. This prevents a
@@ -1507,7 +1524,12 @@ func (r *LoopRunner) fireOnStartPulses() {
 				r.handlePromptResolveFailure(meta.SessionID, meta.Name, loop, loopStore, err)
 				r.rearmRunOnStartAfterFailure(meta.SessionID, meta.Name, loopStore, err)
 			} else {
-				r.handleRunOnStartDeliveryFailure(meta.SessionID, meta.Name, loop, loopStore, err, true, true, loop.EffectiveTrigger())
+				// This is a synchronous pre-dispatch failure (e.g. the boot pulse
+				// never reached the chat-stream RPC), so there is no session handle
+				// here to corroborate an oversized-context signature (mitto-5se) —
+				// pass contextTurnsUnknown so handleDeliveryFailure's classifier
+				// falls back to its generic/upstream-outage classification.
+				r.handleRunOnStartDeliveryFailure(meta.SessionID, meta.Name, loop, loopStore, err, true, true, loop.EffectiveTrigger(), contextTurnsUnknown)
 			}
 			if r.logger == nil {
 				continue
@@ -2519,7 +2541,16 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 //     against the same MaxLoopDeliveryFailures constant. Below the ceiling, a
 //     forced/event-driven failure is still logged (with the trigger-agnostic
 //     failure count) but the schedule itself is left untouched.
-func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger) {
+//
+// contextTurns is the dispatching session's acpContextTurnsSinceReset() value
+// captured at dispatch time (mitto-5se), or contextTurnsUnknown (-1) when no
+// session handle was available. It corroborates a bare chat-stream 400/
+// invalidArgument (acp.IsChatStreamOversizedArgumentError) as oversized_context
+// ONLY when it was already at/over LoopFreshContextTurnThreshold — this keeps
+// the mitto-2efc anti-false-positive guarantee intact for callers of the
+// unrelated, unchanged acp.IsContextTooLargeError: a small-context 400 (e.g. a
+// deferred model-switch race) still falls through to the generic classification.
+func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger, contextTurns int64) {
 	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
 			if r.onLoopUpdated != nil {
@@ -2539,9 +2570,54 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	// auth/config error. This is purely a logging/surfacing signal — the counter
 	// and backoff behavior below is identical either way, so the already-correct
 	// exponential backoff is unchanged (mitto-bfu).
+	//
+	// mitto-5se: a bare 400/invalidArgument that IsContextTooLargeError declined
+	// to match (no token/length corroboration, mitto-2efc) is reclassified as
+	// oversized_context ONLY when this session's own measured context was
+	// already over threshold at dispatch — a loop-scoped corroboration that
+	// avoids reintroducing the false positives mitto-2efc guarded against.
 	failureClass := "generic"
+	oversizedContext := false
 	if mittoAcp.IsUpstreamUnavailableError(err) {
 		failureClass = "upstream_provider_unavailable"
+	} else if !mittoAcp.IsContextTooLargeError(err) &&
+		contextTurns >= LoopFreshContextTurnThreshold &&
+		mittoAcp.IsChatStreamOversizedArgumentError(err) {
+		// The !IsContextTooLargeError guard keeps this mutually exclusive with
+		// the already-handled block above: a corroborated 400 (token/length
+		// phrase present) already incremented contextWindowFailures there and
+		// fell through only because it was under threshold — re-matching it
+		// here on the narrower, uncorroborated predicate would double-count
+		// the same failure against the same counter.
+		failureClass = "oversized_context"
+		oversizedContext = true
+	}
+
+	// Oversized-context ceiling (mitto-5se, AC2): route through the same
+	// bounded-then-auto-pause machinery as a corroborated HTTP 413, so the
+	// operator sees StoppedReasonContextWindowExceeded ("needs a context
+	// reset") instead of the generic StoppedReasonDeliveryFailures. Uses the
+	// SAME contextWindowFailures counter/ceiling as the 413 path — both
+	// signatures mean the same thing operationally.
+	if oversizedContext {
+		if r.logger != nil {
+			r.logger.Warn("Loop delivery failed with an oversized bare 400/invalidArgument, corroborated by accumulated context turns",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"turns_since_reset", contextTurns,
+				"threshold", LoopFreshContextTurnThreshold,
+				"failure_class", failureClass)
+		}
+		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
+			if r.onLoopUpdated != nil {
+				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
+					r.onLoopUpdated(sessionID, updated)
+				}
+			}
+			return
+		}
+		// Under threshold — fall through to the normal schedule backoff so the
+		// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
 	}
 
 	// Trigger-agnostic ceiling (mitto-bmct): count this failure and compare
@@ -2655,8 +2731,11 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 // ceiling, then re-arms a consumed boot-pulse guard while the loop remains
 // enabled. It is shared by synchronous dispatch failures and asynchronous ACP
 // turn failures arriving through PromptMeta.OnComplete.
-func (r *LoopRunner) handleRunOnStartDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger) {
-	r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+//
+// contextTurns corroborates a possible oversized-context signature (mitto-5se);
+// pass contextTurnsUnknown (-1) when no session handle is available to measure it.
+func (r *LoopRunner) handleRunOnStartDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger, contextTurns int64) {
+	r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, contextTurns)
 	r.rearmRunOnStartAfterFailure(sessionID, sessionName, loopStore, err)
 }
 
@@ -2850,6 +2929,32 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 	// onSlack batch, or an onChild fire (mitto-qvlh). All other paths pass all
 	// three as nil/empty.
 	triggerCtx := buildPromptTriggerContext(tasksDelta, slackEvents, onChildOpt)
+
+	// Proactive fresh-context guard (mitto-5se, AC1). Loops that already opt
+	// into loop.FreshContext are unaffected (already bounded). For the rest,
+	// force this dispatch's FreshContext once the session's turns-since-reset
+	// crosses LoopFreshContextTurnThreshold, so the loop resets before its
+	// accumulated history is large enough to blow the model's input limit. A
+	// resumed/loaded session reports contextTurnsUnknown (negative) — treated
+	// as "cannot assert large" and left uncovered by this guard (fail safe);
+	// handleDeliveryFailure's oversized_context classifier is the fallback.
+	// dispatchContextTurns is captured once here (rather than re-read inside
+	// OnComplete, which may fire after the session has already reset its
+	// counter for a later turn) and threaded into the failure handlers below
+	// so the classifier corroborates against the size AT THIS DISPATCH.
+	dispatchContextTurns := bs.acpContextTurnsSinceReset()
+	freshContext := loop.FreshContext
+	if !freshContext && dispatchContextTurns >= LoopFreshContextTurnThreshold {
+		freshContext = true
+		if r.logger != nil {
+			r.logger.Warn("Forcing fresh context: accumulated loop turns over threshold",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"turns_since_reset", dispatchContextTurns,
+				"threshold", LoopFreshContextTurnThreshold)
+		}
+	}
+
 	meta := PromptMeta{
 		SenderID:         "loop-runner",
 		PromptID:         "",              // No client to confirm delivery to
@@ -2860,7 +2965,7 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		LoopKind:         loopKind,
 		IterationNumber:  loop.IterationCount,
 		MaxIterations:    loop.MaxIterations,
-		FreshContext:     loop.FreshContext,
+		FreshContext:     freshContext,
 		Trigger:          triggerCtx,
 		LoopTrigger:      firedBy,
 		OnComplete: func(err error) {
@@ -2870,9 +2975,9 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			defer releaseSlot()
 			if err != nil {
 				if isRunOnStart {
-					r.handleRunOnStartDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+					r.handleRunOnStartDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, dispatchContextTurns)
 				} else {
-					r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy)
+					r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, dispatchContextTurns)
 				}
 				return
 			}

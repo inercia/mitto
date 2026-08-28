@@ -6228,7 +6228,7 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 	// onCompletion delivery uses (resetTimer=true, forced=false).
 	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
 	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false, session.TriggerOnCompletion)
+		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false, session.TriggerOnCompletion, contextTurnsUnknown)
 	}
 
 	// After MaxLoopContextWindowFailures consecutive 413 hits an onCompletion
@@ -6314,7 +6314,7 @@ func TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn(t *testing.T
 	}
 
 	// One scheduled delivery failure — under the ceiling, so backoff only.
-	runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, upstreamErr, true, false, session.TriggerSchedule)
+	runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, upstreamErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 
 	// The loop must NOT be auto-paused (single failure, under the ceiling) —
 	// backoff behavior is unchanged by the classification.
@@ -6349,7 +6349,7 @@ func TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn(t *testing.T
 	handler2 := &recordingSlogHandler{minLevel: slog.LevelDebug}
 	runner2 := NewLoopRunner(store, nil, slog.New(handler2))
 	genericErr := errors.New("Internal error: HTTP error: 404 Not Found")
-	runner2.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+	runner2.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, genericErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 	warns2 := handler2.warnOrHigher()
 	if len(warns2) != 1 {
 		t.Fatalf("generic-error WARN-or-higher count = %d, want 1", len(warns2))
@@ -6410,7 +6410,7 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 
 	// Hits 1..MaxLoopDeliveryFailures-1 must NOT auto-pause yet (backoff only).
 	for i := 1; i < MaxLoopDeliveryFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+		runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 	}
 	mid, err := loopStore.Get()
 	if err != nil {
@@ -6426,7 +6426,7 @@ func TestLoopRunner_DeliveryFailure_GenericError_AutoPausesAtCeiling(t *testing.
 	}
 
 	// The Nth consecutive hit must trip the ceiling.
-	runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+	runner.handleDeliveryFailure(sessionID, "cgw-translation", loop, loopStore, genericErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 
 	final, err := loopStore.Get()
 	if err != nil {
@@ -6523,7 +6523,7 @@ func TestLoopRunner_DeliveryFailure_ForcedDispatch_MustEventuallyAutoPause(t *te
 	// MaxLoopDeliveryFailures hits, which is not what this test is checking.)
 	const attempts = MaxLoopDeliveryFailures
 	for i := 1; i <= attempts; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-managed-tools", loop, loopStore, authErr, true, true, session.TriggerOnTasks)
+		runner.handleDeliveryFailure(sessionID, "cgw-managed-tools", loop, loopStore, authErr, true, true, session.TriggerOnTasks, contextTurnsUnknown)
 	}
 
 	final, err := loopStore.Get()
@@ -6589,7 +6589,7 @@ func TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling(t *
 		runner.runOnStartFiredMu.Unlock()
 
 		runner.handleRunOnStartDeliveryFailure(sessionID, "cgw-managed-tools", loop,
-			loopStore, authErr, true, true, session.TriggerOnTasks)
+			loopStore, authErr, true, true, session.TriggerOnTasks, contextTurnsUnknown)
 
 		if attempt < MaxLoopDeliveryFailures && runner.HasFiredRunOnStart(sessionID) {
 			t.Fatalf("attempt %d: runOnStartFired remained set after asynchronous failure; want re-armed", attempt)
@@ -6718,14 +6718,14 @@ func TestLoopRunner_ReleaseBeadClaim_OnNonBenignAutoStop(t *testing.T) {
 
 		genericErr := errors.New("Internal error: HTTP error: 404 Not Found: The selected model is not available for this session.")
 		for i := 1; i < MaxLoopDeliveryFailures; i++ {
-			runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+			runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 		}
 		if fake.labelCallCount() != 0 || fake.updateCallCount() != 0 {
 			t.Fatalf("beads client called before threshold reached: label=%d update=%d",
 				fake.labelCallCount(), fake.updateCallCount())
 		}
 
-		runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule)
+		runner.handleDeliveryFailure(sessionID, "test", loop, loopStore, genericErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 
 		if got := fake.labelCallCount(); got != 1 {
 			t.Fatalf("labelCallCount() = %d, want 1", got)
@@ -7747,7 +7747,7 @@ func TestLoopRunner_DeliveryFailure_ScheduleBackoffIsTriggerScoped(t *testing.T)
 	genericErr := errors.New("transient transport failure")
 
 	// An onCompletion-initiated failure must not touch the schedule breaker.
-	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerOnCompletion)
+	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerOnCompletion, contextTurnsUnknown)
 	runner.scheduleBackoffFailuresMu.Lock()
 	afterOnCompletion := runner.scheduleBackoffFailures[sessionID]
 	runner.scheduleBackoffFailuresMu.Unlock()
@@ -7757,7 +7757,7 @@ func TestLoopRunner_DeliveryFailure_ScheduleBackoffIsTriggerScoped(t *testing.T)
 	}
 
 	// A schedule-initiated failure must.
-	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerSchedule)
+	runner.handleDeliveryFailure(sessionID, "n", loop, ps, genericErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
 	runner.scheduleBackoffFailuresMu.Lock()
 	afterSchedule := runner.scheduleBackoffFailures[sessionID]
 	runner.scheduleBackoffFailuresMu.Unlock()
