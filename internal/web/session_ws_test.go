@@ -37,6 +37,59 @@ func TestGenerateClientID(t *testing.T) {
 	}
 }
 
+// TestModelConfigOptionCallerBudget_CoversSetModelRetrySchedule reproduces
+// mitto-9kg: handleSetConfigOption's synchronous caller budget
+// (modelConfigOptionCallerBudget, 30s) is shorter than the underlying
+// set_model RPC's own worst-case retry schedule, so an interactive model
+// change from the conversation side panel is silently cancelled by this
+// context before SharedACPProcess.SetSessionModel's retries can complete —
+// producing the reported "model change has no effect" symptom whenever the
+// shared ACP process is busy (this conversation prompting, or serialized
+// behind a sibling's own set_model call on the capacity-1 setModelSem).
+//
+// The set_model retry/attempt constants live in internal/acpproc
+// (SharedACPProcess), which this package must not import for unexported
+// values, so the expected schedule is mirrored here from the documented
+// constants in internal/acpproc/shared_acp_process.go (setSessionModelMaxAttempts,
+// setSessionModelAttemptTimeouts, setSessionModelRetryBaseDelay,
+// setSessionModelRetryJitterRatio) — kept consistent with
+// internal/conversation/constraints_test.go's TestConstraintModelSwitchBudgetMath,
+// which asserts the SAME schedule against the 90s async budget used by the
+// background/loop model-switch path. That path budgets correctly; this
+// synchronous interactive path (handleSetConfigOption) does not.
+//
+// This test currently FAILS, demonstrating the bug: the 30s caller budget is
+// well below even a SINGLE caller's own worst-case retry schedule (~44s),
+// let alone one additionally queued behind a busy sibling.
+func TestModelConfigOptionCallerBudget_CoversSetModelRetrySchedule(t *testing.T) {
+	const (
+		// Mirror of internal/acpproc/shared_acp_process.go set_model constants.
+		maxRetries       = 3                      // setSessionModelMaxAttempts
+		scheduleSum      = 43 * time.Second       // sum(setSessionModelAttemptTimeouts) = 20s+15s+8s
+		retryBaseDelay   = 300 * time.Millisecond // setSessionModelRetryBaseDelay
+		retryJitterRatio = 0.5                    // setSessionModelRetryJitterRatio
+	)
+
+	// Max jittered backoff across all retry cycles (mirrors
+	// TestConstraintModelSwitchBudgetMath / TestSetModelAsyncBudgetMath).
+	maxJitteredBackoff := time.Duration(float64(retryBaseDelay)*float64(maxRetries-1)*(1+retryJitterRatio)) + retryBaseDelay
+
+	// A SINGLE caller's own worst-case wall-clock time for SetSessionModel to
+	// either succeed or exhaust its retries — no sibling contention yet.
+	singleCallerMax := scheduleSum + maxJitteredBackoff
+
+	if modelConfigOptionCallerBudget < singleCallerMax {
+		t.Errorf("modelConfigOptionCallerBudget (%v) is less than a single caller's own "+
+			"worst-case set_model retry schedule (%v); an interactive model change can be "+
+			"cancelled by this context before SharedACPProcess.SetSessionModel's own retries "+
+			"complete, even with no sibling contention on the shared ACP process (mitto-9kg)",
+			modelConfigOptionCallerBudget, singleCallerMax)
+	}
+
+	t.Logf("modelConfigOptionCallerBudget=%v, single-caller worst-case set_model schedule=%v",
+		modelConfigOptionCallerBudget, singleCallerMax)
+}
+
 func TestIsLifecycleResumeCancellation(t *testing.T) {
 	if !isLifecycleResumeCancellation(fmt.Errorf("resume aborted: %w", context.Canceled)) {
 		t.Fatal("wrapped context.Canceled must be treated as a quiet lifecycle cancellation")

@@ -1719,6 +1719,26 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 	c.sendMessage(WSMsgTypeKeepaliveAck, keepaliveData)
 }
 
+// modelConfigOptionCallerBudget bounds handleSetConfigOption's synchronous
+// context timeout for applying a config-option change (e.g. a model change
+// from the conversation side panel) to the ACP agent.
+//
+// mitto-9kg: this budget must cover the underlying set_model RPC's retry
+// schedule (SharedACPProcess.SetSessionModel, internal/acpproc/shared_acp_process.go:
+// setSessionModelAttemptTimeouts = {20s, 15s, 8s} ≈ 44s with jitter), or an
+// interactive change against a busy shared ACP process (serialized behind
+// setModelSem, possibly queued behind a sibling conversation's own ~44s
+// attempt) is silently cancelled by this context before the RPC's retries
+// can complete — the reported "model change has no effect" symptom.
+// TestModelConfigOptionCallerBudget_CoversSetModelRetrySchedule pins this.
+//
+// 90s mirrors modelSwitchAsyncBudget (internal/conversation/prompt_dispatcher.go),
+// the budget already established for the identical set_model RPC on the
+// per-prompt/background model-switch path: it covers not just a single
+// caller's own ~44s worst case but also one sibling ahead of it on the
+// capacity-1 setModelSem queue.
+const modelConfigOptionCallerBudget = 90 * time.Second
+
 // handleSetConfigOption handles a request to change a session config option value.
 // This sends the request to the ACP agent and broadcasts the change.
 // For legacy modes, use configID "mode" with the desired mode value.
@@ -1743,7 +1763,7 @@ func (c *SessionWSClient) handleSetConfigOption(configID, value string) {
 	}
 
 	// Call the background session to set the config option
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), modelConfigOptionCallerBudget)
 	defer cancel()
 
 	if err := c.bgSession.SetConfigOption(ctx, configID, value); err != nil {
