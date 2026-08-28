@@ -2442,6 +2442,73 @@ func TestGetOrCreateAuxiliarySession_SingleForegroundPromptBails(t *testing.T) {
 	}
 }
 
+// TestGetOrCreateAuxiliarySession_AgentInternalDeadlineShedBails is the
+// mitto-pic reproduction: a process that just wedged on the agent's OWN
+// internal deadline (a single occurrence, NOT yet 3 consecutive timeouts) must
+// shed a following NON-ESSENTIAL auxiliary create fast instead of paying the
+// full auxSessionCreateBudget (60s) again. Neither the IsSaturated() bail
+// (needs 3 consecutive timeouts) nor the ActiveRPCs bail (needs a concurrent
+// in-flight RPC) fires here — this is the pre-existing hole the plan documents.
+func TestGetOrCreateAuxiliarySession_AgentInternalDeadlineShedBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-agent-deadline-shed"
+	proc := newTestSharedProcess()
+	proc.recordAgentInternalDeadline()
+
+	// Preconditions: isolate this from the OTHER existing bails so this test
+	// pins the NEW guard specifically.
+	if proc.IsSaturated() {
+		t.Fatal("test setup: process must not be saturated (isolating the new agent-deadline guard)")
+	}
+	if got := proc.ActiveRPCs(); got != 0 {
+		t.Fatalf("test setup: expected ActiveRPCs()=0, got %d", got)
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(context.Background(), wsUUID, "follow-up")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Fatalf("expected a recent agent-internal-deadline hit to shed nonessential auxiliary creation with ErrProcessBusy, got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected immediate load shedding, got %v — call fell through into NewSession", elapsed)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_AgentInternalDeadlineShed_ExemptsImprovePrompt
+// verifies the essential "improve-prompt" purpose (a human actively waiting) is
+// NOT shed by the new agent-internal-deadline guard, per isProactiveBailPurpose.
+// It still falls through into NewSession, which fails fast here only because
+// the test process has no real connection — proving the new guard did not
+// intercept it (a nil-conn error, not ErrProcessBusy).
+func TestGetOrCreateAuxiliarySession_AgentInternalDeadlineShed_ExemptsImprovePrompt(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-agent-deadline-shed-exempt"
+	proc := newTestSharedProcess()
+	proc.recordAgentInternalDeadline()
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	_, err := m.getOrCreateAuxiliarySession(context.Background(), wsUUID, "improve-prompt")
+	if errors.Is(err, acperrors.ErrProcessBusy) {
+		t.Fatalf("improve-prompt (essential, user waiting) must be exempt from the agent-deadline shed, got %v", err)
+	}
+}
+
 // TestGetOrCreateAuxiliarySession_MCPInitTimedOutBails is the mitto-337
 // reproduction (hard case): the shared process's stderr monitor has already
 // observed the agent report "MCP initialization timed out"
