@@ -1120,6 +1120,16 @@ refetch `GET /api/global/task-label-colors`; the event carries an empty object.
 { "type": "task_label_colors_updated", "data": {} }
 ```
 
+#### `folder_task_label_colors_updated`
+
+Broadcast after a folder's ordered task-label color mapping is saved via
+`PUT /api/folders/task-label-colors`. Clients refetch
+`GET /api/folders/task-label-colors?working_dir=...` for the affected folder.
+
+```json
+{ "type": "folder_task_label_colors_updated", "data": { "working_dir": "/project" } }
+```
+
 ### Diagnostic & Lifecycle Events
 
 Broadcast on `/api/events` to all connected clients. Mostly informational — the UI

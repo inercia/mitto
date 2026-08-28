@@ -33,6 +33,22 @@ describe("task label colors resource", () => {
     expect(calls[0].init.body).toBe('{"entries":[]}');
   });
 
+  test("getFolder(params) calls GET /api/folders/task-label-colors?working_dir=...", async () => {
+    const { taskLabelColors, calls } = mk();
+    await taskLabelColors.getFolder({ working_dir: "/tmp/ws" });
+    expect(calls[0].url).toBe("/api/folders/task-label-colors?working_dir=%2Ftmp%2Fws");
+    expect(calls[0].init.method).toBe("GET");
+  });
+
+  test("setFolder(workingDir, body) PUTs {entries} with working_dir as a query param", async () => {
+    const { taskLabelColors, calls } = mk();
+    const body = { entries: [{ label: "blocked", color: "#f59e0b" }] };
+    await taskLabelColors.setFolder("/tmp/ws", body);
+    expect(calls[0].url).toBe("/api/folders/task-label-colors?working_dir=%2Ftmp%2Fws");
+    expect(calls[0].init.method).toBe("PUT");
+    expect(calls[0].init.body).toBe(JSON.stringify(body));
+  });
+
   test("surfaces non-2xx responses", async () => {
     const { taskLabelColors, respondWith } = mk();
     respondWith(() =>

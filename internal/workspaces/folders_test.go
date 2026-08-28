@@ -698,6 +698,89 @@ func TestFolderSettingsEmpty_WithShortcuts(t *testing.T) {
 	}
 }
 
+// ---- TaskLabelColors tests ----------------------------------------------------
+
+func TestSetFolderTaskLabelColors_RoundTrip(t *testing.T) {
+	setupFoldersTestDir(t)
+	const wd = "/proj"
+	entries := []TaskLabelColor{{Label: "needs-human", Color: "#ef4444"}, {Label: "blocked", Color: "#f59e0b"}}
+	if err := SetFolderTaskLabelColors(wd, entries); err != nil {
+		t.Fatalf("SetFolderTaskLabelColors: %v", err)
+	}
+	got := FolderTaskLabelColors(wd)
+	if len(got) != 2 {
+		t.Fatalf("FolderTaskLabelColors = %v, want 2 entries", got)
+	}
+	if got[0].Label != "needs-human" || got[0].Color != "#ef4444" {
+		t.Errorf("entry[0] = %+v, want {needs-human #ef4444}", got[0])
+	}
+	if got[1].Label != "blocked" || got[1].Color != "#f59e0b" {
+		t.Errorf("entry[1] = %+v, want {blocked #f59e0b}", got[1])
+	}
+}
+
+func TestSetFolderTaskLabelColors_EmptyPrunesFolder(t *testing.T) {
+	setupFoldersTestDir(t)
+	const wd = "/proj"
+	// Seed with an entry so folders.json gets created.
+	if err := SetFolderTaskLabelColors(wd, []TaskLabelColor{{Label: "x", Color: "#111111"}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Clear.
+	if err := SetFolderTaskLabelColors(wd, nil); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	folders, err := LoadFolders()
+	if err != nil {
+		t.Fatalf("LoadFolders: %v", err)
+	}
+	if _, ok := folders[wd]; ok {
+		t.Error("expected folder entry to be removed after clearing task label colors")
+	}
+	if got := FolderTaskLabelColors(wd); got != nil {
+		t.Errorf("FolderTaskLabelColors after clear = %v, want nil", got)
+	}
+}
+
+func TestFolderSettingsEmpty_WithTaskLabelColors(t *testing.T) {
+	fs := FolderSettings{TaskLabelColors: []TaskLabelColor{{Label: "x", Color: "#111111"}}}
+	if folderSettingsEmpty(fs) {
+		t.Error("folderSettingsEmpty = true, want false (non-empty task label colors)")
+	}
+	fs2 := FolderSettings{TaskLabelColors: []TaskLabelColor{}}
+	if !folderSettingsEmpty(fs2) {
+		t.Error("folderSettingsEmpty = false, want true (empty task label colors slice)")
+	}
+}
+
+func TestPreserveFolderNativeFields_PreservesTaskLabelColors(t *testing.T) {
+	setupFoldersTestDir(t)
+	const wd = "/proj"
+	initial := map[string]FolderSettings{
+		wd: {TaskLabelColors: []TaskLabelColor{{Label: "blocked", Color: "#f59e0b"}}},
+	}
+	if err := SaveFolders(initial); err != nil {
+		t.Fatalf("SaveFolders: %v", err)
+	}
+
+	// Simulate a workspace-driven save: extractFolderSettings yields no
+	// TaskLabelColors (folder-native, not workspace-derived), so preserve
+	// must restore them.
+	workspaces := []WorkspaceSettings{{WorkingDir: wd, Name: "Proj"}}
+	extracted := map[string]FolderSettings{wd: {Name: "Proj"}}
+	merged := preserveFolderNativeFields(workspaces, extracted)
+	fs, ok := merged[wd]
+	if !ok {
+		t.Fatal("folder entry missing after preserveFolderNativeFields")
+	}
+	if len(fs.TaskLabelColors) != 1 || fs.TaskLabelColors[0].Label != "blocked" {
+		t.Errorf("TaskLabelColors not preserved: got %v", fs.TaskLabelColors)
+	}
+	if fs.Name != "Proj" {
+		t.Errorf("Name = %q, want Proj", fs.Name)
+	}
+}
+
 func TestPreserveFolderNativeFields_PreservesShortcuts(t *testing.T) {
 	setupFoldersTestDir(t)
 	const wd = "/proj"
