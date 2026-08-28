@@ -2,9 +2,9 @@ import { test, expect } from "../fixtures/test-fixtures";
 import type { Page } from "@playwright/test";
 
 /**
- * Structural regression net for the sidebar toolbar button row (New
- * Conversation / Add Folder / Filter / Density / Search / Workspaces /
- * Settings).
+ * Structural regression net for the sidebar toolbar button row (Add Folder /
+ * Filter / Density / Search). Workspaces and Settings now live in the sidebar
+ * footer (bottom-left), not in this toolbar pill.
  *
  * The toolbar is now rendered by the portable Toolbar component
  * (web/static/components/Toolbar.js) as a segmented "pill": a single bordered,
@@ -27,8 +27,6 @@ const ITEM_IDS = [
   "category-filter-btn",
   "density-btn",
   "search-btn",
-  "workspaces-btn",
-  "settings-btn",
 ] as const;
 
 const toolbar = (page: Page) =>
@@ -116,5 +114,38 @@ test.describe("Sidebar toolbar structure (segmented pill)", () => {
         `${m.id} must be borderless at rest (style=${m.borderStyle}, width=${m.borderWidth})`,
       ).toBe(true);
     }
+  });
+
+  // Loop filter is a three-state gate (Running / Idle / Paused, mitto-k53)
+  // rather than a single on/off toggle. This locks the dropdown's structural
+  // shape; toggle behavior and sessionStorage persistence are covered by
+  // hierarchical-sessions.spec.ts.
+  test("category filter dropdown groups loop toggles under a Loops section (mitto-k53.5)", async ({
+    page,
+  }) => {
+    const tb = toolbar(page);
+    const filterBtn = tb.locator('[data-testid="category-filter-btn"]').first();
+    await filterBtn.click();
+
+    // A plain "Loops" section title groups the three loop-state toggles
+    // (it is not itself a toggle).
+    await expect(page.getByText("Loops", { exact: true })).toBeVisible({
+      timeout: 3000,
+    });
+
+    for (const testId of [
+      "category-filter-loop-running",
+      "category-filter-loop-idle",
+      "category-filter-loop-paused",
+    ]) {
+      await expect(page.locator(`[data-testid="${testId}"]`)).toBeVisible({
+        timeout: 3000,
+      });
+    }
+
+    // Regression guard: the old single "Loop" toggle must not come back.
+    await expect(
+      page.locator('[data-testid="category-filter-loop"]'),
+    ).toHaveCount(0);
   });
 });
