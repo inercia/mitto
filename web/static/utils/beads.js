@@ -178,6 +178,58 @@ export function taskTitleBackground(issue, entries) {
   return "";
 }
 
+// WCAG relative-luminance threshold below which a background color is
+// treated as "dark" (warranting white title text). Grounded computation
+// (mitto-m5f.4 plan comment) shows a naive 0.5 cutoff misclassifies the
+// project's lighter accent colors — #eab308 (L=0.4975, right on the 0.5
+// boundary), #f59e0b (L=0.4389), #22c55e (L=0.4108) — as "dark" even though
+// dark text reads better on them. 0.4 correctly classifies every acceptance
+// color: black/olive/blue -> dark (white text); white/yellow/amber/green ->
+// light (dark text).
+export const TITLE_DARK_LUMINANCE_THRESHOLD = 0.4;
+
+// Linearize a single sRGB channel (0-255) per the WCAG relative luminance
+// formula.
+function linearizeChannel(c) {
+  const s = c / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+
+// isDarkColor computes the WCAG relative luminance of a hex color (#rgb or
+// #rrggbb) and returns true when it falls below TITLE_DARK_LUMINANCE_THRESHOLD.
+// Relative luminance (not a naive channel average) is essential: saturated
+// blue #3b82f6 has a naive average of 0.568 (reads as "light") but a true
+// luminance of 0.2355 (correctly "dark" -> white text). Unparseable or empty
+// input returns false (treated as light), preserving the current dark-theme
+// text color.
+export function isDarkColor(hex) {
+  if (typeof hex !== "string") return false;
+  const match = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!match) return false;
+  let hexDigits = match[1];
+  if (hexDigits.length === 3) {
+    hexDigits = hexDigits
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  const r = parseInt(hexDigits.slice(0, 2), 16);
+  const g = parseInt(hexDigits.slice(2, 4), 16);
+  const b = parseInt(hexDigits.slice(4, 6), 16);
+  const luminance =
+    0.2126 * linearizeChannel(r) +
+    0.7152 * linearizeChannel(g) +
+    0.0722 * linearizeChannel(b);
+  return luminance < TITLE_DARK_LUMINANCE_THRESHOLD;
+}
+
+// taskTitleTextClass returns the Tailwind text-color class that gives
+// sufficient contrast against the given hex background color: white text on
+// dark backgrounds, near-black text on light backgrounds.
+export function taskTitleTextClass(hex) {
+  return isDarkColor(hex) ? "text-white" : "text-neutral-900";
+}
+
 // Sort menu options. `field` is the persisted key; `key` is the issue property
 // holding the value to compare on (priority is numeric, the dates are RFC3339
 // strings).

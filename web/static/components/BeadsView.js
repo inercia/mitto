@@ -24,6 +24,8 @@ import {
   cmpBySort,
   computeEffectiveStreamingSet,
   taskTitleBackground,
+  isDarkColor,
+  taskTitleTextClass,
   SORT_FIELD_OPTIONS,
   SORT_FIELD_LABELS,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
@@ -2526,6 +2528,15 @@ export function BeadsView({
     const isEpic = issue.issue_type === "epic" || childCount > 0;
     const showChevron = epicExpanded !== null;
     const labelBackground = taskTitleBackground(issue, taskLabelColors);
+    const onDark = labelBackground ? isDarkColor(labelBackground) : null;
+    const titleTextClass = labelBackground
+      ? taskTitleTextClass(labelBackground)
+      : "text-mitto-text";
+    const idTextClass = labelBackground
+      ? onDark
+        ? "text-white/70"
+        : "text-neutral-900/70"
+      : "text-mitto-text-secondary";
     const bgTone = isSelected
       ? isStreamingIssue
         ? "bg-mitto-surface-3/30 beads-row-streaming"
@@ -2596,9 +2607,7 @@ export function BeadsView({
                   }}
                   >${issue.id}</a
                 >`
-              : html`<span class="text-mitto-text-secondary"
-                  >${issue.id}</span
-                >`}
+              : html`<span class=${idTextClass}>${issue.id}</span>`}
           </span>
           ${typeBadge(issue.issue_type)} ${statusBadge(issue.status)}
           ${priorityBadge(issue.priority)}
@@ -2616,7 +2625,7 @@ export function BeadsView({
               `
             : null}
         </div>
-        <div class="text-sm text-mitto-text wrap-break-word">
+        <div class="text-sm ${titleTextClass} wrap-break-word">
           <span data-testid="beads-issue-title">${issue.title}</span>
         </div>
       </div>
