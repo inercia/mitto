@@ -74,6 +74,7 @@ export const EVENTS: Readonly<{
     HOOK_FAILED: "hook_failed";
     PROMPTS_CHANGED: "prompts_changed";
     TASK_LABEL_COLORS_UPDATED: "task_label_colors_updated";
+    FOLDER_TASK_LABEL_COLORS_UPDATED: "folder_task_label_colors_updated";
     BEADS_CHANGED: "beads_changed";
     BEADS_CLEANUP_PROGRESS: "beads_cleanup_progress";
     MCP_TOOLS_UNAVAILABLE: "mcp_tools_unavailable";
@@ -1410,6 +1411,17 @@ export type RequiredToolsStatusPayload = {
  * (`task_label_colors_updated`). The empty object signals clients to refetch.
  */
 export type TaskLabelColorsUpdatedPayload = any;
+/**
+ * Payload of {@link EVENTS.FOLDER_TASK_LABEL_COLORS_UPDATED}
+ * (`folder_task_label_colors_updated`). Signals clients to refetch the given
+ * folder's task-label color mapping.
+ */
+export type FolderTaskLabelColorsUpdatedPayload = {
+    /**
+     * - Folder whose task-label colors changed.
+     */
+    working_dir: string;
+};
 /**
  * Payload of {@link EVENTS.PROMPTS_CHANGED} (`prompts_changed`).
  */
