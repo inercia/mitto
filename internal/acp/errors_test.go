@@ -708,6 +708,63 @@ func TestIsContextTooLargeError_mitto_2efc_UncorroboratedInvalidArgument(t *test
 	}
 }
 
+// TestIsChatStreamOversizedArgumentError is the truth table for the new
+// mitto-5se narrow predicate: it must match the bare httpStatus:400/
+// apiStatus:invalidArgument pair regardless of whether a token/length phrase
+// is present (unlike IsContextTooLargeError, which requires corroboration),
+// and must not match unrelated status codes, nil, or generic errors.
+func TestIsChatStreamOversizedArgumentError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "bare 400 invalidArgument with no corroborating phrase (mitto-2efc's uncorroborated case) matches this narrower predicate",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"model claude-opus-5 is not yet available for this account"}}`),
+			want: true,
+		},
+		{
+			name: "400 invalidArgument corroborated by a token/length phrase also matches (predicate is a superset)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"request exceeds maximum token length"}}`),
+			want: true,
+		},
+		{
+			name: "HTTP 413 does NOT match (different signature, handled by IsContextTooLargeError instead)",
+			err:  fmt.Errorf(`HTTP error: 413 Payload Too Large`),
+			want: false,
+		},
+		{
+			name: "400 without apiStatus:invalidArgument does not match",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"failedPrecondition"}}`),
+			want: false,
+		},
+		{
+			name: "apiStatus:invalidArgument without httpStatus:400 does not match",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"apiStatus":"invalidArgument"}}`),
+			want: false,
+		},
+		{
+			name: "unrelated generic error",
+			err:  errors.New("some other io failure"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsChatStreamOversizedArgumentError(tt.err); got != tt.want {
+				t.Errorf("IsChatStreamOversizedArgumentError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsUpstreamUnavailableError is the classifier truth table for the
 // upstream-provider-outage predicate, covering both the mitto-gbf5
 // network-level connect-timeout brownout and the mitto-bfu application-level

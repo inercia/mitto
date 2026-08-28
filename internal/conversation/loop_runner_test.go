@@ -3350,6 +3350,156 @@ func TestLoopRunner_DeliverPrompt_FreeTextUnaffected(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_DeliverPrompt_ProactiveFreshContextGuard_ForcesOverThreshold
+// is the mitto-5se AC1 test: deliverPrompt's proactive guard must force this
+// dispatch's FreshContext to true (observed via the WARN it emits, since
+// there is no live ACP connection to inspect PromptMeta directly) once the
+// session's own measured turns-since-reset reaches LoopFreshContextTurnThreshold,
+// even though loop.FreshContext is false.
+func TestLoopRunner_DeliverPrompt_ProactiveFreshContextGuard_ForcesOverThreshold(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sid = "fresh-guard-over"
+	meta := session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+		// FreshContext left false: the guard must force it anyway.
+	}
+	loopStore := store.Loop(sid)
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
+	bs.markACPContextFresh()
+	for i := int64(0); i < LoopFreshContextTurnThreshold; i++ {
+		bs.noteACPTurnDispatched()
+	}
+
+	// No ACP connection is wired, so deliverPrompt fails synchronously — that
+	// is fine; the guard runs and logs BEFORE the PromptWithMeta call.
+	_ = runner.deliverPrompt(bs, meta, loop, loopStore, false, false, false, session.TriggerSchedule, false, nil)
+
+	found := false
+	for _, r := range handler.warnOrHigher() {
+		if strings.Contains(r.Message, "Forcing fresh context") {
+			found = true
+			if turns, ok := slogRecordStringAttr(r, "turns_since_reset"); !ok || turns != fmt.Sprintf("%d", LoopFreshContextTurnThreshold) {
+				t.Errorf("turns_since_reset attr = %q, ok=%v, want %d", turns, ok, LoopFreshContextTurnThreshold)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected a 'Forcing fresh context' WARN once turns_since_reset reached the threshold, found none")
+	}
+}
+
+// TestLoopRunner_DeliverPrompt_ProactiveFreshContextGuard_UnderThreshold_NoOp
+// verifies the guard stays silent (no forced FreshContext) below the
+// threshold, so a normal, bounded loop is unaffected by mitto-5se.
+func TestLoopRunner_DeliverPrompt_ProactiveFreshContextGuard_UnderThreshold_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sid = "fresh-guard-under"
+	meta := session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	loopStore := store.Loop(sid)
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
+	bs.markACPContextFresh()
+	for i := int64(0); i < LoopFreshContextTurnThreshold-1; i++ {
+		bs.noteACPTurnDispatched()
+	}
+
+	_ = runner.deliverPrompt(bs, meta, loop, loopStore, false, false, false, session.TriggerSchedule, false, nil)
+
+	for _, r := range handler.warnOrHigher() {
+		if strings.Contains(r.Message, "Forcing fresh context") {
+			t.Errorf("unexpected 'Forcing fresh context' WARN below threshold: %+v", r)
+		}
+	}
+}
+
+// TestLoopRunner_DeliverPrompt_ProactiveFreshContextGuard_AlreadyOptedIn_NoWarn
+// verifies that a loop which already sets loop.FreshContext=true is left
+// alone by the guard — no WARN is emitted even with turns over threshold,
+// since the loop is already bounded (mitto-5se Part A doc comment).
+func TestLoopRunner_DeliverPrompt_ProactiveFreshContextGuard_AlreadyOptedIn_NoWarn(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sid = "fresh-guard-optedin"
+	meta := session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loop := &session.LoopPrompt{
+		Prompt:       "iterate",
+		Frequency:    session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:      true,
+		FreshContext: true,
+	}
+	loopStore := store.Loop(sid)
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := NewTestBackgroundSessionWithCtx(sid, ctx, cancel)
+	bs.markACPContextFresh()
+	for i := int64(0); i < LoopFreshContextTurnThreshold+10; i++ {
+		bs.noteACPTurnDispatched()
+	}
+
+	_ = runner.deliverPrompt(bs, meta, loop, loopStore, false, false, false, session.TriggerSchedule, false, nil)
+
+	for _, r := range handler.warnOrHigher() {
+		if strings.Contains(r.Message, "Forcing fresh context") {
+			t.Errorf("unexpected 'Forcing fresh context' WARN for a loop already opted into FreshContext: %+v", r)
+		}
+	}
+}
+
 // substituteTestArgs mirrors the Go-template rendering that PromptWithMeta
 // applies inside its async goroutine so tests can verify the correct output
 // without a real ACP connection.
@@ -6356,6 +6506,214 @@ func TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn(t *testing.T
 	}
 	if got, _ := slogRecordStringAttr(warns2[0], "failure_class"); got != "generic" {
 		t.Errorf("generic failure_class = %q, want %q (mitto-bfu)", got, "generic")
+	}
+}
+
+// bareInvalidArgument400Err mirrors the bead's own log evidence: a bare
+// httpStatus:400/apiStatus:invalidArgument envelope with NO token/length
+// corroborating phrase — the exact shape IsContextTooLargeError declines to
+// match (mitto-2efc) and IsChatStreamOversizedArgumentError does match.
+var bareInvalidArgument400Err = fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument"}}`)
+
+// TestLoopRunner_DeliveryFailure_OversizedContext_OverThreshold_ClassifiesAndAutoPauses
+// is the mitto-5se AC2 test: a bare 400/invalidArgument corroborated by
+// contextTurns >= LoopFreshContextTurnThreshold must classify as
+// failure_class="oversized_context", route through the SAME ceiling/counter
+// as a corroborated HTTP 413, and auto-pause with
+// StoppedReasonContextWindowExceeded (not the generic
+// StoppedReasonDeliveryFailures) after MaxLoopContextWindowFailures hits.
+func TestLoopRunner_DeliveryFailure_OversizedContext_OverThreshold_ClassifiesAndAutoPauses(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "mitto-5se-oversized-over"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:   "Test",
+		Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
+		Enabled:  true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// Sanity: precondition matches what the classifier depends on.
+	if mittoAcp.IsContextTooLargeError(bareInvalidArgument400Err) {
+		t.Fatalf("test precondition failed: IsContextTooLargeError must NOT match the uncorroborated bare 400 (mitto-2efc)")
+	}
+	if !mittoAcp.IsChatStreamOversizedArgumentError(bareInvalidArgument400Err) {
+		t.Fatalf("test precondition failed: IsChatStreamOversizedArgumentError must match the bare 400/invalidArgument pair")
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) { autoStopCalls++ })
+
+	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, bareInvalidArgument400Err, true, false, session.TriggerOnCompletion, LoopFreshContextTurnThreshold)
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d corroborated oversized-context hits; want false", MaxLoopContextWindowFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonContextWindowExceeded {
+		t.Errorf("loop.StoppedReason = %q, want %q (mitto-5se: oversized_context must route through the context-window stop reason, not generic)",
+			final.StoppedReason, session.StoppedReasonContextWindowExceeded)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+
+	// The classification WARN on the final (auto-pausing) hit must carry
+	// failure_class=oversized_context.
+	var sawOversized bool
+	for _, r := range handler.warnOrHigher() {
+		if fc, ok := slogRecordStringAttr(r, "failure_class"); ok && fc == "oversized_context" {
+			sawOversized = true
+		}
+	}
+	if !sawOversized {
+		t.Error("expected at least one WARN with failure_class=oversized_context")
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_OversizedContext_UnderThreshold_StaysGeneric
+// is the mitto-2efc regression guard within mitto-5se: the SAME bare
+// 400/invalidArgument error, when contextTurns is below the threshold (a
+// small-context 400, e.g. a deferred model-switch race), must NOT be
+// reclassified as oversized_context — it stays generic and follows the
+// ordinary MaxLoopDeliveryFailures ceiling with StoppedReasonDeliveryFailures.
+func TestLoopRunner_DeliveryFailure_OversizedContext_UnderThreshold_StaysGeneric(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "mitto-5se-oversized-under"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) { autoStopCalls++ })
+
+	// Single hit, well under threshold (including the contextTurnsUnknown
+	// sentinel and a small positive count) — must classify generic.
+	for _, turns := range []int64{contextTurnsUnknown, 0, LoopFreshContextTurnThreshold - 1} {
+		h := &recordingSlogHandler{minLevel: slog.LevelDebug}
+		r := NewLoopRunner(store, nil, slog.New(h))
+		r.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, bareInvalidArgument400Err, true, false, session.TriggerSchedule, turns)
+		if got, _ := slogRecordStringAttr(h.warnOrHigher()[0], "failure_class"); got != "generic" {
+			t.Errorf("contextTurns=%d: failure_class = %q, want %q (mitto-2efc guarantee must hold under threshold)", turns, got, "generic")
+		}
+	}
+
+	// Drive to the generic ceiling (MaxLoopDeliveryFailures) with contextTurns
+	// under threshold and confirm StoppedReasonDeliveryFailures, not
+	// StoppedReasonContextWindowExceeded.
+	for i := 1; i <= MaxLoopDeliveryFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, bareInvalidArgument400Err, true, false, session.TriggerSchedule, 0)
+	}
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d generic hits; want false", MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want %q (under-threshold bare 400 must NOT be treated as oversized-context)",
+			final.StoppedReason, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_CorroboratedContextTooLarge_NotDoubleCounted
+// verifies the mutual-exclusivity guard: a 400/invalidArgument ALREADY
+// corroborated by a token/length phrase (so IsContextTooLargeError matches)
+// must go through the FIRST block only — even with contextTurns over
+// threshold, it must not ALSO match the narrower oversized_context branch and
+// double-increment contextWindowFailures for the same failure.
+func TestLoopRunner_DeliveryFailure_CorroboratedContextTooLarge_NotDoubleCounted(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "mitto-5se-corroborated"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:   "Test",
+		Triggers: []session.LoopTrigger{session.TriggerOnCompletion},
+		Enabled:  true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	corroboratedErr := fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument","details":"request exceeds maximum token length"}}`)
+	if !mittoAcp.IsContextTooLargeError(corroboratedErr) {
+		t.Fatalf("test precondition failed: IsContextTooLargeError must match the token-corroborated 400")
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) { autoStopCalls++ })
+
+	// Drive exactly MaxLoopContextWindowFailures hits with contextTurns ALSO
+	// over threshold. If the two blocks double-counted, this would trip the
+	// ceiling in half as many calls (or otherwise diverge from the
+	// single-counter 413 test's shape) — asserting it trips at exactly N
+	// confirms only one counter increment happens per call.
+	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-corroborated", loop, loopStore, corroboratedErr, true, false, session.TriggerOnCompletion, LoopFreshContextTurnThreshold)
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d corroborated 413-equivalent hits; want false", MaxLoopContextWindowFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonContextWindowExceeded {
+		t.Errorf("loop.StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonContextWindowExceeded)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1 (double-counting would still show 1 here since MarkStopped is idempotent-guarded, "+
+			"but a double-increment would have tripped the ceiling on an earlier iteration than MaxLoopContextWindowFailures)", autoStopCalls)
 	}
 }
 

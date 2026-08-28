@@ -1687,6 +1687,32 @@ func TestBackgroundSession_ACPContextIsEmpty_ZeroValueStructIsNotEmpty(t *testin
 	}
 }
 
+// TestBackgroundSession_AcpContextTurnsSinceReset_ExposesRawCounter pins the
+// mitto-5se accessor contract: acpContextTurnsSinceReset() is a thin read of
+// the same tri-state counter as acpContextIsEmpty (unknown/-1, fresh/0, or a
+// positive turn count), used by LoopRunner's proactive fresh-context guard
+// and its oversized-context failure classifier.
+func TestBackgroundSession_AcpContextTurnsSinceReset_ExposesRawCounter(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	bs.markACPContextUnknown()
+	if got := bs.acpContextTurnsSinceReset(); got != contextTurnsUnknown {
+		t.Errorf("acpContextTurnsSinceReset() = %d, want %d (unknown sentinel)", got, contextTurnsUnknown)
+	}
+
+	bs.markACPContextFresh()
+	if got := bs.acpContextTurnsSinceReset(); got != 0 {
+		t.Errorf("acpContextTurnsSinceReset() = %d, want 0 after markACPContextFresh", got)
+	}
+
+	bs.noteACPTurnDispatched()
+	bs.noteACPTurnDispatched()
+	bs.noteACPTurnDispatched()
+	if got := bs.acpContextTurnsSinceReset(); got != 3 {
+		t.Errorf("acpContextTurnsSinceReset() = %d, want 3 after three dispatched turns", got)
+	}
+}
+
 func TestBackgroundSession_CreatedAt(t *testing.T) {
 	bs := &BackgroundSession{}
 
