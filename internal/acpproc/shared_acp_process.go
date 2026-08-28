@@ -400,6 +400,24 @@ type SharedACPProcess struct {
 	// This semaphore guards ONLY set_model — it must never be held during prompts.
 	setModelSem chan struct{}
 
+	// setModelShedLevel bounds the blast radius of a single straggler's saturation
+	// trip on concurrently-spawned siblings (mitto-ttb): a burst of child
+	// conversations spawned within a few seconds of each other (e.g. a
+	// mitto_conversation_new fan-out) each independently trigger an async startup
+	// SetSessionModel with zero admission control. Without this gate, the first
+	// caller to acquire setModelSem exhausts its attempts and trips isSaturated(),
+	// then EVERY other concurrently-queued sibling also fails once it wins the
+	// semaphore and rechecks saturation (mitto-qy0j) — turning one straggler's
+	// failure into a 100% cascade across the whole cohort. setModelShedLevel
+	// records the highest SaturationLevel for which a SetSessionModel failure has
+	// already been surfaced to a caller (see admitSetModelSaturationShed): only
+	// the FIRST caller to observe a given level returns the hard error, every
+	// other concurrent caller for that SAME level silently skips (returns nil)
+	// instead of piling on a duplicate failure. Reset to 0 on the next successful
+	// RPC (recordRPCSuccess) so a later, distinct saturation episode gets its own
+	// single shed.
+	setModelShedLevel atomic.Int64
+
 	// Saturation tracking (mitto-13ck.2): consecutive NewSession/LoadSession RPC
 	// timeouts against this shared process. After sessionSaturationTimeoutThreshold
 	// consecutive timeouts the process is flagged saturated until saturatedUntil,
@@ -1305,6 +1323,11 @@ func (p *SharedACPProcess) recordRPCSuccess() {
 	p.saturatedUntil = time.Time{}
 	p.saturationLevel = 0
 	p.inProbe = false
+	// mitto-ttb: the process recovered, so any previously-shed SetSessionModel
+	// saturation episode is stale — clear it so the NEXT distinct saturation
+	// episode (which will re-trip saturationLevel from 0) gets its own single
+	// shed instead of being silently suppressed by a leftover marker.
+	p.setModelShedLevel.Store(0)
 }
 
 // shouldFailFastCreateAttempt decides whether a NewSession retry attempt should
@@ -1566,6 +1589,27 @@ func (p *SharedACPProcess) SaturationLevel() int {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
 	return p.saturationLevel
+}
+
+// admitSetModelSaturationShed bounds the blast radius of a single straggler's
+// saturation trip on concurrently-spawned SetSessionModel siblings (mitto-ttb).
+// It returns true exactly once per distinct saturation level: the first caller
+// to observe level "wins" the compare-and-swap and should surface the hard
+// failure; every other concurrent caller that observes the SAME level gets
+// false and should silently skip (return nil) instead of piling on a
+// duplicate failure. A later, distinct escalation (a higher level) or a
+// recovery (recordRPCSuccess resets setModelShedLevel to 0) allows a fresh
+// single shed again.
+func (p *SharedACPProcess) admitSetModelSaturationShed(level int) bool {
+	for {
+		prev := p.setModelShedLevel.Load()
+		if prev >= int64(level) {
+			return false
+		}
+		if p.setModelShedLevel.CompareAndSwap(prev, int64(level)) {
+			return true
+		}
+	}
 }
 
 // rpcErrorCode extracts the JSON-RPC error code from err when it (or any error it
@@ -2443,6 +2487,16 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	// NON-saturated process still gets its full per-attempt budget (mitto-f7q) — only an
 	// already-tripped saturation flag short-circuits here.
 	if p.isSaturated() {
+		if !p.admitSetModelSaturationShed(p.SaturationLevel()) {
+			// mitto-ttb: another concurrently-spawned sibling already surfaced
+			// this saturation episode; bound the blast radius by skipping
+			// instead of piling on a duplicate failure.
+			if p.logger != nil {
+				p.logger.Debug("SetSessionModel: skipping (process already known-saturated; failure already reported for this episode)",
+					"session_id", sessionID, "model_id", modelID)
+			}
+			return nil
+		}
 		// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
 		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
@@ -2496,6 +2550,17 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	default:
 	}
 	if p.isSaturated() {
+		if !p.admitSetModelSaturationShed(p.SaturationLevel()) {
+			// mitto-ttb: bound the blast radius — another concurrently-queued
+			// sibling (or the straggler whose attempts tripped this very
+			// episode) already surfaced the failure; skip instead of cascading
+			// it across the whole spawned cohort.
+			if p.logger != nil {
+				p.logger.Debug("SetSessionModel: skipping after semaphore (process already known-saturated; failure already reported for this episode)",
+					"session_id", sessionID, "model_id", modelID)
+			}
+			return nil
+		}
 		return fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot; failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
 
@@ -2527,6 +2592,16 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		// the next attempt boundary instead of draining another full 8s budget. Attempt 1
 		// always proceeds so a single slow set_model on a healthy process keeps its budget.
 		if attempt > 1 && p.isSaturated() {
+			if !p.admitSetModelSaturationShed(p.SaturationLevel()) {
+				// mitto-ttb: another caller (this session's own earlier
+				// attempt, or a concurrent sibling) already surfaced this
+				// saturation episode; skip instead of cascading.
+				if p.logger != nil {
+					p.logger.Debug("SetSessionModel: skipping mid-flight (process already known-saturated; failure already reported for this episode)",
+						"session_id", sessionID, "model_id", modelID, "attempt", attempt)
+				}
+				return nil
+			}
 			// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
 			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w: %w", attempt-1, acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 		}
@@ -2641,6 +2716,16 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 	}
 
+	// mitto-ttb: this caller earned its failure by actually exhausting its
+	// attempt budget (it is the "straggler" — the one paying the real cost of
+	// discovering/confirming saturation), so it always returns the real error
+	// regardless of the shed gate. Still CLAIM the current level so any
+	// concurrently-queued sibling that reaches the post-semaphore or mid-flight
+	// recheck above sees this episode as already reported and skips instead of
+	// cascading into a duplicate failure.
+	if p.isSaturated() {
+		p.admitSetModelSaturationShed(p.SaturationLevel())
+	}
 	return fmt.Errorf("set_model failed after %d attempts: %w", setSessionModelMaxAttempts, lastErr)
 }
 

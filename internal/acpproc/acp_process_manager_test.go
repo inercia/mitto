@@ -1386,24 +1386,29 @@ func TestSetSessionModel_ColdAgentTimeout_TripsSaturation(t *testing.T) {
 	}
 }
 
-// TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast is a
-// regression test for mitto-qy0j (requirement 3): SetSessionModel's saturation
-// check ran only BEFORE queueing on the capacity-1 setModelSem. A sibling call
-// that queued while the process was still healthy could win the semaphore
-// AFTER an earlier caller's three attempts had already tripped saturation, and
-// would still burn a full fresh attempt-1 budget against a now-confirmed-dead
-// process before the mid-flight (attempt>1) fail-fast ever got a chance to
-// apply. N sibling children requesting the same model against a wedged shared
-// process therefore each independently paid a full deadline cycle instead of
-// one failure epoch plus fast fails for the rest.
+// TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingSkipsFast
+// covers the post-semaphore saturation recheck original to mitto-qy0j
+// (requirement 3), UPDATED for mitto-ttb's bounded-blast-radius fix.
+// SetSessionModel's saturation check runs both BEFORE queueing on the
+// capacity-1 setModelSem AND immediately after winning it, so a sibling call
+// that queued while the process was still healthy but won the semaphore AFTER
+// an earlier caller's three attempts already tripped saturation no longer
+// burns a full fresh attempt-1 budget against a now-confirmed-dead process
+// (mitto-qy0j). mitto-ttb goes one step further: since the straggler's own
+// exhausted-attempts failure already IS the single reported failure for this
+// saturation episode (see admitSetModelSaturationShed), the queued sibling
+// must not surface a SECOND failure — it silently skips (returns nil) instead
+// of cascading into a duplicate error, bounding N-sibling fan-outs to at most
+// one isolated failure instead of a whole-cohort storm.
 //
 // This test drives two SetSessionModel calls against the same unresponsive
 // peer: the first exhausts all 3 attempts (tripping saturation, mirroring
 // TestSetSessionModel_ColdAgentTimeout_TripsSaturation), the second is
 // launched only once it has observably queued behind the semaphore (checked
-// via len(p.setModelSem)) and must fail almost immediately once it acquires
-// the slot — not after its own attempt-1 timeout.
-func TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast(t *testing.T) {
+// via len(p.setModelSem)) and must return nil (skip, not fail) almost
+// immediately once it acquires the slot — not after its own attempt-1 timeout,
+// and not with a hard error either.
+func TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingSkipsFast(t *testing.T) {
 	origSchedule := setSessionModelAttemptTimeouts
 	setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
 		60 * time.Millisecond,
@@ -1458,17 +1463,122 @@ func TestSetSessionModel_PostSemaphoreSaturationGuard_QueuedSiblingFailsFast(t *
 	}
 	elapsedAfterRelease := time.Since(releasedAt)
 
-	if siblingErr == nil {
-		t.Fatal("expected the queued sibling SetSessionModel call to fail once saturation trips")
+	// mitto-ttb: the straggler's own exhausted-attempts failure already
+	// reported this saturation episode (admitSetModelSaturationShed), so the
+	// queued sibling must silently skip instead of surfacing a second,
+	// cascaded failure.
+	if siblingErr != nil {
+		t.Fatalf("expected the queued sibling SetSessionModel call to silently skip (nil) once the straggler already reported this saturation episode, got: %v", siblingErr)
 	}
-	if !errors.Is(siblingErr, acperrors.ErrProcessSaturated) {
-		t.Errorf("expected sibling call to fail with ErrProcessSaturated (post-semaphore recheck), got: %v", siblingErr)
-	}
-	// The sibling must fail almost immediately once it acquires the semaphore
+	// The sibling must return almost immediately once it acquires the semaphore
 	// — not after burning its own attempt-1 budget (60ms) plus retry backoff
 	// against an already-confirmed-saturated process.
 	if elapsedAfterRelease > 30*time.Millisecond {
-		t.Errorf("expected sibling call to fail fast (<30ms after semaphore release) via post-semaphore saturation recheck, took %v", elapsedAfterRelease)
+		t.Errorf("expected sibling call to skip fast (<30ms after semaphore release) via post-semaphore saturation recheck, took %v", elapsedAfterRelease)
+	}
+}
+
+// TestSetSessionModel_FourConcurrentChildSpawns_NoAdmissionControl_CascadesFailure
+// is a reproduction test for mitto-ttb (spawn-side admission control gap): a
+// parent fanning out N>=4 child conversations via mitto_conversation_new within
+// ~1s has NO cross-spawn admission gate (internal/mcpserver/tools_conversation_new.go
+// calls SessionManager.ResumeSession once per child with zero staggering/queueing
+// keyed on the shared process — unlike ProcessPendingQueues' session.startup_stagger_ms
+// or the loop-runner's resumeStagger, which DO stagger their multi-resume paths).
+//
+// mitto-ttb Investigation finding: resumeSemaphore (session_manager.go, capacity 5)
+// is released right after the session/new RPC and BEFORE the async ACP-server-
+// constraint set_model fires (acp_callback_sink.go:662 -> bgsession_callbacks.go's
+// cbApplyConfigConstraintsAsync goroutine -> config_manager.go's applyConfigConstraints,
+// which for a child session waits only a [0,5s) childStartupJitter then calls
+// cmSetSessionModel). So a 4-child burst (below the resumeSemaphore capacity of 5,
+// and even one above it would only throttle session/new, not this) sails through
+// completely unthrottled into the actual bottleneck below.
+//
+// Each child's startup performs that set_model RPC, which serialises through the
+// capacity-1 setModelSem (SetSessionModel). This test drives 4 such calls
+// launched simultaneously (mirroring an admission-control-free fan-out) against
+// an unresponsive shared process: the first caller to acquire the semaphore
+// exhausts its 3 attempts and trips isSaturated(), and every OTHER queued
+// sibling then hits the post-semaphore saturation recheck and fails fast too
+// (mitto-qy0j requirement 3, already fixed and correct in ISOLATION for a
+// single straggler — see the N=2 test above, which intentionally only ever
+// produces one queued victim). The defect THIS test targets is the BLAST
+// RADIUS at realistic fan-out size: with zero admission control on the spawn
+// side (neither on session/new nor on the async startup set_model that
+// actually saturates), nothing bounds how many concurrently-spawned children a
+// single straggler's saturation takes down — the entire N=4 cohort cascades to
+// failure in one shot, instead of the "at most 1 isolated shed, not a
+// sustained/whole-cohort storm" bar already enforced for the sibling
+// processor-dispatch admission-control fix (apply_admission_control_test.go).
+//
+// FAILS today: all 4 of 4 concurrently-spawned children fail (a 100% cascade
+// for a single burst) — demonstrating there is no per-shared-process
+// admission gate bounding the fan-out, unlike the staggered multi-resume
+// paths (ProcessPendingQueues' startup_stagger_ms, loop-runner's
+// resumeStagger) that the MCP spawn path lacks an equivalent of.
+func TestSetSessionModel_FourConcurrentChildSpawns_NoAdmissionControl_CascadesFailure(t *testing.T) {
+	origSchedule := setSessionModelAttemptTimeouts
+	setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
+		60 * time.Millisecond,
+		50 * time.Millisecond,
+		40 * time.Millisecond,
+	}
+	defer func() { setSessionModelAttemptTimeouts = origSchedule }()
+
+	const numChildren = 4
+
+	p := &SharedACPProcess{
+		conn:        newUnresponsiveACPPeerConn(),
+		setModelSem: make(chan struct{}, 1),
+		// processDone left nil = process considered alive.
+	}
+
+	// Launch all 4 child startup set_model calls simultaneously with NO
+	// coordination — exactly what mitto_conversation_new's fan-out does today
+	// (each ResumeSession/child-startup set_model is independent; there is no
+	// per-shared-process admission gate or queueing keyed on the target process).
+	var wg sync.WaitGroup
+	errs := make([]error, numChildren)
+	start := make(chan struct{})
+	for i := 0; i < numChildren; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			errs[idx] = p.SetSessionModel(context.Background(),
+				acp.SessionId(fmt.Sprintf("child-session-%d", idx)), "model-a")
+		}(i)
+	}
+	close(start)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("4 concurrent child SetSessionModel calls did not all return")
+	}
+
+	failed := 0
+	for _, err := range errs {
+		if err != nil {
+			failed++
+		}
+	}
+
+	// Desired (fixed) behavior: spawn-side admission control should bound the
+	// blast radius of a single straggler's saturation to at most one isolated
+	// shed, not let it cascade across the whole concurrently-spawned cohort —
+	// mirroring the acceptance bar already enforced for dispatchPromptBatch's
+	// sibling admission-control fix (apply_admission_control_test.go).
+	if failed > 1 {
+		t.Errorf("mitto-ttb: %d of %d concurrently-spawned children failed (want at most 1 isolated "+
+			"failure) — no spawn-side admission control bounds how many children a single straggler's "+
+			"saturation takes down; errs=%v", failed, numChildren, errs)
 	}
 }
 
