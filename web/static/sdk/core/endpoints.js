@@ -167,6 +167,7 @@ export function createEndpoints(config, options = {}) {
     folders: {
       shortcuts: (params) => url("/api/folders/shortcuts", params),
       pin: (params) => url("/api/folders/pin", params),
+      taskLabelColors: (params) => url("/api/folders/task-label-colors", params),
     },
 
     /** Global settings (stored in settings.json). */

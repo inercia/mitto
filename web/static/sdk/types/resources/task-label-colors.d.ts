@@ -23,6 +23,20 @@ export function createTaskLabelColorsResource(config: import("../core/config.js"
      * @returns {Promise<TaskLabelColorsBody>}
      */
     setGlobal: (body: TaskLabelColorsBody, opts?: import("../core/transport.js").RequestOptions) => Promise<TaskLabelColorsBody>;
+    /**
+     * @param {object} params - {working_dir} — must be an absolute path
+     *   matching a known workspace.
+     * @param {import("../core/transport.js").RequestOptions} [opts]
+     * @returns {Promise<TaskLabelColorsBody>}
+     */
+    getFolder: (params: object, opts?: import("../core/transport.js").RequestOptions) => Promise<TaskLabelColorsBody>;
+    /**
+     * @param {string} workingDir - absolute path matching a known workspace.
+     * @param {TaskLabelColorsBody} body
+     * @param {import("../core/transport.js").RequestOptions} [opts]
+     * @returns {Promise<TaskLabelColorsBody>}
+     */
+    setFolder: (workingDir: string, body: TaskLabelColorsBody, opts?: import("../core/transport.js").RequestOptions) => Promise<TaskLabelColorsBody>;
 };
 export type TaskLabelColorEntry = {
     label: string;

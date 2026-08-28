@@ -82,6 +82,8 @@ export function createClient(options?: {}): {
     taskLabelColors: {
         getGlobal: (opts?: import("./core/transport.js").RequestOptions) => Promise<import("./resources/task-label-colors.js").TaskLabelColorsBody>;
         setGlobal: (body: import("./resources/task-label-colors.js").TaskLabelColorsBody, opts?: import("./core/transport.js").RequestOptions) => Promise<import("./resources/task-label-colors.js").TaskLabelColorsBody>;
+        getFolder: (params: object, opts?: import("./core/transport.js").RequestOptions) => Promise<import("./resources/task-label-colors.js").TaskLabelColorsBody>;
+        setFolder: (workingDir: string, body: import("./resources/task-label-colors.js").TaskLabelColorsBody, opts?: import("./core/transport.js").RequestOptions) => Promise<import("./resources/task-label-colors.js").TaskLabelColorsBody>;
     };
     issues: {
         list: (params: any, opts: any) => Promise<any>;

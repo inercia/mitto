@@ -36,6 +36,7 @@ import {
   isBeadsSchemaSkew,
   toSchemaSkewState,
 } from "../utils/beads.js";
+import { mergeTaskLabelColors } from "../utils/taskLabelColors.js";
 // Re-export STATUS_COLORS at its original location so any external consumer
 // that had `import { STATUS_COLORS } from ".../BeadsView.js"` keeps working
 // after the move to utils/beads.js (mitto-90f.3 E-3).
@@ -1539,25 +1540,43 @@ export function BeadsView({
     };
   }, [loadShortcuts, workingDir]);
 
-  const loadTaskLabelColors = useCallback(async (isStale) => {
-    const requestID = ++taskLabelColorsRequestRef.current;
-    try {
-      const data = await getSdkClient().taskLabelColors.getGlobal();
-      if (
-        requestID !== taskLabelColorsRequestRef.current ||
-        (isStale && isStale())
-      )
-        return;
-      setTaskLabelColors(data.entries || []);
-    } catch (_err) {
-      if (
-        requestID !== taskLabelColorsRequestRef.current ||
-        (isStale && isStale())
-      )
-        return;
-      setTaskLabelColors([]);
-    }
-  }, []);
+  // Merge folder (folders.json) + global (settings.json) task-label colors,
+  // folder-first: folder entries take precedence over global on overlapping
+  // labels (mergeTaskLabelColors), while global still applies to labels the
+  // folder does not define. Mirrors the folder+global shortcuts merge above.
+  const loadTaskLabelColors = useCallback(
+    async (isStale) => {
+      const requestID = ++taskLabelColorsRequestRef.current;
+      try {
+        const [folderData, globalData] = await Promise.all([
+          workingDir
+            ? getSdkClient()
+                .taskLabelColors.getFolder({ working_dir: workingDir })
+                .catch(() => ({}))
+            : Promise.resolve({}),
+          getSdkClient()
+            .taskLabelColors.getGlobal()
+            .catch(() => ({})),
+        ]);
+        if (
+          requestID !== taskLabelColorsRequestRef.current ||
+          (isStale && isStale())
+        )
+          return;
+        setTaskLabelColors(
+          mergeTaskLabelColors(folderData?.entries, globalData?.entries),
+        );
+      } catch (_err) {
+        if (
+          requestID !== taskLabelColorsRequestRef.current ||
+          (isStale && isStale())
+        )
+          return;
+        setTaskLabelColors([]);
+      }
+    },
+    [workingDir],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1569,10 +1588,23 @@ export function BeadsView({
 
   useEffect(() => {
     const handler = () => loadTaskLabelColors();
+    const folderHandler = (e) => {
+      const dir = e?.detail?.working_dir;
+      if (!dir || dir === workingDir) loadTaskLabelColors();
+    };
     window.addEventListener("mitto:task_label_colors_updated", handler);
-    return () =>
+    window.addEventListener(
+      "mitto:folder_task_label_colors_updated",
+      folderHandler,
+    );
+    return () => {
       window.removeEventListener("mitto:task_label_colors_updated", handler);
-  }, [loadTaskLabelColors]);
+      window.removeEventListener(
+        "mitto:folder_task_label_colors_updated",
+        folderHandler,
+      );
+    };
+  }, [loadTaskLabelColors, workingDir]);
 
   // Auto-refresh the issue list when the backend fsnotify watcher reports
   // external changes to .beads (another agent/CLI, git pull, bd dolt pull).

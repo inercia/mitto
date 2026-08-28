@@ -9,6 +9,7 @@ const { html } = window.preact;
 import { openExternalURL } from "../utils/index.js";
 import { promptDialogParameters } from "../utils/prompts.js";
 import { PlusIcon, SlidersIcon, SpinnerIcon, TrashIcon } from "./Icons.js";
+import { TaskLabelColorsEditor } from "./TaskLabelColorsEditor.js";
 
 // Descriptors used by the Beads Config tab to render the label + config-key
 // help table for each supported upstream task system.
@@ -64,6 +65,8 @@ export function WorkspaceFolderBeadsTab({
   beads,
   beadsSetters,
   beadsHandlers,
+  taskLabelColors,
+  taskLabelColorsHandlers,
   onOpenPromptParamDialog,
 }) {
   const {
@@ -521,6 +524,22 @@ ${beadsDatabaseModeErrorStderr}</pre
               `;
             })()}
           `}
+
+      <div class="pt-2 border-t border-mitto-border"></div>
+
+      <p class="text-sm text-mitto-text-muted">
+        Task title colors configured here apply only to this folder's Tasks
+        list, taking precedence over the global mapping for the same label.
+      </p>
+      <${TaskLabelColorsEditor}
+        entries=${taskLabelColors.entries}
+        loading=${taskLabelColors.loading}
+        error=${taskLabelColors.error}
+        onAdd=${taskLabelColorsHandlers.onAdd}
+        onUpdate=${taskLabelColorsHandlers.onUpdate}
+        onRemove=${taskLabelColorsHandlers.onRemove}
+        onMove=${taskLabelColorsHandlers.onMove}
+      />
     </div>
   `;
 }

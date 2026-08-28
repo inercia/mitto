@@ -21,3 +21,18 @@ export function moveTaskLabelColor(entries, index, direction) {
   [next[index], next[target]] = [next[target], next[index]];
   return next;
 }
+
+// Merge folder-level and global task-label color entries for render-time
+// lookup (mitto-m5f.3). Folder-first precedence: folder entries are kept in
+// full, then any global entries whose label is not already covered by a
+// folder entry are appended, so the ordered, first-match-wins consumer
+// (taskTitleBackground in utils/beads.js) resolves folder colors ahead of
+// global ones on overlapping labels while still honoring global-only labels.
+export function mergeTaskLabelColors(folderEntries, globalEntries) {
+  const folder = Array.isArray(folderEntries) ? folderEntries : [];
+  const global = Array.isArray(globalEntries) ? globalEntries : [];
+  const folderLabels = new Set(
+    folder.map((e) => e?.label).filter((l) => l !== undefined && l !== null),
+  );
+  return [...folder, ...global.filter((e) => !folderLabels.has(e?.label))];
+}

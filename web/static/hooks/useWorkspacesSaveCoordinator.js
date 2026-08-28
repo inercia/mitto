@@ -36,6 +36,9 @@ export function useWorkspacesSaveCoordinator({
   // Shortcuts persistence (from useFolderShortcutsConfig)
   shortcutsLoaded,
   persistShortcuts,
+  // Task label colors persistence (from useFolderTaskLabelColorsConfig)
+  taskLabelColorsLoaded,
+  persistTaskLabelColors,
   // Add-folder flow guard
   isNewFolderIncomplete,
   // Shell setters
@@ -144,6 +147,18 @@ export function useWorkspacesSaveCoordinator({
         }
       }
 
+      // Persist folder task label colors if the Tasks tab was opened/edited.
+      if (selectedFolder && taskLabelColorsLoaded) {
+        try {
+          await persistTaskLabelColors();
+        } catch (tlcErr) {
+          setError("Failed to save task label colors: " + tlcErr.message);
+          const elapsed = Date.now() - saveStartTime;
+          setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
+          return;
+        }
+      }
+
       setWorkspaces(updated);
       setNewFolderKey(null);
       onSave?.();
@@ -174,6 +189,8 @@ export function useWorkspacesSaveCoordinator({
     persistUserDataSchema,
     shortcutsLoaded,
     persistShortcuts,
+    taskLabelColorsLoaded,
+    persistTaskLabelColors,
     setWorkspaces,
     setNewFolderKey,
     setSaving,

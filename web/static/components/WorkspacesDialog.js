@@ -11,6 +11,7 @@ import { useFolderGeneralEdits } from "../hooks/useFolderGeneralEdits.js";
 import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
+import { useFolderTaskLabelColorsConfig } from "../hooks/useFolderTaskLabelColorsConfig.js";
 import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
 import { useWorkspaceEdits } from "../hooks/useWorkspaceEdits.js";
 import { useWorkspaceMcpActions } from "../hooks/useWorkspaceMcpActions.js";
@@ -329,6 +330,25 @@ export function WorkspacesDialog({
       },
       shortcutSections: SHORTCUT_SECTIONS,
     });
+
+  // Folder Tasks tab: task-label-color state + handlers, mirroring
+  // useFolderShortcutsConfig (mitto-m5f.3). Lazily loads/persists folder-
+  // scoped title-background overrides shown alongside the Beads config tab.
+  const {
+    taskLabelColors,
+    taskLabelColorsHandlers,
+    taskLabelColorsLoaded,
+    persistTaskLabelColors,
+  } = useFolderTaskLabelColorsConfig({
+    selectedFolder,
+    activeTab,
+    getSelectedFolderDir: () => {
+      const folderGroup = groupedWorkspaces.find(
+        (g) => g.displayName === selectedFolder,
+      );
+      return folderGroup?.workspaces[0]?.working_dir || null;
+    },
+  });
 
   // Folder Metadata tab state + handlers. Owns 6 metadata state pieces
   // (folderMetadata/metadataLoading + 4 edit fields), the folder-selection
@@ -654,6 +674,8 @@ export function WorkspacesDialog({
     persistUserDataSchema,
     shortcutsLoaded,
     persistShortcuts,
+    taskLabelColorsLoaded,
+    persistTaskLabelColors,
     isNewFolderIncomplete,
     setWorkspaces,
     setNewFolderKey,
@@ -806,6 +828,8 @@ export function WorkspacesDialog({
                 processorsHandlers=${processorsHandlers}
                 shortcuts=${shortcuts}
                 shortcutsHandlers=${shortcutsHandlers}
+                taskLabelColors=${taskLabelColors}
+                taskLabelColorsHandlers=${taskLabelColorsHandlers}
                 onOpenPromptParamDialog=${openPromptParamDialogForFolder}
               />`
             : !selectedWorkspace

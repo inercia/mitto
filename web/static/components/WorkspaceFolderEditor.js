@@ -87,6 +87,10 @@ function renderFolderEditor({
   // Shortcuts tab (grouped state/handlers from useFolderShortcutsConfig)
   shortcuts,
   shortcutsHandlers,
+  // Tasks tab task-label-colors (grouped state/handlers from
+  // useFolderTaskLabelColorsConfig)
+  taskLabelColors,
+  taskLabelColorsHandlers,
   // Prompt parameter dialog opener (drilled through to WorkspaceFolderBeadsTab
   // so the Prompt Actions sliders button can collect args for parametrized
   // Pull/Push/Sync prompts).
@@ -510,6 +514,8 @@ function renderFolderEditor({
                         beads=${beads}
                         beadsSetters=${beadsSetters}
                         beadsHandlers=${beadsHandlers}
+                        taskLabelColors=${taskLabelColors}
+                        taskLabelColorsHandlers=${taskLabelColorsHandlers}
                         onOpenPromptParamDialog=${onOpenPromptParamDialog}
                       />`
                     }
