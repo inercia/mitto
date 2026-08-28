@@ -193,6 +193,9 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		// Folder shortcut buttons (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
+		// Folder task-label colors (folder-native, stored in folders.json).
+		apiRoute{method: "GET", pattern: "/api/folders/task-label-colors", handler: http.HandlerFunc(s.apiHandlers.HandleFolderTaskLabelColors)},
+		apiRoute{method: "PUT", pattern: "/api/folders/task-label-colors", handler: http.HandlerFunc(s.apiHandlers.HandleFolderTaskLabelColors)},
 		// Folder pin/visibility (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/pin", handler: http.HandlerFunc(s.apiHandlers.HandleFolderPin)},
 		apiRoute{method: "PUT", pattern: "/api/folders/pin", handler: http.HandlerFunc(s.apiHandlers.HandleFolderPin)},

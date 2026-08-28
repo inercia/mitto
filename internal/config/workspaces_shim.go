@@ -18,6 +18,7 @@ type WorkspaceSettings = workspaces.WorkspaceSettings
 
 // --- Types (folders.go) ---
 type ShortcutButton = workspaces.ShortcutButton
+type TaskLabelColor = workspaces.TaskLabelColor
 type FolderSettings = workspaces.FolderSettings
 type BeadsFolderSettings = workspaces.BeadsFolderSettings
 type BeadsDatabaseMode = workspaces.BeadsDatabaseMode
@@ -62,6 +63,8 @@ var (
 	FolderBeadsPromptArgs             = workspaces.FolderBeadsPromptArgs
 	FolderShortcuts                   = workspaces.FolderShortcuts
 	SetFolderShortcuts                = workspaces.SetFolderShortcuts
+	FolderTaskLabelColors             = workspaces.FolderTaskLabelColors
+	SetFolderTaskLabelColors          = workspaces.SetFolderTaskLabelColors
 	SetFolderPinned                   = workspaces.SetFolderPinned
 	FolderPinned                      = workspaces.FolderPinned
 	SetFolderLastOpenedAt             = workspaces.SetFolderLastOpenedAt

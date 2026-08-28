@@ -401,6 +401,11 @@ const (
 	// Data: {}
 	WSMsgTypeTaskLabelColorsUpdated = "task_label_colors_updated"
 
+	// WSMsgTypeFolderTaskLabelColorsUpdated notifies clients that a folder's
+	// ordered task-label color mapping changed and should be refetched.
+	// Data: { "working_dir": string }
+	WSMsgTypeFolderTaskLabelColorsUpdated = "folder_task_label_colors_updated"
+
 	// WSMsgTypeBeadsChanged notifies that beads issues have changed on disk.
 	// Sent when another agent or CLI (bd, git pull, bd dolt pull) modifies the .beads/ directory.
 	// Clients should refresh their tasks/issues view when receiving this message.

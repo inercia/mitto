@@ -23,6 +23,16 @@ type ShortcutButton struct {
 	Prompt string `json:"prompt" yaml:"prompt"`
 }
 
+// TaskLabelColor maps a task label to a task-title background color. Defined
+// here (rather than in internal/config) because FolderSettings.TaskLabelColors
+// below needs it and internal/config already imports internal/workspaces, so
+// the reverse import would be circular. internal/config re-exports this as an
+// alias (see workspaces_shim.go), mirroring ShortcutButton.
+type TaskLabelColor struct {
+	Label string `json:"label" yaml:"label"`
+	Color string `json:"color" yaml:"color"`
+}
+
 // FolderSettings holds folder-level settings shared by all workspaces that
 // operate on the same working directory. folders.json is the AUTHORITATIVE store
 // for these values: they live here once per folder rather than being repeated on
@@ -60,6 +70,11 @@ type FolderSettings struct {
 	// ID (e.g. "tasksList") so new sections need no schema change. Folder-native:
 	// preserved across workspace-driven saves by preserveFolderNativeFields.
 	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
+	// TaskLabelColors is an ordered folder-level mapping from task labels to
+	// task-title background colors, merged with the global mapping at render
+	// time (folder entries first). Folder-native: no per-workspace counterpart;
+	// preserved across workspace-driven saves by preserveFolderNativeFields.
+	TaskLabelColors []TaskLabelColor `json:"task_label_colors,omitempty" yaml:"task_label_colors,omitempty"`
 	// Pinned is a folder-level visibility flag. When true the folder is shown in
 	// the sidebar even if it has no conversations. Folder-native: no per-workspace
 	// counterpart and preserved across workspace-driven saves by
@@ -427,6 +442,9 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 			return false
 		}
 	}
+	if len(fs.TaskLabelColors) > 0 {
+		return false
+	}
 	return true
 }
 
@@ -468,9 +486,10 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 				break
 			}
 		}
+		hasTaskLabelColors := len(ex.TaskLabelColors) > 0
 		hasPinned := ex.Pinned
 		hasLastOpenedAt := !ex.LastOpenedAt.IsZero()
-		if !hasBeads && !hasShortcuts && !hasPinned && !hasLastOpenedAt {
+		if !hasBeads && !hasShortcuts && !hasTaskLabelColors && !hasPinned && !hasLastOpenedAt {
 			continue
 		}
 		if out == nil {
@@ -482,6 +501,9 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 		}
 		if hasShortcuts {
 			fs.Shortcuts = ex.Shortcuts
+		}
+		if hasTaskLabelColors {
+			fs.TaskLabelColors = ex.TaskLabelColors
 		}
 		if hasPinned {
 			fs.Pinned = true
@@ -679,6 +701,45 @@ func SetFolderShortcuts(workingDir string, sections map[string][]ShortcutButton)
 		fs.Shortcuts = nil
 	} else {
 		fs.Shortcuts = cleaned
+	}
+	if folderSettingsEmpty(fs) {
+		delete(folders, workingDir)
+	} else {
+		folders[workingDir] = fs
+	}
+	return SaveFolders(folders)
+}
+
+// FolderTaskLabelColors returns the configured ordered task-label color
+// mapping for a folder, or nil.
+func FolderTaskLabelColors(workingDir string) []TaskLabelColor {
+	folders, err := LoadFolders()
+	if err != nil || folders == nil {
+		return nil
+	}
+	fs, ok := folders[workingDir]
+	if !ok {
+		return nil
+	}
+	return fs.TaskLabelColors
+}
+
+// SetFolderTaskLabelColors persists the ordered task-label color mapping to
+// folders.json. An empty/nil slice clears it; if the folder becomes empty its
+// entry is removed.
+func SetFolderTaskLabelColors(workingDir string, entries []TaskLabelColor) error {
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	if len(entries) == 0 {
+		fs.TaskLabelColors = nil
+	} else {
+		fs.TaskLabelColors = entries
 	}
 	if folderSettingsEmpty(fs) {
 		delete(folders, workingDir)

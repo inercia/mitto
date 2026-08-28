@@ -184,6 +184,10 @@ type Deps struct {
 	// the global task-label color mapping changed. May be nil.
 	BroadcastTaskLabelColorsUpdated func()
 
+	// BroadcastFolderTaskLabelColorsUpdated notifies every global-events client
+	// that a folder's task-label color mapping changed. May be nil.
+	BroadcastFolderTaskLabelColorsUpdated func(workingDir string)
+
 	// BroadcastSessionDeleted mirrors Server.BroadcastSessionDeleted: it notifies
 	// all connected clients that a session was deleted. May be nil; callers must
 	// nil-guard.

@@ -1579,23 +1579,24 @@ func NewServer(config Config) (*Server, error) {
 		StopLoopForArchive: func(sessionID string) {
 			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
-		ApplyOnCloseProcessors:            sessionMgr.ApplyOnCloseProcessors,
-		ErrSessionBusy:                    conversation.ErrSessionBusy,
-		ErrLoopNotEnabled:                 conversation.ErrLoopNotEnabled,
-		LoopDelayFloor:                    s.loopDelayFloor,
-		BroadcastLoopUpdated:              s.BroadcastLoopUpdated,
-		BroadcastBeadsCleanupProgress:     s.BroadcastBeadsCleanupProgress,
-		BootstrapOnCompletion:             s.loopRunner.BootstrapOnCompletion,
-		BroadcastSettingsUpdated:          s.BroadcastSessionSettingsUpdated,
-		BroadcastTaskLabelColorsUpdated:   s.BroadcastTaskLabelColorsUpdated,
-		BroadcastSessionDeleted:           s.BroadcastSessionDeleted,
-		BroadcastACPStartFailed:           s.BroadcastACPStartFailed,
-		BroadcastACPStopped:               s.BroadcastACPStopped,
-		BroadcastACPStarted:               s.BroadcastACPStarted,
-		BroadcastSessionRenamed:           s.BroadcastSessionRenamed,
-		BroadcastSessionBeadsIssueUpdated: s.BroadcastSessionBeadsIssueUpdated,
-		BroadcastSessionPinned:            s.BroadcastSessionPinned,
-		BroadcastSessionArchived:          s.BroadcastSessionArchived,
+		ApplyOnCloseProcessors:                sessionMgr.ApplyOnCloseProcessors,
+		ErrSessionBusy:                        conversation.ErrSessionBusy,
+		ErrLoopNotEnabled:                     conversation.ErrLoopNotEnabled,
+		LoopDelayFloor:                        s.loopDelayFloor,
+		BroadcastLoopUpdated:                  s.BroadcastLoopUpdated,
+		BroadcastBeadsCleanupProgress:         s.BroadcastBeadsCleanupProgress,
+		BootstrapOnCompletion:                 s.loopRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:              s.BroadcastSessionSettingsUpdated,
+		BroadcastTaskLabelColorsUpdated:       s.BroadcastTaskLabelColorsUpdated,
+		BroadcastFolderTaskLabelColorsUpdated: s.BroadcastFolderTaskLabelColorsUpdated,
+		BroadcastSessionDeleted:               s.BroadcastSessionDeleted,
+		BroadcastACPStartFailed:               s.BroadcastACPStartFailed,
+		BroadcastACPStopped:                   s.BroadcastACPStopped,
+		BroadcastACPStarted:                   s.BroadcastACPStarted,
+		BroadcastSessionRenamed:               s.BroadcastSessionRenamed,
+		BroadcastSessionBeadsIssueUpdated:     s.BroadcastSessionBeadsIssueUpdated,
+		BroadcastSessionPinned:                s.BroadcastSessionPinned,
+		BroadcastSessionArchived:              s.BroadcastSessionArchived,
 		BroadcastSessionCreated: func(data map[string]interface{}) {
 			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
 		},
@@ -2442,6 +2443,17 @@ func (s *Server) BroadcastTaskLabelColorsUpdated() {
 		return
 	}
 	s.eventsManager.Broadcast(WSMsgTypeTaskLabelColorsUpdated, map[string]interface{}{})
+}
+
+// BroadcastFolderTaskLabelColorsUpdated tells all clients to refetch a
+// folder's task-label color mapping after a successful settings update.
+func (s *Server) BroadcastFolderTaskLabelColorsUpdated(workingDir string) {
+	if s.eventsManager == nil {
+		return
+	}
+	s.eventsManager.Broadcast(WSMsgTypeFolderTaskLabelColorsUpdated, map[string]interface{}{
+		"working_dir": workingDir,
+	})
 }
 
 // BroadcastSessionBeadsIssueUpdated notifies all connected clients that a

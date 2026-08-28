@@ -1376,12 +1376,6 @@ type Config struct {
 	TaskLabelColors []TaskLabelColor
 }
 
-// TaskLabelColor maps a task label to a task-title background color.
-type TaskLabelColor struct {
-	Label string `json:"label" yaml:"label"`
-	Color string `json:"color" yaml:"color"`
-}
-
 // rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
 // It mirrors ACPServerConstraint but with explicit yaml tags (yaml.v3 lowercases
 // field names by default, which would turn MatchMode into "matchmode").
