@@ -1,22 +1,21 @@
 /**
- * Reproduction test for mitto-u5r — "Streaming chunks scroll the view up
- * while user is scrolled up reading (WebKit flex-col-reverse
- * bottom-anchoring)".
+ * Regression test for mitto-u5r — "Streaming chunks scroll the view up while
+ * user is scrolled up reading".
  *
- * Root cause (see Investigation comment on mitto-u5r): the messages list
- * uses flex-col-reverse so the newest (streaming) message grows at the
- * visual bottom. The "Smart auto-scroll" effect in useScrollManagement.js
- * only re-pins to the bottom when the user IS at the bottom; when the user
- * has scrolled up it merely flips on the "new messages" indicator and does
- * NOTHING to compensate the scrollTop for the height the streamed content
- * just added — so the user's reading position drifts.
+ * Corrected root cause: the scroller (.messages-container-reverse) is a normal
+ * top-anchored block container (scrollTop=0 is the visual top); flex-col-reverse
+ * only reorders the inner wrapper's children. When the newest (streaming)
+ * message grows at the visual bottom, the document extends DOWNWARD below the
+ * reading viewport, so a scrolled-up reader's scrollTop stays naturally
+ * unchanged in both WebKit and Chromium (verified with a standalone layout
+ * fixture, native DRIFT=0px). The earlier fix added `scrollTop += delta` here
+ * to "preserve" the reading position; that offset was itself the cause of the
+ * per-chunk upward drift (the same fixture showed +528px drift with it), so it
+ * was removed.
  *
- * Expected (post-fix) contract exercised here: while streaming and the user
- * is NOT at the bottom, when the container's scrollHeight grows, the hook
- * must offset scrollTop by that growth delta to keep the user's relative
- * reading position stable (mirroring the existing prepend/"load more"
- * restoration a few lines below in the same file). Today it does not, so
- * this assertion fails.
+ * Contract pinned here: while streaming and the user is NOT at the bottom, a
+ * scrollHeight increase (bottom growth) must NOT move scrollTop, and the user
+ * must remain considered scrolled up (not snapped to the bottom).
  *
  * Uses the real vendored Preact runtime (mirrors
  * CallbackTriggerSection.test.js) with a manually-mocked scroll container
@@ -110,7 +109,7 @@ afterEach(() => {
 });
 
 describe("useScrollManagement — mitto-u5r streaming scroll drift", () => {
-  test("preserves reading position when content grows during streaming while scrolled up", async () => {
+  test("does not move scrollTop when content grows during streaming while scrolled up", async () => {
     const mock = makeMockContainer({
       scrollHeight: 2000,
       clientHeight: 500,
@@ -145,9 +144,9 @@ describe("useScrollManagement — mitto-u5r streaming scroll drift", () => {
     expect(resultBox.current.isUserAtBottom).toBe(false);
 
     // A streaming chunk arrives: the streamed message grows at the visual
-    // bottom, increasing scrollHeight by 300px. Nothing else moves
-    // scrollTop (it stays at the 200 the user left it at) until the hook
-    // itself reacts.
+    // bottom, increasing scrollHeight by 300px. Because the scroller is
+    // top-anchored, the growth extends the document below the reading
+    // viewport and must NOT move the reader's scrollTop.
     mock.setScrollHeight(2300);
     messages = [...messages]; // new reference, same length (in-place chunk growth)
     preactRender(
@@ -156,11 +155,10 @@ describe("useScrollManagement — mitto-u5r streaming scroll drift", () => {
     );
     await flush();
 
-    // Expected (fixed) behavior: scrollTop is offset by the scrollHeight
-    // delta (300px) to keep the user's relative reading position stable,
-    // exactly like the existing "load more" prepend-restoration logic a
-    // few lines below in useScrollManagement.js.
-    expect(mock.el.scrollTop).toBe(200 + 300);
+    // Corrected (fixed) behavior: scrollTop is left exactly where the user
+    // scrolled to. The hook adds no compensation for bottom growth; the
+    // top-anchored layout keeps the reading position stable on its own.
+    expect(mock.el.scrollTop).toBe(200);
     // The user should still be considered scrolled up, not snapped to bottom.
     expect(resultBox.current.isUserAtBottom).toBe(false);
   });

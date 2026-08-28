@@ -374,59 +374,18 @@ export function useScrollManagement({
     prevIsLoadingMoreRef.current = isLoadingMore;
   }, [isLoadingMore, messages]);
 
-  // Compensate for content growing at the visual bottom of the flex-col-reverse
-  // layout while the user has scrolled up to read earlier messages (mitto-u5r).
-  // The messages wrapper is flex-col-reverse, so the newest (possibly
-  // streaming) message is the FIRST DOM child and sits at the visual bottom;
-  // growing it increases scrollHeight. When the user is NOT at the bottom,
-  // nothing else in this hook adjusts scrollTop for that growth (the
-  // auto-scroll effect below only re-pins when isUserAtBottom), so the
-  // browser's own reflow/scroll-anchoring can drift the viewport away from
-  // the content the user is reading. Preserve the user's reading position by
-  // offsetting scrollTop by the same scrollHeight delta - mirroring the "load
-  // more" prepend-restoration effect above, which performs the same kind of
-  // offset for growth at the opposite end. Runs in a useLayoutEffect so the
-  // compensation happens before paint, avoiding a visible flash.
-  // Tracked independently from prevActiveSessionIdRef: the session-switch
-  // useLayoutEffect above already mutates that ref to the NEW session id
-  // during the same render a switch happens, so reusing it here would hide
-  // the switch from this effect. Compare against our own snapshot instead.
-  const prevStreamingSessionIdRef = useRef(activeSessionId);
-  const prevStreamingScrollHeightRef = useRef(0);
-  useLayoutEffect(() => {
-    const container = messagesContainerRef.current;
-    const sessionSwitched =
-      prevStreamingSessionIdRef.current !== activeSessionId;
-    prevStreamingSessionIdRef.current = activeSessionId;
-
-    if (!container) return;
-
-    const prevScrollHeight = prevStreamingScrollHeightRef.current;
-    const currentScrollHeight = container.scrollHeight;
-    prevStreamingScrollHeightRef.current = currentScrollHeight;
-
-    // Skip during session-switch/initial-load/prepend transitions - those are
-    // already handled by the effects above, and skip on the very first run
-    // (no prior measurement to diff against).
-    if (
-      !isStreaming ||
-      isUserAtBottom ||
-      sessionSwitched ||
-      sessionJustSwitchedRef.current ||
-      justLoadedMoreRef.current ||
-      prevScrollHeight <= 0
-    ) {
-      return;
-    }
-
-    const delta = currentScrollHeight - prevScrollHeight;
-    if (delta > 0) {
-      const originalBehavior = container.style.scrollBehavior;
-      container.style.scrollBehavior = "auto";
-      container.scrollTop += delta;
-      container.style.scrollBehavior = originalBehavior;
-    }
-  }, [messages, isStreaming, isUserAtBottom, activeSessionId]);
+  // NOTE (mitto-u5r): there is deliberately NO scrollTop compensation for
+  // content growing at the visual bottom while the user is scrolled up. The
+  // scroller (.messages-container-reverse) is a normal top-anchored block
+  // container (scrollTop=0 is the visual top); flex-col-reverse only reorders
+  // the inner wrapper's children for DOM ordering. Growth of the newest
+  // (streaming) message therefore extends the document DOWNWARD, below the
+  // reading viewport, and leaves the reader's scrollTop naturally unchanged in
+  // both WebKit and Chromium. A previous fix added `scrollTop += delta` here to
+  // "preserve" the reading position; that premise was wrong and the offset was
+  // itself the cause of the per-chunk upward drift (each chunk dragged the
+  // viewport toward the bottom by the growth delta). Fixture ground truth in
+  // useScrollManagement.test.js pins the top-anchored stability contract.
 
   // Smart auto-scroll for new content during active conversation
   useEffect(() => {
