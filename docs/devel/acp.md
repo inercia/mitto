@@ -575,6 +575,32 @@ in `acp_process_gc.go` are required beyond reading those getters.
    incident produced 38 consecutive `session/new` failures over 9 h with no
    liveness detection and no recycle.
 
+#### Companion aux-creation fast-shed (mitto-pic) — NOT a saturation trigger
+
+Separate from the three triggers above, an **agent-internal-deadline fast-shed**
+gates _non-essential auxiliary_ `session/new` creation the moment the shared
+process wedges on the agent's **own** internal deadline (the `-32603`
+`agent_internal_deadline=true` flavor, `isAgentInternalDeadlineErr`). It arms
+after a **single** such timeout via `recordAgentInternalDeadline()` (stamping
+`lastAgentInternalDeadlineAt`, guarded by the existing `saturationMu`), and
+`getOrCreateAuxiliarySession` sheds subsequent non-essential purposes with the
+existing `ErrProcessBusy` sentinel while `RecentlyHitAgentInternalDeadline()` is
+true (within `auxAgentDeadlineShedCooldown` = 30 s). `improve-prompt` (a human
+actively waiting) is exempt via `isProactiveBailPurpose`.
+
+This is deliberately **not** a fourth saturation trigger: it does **not** touch
+`saturatedUntil` / `saturationLevel` / `consecutiveRPCTimeouts`, so it never by
+itself promotes the process to `IsSaturated()` / `IsConfirmedDegraded()` or feeds
+Tier 5/6 recycle. It closes the gap the three triggers leave open on the **first**
+agent-internal-deadline timeout — where trigger 1 still needs 3 consecutive
+failures, trigger 2 needs an 8-sample window, and an interspersed success can keep
+either from ever arming — so a quiescent-looking process stops burning a full ~60 s
+per non-essential aux create. Reusing `ErrProcessBusy` (rather than a new sentinel)
+means prompt-mode processor dispatch reschedules through the existing bounded
+busy-wait spool/retry path, so starved processors (e.g. `identify-user-data`) are
+not silently lost. `recordRPCSuccess()` clears the marker early on any genuine
+recovery.
+
 ### Tier 6 — Non-Idle Recycle for Confirmed-Degraded Processes (mitto-1h0)
 
 Tier 5 is **idle-gated**: it skips a process with in-flight RPCs or a prompting
