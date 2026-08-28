@@ -93,6 +93,13 @@ array field, not the legacy scalar `trigger`. See
 six-digit hexadecimal value. Saving broadcasts `task_label_colors_updated` so
 open Tasks views refetch the mapping.
 
+`getFolder(params, opts)`/`setFolder(workingDir, body, opts)` — `GET`/`PUT
+/api/folders/task-label-colors?working_dir=...`. Same `{ entries: [{ label,
+color }] }` body and validation as the global endpoint (trimmed non-empty
+label, six-digit hex color lowercased); `working_dir` must be an absolute path
+matching a known workspace. Saving broadcasts `folder_task_label_colors_updated`
+(with the affected `working_dir`) so open Tasks views for that folder refetch.
+
 ## `client.serverConfig`
 
 `get(params, opts)`/`save(body, opts)` — `GET`/`POST /api/config`. Plus
