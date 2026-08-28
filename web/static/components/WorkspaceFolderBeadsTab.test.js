@@ -54,6 +54,13 @@ if (childRun) {
         saveBeadsPromptName: jest.fn(),
         saveBeadsPromptArgs: jest.fn(),
       },
+      taskLabelColors: { entries: [], loading: false, error: "" },
+      taskLabelColorsHandlers: {
+        onAdd: jest.fn(),
+        onUpdate: jest.fn(),
+        onRemove: jest.fn(),
+        onMove: jest.fn(),
+      },
     };
   }
 

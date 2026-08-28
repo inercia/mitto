@@ -1405,10 +1405,31 @@ describe("task label title backgrounds (mitto-ggs6)", () => {
   test("an open BeadsView refetches mappings when the global event arrives", () => {
     const source = readFileSync(BEADS_VIEW_PATH, "utf8");
     expect(source).toMatch(
-      /const handler = \(\) => loadTaskLabelColors\(\);\s*window\.addEventListener\("mitto:task_label_colors_updated", handler\)/,
+      /const handler = \(\) => loadTaskLabelColors\(\);\s*const folderHandler[\s\S]{0,300}window\.addEventListener\("mitto:task_label_colors_updated", handler\)/,
     );
     expect(source).toMatch(
-      /loadTaskLabelColors[\s\S]*?getSdkClient\(\)\.taskLabelColors\.getGlobal\(\)/,
+      /loadTaskLabelColors[\s\S]*?getSdkClient\(\)\s*\.taskLabelColors\.getGlobal\(\)/,
+    );
+  });
+
+  test("mitto-m5f.3: an open BeadsView refetches mappings when the folder event arrives, scoped by working_dir", () => {
+    const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+    // The folder-scoped listener must exist and be scoped: it only refetches
+    // when the event's working_dir matches this view's own workingDir (or is
+    // absent), so an unrelated folder's edit does not trigger a refetch here.
+    expect(source).toMatch(
+      /window\.addEventListener\(\s*"mitto:folder_task_label_colors_updated",\s*folderHandler,?\s*\)/,
+    );
+    expect(source).toMatch(
+      /const folderHandler = \(e\) => \{\s*const dir = e\?\.detail\?\.working_dir;\s*if \(!dir \|\| dir === workingDir\) loadTaskLabelColors\(\);/,
+    );
+    // Merge must fetch folder (when workingDir is set) + global in parallel
+    // and combine via mergeTaskLabelColors (folder-first precedence).
+    expect(source).toMatch(
+      /getSdkClient\(\)\s*\.taskLabelColors\.getFolder\(\{ working_dir: workingDir \}\)/,
+    );
+    expect(source).toMatch(
+      /setTaskLabelColors\(\s*mergeTaskLabelColors\(folderData\?\.entries, globalData\?\.entries\),?\s*\)/,
     );
   });
 });
