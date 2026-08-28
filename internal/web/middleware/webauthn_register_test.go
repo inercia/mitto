@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,6 +294,67 @@ func TestHandleRegisterFinish_Success(t *testing.T) {
 	am.pendingRegMu.Unlock()
 	if stillPresent {
 		t.Error("pending registration was not popped after a successful finish")
+	}
+}
+
+// TestHandleRegisterFinish_OriginMismatch400LogsDevInfo configures the RP
+// with an origin that does NOT match the W3C test vector's clientDataJSON
+// origin ("https://example.org"), forcing go-webauthn's FinishRegistration
+// to fail origin validation. Verifies the handler still returns the generic
+// client-facing error (no DevInfo leak) while the server log captures the
+// go-webauthn DevInfo describing the actual mismatch (mitto-8jk).
+func TestHandleRegisterFinish_OriginMismatch400LogsDevInfo(t *testing.T) {
+	am := newTestAuthManagerWithPasskeys(t, "example.org", []string{"https://wrong.example.com"})
+
+	session, err := am.CreateSession("admin")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	handle, err := am.passkeyStore.UserHandle()
+	if err != nil {
+		t.Fatalf("UserHandle() error = %v", err)
+	}
+
+	body, challenge, _ := webauthnSpecVectorNoneES256(t)
+
+	am.storePendingRegistration(session.Token, &webauthn.SessionData{
+		Challenge:  challenge,
+		UserID:     handle,
+		CredParams: []protocol.CredentialParameter{{Type: protocol.PublicKeyCredentialType, Algorithm: webauthncose.AlgES256}},
+	})
+
+	var buf strings.Builder
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevDefault)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webauthn/register/finish", bytes.NewReader(body))
+	req.AddCookie(sessionCookieFor(session))
+	w := httptest.NewRecorder()
+	am.HandleRegisterFinish(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	var resp RegisterResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode RegisterResponse: %v", err)
+	}
+	if resp.Success {
+		t.Error("Success = true, want false")
+	}
+	if resp.Error != "failed to verify passkey registration" {
+		t.Errorf("Error = %q, want the unchanged generic client-facing message (no DevInfo leak)", resp.Error)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "err_debug=") {
+		t.Fatalf("log output missing err_debug field:\n%s", logOutput)
+	}
+	if !strings.Contains(strings.ToLower(logOutput), "origin") {
+		t.Errorf("log output err_debug does not mention the origin mismatch:\n%s", logOutput)
 	}
 }
 

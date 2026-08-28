@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -168,7 +169,8 @@ func (a *AuthManager) HandleRegisterFinish(w http.ResponseWriter, r *http.Reques
 
 	cred, err := wa.FinishRegistration(user, *sessionData, r)
 	if err != nil {
-		logger.Warn("WEBAUTHN: FinishRegistration failed", "error", err, "username", session.Username)
+		fields := append([]any{"error", err, "username", session.Username}, webAuthnErrFields(err)...)
+		logger.Warn("WEBAUTHN: FinishRegistration failed", fields...)
 		writeJSON(w, http.StatusBadRequest, RegisterResponse{Success: false, Error: "failed to verify passkey registration"})
 		return
 	}
@@ -177,4 +179,20 @@ func (a *AuthManager) HandleRegisterFinish(w http.ResponseWriter, r *http.Reques
 
 	logger.Info("WEBAUTHN: Passkey registered", "username", session.Username)
 	writeJSON(w, http.StatusOK, RegisterResponse{Success: true})
+}
+
+// webAuthnErrFields extracts additional structured slog key/value pairs from
+// a go-webauthn error, when it unwraps to a *protocol.Error: err_type
+// (.Type), err_details (.Details), and err_debug (.DevInfo). go-webauthn
+// attaches the exact validation-failure cause (e.g. an origin/challenge/RP-
+// hash mismatch) in DevInfo, which Error() alone discards — surfacing it
+// here is for server-side diagnostics only (mitto-8jk); it must never be
+// included in a client-facing HTTP response. Returns nil when err does not
+// wrap a *protocol.Error.
+func webAuthnErrFields(err error) []any {
+	var perr *protocol.Error
+	if !errors.As(err, &perr) {
+		return nil
+	}
+	return []any{"err_type", perr.Type, "err_details", perr.Details, "err_debug", perr.DevInfo}
 }

@@ -416,10 +416,20 @@ func (a *AuthManager) ConfigurePasskey(cfg *config.WebAuthnConfig, externalAddre
 		displayName = "Mitto"
 	}
 
+	origins := []string{rpOrigin}
+	seen := map[string]bool{rpOrigin: true}
+	for _, extra := range cfg.RPOrigins {
+		if extra == "" || seen[extra] {
+			continue
+		}
+		seen[extra] = true
+		origins = append(origins, extra)
+	}
+
 	wa, err := webauthn.New(&webauthn.Config{
 		RPID:          rpID,
 		RPDisplayName: displayName,
-		RPOrigins:     []string{rpOrigin},
+		RPOrigins:     origins,
 	})
 	if err != nil {
 		a.webAuthn = nil

@@ -2243,6 +2243,46 @@ func TestAuthManager_ConfigurePasskey_ExplicitRPOverridesSkipExternalAddress(t *
 	}
 }
 
+// TestAuthManager_ConfigurePasskey_ExtraRPOriginsAreAdditive verifies that
+// cfg.RPOrigins (mitto-8jk) are appended to the derived/override origin
+// rather than replacing it, with duplicates skipped, and passed through to
+// the underlying webauthn.Config.
+func TestAuthManager_ConfigurePasskey_ExtraRPOriginsAreAdditive(t *testing.T) {
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	am := NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "u", Password: "p"}})
+	defer am.Close()
+
+	cfg := &config.WebAuthnConfig{
+		Enabled: true,
+		// Duplicate of the derived origin plus an empty entry must both be
+		// skipped/deduped.
+		RPOrigins: []string{"https://tunnel.example.com", "https://mitto.example.com", ""},
+	}
+	if err := am.ConfigurePasskey(cfg, "https://mitto.example.com"); err != nil {
+		t.Fatalf("ConfigurePasskey() error = %v, want nil", err)
+	}
+	if !am.HasPasskeyEnabled() {
+		t.Fatal("HasPasskeyEnabled() = false, want true")
+	}
+
+	am.mu.RLock()
+	origins := am.webAuthn.Config.RPOrigins
+	am.mu.RUnlock()
+
+	want := []string{"https://mitto.example.com", "https://tunnel.example.com"}
+	if len(origins) != len(want) {
+		t.Fatalf("RPOrigins = %v, want %v", origins, want)
+	}
+	for i, o := range want {
+		if origins[i] != o {
+			t.Errorf("RPOrigins[%d] = %q, want %q (full: %v)", i, origins[i], o, origins)
+		}
+	}
+}
+
 func TestAuthManager_HasPasskeyEnabled_NilReceiver(t *testing.T) {
 	var am *AuthManager
 	if am.HasPasskeyEnabled() {

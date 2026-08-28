@@ -351,6 +351,10 @@ type WebAuthnConfig struct {
 	RPOrigin string `json:"rp_origin,omitempty" yaml:"rp_origin,omitempty"`
 	// RPDisplayName is shown to the user during registration/login. Defaults to "Mitto".
 	RPDisplayName string `json:"rp_display_name,omitempty" yaml:"rp_display_name,omitempty"`
+	// RPOrigins optionally lists additional allowed origins, additive to the
+	// derived/override origin above. Useful when the browser-facing origin
+	// differs from external_address (e.g. behind a tunnel/proxy).
+	RPOrigins []string `json:"rp_origins,omitempty" yaml:"rp_origins,omitempty"`
 }
 
 // HasCloudflareAuth returns true if Cloudflare Access authentication is configured and valid.

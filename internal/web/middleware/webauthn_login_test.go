@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,6 +329,66 @@ func TestHandleLoginFinish_Success(t *testing.T) {
 	am.pendingLoginMu.Unlock()
 	if stillPresent {
 		t.Error("pending login was not popped after a successful finish")
+	}
+}
+
+// TestHandleLoginFinish_OriginMismatch400LogsDevInfo configures the RP with
+// an origin that does NOT match the W3C test vector's clientDataJSON origin
+// ("https://example.org"), forcing go-webauthn's FinishPasskeyLogin to fail
+// origin validation. Verifies the handler still returns the generic
+// client-facing error (no DevInfo leak) while the server log captures the
+// go-webauthn DevInfo describing the actual mismatch (mitto-8jk).
+func TestHandleLoginFinish_OriginMismatch400LogsDevInfo(t *testing.T) {
+	am := newTestAuthManagerWithPasskeys(t, "example.org", []string{"https://wrong.example.com"})
+
+	_, credPubKey, challenge, credentialID := loginSpecVectorNoneES256(t)
+	am.passkeyStore.Add(webauthn.Credential{
+		ID:        credentialID,
+		PublicKey: credPubKey,
+		Flags: webauthn.CredentialFlags{
+			UserPresent:    true,
+			BackupEligible: true,
+		},
+	})
+
+	handle, err := am.passkeyStore.UserHandle()
+	if err != nil {
+		t.Fatalf("UserHandle() error = %v", err)
+	}
+	body := loginAssertionBody(t, credentialID, handle)
+
+	am.storePendingLogin("ceremony-1", &webauthn.SessionData{Challenge: challenge})
+
+	var buf strings.Builder
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevDefault)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webauthn/login/finish", bytes.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: loginCeremonyCookieName, Value: "ceremony-1"})
+	w := httptest.NewRecorder()
+	am.HandleLoginFinish(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	var resp WebAuthnLoginResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode WebAuthnLoginResponse: %v", err)
+	}
+	if resp.Success {
+		t.Error("Success = true, want false")
+	}
+	if resp.Error != "failed to verify passkey login" {
+		t.Errorf("Error = %q, want the unchanged generic client-facing message (no DevInfo leak)", resp.Error)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "err_debug=") {
+		t.Fatalf("log output missing err_debug field:\n%s", logOutput)
+	}
+	if !strings.Contains(strings.ToLower(logOutput), "origin") {
+		t.Errorf("log output err_debug does not mention the origin mismatch:\n%s", logOutput)
 	}
 }
 

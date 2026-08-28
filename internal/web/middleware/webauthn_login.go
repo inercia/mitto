@@ -223,7 +223,8 @@ func (a *AuthManager) HandleLoginFinish(w http.ResponseWriter, r *http.Request) 
 	user, cred, err := wa.FinishPasskeyLogin(handler, *sessionData, r)
 	if err != nil {
 		a.rateLimiter.RecordFailure(ipKey)
-		logger.Warn("WEBAUTHN: FinishPasskeyLogin failed", "error", err)
+		fields := append([]any{"error", err}, webAuthnErrFields(err)...)
+		logger.Warn("WEBAUTHN: FinishPasskeyLogin failed", fields...)
 		writeJSON(w, http.StatusBadRequest, WebAuthnLoginResponse{Success: false, Error: "failed to verify passkey login"})
 		return
 	}
