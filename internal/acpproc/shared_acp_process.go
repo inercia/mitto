@@ -171,6 +171,16 @@ const (
 	// of the pre-fix flat-cooldown design.
 	sessionSaturationCooldownMax = 5 * time.Minute
 
+	// auxAgentDeadlineShedCooldown is the fast-shed window armed after a single
+	// agent-internal-deadline timeout on this process (mitto-pic). Unlike the
+	// consecutive-timeout path (sessionSaturationTimeoutThreshold=3 failures needed)
+	// this arms on the FIRST such timeout, closing the gap where a quiescent-looking
+	// process burns a full ~60s per non-essential auxiliary session/new before the
+	// reactive IsSaturated() bail has evidence to trip. Aligned with
+	// sessionSaturationCooldownBase (30s) — the same "first victim pays, the rest
+	// shed for a cooldown" bound already used elsewhere in this file.
+	auxAgentDeadlineShedCooldown = 30 * time.Second
+
 	// confirmedDegradedLevel is the minimum saturationLevel at which a process is
 	// considered "confirmed degraded" (mitto-1h0): it has tripped saturation, served
 	// its cooldown, run a single-attempt probe, and that probe ALSO timed out — i.e.
@@ -439,6 +449,13 @@ type SharedACPProcess struct {
 	saturatedUntil         time.Time
 	saturationLevel        int
 	inProbe                bool
+	// lastAgentInternalDeadlineAt records when this process last saw the agent's
+	// OWN internal-deadline error (isAgentInternalDeadlineErr) on a session/new
+	// (mitto-pic). Zero value means "never" or "cleared by a subsequent success".
+	// Guarded by saturationMu (no new lock — this is a companion signal to the
+	// saturation state above, not an independent state machine). Read via
+	// RecentlyHitAgentInternalDeadline(), cleared by recordRPCSuccess().
+	lastAgentInternalDeadlineAt time.Time
 	// saturationBuckets is the fixed-size ring buffer backing the rate/rolling-window
 	// saturation trigger (mitto-5eq). Each bucket covers saturationWindowDuration /
 	// saturationWindowBucketCount and records timeouts, budget-exhaustion bails, and
@@ -1232,6 +1249,35 @@ func (p *SharedACPProcess) recordRPCTimeout() {
 	p.recordRPCFailureLocked(time.Now())
 }
 
+// recordAgentInternalDeadline stamps lastAgentInternalDeadlineAt (mitto-pic) so
+// RecentlyHitAgentInternalDeadline() can arm a fast-shed for non-essential
+// auxiliary session creation. Called ONLY on the isAgentInternalDeadlineErr
+// flavor of failure — deliberately not broadened to plain context.DeadlineExceeded
+// or the query-closed wedge in this increment. Distinct from recordRPCTimeout:
+// this arms after a SINGLE occurrence, whereas the consecutive-timeout fast path
+// needs sessionSaturationTimeoutThreshold (3) before IsSaturated() trips.
+func (p *SharedACPProcess) recordAgentInternalDeadline() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	p.lastAgentInternalDeadlineAt = time.Now()
+}
+
+// RecentlyHitAgentInternalDeadline reports whether this process saw the agent's
+// internal-deadline error within the last auxAgentDeadlineShedCooldown (mitto-pic).
+// Non-mutating, guarded by saturationMu — mirrors IsSaturated()/IsConfirmedDegraded().
+// Used by ACPProcessManager.getOrCreateAuxiliarySession to fast-shed non-essential
+// auxiliary purposes before they burn a full session/new budget on a process that
+// just demonstrated it is wedged, even though the reactive IsSaturated() bail (which
+// needs 3 consecutive timeouts) has not yet armed.
+func (p *SharedACPProcess) RecentlyHitAgentInternalDeadline() bool {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	if p.lastAgentInternalDeadlineAt.IsZero() {
+		return false
+	}
+	return time.Now().Before(p.lastAgentInternalDeadlineAt.Add(auxAgentDeadlineShedCooldown))
+}
+
 // recordRPCFailureLocked is the shared escalation body for both full RPC
 // deadlines (recordRPCTimeout) and the agent's self-reported "query closed
 // before response received" wedge (recordRPCWedgeFailure, mitto-aoo). Both
@@ -1323,6 +1369,11 @@ func (p *SharedACPProcess) recordRPCSuccess() {
 	p.saturatedUntil = time.Time{}
 	p.saturationLevel = 0
 	p.inProbe = false
+	// mitto-pic: a real success is direct evidence the process is no longer
+	// wedged, so clear the agent-internal-deadline marker early — recovery
+	// should re-arm the fast-shed cleanly rather than waiting out the full
+	// auxAgentDeadlineShedCooldown.
+	p.lastAgentInternalDeadlineAt = time.Time{}
 	// mitto-ttb: the process recovered, so any previously-shed SetSessionModel
 	// saturation episode is stale — clear it so the NEXT distinct saturation
 	// episode (which will re-trip saturationLevel from 0) gets its own single
@@ -2027,6 +2078,9 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		//     1-10ms failure cannot be cold-start MCP latency.
 		if isAgentInternalDeadlineErr(err) {
 			p.recordRPCTimeout()
+			// mitto-pic: also arm the single-occurrence auxiliary fast-shed —
+			// see recordAgentInternalDeadline / RecentlyHitAgentInternalDeadline.
+			p.recordAgentInternalDeadline()
 		} else if isAgentQueryClosedErr(err) {
 			p.recordRPCWedgeFailure()
 		} else if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {

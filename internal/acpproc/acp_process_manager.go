@@ -1453,6 +1453,36 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		return nil, fmt.Errorf("%w: shared ACP process is mcp-init gated; skipping auxiliary session creation for purpose %q: %w", ErrMCPInitGated, purpose, context.DeadlineExceeded)
 	}
 
+	// Agent-internal-deadline fast-shed (mitto-pic): the three bails above are all
+	// keyed on state that is NOT yet set on the FIRST agent-internal-deadline
+	// timeout — IsSaturated() needs 3 consecutive timeouts (or an 8-sample rate-
+	// window trip), the ActiveRPCs bail needs a concurrent in-flight RPC, and the
+	// MCP-init bail needs an active/timed-out handshake. A quiescent-looking
+	// process that just wedged on its OWN internal deadline therefore burns a full
+	// ~60s per non-essential aux create until the reactive bail arms — and in the
+	// intermittent-success case (a success resets consecutiveRPCTimeouts) it may
+	// never arm at all. RecentlyHitAgentInternalDeadline() arms after a SINGLE
+	// occurrence and self-clears after auxAgentDeadlineShedCooldown (or immediately
+	// on the next real success), bridging that gap for non-essential purposes only
+	// — improve-prompt (a human actively waiting) is exempt via isProactiveBailPurpose.
+	if isProactiveBailPurpose(purpose) && process.RecentlyHitAgentInternalDeadline() {
+		if m.logger != nil {
+			// Debug, consistent with the process_saturated/process_busy/mcp_init_gated
+			// bails above: this can fire repeatedly during a single incident and is
+			// not itself a new degraded-state transition worth an Info/Warn line.
+			m.logger.Debug("Skipping auxiliary NewSession: process recently hit agent-internal deadline",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"reason", "agent_deadline_shed")
+		}
+		// Wrap ErrProcessBusy (the existing proactive load-shedding sentinel — no
+		// new sentinel class per the plan) so callers keep exactly the same
+		// classification and bounded busy-wait retry behavior (mitto-hjx/mitto-qvs)
+		// as the ActiveRPCs-based bail above, while keeping the DeadlineExceeded
+		// chain for pre-existing callers.
+		return nil, fmt.Errorf("%w: shared ACP process recently hit the agent's internal deadline; skipping auxiliary session creation for purpose %q: %w", ErrProcessBusy, purpose, context.DeadlineExceeded)
+	}
+
 	// Instrument auxiliary session creation so cold-start / prewarm timing is
 	// observable in mitto.log. createStart brackets the whole create path from
 	// the cache-miss decision through the NewSession RPC; newSessionStart isolates
