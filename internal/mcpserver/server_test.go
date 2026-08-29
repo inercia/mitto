@@ -18,6 +18,7 @@ import (
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
@@ -251,7 +252,8 @@ func TestGetRuntimeInfoGoroutineAttribution(t *testing.T) {
 // "sections" selector. It starts a short-interval gauge to populate real
 // goroutine samples, then checks the handler mirrors
 // coldstart.RecentGaugeSamples and honors Limit/Sections, plus section
-// selection/validation and beads_cache unavailability.
+// selection/validation, coldstart/by_workspace population, and beads_cache
+// availability in both the unavailable and available cases.
 func TestCreateMetricsHandler(t *testing.T) {
 	stop := coldstart.StartGauge(context.Background(), nil, 5*time.Millisecond)
 	deadline := time.Now().Add(2 * time.Second)
@@ -266,6 +268,14 @@ func TestCreateMetricsHandler(t *testing.T) {
 	want := coldstart.RecentGaugeSamples(0)
 	if len(want) < 2 {
 		t.Fatalf("expected at least 2 gauge samples to be present, got %d", len(want))
+	}
+
+	// Seed at least one cold-start summary (with a workspace UUID) so the
+	// coldstart/by_workspace sections below have real data to report.
+	coldstart.New(nil, "mitto-metrics-test-session", "mitto-metrics-test-ws").Summary("ok")
+	wantColdStarts := coldstart.RecentSummaries(0)
+	if len(wantColdStarts) < 1 {
+		t.Fatalf("expected at least 1 coldstart summary to be present, got %d", len(wantColdStarts))
 	}
 
 	srv := &Server{}
@@ -318,6 +328,53 @@ func TestCreateMetricsHandler(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected Unavailable to contain %q, got %v", "beads_cache", out3.Unavailable)
+	}
+
+	// (f) all-sections also populates ColdStart with the seeded summary, and
+	// leaves WorkspaceStats unset when ByWorkspace is not requested.
+	if out.ColdStart == nil {
+		t.Fatalf("expected ColdStart to be populated for all-sections request")
+	}
+	if len(out.ColdStart.ColdStarts) != len(wantColdStarts) {
+		t.Errorf("ColdStarts length = %d, want %d (matching coldstart.RecentSummaries(0))", len(out.ColdStart.ColdStarts), len(wantColdStarts))
+	}
+	if out.ColdStart.WorkspaceStats != nil {
+		t.Errorf("expected WorkspaceStats to be nil when ByWorkspace is not requested, got %+v", out.ColdStart.WorkspaceStats)
+	}
+
+	// (g) requesting ["coldstart"] with ByWorkspace:true populates WorkspaceStats
+	// matching coldstart.AggregateByWorkspace, and leaves Goroutines nil.
+	_, out4, err := handler(context.Background(), nil, MetricsInput{Sections: []string{"coldstart"}, ByWorkspace: true})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if out4.Goroutines != nil {
+		t.Errorf("expected Goroutines to be nil when only coldstart section requested, got %+v", out4.Goroutines)
+	}
+	if out4.ColdStart == nil {
+		t.Fatalf("expected ColdStart to be populated for coldstart section request")
+	}
+	wantStats := coldstart.AggregateByWorkspace(wantColdStarts)
+	if len(out4.ColdStart.WorkspaceStats) != len(wantStats) {
+		t.Errorf("WorkspaceStats length = %d, want %d (matching coldstart.AggregateByWorkspace)", len(out4.ColdStart.WorkspaceStats), len(wantStats))
+	}
+
+	// (h) beads_cache requested with a non-nil beadsCacheMetricsFn returns the
+	// snapshot verbatim and does not mark the section Unavailable.
+	wantCache := beads.CacheMetrics{Hits: 7, Misses: 3, HitRate: 0.7}
+	srvWithCache := &Server{beadsCacheMetricsFn: func() beads.CacheMetrics { return wantCache }}
+	handlerWithCache := srvWithCache.createMetricsHandler()
+	_, out5, err := handlerWithCache(context.Background(), nil, MetricsInput{Sections: []string{"beads_cache"}})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if out5.BeadsCache == nil || *out5.BeadsCache != wantCache {
+		t.Errorf("BeadsCache = %+v, want %+v", out5.BeadsCache, wantCache)
+	}
+	for _, u := range out5.Unavailable {
+		if u == "beads_cache" {
+			t.Errorf("expected Unavailable to not contain %q when beadsCacheMetricsFn is set, got %v", "beads_cache", out5.Unavailable)
+		}
 	}
 }
 
