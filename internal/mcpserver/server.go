@@ -107,8 +107,8 @@ type Server struct {
 	shutdown       bool
 
 	// beadsCacheMetricsFn returns a snapshot of the beads read-cache counters.
-	// Non-nil only when the --beads-cache flag is on; the mitto_beads_cache_metrics
-	// tool is registered only when this is non-nil (mitto-is2.5).
+	// Non-nil only when the --beads-cache flag is on; when nil, the mitto_metrics
+	// tool reports the beads_cache section under Unavailable (mitto-is2.5, mitto-bv4).
 	beadsCacheMetricsFn func() beads.CacheMetrics
 
 	// beadsClient is the beads.Client used by the
@@ -277,7 +277,8 @@ type Dependencies struct {
 	PromptsCache *config.PromptsCache
 	// BeadsCacheMetrics, when non-nil, returns a snapshot of the beads read-cache
 	// counters. Wired only when the --beads-cache flag is on. Nil means the
-	// mitto_beads_cache_metrics tool is not registered (mitto-is2.5).
+	// mitto_metrics tool reports the beads_cache section under Unavailable
+	// (mitto-is2.5, mitto-bv4).
 	BeadsCacheMetrics func() beads.CacheMetrics
 	// BeadsClient, when non-nil, is used by the mitto_conversation_wait
 	// beads_issues_reached_state branch to read current bd statuses. When nil,
