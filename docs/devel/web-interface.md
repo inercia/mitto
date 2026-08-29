@@ -572,7 +572,7 @@ without needing pprof or a restart:
   and keeps the last 64 samples in a ring, each already broken into
   `live_acp_processes`, `connected_ws_clients`, and `open_mcp_sse_streams`
   alongside the raw `num_goroutine` total. Read it via the MCP
-  `mitto_goroutine_gauge_recent` tool, or grep `goroutine_gauge_sample` in
+  `mitto_metrics` tool (`sections: ["goroutines"]`), or grep `goroutine_gauge_sample` in
   `mitto.log` (DEBUG per tick, promoted to INFO when the total moves by at
   least 10 since the last INFO line).
 - **Live count, no restart.** `runtime.NumGoroutine()` is already exposed via
@@ -629,6 +629,6 @@ signal on its own because it conflates fixed cost, per-session cost, and
 transport-detail cost (idle SSE) that all vary independently of any actual
 defect.
 
-The `mitto_goroutine_gauge_recent` gauge above computes the per-category
+The `mitto_metrics` goroutines gauge above computes the per-category
 pieces of that ratio directly, on a fixed schedule, instead of requiring a
 cold start or a manual log-grep to get a fresh sample.

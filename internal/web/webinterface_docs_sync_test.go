@@ -42,7 +42,7 @@ func TestDocsGoroutineTriageSectionExists(t *testing.T) {
 		// Periodic gauge with per-category attribution (mitto-x3x).
 		"internal/coldstart/gauge.go",
 		"StartGauge",
-		"mitto_goroutine_gauge_recent",
+		"mitto_metrics",
 		"goroutine_gauge_sample",
 		"live_acp_processes",
 		"connected_ws_clients",
@@ -102,7 +102,7 @@ func TestDocsGoroutineTriageSectionExists(t *testing.T) {
 		}
 	}
 
-	// coldstart.GaugeSample (what mitto_goroutine_gauge_recent returns) must
+	// coldstart.GaugeSample (what mitto_metrics returns for the goroutines section) must
 	// still embed ContentionSnapshot and carry the "at" timestamp field the
 	// gauge ring records each sample under.
 	atField, ok := reflect.TypeOf(coldstart.GaugeSample{}).FieldByName("At")

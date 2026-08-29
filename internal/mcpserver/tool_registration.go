@@ -35,28 +35,15 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Description: "Get runtime information including OS, architecture, log file paths, data directories, and process info",
 	}, s.createGetRuntimeInfoHandler())
 
-	// mitto_coldstart_recent tool - always available
+	// mitto_metrics tool - always available. Consolidates the former
+	// mitto_coldstart_recent, mitto_goroutine_gauge_recent, and
+	// mitto_beads_cache_metrics tools behind a "sections" selector (mitto-bv4).
+	// The beads_cache section reports as unavailable when --beads-cache is off,
+	// rather than gating tool registration.
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name:        "mitto_coldstart_recent",
-		Description: "Return the most recent cold-start diagnostic summaries (phase timeline + durations) captured by the cold-start tracer (mitto-3mv). Useful for post-hoc analysis of cold-start latency without grepping logs. Pass by_workspace=true to also receive a per-workspace rollup (total, failures, failure rate, p50/p95, last outcome) sorted by failure rate descending.",
-	}, s.createColdStartRecentHandler())
-
-	// mitto_goroutine_gauge_recent tool - always available
-	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name:        "mitto_goroutine_gauge_recent",
-		Description: "Return the most recent periodic goroutine gauge samples (mitto-x3x), newest first. Each sample carries the raw goroutine total plus per-category attribution (live ACP processes, connected WebSocket clients, open MCP SSE keepalive streams), sampled independently of cold-start frequency. Use this to answer 'is the goroutine count ratcheting?' without grepping logs or restarting for pprof — see docs/devel/web-interface.md 'Triaging goroutine counts'.",
-	}, s.createGoroutineGaugeRecentHandler())
-
-	// mitto_beads_cache_metrics tool - registered only when the beads read
-	// cache is enabled (--beads-cache flag). Nil callback means the cache is
-	// off in this process, so we skip registration to avoid a tool that would
-	// always report zeroes.
-	if deps.BeadsCacheMetrics != nil {
-		mcp.AddTool(mcpSrv, &mcp.Tool{
-			Name:        "mitto_beads_cache_metrics",
-			Description: "Return a point-in-time snapshot of the beads read-cache counters (hits/misses/invalidations by reason/singleflight-shared/entries-current). Only registered when --beads-cache is enabled (mitto-is2).",
-		}, s.createBeadsCacheMetricsHandler())
-	}
+		Name:        "mitto_metrics",
+		Description: "Return Mitto runtime diagnostics behind a single 'sections' selector: 'coldstart' (recent cold-start summaries + optional per-workspace rollup via by_workspace, mitto-3mv), 'goroutines' (periodic goroutine gauge samples with per-category attribution — live ACP processes, connected WS clients, open MCP SSE streams — mitto-x3x), and 'beads_cache' (beads read-cache hit/miss/invalidation counters, only populated when --beads-cache is enabled, mitto-is2). Empty sections returns all available; 'limit' caps ring-buffer entries for coldstart/goroutines. See docs/devel/web-interface.md 'Triaging goroutine counts'.",
+	}, s.createMetricsHandler())
 
 	// mitto_workspace_list tool - always available
 	mcp.AddTool(mcpSrv, &mcp.Tool{

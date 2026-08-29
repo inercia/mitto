@@ -9,22 +9,14 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
 )
 
-// ColdStartRecentInput is the input for the mitto_coldstart_recent tool.
-type ColdStartRecentInput struct {
-	// Limit is the maximum number of recent cold-start summaries to return.
-	// 0 or omitted returns all summaries currently held (up to the ring capacity).
-	Limit int `json:"limit,omitempty" jsonschema:"max number of recent cold starts to return; 0 or omitted = all (up to the ring capacity)"`
-	// ByWorkspace requests a per-workspace rollup in addition to the raw list.
-	ByWorkspace bool `json:"by_workspace,omitempty" jsonschema:"when true, also include a per-workspace rollup sorted by failure rate"`
-}
-
-// ColdStartRecent is the output for the mitto_coldstart_recent tool.
+// ColdStartRecent is the output for the coldstart section of mitto_metrics.
 // It wraps the ring-buffer snapshot returned by coldstart.RecentSummaries,
 // newest first.
 type ColdStartRecent struct {
@@ -32,19 +24,34 @@ type ColdStartRecent struct {
 	WorkspaceStats []coldstart.WorkspaceColdStats `json:"workspace_stats,omitempty"`
 }
 
-// GoroutineGaugeRecentInput is the input for the mitto_goroutine_gauge_recent
-// tool (mitto-x3x).
-type GoroutineGaugeRecentInput struct {
-	// Limit is the maximum number of recent gauge samples to return. 0 or
-	// omitted returns all samples currently held (up to the ring capacity).
-	Limit int `json:"limit,omitempty" jsonschema:"max number of recent gauge samples to return; 0 or omitted = all (up to the ring capacity)"`
-}
-
-// GoroutineGaugeRecent is the output for the mitto_goroutine_gauge_recent
-// tool. It wraps the ring-buffer snapshot returned by
+// GoroutineGaugeRecent is the output for the goroutines section of
+// mitto_metrics (mitto-x3x). It wraps the ring-buffer snapshot returned by
 // coldstart.RecentGaugeSamples, newest first.
 type GoroutineGaugeRecent struct {
 	Samples []coldstart.GaugeSample `json:"samples"`
+}
+
+// MetricsInput is the input for the consolidated mitto_metrics tool (mitto-bv4).
+type MetricsInput struct {
+	// Sections selects which metric groups to return: "coldstart", "goroutines",
+	// "beads_cache". Empty or omitted returns all available sections.
+	Sections []string `json:"sections,omitempty" jsonschema:"which metric sections to return: coldstart, goroutines, beads_cache; empty = all available"`
+	// Limit caps the number of ring-buffer entries returned for the coldstart and
+	// goroutines sections. 0 or omitted returns all held (up to ring capacity).
+	Limit int `json:"limit,omitempty" jsonschema:"max ring-buffer entries for coldstart/goroutines sections; 0 or omitted = all"`
+	// ByWorkspace requests the per-workspace cold-start rollup in the coldstart section.
+	ByWorkspace bool `json:"by_workspace,omitempty" jsonschema:"when true, include a per-workspace cold-start rollup sorted by failure rate"`
+}
+
+// MetricsOutput is the output for the mitto_metrics tool. Each section pointer is
+// populated only when that section was requested (or all, when Sections is empty)
+// and available. Unavailable lists sections that were requested but are off in this
+// process (e.g. beads_cache when --beads-cache is disabled).
+type MetricsOutput struct {
+	ColdStart   *ColdStartRecent      `json:"coldstart,omitempty"`
+	Goroutines  *GoroutineGaugeRecent `json:"goroutines,omitempty"`
+	BeadsCache  *beads.CacheMetrics   `json:"beads_cache,omitempty"`
+	Unavailable []string              `json:"unavailable,omitempty"`
 }
 
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.

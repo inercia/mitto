@@ -9,7 +9,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -564,47 +563,57 @@ func (s *Server) createGetRuntimeInfoHandler() mcp.ToolHandlerFor[struct{}, Runt
 	}
 }
 
-// createColdStartRecentHandler creates the handler for the mitto_coldstart_recent tool.
-// It returns the most recent cold-start summaries captured by the cold-start
-// tracer (internal/coldstart), newest first. A Limit of 0 (or omitted) returns
-// all summaries currently held in the ring buffer.
-func (s *Server) createColdStartRecentHandler() mcp.ToolHandlerFor[ColdStartRecentInput, ColdStartRecent] {
-	return func(ctx context.Context, req *mcp.CallToolRequest, input ColdStartRecentInput) (*mcp.CallToolResult, ColdStartRecent, error) {
-		sums := coldstart.RecentSummaries(input.Limit)
-		out := ColdStartRecent{ColdStarts: sums}
-		if input.ByWorkspace {
-			out.WorkspaceStats = coldstart.AggregateByWorkspace(sums)
+// Metric section identifiers for the mitto_metrics tool (mitto-bv4).
+const (
+	metricSectionColdStart  = "coldstart"
+	metricSectionGoroutines = "goroutines"
+	metricSectionBeadsCache = "beads_cache"
+)
+
+// createMetricsHandler creates the handler for the consolidated mitto_metrics
+// tool (mitto-bv4). It merges the former mitto_coldstart_recent,
+// mitto_goroutine_gauge_recent, and mitto_beads_cache_metrics tools behind a
+// single "sections" selector. An empty Sections returns every available
+// section; unknown section names are rejected. The beads_cache section is
+// reported under Unavailable when the beads read cache is off (--beads-cache).
+func (s *Server) createMetricsHandler() mcp.ToolHandlerFor[MetricsInput, MetricsOutput] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input MetricsInput) (*mcp.CallToolResult, MetricsOutput, error) {
+		want := map[string]bool{}
+		if len(input.Sections) == 0 {
+			want[metricSectionColdStart] = true
+			want[metricSectionGoroutines] = true
+			want[metricSectionBeadsCache] = true
+		} else {
+			for _, sec := range input.Sections {
+				switch sec {
+				case metricSectionColdStart, metricSectionGoroutines, metricSectionBeadsCache:
+					want[sec] = true
+				default:
+					return nil, MetricsOutput{}, fmt.Errorf("unknown metrics section %q (valid: %s, %s, %s)", sec, metricSectionColdStart, metricSectionGoroutines, metricSectionBeadsCache)
+				}
+			}
+		}
+
+		var out MetricsOutput
+		if want[metricSectionColdStart] {
+			sums := coldstart.RecentSummaries(input.Limit)
+			cs := &ColdStartRecent{ColdStarts: sums}
+			if input.ByWorkspace {
+				cs.WorkspaceStats = coldstart.AggregateByWorkspace(sums)
+			}
+			out.ColdStart = cs
+		}
+		if want[metricSectionGoroutines] {
+			out.Goroutines = &GoroutineGaugeRecent{Samples: coldstart.RecentGaugeSamples(input.Limit)}
+		}
+		if want[metricSectionBeadsCache] {
+			if fn := s.beadsCacheMetricsFn; fn != nil {
+				m := fn()
+				out.BeadsCache = &m
+			} else {
+				out.Unavailable = append(out.Unavailable, metricSectionBeadsCache)
+			}
 		}
 		return nil, out, nil
-	}
-}
-
-// createGoroutineGaugeRecentHandler creates the handler for the
-// mitto_goroutine_gauge_recent tool (mitto-x3x). It returns the most recent
-// periodic goroutine gauge samples, newest first — each sample already
-// carries the per-category attribution (ACP processes, WS clients, open MCP
-// SSE streams) alongside the raw goroutine total. A Limit of 0 (or omitted)
-// returns all samples currently held in the ring buffer.
-func (s *Server) createGoroutineGaugeRecentHandler() mcp.ToolHandlerFor[GoroutineGaugeRecentInput, GoroutineGaugeRecent] {
-	return func(ctx context.Context, req *mcp.CallToolRequest, input GoroutineGaugeRecentInput) (*mcp.CallToolResult, GoroutineGaugeRecent, error) {
-		return nil, GoroutineGaugeRecent{Samples: coldstart.RecentGaugeSamples(input.Limit)}, nil
-	}
-}
-
-// BeadsCacheMetricsInput is the (empty) input for mitto_beads_cache_metrics.
-type BeadsCacheMetricsInput struct{}
-
-// createBeadsCacheMetricsHandler creates the handler for the
-// mitto_beads_cache_metrics tool. The tool is registered only when the beads
-// read cache is enabled (--beads-cache); the handler defensively guards
-// against a nil callback and returns a zero-value snapshot if the cache was
-// torn down between registration and invocation.
-func (s *Server) createBeadsCacheMetricsHandler() mcp.ToolHandlerFor[BeadsCacheMetricsInput, beads.CacheMetrics] {
-	return func(ctx context.Context, req *mcp.CallToolRequest, input BeadsCacheMetricsInput) (*mcp.CallToolResult, beads.CacheMetrics, error) {
-		fn := s.beadsCacheMetricsFn
-		if fn == nil {
-			return nil, beads.CacheMetrics{}, nil
-		}
-		return nil, fn(), nil
 	}
 }

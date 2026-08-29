@@ -245,11 +245,14 @@ func TestGetRuntimeInfoGoroutineAttribution(t *testing.T) {
 	}
 }
 
-// TestCreateGoroutineGaugeRecentHandler exercises the mitto_goroutine_gauge_recent
-// tool handler (mitto-x3x) end to end against the real coldstart gauge ring:
-// it starts a short-interval gauge to populate real samples, then checks the
-// handler mirrors coldstart.RecentGaugeSamples and honors Limit.
-func TestCreateGoroutineGaugeRecentHandler(t *testing.T) {
+// TestCreateMetricsHandler exercises the consolidated mitto_metrics tool
+// handler (mitto-bv4), which merges the former mitto_coldstart_recent,
+// mitto_goroutine_gauge_recent, and mitto_beads_cache_metrics tools behind a
+// "sections" selector. It starts a short-interval gauge to populate real
+// goroutine samples, then checks the handler mirrors
+// coldstart.RecentGaugeSamples and honors Limit/Sections, plus section
+// selection/validation and beads_cache unavailability.
+func TestCreateMetricsHandler(t *testing.T) {
 	stop := coldstart.StartGauge(context.Background(), nil, 5*time.Millisecond)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -266,22 +269,55 @@ func TestCreateGoroutineGaugeRecentHandler(t *testing.T) {
 	}
 
 	srv := &Server{}
-	handler := srv.createGoroutineGaugeRecentHandler()
+	handler := srv.createMetricsHandler()
 
-	_, out, err := handler(context.Background(), nil, GoroutineGaugeRecentInput{})
+	// (a) all-sections (empty Sections) returns Goroutines populated matching coldstart.RecentGaugeSamples(0).
+	_, out, err := handler(context.Background(), nil, MetricsInput{})
 	if err != nil {
 		t.Fatalf("handler returned unexpected error: %v", err)
 	}
-	if len(out.Samples) != len(want) {
-		t.Errorf("Samples length = %d, want %d (matching coldstart.RecentGaugeSamples(0))", len(out.Samples), len(want))
+	if out.Goroutines == nil {
+		t.Fatalf("expected Goroutines to be populated for all-sections request")
+	}
+	if len(out.Goroutines.Samples) != len(want) {
+		t.Errorf("Samples length = %d, want %d (matching coldstart.RecentGaugeSamples(0))", len(out.Goroutines.Samples), len(want))
 	}
 
-	_, out2, err := handler(context.Background(), nil, GoroutineGaugeRecentInput{Limit: 1})
+	// (b) Limit:1 on goroutines section returns 1 sample.
+	_, out2, err := handler(context.Background(), nil, MetricsInput{Sections: []string{"goroutines"}, Limit: 1})
 	if err != nil {
 		t.Fatalf("handler returned unexpected error: %v", err)
 	}
-	if len(out2.Samples) != 1 {
-		t.Errorf("Samples length with Limit=1 = %d, want 1", len(out2.Samples))
+	if out2.Goroutines == nil || len(out2.Goroutines.Samples) != 1 {
+		t.Errorf("Samples length with Limit=1 = %v, want 1 sample", out2.Goroutines)
+	}
+
+	// (c) selecting only ["goroutines"] leaves ColdStart nil.
+	if out2.ColdStart != nil {
+		t.Errorf("expected ColdStart to be nil when only goroutines section requested, got %+v", out2.ColdStart)
+	}
+
+	// (d) unknown section returns an error.
+	if _, _, err := handler(context.Background(), nil, MetricsInput{Sections: []string{"bogus"}}); err == nil {
+		t.Errorf("expected error for unknown section, got nil")
+	}
+
+	// (e) beads_cache requested with nil beadsCacheMetricsFn puts "beads_cache" in Unavailable.
+	_, out3, err := handler(context.Background(), nil, MetricsInput{Sections: []string{"beads_cache"}})
+	if err != nil {
+		t.Fatalf("handler returned unexpected error: %v", err)
+	}
+	if out3.BeadsCache != nil {
+		t.Errorf("expected BeadsCache to be nil when beadsCacheMetricsFn is unset, got %+v", out3.BeadsCache)
+	}
+	found := false
+	for _, u := range out3.Unavailable {
+		if u == "beads_cache" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Unavailable to contain %q, got %v", "beads_cache", out3.Unavailable)
 	}
 }
 
