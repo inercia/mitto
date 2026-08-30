@@ -17,7 +17,12 @@ import (
 	"github.com/inercia/mitto/internal/logging"
 )
 
-const (
+// These are declared as vars (not consts) so tests can shrink them to
+// exercise HealthMonitor.run()'s multi-minute confirm/backoff/restart cycle
+// in milliseconds instead of real wall-clock minutes (mirrors the existing
+// hookFailureWindow/hookFailureThreshold override pattern in throttle_test.go).
+// Production callers never mutate these; only tests do, with a defer-restore.
+var (
 	monitorInitialDelay     = 1 * time.Minute
 	monitorCheckInterval    = 30 * time.Second
 	monitorPostRestartDelay = 1 * time.Minute
@@ -29,6 +34,17 @@ const (
 	// will recover during retries and never cause a restart.
 	monitorFailureRetries = 5                // Additional retries before restarting
 	monitorRetryDelay     = 15 * time.Second // Delay between retries
+	// monitorMaxConsecutiveRestarts caps how many restart cycles are attempted for a
+	// single sustained outage (mitto-8n4). Restarting the local up/down hooks cannot
+	// fix an external address that is genuinely unreachable (e.g. a severed tunnel):
+	// the up-hook exits 0 ("self-healing") on every restart, but reachability never
+	// returns, so unbounded restart churn is futile. Once this many consecutive
+	// confirmed failures have each been followed by a restart with no recovery, the
+	// circuit breaker opens — further confirmed failures stop triggering restarts
+	// (health checks keep running at the max backoff interval so recovery is still
+	// detected) until the address recovers, at which point the breaker closes and
+	// the counter resets.
+	monitorMaxConsecutiveRestarts = 2
 )
 
 // HealthMonitorConfig contains the configuration for a HealthMonitor.
@@ -99,6 +115,14 @@ func (m *HealthMonitor) run(ctx context.Context) {
 
 	checkInterval := monitorCheckInterval
 	consecutiveFailures := 0
+	// restartsSinceRecovery counts restart cycles attempted for the current sustained
+	// outage, without an intervening successful health check. It resets to 0 whenever
+	// the address is confirmed healthy (either on the main check or during retries).
+	restartsSinceRecovery := 0
+	// breakerOpen tracks whether the circuit breaker has already fired for the current
+	// outage, so the "stopped restarting" warning is logged once per episode instead of
+	// on every subsequent confirmed failure.
+	breakerOpen := false
 
 	for {
 		// Jitter the sleep so multiple instances don't check in lockstep.
@@ -119,6 +143,8 @@ func (m *HealthMonitor) run(ctx context.Context) {
 			}
 			consecutiveFailures = 0
 			checkInterval = monitorCheckInterval
+			restartsSinceRecovery = 0
+			breakerOpen = false
 			continue
 		}
 
@@ -157,11 +183,33 @@ func (m *HealthMonitor) run(ctx context.Context) {
 			// Recovered during retries — reset and continue
 			consecutiveFailures = 0
 			checkInterval = monitorCheckInterval
+			restartsSinceRecovery = 0
+			breakerOpen = false
 			continue
 		}
 
-		// Failure confirmed after all retries
+		// Failure confirmed after all retries.
 		consecutiveFailures++
+
+		// Circuit breaker: once too many restarts in a row have failed to restore
+		// reachability, stop restarting hooks for this outage (mitto-8n4). Restarting
+		// local hooks cannot fix a genuinely unreachable external address, so further
+		// restart attempts are futile churn — keep probing at the max backoff interval
+		// so recovery is still detected and the breaker closes automatically.
+		if restartsSinceRecovery >= monitorMaxConsecutiveRestarts {
+			if !breakerOpen {
+				logger.Warn("Circuit breaker open: address still unreachable after repeated restarts, pausing hook restarts",
+					"address", m.cfg.Address,
+					"restarts_attempted", restartsSinceRecovery,
+					"consecutive_failures", consecutiveFailures,
+				)
+				breakerOpen = true
+			}
+			checkInterval = monitorMaxCheckInterval
+			continue
+		}
+
+		restartsSinceRecovery++
 		m.mu.Lock()
 		m.restartCount++
 		attempt := m.restartCount
