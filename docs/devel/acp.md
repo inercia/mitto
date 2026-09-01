@@ -488,6 +488,13 @@ making the recycle invisible to the user. The recycle is logged at `Info` with
 effective memory, parent/descendant RSS, descendant count, sample duration, and
 the threshold; every skip reason is logged at `Debug`.
 
+Note: during `LoadSession`, the agent replays the **entire** conversation history
+as `session/update` notifications, but Mitto discards this ACP-level replay in
+full (`internal/acpproc/load_replay_filter.go`, `internal/conversation/client.go`)
+rather than forwarding it — the canonical history is already persisted in each
+session's `events.jsonl` and is what reconstructs the UI, so discarding the
+redundant replay causes no user-visible history loss.
+
 After a recycle, the GC invokes the `onMemoryRecycled` callback (wired in `server.go`),
 which resolves a friendly workspace name and calls `Server.BroadcastMemoryRecycled`. That
 broadcasts a `memory_recycled` event on the `/api/events` channel to all connected clients;

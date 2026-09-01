@@ -46,7 +46,8 @@ func (p *SharedACPProcess) endLoadReplaySuppression(sessionID acp.SessionId) {
 	p.loadReplayMu.Unlock()
 
 	if count > 0 && p.logger != nil {
-		p.logger.Info("Suppressed session/load replay before ACP notification queue",
+		p.logger.Info("Suppressed session/load replay before ACP notification queue "+
+			"(redundant; canonical history is persisted in events.jsonl, no history loss)",
 			"acp_session_id", sessionID,
 			"suppressed_notifications", count,
 			"queue_capacity", sharedACPNotificationQueueCapacity)
@@ -89,11 +90,21 @@ func isReplayPressureMilestone(count uint64) bool {
 	return count == capacity/2 || count == capacity*3/4 || count == capacity
 }
 
+// logReplayPressure logs a milestone as session/load replay notifications are
+// discarded for a loading session. This is NOT a near-miss guardrail: replay
+// notifications are filtered at the transport reader before they ever reach the
+// SDK's bounded notification queue (see filterLoadReplayNotification), so the
+// queue itself is never actually pressured. The milestone is logged at Debug —
+// it is diagnostic detail for a filter working as designed, not a warning
+// condition. The end-of-load summary in endLoadReplaySuppression (Info level)
+// is the observable, quantified signal for how much redundant replay a given
+// load discarded.
 func logReplayPressure(logger *slog.Logger, sessionID acp.SessionId, count uint64) {
 	if logger == nil {
 		return
 	}
-	logger.Warn("Session/load replay would pressure ACP notification queue",
+	logger.Debug("Session/load replay notifications discarded as redundant "+
+		"(canonical history is persisted in events.jsonl, no history loss)",
 		"acp_session_id", sessionID,
 		"suppressed_notifications", count,
 		"queue_capacity", sharedACPNotificationQueueCapacity)
