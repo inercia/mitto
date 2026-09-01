@@ -81,9 +81,17 @@ func TestSharedACPProcess_LoadReplayFilter_PreventsNotificationQueueOverflow(t *
 	if fmt.Sprint(liveSeqs) != "[1]" {
 		t.Fatalf("unrelated live notifications = %v, want [1]", liveSeqs)
 	}
-	if !strings.Contains(logBuf.String(), "would pressure ACP notification queue") ||
+	// The per-load milestone log is Debug-level (not asserted here — see
+	// logReplayPressure doc comment: the SDK notification queue is never
+	// actually pressured, since replay is filtered at the transport reader
+	// before the queue). The observable Info-level signal is the end-of-load
+	// summary logged by endLoadReplaySuppression, which quantifies how much
+	// redundant replay was discarded and confirms no history loss.
+	if !strings.Contains(logBuf.String(), "Suppressed session/load replay before ACP notification queue") ||
+		!strings.Contains(logBuf.String(), "no history loss") ||
+		!strings.Contains(logBuf.String(), fmt.Sprintf("suppressed_notifications=%d", replayCount)) ||
 		!strings.Contains(logBuf.String(), "queue_capacity=8192") {
-		t.Fatalf("missing pre-overflow queue-pressure log: %s", logBuf.String())
+		t.Fatalf("missing end-of-load replay-suppression summary log: %s", logBuf.String())
 	}
 }
 
