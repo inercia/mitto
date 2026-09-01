@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -149,6 +151,21 @@ func logLoopRecordSentFailure(logger *slog.Logger, sessionID string, err error) 
 	// so log at Debug to avoid noisy WARNs.
 	if errors.Is(err, session.ErrLoopNotFound) {
 		logger.Debug("Skipped loop last_sent_at update: loop already removed",
+			"session_id", sessionID,
+			"error", err)
+		return
+	}
+	// Teardown-order race, later window (mitto-2mn): unlike the ErrLoopNotFound
+	// case above (file already gone when RecordSent reads it), here loop.json
+	// still existed at read time but the session directory was removed by a
+	// concurrent teardown (conversation delete / session cleanup) in the
+	// narrow gap between WriteJSONAtomic's temp-file write and its rename.
+	// That surfaces as a wrapped fs.ErrNotExist from the failed os.Rename, or
+	// as fileutil.ErrParentDirMissing if the writer is migrated to
+	// WriteJSONAtomicIfDirExists. Both are benign teardown noise, not a real
+	// failure, so log at Debug like the ErrLoopNotFound case.
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fileutil.ErrParentDirMissing) {
+		logger.Debug("Skipped loop last_sent_at update: session directory removed during write",
 			"session_id", sessionID,
 			"error", err)
 		return

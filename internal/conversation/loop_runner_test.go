@@ -7388,6 +7388,79 @@ func TestLoopRunner_RecordSentFailure_LoopFileMissing_DoesNotWarn(t *testing.T) 
 	}
 }
 
+// TestLoopRunner_RecordSentFailure_RenameDirGone_DoesNotWarn reproduces
+// mitto-2mn: the session dir is removed (conversation delete / session
+// cleanup) in the tiny window between LoopStore.RecordSent's temp-file write
+// and its atomic rename (fileutil.WriteJSONAtomic -> writeJSONAtomicNoMkdir),
+// even though loop.json still existed when RecordSent's getUnlocked() read
+// it. That means RecordSent does NOT return session.ErrLoopNotFound (the
+// benign-teardown case already handled by mitto-rz9j) — it returns a wrapped
+// *os.LinkError carrying ENOENT from the failed os.Rename. Before mitto-2mn
+// is fixed, logLoopRecordSentFailure has no classification for this shape
+// and falls through to its final WARN, which is noisy for a benign teardown
+// race just like mitto-rz9j was. This test drives a REAL os.Rename ENOENT
+// (not a fabricated error) through the exact production wrapping and
+// asserts no WARN-or-higher record is produced.
+func TestLoopRunner_RecordSentFailure_RenameDirGone_DoesNotWarn(t *testing.T) {
+	dir := t.TempDir()
+	tmpPath := filepath.Join(dir, "loop.json.99999.1.tmp")
+	targetPath := filepath.Join(dir, "loop.json")
+	if err := os.WriteFile(tmpPath, []byte("{}"), 0644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	// Simulate the concurrent teardown: the session dir (and everything in
+	// it, including the just-written temp file) is removed after the temp
+	// write but before the rename — the exact window WriteJSONAtomic cannot
+	// close.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll (simulating session teardown) error = %v", err)
+	}
+
+	renameErr := os.Rename(tmpPath, targetPath)
+	if renameErr == nil || !os.IsNotExist(renameErr) {
+		t.Fatalf("os.Rename() error = %v, want a real ENOENT (dir gone)", renameErr)
+	}
+
+	// Wrap exactly as fileutil.writeJSONAtomicNoMkdir and LoopStore.RecordSent
+	// do in production: "failed to write loop file: failed to rename temp
+	// file: rename ...: no such file or directory".
+	writeErr := fmt.Errorf("failed to write loop file: %w",
+		fmt.Errorf("failed to rename temp file: %w", renameErr))
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger := slog.New(handler)
+
+	logLoopRecordSentFailure(logger, "mitto-2mn-repro", writeErr)
+
+	if warns := handler.warnOrHigher(); len(warns) > 0 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Errorf("logLoopRecordSentFailure emitted WARN-or-higher for a rename-ENOENT "+
+			"teardown race (mitto-2mn: session dir removed between temp-file write and "+
+			"rename); expected DEBUG downgrade like the mitto-rz9j ErrLoopNotFound case. "+
+			"records: %s", strings.Join(msgs, "; "))
+	}
+
+	// Sanity: fileutil.ErrParentDirMissing (the sentinel WriteJSONAtomicIfDirExists
+	// returns when the parent dir is already gone at Stat time) must be classified
+	// the same benign way once callers adopt the dir-guarded writer.
+	handler2 := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	logger2 := slog.New(handler2)
+	wrappedParentMissing := fmt.Errorf("failed to write loop file: %w", fileutil.ErrParentDirMissing)
+	logLoopRecordSentFailure(logger2, "mitto-2mn-repro-parent-missing", wrappedParentMissing)
+	if warns := handler2.warnOrHigher(); len(warns) > 0 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Errorf("logLoopRecordSentFailure emitted WARN-or-higher for fileutil.ErrParentDirMissing "+
+			"(mitto-2mn); expected DEBUG downgrade. records: %s", strings.Join(msgs, "; "))
+	}
+}
+
 // TestLoopRunner_RecordSentFailure_ResurrectionSentinel_WarnsLoudly is the
 // D3 classifier test for mitto-uun: when RecordSent surfaces the resurrection
 // sentinel (session.ErrRecordSentOnStoppedLoop — a delivery fired against a
