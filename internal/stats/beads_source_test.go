@@ -171,6 +171,61 @@ func TestBeadsSource_ListErrorAbortsWithoutWriting(t *testing.T) {
 	}
 }
 
+// flakyBeadsLister returns context.DeadlineExceeded on the first N calls for
+// a given dir, then succeeds with the configured payload. Used by the
+// mitto-c20 reproduction below to demonstrate that a single transient
+// DeadlineExceeded currently aborts the whole pass with no retry.
+type flakyBeadsLister struct {
+	payloads  map[string][]byte
+	failsLeft map[string]int
+}
+
+func (f *flakyBeadsLister) List(_ context.Context, dir string) ([]byte, error) {
+	if f.failsLeft[dir] > 0 {
+		f.failsLeft[dir]--
+		return nil, context.DeadlineExceeded
+	}
+	return f.payloads[dir], nil
+}
+
+// TestBeadsSource_Run_RecoversFromTransientDeadlineExceeded reproduces
+// mitto-c20: a stats beads-source watcher-triggered refresh hitting a single
+// transient `bd list` timeout (context.DeadlineExceeded, e.g. under
+// concurrent aux/RPC contention) currently aborts the ENTIRE pass with no
+// retry -- runJSONRead explicitly does not retry context.DeadlineExceeded
+// (internal/beads/cli.go), and runOnce/Run has no retry/backoff of its own
+// around the lister. The watcher-triggered subscriber
+// (statsBeadsSourceWatcherSubscriber in internal/web/server.go) just logs a
+// WARN and drops the tick; the only backstops are the 6h periodic ticker or
+// the next external `.beads/` change event.
+//
+// This test asserts the fix contract: a lister that fails ONCE with
+// context.DeadlineExceeded and then succeeds must still produce a
+// successful pass (Run returns nil and the data lands) -- i.e. Run/runOnce
+// must absorb a single transient deadline timeout via a bounded retry
+// instead of giving up immediately. On the current code this fails: Run
+// returns the DeadlineExceeded-wrapped error from the first (and only) List
+// attempt, and no data is written.
+func TestBeadsSource_Run_RecoversFromTransientDeadlineExceeded(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-09-02T14:00:00Z")
+	dir := "/ws/flaky"
+	lister := &flakyBeadsLister{
+		payloads:  map[string][]byte{dir: []byte(`[{"id":"f-1","status":"open","created_at":"2026-09-02T13:00:00Z"}]`)},
+		failsLeft: map[string]int{dir: 1},
+	}
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-flaky", Dir: dir}), now)
+
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("mitto-c20: Run returned error %v after a single transient context.DeadlineExceeded from List; want a bounded retry to absorb it and succeed", err)
+	}
+
+	bucket := hourBucket(t, "2026-09-02T13:00:00Z")
+	if got := countAt(t, s, bucket, MetricBeadsOpened, BeadsSentinelSessionID, "ws-flaky"); got != 1 {
+		t.Errorf("mitto-c20: beads_opened = %d, want 1 (pass should have recovered via retry and written the data)", got)
+	}
+}
+
 func TestBeadsSource_SkipsEmptyWorkspaceDir(t *testing.T) {
 	s, _ := openTestStore(t)
 	now := hourBucket(t, "2026-04-15T00:00:00Z")

@@ -27,6 +27,7 @@ package stats
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -144,6 +145,24 @@ type BeadsSourceOptions struct {
 	// Logger is optional; when non-nil the source emits INFO on each pass
 	// boundary and WARN on parse issues / per-pass failures.
 	Logger *slog.Logger
+
+	// ListRetries is the number of additional attempts made for a single
+	// workspace's List call after it fails with context.DeadlineExceeded
+	// (mitto-c20): the underlying `bd list` read budget (ReadTimeout, see
+	// internal/beads/cli.go) can be exceeded transiently under contention,
+	// and runJSONRead deliberately does not retry that case itself. Without
+	// a retry here, runOnce's all-or-nothing contract (see its doc comment)
+	// meant a single slow `bd list` aborted the ENTIRE pass, and the
+	// watcher-triggered path only logs a WARN and drops the tick -- leaving
+	// the periodic 6h ticker or the next `.beads/` event as the only
+	// backstop. Only context.DeadlineExceeded is retried; any other List
+	// error still aborts the pass immediately (unchanged behavior). Default:
+	// 2.
+	ListRetries int
+
+	// ListRetryBackoff is the pause between List retry attempts. Default:
+	// 500ms.
+	ListRetryBackoff time.Duration
 }
 
 func (o BeadsSourceOptions) withDefaults() BeadsSourceOptions {
@@ -155,6 +174,12 @@ func (o BeadsSourceOptions) withDefaults() BeadsSourceOptions {
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.ListRetries == 0 {
+		o.ListRetries = 2
+	}
+	if o.ListRetryBackoff == 0 {
+		o.ListRetryBackoff = 500 * time.Millisecond
 	}
 	return o
 }
@@ -345,7 +370,7 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 		if ws.Dir == "" {
 			continue
 		}
-		raw, err := s.lister.List(ctx, ws.Dir)
+		raw, err := s.listWithRetry(ctx, ws.Dir)
 		if err != nil {
 			return fmt.Errorf("stats: beads source: list %s: %w", ws.Dir, err)
 		}
@@ -389,6 +414,33 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 	}
 	s.logInfo("beads source pass done", "buckets", len(agg), "deltas", len(deltas))
 	return nil
+}
+
+// listWithRetry calls s.lister.List for dir, retrying up to
+// opts.ListRetries additional times -- with a fixed opts.ListRetryBackoff
+// pause between attempts -- ONLY when the failure is
+// context.DeadlineExceeded (mitto-c20): that specific error indicates the
+// per-call `bd list` read budget was transiently exceeded (e.g. under
+// concurrent aux/RPC contention), not a persistent failure, so it is worth
+// absorbing here rather than aborting runOnce's all-or-nothing pass. Any
+// other error (including a caller-canceled ctx, which surfaces as
+// context.Canceled, not context.DeadlineExceeded) is returned immediately
+// without retrying, unchanged from before this fix. The retry loop also
+// exits early if ctx is done or the source is closing.
+func (s *BeadsSource) listWithRetry(ctx context.Context, dir string) ([]byte, error) {
+	raw, err := s.lister.List(ctx, dir)
+	for attempt := 0; err != nil && errors.Is(err, context.DeadlineExceeded) && attempt < s.opts.ListRetries; attempt++ {
+		s.logWarn("beads source: transient list timeout, retrying", "dir", dir, "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-s.closed:
+			return nil, err
+		case <-time.After(s.opts.ListRetryBackoff):
+		}
+		raw, err = s.lister.List(ctx, dir)
+	}
+	return raw, err
 }
 
 // loadUptime queries MetricUptimeSeconds once per pass into an in-memory
