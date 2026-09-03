@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestNewStore_CleanupOrphanSessionDirs pins mitto-32ef's startup sweep:
@@ -134,5 +135,83 @@ func TestDelete_RemovesAllSidecarsNoResidue(t *testing.T) {
 
 	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
 		t.Errorf("expected session directory %q to be fully removed, stat err: %v", sessionDir, err)
+	}
+}
+
+// TestDelete_TransientBlockDuringRemoveAll_ShouldRetryNotOrphan pins mitto-s5d:
+// today, Store.Delete's deleteLocked calls os.RemoveAll exactly once. In
+// production, a background writer (events.jsonl append, processor_state.json
+// save on AgentResponded, log flush) racing the delete can create a new file
+// in the session directory in the narrow window between os.RemoveAll's final
+// directory listing and its rmdir call, causing the rmdir to fail with
+// "directory not empty" (ENOTEMPTY / unlinkat ...) even though RemoveAll
+// already removed every OTHER file, including metadata.json/events.jsonl.
+// Store.Delete then returns that raw error with no retry, leaving the
+// session directory orphaned on disk while GetMetadata already reports the
+// session as gone (mitto_conversation_get: "conversation not found") -
+// exactly the reported symptom.
+//
+// This test simulates that transient race deterministically instead of
+// relying on hitting the real microsecond-scale ENOTEMPTY window: a
+// subdirectory is blocked (unreadable) at the moment Delete is called, and a
+// background goroutine clears the block ~30ms later - mirroring how the real
+// racing writer eventually stops touching the directory once its own flush
+// finishes. Store.Delete's current single-attempt os.RemoveAll fails
+// immediately (well before the 30ms elapses), so this test FAILS today. A
+// fix that retries the directory removal for a reasonably short bounded
+// window (comfortably more than 30ms - e.g. a handful of attempts with short
+// backoff) will absorb the block and let Delete succeed with no orphan left
+// behind, which is what this test asserts.
+func TestDelete_TransientBlockDuringRemoveAll_ShouldRetryNotOrphan(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "session-transient-removeall-block"
+	if err := store.Create(Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sessionDir := store.SessionDir(sid)
+
+	// Simulate the racing background writer: a subdirectory with content
+	// that is present (blocking removal) right as Delete starts, then
+	// clears itself shortly after - just like a real writer that stops
+	// touching the directory once its own turn/flush finishes.
+	racingDir := filepath.Join(sessionDir, "racing-writer")
+	if err := os.MkdirAll(racingDir, 0755); err != nil {
+		t.Fatalf("failed to create racing-writer dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(racingDir, "inflight.tmp"), []byte("x"), 0644); err != nil {
+		t.Fatalf("failed to write racing file: %v", err)
+	}
+	if err := os.Chmod(racingDir, 0); err != nil {
+		t.Fatalf("failed to chmod racing-writer dir: %v", err)
+	}
+
+	unblocked := make(chan struct{})
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = os.Chmod(racingDir, 0755)
+		_ = os.RemoveAll(racingDir)
+		close(unblocked)
+	}()
+	t.Cleanup(func() {
+		<-unblocked
+		_ = os.Chmod(racingDir, 0755) // safety net in case Delete already removed the parent
+	})
+
+	deleteErr := store.Delete(sid)
+
+	<-unblocked // ensure the racing writer has finished before inspecting final state
+
+	if deleteErr != nil {
+		t.Fatalf("expected Store.Delete to absorb the transient block and succeed (mitto-s5d: retry the directory removal instead of failing on the first os.RemoveAll attempt), got error: %v", deleteErr)
+	}
+	if _, statErr := os.Stat(sessionDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected session directory %q to be fully removed with no orphan left behind, stat err: %v", sessionDir, statErr)
 	}
 }

@@ -672,7 +672,7 @@ func (s *Store) deleteLocked(sessionID string) ([]deletedSession, func(string, s
 		// Continue with deletion even if cleanup fails - we don't want to block deletion
 	}
 
-	if err := os.RemoveAll(sessionDir); err != nil {
+	if err := removeAllWithRetry(sessionDir); err != nil {
 		return nil, nil, err
 	}
 
@@ -684,6 +684,41 @@ func (s *Store) deleteLocked(sessionID string) ([]deletedSession, func(string, s
 
 	log.Debug("session deleted", "session_id", sessionID, "session_dir", sessionDir)
 	return deleted, s.deleteObserver, nil
+}
+
+// removeAllWithRetry removes path and any children it contains, retrying a
+// bounded number of times with backoff if os.RemoveAll fails.
+//
+// os.RemoveAll walks the directory tree and removes entries one at a time;
+// if a background writer (e.g. an events.jsonl append, a processor_state.json
+// save, or a log flush from a session that just finished responding) creates
+// or modifies a file in the directory between RemoveAll's final listing and
+// its rmdir call, the rmdir fails (commonly "directory not empty" /
+// ENOTEMPTY, though the underlying syscall varies by platform and can also
+// surface as a permission error on the affected entry) even though every
+// other file was already removed successfully (mitto-s5d). A single attempt
+// then leaves the session directory orphaned on disk while the caller
+// believes the session no longer exists. Retrying absorbs that narrow race:
+// the racing writer typically stops touching the directory within
+// milliseconds once its own flush completes, so a short bounded backoff lets
+// a subsequent attempt succeed instead of surfacing a spurious error.
+func removeAllWithRetry(path string) error {
+	const maxAttempts = 6
+	wait := 10 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = os.RemoveAll(path)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		time.Sleep(wait)
+		wait *= 2
+	}
+	return lastErr
 }
 
 // Exists checks if a session exists.
