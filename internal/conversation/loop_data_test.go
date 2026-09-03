@@ -261,12 +261,18 @@ func TestBuildLoopAutoPauseNotification(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:        "deliveryFailures reason stays silent (future extension)",
+			// mitto-4xf: a persistently-stalling loop that auto-pauses after
+			// MaxLoopDeliveryFailures consecutive delivery failures is a
+			// genuine "loop gave up / needs manual intervention" signal, not
+			// a benign stop — it must also raise a proactive toast so an
+			// operator doesn't have to notice a quiet sidebar update.
+			name:        "deliveryFailures reason yields a notification (mitto-4xf)",
 			sessionName: "My Loop",
 			loop: &session.LoopPrompt{
+				PromptName:    "feature-driver",
 				StoppedReason: session.StoppedReasonDeliveryFailures,
 			},
-			wantOK: false,
+			wantOK: true,
 		},
 		{
 			name:        "empty StoppedReason (e.g. onLoopUpdated fired outside auto-stop) stays silent",

@@ -79,21 +79,25 @@ func BuildLoopUpdatedData(sessionID string, loop *session.LoopPrompt) map[string
 }
 
 // BuildLoopAutoPauseNotification builds a proactive operator toast for a loop
-// that was just auto-stopped, gated strictly on StoppedReasonPromptUnresolved
-// (mitto-e4m). This is the failure mode where the loop's configured prompt
-// name can no longer be resolved after MaxPromptResolveFailures consecutive
-// attempts — a silent auto-pause that otherwise only surfaces as a sidebar
-// websocket update (BuildLoopUpdatedData), easy for an operator to miss.
+// that was just auto-stopped, gated to the genuine-failure auto-stop reasons
+// StoppedReasonPromptUnresolved (mitto-e4m) and StoppedReasonDeliveryFailures
+// (mitto-4xf). Both are "the loop gave up and needs manual attention" signals
+// that otherwise only surface as a sidebar websocket update
+// (BuildLoopUpdatedData), easy for an operator to miss — StoppedReasonPromptUnresolved
+// fires when the loop's configured prompt name can no longer be resolved
+// after MaxPromptResolveFailures consecutive attempts; StoppedReasonDeliveryFailures
+// fires when a prompt repeatedly fails to deliver (e.g. an unresponsive
+// agent tripping the inactivity watchdog) after MaxLoopDeliveryFailures
+// consecutive failures.
 //
 // Other auto-stop reasons (maxIterations, archived, pausedByUser,
-// contextWindowExceeded, deliveryFailures, ...) intentionally do NOT produce
-// a toast here — benign stops should stay silent, and the remaining failure
-// reasons are left as a natural future extension (out of scope for mitto-e4m).
+// contextWindowExceeded, ...) intentionally do NOT produce a toast here —
+// those are benign/expected stops and should stay silent.
 //
 // Returns ok=false (and a zero-value request) when loop is nil or the reason
 // does not match, so callers can skip broadcasting without extra branching.
 func BuildLoopAutoPauseNotification(sessionName string, loop *session.LoopPrompt) (UINotifyRequest, bool) {
-	if loop == nil || loop.StoppedReason != session.StoppedReasonPromptUnresolved {
+	if loop == nil {
 		return UINotifyRequest{}, false
 	}
 
@@ -102,13 +106,26 @@ func BuildLoopAutoPauseNotification(sessionName string, loop *session.LoopPrompt
 		name = "(unnamed conversation)"
 	}
 
-	return UINotifyRequest{
-		Title: "Loop conversation auto-paused",
-		Message: fmt.Sprintf(
+	var message string
+	switch loop.StoppedReason {
+	case session.StoppedReasonPromptUnresolved:
+		message = fmt.Sprintf(
 			"%q was auto-paused: its scheduled prompt %q could no longer be resolved after repeated attempts.",
 			name, loop.PromptName,
-		),
-		Style:  "warning",
-		Native: true,
+		)
+	case session.StoppedReasonDeliveryFailures:
+		message = fmt.Sprintf(
+			"%q was auto-paused: its scheduled prompt %q failed to deliver repeatedly (e.g. an unresponsive agent) and needs manual attention.",
+			name, loop.PromptName,
+		)
+	default:
+		return UINotifyRequest{}, false
+	}
+
+	return UINotifyRequest{
+		Title:   "Loop conversation auto-paused",
+		Message: message,
+		Style:   "warning",
+		Native:  true,
 	}, true
 }
