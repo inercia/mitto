@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 )
 
 // TestFilePendingDispatchStore_ConcurrentAppendAcrossInstances verifies
@@ -335,6 +337,70 @@ func TestFlushPendingDispatches_AgeCapDropsPurelyTransientBatchRegardlessOfClass
 	}
 	if len(claim.Entries) != 1 {
 		t.Fatalf("claim.Entries = %d entries, want 1 (the transient-failure batch should remain "+
+			"claimable, not expired)", len(claim.Entries))
+	}
+}
+
+// TestFlushPendingDispatches_AgeCapDropsSaturationOnlyBatch reproduces
+// mitto-44d: the age-cap's transient-failure carve-out
+// (partitionPendingDispatchEntries, extended budget pendingDispatchMaxAgeTransient)
+// is gated on isTransientAuxUnavailableDispatchErr, which recognizes ONLY
+// context.DeadlineExceeded / "auxiliary prompt cancelled" / "context deadline
+// exceeded" (apply.go). It does NOT recognize the shared-ACP-process-saturation
+// error shape (acperrors.ErrSharedProcessSaturated / acperrors.ErrProcessBusy,
+// both of whose Error() contains "shared ACP process is saturated") — even
+// though dispatchWithRetry's own isSaturationDispatchErr treats that exact
+// shape as retriable-forever, and FlushPendingDispatches' busy-deadline loop
+// (apply.go ~L2492-2534) requeues such entries unchanged on every flush
+// instead of ever refreshing their LastError.
+//
+// Production evidence: dispatch_id 318d5d5f
+// (extract-memories-on-close+memorize-preferences) was persisted
+// 2026-09-02T09:11:41 with a saturation LastError, found the shared process
+// busy on every flush for the entire mitto-pic saturation window, and was
+// permanently dropped the instant it reached age=24h0m0s — the FIRST
+// confirmed permanent loss across 18 analysis windows of the mitto-pic saga,
+// because its failure history was saturation-only and therefore never earned
+// the extended transient budget.
+//
+// This test asserts the desired behavior — a purely-saturation-failure batch
+// should be treated the same as a purely-deadline-failure batch (see the test
+// above) and remain claimable past pendingDispatchMaxAge (up to
+// pendingDispatchMaxAgeTransient) — by requiring it to stay out of
+// claim.Expired. Today isTransientAuxUnavailableDispatchErr does not
+// recognize the saturation shape, so this fails.
+func TestFlushPendingDispatches_AgeCapDropsSaturationOnlyBatch(t *testing.T) {
+	const wsUUID = "ws-agecap-saturation-drop"
+	const memoryBatchName = "extract-memories-on-close+memorize-preferences"
+	saturationErr := acperrors.ErrProcessBusy.Error()
+
+	store := &FilePendingDispatchStore{BaseDir: t.TempDir()}
+	staleSavedAt := time.Now().Add(-(pendingDispatchMaxAge + time.Hour))
+	if _, err := store.Append(PendingDispatchEntry{
+		WorkspaceUUID: wsUUID, Name: memoryBatchName, Prompt: "memory batch prompt",
+		TimeoutSeconds: 1, SavedAt: staleSavedAt, Attempts: 1, LastError: saturationErr,
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	claim, err := store.Claim(wsUUID)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+
+	for _, expired := range claim.Expired {
+		if expired.Name == memoryBatchName {
+			t.Fatalf("mitto-44d: a purely-saturation-failure memory batch (LastError=%q) "+
+				"was silently discarded at the 24h age-cap (SavedAt=%s, pendingDispatchMaxAge=%s) "+
+				"because isTransientAuxUnavailableDispatchErr does not recognize the "+
+				"\"shared ACP process is saturated\" error shape — acceptance criterion "+
+				"requires it survive within the extended transient budget "+
+				"(pendingDispatchMaxAgeTransient=%s) just like a deadline-exceeded failure history does",
+				expired.LastError, staleSavedAt, pendingDispatchMaxAge, pendingDispatchMaxAgeTransient)
+		}
+	}
+	if len(claim.Entries) != 1 {
+		t.Fatalf("claim.Entries = %d entries, want 1 (the saturation-only batch should remain "+
 			"claimable, not expired)", len(claim.Entries))
 	}
 }

@@ -1847,18 +1847,30 @@ func isSaturationDispatchErr(err error) bool {
 
 // isTransientAuxUnavailableDispatchErr reports whether err represents the
 // auxiliary ACP process being transiently unavailable — it simply did not
-// respond within its configured per-dispatch timeout — rather than a
-// genuinely poisoned batch (mitto-unc). Distinct from
-// isNonRetryableDispatchErr (the workspace itself stopped being dispatchable)
-// and isSaturationDispatchErr (which already has its own long-wait retry
-// policy): acpproc.ACPProcessManager wraps a cancelled-on-timeout auxiliary
-// prompt as "auxiliary prompt cancelled[ on retry]: %w"
-// (acp_process_manager.go), and the underlying JSON-RPC transport surfaces
-// the cause as a -32603 internal error whose data.error names "context
-// deadline exceeded". FlushPendingDispatches' cap-exhaustion path uses this
-// to keep retrying a purely-transient failure history instead of
-// permanently dropping it — the pendingDispatchMaxAge cutoff (checked at
-// Load/Claim time) remains the real bound for how long it can linger.
+// respond within its configured per-dispatch timeout, or the shared process
+// is currently saturated/busy — rather than a genuinely poisoned batch
+// (mitto-unc, mitto-44d). Distinct from isNonRetryableDispatchErr (the
+// workspace itself stopped being dispatchable): acpproc.ACPProcessManager
+// wraps a cancelled-on-timeout auxiliary prompt as "auxiliary prompt
+// cancelled[ on retry]: %w" (acp_process_manager.go), and the underlying
+// JSON-RPC transport surfaces the cause as a -32603 internal error whose
+// data.error names "context deadline exceeded". FlushPendingDispatches'
+// cap-exhaustion path uses this to keep retrying a purely-transient failure
+// history instead of permanently dropping it — the pendingDispatchMaxAge
+// cutoff (checked at Load/Claim time) remains the real bound for how long it
+// can linger.
+//
+// mitto-44d: the saturation shape (acperrors.ErrSharedProcessSaturated /
+// ErrProcessBusy, "shared ACP process is saturated") is also included here.
+// dispatchWithRetry's own isSaturationDispatchErr already retries that shape
+// indefinitely while the shared process stays saturated, so a batch whose
+// entire recorded failure history is saturation-only must earn the same
+// extended pendingDispatchMaxAgeTransient budget as a deadline-exceeded
+// history — otherwise it silently dies at the ordinary 24h age cap even
+// though the retry loop above never gave up on it (the age cap reconstructs
+// the error from a persisted string via errors.New, so this is necessarily a
+// substring match rather than errors.Is/isSaturationDispatchErr's sentinel
+// check).
 func isTransientAuxUnavailableDispatchErr(err error) bool {
 	if err == nil {
 		return false
@@ -1868,7 +1880,8 @@ func isTransientAuxUnavailableDispatchErr(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "auxiliary prompt cancelled") ||
-		strings.Contains(msg, "context deadline exceeded")
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "shared ACP process is saturated")
 }
 
 // dispatchRetryLogState bounds ordinary transient retry warnings to one per
