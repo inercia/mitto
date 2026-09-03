@@ -5460,6 +5460,58 @@ func TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore(t *testing.T
 	}
 }
 
+// TestLoopRunner_OnBeadsChanged_RecoversFromTransientDeadlineExceeded
+// reproduces mitto-bhx: the onTasks loop-trigger's beads listing
+// (OnBeadsChanged's per-working-dir List call) currently aborts the whole
+// tick on ANY List error, including a single transient
+// context.DeadlineExceeded -- it logs "onTasks: failed to list beads" (WARN)
+// and skips every onTasks session sharing that working dir, with no retry.
+// This is the same transient-`bd list`-timeout family as mitto-c20 (fixed
+// only for internal/stats/beads_source.go's listWithRetry) but a distinct,
+// still-uncovered path in the onTasks loop-trigger listing.
+//
+// This test asserts the fix contract: a List that fails ONCE with
+// context.DeadlineExceeded and then succeeds must still initialize the
+// baseline for an onTasks session in that working dir -- i.e.
+// OnBeadsChanged must absorb a single transient deadline timeout via a
+// bounded retry instead of dropping the tick. On the current code this
+// fails: List is called once, returns context.DeadlineExceeded, the WARN
+// is logged, and the session's baseline is never initialized.
+func TestLoopRunner_OnBeadsChanged_RecoversFromTransientDeadlineExceeded(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj-flaky", "")
+
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	failsLeft := 1
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) {
+		if failsLeft > 0 {
+			failsLeft--
+			return nil, context.DeadlineExceeded
+		}
+		return raw, nil
+	}}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	runner := NewLoopRunner(store, nil, logger)
+	runner.SetBeadsClient(fake)
+
+	runner.OnBeadsChanged(watcher.BeadsChangeEvent{WorkingDirs: []string{"/proj-flaky"}})
+
+	if _, err := NewTasksBaselineStore(store.SessionDir("s1")).Get(); err != nil {
+		t.Errorf("mitto-bhx: session s1 baseline not initialized after a single transient context.DeadlineExceeded from List (error = %v); want a bounded retry to absorb it and succeed", err)
+	}
+	if got := buf.String(); strings.Contains(got, "onTasks: failed to list beads") {
+		t.Errorf("mitto-bhx: OnBeadsChanged logged the drop-tick WARN despite a single transient timeout that a bounded retry should absorb. Log output:\n%s", got)
+	}
+}
+
 func TestLoopRunner_TasksCooldownSettersGetters(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {

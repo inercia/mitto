@@ -52,6 +52,16 @@ var tasksTransientRetryDelays = []time.Duration{
 // without waiting.
 var tasksTransientRetrySleep = time.Sleep
 
+// tasksListRetries bounds how many ADDITIONAL attempts listBeadsWithRetry
+// makes after a transient context.DeadlineExceeded from a `bd list` beads
+// snapshot fetch (mitto-bhx, mirroring stats.BeadsSource.listWithRetry from
+// mitto-c20). Package-var so tests can override for speed.
+var tasksListRetries = 2
+
+// tasksListRetryBackoff is the pause between listBeadsWithRetry attempts.
+// Package-var so tests can override to a near-zero duration.
+var tasksListRetryBackoff = 500 * time.Millisecond
+
 // Compile-time assertion: *LoopRunner implements watcher.BeadsSubscriber.
 var _ watcher.BeadsSubscriber = (*LoopRunner)(nil)
 
@@ -83,6 +93,55 @@ func (r *LoopRunner) beadsClientOrDefault() beads.Client {
 		r.beadsClient = beads.NewClient()
 	}
 	return r.beadsClient
+}
+
+// listBeadsWithRetry fetches a beads snapshot for dir via
+// beadsClientOrDefault().List, retrying up to tasksListRetries additional
+// times -- with a tasksListRetryBackoff pause between attempts -- ONLY when
+// the failure is context.DeadlineExceeded (mitto-bhx): that specific error
+// indicates the per-call `bd list` read budget was transiently exceeded
+// (e.g. under concurrent aux/dolt contention), not a persistent failure, so
+// it is worth absorbing here rather than dropping the onTasks tick. Any
+// other error is returned immediately without retrying, unchanged from
+// before this fix.
+//
+// This mirrors stats.BeadsSource.listWithRetry (mitto-c20) but differs in
+// one critical way: there, the caller's ctx is long-lived and each attempt
+// gets a fresh 45s deadline applied internally by the CLI, so the same ctx
+// is safely reused across retries. Here, tasksListTimeout (30s) IS the
+// per-attempt deadline passed to List, and it is shorter than the CLI's
+// internal readTimeout (45s) -- so once an attempt's ctx has expired,
+// reusing it for a retry would be futile (already exceeded). Each attempt
+// therefore gets its OWN fresh context.WithTimeout(context.Background(),
+// tasksListTimeout).
+//
+// The backoff selects on the runner's stopCh (snapshotted once under r.mu)
+// so a shutdown mid-backoff returns promptly instead of blocking Stop().
+func (r *LoopRunner) listBeadsWithRetry(dir string) ([]byte, error) {
+	r.mu.Lock()
+	stopCh := r.stopCh
+	r.mu.Unlock()
+
+	attempt := func() ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
+		defer cancel()
+		return r.beadsClientOrDefault().List(ctx, dir)
+	}
+
+	raw, err := attempt()
+	for n := 0; err != nil && errors.Is(err, context.DeadlineExceeded) && n < tasksListRetries; n++ {
+		if r.logger != nil {
+			r.logger.Warn("onTasks: transient list timeout, retrying",
+				"working_dir", dir, "attempt", n+1)
+		}
+		select {
+		case <-stopCh:
+			return nil, err
+		case <-time.After(tasksListRetryBackoff):
+		}
+		raw, err = attempt()
+	}
+	return raw, err
 }
 
 // SetMinLoopTasksCooldownSeconds sets the global floor for the onTasks
@@ -210,9 +269,7 @@ func (r *LoopRunner) OnBeadsChanged(event watcher.BeadsChangeEvent) {
 		}
 		raw, ok := rawCache[meta.WorkingDir]
 		if !ok {
-			ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
-			raw, err = r.beadsClientOrDefault().List(ctx, meta.WorkingDir)
-			cancel()
+			raw, err = r.listBeadsWithRetry(meta.WorkingDir)
 			if err != nil {
 				failedDirs[meta.WorkingDir] = struct{}{}
 				if r.logger != nil {
@@ -662,9 +719,7 @@ func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopSt
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
-	raw, err := r.beadsClientOrDefault().List(ctx, meta.WorkingDir)
-	cancel()
+	raw, err := r.listBeadsWithRetry(meta.WorkingDir)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("onTasks: failed to list beads for settle fire",
@@ -789,9 +844,7 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
-	raw, err := r.beadsClientOrDefault().List(ctx, meta.WorkingDir)
-	cancel()
+	raw, err := r.listBeadsWithRetry(meta.WorkingDir)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("onTasks: failed to list beads for baseline rebase",
@@ -1035,9 +1088,7 @@ func (r *LoopRunner) BootstrapTasksBaseline(sessionID string) {
 		return // already initialized
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), tasksListTimeout)
-	raw, err := r.beadsClientOrDefault().List(ctx, meta.WorkingDir)
-	cancel()
+	raw, err := r.listBeadsWithRetry(meta.WorkingDir)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Warn("onTasks: failed to bootstrap baseline", "session_id", sessionID, "error", err)
