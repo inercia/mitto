@@ -4,6 +4,7 @@ package inprocess
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,8 +44,13 @@ func TestSetSessionModel_LegacyFallback_PreSchema013(t *testing.T) {
 	t.Cleanup(func() { ts.Client.DeleteSession(sess.SessionID) })
 
 	var promptComplete bool
+	var mu sync.Mutex
 	callbacks := api.SessionCallbacks{
-		OnPromptComplete: func(_ int) { promptComplete = true },
+		OnPromptComplete: func(_ int) {
+			mu.Lock()
+			promptComplete = true
+			mu.Unlock()
+		},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -68,8 +74,11 @@ func TestSetSessionModel_LegacyFallback_PreSchema013(t *testing.T) {
 	// Wait for the prompt to complete (triggers deferred session/new +
 	// applyConfigConstraints, which is what fires SetSessionModel and takes
 	// the -32601 -> legacy fallback branch).
-	waitFor(t, 30*time.Second, func() bool { return promptComplete },
-		"prompt complete")
+	waitFor(t, 30*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return promptComplete
+	}, "prompt complete")
 
 	sm := ts.Server.GetSessionManager()
 	var bs *conversation.BackgroundSession

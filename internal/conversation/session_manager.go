@@ -2235,6 +2235,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		return existing, nil
 	}
 	sm.sessions[bs.GetSessionID()] = bs
+	sessionCount := len(sm.sessions)
 	sm.mu.Unlock()
 
 	// Live stats path (mitto-a86b.4): attach a stateless observer that
@@ -2249,7 +2250,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 			"acp_id", bs.GetACPID(),
 			"acp_server", acpServer,
 			"working_dir", workingDir,
-			"total_sessions", len(sm.sessions),
+			"total_sessions", sessionCount,
 			"total_ms", time.Since(createStart).Milliseconds(),
 			"config_and_shared_process_ms", configDuration.Milliseconds(),
 			"shared_process_lookup_ms", sharedProcessDuration.Milliseconds(),
@@ -3030,6 +3031,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		return existing, nil
 	}
 	sm.sessions[bs.GetSessionID()] = bs
+	sessionCount := len(sm.sessions)
 	sm.mu.Unlock()
 
 	// Live stats path (mitto-a86b.4): attach observer for the resumed session
@@ -3057,7 +3059,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			"acp_id", bs.GetACPID(),
 			"acp_server", acpServer,
 			"working_dir", workingDir,
-			"total_sessions", len(sm.sessions))
+			"total_sessions", sessionCount)
 	}
 
 	// Trigger early MCP tools fetch to warm the cache before the first message.
