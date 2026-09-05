@@ -358,6 +358,12 @@ func (bs *BackgroundSession) cbACPServerConstraint(category string) *config.ACPS
 	return bs.acpServerConstraints[category]
 }
 
+// cbGetBaselineModel returns the session's current baseline model. See
+// GetBaselineModel (bgsession_config.go) for the locking/semantics.
+func (bs *BackgroundSession) cbGetBaselineModel() string {
+	return bs.GetBaselineModel()
+}
+
 // cbReplaceModelConfigOption removes any existing model config option and
 // appends the new one.
 func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfigOption) {

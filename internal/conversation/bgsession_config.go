@@ -222,6 +222,13 @@ func (bs *BackgroundSession) cmLockPromptMu()     { bs.promptMu.Lock() }
 func (bs *BackgroundSession) cmUnlockPromptMu()   { bs.promptMu.Unlock() }
 func (bs *BackgroundSession) cmIsPrompting() bool { return bs.isPrompting }
 
+// cmGetBaselineModel returns the session's current baseline model for
+// configManager (used by applyConfigConstraints to fall back to a persisted
+// manual selection when no ACP-server constraint governs the model category).
+func (bs *BackgroundSession) cmGetBaselineModel() string {
+	return bs.GetBaselineModel()
+}
+
 func (bs *BackgroundSession) cmSetBaselineAndClearOverride(baseline string) {
 	bs.modelMu.Lock()
 	bs.baselineModel = baseline

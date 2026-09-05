@@ -173,6 +173,11 @@ func (f *fakeCallbackDeps) cbInitBaselineModelIfEmpty(defaultModel string) {
 		f.defaultBaselineUsed = true
 	}
 }
+func (f *fakeCallbackDeps) cbGetBaselineModel() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.baselineModel
+}
 func (f *fakeCallbackDeps) cbApplyConfigConstraintsAsync(category string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

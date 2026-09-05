@@ -190,6 +190,11 @@ func (f *fakeConfigDeps) cmTakeBaselineIfOverride() (string, bool) {
 	f.overrideActive = false
 	return baseline, true
 }
+func (f *fakeConfigDeps) cmGetBaselineModel() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.baselineModel
+}
 func (f *fakeConfigDeps) cmHasAgentModels() bool      { return f.hasAgentModels }
 func (f *fakeConfigDeps) cmGetCurrentModelID() string { return f.currentModelID }
 func (f *fakeConfigDeps) cmSetCurrentModelID(id string) {

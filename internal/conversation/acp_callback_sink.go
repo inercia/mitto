@@ -112,6 +112,12 @@ type acpCallbackDeps interface {
 	// cbInitBaselineModelIfEmpty initialises baselineModel under modelMu if it
 	// is still empty, preferring persisted metadata over the supplied default.
 	cbInitBaselineModelIfEmpty(defaultModel string)
+	// cbGetBaselineModel returns the session's current baseline model (set by
+	// cbInitBaselineModelIfEmpty from persisted metadata, or the agent's
+	// default when nothing was persisted). Used by setAgentModels to pre-apply
+	// a persisted manual selection to the UI chip when no ACP-server
+	// constraint governs the model category (mitto-1yo).
+	cbGetBaselineModel() string
 	// cbApplyConfigConstraintsAsync kicks off the async constraint-application
 	// goroutine for a category (matches the legacy `go bs.applyConfigConstraints(...)`).
 	cbApplyConfigConstraintsAsync(category string)
@@ -622,6 +628,14 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelSta
 
 	options := ModelsToConfigOptions(models)
 
+	// Initialize baselineModel from persisted metadata (survive suspend/resume) or
+	// from the agent's reported current model. Only set when empty so a prior call
+	// isn't overwritten. Done BEFORE computing currentValue below so a persisted
+	// manual selection is available for the pre-apply check that follows.
+	// applyConfigConstraints (called async below) will update baseline via
+	// SetConfigOption if a constraint selects a different model.
+	d.cbInitBaselineModelIfEmpty(models.CurrentModelId)
+
 	// Start with the agent's reported current model.
 	// Pre-apply any matching constraint to local state immediately, so the UI shows
 	// the desired model from the very first acp_started message — before the async
@@ -639,6 +653,25 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelSta
 			}
 			currentValue = matched
 		}
+	} else if baseline := d.cbGetBaselineModel(); baseline != "" && baseline != currentValue {
+		// No ACP-server constraint governs the model category, so the pre-apply
+		// above never fires. Without this, a persisted manual selection
+		// (BaselineModel) from an earlier turn/session is silently lost on every
+		// conversation switch/resume, reverting the UI chip to the agent's
+		// default (mitto-1yo). cbApplyConfigConstraintsAsync below re-applies
+		// the same baseline to the agent itself.
+		for _, opt := range options {
+			if opt.Value == baseline {
+				if lg := d.cbLogger(); lg != nil {
+					lg.Debug("Persisted baseline model: pre-applying to local state",
+						"category", ConfigOptionCategoryModel,
+						"agent_model", currentValue,
+						"baseline_model", baseline)
+				}
+				currentValue = baseline
+				break
+			}
+		}
 	}
 
 	modelOption := SessionConfigOption{
@@ -652,12 +685,6 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelSta
 	}
 
 	d.cbReplaceModelConfigOption(modelOption)
-
-	// Initialize baselineModel from persisted metadata (survive suspend/resume) or
-	// from the agent's reported current model. Only set when empty so a prior call
-	// isn't overwritten. applyConfigConstraints (called async below) will update
-	// baseline via SetConfigOption if a constraint selects a different model.
-	d.cbInitBaselineModelIfEmpty(models.CurrentModelId)
 
 	d.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
 

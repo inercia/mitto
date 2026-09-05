@@ -149,6 +149,7 @@ type configDeps interface {
 	// Model state — atomic ops
 	cmSetBaselineAndClearOverride(baseline string)                   // modelMu.Lock + update + Unlock
 	cmTakeBaselineIfOverride() (baseline string, wasOverriding bool) // modelMu.Lock + check + drain + Unlock
+	cmGetBaselineModel() string                                      // modelMu.Lock + read + Unlock
 	cmHasAgentModels() bool
 	cmGetCurrentModelID() string   // reads agentModels.CurrentModelId; no extra lock
 	cmSetCurrentModelID(id string) // writes agentModels.CurrentModelId; no extra lock; nil-safe
@@ -337,22 +338,46 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 
 func (c configManager) applyConfigConstraints(d configDeps, category string) error {
 	constraint := d.cmGetACPServerConstraint(category)
-	if constraint == nil || constraint.Pattern == "" {
-		return nil
-	}
 
 	opt, ok := d.cmFindByCategory(category)
 	if !ok || len(opt.Options) == 0 {
 		return nil
 	}
 
-	matchedValue := MatchConstraintOption(constraint, opt.Options)
-	if matchedValue == "" {
-		if l := d.cmLogger(); l != nil {
-			l.Warn("ACP server constraint: no matching option found",
-				"category", category, "match_mode", constraint.MatchMode,
-				"pattern", constraint.Pattern, "available_count", len(opt.Options))
+	var matchedValue string
+	switch {
+	case constraint != nil && constraint.Pattern != "":
+		matchedValue = MatchConstraintOption(constraint, opt.Options)
+		if matchedValue == "" {
+			if l := d.cmLogger(); l != nil {
+				l.Warn("ACP server constraint: no matching option found",
+					"category", category, "match_mode", constraint.MatchMode,
+					"pattern", constraint.Pattern, "available_count", len(opt.Options))
+			}
+			return nil
 		}
+	case category == ConfigOptionCategoryModel:
+		// No ACP-server constraint governs the model category: fall back to
+		// re-applying the session's persisted BaselineModel (a manual pick from
+		// an earlier turn/session) to the agent, so it survives conversation
+		// switch/resume instead of being silently lost to the agent's reported
+		// default (mitto-1yo). setAgentModels already pre-applies the baseline
+		// to the local UI config option; this restores it agent-side, reusing
+		// the same bounded startup-constraint retry path used for constraints.
+		baseline := d.cmGetBaselineModel()
+		if baseline == "" {
+			return nil
+		}
+		for _, o := range opt.Options {
+			if o.Value == baseline {
+				matchedValue = baseline
+				break
+			}
+		}
+		if matchedValue == "" {
+			return nil
+		}
+	default:
 		return nil
 	}
 
@@ -368,9 +393,14 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 	}
 
 	if l := d.cmLogger(); l != nil {
-		l.Info("ACP server constraint: auto-selecting option",
-			"category", category, "match_mode", constraint.MatchMode,
-			"pattern", constraint.Pattern, "selected_value", matchedValue)
+		if constraint != nil && constraint.Pattern != "" {
+			l.Info("ACP server constraint: auto-selecting option",
+				"category", category, "match_mode", constraint.MatchMode,
+				"pattern", constraint.Pattern, "selected_value", matchedValue)
+		} else {
+			l.Info("Restoring persisted baseline model on resume",
+				"category", category, "selected_value", matchedValue)
+		}
 	}
 
 	if d.cmHasParent() {

@@ -134,3 +134,81 @@ func TestCbInitBaselineModelIfEmpty_EmptyDefaultDoesNotPersist(t *testing.T) {
 			meta.BaselineModel)
 	}
 }
+
+// TestSetAgentModels_ResumeWithoutConstraint_DoesNotReapplyPersistedBaseline is
+// the reproduction test for mitto-1yo: on session resume, when metadata
+// already carries a BaselineModel that differs from the agent's reported
+// CurrentModelId and NO ACP-server model constraint governs the session, the
+// persisted baseline is loaded into bs.baselineModel (cbInitBaselineModelIfEmpty)
+// but is NEVER reflected back into the model config option's CurrentValue nor
+// re-applied to the agent. The UI chip therefore shows the agent's default
+// model instead of the user's prior manual selection, which is silently lost
+// on every conversation switch.
+//
+// This test exercises setAgentModels end-to-end (the real production call
+// path used on session/resume and session/load, see bgsession_acp_process.go)
+// with a real session.Store carrying a persisted BaselineModel and no
+// ACP-server constraint. It currently FAILS — CurrentValue stays at the
+// agent's default rather than the persisted baseline — and will PASS once the
+// fix restores the persisted baseline to the config option's CurrentValue (and
+// re-applies it to the agent) on resume in the absence of a constraint.
+func TestSetAgentModels_ResumeWithoutConstraint_DoesNotReapplyPersistedBaseline(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-session-resume-baseline-lost"
+	const persistedBaseline = "model-A" // user's earlier manual pick, persisted in metadata
+	const agentDefault = "model-B"      // what the agent reports as CurrentModelId on resume
+
+	if err := store.Create(session.Metadata{
+		SessionID:     sid,
+		ACPServer:     "test-server",
+		WorkingDir:    "/tmp",
+		Name:          "Test",
+		BaselineModel: persistedBaseline,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A fresh BackgroundSession object handling a conversation-switch resume,
+	// with NO ACP-server model constraint configured (the common case that
+	// triggers the bug — a configured constraint would win via
+	// applyConfigConstraints and mask this gap).
+	bs := &BackgroundSession{persistedID: sid, store: store}
+
+	models := &SessionModelState{
+		CurrentModelId: agentDefault,
+		AvailableModels: []ModelInfo{
+			{ModelId: persistedBaseline, Name: "Model A"},
+			{ModelId: agentDefault, Name: "Model B"},
+		},
+	}
+	bs.setAgentModels(models)
+	bs.waitForStartupConfigConstraints()
+
+	opt, ok := bs.cmFindByCategory(ConfigOptionCategoryModel)
+	if !ok {
+		t.Fatalf("expected a model config option to be set")
+	}
+
+	// EXPECTED (post-fix): the persisted baseline must win when there is no
+	// ACP-server constraint, mirroring how a constraint match is pre-applied
+	// at acp_callback_sink.go:632-642 for the constraint case.
+	if opt.CurrentValue != persistedBaseline {
+		t.Errorf("model config option CurrentValue = %q, want %q "+
+			"(persisted BaselineModel must be restored to the UI chip on resume "+
+			"when no ACP-server model constraint governs the session — mitto-1yo)",
+			opt.CurrentValue, persistedBaseline)
+	}
+
+	// In-memory baseline already reflects the persisted value (this part
+	// works today via cbInitBaselineModelIfEmpty) — the bug is that it goes
+	// no further than memory.
+	if got := bs.GetBaselineModel(); got != persistedBaseline {
+		t.Errorf("in-memory baselineModel = %q, want %q", got, persistedBaseline)
+	}
+}
