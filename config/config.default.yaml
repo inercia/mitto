@@ -129,6 +129,21 @@ shortcuts:
   tasksList:
     - prompt: Overview
 
+# Task title colors
+# Ordered mapping from a task (beads issue) label to the background color of the
+# task's title in the Tasks list. The FIRST entry whose label is present on a
+# task wins, so put more specific labels earlier. Colors are six-digit hex.
+#
+# These seed NEW installs only (written to settings.json on first run); existing
+# settings.json files are left untouched. Global colors are MERGED with any
+# per-folder colors at render time (folder entries take precedence for the same
+# label). Edit or extend them via Settings → Task title colors.
+task_label_colors:
+  - label: needs-human
+    color: "#ef4444"
+  - label: blocked
+    color: "#f59e0b"
+
 # Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security

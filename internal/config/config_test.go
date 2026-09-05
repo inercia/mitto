@@ -3008,6 +3008,31 @@ func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
 	}
 }
 
+// TestParse_EmbeddedDefaultTaskLabelColors pins the safe default global
+// task-title colors seeded into new installs via the embedded
+// config/config.default.yaml. It guards against the shipped default drifting
+// (bad YAML, renamed label, or changed color) so first-time users always get
+// the sane "needs-human" → red and "blocked" → amber mappings, in order.
+func TestParse_EmbeddedDefaultTaskLabelColors(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+
+	want := []TaskLabelColor{
+		{Label: "needs-human", Color: "#ef4444"},
+		{Label: "blocked", Color: "#f59e0b"},
+	}
+	if len(cfg.TaskLabelColors) != len(want) {
+		t.Fatalf("embedded default TaskLabelColors = %+v, want %+v", cfg.TaskLabelColors, want)
+	}
+	for i := range want {
+		if cfg.TaskLabelColors[i] != want[i] {
+			t.Errorf("TaskLabelColors[%d] = %+v, want %+v", i, cfg.TaskLabelColors[i], want[i])
+		}
+	}
+}
+
 // TestDefaultModelProfiles_MatchesEmbeddedYAML asserts the hardcoded Go source of
 // truth (DefaultModelProfiles) stays in sync with the shipped config.default.yaml
 // `models:` block — same profile names, criteria, and tags in the same order. This is
