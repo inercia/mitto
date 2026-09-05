@@ -124,6 +124,66 @@ func (s *Server) isTransientChildResumeError(err error) bool {
 		(s.sessionManager.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated))
 }
 
+// scheduleBoundedResumeRetry schedules a bounded async background retry for a
+// conversation whose ACP process failed to start with a transient error (a
+// cold-start MCP-init timeout or shared-process saturation, mitto-nf6). It is
+// the shared retry mechanism behind both the mitto_conversation_new transient
+// branch (tools_conversation_new.go) and the auto-resume-on-send-prompt path
+// (tools_prompt_dispatch.go), extracted from the latter's original inline
+// goroutine to avoid duplicating the backoff/classification logic.
+//
+// Each attempt first checks whether the session already became live (e.g. a
+// concurrent resume or a prior retry attached first) before calling
+// ResumeSession itself; on success it kicks TryProcessQueuedMessage so any
+// prompt queued while the process was still starting gets delivered. Safe to
+// call even when the target has no queued messages — the queue sweep is then
+// a harmless no-op. Gives up silently (WARN log only) after exhausting
+// childResumeRetryDelays; the caller's own reconnect/ensure_resumed paths
+// remain the eventual fallback.
+func (s *Server) scheduleBoundedResumeRetry(convID, convName, convWD string) {
+	sm := s.sessionManager
+	if sm == nil {
+		return
+	}
+	go func() {
+		for attempt, delay := range childResumeRetryDelays {
+			time.Sleep(delay)
+			if sm == nil {
+				return
+			}
+			// Session may already be running (a foreground resume or a prior
+			// retry attached first); if so, kick the queue and stop.
+			if existing := sm.GetSession(convID); existing != nil {
+				go existing.TryProcessQueuedMessage()
+				return
+			}
+			resumed, err := sm.ResumeSession(convID, convName, convWD)
+			if err == nil {
+				s.logger.Info("Resume retry succeeded",
+					"session_id", convID,
+					"attempt", attempt+1)
+				if resumed != nil {
+					go resumed.TryProcessQueuedMessage()
+				}
+				return
+			}
+			if !s.isTransientChildResumeError(err) {
+				s.logger.Warn("Resume retry aborted: non-transient error",
+					"session_id", convID,
+					"attempt", attempt+1,
+					"error", err)
+				return
+			}
+			s.logger.Debug("Resume retry still hitting transient startup failure",
+				"session_id", convID,
+				"attempt", attempt+1)
+		}
+		s.logger.Warn("Resume retry gave up after bounded attempts; queued prompt will be delivered on next ensure_resumed/reconnect",
+			"session_id", convID,
+			"attempts", len(childResumeRetryDelays))
+	}()
+}
+
 // resumeChildWithTransientRetry performs the initial resume plus a short bounded
 // backoff sequence. The bool result reports whether the final error is transient,
 // allowing the caller to keep the child pending instead of returning not_running.

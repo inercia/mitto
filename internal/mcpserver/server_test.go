@@ -6895,6 +6895,10 @@ type mockSessionManagerForAutoResume struct {
 	// onResume is called after a successful resume to allow registering the session
 	// with the MCP server's internal registry (simulating the real flow).
 	onResume func(sessionID string)
+	// workspacesForFolder, when set, is returned by GetWorkspacesForFolder —
+	// needed by tests that exercise handleConversationStart, which validates a
+	// workspace exists for the source session's folder + ACP server pair.
+	workspacesForFolder []config.WorkspaceSettings
 }
 
 type resumeCall struct {
@@ -6949,7 +6953,7 @@ func (m *mockSessionManagerForAutoResume) ResumeSession(sessionID, sessionName, 
 }
 
 func (m *mockSessionManagerForAutoResume) GetWorkspacesForFolder(string) []config.WorkspaceSettings {
-	return nil
+	return m.workspacesForFolder
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionCreated(string, string, string, string, string, string) {
 }

@@ -647,15 +647,30 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// store.Create() only writes metadata to disk - we need to start a BackgroundSession
 	// with an actual ACP process so prompts can be executed.
 	var bs BackgroundSession
+	var resumeTransient bool
 	if s.sessionManager != nil {
 		var resumeErr error
 		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, targetWorkingDir)
 		if resumeErr != nil {
-			s.logger.Error("Failed to start ACP for new conversation",
-				"session_id", newSessionID,
-				"error", resumeErr)
-			// Session was created but ACP failed to start - clean up isn't needed
-			// since the session can be resumed later, but log the error
+			// mitto-nf6: a cold-start MCP-init timeout or shared-process
+			// saturation is transient (session_manager.go's ResumeSession
+			// already classifies it as such and does not count it as a hard
+			// failure). Don't surface a hard error for this case — capture
+			// the condition and schedule a bounded background retry (below,
+			// after the initial prompt is enqueued) instead of logging Error
+			// and leaving the child permanently unstarted.
+			resumeTransient = s.isTransientChildResumeError(resumeErr)
+			if resumeTransient {
+				s.logger.Info("Child ACP start hit transient cold-start timeout; bounded retry will be scheduled",
+					"session_id", newSessionID,
+					"error", resumeErr)
+			} else {
+				s.logger.Error("Failed to start ACP for new conversation",
+					"session_id", newSessionID,
+					"error", resumeErr)
+				// Session was created but ACP failed to start - clean up isn't needed
+				// since the session can be resumed later, but log the error
+			}
 		}
 	}
 
@@ -893,6 +908,14 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				go bs.TryProcessQueuedMessage()
 			}
 		}
+	}
+
+	// mitto-nf6: schedule the bounded resume retry only now, after the initial
+	// prompt (if any) has been enqueued above — so the retry's queue sweep on
+	// success (scheduleBoundedResumeRetry) finds the prompt already waiting.
+	// Harmless to call with no queued messages: the sweep is then a no-op.
+	if resumeTransient {
+		s.scheduleBoundedResumeRetry(newSessionID, input.Title, targetWorkingDir)
 	}
 
 	return nil, output, nil
