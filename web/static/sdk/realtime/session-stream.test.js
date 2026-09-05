@@ -1062,6 +1062,32 @@ describe("SessionStream: sendPrompt() delivery verification", () => {
     expect(result).toEqual({ success: true, promptId: sentMsg.data.prompt_id });
   });
 
+  test("waits for delayed durable ACK through preflight without reconnecting or retrying", async () => {
+    expect(SESSION_STREAM_CONSTANTS.INITIAL_ACK_TIMEOUT_MS).toBe(180000);
+    expect(SESSION_STREAM_CONSTANTS.TOTAL_DELIVERY_BUDGET_MS).toBe(190000);
+    // Isolate delivery timing from independent keepalive zombie detection.
+    const h = makeHarness({ keepaliveIntervalMs: 200000 });
+    const ws = openStream(h);
+    const pending = h.stream.sendPrompt({ message: "slow model selection" });
+    const sentMsg = JSON.parse(ws.sent[0]);
+    const settled = [];
+    pending.then((result) => settled.push(result), (err) => settled.push(err));
+
+    h.clock.advance(179999);
+    await flush();
+    expect(settled).toEqual([]);
+    expect(h.stream.state).toBe("open");
+    expect(h.instances).toHaveLength(1);
+    expect(ws.sent).toHaveLength(1);
+
+    ws.onmessage({ data: JSON.stringify({ type: "prompt_received", data: { prompt_id: sentMsg.data.prompt_id } }) });
+    await expect(pending).resolves.toEqual({ success: true, promptId: sentMsg.data.prompt_id });
+    h.clock.advance(10001); // Past both original deadlines: the ACK cleared the timer.
+    await flush();
+    expect(h.instances).toHaveLength(1);
+    expect(ws.sent).toHaveLength(1);
+  });
+
   test("resolves on a user_prompt echo carrying is_mine + matching prompt_id", async () => {
     const h = makeHarness();
     const ws = openStream(h);
@@ -1079,15 +1105,15 @@ describe("SessionStream: sendPrompt() delivery verification", () => {
     await expect(stream.sendPrompt({ message: "hi" })).rejects.toBeInstanceOf(MittoNetworkError);
   });
 
-  test("ACK timeout -> reconnect -> verified-delivered (connected.last_user_prompt_id matches)", async () => {
-    const h = makeHarness();
+  test("custom client ACK timeout -> reconnect -> verified-delivered (connected.last_user_prompt_id matches)", async () => {
+    const h = makeHarness({ initialAckTimeoutMs: 3000, totalDeliveryBudgetMs: 10000 });
     const ws1 = openStream(h);
     const pending = h.stream.sendPrompt({ message: "hi" });
     let resolved = null;
     pending.then((r) => (resolved = r));
     const sentMsg = JSON.parse(ws1.sent[ws1.sent.length - 1]);
 
-    h.clock.advance(SESSION_STREAM_CONSTANTS.INITIAL_ACK_TIMEOUT_MS);
+    h.clock.advance(3000); // Explicit per-client timing still overrides the defaults.
     await flush();
     // Initial ACK timed out -> a reconnect was forced.
     const ws2 = h.instances[h.instances.length - 1];
@@ -1107,7 +1133,7 @@ describe("SessionStream: sendPrompt() delivery verification", () => {
   });
 
   test("ACK timeout -> reconnect -> not delivered -> retried-and-acked on the new connection", async () => {
-    const h = makeHarness();
+    const h = makeHarness({ keepaliveIntervalMs: 200000 });
     const ws1 = openStream(h);
     const pending = h.stream.sendPrompt({ message: "hi" });
     let resolved = null;

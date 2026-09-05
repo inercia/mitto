@@ -87,11 +87,10 @@ func setupTestServerWithModelConstraint(t *testing.T, pattern string) *TestServe
 	}
 }
 
-// TestResumeModelConstraint verifies that ACP server model-selection constraints
-// are re-applied when a session is resumed (archive → unarchive cycle). This
-// guards the bug where ResumeBackgroundSession's BackgroundSessionConfig literal
-// omitted MittoConfig, leaving acpServerConstraints empty on resume.
-func TestResumeModelConstraint(t *testing.T) {
+// TestResumeModelConstraint_PreservesManualSelection verifies that the server
+// constraint seeds a new conversation, but a subsequent manual selection wins
+// on archive → unarchive (mitto-1yo). The workspace default is not a mandate.
+func TestResumeModelConstraint_PreservesManualSelection(t *testing.T) {
 	const (
 		expectedModelID = "claude-opus-4-6"
 		overrideModelID = "claude-sonnet-4-6"
@@ -153,9 +152,8 @@ func TestResumeModelConstraint(t *testing.T) {
 	}, "initial model constraint to be applied (Opus)")
 	t.Logf("Initial model auto-selected: %s", bs.GetConfigValue("model"))
 
-	// Override the model to Sonnet so resume must re-apply the constraint
-	// (otherwise the post-resume value would already match and we wouldn't
-	// be testing the constraint re-application code path).
+	// A manual selection changes this conversation's persistent baseline;
+	// unlike a prompt preference, it must survive resume.
 	overrideCtx, overrideCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer overrideCancel()
 	if err := bs.SetConfigOption(overrideCtx, "model", overrideModelID); err != nil {
@@ -182,13 +180,14 @@ func TestResumeModelConstraint(t *testing.T) {
 	}, "resumed BackgroundSession to be registered")
 	resumedBS := sm.GetSession(sess.SessionID)
 
-	// The key assertion: the constraint must have been re-applied on resume,
-	// flipping the model back to Opus. Without the MittoConfig fix in
-	// ResumeBackgroundSession, acpServerConstraints stays empty and the model
-	// would remain at the overridden Sonnet value.
+	// Check the acknowledged agent model as well as the UI and baseline, not
+	// just the optimistic config option value published during startup.
 	waitFor(t, 10*time.Second, func() bool {
-		return resumedBS.GetConfigValue("model") == expectedModelID
-	}, "model constraint to be re-applied on resume (Opus)")
+		models := resumedBS.AgentModels()
+		return models != nil && models.CurrentModelId == overrideModelID &&
+			resumedBS.GetConfigValue("model") == overrideModelID &&
+			resumedBS.GetBaselineModel() == overrideModelID
+	}, "conversation's manual selection to be restored on resume (Sonnet)")
 	t.Logf("Post-resume model: %s", resumedBS.GetConfigValue("model"))
 }
 

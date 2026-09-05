@@ -42,22 +42,21 @@ type fakeCallbackDeps struct {
 	streamingSuppressed bool // mitto-2tm: gates streaming callback short-circuit
 
 	// recorders
-	notifiedEvents        []string
-	recordedEvents        []session.Event
-	recordedEventKinds    []string
-	recordedPermissions   []recordedPermission
-	contextUsages         [][2]int
-	mcpRequests           []string
-	planEntries           [][]PlanEntry
-	uiPromptCalls         []UIPromptRequest
-	modeCurrentValues     []string
-	persistedConfig       [][2]string
-	configChanged         [][2]string
-	legacyModesSet        []SessionConfigOption
-	storedAgentModels     []*SessionModelState
-	modelReplacements     []SessionConfigOption
-	asyncConstraintCats   []string
-	maybeApplyInitialCall int
+	notifiedEvents      []string
+	recordedEvents      []session.Event
+	recordedEventKinds  []string
+	recordedPermissions []recordedPermission
+	contextUsages       [][2]int
+	mcpRequests         []string
+	planEntries         [][]PlanEntry
+	uiPromptCalls       []UIPromptRequest
+	modeCurrentValues   []string
+	persistedConfig     [][2]string
+	configChanged       [][2]string
+	legacyModesSet      []SessionConfigOption
+	storedAgentModels   []*SessionModelState
+	modelReplacements   []SessionConfigOption
+	asyncConstraintCats []string
 }
 
 type recordedPermission struct{ Title, OptionID, Outcome string }
@@ -157,9 +156,6 @@ func (f *fakeCallbackDeps) cbStoreAgentModels(m *SessionModelState) {
 	defer f.mu.Unlock()
 	f.storedAgentModels = append(f.storedAgentModels, m)
 }
-func (f *fakeCallbackDeps) cbACPServerConstraint(cat string) *config.ACPServerConstraint {
-	return f.constraints[cat]
-}
 func (f *fakeCallbackDeps) cbReplaceModelConfigOption(opt SessionConfigOption) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -182,11 +178,6 @@ func (f *fakeCallbackDeps) cbApplyConfigConstraintsAsync(category string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncConstraintCats = append(f.asyncConstraintCats, category)
-}
-func (f *fakeCallbackDeps) cbMaybeApplyInitialModelAsync() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.maybeApplyInitialCall++
 }
 
 func (f *fakeCallbackDeps) cbStreamingSuppressed() bool {
@@ -577,11 +568,12 @@ func TestCallbackSink_SetAgentModels_FullFlow_NoConstraint(t *testing.T) {
 	}
 }
 
-func TestCallbackSink_SetAgentModels_PreAppliesConstraint(t *testing.T) {
+func TestCallbackSink_SetAgentModels_PreAppliesConversationModel(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{
+		baselineModel: "m-2",
 		constraints: map[string]*config.ACPServerConstraint{
-			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+			ConfigOptionCategoryModel: {Pattern: "Model 1", MatchMode: "exact"},
 		},
 	}
 	models := &SessionModelState{
@@ -597,11 +589,10 @@ func TestCallbackSink_SetAgentModels_PreAppliesConstraint(t *testing.T) {
 		t.Fatalf("expected one model replacement, got %d", len(d.modelReplacements))
 	}
 	if d.modelReplacements[0].CurrentValue != "m-2" {
-		t.Fatalf("expected constraint pre-applied (CurrentValue=m-2), got %q", d.modelReplacements[0].CurrentValue)
+		t.Fatalf("expected conversation model pre-applied (CurrentValue=m-2), got %q", d.modelReplacements[0].CurrentValue)
 	}
-	// Baseline must still seed from the agent's reported model, NOT from the constraint match.
-	if d.baselineModel != "m-1" {
-		t.Fatalf("baseline should seed from agent currentId 'm-1', got %q", d.baselineModel)
+	if d.baselineModel != "m-2" {
+		t.Fatalf("baseline should retain conversation model 'm-2', got %q", d.baselineModel)
 	}
 }
 

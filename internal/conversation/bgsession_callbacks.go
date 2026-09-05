@@ -345,9 +345,13 @@ func (bs *BackgroundSession) cbSetLegacyModes(modeOption SessionConfigOption) {
 	bs.configMu.Unlock()
 }
 
-// cbStoreAgentModels stores the raw agent model state reference.
+// cbStoreAgentModels stores an owned copy so async startup model changes cannot
+// mutate the caller's response state while it is still being read or logged.
 func (bs *BackgroundSession) cbStoreAgentModels(models *SessionModelState) {
-	bs.agentModels = models
+	snapshot := cloneSessionModelState(models)
+	bs.agentModelsMu.Lock()
+	bs.agentModels = snapshot
+	bs.agentModelsMu.Unlock()
 }
 
 // cbACPServerConstraint returns the constraint for a category (may be nil).
@@ -378,10 +382,9 @@ func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfi
 	bs.configMu.Unlock()
 }
 
-// cbInitBaselineModelIfEmpty initialises baselineModel if it is still empty,
-// preferring persisted metadata over the supplied default. When the baseline
-// is seeded from defaultModel (no persisted value), it is also written back
-// to session metadata so backfill and resume see the same value (mitto-9yl).
+// cbInitBaselineModelIfEmpty seeds the conversation model once, preferring
+// persisted metadata, then initial-model settings, then the agent default.
+// Persist the resolved choice before startup RPCs so resume and retry agree.
 func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 	bs.modelMu.Lock()
 	if bs.baselineModel != "" {
@@ -396,11 +399,23 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 			fromPersisted = true
 		}
 	}
+	if models := bs.AgentModels(); !fromPersisted && models != nil {
+		// Resolve the initial choice BEFORE persisting anything. A default written
+		// first would make a fresh conversation look resumed and mask its preference.
+		// ACP model settings are defaults, not constraints on later manual choices.
+		if selected := SelectPreferredModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models); selected != "" {
+			baseline = selected
+		} else if constraint := bs.cbACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
+			if selected := MatchConstraintOption(constraint, ModelsToConfigOptions(models)); selected != "" {
+				baseline = selected
+			}
+		}
+	}
 	bs.baselineModel = baseline
 	bs.modelMu.Unlock()
 
-	// Persist only when we seeded from the agent's currently-active model
-	// (no prior persisted value) and it is non-empty. cmPersistBaselineModel
+	// Persist the resolved conversation current model once, before startup RPCs.
+	// A failed RPC must retain the intended choice for recovery. cmPersistBaselineModel
 	// takes the store's own lock, so it must be called without holding modelMu.
 	if !fromPersisted && baseline != "" {
 		bs.cmPersistBaselineModel(baseline)
@@ -597,12 +612,6 @@ func (bs *BackgroundSession) finishStartupConstraintAttempt(generation int, gene
 	}
 }
 
-// initialModelApplyBudget bounds the SetSessionModel RPC issued to apply the
-// workspace initial-model preference on fresh conversations. Kept generous so a
-// cold agent still lands the switch, but capped so the goroutine does not
-// linger indefinitely on a stuck ACP.
-var initialModelApplyBudget = 90 * time.Second
-
 // startupConstraintLiveRetryInterval paces recoverStartupConstraintAfterRestart's
 // live-but-saturated retry branch (mitto-3ml): how often it retries the
 // startup model constraint directly (no process restart) while waiting for
@@ -610,88 +619,6 @@ var initialModelApplyBudget = 90 * time.Second
 // so tests can shrink one without perturbing the other's timing assertions.
 // A var so tests can shrink it.
 var startupConstraintLiveRetryInterval = 30 * time.Second
-
-// cbMaybeApplyInitialModelAsync applies the per-workspace initial-model
-// preference (WorkspaceSettings → Initial Model) as the session's persistent
-// baseline for FRESH conversations only. Skipped when:
-//   - no preference is configured on the workspace;
-//   - the session was resumed and already has a persisted BaselineModel;
-//   - the workspace has an ACP server constraint on the model category (it wins
-//     and would fight with our change on every resume);
-//   - the preference cannot be resolved against the agent's available models.
-//
-// Applies via SetConfigOption so the change updates the baseline, persists to
-// metadata, and emits a session_change timeline entry — identical to a manual
-// UI selection.
-//
-// Priority axis is profile-list order: SelectPreferredModel walks each entry
-// in initialModelPreference in order, and for each modelTag entry it walks
-// config.ProfilesByTag(profiles, tag) — which preserves Config.Models order —
-// picking the FIRST profile whose Criteria resolves against the session's
-// available models. Reordering profiles in Config.Models flips which model
-// wins for the same tag (mitto-ex7 "list order = priority" contract).
-func (bs *BackgroundSession) cbMaybeApplyInitialModelAsync() {
-	if len(bs.initialModelPreference) == 0 {
-		return
-	}
-	// Skip resumed sessions: they already have a persisted baseline that reflects
-	// prior manual selections (or a prior application of this same preference).
-	if bs.store != nil && bs.persistedID != "" {
-		if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil && meta.BaselineModel != "" {
-			return
-		}
-	}
-	// Skip when a workspace ACP server constraint already governs the model
-	// category — it wins (see applyConfigConstraints) and re-runs on every
-	// resume, so any change we make here would be immediately reverted.
-	if constraint := bs.cbACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
-		return
-	}
-
-	prefs := bs.initialModelPreference
-	go func() {
-		models := bs.agentModels
-		if models == nil {
-			return
-		}
-		var profiles []config.ModelProfile
-		if bs.mittoConfig != nil {
-			profiles = bs.mittoConfig.EffectiveModelProfiles()
-		}
-		resolved := SelectPreferredModel(prefs, profiles, models)
-		if resolved == "" {
-			if bs.logger != nil {
-				bs.logger.Debug("initial model preference: no matching available model",
-					"session_id", bs.persistedID,
-					"preference", prefs)
-			}
-			return
-		}
-		if models.CurrentModelId == resolved {
-			// Baseline is already the desired model — still record it in the persisted
-			// baseline metadata so future resumes skip the constraint check above.
-			bs.cmPersistBaselineModel(resolved)
-			return
-		}
-		ctx, cancel := context.WithTimeout(bs.ctx, initialModelApplyBudget)
-		defer cancel()
-		if err := bs.configMgr.applyConfigOption(bs, ctx, ConfigOptionCategoryModel, resolved); err != nil {
-			if bs.logger != nil {
-				bs.logger.Warn("initial model preference: failed to apply",
-					"session_id", bs.persistedID,
-					"model", resolved,
-					"error", err)
-			}
-			return
-		}
-		if bs.logger != nil {
-			bs.logger.Info("initial model preference applied",
-				"session_id", bs.persistedID,
-				"model", resolved,
-				"preference", prefs)
-		}
-	}()
-}
 
 // cbStreamingSuppressed reports whether streaming callbacks are currently suppressed
 // (i.e. during an in-place context flush). Used by acpCallbackSink to short-circuit.

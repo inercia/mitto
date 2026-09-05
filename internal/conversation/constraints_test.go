@@ -263,7 +263,7 @@ func TestSelectPreferredModel_PostSplitDefaultsFallthrough(t *testing.T) {
 
 // TestInitialModelPreference_HonoursProfileOrder locks the "list order =
 // priority" contract at the INITIAL-model consumer site (mitto-ex7.4):
-// cbMaybeApplyInitialModelAsync in bgsession_callbacks.go routes through
+// cbInitBaselineModelIfEmpty in bgsession_callbacks.go routes through
 // SelectPreferredModel(initialModelPreference, EffectiveModelProfiles(),
 // agentModels). This test drives that same call with the shape a workspace's
 // Initial Model preference produces (a single ModelTag entry), and asserts

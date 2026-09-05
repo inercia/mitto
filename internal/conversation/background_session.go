@@ -33,7 +33,7 @@ import (
 // Events are persisted immediately when received from ACP, preserving the sequence numbers
 // assigned at streaming time. This ensures streaming and persisted events have identical seq.
 type BackgroundSession struct {
-	// Immutable identifiers
+	// Persistence identity is immutable; ACP identity changes on replacement.
 	persistedID string // Session ID for persistence and routing
 	acpID       string // ACP protocol session ID
 
@@ -42,6 +42,9 @@ type BackgroundSession struct {
 	acpConn   *acp.ClientSideConnection
 	acpClient *WebClient
 	acpWait   func() error // cleanup function from runner.RunWithPipes or cmd.Wait
+	// Retain the authenticated MCP entries for direct-connection fresh sessions.
+	// Memory-only: these entries may contain per-conversation binding headers.
+	sessionMCPServers []acp.McpServer
 
 	// ACP process death detection (Fix A: faster crash detection)
 	// acpProcessDone is closed when the ACP OS process exits, providing sub-second
@@ -57,8 +60,11 @@ type BackgroundSession struct {
 
 	// agentModels holds the model state derived from ConfigOptions (Category="model")
 	// on NewSession/LoadSession/ResumeSession (v0.13.5+). May be nil if the agent
-	// doesn't advertise model information.
-	agentModels *SessionModelState
+	// doesn't advertise model information. The pointer and its contents are guarded
+	// by agentModelsMu; callers use AgentModels() snapshots. Lock order is
+	// modelMu → agentModelsMu. Never hold agentModelsMu across callbacks or RPCs.
+	agentModelsMu sync.RWMutex
+	agentModels   *SessionModelState
 	// modelConfigId is the SessionConfigId the agent advertised for the model
 	// config option. Used when issuing session/set_config_option so we match the
 	// agent-declared id. Falls back to ModelConfigId when empty.
@@ -98,6 +104,7 @@ type BackgroundSession struct {
 	promptMu                 sync.Mutex
 	promptCond               *sync.Cond // Condition variable for waiting on prompt completion
 	isPrompting              bool
+	promptTurn               *promptTurn // Owns preparation, cancellation and cleanup; guarded by promptMu
 	promptCount              int
 	promptStartTime          time.Time // When the current prompt started (for logging)
 	lastResponseComplete     time.Time // When the agent last completed a response (for queue delay)
@@ -117,7 +124,7 @@ type BackgroundSession struct {
 	// activePromptName / activePromptArgs record the workspace-prompt name and
 	// argument map of the dispatch that is currently in flight (isPrompting ==
 	// true). Both fields are guarded by promptMu and set alongside isPrompting
-	// = true at the point of no return in PromptWithMeta; they are cleared
+	// = true when PromptWithMeta reserves preparation; they are cleared
 	// alongside every isPrompting = false transition via clearActiveDispatchLocked.
 	// Empty activePromptName means the in-flight dispatch is a free-text prompt
 	// (no PromptName). Read via ActivePromptDispatch (returns a shallow copy of
@@ -244,7 +251,7 @@ type BackgroundSession struct {
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	// initialModelPreference is the per-workspace initial-model preference
-	// applied to fresh top-level sessions by cbMaybeApplyInitialModelAsync.
+	// used to seed fresh top-level sessions by cbInitBaselineModelIfEmpty.
 	// Nil for resumed sessions, auto-children, and workspaces without a
 	// preference configured.
 	initialModelPreference []config.PromptPreferredModel
@@ -386,9 +393,10 @@ type BackgroundSession struct {
 	promptsCache *config.PromptsCache
 
 	// Model preference override tracking (guarded by modelMu).
-	modelMu        sync.Mutex // Protects baselineModel and overrideActive
-	baselineModel  string     // User's intended model; never mutated by per-prompt overrides
-	overrideActive bool       // True when active session model differs from baselineModel
+	modelMu         sync.Mutex    // Protects baselineModel and overrideActive
+	baselineModel   string        // User's intended model; never mutated by per-prompt overrides
+	baselineVersion atomic.Uint64 // Rejects stale metadata writes without taking modelMu under store locks
+	overrideActive  bool          // True when active session model differs from baselineModel
 
 	// Last queued-send failure — set by queueRecordErrorEvent, read by parent wait loop.
 	queueErrMu         sync.Mutex
@@ -1619,17 +1627,40 @@ func (bs *BackgroundSession) AgentSupportsImages() bool {
 	return bs.agentSupportsImages
 }
 
-// AgentModels returns the agent's model state (available models and current model).
-// This is from the UNSTABLE SessionModelState API and may be nil if the agent doesn't support it.
+// AgentModels returns an independent snapshot of the agent's available models and
+// current model, or nil if the agent doesn't advertise model information. Later
+// updates cannot mutate the snapshot, and callers cannot mutate session state.
 func (bs *BackgroundSession) AgentModels() *SessionModelState {
-	return bs.agentModels
+	bs.agentModelsMu.RLock()
+	defer bs.agentModelsMu.RUnlock()
+	return cloneSessionModelState(bs.agentModels)
+}
+
+// cloneSessionModelState detaches model state at both the storage and read
+// boundaries. The caller must synchronize access to models while it is copied.
+func cloneSessionModelState(models *SessionModelState) *SessionModelState {
+	if models == nil {
+		return nil
+	}
+	snapshot := *models
+	if models.AvailableModels != nil {
+		snapshot.AvailableModels = make([]ModelInfo, len(models.AvailableModels))
+		copy(snapshot.AvailableModels, models.AvailableModels)
+		for i := range snapshot.AvailableModels {
+			if description := snapshot.AvailableModels[i].Description; description != nil {
+				value := *description
+				snapshot.AvailableModels[i].Description = &value
+			}
+		}
+	}
+	return &snapshot
 }
 
 // CurrentModelName returns the display name of the session's current model, falling back
 // to the raw model id when no display name is known. Returns "" when agentModels is nil
 // (cold start / suspended session). Used by menu-time model-tag resolution.
 func (bs *BackgroundSession) CurrentModelName() string {
-	models := bs.agentModels
+	models := bs.AgentModels()
 	if models == nil {
 		return ""
 	}
@@ -1909,14 +1940,15 @@ func (bs *BackgroundSession) startSessionMcpServer(
 	agentCapabilities acp.AgentCapabilities,
 ) []acp.McpServer {
 	bs.registerWithGlobalMCP(store)
+	bs.sessionMCPServers = []acp.McpServer{} // ACP requires an empty array, not nil
 	if bs.globalMcpServer == nil || !agentCapabilities.McpCapabilities.Http {
-		return []acp.McpServer{}
+		return bs.sessionMCPServers
 	}
 	binding, ok := bs.globalMcpServer.SessionHTTPBinding(bs.persistedID)
 	if !ok {
-		return []acp.McpServer{}
+		return bs.sessionMCPServers
 	}
-	return []acp.McpServer{{
+	bs.sessionMCPServers = []acp.McpServer{{
 		Http: &acp.McpServerHttpInline{
 			Type: "http",
 			Name: "mitto",
@@ -1927,6 +1959,7 @@ func (bs *BackgroundSession) startSessionMcpServer(
 			}},
 		},
 	}}
+	return bs.sessionMCPServers
 }
 
 // stopSessionMcpServer unregisters from global MCP server.

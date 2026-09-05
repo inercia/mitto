@@ -421,9 +421,10 @@ type SharedACPProcess struct {
 	// failure into a 100% cascade across the whole cohort. setModelShedLevel
 	// records the highest SaturationLevel for which a SetSessionModel failure has
 	// already been surfaced to a caller (see admitSetModelSaturationShed): only
-	// the FIRST caller to observe a given level returns the hard error, every
-	// other concurrent caller for that SAME level silently skips (returns nil)
-	// instead of piling on a duplicate failure. Reset to 0 on the next successful
+	// the FIRST caller observes the primary failure; other callers shed quickly.
+	// ALL callers must return a retryable error if no RPC was acknowledged:
+	// returning nil falsely confirms the selected model (mitto-1yo).
+	// Reset to 0 on the next successful
 	// RPC (recordRPCSuccess) so a later, distinct saturation episode gets its own
 	// single shed.
 	setModelShedLevel atomic.Int64
@@ -1647,8 +1648,9 @@ func (p *SharedACPProcess) SaturationLevel() int {
 // It returns true exactly once per distinct saturation level: the first caller
 // to observe level "wins" the compare-and-swap and should surface the hard
 // failure; every other concurrent caller that observes the SAME level gets
-// false and should silently skip (return nil) instead of piling on a
-// duplicate failure. A later, distinct escalation (a higher level) or a
+// false and should shed quickly without duplicate logging. A shed still returns
+// a retryable error: nil is reserved for an acknowledged model switch. A later,
+// distinct escalation (a higher level) or a
 // recovery (recordRPCSuccess resets setModelShedLevel to 0) allows a fresh
 // single shed again.
 func (p *SharedACPProcess) admitSetModelSaturationShed(level int) bool {
@@ -2549,7 +2551,7 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 				p.logger.Debug("SetSessionModel: skipping (process already known-saturated; failure already reported for this episode)",
 					"session_id", sessionID, "model_id", modelID)
 			}
-			return nil
+			return fmt.Errorf("set_model not applied: %w", acperrors.ErrProcessSaturated)
 		}
 		// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
 		return fmt.Errorf("set_model: shared ACP process is saturated (repeated RPC timeouts); failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
@@ -2613,7 +2615,7 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 				p.logger.Debug("SetSessionModel: skipping after semaphore (process already known-saturated; failure already reported for this episode)",
 					"session_id", sessionID, "model_id", modelID)
 			}
-			return nil
+			return fmt.Errorf("set_model not applied after serialization wait: %w", acperrors.ErrProcessSaturated)
 		}
 		return fmt.Errorf("set_model: shared ACP process became saturated while waiting for the serialization slot; failing fast: %w: %w", acperrors.ErrProcessSaturated, context.DeadlineExceeded)
 	}
@@ -2654,7 +2656,7 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 					p.logger.Debug("SetSessionModel: skipping mid-flight (process already known-saturated; failure already reported for this episode)",
 						"session_id", sessionID, "model_id", modelID, "attempt", attempt)
 				}
-				return nil
+				return fmt.Errorf("set_model not applied during retry: %w", acperrors.ErrProcessSaturated)
 			}
 			// mitto-wub: wrap acperrors.ErrProcessSaturated too (see NewSession above).
 			return fmt.Errorf("set_model: shared ACP process became saturated mid-flight (after %d attempt(s)); failing fast: %w: %w", attempt-1, acperrors.ErrProcessSaturated, context.DeadlineExceeded)

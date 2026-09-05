@@ -11,9 +11,8 @@
 // are passed in as props; the sub-hook never allocates its own.
 //
 // C1 (useWSConnection) transport primitives (sendToSession,
-// waitForSessionConnection, isConnectionHealthy, sessionWsRefs) and C3
-// (useWSMobileResilience) tunable (isMobileDevice) are also passed in as
-// props. See rule 21-web-frontend-state (activeSessionIdRef closures),
+// waitForSessionConnection, isConnectionHealthy, sessionWsRefs) are passed
+// in as props. See rule 21-web-frontend-state (activeSessionIdRef closures),
 // rule 22-web-frontend-websocket (sessionWsRefs read discipline), and
 // rule 24-web-frontend-sync (dedup stays in the composer's
 // handleSessionMessage — no receive-side logic in this hook).
@@ -45,7 +44,6 @@ import {
  * @param {Function} props.waitForSessionConnection — (sessionId, timeout?) => Promise<import("../sdk/index.js").SessionStream>
  * @param {Function} props.isConnectionHealthy — (sessionId) => boolean
  * @param {{ current: Object<string, import("../sdk/index.js").SessionStream> }} props.sessionWsRefs — from C1 (mitto-7gta.30)
- * @param {boolean} props.isMobileDevice — from C3, tunes INITIAL_ACK_TIMEOUT_MS
  * @param {{ current: Object<string, { resolve, reject, timeoutId }> }} props.pendingSendsRef
  * @param {{ current: Object<string, { promptId: string, seq: number }> }} props.lastConfirmedPromptRef
  * @returns {{
@@ -67,16 +65,18 @@ export function useWSDeliveryVerification({
   waitForSessionConnection,
   isConnectionHealthy,
   sessionWsRefs,
-  isMobileDevice,
   pendingSendsRef,
   lastConfirmedPromptRef,
 }) {
-  // Timeout configuration for message delivery with automatic retry
-  // Total budget: 10 seconds - user can wait this long for message delivery
-  const TOTAL_DELIVERY_BUDGET_MS = 10000;
-  // Initial ACK timeout: short to quickly detect zombie connections
-  // Mobile gets slightly longer due to network variability.
-  const INITIAL_ACK_TIMEOUT_MS = isMobileDevice ? 4000 : 3000;
+  // Delivery ACK means persisted, not merely received: synchronous preflight
+  // can join a 90s startup constraint and then spend 90s selecting the model
+  // (conversation constraintModelSwitchCallerBudget + modelSwitchBudget).
+  // A short ACK timeout would reconnect/retry a still-preparing prompt, whose
+  // ID is not yet durable. Keepalive independently detects zombie connections.
+  const INITIAL_ACK_TIMEOUT_MS = 180000;
+  // Preserve the existing 10s reconnect/verification/retry allowance AFTER
+  // preflight, rather than reporting failure while a model switch is pending.
+  const TOTAL_DELIVERY_BUDGET_MS = INITIAL_ACK_TIMEOUT_MS + 10000;
   // Timeout for reconnection during retry
   const RECONNECT_TIMEOUT_MS = 4000;
 
@@ -171,7 +171,6 @@ export function useWSDeliveryVerification({
 
       // Clear any existing action buttons when sending a new prompt
       clearActionButtons(activeSessionId);
-
 
       // Add user message with optional images and files (unless skipped for retry)
       if (!options.skipMessageAdd) {
@@ -282,7 +281,7 @@ export function useWSDeliveryVerification({
 
       // Main delivery logic with retry
       try {
-        // First attempt with short ACK timeout
+        // Wait for durable ACK, allowing the backend's bounded preflight.
         const result = await attemptSend(INITIAL_ACK_TIMEOUT_MS);
         removePendingPrompt(promptId);
         return result;

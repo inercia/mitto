@@ -149,17 +149,23 @@ type configDeps interface {
 	// Model state — atomic ops
 	cmSetBaselineAndClearOverride(baseline string)                   // modelMu.Lock + update + Unlock
 	cmTakeBaselineIfOverride() (baseline string, wasOverriding bool) // modelMu.Lock + check + drain + Unlock
-	cmGetBaselineModel() string                                      // modelMu.Lock + read + Unlock
+	// cmPutBackOverrideActive (mitto-1yo) re-arms overrideActive after
+	// cmTakeBaselineIfOverride cleared it but the subsequent restore RPC
+	// failed, so a LATER drain/turn-completion attempt retries instead of
+	// silently abandoning the temporary-override contract. baselineModel is
+	// left untouched (cmTakeBaselineIfOverride never mutates it).
+	cmPutBackOverrideActive()   // modelMu.Lock + overrideActive=true + Unlock
+	cmGetBaselineModel() string // modelMu.Lock + read + Unlock
 	cmHasAgentModels() bool
-	cmGetCurrentModelID() string   // reads agentModels.CurrentModelId; no extra lock
-	cmSetCurrentModelID(id string) // writes agentModels.CurrentModelId; no extra lock; nil-safe
+	cmGetCurrentModelID() string   // reads agentModels.CurrentModelId under agentModelsMu
+	cmSetCurrentModelID(id string) // writes agentModels.CurrentModelId under agentModelsMu; nil-safe
 
 	// ACP server constraint lookup
 	cmGetACPServerConstraint(category string) *config.ACPServerConstraint
 
 	// Persistence helpers (no-ops when no store)
 	cmPersistConfigValue(configID, value string)
-	cmPersistBaselineModel(value string)
+	cmPersistBaselineModel(value string) // ignores superseded selections; never called under promptMu
 
 	// Config changed notification (no-op when hook not set)
 	cmNotifyConfigChanged(configID, value string)
@@ -243,28 +249,34 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 		d.cmLockPendingConfig()
 		d.cmSetPendingEntry(configID, value)
 		d.cmUnlockPendingConfig()
+		// Publish the pending request and its baseline in the same admission
+		// critical section. Completion cannot drain it or open the next turn
+		// between those updates. Only in-memory work belongs under promptMu.
+		if found.Category == ConfigOptionCategoryModel {
+			d.cmSetBaselineAndClearOverride(value)
+		}
+		d.cmUpdateConfigOptionValue(configID, value)
 		d.cmUnlockPromptMu()
 
-		// Optimistically reflect and broadcast pending value.
-		d.cmUpdateConfigOptionValue(configID, value)
+		// Persistence and callbacks may block. Baseline persistence rejects a
+		// stale selection if another setter wins after we release promptMu.
 		c.persistConfigValue(d, configID, value)
 
 		if l := d.cmLogger(); l != nil {
 			l.Info("Config option change deferred while prompting", "config_id", configID, "value", value)
 		}
 		if found.Category == ConfigOptionCategoryModel {
-			d.cmSetBaselineAndClearOverride(value)
 			c.persistBaselineModel(d, value)
 		}
 		d.cmNotifyConfigChanged(configID, value)
 		return nil
 	}
-	d.cmUnlockPromptMu()
 
 	// Idle: supersede any pending value to prevent the flush from overwriting this immediate change.
 	d.cmLockPendingConfig()
 	d.cmDeletePendingEntry(configID)
 	d.cmUnlockPendingConfig()
+	d.cmUnlockPromptMu()
 
 	return c.applyConfigOptionWithOpts(d, ctx, configID, value, recordTimeline)
 }
@@ -279,6 +291,13 @@ func (c configManager) applyConfigOption(d configDeps, ctx context.Context, conf
 // constraint auto-select path, which re-selects the configured model on every
 // session resume and would otherwise repeat an identical "Model changed" pill.
 func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline bool) error {
+	return c.applyConfigOptionWithBaseline(d, ctx, configID, value, recordTimeline, true)
+}
+
+// Deferred model selections already published and persisted their baseline at
+// admission. Their RPC completion must only change active state, never promote
+// the old request over a newer selection accepted while the RPC was in flight.
+func (c configManager) applyConfigOptionWithBaseline(d configDeps, ctx context.Context, configID, value string, recordTimeline, updateBaseline bool) error {
 	opt, ok := d.cmFindByID(configID)
 	if !ok {
 		return fmt.Errorf("unknown config option: %s", configID)
@@ -308,8 +327,10 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 			return fmt.Errorf("failed to set %s: %w", configID, err)
 		}
 		d.cmSetCurrentModelID(value)
-		d.cmSetBaselineAndClearOverride(value)
-		c.persistBaselineModel(d, value)
+		if updateBaseline {
+			d.cmSetBaselineAndClearOverride(value)
+			c.persistBaselineModel(d, value)
+		}
 		if recordTimeline {
 			recordErr = d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
 		}
@@ -346,6 +367,10 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 
 	var matchedValue string
 	switch {
+	case category == ConfigOptionCategoryModel && d.cmGetBaselineModel() != "":
+		// Startup configuration seeds the baseline once; it must never override a
+		// conversation's own current model on resume or after a manual change.
+		matchedValue = d.cmGetBaselineModel()
 	case constraint != nil && constraint.Pattern != "":
 		matchedValue = MatchConstraintOption(constraint, opt.Options)
 		if matchedValue == "" {
@@ -354,27 +379,6 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 					"category", category, "match_mode", constraint.MatchMode,
 					"pattern", constraint.Pattern, "available_count", len(opt.Options))
 			}
-			return nil
-		}
-	case category == ConfigOptionCategoryModel:
-		// No ACP-server constraint governs the model category: fall back to
-		// re-applying the session's persisted BaselineModel (a manual pick from
-		// an earlier turn/session) to the agent, so it survives conversation
-		// switch/resume instead of being silently lost to the agent's reported
-		// default (mitto-1yo). setAgentModels already pre-applies the baseline
-		// to the local UI config option; this restores it agent-side, reusing
-		// the same bounded startup-constraint retry path used for constraints.
-		baseline := d.cmGetBaselineModel()
-		if baseline == "" {
-			return nil
-		}
-		for _, o := range opt.Options {
-			if o.Value == baseline {
-				matchedValue = baseline
-				break
-			}
-		}
-		if matchedValue == "" {
 			return nil
 		}
 	default:
@@ -417,10 +421,31 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
+	parentCtx := d.cmSessionCtx()
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, constraintModelSwitchCallerBudget)
 	defer cancel()
 
-	err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false, false)
+	apply := func() error {
+		if d.cmIsClosed() {
+			return fmt.Errorf("session is closed")
+		}
+		if category == ConfigOptionCategoryModel && d.cmGetBaselineModel() != "" {
+			// Re-read after jitter/retries: a newer manual selection wins. Restoring
+			// active state must not persist an old snapshot over that selection.
+			target := d.cmGetBaselineModel()
+			for _, option := range opt.Options {
+				if option.Value == target {
+					return c.setActiveModelOnly(d, ctx, target)
+				}
+			}
+			return fmt.Errorf("conversation model %q is no longer available", target)
+		}
+		return c.setConfigOptionWithOpts(d, ctx, opt.ID, matchedValue, false, false)
+	}
+	err := apply()
 	if category == ConfigOptionCategoryModel && err != nil && isRetryableModelPreferenceError(err) {
 		timer := time.NewTimer(modelSwitchWarmRetryDelay)
 		defer timer.Stop()
@@ -433,7 +458,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 			l.Info("Retrying startup model constraint after cold-agent cooldown",
 				"session_id", d.cmSessionID(), "model", matchedValue)
 		}
-		err = c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false, false)
+		err = apply()
 	}
 	if err != nil {
 		if l := d.cmLogger(); l != nil {
@@ -457,14 +482,18 @@ func (c configManager) flushPendingConfig(d configDeps) {
 		}
 		return
 	}
+	// Pair the drain with the setter's pending+baseline publication. The turn
+	// owner must recheck pending config under promptMu before becoming idle.
+	d.cmLockPromptMu()
 	pending := d.cmDrainPendingConfig()
+	d.cmUnlockPromptMu()
 	if len(pending) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for configID, value := range pending {
-		if err := c.applyConfigOption(d, ctx, configID, value); err != nil {
+		if err := c.applyConfigOptionWithBaseline(d, ctx, configID, value, true, false); err != nil {
 			if l := d.cmLogger(); l != nil {
 				l.Error("Failed to flush deferred config option", "config_id", configID, "value", value, "error", err)
 			}
@@ -505,8 +534,16 @@ func (c configManager) restoreBaselineIfOverride(d configDeps) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := c.setActiveModelOnly(d, ctx, baseline); err != nil {
+		// mitto-1yo: the restore RPC failed (agent cold/saturated/dead) — put
+		// the override flag back so a LATER drain/turn-completion attempt
+		// retries instead of silently abandoning the temporary-override
+		// contract. Previously cmTakeBaselineIfOverride cleared the flag
+		// unconditionally before the RPC outcome was known, so a failed
+		// restore was never retried.
+		d.cmPutBackOverrideActive()
 		if l := d.cmLogger(); l != nil {
-			l.Warn("Failed to restore baseline model after queue drain", "baseline", baseline, "error", err)
+			l.Warn("Failed to restore baseline model after queue drain; will retry on next drain",
+				"baseline", baseline, "error", err)
 		}
 	} else if l := d.cmLogger(); l != nil {
 		l.Info("Restored baseline model after queue drain", "model", baseline)

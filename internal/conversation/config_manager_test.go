@@ -16,7 +16,8 @@ import (
 var _ configDeps = (*fakeConfigDeps)(nil)
 
 type fakeConfigDeps struct {
-	mu sync.Mutex
+	mu       sync.Mutex
+	promptMu sync.Mutex
 
 	// state knobs
 	sessionID      string
@@ -52,6 +53,7 @@ type fakeConfigDeps struct {
 	notifiedConfig    [][3]string // sessionID, configID, value
 	baselineUpdates   []string
 	overrideClears    int
+	putBackCalls      int
 	sessionChanges    [][3]string // kind, value, previousValue
 	sessionCtx        context.Context
 }
@@ -168,8 +170,8 @@ func (f *fakeConfigDeps) cmDrainPendingConfig() map[string]string {
 	return drained
 }
 
-func (f *fakeConfigDeps) cmLockPromptMu()     { f.mu.Lock() }
-func (f *fakeConfigDeps) cmUnlockPromptMu()   { f.mu.Unlock() }
+func (f *fakeConfigDeps) cmLockPromptMu()     { f.promptMu.Lock() }
+func (f *fakeConfigDeps) cmUnlockPromptMu()   { f.promptMu.Unlock() }
 func (f *fakeConfigDeps) cmIsPrompting() bool { return f.isPrompting }
 
 func (f *fakeConfigDeps) cmSetBaselineAndClearOverride(baseline string) {
@@ -189,6 +191,12 @@ func (f *fakeConfigDeps) cmTakeBaselineIfOverride() (string, bool) {
 	baseline := f.baselineModel
 	f.overrideActive = false
 	return baseline, true
+}
+func (f *fakeConfigDeps) cmPutBackOverrideActive() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.overrideActive = true
+	f.putBackCalls++
 }
 func (f *fakeConfigDeps) cmGetBaselineModel() string {
 	f.mu.Lock()
@@ -520,11 +528,19 @@ func TestConfigManager_FlushPendingConfig_AppliesPending(t *testing.T) {
 	c := configManager{}
 	d := newFakeConfigDeps()
 	d.pendingConfig[ConfigOptionCategoryModel] = "m-2"
+	d.baselineModel = "m-2" // Published by the deferred setter, not the flush.
+	d.currentModelID = "m-1"
 
 	c.flushPendingConfig(d)
 
 	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
 		t.Fatalf("expected model RPC for 'm-2', got %v", d.modelRPCCalls)
+	}
+	if len(d.baselineUpdates) != 0 || len(d.persistedBaseline) != 0 {
+		t.Fatalf("flush must not republish baseline: updates=%v persisted=%v", d.baselineUpdates, d.persistedBaseline)
+	}
+	if len(d.sessionChanges) != 1 || d.sessionChanges[0] != [3]string{ConfigOptionCategoryModel, "m-2", "m-1"} {
+		t.Fatalf("flush must still record the successful manual model change: %v", d.sessionChanges)
 	}
 }
 
@@ -618,6 +634,46 @@ func TestConfigManager_RestoreBaselineIfOverride_RestoresModel(t *testing.T) {
 
 	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-1" {
 		t.Fatalf("expected model RPC restoring to 'm-1', got %v", d.modelRPCCalls)
+	}
+}
+
+// TestConfigManager_RestoreBaselineIfOverride_FailurePreservesOverrideForRetry
+// pins the mitto-1yo fix: cmTakeBaselineIfOverride previously cleared
+// overrideActive unconditionally BEFORE the restore RPC's outcome was known,
+// so a failed restore was silently abandoned — no later drain/turn-completion
+// attempt would ever retry it. The flag must be put back on failure.
+func TestConfigManager_RestoreBaselineIfOverride_FailurePreservesOverrideForRetry(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.overrideActive = true
+	d.baselineModel = "m-1"
+	d.currentModelID = "m-2" // different from baseline, restore RPC will fire
+	d.setModelErr = errors.New("agent saturated")
+
+	c.restoreBaselineIfOverride(d)
+
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-1" {
+		t.Fatalf("expected one restore RPC attempt to 'm-1', got %v", d.modelRPCCalls)
+	}
+	if !d.overrideActive {
+		t.Fatal("expected overrideActive to be put back (true) after a failed restore RPC, so a later attempt retries")
+	}
+	if d.putBackCalls != 1 {
+		t.Fatalf("expected 1 cmPutBackOverrideActive call, got %d", d.putBackCalls)
+	}
+	if d.baselineModel != "m-1" {
+		t.Fatalf("expected baselineModel to remain 'm-1' after a failed restore, got %q", d.baselineModel)
+	}
+
+	// A later retry (RPC now succeeds) must actually restore, proving the
+	// flag was genuinely preserved rather than just left dangling.
+	d.setModelErr = nil
+	c.restoreBaselineIfOverride(d)
+	if len(d.modelRPCCalls) != 2 {
+		t.Fatalf("expected a second restore RPC attempt on retry, got %v", d.modelRPCCalls)
+	}
+	if d.overrideActive {
+		t.Fatal("expected overrideActive to be cleared after the retried restore succeeds")
 	}
 }
 

@@ -5839,6 +5839,98 @@ func TestApplyModelTag_NoMatchingProfile_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestApplyModelTag_AlreadyActive_StaleBaseline_PromotesToBaseline pins the
+// mitto-1yo fix: when the resolved tag already equals the active model, no RPC
+// is needed — but an explicit model_tag request is a manual-equivalent
+// selection and must still promote the active model to the persistent
+// baseline. Previously this short-circuited to a total no-op, leaving a
+// stale/absent baseline that a later resume or override-restore could revert
+// away from, even though the tag "succeeded".
+func TestApplyModelTag_AlreadyActive_StaleBaseline_PromotesToBaseline(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.agentModels = &SessionModelState{
+		CurrentModelId: "some-agent-model",
+		AvailableModels: []ModelInfo{
+			{ModelId: "some-agent-model", Name: "Some Agent Model"},
+		},
+	}
+	bs.mittoConfig = &config.Config{
+		Models: []config.ModelProfile{
+			{
+				Name:     "Reasoning",
+				Tags:     []string{"Reasoning"},
+				Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Some Agent Model"},
+			},
+		},
+	}
+	// Stale baseline from an earlier session/selection, deliberately different
+	// from the model the tag resolves to (which happens to already be active).
+	bs.modelMu.Lock()
+	bs.baselineModel = "some-stale-baseline-model"
+	bs.overrideActive = true
+	bs.modelMu.Unlock()
+
+	resolved, err := bs.ApplyModelTag(context.Background(), "Reasoning")
+	if err != nil {
+		t.Fatalf("ApplyModelTag returned error: %v", err)
+	}
+	if resolved != "some-agent-model" {
+		t.Fatalf("resolved id = %q, want %q", resolved, "some-agent-model")
+	}
+	// No ACP connection is wired on this bare BackgroundSession — if
+	// ApplyModelTag had gone through the SetConfigOption/RPC path (it must
+	// not, since resolved already equals the active model) this would have
+	// errored, so reaching here already proves no RPC was attempted.
+
+	got := bs.GetBaselineModel()
+	if got != "some-agent-model" {
+		t.Fatalf("baseline model = %q, want promoted to %q", got, "some-agent-model")
+	}
+	bs.modelMu.Lock()
+	override := bs.overrideActive
+	bs.modelMu.Unlock()
+	if override {
+		t.Error("expected overrideActive to be cleared once the tag is promoted to baseline")
+	}
+}
+
+// TestApplyModelTag_AlreadyActive_BaselineAlreadyMatches_NoOp verifies the
+// common case is unaffected: when the resolved tag already equals both the
+// active model AND the baseline, ApplyModelTag stays a pure no-op (no
+// redundant baseline write).
+func TestApplyModelTag_AlreadyActive_BaselineAlreadyMatches_NoOp(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.agentModels = &SessionModelState{
+		CurrentModelId: "some-agent-model",
+		AvailableModels: []ModelInfo{
+			{ModelId: "some-agent-model", Name: "Some Agent Model"},
+		},
+	}
+	bs.mittoConfig = &config.Config{
+		Models: []config.ModelProfile{
+			{
+				Name:     "Reasoning",
+				Tags:     []string{"Reasoning"},
+				Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Some Agent Model"},
+			},
+		},
+	}
+	bs.modelMu.Lock()
+	bs.baselineModel = "some-agent-model"
+	bs.modelMu.Unlock()
+
+	resolved, err := bs.ApplyModelTag(context.Background(), "Reasoning")
+	if err != nil {
+		t.Fatalf("ApplyModelTag returned error: %v", err)
+	}
+	if resolved != "some-agent-model" {
+		t.Fatalf("resolved id = %q, want %q", resolved, "some-agent-model")
+	}
+	if got := bs.GetBaselineModel(); got != "some-agent-model" {
+		t.Fatalf("baseline model = %q, want unchanged %q", got, "some-agent-model")
+	}
+}
+
 // TestStartPromptInactivityWatchdog_FiresWhenIdle verifies the watchdog cancels the
 // prompt and sets the fired flag when no streamed activity is observed within the
 // configured timeout, emitting both a WARN and an ERROR log along the way.

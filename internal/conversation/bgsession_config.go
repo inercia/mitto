@@ -53,6 +53,16 @@ func (bs *BackgroundSession) flushPendingConfig() {
 	bs.configMgr.flushPendingConfig(bs)
 }
 
+// hasPendingConfigLocked closes the drain-to-idle race with SetConfigOption.
+// The caller holds promptMu and must retain it through the idle transition if
+// this returns false, or unlock and flush again if it returns true. Closed
+// sessions may skip the check: their pending changes are deliberately not drained.
+func (bs *BackgroundSession) hasPendingConfigLocked() bool {
+	bs.pendingConfigMu.Lock()
+	defer bs.pendingConfigMu.Unlock()
+	return len(bs.pendingConfig) != 0
+}
+
 func (bs *BackgroundSession) persistConfigValue(configID, value string) {
 	bs.configMgr.persistConfigValue(bs, configID, value)
 }
@@ -81,7 +91,7 @@ func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (str
 		bs.restoreBaselineIfOverride()
 		return "", nil
 	}
-	models := bs.agentModels
+	models := bs.AgentModels()
 	if models == nil {
 		return "", fmt.Errorf("agent has not advertised a model catalog")
 	}
@@ -93,7 +103,17 @@ func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (str
 	if resolved == "" {
 		return "", fmt.Errorf("model_tag %q did not resolve to any available model", tag)
 	}
-	if resolved == models.CurrentModelId {
+	if resolved == models.CurrentModelId && !bs.IsPrompting() {
+		// mitto-1yo: the resolved tag already matches the active model, so no
+		// RPC is needed — but an explicit model_tag request is a
+		// manual-equivalent selection and must still promote the active
+		// model to the persistent baseline (mirrors the SetConfigOption
+		// model-category success path below). Without this, a stale/absent
+		// baseline lingers and a later resume or override-restore can revert
+		// away from the tag's resolved model even though nothing here ever
+		// "looked" overridden.
+		bs.cmSetBaselineAndClearOverride(resolved)
+		bs.cmPersistBaselineModel(resolved)
 		return resolved, nil
 	}
 	if err := bs.SetConfigOption(ctx, string(ModelConfigId), resolved); err != nil {
@@ -233,6 +253,7 @@ func (bs *BackgroundSession) cmSetBaselineAndClearOverride(baseline string) {
 	bs.modelMu.Lock()
 	bs.baselineModel = baseline
 	bs.overrideActive = false
+	bs.baselineVersion.Add(1)
 	bs.modelMu.Unlock()
 }
 
@@ -256,14 +277,33 @@ func (bs *BackgroundSession) cmTakeBaselineIfOverride() (string, bool) {
 	return baseline, true
 }
 
-func (bs *BackgroundSession) cmHasAgentModels() bool { return bs.agentModels != nil }
+// cmPutBackOverrideActive re-arms overrideActive after cmTakeBaselineIfOverride
+// cleared it but the restore RPC subsequently failed (mitto-1yo). baselineModel
+// is left untouched.
+func (bs *BackgroundSession) cmPutBackOverrideActive() {
+	bs.modelMu.Lock()
+	bs.overrideActive = true
+	bs.modelMu.Unlock()
+}
+
+func (bs *BackgroundSession) cmHasAgentModels() bool {
+	bs.agentModelsMu.RLock()
+	defer bs.agentModelsMu.RUnlock()
+	return bs.agentModels != nil
+}
+
 func (bs *BackgroundSession) cmGetCurrentModelID() string {
+	bs.agentModelsMu.RLock()
+	defer bs.agentModelsMu.RUnlock()
 	if bs.agentModels == nil {
 		return ""
 	}
 	return bs.agentModels.CurrentModelId
 }
+
 func (bs *BackgroundSession) cmSetCurrentModelID(id string) {
+	bs.agentModelsMu.Lock()
+	defer bs.agentModelsMu.Unlock()
 	if bs.agentModels != nil {
 		bs.agentModels.CurrentModelId = id
 	}
@@ -290,8 +330,23 @@ func (bs *BackgroundSession) cmPersistBaselineModel(value string) {
 	if bs.store == nil {
 		return
 	}
+	// Snapshot the generation without holding modelMu (or promptMu) across
+	// I/O. A delayed caller must not persist an already superseded value.
+	bs.modelMu.Lock()
+	version := bs.baselineVersion.Load()
+	current := bs.baselineModel == value
+	bs.modelMu.Unlock()
+	if !current {
+		return
+	}
 	if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
-		m.BaselineModel = value
+		// Check inside the store's serialized metadata update, not before it:
+		// a newer selection may have persisted while we waited for its lock.
+		// Do not acquire modelMu here; baseline initialization takes locks in
+		// the opposite order (modelMu then store).
+		if bs.baselineVersion.Load() == version {
+			m.BaselineModel = value
+		}
 	}); err != nil && bs.logger != nil {
 		bs.logger.Warn("Failed to persist baseline model", "model", value, "error", err)
 	}

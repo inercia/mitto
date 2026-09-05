@@ -217,16 +217,189 @@ type PromptMeta struct {
 	// allocations in the hot path. See prompt_dispatcher.go for the copy into
 	// ProcessorInput.TriggerOnTasksChanges (mitto-xkn).
 	Trigger *PromptTriggerContext
-	// modelPreferenceResolved is set by resolveAndSubstitute (mitto-y78i) once
-	// it has already attempted this dispatch's model-switch preference — for
-	// templated bodies, ahead of rendering — so buildProcessorInput's
-	// ModelName/ModelTags reflect the ACTUAL outcome (landed or deferred)
-	// instead of blindly trusting intendedModelID's optimistic guess, and so
-	// PromptWithMeta's later applyModelPreference call (in the background
-	// goroutine) skips re-attempting the switch and paying modelSwitchSyncGrace
-	// a second time. Left false (the pre-existing behavior) for FreshContext
-	// dispatches, whose switch must run after createFreshContextSession.
+	// modelPreferenceResolved is set after synchronous pre-render selection so
+	// ModelName/ModelTags describe the actual result and the async prompt path
+	// does not repeat the switch. FreshContext selects after session replacement.
 	modelPreferenceResolved bool
+	// modelContext covers the owning turn from preparation through the ACP
+	// prompt. Model switches must finish within this context, never outlive it.
+	modelContext context.Context
+}
+
+// promptTurn owns the reservation from preparation through completion. The
+// cleanup lock serializes cancellation with completion/retry RPCs; promptMu is
+// only used for short state checks and is never held across those RPCs.
+type promptTurn struct {
+	ctx             context.Context
+	cancel          context.CancelFunc
+	preparationDone chan struct{}
+	preparationOnce sync.Once
+	cleanupMu       sync.Mutex
+	stopRequested   bool // guarded by BackgroundSession.promptMu
+}
+
+func (t *promptTurn) finishPreparation() {
+	t.preparationOnce.Do(func() { close(t.preparationDone) })
+}
+
+// promptTurnDeps gives stateless dispatch helpers the owning context rather
+// than allowing an old goroutine to operate on the next turn's mutable state.
+type promptTurnDeps struct {
+	*BackgroundSession
+	turn *promptTurn
+}
+
+func (d promptTurnDeps) ownsTurn() bool {
+	d.promptMu.Lock()
+	defer d.promptMu.Unlock()
+	return d.promptTurn == d.turn
+}
+
+// release requires turn.cleanupMu. Restore and flush while the reservation is
+// still held, including when the queue is absent/disabled or preparation failed.
+func (d promptTurnDeps) release() {
+	if !d.ownsTurn() {
+		return
+	}
+	// A deferred-handshake watchdog may have returned before its worker
+	// launched startup model work. cleanupMu joins that worker; this joins
+	// the bounded model RPC it launched before restoring/releasing the slot.
+	d.waitForStartupConfigConstraints()
+	d.restoreBaselineIfOverride()
+	d.flushPendingConfig()
+	d.BackgroundSession.pdFlushMarkdown()
+	d.DismissActiveUIPrompt()
+	d.BackgroundSession.pdNotifyStreamingStateChanged(false)
+	// Pair the last drain with config admission. A manual selection may arrive
+	// during an earlier RPC or cleanup callback; apply it before opening the slot.
+	for {
+		d.promptMu.Lock()
+		if d.IsClosed() || !d.hasPendingConfigLocked() {
+			break
+		}
+		d.promptMu.Unlock()
+		d.flushPendingConfig()
+	}
+	d.promptTurn = nil
+	d.isPrompting = false
+	d.clearActiveDispatchLocked()
+	d.promptStartTime = time.Time{}
+	d.lastResponseComplete = time.Now()
+	if d.promptCond != nil {
+		d.promptCond.Broadcast()
+	}
+	d.promptMu.Unlock()
+}
+
+func (d promptTurnDeps) releaseAborted() {
+	// Cancel/ForceReset must send their cancel notification/flush before releasing
+	// the slot. Do not let the prompt's defer race ahead of that cleanup.
+	d.turn.cancel()
+	d.turn.finishPreparation()
+	d.turn.cleanupMu.Lock()
+	defer d.turn.cleanupMu.Unlock()
+	d.promptMu.Lock()
+	stopping := d.turn.stopRequested
+	d.promptMu.Unlock()
+	if !stopping {
+		d.release()
+	}
+}
+
+func (d promptTurnDeps) pdSessionCtx() context.Context { return d.turn.ctx }
+func (d promptTurnDeps) pdMarkPromptComplete()         { d.release() }
+
+func (d promptTurnDeps) waitForStartupModel() error {
+	// Startup RPCs already have a bounded budget. Join them rather than racing
+	// a per-turn switch against the callback's asynchronous baseline selection.
+	d.waitForStartupConfigConstraints()
+	if err := d.turn.ctx.Err(); err != nil {
+		return err
+	}
+	if !d.startupConfigConstraintsReady() {
+		return &sessionError{"the conversation model is still initializing; please retry"}
+	}
+	return nil
+}
+
+// Handshake failure cleanup belongs to the owning preparation defer, not the
+// watchdog (which may return while its worker is still unwinding).
+func (d promptTurnDeps) pdResetPromptingStateForAbort() {}
+
+func (d promptTurnDeps) pdRestoreBaselineIfOverride() {
+	if d.ownsTurn() {
+		d.restoreBaselineIfOverride()
+	}
+}
+
+func (d promptTurnDeps) pdFlushPendingConfig() {
+	if d.ownsTurn() {
+		d.flushPendingConfig()
+	}
+}
+
+func (d promptTurnDeps) pdFlushMarkdown() {
+	if d.ownsTurn() {
+		d.BackgroundSession.pdFlushMarkdown()
+	}
+}
+
+func (d promptTurnDeps) pdDismissActiveUIPrompt() {
+	if d.ownsTurn() {
+		d.DismissActiveUIPrompt()
+	}
+}
+
+func (d promptTurnDeps) pdNotifyStreamingStateChanged(active bool) {
+	// release publishes false before opening the slot to a newer turn.
+	if active && d.ownsTurn() && d.turn.ctx.Err() == nil {
+		d.BackgroundSession.pdNotifyStreamingStateChanged(true)
+	}
+}
+
+func (d promptTurnDeps) pdReacquirePromptingState() {
+	// Crash retry keeps this turn's reservation; there is nothing to reacquire.
+}
+
+// The completion path already restored the baseline before becoming idle.
+// Queue-drain fallbacks must not restore a newer concurrently accepted turn.
+type completedPromptQueueDeps struct{ *BackgroundSession }
+
+func (completedPromptQueueDeps) restoreBaselineIfOverride() {}
+
+func (d promptTurnDeps) pdProcessNextQueuedMessage() bool {
+	d.release()
+	if d.IsPrompting() || !d.startupConfigConstraintsReady() {
+		return false
+	}
+	return d.queueDisp.processNext(completedPromptQueueDeps{d.BackgroundSession})
+}
+
+type promptHandshakeDeps struct {
+	*BackgroundSession
+	ctx context.Context
+}
+
+func (d promptHandshakeDeps) hsSessionCtx() context.Context { return d.ctx }
+
+func (d promptTurnDeps) pdCompleteDeferredHandshake() error {
+	// Also cover the outer watchdog's worker: it must not adopt a late session
+	// after the preparation defer/cancellation has handed the slot to a new turn.
+	d.turn.cleanupMu.Lock()
+	defer d.turn.cleanupMu.Unlock()
+	if err := d.turn.ctx.Err(); err != nil {
+		return err
+	}
+	if !d.ownsTurn() {
+		return context.Canceled
+	}
+	budget := d.pdRecommendedHandshakeDeadline()
+	if budget <= 0 {
+		budget = handshakeWatchdogFallback
+	}
+	ctx, cancel := context.WithTimeout(d.turn.ctx, budget)
+	defer cancel()
+	return d.handshaker.completeDeferredHandshake(promptHandshakeDeps{d.BackgroundSession, ctx})
 }
 
 // PromptTriggerContext holds trigger-source data threaded from the LoopRunner
@@ -448,25 +621,6 @@ func (bs *BackgroundSession) FlushContext() error {
 // The meta parameter contains sender information for multi-client broadcast.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
-	// Loop continuation signal (mitto-5xjn): peek BEFORE resolveAndSubstitute so the
-	// prompt-body template ({{ if .Iteration.IsUninterrupted }}) renders against it. We
-	// only PEEK here (no mutation); the marker is advanced at the dispatch point of no
-	// return below, so rejected/early-return dispatches never corrupt the chain.
-	isScheduledLoop := meta.LoopKind == LoopKindScheduled && !meta.FreshContext
-	meta.IterationUninterrupted = bs.peekLoopContinuation(isScheduledLoop)
-
-	// Resolve prompt name, apply argument substitution, annotate meta.
-	// See promptDispatcher.resolveAndSubstitute for the full logic.
-	var (
-		argCount int
-		err      error
-	)
-	message, argCount, meta, err = bs.promptDisp.resolveAndSubstitute(bs, message, meta)
-	if err != nil {
-		bs.notifyObservers(func(o SessionObserver) { o.OnError(err.Error()) })
-		return err
-	}
-
 	imageIDs := meta.ImageIDs
 	fileIDs := meta.FileIDs
 	if bs.IsClosed() {
@@ -479,6 +633,12 @@ func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) err
 retryAfterRestart:
 	bs.promptMu.Lock()
 	if bs.isPrompting {
+		if bs.promptTurn != nil {
+			// The owner handles connection death and releases only after all
+			// preparation/retry work has stopped. Never restart underneath it.
+			bs.promptMu.Unlock()
+			return &sessionError{"prompt already in progress"}
+		}
 		// Check if the ACP connection is dead (process crashed)
 		// We use non-blocking checks on both Done() and acpProcessDone channels.
 		// acpProcessDone fires faster than Done() because it uses OS-level process
@@ -571,9 +731,11 @@ retryAfterRestart:
 			return &sessionError{"prompt already in progress"}
 		}
 	}
+	turnCtx, turnCancel := context.WithCancel(bs.ctx)
+	turn := &promptTurn{ctx: turnCtx, cancel: turnCancel, preparationDone: make(chan struct{})}
+	bs.promptTurn = turn
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
-	bs.promptCount++
 	// Record the in-flight dispatch identity so a duplicate identical
 	// dispatch via target.reuseCoalesce can be a no-op (mitto-djs1).
 	// A shallow copy of Arguments keeps callers isolated from later
@@ -588,6 +750,41 @@ retryAfterRestart:
 		bs.activePromptArgs = nil
 	}
 	bs.TouchActivity()
+	bs.promptMu.Unlock()
+
+	// Reserve before any rendering/model preflight: a rejected concurrent send
+	// must not be allowed to change the running turn's model.
+	d := promptTurnDeps{BackgroundSession: bs, turn: turn}
+	meta.modelContext = turn.ctx
+	asyncStarted := false
+	defer func() {
+		if !asyncStarted {
+			d.releaseAborted()
+		}
+	}()
+	if err := d.waitForStartupModel(); err != nil {
+		return err
+	}
+
+	isScheduledLoop := meta.LoopKind == LoopKindScheduled && !meta.FreshContext
+	meta.IterationUninterrupted = bs.peekLoopContinuation(isScheduledLoop)
+	var argCount int
+	var err error
+	message, argCount, meta, err = bs.promptDisp.resolveAndSubstitute(d, message, meta)
+	if err != nil {
+		bs.notifyObservers(func(o SessionObserver) { o.OnError(err.Error()) })
+		return err
+	}
+	if err := turn.ctx.Err(); err != nil {
+		return err
+	}
+	if bs.IsClosed() {
+		return &sessionError{"session is closed"}
+	}
+
+	// Only accepted preparation consumes the first-prompt/history counters.
+	bs.promptMu.Lock()
+	bs.promptCount++
 
 	// Check if we need to inject conversation history (first prompt of resumed session).
 	// FreshContext suppresses history injection so each loop run starts clean.
@@ -615,7 +812,7 @@ retryAfterRestart:
 
 	// Load images and files, build content blocks + session refs.
 	// See promptDispatcher.buildAttachmentBlocks for the full logic.
-	contentBlocks, imageRefs, fileRefs := bs.promptDisp.buildAttachmentBlocks(bs, imageIDs, fileIDs)
+	contentBlocks, imageRefs, fileRefs := bs.promptDisp.buildAttachmentBlocks(d, imageIDs, fileIDs)
 
 	// Clear action buttons when new activity starts
 	// This ensures suggestions are tied to the latest agent response
@@ -702,11 +899,16 @@ retryAfterRestart:
 
 	// Build processor input and assemble final content blocks.
 	// See promptDispatcher.buildProcessorInput + applyProcessorsAndBuildBlocks.
-	processorInput := bs.promptDisp.buildProcessorInput(bs, message, isFirst, meta)
-	finalBlocks := bs.promptDisp.applyProcessorsAndBuildBlocks(bs, processorInput, message, contentBlocks, shouldInjectHistory)
+	processorInput := bs.promptDisp.buildProcessorInput(d, message, isFirst, meta)
+	finalBlocks := bs.promptDisp.applyProcessorsAndBuildBlocks(d, processorInput, message, contentBlocks, shouldInjectHistory)
+	if err := turn.ctx.Err(); err != nil {
+		return err
+	}
 
 	// Run prompt in background
+	asyncStarted = true
 	go func() {
+		defer turn.cancel()
 		// PromptWithMeta has already returned success to its caller, so every exit
 		// from this goroutine must invoke OnComplete exactly once. Normal completion
 		// goes through finalizeTurn below; abort paths (including deferred-handshake
@@ -722,6 +924,7 @@ retryAfterRestart:
 			}
 			defer func() { meta.OnComplete(completionErr) }()
 		}
+		defer d.releaseAborted()
 
 		// autoRetried guards a single automatic retry after an ACP crash during
 		// streaming. On the first crash we restart the process and jump back to
@@ -732,18 +935,29 @@ retryAfterRestart:
 		// Complete the deferred handshake, create a fresh-context session if requested,
 		// and apply any per-prompt model preference.
 		// See promptDispatcher.completeHandshakeOrAbort, createFreshContextSession, applyModelPreference.
-		if !bs.promptDisp.completeHandshakeOrAbort(bs) {
+		if !bs.promptDisp.completeHandshakeOrAbort(d) {
 			return
 		}
-		freshContextSessionID := bs.promptDisp.createFreshContextSession(bs, meta, freshContextPillSeq)
-		// mitto-y78i: resolveAndSubstitute already attempted this dispatch's
-		// model-switch preference ahead of the template render (for
-		// non-FreshContext dispatches) — skip re-attempting it here so the
-		// prompt does not pay modelSwitchSyncGrace a second time. FreshContext
-		// dispatches never set modelPreferenceResolved, so they keep applying
-		// it here, after the fresh session is created, as before.
+		if err := d.waitForStartupModel(); err != nil {
+			completionErr = err
+			bs.notifyObservers(func(o SessionObserver) { o.OnError(err.Error()) })
+			return
+		}
+		_, freshErr := bs.promptDisp.createFreshContextSession(d, meta, freshContextPillSeq)
+		if freshErr != nil {
+			completionErr = freshErr
+			bs.notifyObservers(func(o SessionObserver) { o.OnError(freshErr.Error()) })
+			return
+		}
+		// Rendering already applied non-FreshContext model preferences. Fresh
+		// sessions apply their preference only after adopting the new catalog/ID.
 		if !meta.modelPreferenceResolved {
-			bs.promptDisp.applyModelPreference(bs, meta)
+			bs.promptDisp.applyModelPreference(d, meta)
+		}
+		turn.finishPreparation()
+		if err := turn.ctx.Err(); err != nil {
+			completionErr = err
+			return
 		}
 
 		// Declare all variables that are live across the retryPrompt goto target
@@ -766,13 +980,19 @@ retryAfterRestart:
 		)
 
 	retryPrompt:
+		turn.cleanupMu.Lock()
+		if !d.ownsTurn() || turn.ctx.Err() != nil {
+			completionErr = context.Canceled
+			turn.cleanupMu.Unlock()
+			return
+		}
 		// Reset the inactivity flag for this attempt (a goto retryPrompt reuses it).
 		inactivityWatchdogFired.Store(false)
 		// Create a prompt context that gets cancelled when the ACP process dies.
 		// This ensures we fail fast instead of waiting for the ACP server's internal
 		// 60-second control request timeout when the CLI subprocess has crashed.
 		// See: claude-code-agent-sdk DEFAULT_CONTROL_REQUEST_TIMEOUT (60s)
-		promptCtx, promptCancel = context.WithCancel(bs.ctx)
+		promptCtx, promptCancel = context.WithCancel(turn.ctx)
 		// NOTE: no defer — we call promptCancel() explicitly after the prompt
 		// returns so that (a) we clean up the health-monitor goroutine eagerly,
 		// and (b) a goto back to retryPrompt doesn't accumulate extra defers.
@@ -790,7 +1010,7 @@ retryAfterRestart:
 			connDoneCh = bs.sharedProcess.Done()
 		}
 		if connDoneCh != nil {
-			go func() {
+			go func(promptCtx context.Context, promptCancel context.CancelFunc, connDoneCh, processDoneCh <-chan struct{}) {
 				select {
 				case <-connDoneCh:
 					if bs.logger != nil {
@@ -807,7 +1027,7 @@ retryAfterRestart:
 				case <-promptCtx.Done():
 					// Prompt completed normally or was cancelled for another reason
 				}
-			}()
+			}(promptCtx, promptCancel, connDoneCh, processDoneCh)
 		}
 
 		// Monitor for a live-but-unresponsive agent: if the agent stops streaming any
@@ -817,22 +1037,23 @@ retryAfterRestart:
 		bs.startPromptInactivityWatchdog(promptCtx, promptCancel, &inactivityWatchdogFired)
 		bs.startAgentWorkingHeartbeat(promptCtx)
 
-		// On retry after ACP crash, freshContextSessionID is from the old (dead)
-		// connection; fall back to bs.acpID which holds the new session.
+		// Fresh-context replacement adopts its ID before model selection, just
+		// like crash restart. The prompt and config RPCs always use the same ID.
 		acpSessionIDForPrompt := bs.acpID
-		if freshContextSessionID != "" && !autoRetried {
-			acpSessionIDForPrompt = freshContextSessionID
-		}
+		promptConn, sharedProcess := bs.acpConn, bs.sharedProcess
 
 		// Track that a turn is being dispatched on the current ACP session, so a
 		// later FreshContext iteration can tell it is no longer virgin (mitto-s9g2).
 		bs.noteACPTurnDispatched()
 
 		promptStartedAt = time.Now() // captured for after-phase processors
-		if bs.sharedProcess != nil {
-			promptResp, err = bs.sharedProcess.Prompt(promptCtx, acp.SessionId(acpSessionIDForPrompt), finalBlocks)
+		turn.cleanupMu.Unlock()
+		// A concurrent Cancel now cancels promptCtx; captured transport/ID keep
+		// this attempt from reading state adopted by a newer turn.
+		if sharedProcess != nil {
+			promptResp, err = sharedProcess.Prompt(promptCtx, acp.SessionId(acpSessionIDForPrompt), finalBlocks)
 		} else {
-			promptResp, err = bs.acpConn.Prompt(promptCtx, acp.PromptRequest{
+			promptResp, err = promptConn.Prompt(promptCtx, acp.PromptRequest{
 				SessionId: acp.SessionId(acpSessionIDForPrompt),
 				Prompt:    finalBlocks,
 			})
@@ -844,137 +1065,131 @@ retryAfterRestart:
 			completionErr = abortedErr
 		}
 
-		bs.promptDisp.accumulateTokenUsage(bs, promptResp, message)
-
-		if bs.promptDisp.markPromptCompleteAndFlush(bs) {
-			return
-		}
-
-		// Notify all observers
-		eventCount := bs.GetEventCount()
-		observerCount := bs.ObserverCount()
-		if bs.logger != nil {
-			bs.logger.Debug("prompt_completion_notify_start",
-				"session_id", bs.persistedID,
-				"event_count", eventCount,
-				"observer_count", observerCount)
-		}
-
-		// sessionIdle becomes true only on the success path when the turn ended and
-		// no further queued message was dispatched. It gates the on-completion loop
-		// idle hook invoked after OnComplete below.
-		sessionIdle := false
-
-		if err != nil {
-			if bs.promptDisp.handlePromptError(bs, err, &autoRetried, observerCount, inactivityWatchdogFired.Load()) {
-				goto retryPrompt
+		// Serialize completion/retry RPCs with Cancel/ForceReset, not promptMu.
+		// Keep the reservation until the error handler has decided whether to retry.
+		retry := func() bool {
+			turn.cleanupMu.Lock()
+			defer turn.cleanupMu.Unlock()
+			if !d.ownsTurn() || turn.ctx.Err() != nil {
+				completionErr = turn.ctx.Err()
+				return false
 			}
-		} else {
-			sessionIdle = bs.promptDisp.handlePromptSuccess(bs, eventCount, observerCount, promptResp, message, meta, promptStartedAt, promptEndedAt)
+			bs.promptDisp.accumulateTokenUsage(d, promptResp, message)
+			eventCount, observerCount := bs.GetEventCount(), bs.ObserverCount()
+			if err != nil && bs.promptDisp.handlePromptError(d, err, &autoRetried, observerCount, inactivityWatchdogFired.Load()) {
+				// Restart replaced the ACP session. Reapply this turn's preference
+				// while cleanup is serialized, before retrying on that session.
+				if startupErr := d.waitForStartupModel(); startupErr != nil {
+					completionErr = startupErr
+					bs.notifyObservers(func(o SessionObserver) { o.OnError(startupErr.Error()) })
+					return false
+				}
+				bs.promptDisp.applyModelPreference(d, meta)
+				return turn.ctx.Err() == nil
+			}
+			if bs.promptDisp.markPromptCompleteAndFlush(d) {
+				return false
+			}
+			sessionIdle := false
+			if err == nil {
+				sessionIdle = bs.promptDisp.handlePromptSuccess(d, eventCount, observerCount, promptResp, message, meta, promptStartedAt, promptEndedAt)
+			}
+			completionErr = err
+			bs.promptDisp.finalizeTurn(d, err, meta, sessionIdle)
+			return false
+		}()
+		if retry {
+			goto retryPrompt
 		}
-
-		bs.promptDisp.finalizeTurn(bs, err, meta, sessionIdle)
 	}()
 
 	return nil
 }
 
-// Cancel cancels the current prompt and resets the prompting state.
-// This sends a cancel notification to the ACP agent and resets the isPrompting flag
-// so the session can accept new prompts even if the agent doesn't respond to the cancel.
-func (bs *BackgroundSession) Cancel() error {
-	// Dismiss any active UI prompt first (MCP tool questions, permissions, etc.)
-	// This ensures the UI is cleaned up when the user presses Stop.
-	bs.DismissActiveUIPrompt()
-
-	// Reset prompting state regardless of whether cancel succeeds
-	// This ensures the session can accept new prompts even if the agent is unresponsive
+// cancelPromptTurn cancels without releasing the reservation. The caller must
+// wait for preparation to leave model/session RPCs before restoring the baseline.
+func (bs *BackgroundSession) cancelPromptTurn() *promptTurn {
 	bs.promptMu.Lock()
-	wasPrompting := bs.isPrompting
-	bs.isPrompting = false
-	bs.clearActiveDispatchLocked()
-	bs.promptStartTime = time.Time{}
-	bs.lastResponseComplete = time.Now()
-	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
-	bs.promptMu.Unlock()
+	defer bs.promptMu.Unlock()
+	if !bs.isPrompting {
+		return nil
+	}
+	turn := bs.promptTurn
+	if turn == nil {
+		// Legacy/minimal sessions used by callers/tests can have a busy flag
+		// without a turn. Give their cleanup the same ownership protection.
+		ctx, cancel := context.WithCancel(context.Background())
+		turn = &promptTurn{ctx: ctx, cancel: cancel, preparationDone: make(chan struct{})}
+		turn.finishPreparation()
+		bs.promptTurn = turn
+	}
+	turn.stopRequested = true
+	turn.cancel()
+	return turn
+}
 
-	// Notify about streaming state change if we were prompting
-	if wasPrompting && bs.onStreamingStateChanged != nil {
-		bs.onStreamingStateChanged(bs.persistedID, false)
+func (bs *BackgroundSession) finishCancelledPromptTurn(turn *promptTurn, sendCancel bool) error {
+	if turn == nil {
+		return nil
+	}
+	d := promptTurnDeps{BackgroundSession: bs, turn: turn}
+	turn.cleanupMu.Lock()
+	if d.ownsTurn() {
+		bs.DismissActiveUIPrompt()
+	}
+	turn.cleanupMu.Unlock()
+	<-turn.preparationDone
+	turn.cleanupMu.Lock()
+	defer turn.cleanupMu.Unlock()
+	if !d.ownsTurn() {
+		return nil
 	}
 
-	// Send cancel notification to ACP agent (best effort)
+	// Never cancel after releasing the slot: it could cancel a newer turn on
+	// the same ACP session. The protocol notification is best-effort/bounded.
 	var cancelErr error
-	if bs.sharedProcess != nil {
-		cancelErr = bs.sharedProcess.Cancel(bs.ctx, acp.SessionId(bs.acpID))
-	} else if bs.acpConn != nil {
-		cancelErr = bs.acpConn.Cancel(bs.ctx, acp.CancelNotification{
-			SessionId: acp.SessionId(bs.acpID),
-		})
+	if sendCancel {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if bs.sharedProcess != nil {
+			cancelErr = bs.sharedProcess.Cancel(ctx, acp.SessionId(bs.acpID))
+		} else if bs.acpConn != nil {
+			cancelErr = bs.acpConn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(bs.acpID)})
+		}
 	}
-
-	// Apply any config changes deferred during the cancelled turn now that the
-	// session is idle.
-	if wasPrompting {
-		bs.flushPendingConfig()
-	}
-
-	// mitto-79x: Cancel() only clears local prompting state — it never used to
-	// trigger the queue dispatcher, so any message queued while wedged stayed
-	// stranded forever (the dispatcher is entirely event-driven; there is no
-	// periodic self-heal). Async because TryProcessQueuedMessage ultimately
-	// calls promptWithMeta, which re-acquires promptMu.
-	if wasPrompting {
-		go bs.TryProcessQueuedMessage()
-	}
-
+	// The canceled context suppresses the old response's completion path, so
+	// both Stop and ForceReset must finalize the session stream here, exactly once.
+	bs.pdFlushMarkdown()
+	eventCount := bs.GetEventCount()
+	bs.notifyObservers(func(o SessionObserver) { o.OnPromptComplete(eventCount) })
+	d.release()
 	return cancelErr
 }
 
-// ForceReset forcefully resets the session's prompting state.
-// This is used when the agent is completely unresponsive and Cancel doesn't work.
-// It resets the isPrompting flag, flushes any buffered content, and notifies observers.
-// Unlike Cancel, this does NOT send a cancel notification to the agent.
-func (bs *BackgroundSession) ForceReset() {
-	bs.promptMu.Lock()
-	wasPrompting := bs.isPrompting
-	bs.isPrompting = false
-	bs.clearActiveDispatchLocked()
-	bs.promptStartTime = time.Time{}
-	bs.lastResponseComplete = time.Now()
-	bs.promptCond.Broadcast() // Signal any waiters that prompt is complete
-	bs.promptMu.Unlock()
-
-	// Notify about streaming state change if we were prompting
-	if wasPrompting && bs.onStreamingStateChanged != nil {
-		bs.onStreamingStateChanged(bs.persistedID, false)
+// Cancel cancels the owning context, waits for preparation/model RPCs to finish,
+// then restores and releases the turn, even without an enabled queue.
+func (bs *BackgroundSession) Cancel() error {
+	// UI-only questions can exist even when no agent turn is in progress.
+	bs.DismissActiveUIPrompt()
+	turn := bs.cancelPromptTurn()
+	err := bs.finishCancelledPromptTurn(turn, true)
+	if turn != nil {
+		go bs.TryProcessQueuedMessage()
 	}
+	return err
+}
 
-	if !wasPrompting {
+// ForceReset has the same ownership and model-cleanup barrier as Cancel but
+// does not send an ACP cancel notification.
+func (bs *BackgroundSession) ForceReset() {
+	turn := bs.cancelPromptTurn()
+	if turn == nil {
 		if bs.logger != nil {
 			bs.logger.Debug("ForceReset called but session was not prompting")
 		}
 		return
 	}
-
-	// Flush any buffered content
-	if bs.acpClient != nil {
-		bs.acpClient.FlushMarkdown()
-	}
-
-	// Notify observers that the prompt was forcefully reset
-	eventCount := bs.GetEventCount()
-	bs.notifyObservers(func(o SessionObserver) {
-		o.OnPromptComplete(eventCount)
-	})
-
-	// Apply any config changes deferred during the reset turn now that the session
-	// is idle (best effort; the RPC fails fast if the agent connection is dead).
-	bs.flushPendingConfig()
-
-	// mitto-79x: see the matching comment in Cancel() — ForceReset() has the same
-	// drain gap. Async because TryProcessQueuedMessage ultimately calls
-	// promptWithMeta, which re-acquires promptMu.
+	_ = bs.finishCancelledPromptTurn(turn, false)
 	go bs.TryProcessQueuedMessage()
 
 	if bs.logger != nil {
@@ -1238,6 +1453,12 @@ func (bs *BackgroundSession) pdRecordErrorEvent(seq int64, msg string) error {
 	})
 }
 
+// pdRestoreBaselineIfOverride restores the session's persisted baseline model
+// if a per-prompt override is currently active. No-op otherwise. Exposed to
+// promptDeps callers (e.g. handlePromptError's error-class-gated branch) that
+// need to restore without also advancing/draining the queue.
+func (bs *BackgroundSession) pdRestoreBaselineIfOverride() { bs.restoreBaselineIfOverride() }
+
 func (bs *BackgroundSession) pdResetPromptingStateForAbort() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false
@@ -1255,21 +1476,55 @@ func (bs *BackgroundSession) pdNotifyStreamingStateChanged(active bool) {
 
 func (bs *BackgroundSession) pdHasACPConn() bool { return bs.acpConn != nil }
 
+// Fresh-session setup already owns a prompt turn and applies its baseline
+// synchronously. Do not spawn a competing startup model-selection worker.
+type freshSessionModelDeps struct{ *BackgroundSession }
+
+func (freshSessionModelDeps) cbApplyConfigConstraintsAsync(string) {}
+
 func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string) (string, error) {
+	mcpServers := bs.sessionMCPServers
+	if mcpServers == nil {
+		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
+	}
 	freshSess, err := bs.acpConn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
-		McpServers: []acp.McpServer{}, // Must be empty array, not nil — ACP validates this
+		McpServers: mcpServers,
 	})
 	if err != nil {
 		return "", err
 	}
-	// A brand-new session created fresh in this process is provably empty (mitto-s9g2).
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if freshSess.SessionId == "" {
+		return "", &sessionError{"fresh ACP session returned an empty session ID"}
+	}
+
+	// Adopt before any model RPC: config and prompt dispatch must address the
+	// same new session. WebClient itself has no session ID/binding to update;
+	// authenticated MCP ownership is bound to persistedID, which is unchanged.
+	bs.acpID = string(freshSess.SessionId)
+	bs.markACPContextUnknown() // Only mark fresh after initialization succeeds.
+	bs.hsPersistACPSessionID()
+	bs.setSessionModes(freshSess.Modes)
+	models, configID, _ := DeriveAgentModels(freshSess.ConfigOptions, freshSess.Models, bs.mittoConfig.EffectiveModelProfiles())
+	bs.modelConfigId = configID // Clear an old ID when the new catalog uses the fallback.
+	bs.callbackSink.setAgentModels(freshSessionModelDeps{bs}, models)
+	baseline := bs.pdReadBaselineModel()
+	if baseline != "" && models != nil && !models.Synthesized && models.CurrentModelId != baseline {
+		bs.pdWriteOverrideActive(true) // Failed initialization must retain restoration intent.
+		if err := bs.setActiveModelOnly(ctx, baseline); err != nil {
+			return "", fmt.Errorf("initialize fresh ACP session baseline: %w", err)
+		}
+	}
+	bs.pdWriteOverrideActive(false)
 	bs.markACPContextFresh()
-	return string(freshSess.SessionId), nil
+	return bs.acpID, nil
 }
 
 func (bs *BackgroundSession) pdGetAgentModels() *SessionModelState {
-	return bs.agentModels
+	return bs.AgentModels()
 }
 
 func (bs *BackgroundSession) pdResolveModelTags(modelName string) []string {

@@ -104,7 +104,9 @@ type fakePromptDeps struct {
 	setActiveModelCalls    []string
 	setActiveModelErr      error
 	setActiveModelErrors   []error
-	setActiveModelGate     chan struct{} // if non-nil, block in pdSetActiveModelOnly until closed (simulates a slow/cold set_model)
+	setActiveModelGate     chan struct{} // wait for release or context cancellation
+	setActiveModelStarted  chan context.Context
+	setActiveModelDone     chan error
 	recordedSessionChanges []session.SessionChangeData
 	// recordedSessionChangeSeqs (mitto-c36) mirrors recordedSessionChanges 1:1
 	// and captures the seq passed via pdRecordSessionChangeWithSeq (or 0 when
@@ -161,6 +163,9 @@ type fakePromptDeps struct {
 	// FreshContext dispatcher tests keep exercising the flush/new-session paths
 	// unchanged; virginity-skip tests set this to true explicitly.
 	contextIsEmpty bool
+
+	// restoreBaselineCalls counts pdRestoreBaselineIfOverride invocations.
+	restoreBaselineCalls int
 }
 
 func newFakePromptDeps() *fakePromptDeps {
@@ -335,16 +340,23 @@ func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 	defer f.mu.Unlock()
 	f.overrideActive = active
 }
-func (f *fakePromptDeps) pdSetActiveModelOnly(ctx context.Context, modelID string) error {
+func (f *fakePromptDeps) pdSetActiveModelOnly(ctx context.Context, modelID string) (result error) {
 	f.mu.Lock()
 	f.setActiveModelCalls = append(f.setActiveModelCalls, modelID)
 	call := len(f.setActiveModelCalls)
 	gate := f.setActiveModelGate
+	started, done := f.setActiveModelStarted, f.setActiveModelDone
 	err := f.setActiveModelErr
 	if call <= len(f.setActiveModelErrors) {
 		err = f.setActiveModelErrors[call-1]
 	}
 	f.mu.Unlock()
+	if done != nil {
+		defer func() { done <- result }()
+	}
+	if started != nil {
+		started <- ctx
+	}
 	if gate != nil {
 		select {
 		case <-gate:
@@ -352,7 +364,27 @@ func (f *fakePromptDeps) pdSetActiveModelOnly(ctx context.Context, modelID strin
 			return ctx.Err()
 		}
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil {
+		f.mu.Lock()
+		if f.agentModels != nil {
+			for _, model := range f.agentModels.AvailableModels {
+				if string(model.ModelId) == modelID {
+					f.agentModels.CurrentModelId = model.ModelId
+					break
+				}
+			}
+		}
+		f.mu.Unlock()
+	}
 	return err
+}
+func (f *fakePromptDeps) pdRestoreBaselineIfOverride() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restoreBaselineCalls++
 }
 func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
 	f.mu.Lock()
@@ -1906,7 +1938,10 @@ func TestPromptDispatcher_CreateFreshContextSession_FreshContextFalse_ReturnsEmp
 	d := newFakePromptDeps()
 	d.hasACPConn = true
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: false}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: false}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error when FreshContext=false, got %v", err)
+	}
 	if id != "" {
 		t.Fatalf("expected empty id when FreshContext=false, got %q", id)
 	}
@@ -1920,7 +1955,10 @@ func TestPromptDispatcher_CreateFreshContextSession_NoACPConn_ReturnsEmpty(t *te
 	d := newFakePromptDeps()
 	d.hasACPConn = false
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error when no ACP conn or flush command, got %v", err)
+	}
 	if id != "" {
 		t.Fatalf("expected empty id when no ACP conn, got %q", id)
 	}
@@ -1935,7 +1973,10 @@ func TestPromptDispatcher_CreateFreshContextSession_Success_ReturnsID(t *testing
 	d.hasACPConn = true
 	d.acpNewSessionID = "fresh-session-123"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on NewSession success, got %v", err)
+	}
 	if id != "fresh-session-123" {
 		t.Fatalf("expected 'fresh-session-123', got %q", id)
 	}
@@ -1949,13 +1990,16 @@ func TestPromptDispatcher_CreateFreshContextSession_Success_ReturnsID(t *testing
 	}
 }
 
-func TestPromptDispatcher_CreateFreshContextSession_ACPError_ReturnsEmpty(t *testing.T) {
+func TestPromptDispatcher_CreateFreshContextSession_ACPError_ReturnsError(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.hasACPConn = true
 	d.acpNewSessionErr = errors.New("new session failed")
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if !errors.Is(err, d.acpNewSessionErr) {
+		t.Fatalf("expected wrapped NewSession error, got %v", err)
+	}
 	if id != "" {
 		t.Fatalf("expected empty id on error, got %q", id)
 	}
@@ -1975,7 +2019,10 @@ func TestPromptDispatcher_CreateFreshContextSession_PrefersInPlaceFlush_WhenCmdC
 	d.hasACPConn = false
 	d.acpNewSessionID = "should-not-be-used"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on in-place flush success, got %v", err)
+	}
 
 	if id != "" {
 		t.Fatalf("expected empty id (in-place path), got %q", id)
@@ -1997,25 +2044,29 @@ func TestPromptDispatcher_CreateFreshContextSession_PrefersInPlaceFlush_WhenCmdC
 	}
 }
 
-func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *testing.T) {
+func TestPromptDispatcher_CreateFreshContextSession_FlushError_NoACPConn_ReturnsError(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.contextFlushCommand = "/clear"
 	d.flushContextInPlaceErr = errors.New("flush failed")
 	// hasACPConn defaults to false — the new-session fallback (mitto-2efc) is
-	// unreachable here, so the observable behavior (return "") is unchanged
-	// from before the fix. See TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSession
+	// unreachable here, so the flush error must abort dispatch rather than
+	// continue on stale context. See TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSession
 	// for the case where the fallback IS available.
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if !errors.Is(err, d.flushContextInPlaceErr) {
+		t.Fatalf("expected wrapped flush error when no ACP conn, got %v", err)
+	}
 
-	// Must still return "" (continue on existing session) even on flush error,
-	// since no ACP connection is available to create a fresh session.
 	if id != "" {
-		t.Fatalf("expected empty id even on flush error, got %q", id)
+		t.Fatalf("expected empty id on flush error, got %q", id)
 	}
 	if !d.flushContextCalled {
 		t.Fatal("expected pdFlushContextInPlace to be called")
+	}
+	if d.acpNewSessionCalls != 0 {
+		t.Fatalf("acpNewSessionCalls = %d, want 0 (no ACP conn)", d.acpNewSessionCalls)
 	}
 	// mitto-so19: no pill should be recorded when the flush command failed.
 	if len(d.recordedSessionChanges) != 0 {
@@ -2036,7 +2087,10 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSes
 	d.hasACPConn = true
 	d.acpNewSessionID = "fresh-after-flush-fail"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on new-session fallback success, got %v", err)
+	}
 
 	if id != "fresh-after-flush-fail" {
 		t.Fatalf("expected new-session fallback id, got %q", id)
@@ -2065,7 +2119,10 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushSuccess_NoNewSessionFal
 	d.hasACPConn = true
 	d.acpNewSessionID = "should-not-be-used"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on in-place flush success, got %v", err)
+	}
 
 	if id != "" {
 		t.Fatalf("expected empty id (in-place path succeeded), got %q", id)
@@ -2091,7 +2148,10 @@ func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNo
 	d.hasACPConn = true
 	d.acpNewSessionID = "new-sess-42"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on NewSession fallback success, got %v", err)
+	}
 
 	if id != "new-sess-42" {
 		t.Fatalf("expected fallback NewSession id, got %q", id)
@@ -2117,7 +2177,10 @@ func TestPromptDispatcher_CreateFreshContextSession_UsesReservedPillSeq_Flush(t 
 	d := newFakePromptDeps()
 	d.contextFlushCommand = "/clear"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 42)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 42)
+	if err != nil {
+		t.Fatalf("expected nil error on in-place flush success, got %v", err)
+	}
 
 	if id != "" {
 		t.Fatalf("expected empty id (in-place path), got %q", id)
@@ -2139,7 +2202,10 @@ func TestPromptDispatcher_CreateFreshContextSession_UsesReservedPillSeq_NewSessi
 	d.hasACPConn = true
 	d.acpNewSessionID = "fresh-99"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 99)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 99)
+	if err != nil {
+		t.Fatalf("expected nil error on NewSession success, got %v", err)
+	}
 
 	if id != "fresh-99" {
 		t.Fatalf("expected 'fresh-99', got %q", id)
@@ -2162,7 +2228,13 @@ func TestPromptDispatcher_CreateFreshContextSession_ZeroPillSeq_FallsBackToSeqle
 	d := newFakePromptDeps()
 	d.contextFlushCommand = "/clear"
 
-	_ = p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on in-place flush success, got %v", err)
+	}
+	if id != "" {
+		t.Fatalf("expected empty id (in-place path), got %q", id)
+	}
 
 	if len(d.recordedSessionChanges) != 1 {
 		t.Fatalf("expected 1 pill, got %d", len(d.recordedSessionChanges))
@@ -2186,7 +2258,10 @@ func TestPromptDispatcher_CreateFreshContextSession_VirginSession_SkipsInPlaceFl
 	d.hasACPConn = true
 	d.acpNewSessionID = "should-not-be-used"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on virgin-session skip, got %v", err)
+	}
 
 	if id != "" {
 		t.Fatalf("expected empty id (skip path), got %q", id)
@@ -2213,7 +2288,10 @@ func TestPromptDispatcher_CreateFreshContextSession_VirginSession_SkipsNewSessio
 	d.hasACPConn = true
 	d.acpNewSessionID = "should-not-be-used"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on virgin-session skip, got %v", err)
+	}
 
 	if id != "" {
 		t.Fatalf("expected empty id (skip path), got %q", id)
@@ -2239,7 +2317,10 @@ func TestPromptDispatcher_CreateFreshContextSession_NonVirginSession_FlushesAsTo
 	d.contextFlushCommand = "/clear"
 	d.hasACPConn = false
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on in-place flush success, got %v", err)
+	}
 
 	if id != "" {
 		t.Fatalf("expected empty id (in-place path), got %q", id)
@@ -2270,7 +2351,10 @@ func TestPromptDispatcher_CreateFreshContextSession_ResumedUnknownVirginity_Flus
 	d.contextFlushCommand = "" // exercise the new-session fallback leg too
 	d.acpNewSessionID = "resumed-session-fresh"
 
-	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error on new-session fallback success, got %v", err)
+	}
 
 	if id != "resumed-session-fresh" {
 		t.Fatalf("expected new-session fallback id, got %q", id)
@@ -2636,17 +2720,9 @@ func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) 
 }
 
 func TestPromptDispatcher_ApplyModelPreference_ColdFailureRetriesWhenWarm(t *testing.T) {
-	origGrace := modelSwitchSyncGrace
-	origBudget := modelSwitchAsyncBudget
 	origRetryDelay := modelSwitchWarmRetryDelay
-	modelSwitchSyncGrace = 5 * time.Millisecond
-	modelSwitchAsyncBudget = 250 * time.Millisecond
-	modelSwitchWarmRetryDelay = 10 * time.Millisecond
-	defer func() {
-		modelSwitchSyncGrace = origGrace
-		modelSwitchAsyncBudget = origBudget
-		modelSwitchWarmRetryDelay = origRetryDelay
-	}()
+	modelSwitchWarmRetryDelay = 0
+	t.Cleanup(func() { modelSwitchWarmRetryDelay = origRetryDelay })
 
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
@@ -2668,29 +2744,150 @@ func TestPromptDispatcher_ApplyModelPreference_ColdFailureRetriesWhenWarm(t *tes
 
 	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		d.mu.Lock()
-		calls := len(d.setActiveModelCalls)
-		pills := len(d.recordedSessionChanges)
-		override := d.overrideActive
-		d.mu.Unlock()
-		if calls == 2 && pills == 1 && override {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if len(d.setActiveModelCalls) != 2 || len(d.recordedSessionChanges) != 1 || !d.overrideActive {
+		t.Fatalf("warm retry must finish before returning: calls=%v pills=%v override=%v",
+			d.setActiveModelCalls, d.recordedSessionChanges, d.overrideActive)
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	t.Fatalf("cold model switch was not retried successfully: calls=%v pills=%v override=%v",
-		d.setActiveModelCalls, d.recordedSessionChanges, d.overrideActive)
 }
 
-func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt(t *testing.T) {
-	// Shrink the synchronous grace so the test is fast.
-	origGrace := modelSwitchSyncGrace
-	modelSwitchSyncGrace = 30 * time.Millisecond
-	defer func() { modelSwitchSyncGrace = origGrace }()
+// startGatedPromptModelSwitch synchronizes on RPC entry, not elapsed time. Cleanup
+// always releases the gate and joins the dispatch, including on assertion failure.
+func startGatedPromptModelSwitch(t *testing.T, d *fakePromptDeps, run func()) (context.Context, func(), <-chan struct{}) {
+	t.Helper()
+	gate := make(chan struct{})
+	d.setActiveModelGate = gate
+	d.setActiveModelStarted = make(chan context.Context, 2)
+	d.setActiveModelDone = make(chan error, 2)
+	done := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(func() {
+		release()
+		waitForPromptModelSwitch(t, done)
+	})
+	go func() {
+		defer close(done)
+		run()
+	}()
+	select {
+	case ctx := <-d.setActiveModelStarted:
+		return ctx, release, done
+	case <-time.After(2 * time.Second):
+		t.Fatal("model switch did not start")
+		return nil, nil, nil
+	}
+}
+
+func waitForPromptModelSwitch(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch did not return after model switch completed or was canceled")
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_BlocksUntilSuccess(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &SessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []ModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Model 2"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
+	_, release, done := startGatedPromptModelSwitch(t, d, func() {
+		p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+	})
+	select {
+	case <-done:
+		t.Fatal("dispatch returned while its model switch was still blocked")
+	default:
+	}
+	d.mu.Lock()
+	pills := len(d.recordedSessionChanges)
+	override := d.overrideActive
+	d.mu.Unlock()
+	if pills != 0 || override {
+		t.Fatalf("override finalized before the switch landed: pills=%d override=%v", pills, override)
+	}
+
+	release()
+	waitForPromptModelSwitch(t, done)
+	if len(d.setActiveModelCalls) != 1 || d.setActiveModelCalls[0] != "m-2" {
+		t.Fatalf("expected one switch to m-2, got %v", d.setActiveModelCalls)
+	}
+	if len(d.recordedSessionChanges) != 1 || !d.overrideActive || d.agentModels.CurrentModelId != "m-2" {
+		t.Fatalf("switch must land and finalize for this turn before returning: model=%q pills=%v override=%v",
+			d.agentModels.CurrentModelId, d.recordedSessionChanges, d.overrideActive)
+	}
+	if d.processNextCalled != 0 || d.restoreBaselineCalls != 0 {
+		t.Fatal("model preference must not advance the queue or restore the baseline")
+	}
+}
+
+// Cancellation ends the switch itself, so no late completion needs an epoch
+// check or a self-triggered queue-drain restore.
+func TestPromptDispatcher_ApplyModelPreference_CanceledSwitch_NoLateOverride(t *testing.T) {
+	for _, source := range []string{"prompt_context", "session_context_fallback"} {
+		t.Run(source, func(t *testing.T) {
+			p := promptDispatcher{}
+			d := newFakePromptDeps()
+			d.agentModels = &SessionModelState{
+				CurrentModelId: "m-1",
+				AvailableModels: []ModelInfo{
+					{ModelId: "m-1", Name: "Model 1"},
+					{ModelId: "m-2", Name: "Model 2"},
+				},
+			}
+			d.baselineModel = "m-1"
+			d.modelProfiles = []config.ModelProfile{
+				{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}}
+			if source == "prompt_context" {
+				meta.modelContext = ctx
+			} else {
+				d.sessionCtx = ctx
+			}
+			_, release, done := startGatedPromptModelSwitch(t, d, func() { p.applyModelPreference(d, meta) })
+			cancel()
+			waitForPromptModelSwitch(t, done)
+			select {
+			case err := <-d.setActiveModelDone:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("switch error = %v, want context.Canceled", err)
+				}
+			default:
+				t.Fatal("dispatch returned before the canceled RPC finished")
+			}
+			// Releasing the former gate cannot land a switch: its RPC is finished.
+			release()
+			if len(d.setActiveModelCalls) != 1 || len(d.recordedSessionChanges) != 0 || d.overrideActive {
+				t.Fatalf("canceled switch retried or finalized: calls=%v pills=%v override=%v",
+					d.setActiveModelCalls, d.recordedSessionChanges, d.overrideActive)
+			}
+			if d.agentModels.CurrentModelId != "m-1" || d.processNextCalled != 0 || d.restoreBaselineCalls != 0 {
+				t.Fatal("canceled switch changed the model or triggered queue-drain restoration")
+			}
+			if source == "prompt_context" && d.sessionCtx.Err() != nil {
+				t.Fatal("canceling this turn must not cancel the session")
+			}
+		})
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_SwitchBudgetExceeded_NoLateOverride(t *testing.T) {
+	origBudget := modelSwitchBudget
+	modelSwitchBudget = 25 * time.Millisecond
+	t.Cleanup(func() { modelSwitchBudget = origBudget })
 
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
@@ -2705,152 +2902,101 @@ func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt
 	d.modelProfiles = []config.ModelProfile{
 		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
 	}
-	gate := make(chan struct{})
-	d.setActiveModelGate = gate
-	var buf bytes.Buffer
-	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	start := time.Now()
-	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
-	elapsed := time.Since(start)
-
-	// The interactive prompt must NOT block on the slow set_model.
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("applyModelPreference blocked on slow set_model (%s); expected to return near the grace window", elapsed)
-	}
-	if !strings.Contains(buf.String(), "Deferring model switch to background") {
-		t.Fatalf("expected deferral log, got: %s", buf.String())
-	}
-
-	// The background switch was attempted (poll to avoid scheduling flakiness).
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		d.mu.Lock()
-		calls := len(d.setActiveModelCalls)
-		d.mu.Unlock()
-		if calls == 1 {
-			break
+	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}}
+	switchCtx, release, done := startGatedPromptModelSwitch(t, d, func() { p.applyModelPreference(d, meta) })
+	// The gate stays shut: only expiry of the dispatch-wide budget can finish.
+	waitForPromptModelSwitch(t, done)
+	select {
+	case err := <-d.setActiveModelDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("switch error = %v, want context.DeadlineExceeded", err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("expected the background switch to be attempted once")
-		}
-		time.Sleep(5 * time.Millisecond)
+	default:
+		t.Fatal("dispatch returned before the timed-out RPC finished")
 	}
-
-	// The override pill/flag are NOT applied yet (switch still in flight -> next turn).
-	d.mu.Lock()
-	pills := len(d.recordedSessionChanges)
-	d.mu.Unlock()
-	if pills != 0 {
-		t.Fatalf("expected no override pill until the deferred switch lands, got %d", pills)
+	if !errors.Is(switchCtx.Err(), context.DeadlineExceeded) || d.sessionCtx.Err() != nil {
+		t.Fatalf("budget must expire without canceling the session: switch=%v session=%v", switchCtx.Err(), d.sessionCtx.Err())
 	}
-
-	// Release the switch; it should now complete and apply the override.
-	close(gate)
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		d.mu.Lock()
-		pills = len(d.recordedSessionChanges)
-		override := d.overrideActive
-		d.mu.Unlock()
-		if pills == 1 && override {
-			return // success: switch landed, override applied for the next turn
-		}
-		time.Sleep(5 * time.Millisecond)
+	release()
+	if len(d.setActiveModelCalls) != 1 || len(d.recordedSessionChanges) != 0 || d.overrideActive {
+		t.Fatalf("timed-out switch retried or finalized: calls=%v pills=%v override=%v",
+			d.setActiveModelCalls, d.recordedSessionChanges, d.overrideActive)
 	}
-	t.Fatal("deferred model switch did not apply the override after the switch completed")
+	if d.agentModels.CurrentModelId != "m-1" || d.processNextCalled != 0 || d.restoreBaselineCalls != 0 {
+		t.Fatal("timed-out switch changed the model or triggered queue-drain restoration")
+	}
 }
 
-// TestPromptDispatcher_TierCheck_RendersOptimisticWhenSwitchDeferred pins the
-// fix for mitto-y78i: resolveAndSubstitute now attempts a templated dispatch's
-// model-switch preference (via applyModelPreference) BEFORE rendering, and
-// marks meta.modelPreferenceResolved so buildProcessorInput trusts the actual
-// post-attempt models.CurrentModelId instead of intendedModelID's optimistic
-// guess. When the set_model RPC is slower than modelSwitchSyncGrace,
-// applyModelPreference defers it to the background and the turn genuinely
-// dispatches on the OLD model (logged as "Deferring model switch to
-// background") — so the render must reflect that model, not the one the
-// dispatch merely intended to reach.
-//
-// This test drives the fixed sequence resolveAndSubstitute now performs:
-// applyModelPreference (switch attempt) happens-before buildProcessorInput
-// (render), with meta.modelPreferenceResolved set exactly as
-// resolveAndSubstitute sets it in between the two calls. Before the fix,
-// buildProcessorInput ran first and unconditionally trusted intendedModelID,
-// so a tier-check fragment consuming these fields reported "tier confirmed"
-// for a turn that actually ran degraded — a false negative in the audit
-// trail.
-func TestPromptDispatcher_TierCheck_RendersOptimisticWhenSwitchDeferred(t *testing.T) {
-	// Shrink the synchronous grace so the test is fast and deterministic.
-	origGrace := modelSwitchSyncGrace
-	modelSwitchSyncGrace = 30 * time.Millisecond
-	defer func() { modelSwitchSyncGrace = origGrace }()
-
-	p := promptDispatcher{}
-	d := newFakePromptDeps()
-	d.agentModels = &SessionModelState{
-		CurrentModelId: "m-opus",
-		AvailableModels: []ModelInfo{
-			{ModelId: "m-opus", Name: "Claude Opus"},
-			{ModelId: "m-sonnet", Name: "Claude Sonnet"},
-		},
-	}
-	d.baselineModel = "m-opus"
-	d.modelProfiles = []config.ModelProfile{
-		{Name: "Coding", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"}, Tags: []string{"Coding"}},
-		{Name: "Reasoning", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Reasoning"}},
-	}
-	d.modelTagsByName = map[string][]string{
-		"Claude Opus":   {"Reasoning"},
-		"Claude Sonnet": {"Coding"},
-	}
-	// The set_model RPC never returns within the test's lifetime — this is the
-	// "cold/slow agent" precondition that pushes applyModelPreference past
-	// modelSwitchSyncGrace. sessionCtx must be non-nil so the background
-	// goroutine's WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget) doesn't
-	// panic on a nil parent context.
-	d.setActiveModelGate = make(chan struct{}) // never closed in this test
-	d.sessionCtx = context.Background()
-
-	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelTag: "Coding"}}}
-
-	// Step 1: the switch path (applyModelPreference), now hoisted by
-	// resolveAndSubstitute to run BEFORE the render (bgsession_prompt.go:355's
-	// resolveAndSubstitute calls it ahead of buildProcessorInput). Because the
-	// RPC never lands within modelSwitchSyncGrace, it defers to the
-	// background, leaving the turn on the OLD model.
-	var buf bytes.Buffer
-	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	p.applyModelPreference(d, meta)
-
-	if !strings.Contains(buf.String(), "Deferring model switch to background") {
-		t.Fatalf("expected applyModelPreference to defer the switch (precondition of the bug), got log: %s", buf.String())
-	}
-	// The model actually active for this turn never changed.
-	if d.agentModels.CurrentModelId != "m-opus" {
-		t.Fatalf("expected CurrentModelId to remain m-opus (switch deferred, not landed), got %q", d.agentModels.CurrentModelId)
-	}
-
-	// Step 2: the render path (buildProcessorInput), with
-	// meta.modelPreferenceResolved set exactly as resolveAndSubstitute sets it
-	// after attempting the switch above.
-	meta.modelPreferenceResolved = true
-	input := p.buildProcessorInput(d, "msg", false, meta)
-
-	// FIXED (mitto-y78i): the render must reflect the ACTUAL landed model when
-	// the switch is deferred — Opus/Reasoning, matching what the turn actually
-	// dispatched on — not the intended Sonnet/Coding tier.
-	if input.ModelName == "Claude Sonnet" || (len(input.ModelTags) == 1 && input.ModelTags[0] == "Coding") {
-		t.Fatalf("tier-check renders optimistically when the model switch is deferred to the background: "+
-			"got ModelName=%q ModelTags=%v (claims the intended Coding tier), "+
-			"want the ACTUAL landed model (Claude Opus / Reasoning) since applyModelPreference deferred the switch",
-			input.ModelName, input.ModelTags)
-	}
-	if input.ModelName != "Claude Opus" {
-		t.Errorf("ModelName = %q, want %q (the actual model this turn ran on)", input.ModelName, "Claude Opus")
-	}
-	if len(input.ModelTags) != 1 || input.ModelTags[0] != "Reasoning" {
-		t.Errorf("ModelTags = %v, want [Reasoning] (the actual model's tags)", input.ModelTags)
+// Rendering waits for the bounded switch outcome and reports the actual model,
+// not an optimistic preferred tier after failure (mitto-y78i, mitto-1yo).
+func TestPromptDispatcher_TierCheck_RendersAfterSwitchOutcome(t *testing.T) {
+	for _, outcome := range []string{"success", "timeout", "canceled"} {
+		t.Run(outcome, func(t *testing.T) {
+			if outcome == "timeout" {
+				origBudget := modelSwitchBudget
+				modelSwitchBudget = 25 * time.Millisecond
+				t.Cleanup(func() { modelSwitchBudget = origBudget })
+			}
+			p := promptDispatcher{}
+			d := newFakePromptDeps()
+			d.agentModels = &SessionModelState{
+				CurrentModelId: "m-opus",
+				AvailableModels: []ModelInfo{
+					{ModelId: "m-opus", Name: "Claude Opus"},
+					{ModelId: "m-sonnet", Name: "Claude Sonnet"},
+				},
+			}
+			d.baselineModel = "m-opus"
+			d.modelProfiles = []config.ModelProfile{
+				{Name: "Coding", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"}, Tags: []string{"Coding"}},
+				{Name: "Reasoning", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Reasoning"}},
+			}
+			d.modelTagsByName = map[string][]string{
+				"Claude Opus":   {"Reasoning"},
+				"Claude Sonnet": {"Coding"},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			meta := PromptMeta{
+				PreferredModels: []config.PromptPreferredModel{{ModelTag: "Coding"}},
+				modelContext:    ctx,
+			}
+			var message string
+			var renderedMeta PromptMeta
+			var renderErr error
+			_, release, done := startGatedPromptModelSwitch(t, d, func() {
+				message, _, renderedMeta, renderErr = p.resolveAndSubstitute(d,
+					`{{ .Session.ModelName }}|{{ range .Session.ModelTags }}{{ . }}{{ end }}`, meta)
+			})
+			if outcome != "timeout" {
+				select {
+				case <-done:
+					t.Fatal("template rendered before the model switch finished")
+				default:
+				}
+			}
+			want := "Claude Opus|Reasoning"
+			switch outcome {
+			case "success":
+				want = "Claude Sonnet|Coding"
+				release()
+			case "canceled":
+				cancel()
+			}
+			waitForPromptModelSwitch(t, done)
+			if renderErr != nil {
+				t.Fatalf("resolveAndSubstitute: %v", renderErr)
+			}
+			if !renderedMeta.modelPreferenceResolved {
+				t.Fatal("render did not mark model preference resolved")
+			}
+			if message != want {
+				t.Fatalf("tier-check render = %q, want %q", message, want)
+			}
+			if outcome != "success" && (d.overrideActive || len(d.recordedSessionChanges) != 0) {
+				t.Fatal("failed switch emitted an override pill or enabled the override")
+			}
+		})
 	}
 }
 
@@ -3173,6 +3319,11 @@ func TestPromptDispatcher_HandlePromptError_WatchdogFired_RecoverableMessage_NoR
 	if d.processNextCalled != 0 {
 		t.Fatal("expected no queue advance for watchdog-fired path")
 	}
+	// mitto-1yo: the turn is definitively over, so an active per-prompt
+	// model override must still be released even though the queue isn't advanced.
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected 1 restoreBaselineIfOverride call, got %d", d.restoreBaselineCalls)
+	}
 }
 
 // TestPromptDispatcher_HandlePromptError_WatchdogFired_PersistsErrorEvent
@@ -3217,6 +3368,9 @@ func TestPromptDispatcher_HandlePromptError_ACPDead_AlreadyAutoRetried_NoRetry(t
 	if d.restartCalled != 0 {
 		t.Fatal("expected no restart when already auto-retried")
 	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected 1 restoreBaselineIfOverride call, got %d", d.restoreBaselineCalls)
+	}
 }
 
 func TestPromptDispatcher_HandlePromptError_ACPDead_CanRestart_Success_ReturnsRetryTrue(t *testing.T) {
@@ -3255,6 +3409,12 @@ func TestPromptDispatcher_HandlePromptError_ACPDead_CanRestart_Success_ReturnsRe
 	if !found {
 		t.Fatal("expected at least one observer notification on restart success")
 	}
+	// mitto-1yo: the turn is NOT over (control returns to retryPrompt under
+	// the reacquired prompting state) — an active override must survive the
+	// retry, so restore must NOT fire here.
+	if d.restoreBaselineCalls != 0 {
+		t.Fatalf("expected no restoreBaselineIfOverride call when the turn is retried, got %d", d.restoreBaselineCalls)
+	}
 }
 
 func TestPromptDispatcher_HandlePromptError_ACPDead_CanRestart_Fails_NoRetry(t *testing.T) {
@@ -3280,6 +3440,9 @@ func TestPromptDispatcher_HandlePromptError_ACPDead_CanRestart_Fails_NoRetry(t *
 	if len(d.notifiedErrors) < 2 {
 		t.Fatalf("expected ≥2 error notifications (restart attempt + failure), got %d", len(d.notifiedErrors))
 	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected 1 restoreBaselineIfOverride call, got %d", d.restoreBaselineCalls)
+	}
 }
 
 func TestPromptDispatcher_HandlePromptError_ACPDead_NoRestart_KeepsCrashingMessage(t *testing.T) {
@@ -3301,6 +3464,9 @@ func TestPromptDispatcher_HandlePromptError_ACPDead_NoRestart_KeepsCrashingMessa
 	if !containsSubstring(d.notifiedErrors[0], "keeps crashing") {
 		t.Fatalf("expected 'keeps crashing' message, got %q", d.notifiedErrors[0])
 	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected 1 restoreBaselineIfOverride call, got %d", d.restoreBaselineCalls)
+	}
 }
 
 func TestPromptDispatcher_HandlePromptError_Transient_AdvancesQueue(t *testing.T) {
@@ -3321,8 +3487,16 @@ func TestPromptDispatcher_HandlePromptError_Transient_AdvancesQueue(t *testing.T
 	if d.flushConfigCount != 1 {
 		t.Fatalf("expected 1 flushPendingConfig call, got %d", d.flushConfigCount)
 	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected 1 restoreBaselineIfOverride call, got %d", d.restoreBaselineCalls)
+	}
 }
 
+// TestPromptDispatcher_HandlePromptError_RateLimitError_QueueNotAdvanced pins
+// mitto-1yo: even though the queue is deliberately NOT advanced for a
+// rate-limit error (to avoid cascading identical failures), an active
+// per-prompt model override must still be released — the temporary-override
+// contract is decoupled from the queue-advance decision.
 func TestPromptDispatcher_HandlePromptError_RateLimitError_QueueNotAdvanced(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
@@ -3336,8 +3510,13 @@ func TestPromptDispatcher_HandlePromptError_RateLimitError_QueueNotAdvanced(t *t
 	if d.processNextCalled != 0 {
 		t.Fatalf("expected no queue advance for rate-limit error, got %d", d.processNextCalled)
 	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected restoreBaselineIfOverride to still be called for rate-limit error, got %d", d.restoreBaselineCalls)
+	}
 }
 
+// TestPromptDispatcher_HandlePromptError_ContextTooLargeError_QueueNotAdvanced
+// pins mitto-1yo: see RateLimitError sibling above.
 func TestPromptDispatcher_HandlePromptError_ContextTooLargeError_QueueNotAdvanced(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
@@ -3350,12 +3529,17 @@ func TestPromptDispatcher_HandlePromptError_ContextTooLargeError_QueueNotAdvance
 	if d.processNextCalled != 0 {
 		t.Fatalf("expected no queue advance for context-too-large error, got %d", d.processNextCalled)
 	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected restoreBaselineIfOverride to still be called for context-too-large error, got %d", d.restoreBaselineCalls)
+	}
 }
 
 // mitto-r5o: Authentication-required errors from the upstream CLI (e.g. Claude
 // Code's -32000 "Authentication required" when the OAuth token expires) must
 // NOT advance the queue — every queued message will hit the same failure until
 // the user re-authenticates, so cascading them just spams identical errors.
+// mitto-1yo: but an active per-prompt model override must still be released
+// (see RateLimitError sibling above).
 func TestPromptDispatcher_HandlePromptError_AuthError_QueueNotAdvanced(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
@@ -3367,6 +3551,9 @@ func TestPromptDispatcher_HandlePromptError_AuthError_QueueNotAdvanced(t *testin
 
 	if d.processNextCalled != 0 {
 		t.Fatalf("expected no queue advance for auth error, got %d", d.processNextCalled)
+	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected restoreBaselineIfOverride to still be called for auth error, got %d", d.restoreBaselineCalls)
 	}
 }
 

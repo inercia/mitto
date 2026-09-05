@@ -134,6 +134,12 @@ type promptDeps interface {
 	pdReadBaselineModel() string            // modelMu.Lock + read + Unlock
 	pdWriteOverrideActive(active bool)      // modelMu.Lock + write + Unlock
 	pdSetActiveModelOnly(ctx context.Context, modelID string) error
+	// pdRestoreBaselineIfOverride (mitto-1yo) restores the persisted baseline
+	// model if a per-prompt override is currently active, without touching
+	// the message queue. Used by handlePromptError's error-class-gated branch
+	// so a temporary override is always released on a definitive turn-ending
+	// error, even when the queue itself is deliberately left un-advanced.
+	pdRestoreBaselineIfOverride()
 	// pdRecordSessionChange assigns a seq, persists a session-change timeline
 	// event via the recorder, and notifies observers. Used for the model-override pill.
 	pdRecordSessionChange(kind, value, previousValue string)
@@ -423,8 +429,7 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		// fragment consuming .Session.ModelTags reflects the model this turn
 		// actually dispatches on rather than merely the one it intends to
 		// reach — applyModelPreference already knows, by the time it
-		// returns, whether the switch landed within modelSwitchSyncGrace or
-		// was deferred to the background. Skipped for FreshContext
+		// returns, whether the bounded switch succeeded or failed. Skipped for FreshContext
 		// dispatches: applyModelPreference must run AFTER
 		// createFreshContextSession there (a switch applied before
 		// session/new targets the wrong session and is discarded), so those
@@ -1049,22 +1054,22 @@ func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
 // When a contextFlushCommand is configured for the ACP server, it performs an
 // in-place flush (sends the command on the existing session with streaming suppressed)
 // rather than creating a new ACP session. This works for both direct-conn and
-// shared-process sessions. The flush is best-effort: errors are logged as warnings
-// but never abort the main loop prompt. Returns "" in this path — the main
+// shared-process sessions. Failed flushes may fall back to a new session, but
+// failed initialization aborts dispatch rather than using stale state. Returns "" in this path — the main
 // Prompt() continues on the existing session.
 //
 // When no flush command is configured, falls back to the original NewSession path
 // (direct-conn only, gated by pdHasACPConn). Returns the new session ID on success,
-// or "" on failure or when FreshContext is not requested.
+// or an error on failure; returns "", nil when FreshContext is not requested.
 //
 // pillSeq (mitto-c36) is a seq reserved upstream in PromptWithMeta BEFORE the
 // user-prompt seq is allocated. When > 0, the "context_cleared" pill is recorded
 // with this reserved seq so it orders before the user prompt in the persisted
 // transcript. When 0 (never in the production path, only in tests that don't care),
 // falls back to the plain pdRecordSessionChange which allocates its own seq.
-func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta, pillSeq int64) string {
+func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta, pillSeq int64) (string, error) {
 	if !meta.FreshContext {
-		return ""
+		return "", nil
 	}
 
 	// mitto-s9g2: skip the clear entirely when the current ACP session is
@@ -1077,7 +1082,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 			l.Debug("Skipping FreshContext clear: ACP session has no turns yet",
 				"session_id", d.pdSessionID())
 		}
-		return ""
+		return "", nil
 	}
 
 	recordPill := func(value string) {
@@ -1088,6 +1093,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 		d.pdRecordSessionChange("context_cleared", value, "")
 	}
 
+	var flushErr error
 	// Prefer in-place flush when the ACP server has a flush command configured.
 	if cmd := d.pdContextFlushCommand(); cmd != "" {
 		flushCtx, flushCancel := context.WithTimeout(d.pdSessionCtx(), 30*time.Second)
@@ -1101,8 +1107,9 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 			// Surface the context clear in the conversation timeline (mitto-so19).
 			recordPill("flush")
 			// Main prompt continues on the existing (now-flushed) session.
-			return ""
+			return "", nil
 		}
+		flushErr = err
 		if l := d.pdLogger(); l != nil {
 			l.Warn("In-place context flush failed, falling back to a fresh ACP session",
 				"error", err,
@@ -1117,13 +1124,16 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 
 	// Fallback: create a new ACP session (direct-conn only).
 	if !d.pdHasACPConn() {
-		return ""
+		if flushErr != nil {
+			return "", fmt.Errorf("failed to clear context: %w", flushErr)
+		}
+		return "", nil
 	}
 	cwd := d.pdWorkingDir()
 	if cwd == "" {
 		cwd = "."
 	}
-	freshCtx, freshCancel := context.WithTimeout(d.pdSessionCtx(), 10*time.Second)
+	freshCtx, freshCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchBudget)
 	sessID, err := d.pdACPConnNewSession(freshCtx, cwd)
 	freshCancel()
 	if err == nil {
@@ -1134,30 +1144,20 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 		}
 		// Surface the context clear in the conversation timeline (mitto-so19).
 		recordPill("new_session")
-		return sessID
+		return sessID, nil
 	}
 	if l := d.pdLogger(); l != nil {
-		l.Warn("Failed to create fresh ACP session, using existing",
+		l.Warn("Failed to initialize fresh ACP session; aborting prompt",
 			"error", err,
 			"session_id", d.pdSessionID())
 	}
-	return ""
+	return "", fmt.Errorf("failed to initialize fresh context: %w", err)
 }
 
-// modelSwitchSyncGrace bounds how long applyModelPreference blocks the interactive
-// prompt waiting for a set_model RPC to land. A warm switch completes well within
-// this window so the preferred model applies to THIS turn; a cold/slow switch
-// exceeds it, so the prompt is dispatched on the current model immediately and the
-// switch completes in the background (applying to the NEXT turn). Prevents the
-// cold-start wedge where a synchronous ~41s set_model blocked the first prompt
-// (mitto-54k.5). A var so tests can shrink it.
-var modelSwitchSyncGrace = 3 * time.Second
-
-// modelSwitchAsyncBudget is the total wall-clock budget for the background set_model
-// RPC, bounded by the session context. Mirrors the aux-session async budget so a
-// cold agent gets its full retry schedule off the critical path (mitto-54k.5).
-// A var so tests can shrink it.
-var modelSwitchAsyncBudget = 90 * time.Second
+// modelSwitchBudget bounds the entire pre-dispatch selection including its warm
+// retry. Selection is synchronous: a temporary model must never land in a later
+// turn. The owning turn's cancellation can shorten this budget. Variable for tests.
+var modelSwitchBudget = 90 * time.Second
 
 // modelSwitchWarmRetryDelay waits out the shared process's first saturation
 // cooldown before spending the still-available outer budget on one warm retry.
@@ -1356,53 +1356,25 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 		return
 	}
 
-	// A model switch is required. Do NOT block the interactive prompt on a slow
-	// set_model (mitto-54k.5): run the switch in the background bounded by the
-	// session context, but wait up to modelSwitchSyncGrace for it to land so a warm
-	// switch still applies to THIS turn. On a cold/slow agent the grace elapses, the
-	// prompt is dispatched on the current model, and the switch completes in the
-	// background (applying to the NEXT turn). setModelSem serialisation and the
-	// mitto-29q re-arm are preserved because the switch still goes through
-	// pdSetActiveModelOnly -> SetSessionModel.
+	// The switch belongs to this turn. Await its bounded outcome instead of
+	// letting an old RPC land after completion or during a newer prompt. The
+	// caller reserves the turn before even the pre-render preference check.
 	switchStart := time.Now()
-	done := make(chan struct{})
-	go func() {
-		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget)
-		defer setCancel()
-		setErr := p.setPreferredModelWithWarmRetry(d, setCtx, desired)
-		if setErr != nil {
-			if l := d.pdLogger(); l != nil {
-				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
-			}
-		}
-		// finalize BEFORE signalling done so the warm path observes the pill and
-		// override flag as soon as the select returns (happens-before via close(done)).
-		finalizeOverride(setErr != nil)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Switch landed within the grace window (warm/fast): applies to this turn.
-		d.pdColdPhase("model_switch",
-			"desired", desired,
-			"from", currentModel,
-			"landed", "warm",
-			"switch_ms", time.Since(switchStart).Milliseconds())
-	case <-time.After(modelSwitchSyncGrace):
-		// Cold/slow: dispatch the prompt now; the switch completes in the background.
-		if l := d.pdLogger(); l != nil {
-			l.Info("Deferring model switch to background; dispatching prompt on current model",
-				"session_id", d.pdSessionID(),
-				"desired_model", desired,
-				"current_model", currentModel)
-		}
-		d.pdColdPhase("model_switch",
-			"desired", desired,
-			"from", currentModel,
-			"landed", "deferred",
-			"grace_ms", modelSwitchSyncGrace.Milliseconds())
+	parentCtx := meta.modelContext
+	if parentCtx == nil {
+		parentCtx = d.pdSessionCtx()
 	}
+	setCtx, setCancel := context.WithTimeout(parentCtx, modelSwitchBudget)
+	defer setCancel()
+	setErr := p.setPreferredModelWithWarmRetry(d, setCtx, desired)
+	if setErr != nil {
+		if l := d.pdLogger(); l != nil {
+			l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
+		}
+	}
+	finalizeOverride(setErr != nil)
+	d.pdColdPhase("model_switch", "desired", desired, "from", currentModel,
+		"landed", setErr == nil, "switch_ms", time.Since(switchStart).Milliseconds())
 }
 
 // accumulateTokenUsage stores and accumulates token usage from a prompt response.
@@ -1627,6 +1599,9 @@ func (p promptDispatcher) handlePromptError(
 		d.pdNotifyObservers(func(o SessionObserver) {
 			o.OnError(watchdogMsg)
 		})
+		// mitto-1yo: the turn is definitively over — release any active
+		// per-prompt model override so it does not outlive it.
+		d.pdRestoreBaselineIfOverride()
 		return false
 	} else if acpDead && *autoRetried {
 		// The auto-retry already happened and the process crashed again.
@@ -1636,6 +1611,7 @@ func (p promptDispatcher) handlePromptError(
 		d.pdNotifyObservers(func(o SessionObserver) {
 			o.OnError("AI agent restarted. Please resend your message.")
 		})
+		d.pdRestoreBaselineIfOverride() // mitto-1yo: turn is over, no further auto-retry
 		return false
 	} else if acpDead && d.pdCanRestartACP() {
 		// First crash on this prompt — restart and automatically retry.
@@ -1653,9 +1629,12 @@ func (p promptDispatcher) handlePromptError(
 			d.pdNotifyObservers(func(o SessionObserver) {
 				o.OnError(errMsg)
 			})
+			d.pdRestoreBaselineIfOverride() // mitto-1yo: restart failed, turn is over
 			return false
 		}
-		// Restart succeeded — automatically retry the prompt.
+		// Restart succeeded — automatically retry the prompt. The turn is NOT
+		// over (control goes back to retryPrompt under the same reacquired
+		// prompting state), so the override must stay active — no restore here.
 		*autoRetried = true
 		d.pdNotifyObservers(func(o SessionObserver) {
 			o.OnError("AI agent restarted. Retrying your message automatically...")
@@ -1674,6 +1653,7 @@ func (p promptDispatcher) handlePromptError(
 		d.pdNotifyObservers(func(o SessionObserver) {
 			o.OnError("The AI agent keeps crashing. Please switch to another conversation and back to restart.")
 		})
+		d.pdRestoreBaselineIfOverride() // mitto-1yo: turn is over, agent unusable
 		return false
 	}
 
@@ -1683,6 +1663,13 @@ func (p promptDispatcher) handlePromptError(
 	d.pdNotifyObservers(func(o SessionObserver) {
 		o.OnError(userFriendlyErr)
 	})
+
+	// mitto-1yo: the turn is over regardless of error class — always release
+	// an active per-prompt model override. This is intentionally decoupled
+	// from the queue-advance decision below: even when the queue is
+	// deliberately left un-advanced (auth/rate/context-too-large), the
+	// temporary override contract still requires restoring the baseline now.
+	d.pdRestoreBaselineIfOverride()
 
 	// Advance the queue for transient errors where the ACP process is still healthy.
 	// Skip queue processing for errors that indicate a hard capacity or rate limit —

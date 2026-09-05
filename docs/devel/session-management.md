@@ -35,6 +35,58 @@ flowchart TB
 3. **Completion**: `Recorder.End()` marks session as completed
 4. **Playback**: `Player` loads events for review/replay
 
+### Per-conversation current model
+
+`Metadata.BaselineModel` is the conversation's **persistent current model**.
+It is not a workspace-wide setting and is not the temporary model used by a
+particular prompt. Each `BackgroundSession` owns its baseline independently,
+even when several conversations share one ACP process.
+
+At the first model-catalog advertisement, `cbInitBaselineModelIfEmpty` resolves:
+
+1. The existing in-memory or persisted conversation model, if present.
+2. The configured initial-model preference (workspace, then ACP-server setting).
+3. A matching legacy ACP-server model default/child initial-model constraint.
+4. The agent-reported default.
+
+The resolved choice is persisted **before** scheduling the startup model RPC.
+There is one startup worker and one readiness barrier, not competing initial-
+preference and constraint workers. A failed RPC retains the intended model for
+bounded startup recovery. An unavailable persisted model fails the startup gate
+rather than silently replacing the user's choice.
+
+On resume/restart, startup settings do not choose again: the same conversation
+model is reapplied to the newly advertised ACP session. Manual dropdown/MCP
+model selections update this conversation's baseline; prompt `preferredModels`
+only change its active model and restore the baseline afterward. The UI's
+active-model value may temporarily differ from the persisted baseline.
+
+Model selection is synchronous **within the reserved turn**, with a 90-second
+total retry budget, not a detached background switch. Reservation precedes
+template rendering, so overlapping sends cannot change the running turn's model.
+Stop/reset cancels preparation and joins it before releasing the reservation;
+old completions cannot restore a model or finalize a newer turn. Completion
+restores the baseline and drains manual selections before admitting another turn,
+including when queue processing is disabled. A failed restore remains pending.
+Manual choices arriving during cleanup are drained before the atomic idle transition.
+
+Fresh-context session replacement adopts the new ACP session ID and catalog,
+reapplies the same baseline, then applies that turn's preference. Failed fresh
+initialization aborts the prompt. Published model catalogs are owned snapshots,
+so concurrent startup updates cannot mutate readers' state.
+
+WebSocket dispatch keeps slow preparation off the reader so keepalives and Stop
+remain available. ACK still follows persistence, never mere receipt; the browser
+allows 180 seconds for startup plus model preparation before delivery verification.
+Regression coverage includes `TestPromptTurn_*`, `TestFreshContext_DirectACP*`,
+`TestAgentModelsSnapshot_*`, and `TestWebSocketPromptPreparationDoesNotBlockReadPump`.
+
+`SharedACPProcess.SetSessionModel` addresses the **ACP session ID** on each RPC.
+A saturation shed must return a retryable error, never `nil`: without an agent
+acknowledgement the switch has not succeeded, and local model state must not
+claim otherwise. Tests: `TestModelLifecycle_InitializeOnce`,
+`TestConversationModelLifecycle`, and the `TestSetSessionModel_*` shed tests.
+
 ### Store locking model
 
 `session.Store` uses two lock levels so disk I/O for one conversation does not

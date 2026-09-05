@@ -192,6 +192,7 @@ func (s *MockACPServer) handleResumeSession(req JSONRPCRequest) error {
 
 	// Refresh the model config option with the currently-selected model id so
 	// clients see the up-to-date state after a set_config_option round-trip.
+	s.currentModel = s.sessionModel(s.sessionID)
 	configOptions := freshConfigOptionsWithModel(sess.ConfigOptions, s.currentModel)
 	s.log("Resumed session: %s (mode: %s, model: %s)", s.sessionID, s.currentMode, s.currentModel)
 
@@ -222,6 +223,20 @@ func freshConfigOptionsWithModel(opts []SessionConfigOption, modelId string) []S
 		out = append(out, buildModelConfigOption(modelId))
 	}
 	return out
+}
+
+// Model state belongs to the addressed ACP session, not the last-created one.
+func (s *MockACPServer) sessionModel(sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess := s.sessions[sessionID]; sess != nil {
+		for _, opt := range sess.ConfigOptions {
+			if opt.Category == "model" || opt.ID == "model" {
+				return opt.CurrentValue
+			}
+		}
+	}
+	return defaultModelId
 }
 
 // handleSetSessionMode handles session mode change requests.
@@ -295,7 +310,7 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
 
-	if err := s.applyModelChange(req, params.ModelID, "set_model"); err != nil {
+	if err := s.applyModelChange(req, params.SessionID, params.ModelID, "set_model"); err != nil {
 		return err
 	}
 
@@ -308,9 +323,9 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 	// Emit the config_option_update notification so downstream state
 	// (Mitto's AgentModels tracking) still transitions — mirrors the
 	// legacy-path emission below.
-	updated := freshConfigOptionsWithModel(nil, s.currentModel)
+	updated := freshConfigOptionsWithModel(nil, s.sessionModel(params.SessionID))
 	notification := SessionNotification{JSONRPC: "2.0", Method: "session/update"}
-	notification.Params.SessionID = s.sessionID
+	notification.Params.SessionID = params.SessionID
 	notification.Params.Update = SessionUpdate{
 		ConfigOptionUpdate: &SessionConfigOptionUpdate{
 			SessionUpdate: "config_option_update",
@@ -326,7 +341,7 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 // fallback). Returns a non-nil error only when the caller has already sent an
 // error response and should stop (i.e. do not send a success response).
 // rpcTag is the label used in the RPC-order log ("set_model" | "set_config_option").
-func (s *MockACPServer) applyModelChange(req JSONRPCRequest, value, rpcTag string) error {
+func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, rpcTag string) error {
 	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS).
 	if s.setModelDelayMs > 0 {
 		time.Sleep(time.Duration(s.setModelDelayMs) * time.Millisecond)
@@ -356,9 +371,14 @@ func (s *MockACPServer) applyModelChange(req JSONRPCRequest, value, rpcTag strin
 		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", value), nil)
 	}
 	s.currentModel = value
+	s.mu.Lock()
+	if sess := s.sessions[sessionID]; sess != nil {
+		sess.ConfigOptions = freshConfigOptionsWithModel(sess.ConfigOptions, value)
+	}
+	s.mu.Unlock()
 
 	s.recordRPCOrder(rpcTag, value)
-	s.log("Session model changed via %s: %s -> %s", rpcTag, s.sessionID, value)
+	s.log("Session model changed via %s: %s -> %s", rpcTag, sessionID, value)
 	return nil
 }
 
@@ -384,7 +404,7 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 		// Shared model-change path: MOCK_SET_MODEL_DELAY_MS / _FAIL_FIRST
 		// knobs, model-id validation, currentModel update, RPC-order log.
 		// Emits its own error response on failure/rejection.
-		if err := s.applyModelChange(req, params.Value, "set_config_option"); err != nil {
+		if err := s.applyModelChange(req, params.SessionID, params.Value, "set_config_option"); err != nil {
 			return err
 		}
 	} else {
@@ -395,7 +415,7 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 
 	// Build the updated ConfigOptions snapshot to include in both the response
 	// and the config_option_update notification.
-	updated := freshConfigOptionsWithModel(nil, s.currentModel)
+	updated := freshConfigOptionsWithModel(nil, s.sessionModel(params.SessionID))
 
 	// Send success response (SDK's SetSessionConfigOptionResponse carries the
 	// full configOptions snapshot).
@@ -408,7 +428,7 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 		JSONRPC: "2.0",
 		Method:  "session/update",
 	}
-	notification.Params.SessionID = s.sessionID
+	notification.Params.SessionID = params.SessionID
 	notification.Params.Update = SessionUpdate{
 		ConfigOptionUpdate: &SessionConfigOptionUpdate{
 			SessionUpdate: "config_option_update",
@@ -450,6 +470,7 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 
 	s.log("Prompt received (session=%s): %s", params.SessionID, message)
 	s.recordRPCOrder("prompt", message)
+	s.recordRPCOrder("prompt_model", params.SessionID+"\t"+s.sessionModel(params.SessionID))
 
 	// Route notifications to the correct session.
 	// When multiple sessions share this ACP process (e.g. main + auxiliary sessions),

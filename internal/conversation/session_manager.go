@@ -2105,8 +2105,8 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	// InitialModelTag) as an ordered PromptPreferredModel list. Only applied to
 	// fresh top-level sessions (this create path); auto-children go through
 	// ResumeSessionWithModelConstraint which leaves this nil. BackgroundSession
-	// no-ops when the session is resumed with a persisted BaselineModel or when
-	// the workspace has an ACP-server constraint on the model category.
+	// seeds the baseline once; resumed sessions preserve their own current model
+	// rather than re-applying workspace or ACP-server defaults.
 	initialModelPref := effectiveWs.GetInitialModelPreference()
 
 	newBsStart := time.Now()

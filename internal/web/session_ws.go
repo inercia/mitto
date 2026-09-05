@@ -908,25 +908,32 @@ func (c *SessionWSClient) handlePromptWithMeta(message string, promptName string
 		ImageIDs:   imageIDs,
 		FileIDs:    fileIDs,
 	}
-	if err := bgSession.PromptWithMeta(message, meta); err != nil {
-		c.sendPromptError("Failed to send prompt: "+err.Error(), promptID)
-		return
-	}
-
-	// Note: prompt_received ACK is now sent via the OnUserPrompt observer callback
-	// which is called by conversation.BackgroundSession.PromptWithMeta after persisting the prompt.
-	// This ensures all observers (including the sender) receive the same broadcast.
-
-	// Auto-generate title if session has no title yet
-	if shouldGenerateTitle {
-		titleMessage := message
-		if titleMessage == "" && promptName != "" {
-			titleMessage = promptName
+	// PromptWithMeta performs synchronous preparation before persisting: startup
+	// constraints and a per-prompt model switch can each wait up to 90 seconds.
+	// Keep that work off the WebSocket reader so keepalives and Stop can reach
+	// the session. Only the live dispatch is asynchronous; attachment and offline
+	// queue persistence above retain their existing ordering. Capture bgSession
+	// rather than looking it up again after a disconnect/ACP stop.
+	go func() {
+		if err := bgSession.PromptWithMeta(message, meta); err != nil {
+			c.sendPromptError("Failed to send prompt: "+err.Error(), promptID)
+			return
 		}
-		workspaceUUID := bgSession.GetWorkspaceUUID()
-		auxiliaryManager := bgSession.GetAuxiliaryManager()
-		go c.generateAndSetTitle(titleMessage, workspaceUUID, auxiliaryManager)
-	}
+
+		// ACK remains exclusively in OnUserPrompt, after prompt persistence.
+		// Starting preparation (or returning from it) is not delivery proof.
+
+		// Auto-generate title if session has no title yet
+		if shouldGenerateTitle {
+			titleMessage := message
+			if titleMessage == "" && promptName != "" {
+				titleMessage = promptName
+			}
+			workspaceUUID := bgSession.GetWorkspaceUUID()
+			auxiliaryManager := bgSession.GetAuxiliaryManager()
+			c.generateAndSetTitle(titleMessage, workspaceUUID, auxiliaryManager)
+		}
+	}()
 }
 
 // enqueuePromptOffline persists a prompt into the session's queue when the

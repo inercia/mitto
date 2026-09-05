@@ -1104,7 +1104,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 						"acp_session_id", acpSessionID,
 						"resume_method", "load")
 					bs.logSessionModes(loadResp.Modes)
-					bs.logAgentModels(bs.agentModels)
+					bs.logAgentModels(bs.AgentModels())
 				}
 				return "", nil
 			}
@@ -1181,7 +1181,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			"command", acpCommand,
 			"resume_method", bs.resumeMethod)
 		bs.logSessionModes(sessResp.Modes)
-		bs.logAgentModels(bs.agentModels)
+		bs.logAgentModels(bs.AgentModels())
 	}
 
 	// Notify observers that ACP is now ready to accept prompts.

@@ -64,8 +64,12 @@ const INITIAL_EVENTS_LIMIT = 50;
 // Number of events requested per gap-fill load_events (after_seq mode).
 const GAP_FILL_LIMIT = 100;
 // sendPrompt() delivery-verification budget (see useWSDeliveryVerification.js).
-const TOTAL_DELIVERY_BUDGET_MS = 10000;
-const INITIAL_ACK_TIMEOUT_MS = 3000;
+// Durable ACK follows synchronous preflight: up to 90s joining startup
+// constraints, then 90s selecting the model. Do not retry a still-preparing
+// prompt whose ID is not yet durable; keepalive detects zombies independently.
+// Reserve another 10s for reconnect/verification/retry after preflight.
+const TOTAL_DELIVERY_BUDGET_MS = 190000;
+const INITIAL_ACK_TIMEOUT_MS = 180000;
 const RECONNECT_VERIFY_TIMEOUT_MS = 4000;
 // Auto-clear window for an in-flight sync (load_events) request. If
 // events_loaded never arrives (server error, zombie connection), the flag is

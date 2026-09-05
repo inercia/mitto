@@ -268,7 +268,7 @@ func (bs *BackgroundSession) logSessionConfigOptions(source string, opts []acp.S
 // bgsession_acp_process.go does not use this hook — it calls DeriveAgentModels
 // inline since the config is already in scope there.
 func (bs *BackgroundSession) applySynthesizedModelsIfEmpty() {
-	if bs.agentModels != nil {
+	if bs.cmHasAgentModels() {
 		return
 	}
 	if bs.mittoConfig == nil {
