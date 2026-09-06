@@ -442,10 +442,7 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 			return false
 		}
 	}
-	if len(fs.TaskLabelColors) > 0 {
-		return false
-	}
-	return true
+	return len(fs.TaskLabelColors) == 0
 }
 
 func beadsSettingsEmpty(settings *BeadsFolderSettings) bool {

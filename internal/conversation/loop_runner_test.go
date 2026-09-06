@@ -6561,11 +6561,11 @@ func TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn(t *testing.T
 	}
 }
 
-// bareInvalidArgument400Err mirrors the bead's own log evidence: a bare
+// errBareInvalidArgument400 mirrors the bead's own log evidence: a bare
 // httpStatus:400/apiStatus:invalidArgument envelope with NO token/length
 // corroborating phrase — the exact shape IsContextTooLargeError declines to
 // match (mitto-2efc) and IsChatStreamOversizedArgumentError does match.
-var bareInvalidArgument400Err = fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument"}}`)
+var errBareInvalidArgument400 = fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":400,"apiStatus":"invalidArgument"}}`)
 
 // TestLoopRunner_DeliveryFailure_OversizedContext_OverThreshold_ClassifiesAndAutoPauses
 // is the mitto-5se AC2 test: a bare 400/invalidArgument corroborated by
@@ -6597,10 +6597,10 @@ func TestLoopRunner_DeliveryFailure_OversizedContext_OverThreshold_ClassifiesAnd
 	}
 
 	// Sanity: precondition matches what the classifier depends on.
-	if mittoAcp.IsContextTooLargeError(bareInvalidArgument400Err) {
+	if mittoAcp.IsContextTooLargeError(errBareInvalidArgument400) {
 		t.Fatalf("test precondition failed: IsContextTooLargeError must NOT match the uncorroborated bare 400 (mitto-2efc)")
 	}
-	if !mittoAcp.IsChatStreamOversizedArgumentError(bareInvalidArgument400Err) {
+	if !mittoAcp.IsChatStreamOversizedArgumentError(errBareInvalidArgument400) {
 		t.Fatalf("test precondition failed: IsChatStreamOversizedArgumentError must match the bare 400/invalidArgument pair")
 	}
 
@@ -6610,7 +6610,7 @@ func TestLoopRunner_DeliveryFailure_OversizedContext_OverThreshold_ClassifiesAnd
 	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) { autoStopCalls++ })
 
 	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, bareInvalidArgument400Err, true, false, session.TriggerOnCompletion, LoopFreshContextTurnThreshold)
+		runner.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, errBareInvalidArgument400, true, false, session.TriggerOnCompletion, LoopFreshContextTurnThreshold)
 	}
 
 	final, err := loopStore.Get()
@@ -6679,7 +6679,7 @@ func TestLoopRunner_DeliveryFailure_OversizedContext_UnderThreshold_StaysGeneric
 	for _, turns := range []int64{contextTurnsUnknown, 0, LoopFreshContextTurnThreshold - 1} {
 		h := &recordingSlogHandler{minLevel: slog.LevelDebug}
 		r := NewLoopRunner(store, nil, slog.New(h))
-		r.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, bareInvalidArgument400Err, true, false, session.TriggerSchedule, turns)
+		r.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, errBareInvalidArgument400, true, false, session.TriggerSchedule, turns)
 		if got, _ := slogRecordStringAttr(h.warnOrHigher()[0], "failure_class"); got != "generic" {
 			t.Errorf("contextTurns=%d: failure_class = %q, want %q (mitto-2efc guarantee must hold under threshold)", turns, got, "generic")
 		}
@@ -6689,7 +6689,7 @@ func TestLoopRunner_DeliveryFailure_OversizedContext_UnderThreshold_StaysGeneric
 	// under threshold and confirm StoppedReasonDeliveryFailures, not
 	// StoppedReasonContextWindowExceeded.
 	for i := 1; i <= MaxLoopDeliveryFailures; i++ {
-		runner.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, bareInvalidArgument400Err, true, false, session.TriggerSchedule, 0)
+		runner.handleDeliveryFailure(sessionID, "cgw-oversized", loop, loopStore, errBareInvalidArgument400, true, false, session.TriggerSchedule, 0)
 	}
 	final, err := loopStore.Get()
 	if err != nil {
