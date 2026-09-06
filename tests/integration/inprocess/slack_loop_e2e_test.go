@@ -190,21 +190,37 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 
 func TestSlackLoopDelegatedAuthorizationE2E(t *testing.T) {
 	ts := SetupTestServer(t)
-	emit := make(chan struct{})
+	emitBoth := make(chan struct{})
+	emitRest := make(chan struct{})
 	catalog := slackE2ECatalog{
 		"bot-install": {Installation: slackcatalog.Installation{ID: "bot-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindBot,
 			TeamID: "team", BotUserID: "UBOT"}, TokenConfigured: true},
 		"user-install": {Installation: slackcatalog.Installation{ID: "user-install", AppID: "app", CredentialKind: slackcatalog.CredentialKindUser,
 			TeamID: "team", UserID: "UDELEGATED"}, TokenConfigured: true},
 	}
-	source := &slackbridge.FakeSource{Runs: []slackbridge.FakeRun{{Wait: emit, Events: []slackbridge.Event{
-		{EventID: "event-both", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "both",
-			AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{{UserID: "UBOT", IsBot: true}, {UserID: "UDELEGATED"}}},
-		{EventID: "event-user", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "user",
-			AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{{UserID: "UDELEGATED"}}},
-		{EventID: "event-revoked", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "must-not-persist",
-			AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{}},
-	}}}}
+	// event-both is emitted in its own gated FakeRun, separate from
+	// event-user/event-revoked. Both runs share the same conversation surface
+	// (ChannelID=private, no thread), so if all three events were emitted in a
+	// single burst, event-user's Accept() would arrive while event-both was
+	// still "pending" under the 2s settle timer, and coalesceSupersededLocked
+	// (journal.go, mitto-7vk) would legitimately supersede event-both's
+	// pending user/dual recipients -- production coalescing is intentional
+	// (bounding a busy conversation surface), so the test itself must not
+	// race it (mitto-0fb). Splitting the burst and waiting for event-both to
+	// fully drain (recipients claimed past "pending", immune to coalescing)
+	// before emitting the rest fixes the race without touching production code.
+	source := &slackbridge.FakeSource{Runs: []slackbridge.FakeRun{
+		{Wait: emitBoth, Events: []slackbridge.Event{
+			{EventID: "event-both", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "both",
+				AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{{UserID: "UBOT", IsBot: true}, {UserID: "UDELEGATED"}}},
+		}},
+		{Wait: emitRest, Events: []slackbridge.Event{
+			{EventID: "event-user", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "user",
+				AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{{UserID: "UDELEGATED"}}},
+			{EventID: "event-revoked", TeamID: "team", ChannelID: "private", AuthorID: "human", Kind: "message", Text: "must-not-persist",
+				AuthorizationScopeKnown: true, Authorizations: []slackbridge.EventAuthorization{}},
+		}},
+	}}
 	sources := &slackE2ESources{source: source}
 	bot := createSlackLoopSession(t, ts, "bot authorization", true, []string{"onSlack"}, "bot-install", "private")
 	user := createSlackLoopSession(t, ts, "user authorization", true, []string{"onSlack"}, "user-install", "private")
@@ -218,8 +234,19 @@ func TestSlackLoopDelegatedAuthorizationE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	close(emit)
+
+	close(emitBoth)
 	waitSlackCounts(t, ts, map[string]int{bot: 1, user: 1, dual: 1})
+	for _, sessionID := range []string{bot, user, dual} {
+		waitLoopSessionIdle(t, ts, sessionID)
+	}
+
+	// event-both is now delivered (recipients terminal), so it survives the
+	// coalescing pass triggered by event-user's Accept() below. user/dual each
+	// get a second, separate dispatch for event-user; bot's subscription is
+	// not authorized for event-user and stays at one dispatch.
+	close(emitRest)
+	waitSlackCounts(t, ts, map[string]int{bot: 1, user: 2, dual: 2})
 	for _, sessionID := range []string{bot, user, dual} {
 		waitLoopSessionIdle(t, ts, sessionID)
 	}
