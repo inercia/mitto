@@ -100,6 +100,18 @@ func IsNotFound(err error) bool {
 	return false
 }
 
+// IsOpenChildrenRejection reports whether err represents bd's business-rule
+// refusal to close an epic that still has open child issues (e.g. "cannot
+// close epic <id>: N open child issue(s); close children first"). This is a
+// recoverable, actionable rejection distinct from a genuine internal error,
+// so callers map it to an HTTP 409 with the reason instead of a bare 500.
+func IsOpenChildrenRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(StderrOf(err)), "open child issue")
+}
+
 // IsPublishFailure reports whether err is a MigrateRemote failure at the
 // publish stage ("bd dolt push") rather than the local schema-migration
 // stage ("bd migrate schema"). When true, the local migration already

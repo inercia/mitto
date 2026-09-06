@@ -79,8 +79,10 @@ func isValidBeadsIssueRef(s string) bool {
 //
 // A schema-version skew is distinguished from a genuine internal error: it
 // surfaces as an actionable HTTP 409 with direction-appropriate remediation,
-// rather than a bare 500. Every other failure keeps the existing HTTP 500
-// behavior.
+// rather than a bare 500. Likewise, bd's business-rule refusal to close an
+// epic with open child issues surfaces as an actionable HTTP 409 carrying the
+// reason (mitto-phg), rather than a bare 500. Every other failure keeps the
+// existing HTTP 500 behavior.
 func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
 	if beads.IsSchemaSkew(err) {
 		info := beads.SchemaSkewInfo(err)
@@ -137,6 +139,22 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 			msg = "The beads database at " + info.DBPath + " needs migration"
 		}
 		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsSchemaSkew, Message: msg, Details: details}})
+		return
+	}
+
+	if beads.IsOpenChildrenRejection(err) {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("beads command failed: epic has open child issues", "stderr", beads.StderrOf(err), "path", r.URL.Path)
+		}
+		var details map[string]any
+		if s := beads.StderrOf(err); s != "" {
+			details = map[string]any{"stderr": s}
+		}
+		msg := "Cannot close this issue: it still has open child issue(s). Close or reassign the child issues first."
+		if s := beads.StderrOf(err); s != "" {
+			msg = s
+		}
+		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsOpenChildren, Message: msg, Details: details}})
 		return
 	}
 

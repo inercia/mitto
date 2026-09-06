@@ -81,6 +81,11 @@ const (
 	// server_error so the frontend can render the partial-success nuance.
 	// See HandleBeadsMigrate in internal/web/handlers/beads_migrate.go.
 	errCodeBeadsMigratePublishFailed = "beads_migrate_publish_failed"
+
+	// errCodeBeadsOpenChildren identifies bd's business-rule refusal to close
+	// an epic that still has open child issues (mitto-phg). See
+	// writeBeadsError in internal/web/handlers/beads.go.
+	errCodeBeadsOpenChildren = "beads_open_children"
 )
 
 // auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 60s

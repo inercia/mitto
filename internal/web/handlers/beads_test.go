@@ -116,6 +116,19 @@ func (c *schemaAheadBD122Client) List(_ context.Context, _ string) ([]byte, erro
 	}
 }
 
+// epicOpenChildrenClient reproduces bd's business-rule refusal to close an
+// epic that still has open child issues (mitto-phg). The exact stderr wording
+// is taken verbatim from the mitto.log evidence attached to that bead.
+type epicOpenChildrenClient struct{ stubBeadsClient }
+
+func (c *epicOpenChildrenClient) SetStatus(_ context.Context, _, _, _ string) error {
+	return &beads.CmdError{
+		Err:      errors.New("bd exited with non-zero status: exit status 1"),
+		Stderr:   `cannot close epic on-call-3b9: 5 open child issue(s); close children first`,
+		ExitCode: 1,
+	}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
@@ -1659,6 +1672,39 @@ func TestHandleBeadsStatus_UndeferActionAccepted(t *testing.T) {
 	s.handleBeadsStatus(w, req)
 	if w.Code != http.StatusOK && w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 200 or 500", w.Code)
+	}
+}
+
+// TestHandleBeadsStatus_EpicWithOpenChildren_ReturnsActionable4xx reproduces
+// mitto-phg: closing an epic that still has open child issues is a known,
+// recoverable bd business-rule rejection, not a genuine internal error. It
+// must surface as a 4xx (not 500) carrying the actionable reason, mirroring
+// the existing schema-skew classification precedent in writeBeadsError.
+func TestHandleBeadsStatus_EpicWithOpenChildren_ReturnsActionable4xx(t *testing.T) {
+	s := newBeadsTestServerWithClient(&epicOpenChildrenClient{})
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/on-call-3b9/status?working_dir=/test/workspace",
+		strings.NewReader(`{"action":"close"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "on-call-3b9")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsStatus(w, req)
+
+	if w.Code < 400 || w.Code >= 500 {
+		t.Fatalf("status = %d, want a 4xx (not 500); body=%s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if !strings.Contains(env.Error.Message, "open child issue") {
+		t.Errorf("error.message = %q, want it to mention the open-children reason", env.Error.Message)
 	}
 }
 
