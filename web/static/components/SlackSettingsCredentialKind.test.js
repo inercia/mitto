@@ -79,6 +79,7 @@ if (isIsolatedRun) {
         if (url === "/api/slack/apps") return json({ apps: [app] });
         if (url === "/api/slack/environment-import")
           return json({ present: false });
+        if (url === "/api/slack/connections") return json({ connections: [] });
         if (
           url === "/api/slack/apps/app-a/installations" &&
           (init.method || "GET") === "GET"
@@ -140,12 +141,21 @@ if (isIsolatedRun) {
           container,
           "new installation form",
         );
-        const inputs = container.querySelectorAll(
-          '[data-testid="slack-new-installation-form"] input',
+        // Select by type/name instead of positional index: the "Add via"
+        // mode radios (mitto-a13) sit between the text fields and the bot
+        // token field, so a plain nth-input index silently drifts whenever
+        // the form gains or reorders fields (mitto-62e).
+        const textInputs = container.querySelectorAll(
+          '[data-testid="slack-new-installation-form"] input:not([type="radio"])',
         );
-        inputValue(inputs[0], "Bot Team");
-        inputValue(inputs[1], "T111");
-        inputValue(inputs[2], "write-only-canary");
+        inputValue(textInputs[0], "Bot Team"); // Friendly name
+        inputValue(textInputs[1], "T111"); // Team ID
+        inputValue(
+          container.querySelector(
+            '[data-testid="slack-new-installation-form"] input[type="password"]',
+          ),
+          "write-only-canary",
+        ); // Bot token
         await new Promise((resolve) => setTimeout(resolve, 0));
         container
           .querySelector('[data-testid="slack-new-installation-form"]')
