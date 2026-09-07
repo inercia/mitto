@@ -101,12 +101,19 @@ func wrapWithStderr(err error) error {
 // configured bd versions may exit non-zero for an absent key; tolerating
 // that here makes shared-mode reconciliation idempotent across bd versions
 // and safe to retry after a partial failure (mitto-ov4 fix scope).
+//
+// This also tolerates a missing .beads/config.yaml ("no config.yaml found in
+// BEADS_DIR ... run 'bd init' first"): Dolt-backed databases mark
+// initialization with metadata.json alone and may have no config.yaml at
+// all, and a file-backed one can have it transiently absent mid-rewrite.
+// Either way, the guard being unset is definitionally absent when there is
+// no config file to hold it, so the unset is a safe no-op (mitto-fh9).
 func isConfigKeyAlreadyAbsent(err error) bool {
 	diag := strings.ToLower(StderrOf(err))
 	if diag == "" {
 		return false
 	}
-	return strings.Contains(diag, "not set") || strings.Contains(diag, "no such key") || strings.Contains(diag, "does not exist") || strings.Contains(diag, "key not found")
+	return strings.Contains(diag, "not set") || strings.Contains(diag, "no such key") || strings.Contains(diag, "does not exist") || strings.Contains(diag, "key not found") || strings.Contains(diag, "no config.yaml")
 }
 
 // ReconcileDatabaseMode delegates to the wrapped client and invalidates reads
