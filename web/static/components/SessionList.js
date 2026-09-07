@@ -1961,9 +1961,8 @@ export function SessionList({
       </div>
       <!-- Side panel toolbar: panel-wide actions, sitting right above the
            conversation tree. Holds, in order: open-folder, category-filter,
-           density, search, workspaces, and settings. Workspaces and settings
-           were moved up from the footer; they are disabled (greyed) rather
-           than hidden when the configuration is read-only. -->
+           density, and search. (Workspaces and settings live in the footer, at
+           the bottom of the panel.) -->
       <div
         ref=${toolbarRef}
         class="px-3 pb-4"
@@ -1971,11 +1970,9 @@ export function SessionList({
       >
         <!-- Actions rendered via the portable Toolbar component
              (components/Toolbar.js) as a segmented "pill". Order: open folder,
-             category filter, density, search, workspaces, settings — evenly
-             spaced, no separators. Filter/Density keep their controlled open
-             state (openToolbarMenu) and custom menu content;
-             Workspaces/Settings are disabled (greyed) when the configuration
-             is read-only. -->
+             category filter, density, search — evenly spaced, no separators.
+             Filter/Density keep their controlled open state (openToolbarMenu)
+             and custom menu content. -->
         <${Toolbar}
           variant="block"
           surface="bg-mitto-surface-3"
@@ -2108,32 +2105,6 @@ export function SessionList({
               tip: "Search",
               ariaLabel: "Search",
             },
-            {
-              kind: "button",
-              testId: "workspaces-btn",
-              icon: html`<${FolderIcon} className="w-4 h-4" />`,
-              tip: configReadonly
-                ? "Workspaces (read-only configuration)"
-                : "Workspaces",
-              ariaLabel: "Workspaces",
-              disabled: configReadonly,
-              onClick: () =>
-                !configReadonly && onShowWorkspaces && onShowWorkspaces(),
-            },
-            {
-              kind: "button",
-              testId: "settings-btn",
-              icon: html`<${SettingsIcon} className="w-4 h-4" />`,
-              tip: configReadonly
-                ? rcFilePath
-                  ? `Using ${rcFilePath}`
-                  : "Settings (read-only configuration)"
-                : "Settings",
-              ariaLabel: "Settings",
-              disabled: configReadonly,
-              onClick: () =>
-                !configReadonly && onShowSettings && onShowSettings(),
-            },
           ]}
         />
       </div>
@@ -2148,9 +2119,56 @@ export function SessionList({
         }
         ${renderUnifiedTree()}
       </div>
-      <!-- Footer with theme and font size toggles -->
+      <!-- Footer: workspaces, settings, theme and font-size toggles, and the
+           keyboard-shortcuts button. Workspaces and settings live here (at the
+           bottom of the panel); they are disabled (greyed) rather than hidden
+           when the configuration is read-only. -->
       <div class="p-4 border-t border-mitto-border-1">
         <div class="flex items-center justify-center gap-3">
+          <!-- Workspaces and Settings (bottom-left of the panel). Disabled
+               (greyed) instead of hidden when the configuration is read-only. -->
+          <button
+            type="button"
+            data-testid="workspaces-btn"
+            onClick=${() =>
+              !configReadonly && onShowWorkspaces && onShowWorkspaces()}
+            aria-disabled=${configReadonly ? "true" : "false"}
+            class="btn btn-ghost btn-square btn-sm tooltip tooltip-top ${
+              configReadonly
+                ? "opacity-40 pointer-events-none text-mitto-text-muted"
+                : "text-mitto-text-muted hover:text-mitto-text-strong"
+            }"
+            data-tip=${
+              configReadonly
+                ? "Workspaces (read-only configuration)"
+                : "Workspaces"
+            }
+            aria-label="Workspaces"
+          >
+            <${FolderIcon} className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="settings-btn"
+            onClick=${() =>
+              !configReadonly && onShowSettings && onShowSettings()}
+            aria-disabled=${configReadonly ? "true" : "false"}
+            class="btn btn-ghost btn-square btn-sm tooltip tooltip-top ${
+              configReadonly
+                ? "opacity-40 pointer-events-none text-mitto-text-muted"
+                : "text-mitto-text-muted hover:text-mitto-text-strong"
+            }"
+            data-tip=${
+              configReadonly
+                ? rcFilePath
+                  ? `Using ${rcFilePath}`
+                  : "Settings (read-only configuration)"
+                : "Settings"
+            }
+            aria-label="Settings"
+          >
+            <${SettingsIcon} className="w-4 h-4" />
+          </button>
           <!-- Theme toggle (daisyUI swap; checked = light = sun shown).
                Controlled Preact checkbox — useTheme owns persistence / follow-system /
                Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
