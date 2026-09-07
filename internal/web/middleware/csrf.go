@@ -243,13 +243,24 @@ func (c *CSRFManager) isCSRFExemptPath(path string) bool {
 // This is stateless and doesn't require server-side token storage.
 //
 // CSRF protection is only enforced for external connections (those coming through
-// the external listener). Internal/localhost connections skip CSRF checks since
-// an attacker would need to be on the same machine to exploit them.
+// the external listener). Requests on the internal (loopback) listener skip the
+// check.
+//
+// NOTE (mitto-aha): skipping the internal listener is NOT justified by localhost
+// being immune to CSRF. A remote attacker's page loaded in the user's browser can
+// issue cross-site requests to http://127.0.0.1:<port>/, and — absent a Host
+// allowlist — DNS rebinding can defeat the loopback binding entirely; in both
+// cases the victim's browser, not the attacker, is the "same machine". Real-world
+// exploitability is instead limited by browser-dependent factors (SameSite=Lax on
+// the session cookie, no Access-Control-Allow-Credentials, Local Network Access),
+// which are mitigations rather than a server-side guarantee. Authenticated local
+// access plus Host/Origin hardening is tracked in mitto-aha.
 func (c *CSRFManager) CSRFMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip CSRF check for internal (localhost) connections.
-		// CSRF attacks require a victim's browser to make requests to our server,
-		// which is only a concern for externally-accessible endpoints.
+		// Skip CSRF enforcement for internal (loopback) connections. This is a
+		// deliberate trade-off, not a claim that localhost cannot be a
+		// CSRF/DNS-rebinding target — see the CSRFMiddleware doc comment and
+		// mitto-aha.
 		if !IsExternalConnection(r) {
 			next.ServeHTTP(w, r)
 			return
