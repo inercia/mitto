@@ -2,6 +2,7 @@ package eventprojection
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/inercia/mitto/internal/agentbackend"
@@ -338,5 +339,261 @@ func TestProjector_FakeHostIntegration(t *testing.T) {
 	}
 	if len(sink.events) != 2 || sink.events[1].Kind != agentbackend.EventLifecycle || sink.events[1].Lifecycle != agentbackend.LifecycleReconnected {
 		t.Fatalf("expected a reconnect lifecycle event to be projected, got %+v", sink.events)
+	}
+}
+
+func TestProjector_SeqIsMittoOwnedNeverDerivedFromUpstreamCursor(t *testing.T) {
+	p, sink := newTestProjector(t)
+
+	// Use a cursor value that LOOKS like it could be mistaken for a Mitto
+	// seq (a large numeric string) to prove Seq is always allocated by the
+	// injected SeqAllocator and never derived from/equal to the opaque,
+	// possibly host-wide UpstreamCursor value.
+	const suspiciousCursor = "999999"
+	ev := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "hi", suspiciousCursor)
+	if err := p.Ingest(ev); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	if len(sink.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(sink.events))
+	}
+	if got := sink.events[0].Seq; got != 1 {
+		t.Fatalf("Seq = %d, want 1 (Mitto-owned, independent of the upstream cursor value %q)", got, suspiciousCursor)
+	}
+	if sink.events[0].UpstreamIdentity != suspiciousCursor {
+		t.Fatalf("UpstreamIdentity should still record the opaque cursor for dedup purposes: got %q", sink.events[0].UpstreamIdentity)
+	}
+}
+
+func TestProjector_OutOfOrderCursorArrivalsHandledByIdentityNotOrdering(t *testing.T) {
+	p, sink := newTestProjector(t)
+
+	// Cursors are opaque, backend-assigned markers with no assumed
+	// ordering/comparability (doc.go) -- delivering "cur-2" before "cur-1"
+	// must not corrupt dedup state or crash.
+	ev2 := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "second", "cur-2")
+	ev1 := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "first", "cur-1")
+
+	if err := p.Ingest(ev2); err != nil {
+		t.Fatalf("Ingest ev2: %v", err)
+	}
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if err := p.Ingest(ev1); err != nil {
+		t.Fatalf("Ingest ev1: %v", err)
+	}
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	if len(sink.events) != 2 {
+		t.Fatalf("expected both out-of-order events projected, got %d", len(sink.events))
+	}
+	if sink.events[0].UpstreamIdentity != "cur-2" || sink.events[1].UpstreamIdentity != "cur-1" {
+		t.Fatalf("unexpected identities: %+v", sink.events)
+	}
+	replaySeq := sink.events[0].Seq
+
+	// Re-deliver "cur-2" (the first one ever seen) a second time, out of
+	// order relative to "cur-1"'s single delivery: must still be
+	// recognized as a replay carrying its OWN original seq, regardless of
+	// arrival order.
+	if err := p.Ingest(ev2); err != nil {
+		t.Fatalf("Ingest ev2 (replay): %v", err)
+	}
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if len(sink.events) != 3 {
+		t.Fatalf("expected the replay to be re-emitted, got %d events", len(sink.events))
+	}
+	if sink.events[2].Phase != PhaseReplay || sink.events[2].Seq != replaySeq {
+		t.Fatalf("replay of cur-2 = %+v, want Phase=replay Seq=%d", sink.events[2], replaySeq)
+	}
+}
+
+func TestProjector_IndependentSourceIDsDoNotShareDedupState(t *testing.T) {
+	// One durable store shared by two independent, interleaved upstream
+	// host sessions (e.g. one host process serving many chats) must never
+	// cross-contaminate each session's dedup/replay state.
+	store := NewMemoryCheckpointStore()
+	srcA := SourceID{Backend: "fake", Provider: "p1", ProviderSession: "sessA"}
+	srcB := SourceID{Backend: "fake", Provider: "p1", ProviderSession: "sessB"}
+
+	sinkA := &captureSink{}
+	pA, err := NewProjector(srcA, &seqCounter{}, sinkA, store, nil)
+	if err != nil {
+		t.Fatalf("NewProjector A: %v", err)
+	}
+	sinkB := &captureSink{}
+	pB, err := NewProjector(srcB, &seqCounter{}, sinkB, store, nil)
+	if err != nil {
+		t.Fatalf("NewProjector B: %v", err)
+	}
+
+	// Both sessions happen to reuse the identical UpstreamCursor value.
+	evA := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "from A", "cur-1")
+	evB := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "from B", "cur-1")
+
+	if err := pA.Ingest(evA); err != nil {
+		t.Fatalf("Ingest A: %v", err)
+	}
+	if err := pB.Ingest(evB); err != nil {
+		t.Fatalf("Ingest B: %v", err)
+	}
+	if err := pA.Flush(); err != nil {
+		t.Fatalf("Flush A: %v", err)
+	}
+	if err := pB.Flush(); err != nil {
+		t.Fatalf("Flush B: %v", err)
+	}
+
+	if len(sinkA.events) != 1 || sinkA.events[0].Content[0].Text.Text != "from A" {
+		t.Fatalf("sink A unexpected: %+v", sinkA.events)
+	}
+	if len(sinkB.events) != 1 || sinkB.events[0].Content[0].Text.Text != "from B" {
+		t.Fatalf("sink B unexpected: %+v", sinkB.events)
+	}
+	if sinkA.events[0].Phase != PhaseSnapshot || sinkB.events[0].Phase != PhaseSnapshot {
+		t.Fatalf("both independent sources must independently see their own first commit as PhaseSnapshot: A=%v B=%v", sinkA.events[0].Phase, sinkB.events[0].Phase)
+	}
+
+	// Re-arrival on A alone must replay only A's identity, leaving B
+	// untouched.
+	if err := pA.Ingest(evA); err != nil {
+		t.Fatalf("Ingest A (replay): %v", err)
+	}
+	if err := pA.Flush(); err != nil {
+		t.Fatalf("Flush A: %v", err)
+	}
+	if len(sinkA.events) != 2 || sinkA.events[1].Phase != PhaseReplay {
+		t.Fatalf("expected A's replay: %+v", sinkA.events)
+	}
+	if len(sinkB.events) != 1 {
+		t.Fatalf("B must be unaffected by A's replay, got %d events", len(sinkB.events))
+	}
+}
+
+// neverPersistsCheckpointStore models a CheckpointStore whose Save() is lost
+// on every call (e.g. a process crash between the sink write and the
+// checkpoint persist -- Window A in doc.go / the Plan's crash-consistency
+// design). Load always reports no checkpoint, as if no Save ever landed.
+type neverPersistsCheckpointStore struct{}
+
+func (neverPersistsCheckpointStore) Load(SourceID) (*Checkpoint, error) {
+	return nil, ErrCheckpointNotFound
+}
+func (neverPersistsCheckpointStore) Save(*Checkpoint) error { return nil }
+
+func TestProjector_CrashWindowA_UnpersistedCheckpointCanDuplicateProjectionButPreservesIdentity(t *testing.T) {
+	store := neverPersistsCheckpointStore{}
+	src := SourceID{Backend: "fake", Provider: "p1", ProviderSession: "s1"}
+	ev := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "hello", "cur-1")
+
+	// First "process lifetime": the event is committed and handed to the
+	// sink (the durable event write succeeds), but the checkpoint save
+	// that should follow it is lost -- simulating a crash landing exactly
+	// in Window A (event persisted, checkpoint not advanced).
+	sink1 := &captureSink{}
+	p1, err := NewProjector(src, &seqCounter{}, sink1, store, nil)
+	if err != nil {
+		t.Fatalf("NewProjector 1: %v", err)
+	}
+	if err := p1.Ingest(ev); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if err := p1.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if len(sink1.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(sink1.events))
+	}
+	firstIdentity := sink1.events[0].UpstreamIdentity
+
+	// "Restart": a fresh Projector loads from the store, which never
+	// durably recorded the identity. Re-arrival of the SAME upstream event
+	// is therefore NOT recognized as a replay. This is the documented
+	// (doc.go) non-guarantee: reconciliation gives at-most-once PROJECTION
+	// only once the checkpoint save has actually landed -- it is never a
+	// promise of exactly-once SIDE-EFFECT EXECUTION by whatever consumes
+	// the sink's output.
+	sink2 := &captureSink{}
+	p2, err := NewProjector(src, &seqCounter{}, sink2, store, nil)
+	if err != nil {
+		t.Fatalf("NewProjector 2: %v", err)
+	}
+	if err := p2.Ingest(ev); err != nil {
+		t.Fatalf("Ingest (post-crash re-arrival): %v", err)
+	}
+	if err := p2.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	if len(sink2.events) != 1 {
+		t.Fatalf("expected the re-arrival to be projected again (the documented Window A risk), got %d", len(sink2.events))
+	}
+	if sink2.events[0].Phase == PhaseReplay {
+		t.Fatalf("did not expect PhaseReplay: an unpersisted checkpoint cannot recognize the replay (this IS the Window A gap)")
+	}
+	// The one thing that MUST still hold even inside this crash window:
+	// both emissions carry the SAME UpstreamIdentity, so a sink/consumer
+	// that needs exactly-once side-effect execution can dedup on it.
+	if firstIdentity == "" || sink2.events[0].UpstreamIdentity != firstIdentity {
+		t.Fatalf("UpstreamIdentity must remain stable across the crash window so downstream consumers can dedup: got %q, want %q", sink2.events[0].UpstreamIdentity, firstIdentity)
+	}
+}
+
+// countingCheckpointStore wraps a MemoryCheckpointStore to count Save calls,
+// for asserting that a failed sink write never lets the checkpoint advance.
+type countingCheckpointStore struct {
+	*MemoryCheckpointStore
+	saves int
+}
+
+func (s *countingCheckpointStore) Save(cp *Checkpoint) error {
+	s.saves++
+	return s.MemoryCheckpointStore.Save(cp)
+}
+
+// panicSink simulates a sink whose durable write fails catastrophically
+// (e.g. a crash mid-write), to prove Window B (checkpoint advanced without
+// the event ever being durably written) cannot happen: the crash-consistency
+// ordering in projection.go calls the sink BEFORE saving the checkpoint, so
+// a sink failure must prevent the checkpoint save from ever running.
+type panicSink struct{}
+
+func (panicSink) Emit(ProjectedEvent) { panic("simulated sink failure") }
+
+func TestProjector_CrashWindowB_SinkFailureNeverAdvancesCheckpoint(t *testing.T) {
+	store := &countingCheckpointStore{MemoryCheckpointStore: NewMemoryCheckpointStore()}
+	src := SourceID{Backend: "fake", Provider: "p1", ProviderSession: "s1"}
+	p, err := NewProjector(src, &seqCounter{}, panicSink{}, store, nil)
+	if err != nil {
+		t.Fatalf("NewProjector: %v", err)
+	}
+	ev := textEvent(agentbackend.EventAgentMessage, agentbackend.OriginLocal, "hello", "cur-1")
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("expected the sink failure to propagate out of Ingest/Flush")
+			}
+		}()
+		if err := p.Ingest(ev); err != nil {
+			t.Fatalf("Ingest: %v", err)
+		}
+		_ = p.Flush()
+	}()
+
+	if store.saves != 0 {
+		t.Fatalf("checkpoint must never be advanced when the event write fails: got %d Save call(s), want 0 (Window B is impossible by ordering)", store.saves)
+	}
+	if _, err := store.Load(src); !errors.Is(err, ErrCheckpointNotFound) {
+		t.Fatalf("checkpoint store must still report no checkpoint after the failed write: err = %v", err)
 	}
 }
