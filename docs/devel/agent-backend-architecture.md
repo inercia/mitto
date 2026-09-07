@@ -164,12 +164,48 @@ Translators are pure functions with unit coverage: content blocks,
 stop-reason/outcome, three-state capabilities, model/mode/config state, and
 error mapping to the neutral sentinels. Inbound ACP notifications translate to
 neutral `Event`s tagged `Origin=OriginLocal`. **Still deferred:** wiring the
-adapter into `BackgroundSession` (mitto-lrt.7, lifecycle) and extracting the
-sequence/streaming projection with full tool-call/plan event payload modeling
-(mitto-lrt.8, event projection). Documented shims/gaps to remove alongside that
-later work: the synthesized `ConversationID` in `NewSession` (real Mitto IDs
-arrive with the .7 wiring); dropped Audio/embedded-Resource content blocks and
-deferred non-message `SessionUpdate` kinds (modeled in .8).
+adapter into `BackgroundSession` (lifecycle track, mitto-lrt.7 onward — the .7
+increment introduced the ownership seam below but did not route the acpbackend
+adapter through it yet) and extracting the sequence/streaming projection with
+full tool-call/plan event payload modeling (mitto-lrt.8, event projection).
+Documented shims/gaps to remove alongside that later work: the synthesized
+`ConversationID` in `NewSession` (real Mitto IDs arrive when the lifecycle seam
+is wired into production call sites); dropped Audio/embedded-Resource content
+blocks and deferred non-message `SessionUpdate` kinds (modeled in .8).
+
+**Ownership seam realized (mitto-lrt.7):** conversation lifecycle now has a
+protocol-neutral acquisition + ownership seam, `BackendProvider` /
+`BackendLease` (`internal/conversation/backend_provider.go`), mirroring the
+existing `ProcessManager` dependency-inversion pattern (`SetACPProcessManager`).
+`BackendProvider.AcquireSession` acquires a lease for a `New`/`Load`/`Resume`
+intent; `BackendLease` models *ownership* of one acquired session —
+`Ref`/`State`/`Capabilities`/`Detach`/`Reconnect`/`Terminate` — with ACP-only
+`LocalProcess()`/`SessionHandle()` escape hatches so the existing
+prompt/streaming data path keeps flowing through `SharedProcess`/`SessionHandle`
+unchanged. Ownership rules from the ADR are encoded here: `Detach` releases a
+share without killing a shared process or a host-owned session ("detach, not
+kill"); `Reconnect` is single-flight (concurrent callers coalesce onto one
+upstream resume, never replaying a possibly-accepted prompt); `Terminate` is
+capability-gated and returns a typed `*agentbackend.UnsupportedError` for
+backends that cannot honor it. `ClassifyAcquireError` (`backend_state.go`) maps
+known acquisition/reconnect errors to neutral `agentbackend.LifecycleState`
+(connection-unavailable/session-missing → `Disconnected`, busy/saturated and
+concurrent GC-recycle → `Reconnecting`, permanent ACP classification →
+`Stopped`) while returning the original error unchanged for `errors.Is`/`As`.
+The ACP implementation delegates byte-identically to `ProcessManager`; a
+non-process fake (`backend_provider_fake_test.go`, built on
+`agentbackend.FakeHost`) proves create/attach/detach/resume, sibling isolation
+under concurrent detach, and single-flight reconnect with **no**
+process/PID/runner/restart.
+
+**Deliberately deferred (mitto-lrt.7):** to keep the hardened ACP lifecycle
+zero-regression, the seam ships tested but **not yet wired into the production
+`SessionManager`/`BackgroundSession` acquisition call sites** — those still
+acquire via `ProcessManager.GetOrCreateProcess` directly, so a `nil`
+`BackendProvider` is a valid, common state and callers fall back to the
+pre-existing path. Routing the per-prompt data path through `agentbackend`'s
+neutral `Event`s remains separately blocked on the event-projection work
+(mitto-lrt.8).
 
 ## 7. Migration matrix (proposed)
 
