@@ -162,23 +162,47 @@ three anchor files; existing identity separation in `session.Metadata`,
 
 **Proposed (this record, not yet implemented):** §1–§7 above.
 
-**Unverified (AHP assumptions — not confirmed against any AHP spec):**
-whether AHP has its own capability-discovery mechanism, its own
-session/cursor model, and whether "remote attach" is even a real AHP
-operation as opposed to always spawning a local subprocess. These are
-flagged, not assumed, below.
+**Verified against the AHP spec (mitto-lrt.3, 2026-09-07):** AHP v0.9.0 has
+its own capability-discovery mechanism (`initialize` handshake,
+`auth/required`), its own session/cursor model (URI-addressed channels,
+server-assigned `lastSeenServerSeq` plus client-assigned `ClientSeq`,
+explicit sequence-gap detection forcing resubscribe), and a published,
+spec-lockstep **Go** client (`github.com/microsoft/agent-host-protocol/clients/go`)
+alongside its Rust/TypeScript/Kotlin/Swift clients — the "no Go SDK" premise
+in the original mitto-3jr research was incorrect and is corrected here. See
+[docs/devel/ahp-feasibility.md](ahp-feasibility.md) for the full evidence
+matrix, including the one confirmed architectural mismatch (AHP
+creates/mutates resources via a generic `Dispatch(channel, action)` write-ahead
+call reconciled by client-side reducers, not typed request/response RPCs like
+ACP's `session/new`).
+
+**Remaining unverified:** AHP's model-selection surface (not found in the
+inspected Go client API; needs a deeper JSON-Schema read) and whether any
+Claude-backed AHP host is reachable outside VS Code's in-process reference
+host. These are runtime/environmental gaps, not architectural gaps in the Go
+client itself.
 
 ## 9. Open questions
 
 1. Does a concrete AHP specification exist yet that this record can be
-   checked against, or is "AHP" still aspirational? _(blocks any contract
-   implementation — file `bd create --parent mitto-lrt` if unresolved when
-   implementation work starts.)_
+   checked against, or is "AHP" still aspirational? **Resolved (2026-09-07):**
+   yes — spec `v0.9.0` (2026-08-28), pre-1.0 and actively churning (breaking
+   changes in every 0.6→0.9 release), with five independently-versioned
+   language clients including Go. See
+   [docs/devel/ahp-feasibility.md](ahp-feasibility.md).
 2. Is "remote attach without local process ownership" (§2) an actual
    near-term requirement, or should the first increment assume every
    `BackendConnection` still spawns a local subprocess (i.e. §2's "Remote"
-   column is design headroom, not immediate scope)?
+   column is design headroom, not immediate scope)? **Resolved for AHP
+   specifically (2026-09-07):** remote attach is not optional headroom for
+   an AHP backend — it is the _only_ mode the protocol models. An AHP client
+   always subscribes to host-owned channels; it never spawns the agent
+   process itself. §2's "Remote" column is therefore mandatory scope for any
+   AHP `BackendConnection`, independent of whether AHP is ultimately adopted
+   (mitto-lrt.3 records that adoption itself remains blocked on host/auth
+   availability, not on this architectural question).
 
-Each question above either gets resolved inline in a future revision of
-this record, or is filed as an explicit blocker bead under `mitto-lrt`
-before any contract implementation begins.
+Both questions above are now resolved against the current AHP spec/SDK
+revisions; mitto-lrt.3's blocked-on-runtime-validation decision is a separate,
+environmental finding (no reachable host, no dependency authorization yet) and
+does not reopen either question.

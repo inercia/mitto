@@ -54,6 +54,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Agent/Backend Architecture](agent-backend-architecture.md)** — Design decision record proposing `AgentDefinition`/`BackendConnection`/`AgentRef` identities, ownership boundaries between locally-launched and remotely-attached backends, and a migration matrix, in preparation for a second upstream protocol alongside ACP
 
+- **[AHP Feasibility](ahp-feasibility.md)** — Bounded evidence-matrix investigation of Mitto as a Go client of an external Agent Host Protocol (AHP) host (Claude as first candidate); confirms a published Go AHP SDK exists (correcting prior research) and records a blocked-on-runtime-validation decision pending host/auth availability and dependency authorization
+
 - **[Session Resume Analysis](session-resume-analysis.md)** — ACP session resume support analysis, UNSTABLE API usage, implementation plan
 
 - **[Task Automation Manager](task-automation-manager.md)** — Beads-backed automation design: native claims and ticket-resident workflow state, shared Go scheduling, per-item LLM supervisors, customizable phases, recovery, migration, and open questions with possible solutions
