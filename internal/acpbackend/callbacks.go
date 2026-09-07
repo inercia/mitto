@@ -12,10 +12,10 @@ import (
 // buildCallbacks constructs the conversation.SessionCallbacks the adapter
 // registers with the underlying SharedProcess for a session, translating
 // streamed updates into neutral Events and delegating client-service
-// requests (file/permission) to the optional ClientHooks. Terminal
-// operations have no neutral ClientServices analogue yet (contracts.go only
-// models ReadFile/WriteFile/RequestPermission) and always fail with
-// *agentbackend.UnsupportedError until the neutral contract grows one.
+// requests (file/permission/terminal) to the optional ClientHooks/
+// TerminalHooks. With no hooks installed (the default), every request is
+// answered with *agentbackend.UnsupportedError — installing hooks is
+// required to opt into real behavior (mitto-lrt.11).
 func (c *Connection) buildCallbacks(ref agentbackend.SessionRef) *conversation.SessionCallbacks {
 	return &conversation.SessionCallbacks{
 		OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
@@ -27,20 +27,10 @@ func (c *Connection) buildCallbacks(ref agentbackend.SessionRef) *conversation.S
 		OnReadTextFile:        c.onReadTextFile(ref),
 		OnWriteTextFile:       c.onWriteTextFile(ref),
 		OnRequestPermission:   c.onRequestPermission(ref),
-		OnCreateTerminal:      unsupportedTerminalHandler[acp.CreateTerminalRequest, acp.CreateTerminalResponse](),
-		OnTerminalOutput:      unsupportedTerminalHandler[acp.TerminalOutputRequest, acp.TerminalOutputResponse](),
-		OnReleaseTerminal:     unsupportedTerminalHandler[acp.ReleaseTerminalRequest, acp.ReleaseTerminalResponse](),
-		OnWaitForTerminalExit: unsupportedTerminalHandler[acp.WaitForTerminalExitRequest, acp.WaitForTerminalExitResponse](),
-		OnKillTerminal:        unsupportedTerminalHandler[acp.KillTerminalRequest, acp.KillTerminalResponse](),
-	}
-}
-
-// unsupportedTerminalHandler builds a SessionCallbacks terminal handler that
-// always reports agentbackend.FeatureTerminals as unsupported, since the
-// neutral ClientServices contract does not model terminals yet.
-func unsupportedTerminalHandler[Req any, Resp any]() func(ctx context.Context, params Req) (Resp, error) {
-	return func(ctx context.Context, params Req) (Resp, error) {
-		var zero Resp
-		return zero, &agentbackend.UnsupportedError{Feature: agentbackend.FeatureTerminals}
+		OnCreateTerminal:      c.onCreateTerminal(ref),
+		OnTerminalOutput:      c.onTerminalOutput(ref),
+		OnReleaseTerminal:     c.onReleaseTerminal(ref),
+		OnWaitForTerminalExit: c.onWaitForTerminalExit(ref),
+		OnKillTerminal:        c.onKillTerminal(ref),
 	}
 }

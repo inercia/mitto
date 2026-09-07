@@ -40,6 +40,11 @@ type Connection struct {
 	// auto-approved or served (see client_services.go).
 	hooks *ClientHooks
 
+	// terminalHooks, when non-nil, lets the caller supply real terminal
+	// execution for TerminalServices; nil means those requests are rejected
+	// with *agentbackend.UnsupportedError (see terminal_services.go).
+	terminalHooks *TerminalHooks
+
 	convSeq int64 // atomic: source for synthesized ConversationIDs (see NewSession)
 
 	subMu sync.Mutex
@@ -115,6 +120,16 @@ func (c *Connection) Providers(ctx context.Context) ([]agentbackend.ProviderID, 
 	return []agentbackend.ProviderID{c.provider}, nil
 }
 
+// Ownership implements agentbackend.ResourceOwner. The ACP protocol always
+// spawns a local subprocess for the agent (internal/acpproc), so every ACP
+// session's file/terminal requests describe resources on the LOCAL Mitto
+// machine — this is a constant fact of the ACP transport, not something to
+// infer per-session, and preserves the existing byte-identical local
+// execution behavior of the pre-mitto-lrt.11 ACP path.
+func (c *Connection) Ownership(ref agentbackend.SessionRef) agentbackend.ResourceOwnership {
+	return agentbackend.OwnershipLocal
+}
+
 // nextConversationID synthesizes a Mitto-owned conversation id for a
 // newly-created session. SessionOps.NewSession's neutral signature (ctx,
 // provider) carries no caller-supplied conversation id, so the adapter must
@@ -130,4 +145,5 @@ func (c *Connection) nextConversationID() string {
 var (
 	_ agentbackend.Connection        = (*Connection)(nil)
 	_ agentbackend.ProviderDiscovery = (*Connection)(nil)
+	_ agentbackend.ResourceOwner     = (*Connection)(nil)
 )

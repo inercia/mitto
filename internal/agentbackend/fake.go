@@ -14,12 +14,13 @@ import (
 // updates. All delivery is synchronous and goroutine-free, so there is
 // nothing to leak on Subscription.Close.
 type fakeHost struct {
-	mu        sync.Mutex
-	state     LifecycleState
-	providers []ProviderID
-	sessions  map[SessionRef]*fakeSession
-	nextSeq   int
-	subs      map[string][]*fakeSubscription // key: ConversationID, "" = host-wide
+	mu          sync.Mutex
+	state       LifecycleState
+	providers   []ProviderID
+	sessions    map[SessionRef]*fakeSession
+	nextSeq     int
+	subs        map[string][]*fakeSubscription // key: ConversationID, "" = host-wide
+	mcpBindings map[ProviderSessionID]MCPBindingHandle
 }
 
 // NewFakeHost creates a fake backend host advertising the given providers
@@ -30,10 +31,11 @@ func NewFakeHost(providers ...ProviderID) *fakeHost {
 		providers = []ProviderID{"fake-provider"}
 	}
 	return &fakeHost{
-		state:     LifecycleDisconnected,
-		providers: providers,
-		sessions:  make(map[SessionRef]*fakeSession),
-		subs:      make(map[string][]*fakeSubscription),
+		state:       LifecycleDisconnected,
+		providers:   providers,
+		sessions:    make(map[SessionRef]*fakeSession),
+		subs:        make(map[string][]*fakeSubscription),
+		mcpBindings: make(map[ProviderSessionID]MCPBindingHandle),
 	}
 }
 
@@ -131,4 +133,51 @@ func (h *fakeHost) lookupSession(ref SessionRef) (*fakeSession, error) {
 		return nil, ErrSessionNotFound
 	}
 	return s, nil
+}
+
+// Ownership implements ResourceOwner. fakeHost always reports OwnershipHost:
+// per its own doc comment it models a remote-owned host (no subprocess, no
+// exec), so every session's file/terminal requests describe resources on
+// that host, never the local Mitto machine — proving the fail-closed
+// rejection path contract tests exercise against a backend that cannot be
+// assumed local-owned.
+func (h *fakeHost) Ownership(ref SessionRef) ResourceOwnership {
+	return OwnershipHost
+}
+
+// BindMCP implements MCPBinder, keyed by ref.ProviderSession (modeling one
+// underlying protocol-session/transport). Rebinding the SAME ref is
+// idempotent; binding a different ref onto an already-bound
+// ProviderSession is rejected with ErrCrossSessionMCPBinding rather than
+// repointing the binding (mitto-apvg immutability invariant).
+func (h *fakeHost) BindMCP(ctx context.Context, ref SessionRef) (MCPBindingHandle, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if existing, ok := h.mcpBindings[ref.ProviderSession]; ok {
+		if existing.Session() != ref {
+			return MCPBindingHandle{}, ErrCrossSessionMCPBinding
+		}
+		return existing, nil
+	}
+	h.nextSeq++
+	handle := NewMCPBindingHandle(ref, fmt.Sprintf("bind-%d", h.nextSeq))
+	h.mcpBindings[ref.ProviderSession] = handle
+	return handle, nil
+}
+
+// UnbindMCP implements MCPBinder. Ownership-aware: releasing a binding still
+// attributed to a different SessionRef is rejected rather than tearing down
+// another session's binding.
+func (h *fakeHost) UnbindMCP(ctx context.Context, ref SessionRef) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	existing, ok := h.mcpBindings[ref.ProviderSession]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if existing.Session() != ref {
+		return ErrCrossSessionMCPBinding
+	}
+	delete(h.mcpBindings, ref.ProviderSession)
+	return nil
 }

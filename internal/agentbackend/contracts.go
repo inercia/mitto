@@ -90,3 +90,91 @@ type ClientServices interface {
 	WriteFile(ctx context.Context, ref SessionRef, path string, data []byte) error
 	RequestPermission(ctx context.Context, ref SessionRef, prompt string) (bool, error)
 }
+
+// TerminalHandle identifies one terminal created via TerminalServices,
+// scoped to the SessionRef it was created for. Opaque to callers outside the
+// owning backend.
+type TerminalHandle string
+
+// TerminalExitStatus reports how a terminal command finished. At most one
+// field is meaningful at a time: ExitCode is set when the process exited
+// normally (a zero value is a valid exit code, hence the pointer), Signal is
+// set when it was terminated by a signal instead — mirroring ACP's
+// terminal/wait_for_exit response shape without depending on the ACP SDK.
+type TerminalExitStatus struct {
+	ExitCode *int
+	Signal   *string
+}
+
+// TerminalServices is an optional client-side contract for running commands
+// in a host-managed terminal on behalf of the agent (create/output/wait/
+// kill/release), kept separate from ClientServices so a backend that cannot
+// safely execute anything (e.g. a host-owned session — see ResourceOwner)
+// can simply not implement it. A backend/session that doesn't implement this
+// interface, or a caller invoking one of its methods without checking
+// ResourceOwner first, must be treated identically to every method
+// returning *UnsupportedError{Feature: FeatureTerminals}.
+type TerminalServices interface {
+	CreateTerminal(ctx context.Context, ref SessionRef, command string, args []string, cwd string, env map[string]string) (TerminalHandle, error)
+	TerminalOutput(ctx context.Context, ref SessionRef, handle TerminalHandle) (output string, truncated bool, exit *TerminalExitStatus, err error)
+	WaitForTerminalExit(ctx context.Context, ref SessionRef, handle TerminalHandle) (TerminalExitStatus, error)
+	KillTerminal(ctx context.Context, ref SessionRef, handle TerminalHandle) error
+	ReleaseTerminal(ctx context.Context, ref SessionRef, handle TerminalHandle) error
+}
+
+// ResourceOwnership classifies whether a client-service resource request
+// (a file path, a terminal command) targets something owned by the LOCAL
+// Mitto machine, or by the connected backend host itself. A host-owned
+// session's "file path" or "command" is meaningful only in the host's own
+// environment; executing it against the local filesystem/process table
+// merely because it looks like an ordinary path/command would be a sandbox
+// escape from the host's point of view. ACP sessions are always local-owned
+// today (the agent runs as a local subprocess); a future remote backend
+// (e.g. AHP) may report OwnershipHost instead.
+type ResourceOwnership int
+
+const (
+	// OwnershipLocal means file/terminal requests for this session may be
+	// served against the local Mitto machine (today's ACP behavior).
+	OwnershipLocal ResourceOwnership = iota
+	// OwnershipHost means file/terminal requests for this session describe
+	// resources on the connected host, NOT the local Mitto machine; callers
+	// MUST reject such requests with *UnsupportedError rather than executing
+	// them locally.
+	OwnershipHost
+)
+
+// String returns a lowercase, stable string form for logging/debugging.
+func (o ResourceOwnership) String() string {
+	if o == OwnershipHost {
+		return "host"
+	}
+	return "local"
+}
+
+// ResourceOwner is an optional contract a backend/connection may implement
+// to report ResourceOwnership for a session. A backend that does not
+// implement this interface is assumed OwnershipLocal (matches every backend
+// today). Callers that honor ClientServices/TerminalServices requests MUST
+// consult Ownership first when it is available and refuse with
+// *UnsupportedError for any request against an OwnershipHost session.
+type ResourceOwner interface {
+	Ownership(ref SessionRef) ResourceOwnership
+}
+
+// RejectIfHostOwned enforces the ResourceOwner invariant in one call: when
+// owner is non-nil and reports OwnershipHost for ref, it returns
+// *UnsupportedError{Feature: feature} so a ClientServices/TerminalServices
+// caller can refuse a host-owned session's file/terminal request rather
+// than risk executing it against the local Mitto machine. A nil owner (a
+// backend that doesn't implement ResourceOwner) is treated as
+// OwnershipLocal, matching ResourceOwner's own doc comment.
+func RejectIfHostOwned(owner ResourceOwner, ref SessionRef, feature Feature) error {
+	if owner == nil {
+		return nil
+	}
+	if owner.Ownership(ref) == OwnershipHost {
+		return &UnsupportedError{Feature: feature}
+	}
+	return nil
+}

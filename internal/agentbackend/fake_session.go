@@ -93,6 +93,8 @@ var (
 	_ ProviderDiscovery = (*fakeHost)(nil)
 	_ SessionOps        = (*fakeHost)(nil)
 	_ EventDelivery     = (*fakeHost)(nil)
+	_ ResourceOwner     = (*fakeHost)(nil)
+	_ MCPBinder         = (*fakeHost)(nil)
 	_ Session           = (*fakeSession)(nil)
 	_ Capabilities      = (*fakeCapabilities)(nil)
 	_ Subscription      = (*fakeSubscription)(nil)

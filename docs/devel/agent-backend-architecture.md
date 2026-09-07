@@ -360,3 +360,53 @@ Both questions above are now resolved against the current AHP spec/SDK
 revisions; mitto-lrt.3's blocked-on-runtime-validation decision is a separate,
 environmental finding (no reachable host, no dependency authorization yet) and
 does not reopen either question.
+
+## 10. Client services, permissions & secure MCP binding (mitto-lrt.11)
+
+Additive, tested-but-inert, matching the mitto-lrt.4/.6/.7 shape: new neutral
+types in `internal/agentbackend`, adapter glue in `internal/acpbackend`,
+proven by the non-process fake + contract tests. No production behavior
+change; live `BackgroundSession`/`mcpserver` wiring is deferred.
+
+- **Client-service boundary.** `TerminalServices` is a new optional
+  contract (`CreateTerminal`/`TerminalOutput`/`WaitForTerminalExit`/
+  `KillTerminal`/`ReleaseTerminal`), kept separate from `ClientServices` so a
+  backend that cannot safely execute anything need not implement it. The ACP
+  adapter (`internal/acpbackend`) wires it the same way as `ClientHooks`:
+  installing `*TerminalHooks` opts in to real behavior; the default (nil) is
+  `*UnsupportedError{Feature: FeatureTerminals}` for every method, preserving
+  the pre-existing ACP terminal-handling behavior byte-for-byte.
+- **Host-vs-local ownership.** `ResourceOwnership` (`OwnershipLocal` /
+  `OwnershipHost`) plus the optional `ResourceOwner` contract and the
+  `RejectIfHostOwned` helper model the invariant that a host-owned session's
+  file/terminal requests are never safe to execute on the local Mitto
+  machine. The ACP adapter's `Connection.Ownership` always reports
+  `OwnershipLocal` (ACP always spawns a local subprocess); the in-memory fake
+  models a remote-owned host and always reports `OwnershipHost`.
+- **Fail-closed permissions.** `PermissionDecision` makes `PermissionUnknown`
+  behave identically to `PermissionDenied` for `Approved()` — an
+  indeterminate decision never grants access. `PermissionFence` sequences
+  competing/stale responders for one outstanding request via a monotonic
+  generation: `Next()` supersedes any prior in-flight request, and `Accept`
+  rejects a response tagged with a superseded generation, so a late
+  responder from before a reconnect can never be mistaken for the live one.
+- **Secure per-conversation MCP binding.** `FeatureMCPBinding` is a new
+  `Feature` queried through the existing three-state `Capabilities`: a host
+  that only offers a catalog/side-channel (no per-conversation attribution)
+  must report `CapabilityUnsupported`, and scoped tools must be BLOCKED in
+  that state, never broadened. `MCPBindingHandle` is an opaque,
+  reference-only handle (its `String()` never exposes the internal id, only
+  the bound session) issued by the optional `MCPBinder` contract
+  (`BindMCP`/`UnbindMCP`), which is immutable per session: rebinding an
+  already-bound transport to a different `SessionRef` returns
+  `ErrCrossSessionMCPBinding` rather than repointing it (mirrors the
+  mitto-apvg `internal/mcpserver` binding-token semantics without changing
+  them).
+- **Reachability / TLS / auth / credential-ref modeling.**
+  `EndpointBinding` describes an MCP endpoint's `AddressClass` (loopback vs.
+  remote), TLS requirement, `AuthScheme`, and an opaque `CredentialRef`
+  string (mirrors `BackendConnection.CredentialRef` /
+  `internal/secrets.CredentialRef` by reference only — never a secret
+  value). Its zero value is the closed default (loopback, no auth, tools NOT
+  relayed); `Validate()` rejects any remote binding that skips TLS, an auth
+  scheme, or a credential reference.
