@@ -52,9 +52,11 @@ This directory contains technical documentation for developers working on Mitto.
 
 ### Analysis
 
+- **[Agent/Backend Architecture](agent-backend-architecture.md)** — Design decision record proposing `AgentDefinition`/`BackendConnection`/`AgentRef` identities, ownership boundaries between locally-launched and remotely-attached backends, and a migration matrix, in preparation for a second upstream protocol alongside ACP
+
 - **[Session Resume Analysis](session-resume-analysis.md)** — ACP session resume support analysis, UNSTABLE API usage, implementation plan
 
-- **[Task Automation Manager](task-automation-manager.md)** — Design proposal to replace the `Loop processing tasks` supervisor prompt with a shared Go scheduler: hybrid architecture, deterministic vs semantic boundary, scheduling/fairness, migration plan, and open questions
+- **[Task Automation Manager](task-automation-manager.md)** — Beads-backed automation design: native claims and ticket-resident workflow state, shared Go scheduling, per-item LLM supervisors, customizable phases, recovery, migration, and open questions with possible solutions
 
 ### Debugging & Tools
 
@@ -102,7 +104,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Restricted runners        | [Restricted Runner Integration](restricted-runners.md) | Architecture, Runner Types, Config Hierarchy           |
 | Message processors        | [Message Processing Pipeline](processors.md)           | Pipeline, Processor Types, Variable Substitution       |
 | Session resume            | [Session Resume Analysis](session-resume-analysis.md)  | ACP resume support, UNSTABLE API, implementation plan  |
-| Task automation           | [Task Automation Manager](task-automation-manager.md)  | Hybrid arch, deterministic vs semantic, migration plan |
+| Task automation           | [Task Automation Manager](task-automation-manager.md)  | Beads claims/state, LLM supervision, workflow decisions |
 
 ## Additional Documentation
 
