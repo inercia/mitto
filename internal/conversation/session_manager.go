@@ -176,6 +176,17 @@ type SessionManager struct {
 	// When nil, legacy per-session process ownership is used.
 	acpProcessManager ProcessManager
 
+	// backendProvider is the optional protocol-neutral backend acquisition
+	// seam (mitto-lrt.7; see backend_provider.go). It mirrors
+	// acpProcessManager's injection pattern but returns a BackendLease
+	// (ownership) rather than a bare SharedProcess. Nil in production today
+	// — routing SessionManager's own acquisition call sites through it is
+	// deferred to a follow-up increment to keep this seam's introduction
+	// additive and zero-risk to the existing ACP hot path; NewACPBackendProvider
+	// already implements it against the SAME ProcessManager set above, proven
+	// by dedicated tests (backend_provider_acp_test.go).
+	backendProvider BackendProvider
+
 	// auxiliaryManager provides workspace-scoped auxiliary tasks (title generation,
 	// follow-up analysis, conversation summaries, etc.).
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
@@ -1077,6 +1088,22 @@ func (sm *SessionManager) SetACPProcessManager(pm ProcessManager) {
 		return
 	}
 	sm.acpProcessManager = pm
+}
+
+// SetBackendProvider sets the optional protocol-neutral backend acquisition
+// provider (mitto-lrt.7). See the backendProvider field doc for scope notes.
+func (sm *SessionManager) SetBackendProvider(p BackendProvider) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.backendProvider = p
+}
+
+// GetBackendProvider returns the currently-injected backend provider, or nil
+// if none was set.
+func (sm *SessionManager) GetBackendProvider() BackendProvider {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.backendProvider
 }
 
 // ACPProcessCount returns the number of active shared ACP processes.
