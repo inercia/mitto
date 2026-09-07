@@ -3,7 +3,7 @@
 Status: proposed (mitto-lrt.1). Scope: **naming and boundaries only** — this
 record does not mandate a giant `Agent` interface, a global ACP→Agent rename,
 or any code change. It exists to validate identities and ownership rules
-*before* Mitto adds a second upstream protocol (a prospective Agent Host
+_before_ Mitto adds a second upstream protocol (a prospective Agent Host
 Protocol / AHP **client**, not an AHP server) alongside ACP. Concrete
 contracts and the actual adapter implementation are tracked as follow-up
 issues under the `mitto-lrt` epic once the open questions below are
@@ -51,7 +51,7 @@ Four distinct identities, none of which embeds a protocol SDK type:
 
 - **`AgentDefinition`** (retain `internal/agents` shape) — identity and
   metadata only: display name, install/status/MCP scripts, defaults. Says
-  nothing about how the agent is *reached* at runtime.
+  nothing about how the agent is _reached_ at runtime.
 - **`BackendConnection`** (new, proposed) — protocol + connection
   configuration for reaching an agent: which protocol (ACP today, AHP
   later), command/URL, env, working directory. One `AgentDefinition` may be
@@ -75,14 +75,14 @@ Rows are per-concern, columns are "local ACP subprocess" (today's model,
 `SharedProcess.Restart`/`.Generation`/`.RecommendedLoadTimeout`) vs. "remote
 attach" (connect/reconnect/detach without process lifecycle control):
 
-| Concern                        | Local (ACP subprocess) | Remote (attach) |
-| ------------------------------ | ----------------------- | ---------------- |
-| Launch / restart / kill        | Mitto-owned              | not available — host-owned |
-| History replay                 | `LoadSession`/`ResumeSession` | protocol-defined resume/attach |
-| Model / mode / title changes   | Mitto-initiated, mirrored to upstream | may originate on either side (§3) |
-| Permissions, terminals, files  | ACP request/response today | protocol-defined equivalent, if any |
-| Auxiliary work (title, MCP checks) | scheduled on the same local process | needs its own remote session, not "free" |
-| Mitto loops (schedule/onCompletion/onTasks) | always Mitto-local | unaffected — loops are a Mitto concept, not projected upstream |
+| Concern                                     | Local (ACP subprocess)                | Remote (attach)                                                |
+| ------------------------------------------- | ------------------------------------- | -------------------------------------------------------------- |
+| Launch / restart / kill                     | Mitto-owned                           | not available — host-owned                                     |
+| History replay                              | `LoadSession`/`ResumeSession`         | protocol-defined resume/attach                                 |
+| Model / mode / title changes                | Mitto-initiated, mirrored to upstream | may originate on either side (§3)                              |
+| Permissions, terminals, files               | ACP request/response today            | protocol-defined equivalent, if any                            |
+| Auxiliary work (title, MCP checks)          | scheduled on the same local process   | needs its own remote session, not "free"                       |
+| Mitto loops (schedule/onCompletion/onTasks) | always Mitto-local                    | unaffected — loops are a Mitto concept, not projected upstream |
 
 Destructive host operations (killing/restarting a remote agent process) are
 explicitly **out of scope** for a remote `BackendConnection` — only locally
@@ -141,15 +141,15 @@ introduce a new boundary.
 
 ## 7. Migration matrix (proposed)
 
-| Surface | Today | Migration rule |
-| ------- | ----- | --------------- |
-| `WorkspaceSettings.ACPServer` / `.UUID` | server name; UUID independent | UUID stability preserved; server-name aliasing must reject ambiguous matches rather than silently pick one |
-| `session.Metadata.ACPSessionID` | resume-only cursor | new protocol adds its own cursor field; existing field untouched |
-| Prompt/CEL selectors, CLI `--acp` flag, MCP `acp_server` params | select by server name | unchanged for ACP; new protocol adds parallel selection, no renaming of existing flags |
-| REST/WS (`acp_started`/`acp_stopped`/`acp_start_failed`) | ACP-specific event names | preserved as-is; a second protocol gets its own event names, not overloaded onto these |
-| Go/JS SDKs, UI (`SettingsDialog`) | ACP-only today | additive only; no breaking change to existing public shapes |
-| Archived conversations | tied to their original ACP session | **never** silently migrated to a different protocol on unarchive — explicit user action required |
-| Unsupported backend | n/a | fail closed with a typed error, never silently fall back to a different backend |
+| Surface                                                         | Today                              | Migration rule                                                                                             |
+| --------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `WorkspaceSettings.ACPServer` / `.UUID`                         | server name; UUID independent      | UUID stability preserved; server-name aliasing must reject ambiguous matches rather than silently pick one |
+| `session.Metadata.ACPSessionID`                                 | resume-only cursor                 | new protocol adds its own cursor field; existing field untouched                                           |
+| Prompt/CEL selectors, CLI `--acp` flag, MCP `acp_server` params | select by server name              | unchanged for ACP; new protocol adds parallel selection, no renaming of existing flags                     |
+| REST/WS (`acp_started`/`acp_stopped`/`acp_start_failed`)        | ACP-specific event names           | preserved as-is; a second protocol gets its own event names, not overloaded onto these                     |
+| Go/JS SDKs, UI (`SettingsDialog`)                               | ACP-only today                     | additive only; no breaking change to existing public shapes                                                |
+| Archived conversations                                          | tied to their original ACP session | **never** silently migrated to a different protocol on unarchive — explicit user action required           |
+| Unsupported backend                                             | n/a                                | fail closed with a typed error, never silently fall back to a different backend                            |
 
 Rollback is bounded to configuration (workspace/server settings) — there is
 no proposed schema migration of existing `events.jsonl` data.
@@ -171,9 +171,9 @@ flagged, not assumed, below.
 ## 9. Open questions
 
 1. Does a concrete AHP specification exist yet that this record can be
-   checked against, or is "AHP" still aspirational? *(blocks any contract
+   checked against, or is "AHP" still aspirational? _(blocks any contract
    implementation — file `bd create --parent mitto-lrt` if unresolved when
-   implementation work starts.)*
+   implementation work starts.)_
 2. Is "remote attach without local process ownership" (§2) an actual
    near-term requirement, or should the first increment assume every
    `BackendConnection` still spawns a local subprocess (i.e. §2's "Remote"
