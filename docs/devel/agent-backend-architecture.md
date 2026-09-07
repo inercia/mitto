@@ -122,7 +122,7 @@ incorrectly hide capabilities from backends that simply don't advertise
 them; collapsing it into "supported" would incorrectly attempt calls the
 backend will reject.
 
-## 6. Incremental package-dependency diagram (proposed)
+## 6. Incremental package-dependency diagram (partially realized by mitto-lrt.4)
 
 ```
 internal/conversation  (domain: SharedProcess, SessionHandle, SessionCallbacks)
@@ -138,6 +138,19 @@ The existing `SharedProcess`/`SessionHandle`/`SessionCallbacks` interfaces
 already occupy the adapter-boundary position architecturally — the proposed
 work is to stop leaking `acp.*` types through that boundary, not to
 introduce a new boundary.
+
+**Package name (decided, mitto-lrt.4):** the neutral-contract package realizing
+the seam above is `internal/agentbackend`. It defines the typed identifiers,
+neutral prompt content/outcome/capability/state/event contracts, and small
+separated interfaces (`Connection`, `ProviderDiscovery`, `SessionOps`,
+`EventDelivery`, optional `ClientServices`) described in §1–§5, plus a
+non-process in-memory fake proving the contracts don't collapse into an ACP
+alias layer. It is purely additive: `internal/conversation` and
+`internal/acpproc` are untouched, and bridging an ACP adapter onto these
+contracts is deferred to mitto-lrt.6 (adapter), .7 (lifecycle), .8 (event
+projection). `internal/agentbackend` must never import `acp-go-sdk`, an AHP
+client, `internal/acp`, `internal/acpproc`, `internal/web`,
+`internal/conversation`, or `os/exec` — enforced by an import-guard test.
 
 ## 7. Migration matrix (proposed)
 
