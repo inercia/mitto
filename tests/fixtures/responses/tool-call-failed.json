@@ -1,0 +1,32 @@
+{
+  "scenario": "tool-call-failed",
+  "description": "A tool call that ends in a 'failed' status (as opposed to 'completed'), used to characterize that Mitto relays and persists a failed tool-call status verbatim rather than silently coercing it to a success state (mitto-lrt.2, Group D).",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "TEST:tool-call-failed"
+      },
+      "actions": [
+        {
+          "type": "tool_call",
+          "id": "tool-fail-1",
+          "title": "Run flaky command",
+          "status": "running",
+          "delay_ms": 20
+        },
+        {
+          "type": "tool_update",
+          "id": "tool-fail-1",
+          "status": "failed",
+          "delay_ms": 20
+        },
+        {
+          "type": "agent_message",
+          "chunks": ["The command failed. ", "See the tool output for details."],
+          "delay_ms": 20
+        }
+      ]
+    }
+  ]
+}

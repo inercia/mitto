@@ -58,6 +58,8 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Session Resume Analysis](session-resume-analysis.md)** — ACP session resume support analysis, UNSTABLE API usage, implementation plan
 
+- **[ACP Behavior Regression Baseline](acp-behavior-baseline.md)** — Executable regression baseline recorded before backend-boundary extraction: provenance, methodology, and a behavior-to-test coverage matrix
+
 - **[Task Automation Manager](task-automation-manager.md)** — Beads-backed automation design: native claims and ticket-resident workflow state, shared Go scheduling, per-item LLM supervisors, customizable phases, recovery, migration, and open questions with possible solutions
 
 ### Debugging & Tools
