@@ -140,6 +140,14 @@ type promptDeps interface {
 	// so a temporary override is always released on a definitive turn-ending
 	// error, even when the queue itself is deliberately left un-advanced.
 	pdRestoreBaselineIfOverride()
+	// pdAuthGuidanceAlreadySurfaced/pdMarkAuthGuidanceSurfaced/pdClearAuthGuidanceSurfaced
+	// (mitto-6vs) dedupe the durable auth-expiry guidance recorded by
+	// handlePromptError's auth branch: recorded once per outage streak,
+	// re-armed on the next successful prompt (pdClearAuthGuidanceSurfaced
+	// called from handlePromptSuccess).
+	pdAuthGuidanceAlreadySurfaced() bool
+	pdMarkAuthGuidanceSurfaced()
+	pdClearAuthGuidanceSurfaced()
 	// pdRecordSessionChange assigns a seq, persists a session-change timeline
 	// event via the recorder, and notifies observers. Used for the model-override pill.
 	pdRecordSessionChange(kind, value, previousValue string)
@@ -1466,6 +1474,11 @@ func (p promptDispatcher) handlePromptSuccess(
 		o.OnPromptComplete(eventCount)
 	})
 
+	// mitto-6vs: a successful prompt means the CLI is authenticated again —
+	// re-arm the auth-expiry guidance dedupe guard so a future re-expiry
+	// surfaces a fresh durable record instead of staying silently suppressed.
+	d.pdClearAuthGuidanceSurfaced()
+
 	// Apply any config changes deferred during this turn before dispatching
 	// the next queued message, so the queued prompt runs under the new config.
 	d.pdFlushPendingConfig()
@@ -1660,6 +1673,28 @@ func (p promptDispatcher) handlePromptError(
 	// Transient error: ACP process is still alive.
 	hints := mittoAcp.FormatErrorHints{ProcessHistory: d.pdSharedProcessHistory()}
 	userFriendlyErr := mittoAcp.FormatACPErrorWithContext(err, hints)
+
+	// mitto-6vs: auth-expiry ("-32000 Authentication required") guidance is
+	// otherwise transient-only (OnError below), so it evaporates for
+	// unattended sessions (e.g. a loop-driven conversation with no client
+	// attached) — the exact gap that let this recur despite mitto-r5o/bov
+	// already covering the retry-storm (AC2, below). Mirror the
+	// inactivity-watchdog's recorder-then-notify idiom so the message
+	// survives a reload/replay. Deduped per outage streak so repeated
+	// consecutive auth failures (manual resends, loop boot-pulses) don't
+	// write N identical transcript entries; re-armed by
+	// pdClearAuthGuidanceSurfaced on the next successful prompt.
+	if mittoAcp.IsAuthError(err) && d.pdHasRecorder() && !d.pdAuthGuidanceAlreadySurfaced() {
+		seq := d.pdGetNextSeq()
+		if recErr := d.pdRecordErrorEvent(seq, userFriendlyErr); recErr != nil {
+			if l := d.pdLogger(); l != nil {
+				l.Error("Failed to persist auth-expiry guidance", "error", recErr)
+			}
+		}
+		d.pdRefreshNextSeq()
+		d.pdMarkAuthGuidanceSurfaced()
+	}
+
 	d.pdNotifyObservers(func(o SessionObserver) {
 		o.OnError(userFriendlyErr)
 	})

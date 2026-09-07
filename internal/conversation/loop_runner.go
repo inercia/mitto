@@ -2597,6 +2597,15 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	oversizedContext := false
 	if mittoAcp.IsUpstreamUnavailableError(err) {
 		failureClass = "upstream_provider_unavailable"
+	} else if mittoAcp.IsAuthError(err) {
+		// mitto-6vs: agent CLI auth expiry (-32000 "Authentication required").
+		// The durable actionable guidance was already recorded by
+		// handlePromptError before this delivery-failure path runs (no
+		// double-record needed here) — this classification only makes the
+		// loop's own WARN logs distinguishable from a generic failure so an
+		// operator scanning logs doesn't mistake a re-auth need for a
+		// transient/unknown fault.
+		failureClass = "auth_required"
 	} else if !mittoAcp.IsContextTooLargeError(err) &&
 		contextTurns >= LoopFreshContextTurnThreshold &&
 		mittoAcp.IsChatStreamOversizedArgumentError(err) {
@@ -2706,6 +2715,8 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 				backoffMsg := "Loop prompt failed, backing off next run"
 				if failureClass == "upstream_provider_unavailable" {
 					backoffMsg = "Loop delivery hit a transient upstream provider outage; backing off next run (auto-retrying, not a broken loop)"
+				} else if failureClass == "auth_required" {
+					backoffMsg = "Loop delivery failed: agent CLI authentication expired; backing off next run (re-authenticate the agent CLI, e.g. claude auth login)"
 				}
 				r.logger.Warn(backoffMsg,
 					"session_id", sessionID,
@@ -2731,6 +2742,8 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		notAdvancedMsg := "Loop prompt failed, schedule not advanced"
 		if failureClass == "upstream_provider_unavailable" {
 			notAdvancedMsg = "Loop delivery hit a transient upstream provider outage; schedule not advanced (auto-retrying, not a broken loop)"
+		} else if failureClass == "auth_required" {
+			notAdvancedMsg = "Loop delivery failed: agent CLI authentication expired; schedule not advanced (re-authenticate the agent CLI, e.g. claude auth login)"
 		}
 		r.logger.Warn(notAdvancedMsg,
 			"session_id", sessionID,

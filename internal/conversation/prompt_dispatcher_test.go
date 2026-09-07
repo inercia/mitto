@@ -166,6 +166,11 @@ type fakePromptDeps struct {
 
 	// restoreBaselineCalls counts pdRestoreBaselineIfOverride invocations.
 	restoreBaselineCalls int
+
+	// === New in mitto-6vs: durable auth-expiry guidance dedupe ===
+	authGuidanceSurfaced   bool
+	markAuthGuidanceCalls  int
+	clearAuthGuidanceCalls int
 }
 
 func newFakePromptDeps() *fakePromptDeps {
@@ -385,6 +390,23 @@ func (f *fakePromptDeps) pdRestoreBaselineIfOverride() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.restoreBaselineCalls++
+}
+func (f *fakePromptDeps) pdAuthGuidanceAlreadySurfaced() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authGuidanceSurfaced
+}
+func (f *fakePromptDeps) pdMarkAuthGuidanceSurfaced() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authGuidanceSurfaced = true
+	f.markAuthGuidanceCalls++
+}
+func (f *fakePromptDeps) pdClearAuthGuidanceSurfaced() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authGuidanceSurfaced = false
+	f.clearAuthGuidanceCalls++
 }
 func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
 	f.mu.Lock()

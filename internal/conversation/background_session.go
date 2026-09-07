@@ -403,6 +403,15 @@ type BackgroundSession struct {
 	lastQueueSendError string
 	lastQueueSendErrAt time.Time
 
+	// authGuidanceSurfaced dedupes the durable auth-expiry ("-32000
+	// Authentication required") guidance recorded by handlePromptError
+	// (mitto-6vs). Set on the first auth failure of a streak so repeated
+	// failures (manual resends, repeated loop boot-pulses) don't write N
+	// identical transcript entries; cleared on the next successful prompt so
+	// the message re-arms after the user re-authenticates.
+	authGuidanceMu       sync.Mutex
+	authGuidanceSurfaced bool
+
 	// Loop continuation marker (mitto-5xjn). lastTurnScheduledLoop records whether
 	// the most recent COMMITTED dispatch was a scheduled (non-forced, non-FreshContext)
 	// run of this loop. It powers Iteration.IsUninterrupted. Session-scoped +
