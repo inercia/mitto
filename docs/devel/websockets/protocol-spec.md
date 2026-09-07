@@ -799,6 +799,13 @@ rather than clearing it on absence.
 
 #### `config_option_changed` — Config option changed
 
+Session config changes, including temporary prompt model switches and baseline
+restoration, are broadcast on the **global events WebSocket**. Clients must apply
+them to the conversation identified by `data.session_id`, not just the active
+conversation. The web UI forwards these events to the same config-state handler
+used by the per-session socket; selectors update without a completion-time fetch
+or reload. Restoration does not create a separate timeline entry.
+
 ```json
 {
   "type": "config_option_changed",

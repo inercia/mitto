@@ -2948,6 +2948,15 @@ export function useWebSocket({
         console.log("Global events ready");
         break;
 
+      case "config_option_changed":
+        // Model switches/restores are broadcast on the global events socket.
+        // Reuse the session handler so the composer's selector follows the
+        // server immediately, including for cached background conversations.
+        if (typeof msg.data?.session_id === "string" && msg.data.session_id) {
+          handleSessionMessageRef.current(msg.data.session_id, msg);
+        }
+        break;
+
       case "session_created":
         // A new session was created (possibly by another client)
 
