@@ -69,6 +69,25 @@ func AgentRefFromACPServerName(serverName string) (agentbackend.AgentRef, error)
 	return ref, nil
 }
 
+// AgentRefFromStableID derives a neutral AgentRef from an
+// agents.AgentDefinition.StableID() value (mitto-lrt.9). Unlike
+// AgentRefFromACPServerName, the input here is the agent's stable identity
+// (e.g. its ACPId), not the configured ACP server's display name — the two
+// may differ (e.g. server name "Auggie (Opus)" vs. agent StableID "auggie").
+// This package intentionally does not import internal/agents (a plain
+// string keeps the dependency one-directional); callers pass
+// def.StableID() directly.
+func AgentRefFromStableID(stableID string) (agentbackend.AgentRef, error) {
+	ref := agentbackend.AgentRef{
+		Backend:  BackendIDForACP,
+		Provider: agentbackend.ProviderID(stableID),
+	}
+	if err := ref.Validate(); err != nil {
+		return agentbackend.AgentRef{}, err
+	}
+	return ref, nil
+}
+
 // SessionRefFromMetadata derives a neutral SessionRef from legacy session
 // metadata. It never collapses session.Metadata.SessionID and
 // session.Metadata.ACPSessionID into a single identifier: SessionID becomes

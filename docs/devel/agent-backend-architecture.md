@@ -207,6 +207,37 @@ pre-existing path. Routing the per-prompt data path through `agentbackend`'s
 neutral `Event`s remains separately blocked on the event-projection work
 (mitto-lrt.8).
 
+**Agent identity/availability realized (mitto-lrt.9):** `internal/agents`
+gains a display-name-independent `AgentDefinition.StableID()` (precedence:
+explicit `Metadata.AgentID` override > `ACPId` > `Name` > `DirName`), and a
+new additive `internal/agents/availability.go` models runtime reachability
+without conflating it with static definitions: `ProviderReach` (`Local` —
+backed by an on-disk `AgentDefinition` with scripts — vs. `Remote` — only
+host-advertised, no scripts) and a four-state `AvailabilityState`
+(`Installed`/`Configured`/`Connected`/`Available`) replacing the previous
+single collapsed boolean. `ComposeAvailability` is a **pure** function over
+already-gathered inputs (`installed`, `configured []ConfiguredProvider`,
+`conns map[string]ConnectionState`) — it never runs a script or opens a
+connection itself, and `Available` is fail-closed: `!Disabled &&
+ProtocolSupported && (Connected || (Local && Installed))`, so a
+disabled/unsupported backend descriptor (e.g. a future gated AHP adapter)
+never surfaces as a usable runtime choice merely by existing (§5's
+three-state capability principle applied at the availability layer). A
+`CatalogCache` keyed by `(Backend, Provider, Version)` scopes
+model/mode-catalog caching and supports `InvalidateProvider` on
+reconnect/capability refresh without touching `StableID`/`AgentRef` — the
+stable selection identity is never itself cached, so invalidation cannot
+lose it. Layering: `internal/agents` still does **not** import
+`internal/agentbackend` (`ConnectionState`/`ConfiguredProvider` are plain
+structs, not `agentbackend.LifecycleState`/`AgentRef`); the identity bridge
+is one-directional, added to `internal/backendcompat` instead
+(`AgentRefFromStableID`), mirroring the existing
+`AgentRefFromACPServerName`. `internal/web/handlers/agent_discovery.go`'s
+`AgentScanResult` additively exposes `stable_id`; wiring the full
+`AvailabilityState` into that endpoint (which needs live connection-state
+plumbing) and UI presentation are explicitly deferred to a follow-up —
+out of scope here per the bead's own scope note.
+
 ## 7. Migration matrix (proposed)
 
 | Surface                                                         | Today                              | Migration rule                                                                                             |

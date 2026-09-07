@@ -15,6 +15,12 @@ import (
 type AgentScanResult struct {
 	// DirName is the agent's directory name (e.g., "claude-code", "augment")
 	DirName string `json:"dir_name"`
+	// StableID is the agent's display-name-independent stable identifier
+	// (agents.AgentDefinition.StableID(), mitto-lrt.9), additive alongside
+	// DirName so a future runtime-connection descriptor can correlate back
+	// to this definition without depending on DirName or a mutable display
+	// name.
+	StableID string `json:"stable_id"`
 	// Source is the parent directory name (e.g., "builtin", "custom")
 	Source string `json:"source"`
 	// Metadata is the agent's parsed metadata.yaml content
@@ -142,6 +148,7 @@ func (h *Handlers) HandleScanAgents(w http.ResponseWriter, r *http.Request) {
 	for _, agent := range allAgents {
 		result := AgentScanResult{
 			DirName:  agent.DirName,
+			StableID: agent.StableID(),
 			Source:   agent.Source,
 			Metadata: agent.Metadata,
 		}
