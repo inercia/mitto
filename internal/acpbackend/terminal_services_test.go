@@ -101,6 +101,117 @@ func TestBuildCallbacks_CreateTerminal_TranslatesRequestAndResponse(t *testing.T
 	}
 }
 
+func TestBuildCallbacks_TerminalOutput_TranslatesRequestAndResponse(t *testing.T) {
+	c := NewConnection(newFakeSharedProcess(), "acp", "/work", nil)
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+
+	var gotHandle agentbackend.TerminalHandle
+	c.SetTerminalHooks(&TerminalHooks{
+		TerminalOutput: func(_ context.Context, _ agentbackend.SessionRef, handle agentbackend.TerminalHandle) (string, bool, *agentbackend.TerminalExitStatus, error) {
+			gotHandle = handle
+			code := 7
+			return "partial output", true, &agentbackend.TerminalExitStatus{ExitCode: &code}, nil
+		},
+	})
+
+	cbs := c.buildCallbacks(ref)
+	resp, err := cbs.OnTerminalOutput(context.Background(), acp.TerminalOutputRequest{TerminalId: "term-9"})
+	if err != nil {
+		t.Fatalf("OnTerminalOutput: %v", err)
+	}
+	if gotHandle != "term-9" {
+		t.Errorf("handle passed to hook = %q, want term-9", gotHandle)
+	}
+	if resp.Output != "partial output" || !resp.Truncated {
+		t.Errorf("resp = %+v, want Output=%q Truncated=true", resp, "partial output")
+	}
+	if resp.ExitStatus == nil || resp.ExitStatus.ExitCode == nil || *resp.ExitStatus.ExitCode != 7 {
+		t.Errorf("resp.ExitStatus = %+v, want ExitCode=7", resp.ExitStatus)
+	}
+}
+
+func TestBuildCallbacks_WaitForTerminalExit_TranslatesRequestAndResponse(t *testing.T) {
+	c := NewConnection(newFakeSharedProcess(), "acp", "/work", nil)
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+
+	var gotHandle agentbackend.TerminalHandle
+	c.SetTerminalHooks(&TerminalHooks{
+		WaitForTerminalExit: func(_ context.Context, _ agentbackend.SessionRef, handle agentbackend.TerminalHandle) (agentbackend.TerminalExitStatus, error) {
+			gotHandle = handle
+			signal := "SIGTERM"
+			return agentbackend.TerminalExitStatus{Signal: &signal}, nil
+		},
+	})
+
+	cbs := c.buildCallbacks(ref)
+	resp, err := cbs.OnWaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{TerminalId: "term-9"})
+	if err != nil {
+		t.Fatalf("OnWaitForTerminalExit: %v", err)
+	}
+	if gotHandle != "term-9" {
+		t.Errorf("handle passed to hook = %q, want term-9", gotHandle)
+	}
+	if resp.Signal == nil || *resp.Signal != "SIGTERM" {
+		t.Errorf("resp.Signal = %v, want SIGTERM", resp.Signal)
+	}
+}
+
+func TestBuildCallbacks_KillAndReleaseTerminal_Delegate(t *testing.T) {
+	c := NewConnection(newFakeSharedProcess(), "acp", "/work", nil)
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+
+	var killedHandle, releasedHandle agentbackend.TerminalHandle
+	c.SetTerminalHooks(&TerminalHooks{
+		KillTerminal: func(_ context.Context, _ agentbackend.SessionRef, handle agentbackend.TerminalHandle) error {
+			killedHandle = handle
+			return nil
+		},
+		ReleaseTerminal: func(_ context.Context, _ agentbackend.SessionRef, handle agentbackend.TerminalHandle) error {
+			releasedHandle = handle
+			return nil
+		},
+	})
+
+	cbs := c.buildCallbacks(ref)
+	if _, err := cbs.OnKillTerminal(context.Background(), acp.KillTerminalRequest{TerminalId: "term-1"}); err != nil {
+		t.Fatalf("OnKillTerminal: %v", err)
+	}
+	if killedHandle != "term-1" {
+		t.Errorf("killedHandle = %q, want term-1", killedHandle)
+	}
+	if _, err := cbs.OnReleaseTerminal(context.Background(), acp.ReleaseTerminalRequest{TerminalId: "term-2"}); err != nil {
+		t.Fatalf("OnReleaseTerminal: %v", err)
+	}
+	if releasedHandle != "term-2" {
+		t.Errorf("releasedHandle = %q, want term-2", releasedHandle)
+	}
+}
+
+func TestBuildCallbacks_TerminalCallbacks_NilHooksPropagateUnsupported(t *testing.T) {
+	// With no TerminalHooks installed, every ACP terminal/* callback must
+	// surface *agentbackend.UnsupportedError through the wire-translation
+	// layer too, not just the direct TerminalServices methods (covered by
+	// TestTerminalServices_NilHooks_FailClosed) — this pins the whole path
+	// an inbound ACP terminal/create (etc.) request actually takes.
+	c := NewConnection(newFakeSharedProcess(), "acp", "/work", nil)
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+	cbs := c.buildCallbacks(ref)
+
+	var unsupported *agentbackend.UnsupportedError
+	if _, err := cbs.OnTerminalOutput(context.Background(), acp.TerminalOutputRequest{TerminalId: "t"}); !errors.As(err, &unsupported) {
+		t.Errorf("OnTerminalOutput: expected *UnsupportedError, got %v", err)
+	}
+	if _, err := cbs.OnWaitForTerminalExit(context.Background(), acp.WaitForTerminalExitRequest{TerminalId: "t"}); !errors.As(err, &unsupported) {
+		t.Errorf("OnWaitForTerminalExit: expected *UnsupportedError, got %v", err)
+	}
+	if _, err := cbs.OnKillTerminal(context.Background(), acp.KillTerminalRequest{TerminalId: "t"}); !errors.As(err, &unsupported) {
+		t.Errorf("OnKillTerminal: expected *UnsupportedError, got %v", err)
+	}
+	if _, err := cbs.OnReleaseTerminal(context.Background(), acp.ReleaseTerminalRequest{TerminalId: "t"}); !errors.As(err, &unsupported) {
+		t.Errorf("OnReleaseTerminal: expected *UnsupportedError, got %v", err)
+	}
+}
+
 func TestConnection_Ownership_AlwaysLocal(t *testing.T) {
 	c := NewConnection(newFakeSharedProcess(), "acp", "/work", nil)
 	ref := agentbackend.SessionRef{ConversationID: "conv-1"}

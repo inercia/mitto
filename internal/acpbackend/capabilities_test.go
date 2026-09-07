@@ -74,3 +74,15 @@ func TestSessionCapabilities_Terminals_Unknown(t *testing.T) {
 		t.Errorf("unrecognized feature = %v, want Unknown", got)
 	}
 }
+
+func TestSessionCapabilities_MCPBinding_Unknown(t *testing.T) {
+	// ACP's AgentCapabilities/ClientCapabilities do not model secure
+	// per-conversation MCP-binding attribution at all (mitto-lrt.11): this
+	// must report Unknown, never a guessed Supported, so callers relying on
+	// the three-state contract block scoped tools rather than assume
+	// support (agent-backend-architecture.md §10).
+	caps := newSessionCapabilities(acp.AgentCapabilities{}, nil, nil)
+	if got := caps.Query(agentbackend.FeatureMCPBinding); got != agentbackend.CapabilityUnknown {
+		t.Errorf("MCPBinding = %v, want Unknown", got)
+	}
+}
