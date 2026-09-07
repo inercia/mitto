@@ -10,6 +10,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -32,6 +33,7 @@ type fakeBackendSharedProcess struct {
 
 	newHandle, loadHandle, resumeHandle *SessionHandle
 	newErr, loadErr, resumeErr          error
+	newCalls                            int
 
 	unregistered []acp.SessionId
 	generation   int
@@ -48,6 +50,9 @@ func newFakeBackendSharedProcess() *fakeBackendSharedProcess {
 func (f *fakeBackendSharedProcess) Capabilities() *acp.AgentCapabilities { return f.caps }
 func (f *fakeBackendSharedProcess) ProcessDone() <-chan struct{}         { return f.processDone }
 func (f *fakeBackendSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
+	f.mu.Lock()
+	f.newCalls++
+	f.mu.Unlock()
 	return f.newHandle, f.newErr
 }
 func (f *fakeBackendSharedProcess) LoadSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
@@ -304,5 +309,98 @@ func TestACPCapabilities_Query(t *testing.T) {
 	}
 	if got := caps.Query(agentbackend.FeatureTerminals); got != agentbackend.CapabilityUnknown {
 		t.Errorf("Query(FeatureTerminals) = %v, want Unknown", got)
+	}
+}
+
+// TestACPBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession
+// proves the mitto-lrt.7 acceptance criterion "missing-session ... cases
+// surface actionable states instead of duplicating work": when
+// LoadSession/ResumeSession fails (e.g. the upstream session is gone), the
+// error is surfaced unchanged (classifiable to an actionable state) and the
+// provider never silently falls back to creating a replacement session.
+func TestACPBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession(t *testing.T) {
+	tests := []struct {
+		name   string
+		intent Intent
+	}{
+		{"load", IntentLoad},
+		{"resume", IntentResume},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := newFakeBackendSharedProcess()
+			wantErr := fmt.Errorf("upstream session gone: %w", agentbackend.ErrSessionNotFound)
+			switch tt.intent {
+			case IntentLoad:
+				proc.loadErr = wantErr
+			case IntentResume:
+				proc.resumeErr = wantErr
+			}
+			provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+
+			lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+				Intent:  tt.intent,
+				Session: agentbackend.SessionRef{ProviderSession: "missing-session"},
+			})
+			if lease != nil {
+				t.Fatalf("AcquireSession lease = %v, want nil on a missing-session error", lease)
+			}
+			if !errors.Is(err, agentbackend.ErrSessionNotFound) {
+				t.Fatalf("AcquireSession error = %v, want to wrap ErrSessionNotFound", err)
+			}
+			if proc.newCalls != 0 {
+				t.Errorf("NewSession calls = %d, want 0 (must not silently create a replacement session)", proc.newCalls)
+			}
+			if state, _ := ClassifyAcquireError(err); state != agentbackend.LifecycleDisconnected {
+				t.Errorf("ClassifyAcquireError state = %v, want LifecycleDisconnected (actionable missing-session state)", state)
+			}
+		})
+	}
+}
+
+// TestACPLease_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt
+// proves the mitto-lrt.7 acceptance criterion "uncertain-delivery cases
+// surface actionable states instead of duplicating work": a caller whose
+// context is cancelled while WAITING on another caller's in-flight Reconnect
+// gets back an actionable ctx error (it cannot know whether the shared
+// attempt will ultimately succeed) but must never trigger a second,
+// duplicate ResumeSession call — the in-flight attempt remains the single
+// source of truth.
+func TestACPLease_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	proc.newHandle = &SessionHandle{SessionID: "sess-1"}
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{Intent: IntentNew})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+	al := lease.(*acpLease)
+
+	gate := make(chan struct{})
+	var calls int
+	al.process = &gatingSharedProcess{fakeBackendSharedProcess: proc, gate: gate, calls: &calls, handle: &SessionHandle{SessionID: "sess-1-resumed"}}
+
+	// First caller starts the in-flight attempt and blocks on gate.
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- lease.Reconnect(context.Background())
+	}()
+	time.Sleep(20 * time.Millisecond) // ensure the first caller is in-flight
+
+	// A waiter whose context expires before the in-flight attempt completes
+	// must surface that uncertainty to ITS caller without starting a second
+	// ResumeSession call.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if waiterErr := lease.Reconnect(ctx); !errors.Is(waiterErr, context.DeadlineExceeded) {
+		t.Fatalf("waiter Reconnect error = %v, want context.DeadlineExceeded", waiterErr)
+	}
+
+	close(gate)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Reconnect error = %v, want nil", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ResumeSession calls = %d, want exactly 1 (a timed-out waiter must not start a second attempt)", calls)
 	}
 }

@@ -11,6 +11,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -333,5 +334,90 @@ func TestFakeRemoteBackendProvider_Reconnect_SingleFlight(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("ResumeSession calls = %d, want exactly 1 (single-flight)", calls)
+	}
+}
+
+// TestFakeRemoteBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession
+// proves the mitto-lrt.7 acceptance criterion "missing-session ... cases
+// surface actionable states instead of duplicating work" on the non-process
+// fake backend: Load/Resume against a session ref that was never created
+// returns ErrSessionNotFound (classifiable to an actionable state) and never
+// silently creates a replacement session under that ref.
+func TestFakeRemoteBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession(t *testing.T) {
+	host := agentbackend.NewFakeHost("fake-provider")
+	provider := &fakeRemoteBackendProvider{ops: host}
+	agent := agentbackend.AgentRef{Backend: "fake", Provider: "fake-provider"}
+	unknownRef := agentbackend.SessionRef{ConversationID: "conv-never-created", Provider: "fake-provider", ProviderSession: "sess-never-created"}
+
+	tests := []struct {
+		name   string
+		intent Intent
+	}{
+		{"load", IntentLoad},
+		{"resume", IntentResume},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lease, err := provider.AcquireSession(context.Background(), AcquireRequest{Agent: agent, Session: unknownRef, Intent: tt.intent})
+			if lease != nil {
+				t.Fatalf("AcquireSession lease = %v, want nil for a missing session", lease)
+			}
+			if !errors.Is(err, agentbackend.ErrSessionNotFound) {
+				t.Fatalf("AcquireSession error = %v, want ErrSessionNotFound", err)
+			}
+			if state, _ := ClassifyAcquireError(err); state != agentbackend.LifecycleDisconnected {
+				t.Errorf("ClassifyAcquireError state = %v, want LifecycleDisconnected (actionable missing-session state)", state)
+			}
+			// No fallback: the ref must still be unloadable afterward — no
+			// replacement session was silently created under it.
+			if _, err := host.LoadSession(context.Background(), unknownRef); !errors.Is(err, agentbackend.ErrSessionNotFound) {
+				t.Errorf("LoadSession after failed acquire = %v, want ErrSessionNotFound (no silent creation)", err)
+			}
+		})
+	}
+}
+
+// TestFakeRemoteBackendProvider_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt
+// proves the mitto-lrt.7 acceptance criterion "uncertain-delivery cases
+// surface actionable states instead of duplicating work" on the non-process
+// fake backend: a caller whose context is cancelled while WAITING on another
+// caller's in-flight Reconnect gets back an actionable ctx error but never
+// triggers a second, duplicate ResumeSession call.
+func TestFakeRemoteBackendProvider_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt(t *testing.T) {
+	host := agentbackend.NewFakeHost("fake-provider")
+	provider := &fakeRemoteBackendProvider{ops: host}
+	agent := agentbackend.AgentRef{Backend: "fake", Provider: "fake-provider"}
+
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{Agent: agent, Intent: IntentNew})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+	fl, ok := lease.(*fakeRemoteLease)
+	if !ok {
+		t.Fatalf("lease is %T, want *fakeRemoteLease", lease)
+	}
+
+	gate := make(chan struct{})
+	var calls int64
+	fl.ops = &gatingSessionOps{SessionOps: fl.ops, gate: gate, calls: &calls}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- lease.Reconnect(context.Background())
+	}()
+	time.Sleep(20 * time.Millisecond) // ensure the first caller is in-flight
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if waiterErr := lease.Reconnect(ctx); !errors.Is(waiterErr, context.DeadlineExceeded) {
+		t.Fatalf("waiter Reconnect error = %v, want context.DeadlineExceeded", waiterErr)
+	}
+
+	close(gate)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Reconnect error = %v, want nil", err)
+	}
+	if calls != 1 {
+		t.Fatalf("ResumeSession calls = %d, want exactly 1 (a timed-out waiter must not start a second attempt)", calls)
 	}
 }
