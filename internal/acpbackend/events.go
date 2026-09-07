@@ -68,11 +68,9 @@ func (c *Connection) publish(ev agentbackend.Event) {
 // Event for ref, returning ok=false when the update kind has no neutral
 // analogue yet. AvailableCommandsUpdate/ConfigOptionUpdate/SessionInfoUpdate/
 // UsageUpdate/UserMessageChunk are deferred (EventKind has no dedicated slot
-// for them yet). ToolCall/ToolCallUpdate/Plan carry no faithful neutral
-// payload — Event has no tool-call/plan-specific field — so they are
-// delivered as bare marker events (Kind set, Content left nil); full
-// tool-call/plan event payload modeling is deferred to the sequence/
-// streaming extraction work (mitto-lrt.8).
+// for them yet). ToolCall/ToolCallUpdate/Plan carry their full neutral
+// payload (agentbackend.ToolCallPayload / agentbackend.PlanPayload, added by
+// mitto-lrt.8).
 //
 // Origin is always OriginLocal: in the current ACP integration, a session's
 // SessionNotification stream only flows while this same Connection has an
@@ -95,11 +93,40 @@ func translateSessionUpdate(ref agentbackend.SessionRef, u acp.SessionUpdate) (a
 			base.Content = []agentbackend.ContentBlock{nb}
 		}
 		return base, true
-	case u.ToolCall != nil || u.ToolCallUpdate != nil:
+	case u.ToolCall != nil:
 		base.Kind = agentbackend.EventToolCall
+		base.ToolCall = &agentbackend.ToolCallPayload{
+			ID:     string(u.ToolCall.ToolCallId),
+			Title:  u.ToolCall.Title,
+			Status: string(u.ToolCall.Status),
+			Kind:   string(u.ToolCall.Kind),
+		}
+		return base, true
+	case u.ToolCallUpdate != nil:
+		base.Kind = agentbackend.EventToolCall
+		p := &agentbackend.ToolCallPayload{ID: string(u.ToolCallUpdate.ToolCallId), Update: true}
+		if u.ToolCallUpdate.Title != nil {
+			p.Title = *u.ToolCallUpdate.Title
+		}
+		if u.ToolCallUpdate.Status != nil {
+			p.Status = string(*u.ToolCallUpdate.Status)
+		}
+		if u.ToolCallUpdate.Kind != nil {
+			p.Kind = string(*u.ToolCallUpdate.Kind)
+		}
+		base.ToolCall = p
 		return base, true
 	case u.Plan != nil:
 		base.Kind = agentbackend.EventPlan
+		entries := make([]agentbackend.PlanEntry, len(u.Plan.Entries))
+		for i, e := range u.Plan.Entries {
+			entries[i] = agentbackend.PlanEntry{
+				Content:  e.Content,
+				Priority: string(e.Priority),
+				Status:   string(e.Status),
+			}
+		}
+		base.Plan = &agentbackend.PlanPayload{Entries: entries}
 		return base, true
 	case u.CurrentModeUpdate != nil:
 		base.Kind = agentbackend.EventModeChange

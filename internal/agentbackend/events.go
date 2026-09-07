@@ -64,9 +64,54 @@ type Event struct {
 	Models *ModelState
 	// Modes carries the updated mode state for EventModeChange.
 	Modes *ModeState
+	// ToolCall carries the payload for EventToolCall (tool call announcement
+	// or status/title update). Added by mitto-lrt.8; nil for a bare marker.
+	ToolCall *ToolCallPayload
+	// Plan carries the payload for EventPlan. Added by mitto-lrt.8; nil for
+	// a bare marker.
+	Plan *PlanPayload
 
 	// UpstreamCursor is an opaque, backend-assigned position marker (e.g. a
 	// sequence number) used for gap detection across reconnects. It is kept
 	// separate from any Mitto-owned sequence number.
 	UpstreamCursor string
+}
+
+// ToolCallPayload is the neutral payload for EventToolCall, covering both a
+// tool call's initial announcement and later status/title updates (see
+// Update). A neutral mirror of conversation.StreamEvent's tool-call fields.
+type ToolCallPayload struct {
+	// ID uniquely identifies this tool call within the session.
+	ID string
+	// Title is a human-readable description of what the tool is doing. Left
+	// empty on an Update that does not change the title.
+	Title string
+	// Status is the tool call's current execution status (e.g. "pending",
+	// "in_progress", "completed", "failed"), backend-defined.
+	Status string
+	// Kind categorizes the tool being invoked (backend-defined), when known.
+	Kind string
+	// Update reports whether this payload is a status/title update to a
+	// previously-announced tool call, as opposed to the call's initial
+	// announcement.
+	Update bool
+}
+
+// PlanEntry is a single neutral plan entry, a mirror of conversation.PlanEntry.
+type PlanEntry struct {
+	// Content is a human-readable description of what this task aims to accomplish.
+	Content string
+	// Priority indicates the relative importance of this task (backend-defined,
+	// e.g. "high", "medium", "low").
+	Priority string
+	// Status is the current execution status (backend-defined, e.g. "pending",
+	// "in_progress", "completed").
+	Status string
+}
+
+// PlanPayload is the neutral payload for EventPlan. Per the ACP plan-update
+// contract (mirrored here), Entries is always the complete, current plan —
+// each update replaces the whole list, it is never a delta.
+type PlanPayload struct {
+	Entries []PlanEntry
 }

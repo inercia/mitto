@@ -100,6 +100,65 @@ func TestTranslateSessionUpdate_CurrentModeUpdate(t *testing.T) {
 	}
 }
 
+func TestTranslateSessionUpdate_ToolCall(t *testing.T) {
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+	u := acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+		ToolCallId: "tc1",
+		Title:      "Read file",
+		Status:     acp.ToolCallStatusInProgress,
+		Kind:       acp.ToolKindRead,
+	}}
+	ev, ok := translateSessionUpdate(ref, u)
+	if !ok || ev.Kind != agentbackend.EventToolCall {
+		t.Fatalf("unexpected result: ok=%v ev=%+v", ok, ev)
+	}
+	if ev.ToolCall == nil {
+		t.Fatal("expected non-nil ToolCall payload")
+	}
+	if ev.ToolCall.ID != "tc1" || ev.ToolCall.Title != "Read file" || ev.ToolCall.Update {
+		t.Errorf("unexpected ToolCall payload: %+v", ev.ToolCall)
+	}
+	if ev.ToolCall.Status == "" || ev.ToolCall.Kind == "" {
+		t.Errorf("expected non-empty Status/Kind, got %+v", ev.ToolCall)
+	}
+}
+
+func TestTranslateSessionUpdate_ToolCallUpdate(t *testing.T) {
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+	status := acp.ToolCallStatusCompleted
+	u := acp.SessionUpdate{ToolCallUpdate: &acp.SessionToolCallUpdate{
+		ToolCallId: "tc1",
+		Status:     &status,
+	}}
+	ev, ok := translateSessionUpdate(ref, u)
+	if !ok || ev.Kind != agentbackend.EventToolCall {
+		t.Fatalf("unexpected result: ok=%v ev=%+v", ok, ev)
+	}
+	if ev.ToolCall == nil || !ev.ToolCall.Update {
+		t.Fatalf("expected an Update=true ToolCall payload, got %+v", ev.ToolCall)
+	}
+	if ev.ToolCall.ID != "tc1" || ev.ToolCall.Status != string(status) {
+		t.Errorf("unexpected ToolCall payload: %+v", ev.ToolCall)
+	}
+}
+
+func TestTranslateSessionUpdate_Plan(t *testing.T) {
+	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
+	u := acp.SessionUpdate{Plan: &acp.SessionUpdatePlan{Entries: []acp.PlanEntry{
+		{Content: "step 1", Priority: acp.PlanEntryPriorityHigh, Status: acp.PlanEntryStatusPending},
+	}}}
+	ev, ok := translateSessionUpdate(ref, u)
+	if !ok || ev.Kind != agentbackend.EventPlan {
+		t.Fatalf("unexpected result: ok=%v ev=%+v", ok, ev)
+	}
+	if ev.Plan == nil || len(ev.Plan.Entries) != 1 {
+		t.Fatalf("expected 1 plan entry, got %+v", ev.Plan)
+	}
+	if ev.Plan.Entries[0].Content != "step 1" || ev.Plan.Entries[0].Priority != "high" || ev.Plan.Entries[0].Status != "pending" {
+		t.Errorf("unexpected plan entry: %+v", ev.Plan.Entries[0])
+	}
+}
+
 func TestTranslateSessionUpdate_UnknownKindNotOK(t *testing.T) {
 	ref := agentbackend.SessionRef{ConversationID: "conv-1"}
 	// A SessionUpdate with no recognized field set (e.g. UsageUpdate, deferred).

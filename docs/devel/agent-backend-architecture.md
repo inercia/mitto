@@ -163,15 +163,18 @@ is **not** imported *by* `internal/conversation` in this increment.
 Translators are pure functions with unit coverage: content blocks,
 stop-reason/outcome, three-state capabilities, model/mode/config state, and
 error mapping to the neutral sentinels. Inbound ACP notifications translate to
-neutral `Event`s tagged `Origin=OriginLocal`. **Still deferred:** wiring the
-adapter into `BackgroundSession` (lifecycle track, mitto-lrt.7 onward — the .7
+neutral `Event`s tagged `Origin=OriginLocal`, now carrying full tool-call/plan
+payloads (`agentbackend.ToolCallPayload`/`PlanPayload`, realized in mitto-lrt.8
+below — the bare-marker shim is gone). **Still deferred:** wiring the adapter
+into `BackgroundSession` (lifecycle track, mitto-lrt.7 onward — the .7
 increment introduced the ownership seam below but did not route the acpbackend
-adapter through it yet) and extracting the sequence/streaming projection with
-full tool-call/plan event payload modeling (mitto-lrt.8, event projection).
+adapter through it yet) and live-wiring the event-projection engine
+(mitto-lrt.8) into that same production data path (mitto-lrt.12+).
 Documented shims/gaps to remove alongside that later work: the synthesized
 `ConversationID` in `NewSession` (real Mitto IDs arrive when the lifecycle seam
 is wired into production call sites); dropped Audio/embedded-Resource content
-blocks and deferred non-message `SessionUpdate` kinds (modeled in .8).
+blocks and deferred non-message `SessionUpdate` kinds (still deferred — no
+`EventKind` slot yet; unaffected by .8's tool-call/plan work).
 
 **Ownership seam realized (mitto-lrt.7):** conversation lifecycle now has a
 protocol-neutral acquisition + ownership seam, `BackendProvider` /
@@ -204,8 +207,60 @@ zero-regression, the seam ships tested but **not yet wired into the production
 acquire via `ProcessManager.GetOrCreateProcess` directly, so a `nil`
 `BackendProvider` is a valid, common state and callers fall back to the
 pre-existing path. Routing the per-prompt data path through `agentbackend`'s
-neutral `Event`s remains separately blocked on the event-projection work
-(mitto-lrt.8).
+neutral `Event`s now has a projection engine to route through
+(mitto-lrt.8, below), but live-wiring either seam into the production data
+path remains deferred to mitto-lrt.12+.
+
+**Event projection & durable replay realized (mitto-lrt.8):** a new,
+additive, protocol-neutral leaf package `internal/eventprojection` consumes
+`agentbackend.Event` and emits sequence-numbered `ProjectedEvent`s to a
+caller-supplied `ProjectionSink`. Design mirrors the .4/.6/.7/.9 formula
+(pure package + fake + import guard; **not** wired into
+`BackgroundSession`/`SessionManager` this increment). Key pieces:
+- **`Projector`** (`projection.go`): coalesces consecutive same-kind/
+  same-origin `EventAgentMessage`/`EventAgentThought` chunks to a logical
+  boundary (content-agnostic — no markdown/HTML awareness, unlike
+  `MarkdownBuffer`) before allocating a Mitto seq via the inverted
+  `SeqAllocator` seam (mirrors `conversation.SeqProvider`). Any other event
+  kind is itself a boundary.
+- **Replay/dedup** (`checkpoint.go`): a durable `Checkpoint` per `SourceID`
+  (`{Backend, Provider, ProviderSession}`, since `SessionRef` alone doesn't
+  carry backend identity) tracks `LastCursor` plus a bounded dedup ring +
+  identity→seq map. Only `agentbackend.Event.UpstreamCursor`-bearing events
+  participate in dedup/replay — a cursor-less event (the common case for
+  today's ACP adapter, which never sets it) is always treated as new/live, a
+  safe default that never silently drops or falsely dedups. A replayed
+  identity is **re-emitted** with its **original** Mitto seq (`PhaseReplay`),
+  not a fresh one, so a `ProjectionSink` writer can idempotently no-op;
+  crash-consistency ordering is `sink.Emit()` (the durable event write)
+  **then** `CheckpointStore.Save()` — proven against `agentbackend.FakeHost`'s
+  existing `ResumeSession` sequence-gap signal.
+  **Explicit non-guarantee:** this gives at-most-once *projection* into a
+  sink, never exactly-once *side-effect execution* by whatever consumes the
+  sink's output (see package doc).
+- **Prompt correlation** (`correlation.go`): `PromptCorrelation` links an
+  optimistic local prompt ID to the upstream identity that later echoes it;
+  a confirmed echo (`Origin=OriginRemote` + resolved link) is **not**
+  re-projected as a new external action, while a genuinely external,
+  unresolvable `OriginRemote` update is projected exactly once with
+  `SuppressLocalAutomation=true` so processors/loops don't double-fire.
+- **Seams stay inverted**: `SeqAllocator`, `CheckpointStore`, and
+  `ProjectionSink` are interfaces defined in this leaf package; the durable,
+  session-sidecar-backed `CheckpointStore` implementation
+  (`session.Store.Read/WriteSessionSidecarJSON`, the same pattern as
+  `mcpserver/child_report_store.go`) lives in the **sibling** package
+  `internal/eventprojection/eventprojectionsession` — kept outside the core
+  so `internal/eventprojection`'s own `imports_test.go` guard (mirroring
+  `internal/agentbackend`'s) can forbid `internal/session` (plus
+  `acp-go-sdk`, `internal/acp`, `internal/acpproc`, `internal/web`,
+  `internal/conversation`, `os/exec`) transitively, exactly like .6 put its
+  ACP-backed seam implementation in a higher package than the neutral
+  contracts it implements.
+- **Contract extension**: `agentbackend.Event` gained additive
+  `ToolCall *ToolCallPayload` / `Plan *PlanPayload` fields (id/title/status/
+  kind; plan entries) — the "bare marker, deferred to mitto-lrt.8" shim
+  `acpbackend.translateSessionUpdate` carried since .6 is now gone; ACP tool
+  call/plan `SessionUpdate`s translate to fully-populated neutral payloads.
 
 **Agent identity/availability realized (mitto-lrt.9):** `internal/agents`
 gains a display-name-independent `AgentDefinition.StableID()` (precedence:
