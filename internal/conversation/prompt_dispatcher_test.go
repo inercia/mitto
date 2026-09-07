@@ -3579,6 +3579,67 @@ func TestPromptDispatcher_HandlePromptError_AuthError_QueueNotAdvanced(t *testin
 	}
 }
 
+// TestPromptDispatcher_HandlePromptError_AuthError_RecordsDurableGuidanceOnce
+// is the mitto-6vs regression test: handlePromptError's auth branch must
+// persist the friendly re-auth guidance via pdRecordErrorEvent so it survives
+// in unattended/loop-driven sessions with no client attached (previously it
+// only fired a transient OnError notification). The record must be deduped —
+// a second consecutive auth failure in the same outage streak must NOT write
+// a second identical transcript entry — and re-armed by
+// pdClearAuthGuidanceSurfaced once handlePromptSuccess observes a successful
+// prompt (the CLI is authenticated again).
+func TestPromptDispatcher_HandlePromptError_AuthError_RecordsDurableGuidanceOnce(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasRecorder = true
+
+	authErr := &fakeAuthError{}
+
+	// First auth failure of the streak: durable record written, guard armed.
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected 1 durable error event after first auth failure, got %d: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
+	}
+	if d.markAuthGuidanceCalls != 1 {
+		t.Fatalf("expected pdMarkAuthGuidanceSurfaced called once, got %d", d.markAuthGuidanceCalls)
+	}
+	if !d.authGuidanceSurfaced {
+		t.Fatal("expected authGuidanceSurfaced=true after first auth failure")
+	}
+
+	// Second consecutive auth failure in the same streak: must NOT re-record.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected still 1 durable error event after second consecutive auth failure "+
+			"(dedupe must suppress repeat records), got %d: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
+	}
+	if d.markAuthGuidanceCalls != 1 {
+		t.Fatalf("expected pdMarkAuthGuidanceSurfaced still called only once, got %d", d.markAuthGuidanceCalls)
+	}
+
+	// A successful prompt re-arms the guard (CLI is authenticated again).
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	p.handlePromptSuccess(d, 1, 1, resp, "msg", PromptMeta{}, time.Now(), time.Now())
+	if d.clearAuthGuidanceCalls != 1 {
+		t.Fatalf("expected pdClearAuthGuidanceSurfaced called once on success, got %d", d.clearAuthGuidanceCalls)
+	}
+	if d.authGuidanceSurfaced {
+		t.Fatal("expected authGuidanceSurfaced=false after a successful prompt")
+	}
+
+	// A fresh auth-outage streak must record durable guidance again.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.recordedErrorEvents) != 2 {
+		t.Fatalf("expected 2 durable error events after a re-armed auth failure, got %d: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
+	}
+}
+
 // containsSubstring is a simple helper to avoid importing strings in test.
 func containsSubstring(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {
