@@ -73,6 +73,7 @@ added by this increment; all others already existed at the baseline revision.
 | Concurrent `set_model` bursts | `concurrent_model_set_test.go` |
 | Deferred config application ordering vs. queued prompts | `deferred_config_test.go` |
 | Authenticated per-conversation MCP injection / init timeout | `mcp_init_timeout_test.go` |
+| MCP transport-binding dissociation on conversation close (single owner, shared-lease multi-owner retention/retirement, in-flight POST draining, idempotent cleanup, new-owner-cancels-retirement, idle-while-owned) | `internal/mcpserver/mcp_session_reaper_test.go` (`TestReapOwnerlessMCPSessionWithOpenStream`, `TestReapSharedMCPSessionAfterFinalOwner`, `TestReapOwnerlessMCPSessionWaitsForInflightPOST`, `TestPOSTCancelsPendingOwnerRetirement`, `TestNewOwnerCancelsPendingOwnerRetirement`, `TestOwnerLifecycleCleanupIsIdempotent`, `TestOwnedMCPSessionIsNotIdleReapedPastTimeout`) |
 | SDK (`pkg/api`) contract | `sdk_contract_test.go` |
 | WS reconnect dedup / pruning | `prune_reconnect_test.go` |
 
