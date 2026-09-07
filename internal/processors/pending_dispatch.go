@@ -237,7 +237,11 @@ func (s *FilePendingDispatchStore) append(entry PendingDispatchEntry, claimed bo
 // FlushPendingDispatches, so its file would linger on disk indefinitely
 // despite the age cap.
 func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatchEntry, error) {
-	fresh, _, err := s.LoadWithExpired(workspaceUUID)
+	// Default to the recoverable budget: Load is a generic read whose caller
+	// has no orphan signal, and retaining is the safe direction (a genuinely
+	// orphaned workspace is pruned instead by SweepPendingDispatchDir, which
+	// DOES have the registry-membership signal — mitto-0ql).
+	fresh, _, err := s.LoadWithExpired(workspaceUUID, true)
 	return fresh, err
 }
 
@@ -246,7 +250,13 @@ func (s *FilePendingDispatchStore) Load(workspaceUUID string) ([]PendingDispatch
 // to observe the drop (mitto-f81: SweepPendingDispatchDir's non-dispatchable
 // branch, which never calls FlushPendingDispatches/Claim for an orphaned
 // workspace) can audit-log it instead of the drop being completely silent.
-func (s *FilePendingDispatchStore) LoadWithExpired(workspaceUUID string) (fresh, expired []PendingDispatchEntry, err error) {
+//
+// recoverableWorkspace selects whether the "no shared process for workspace"
+// failure class earns the extended transient budget (see
+// dispatchErrEarnsTransientBudget / mitto-0ql). The orphaned-workspace sweep
+// passes false so an unrecoverable batch still drops at the ordinary cap;
+// every other caller passes true.
+func (s *FilePendingDispatchStore) LoadWithExpired(workspaceUUID string, recoverableWorkspace bool) (fresh, expired []PendingDispatchEntry, err error) {
 	if workspaceUUID == "" {
 		return nil, nil, fmt.Errorf("pending dispatch load missing workspace UUID")
 	}
@@ -263,7 +273,7 @@ func (s *FilePendingDispatchStore) LoadWithExpired(workspaceUUID string) (fresh,
 	if readErr != nil {
 		return nil, nil, readErr
 	}
-	fresh, expired = partitionPendingDispatchEntries(entries)
+	fresh, expired = partitionPendingDispatchEntries(entries, recoverableWorkspace)
 	// Persist the pruned set best-effort: a write failure only means the
 	// stale entries are re-pruned on the next Load, never that a fresh
 	// entry is lost, so the caller still gets the fresh set.
@@ -295,7 +305,11 @@ func (s *FilePendingDispatchStore) Claim(workspaceUUID string) (PendingDispatchC
 	if len(entries) == 0 {
 		return PendingDispatchClaim{}, nil
 	}
-	fresh, expired := partitionPendingDispatchEntries(entries)
+	// Claim only runs during a flush, which only fires for a workspace with a
+	// live shared process (reopen trigger or the sweep's dispatchable branch),
+	// so a persisted "no shared process" error is necessarily stale and
+	// recoverable here — grant it the transient budget (mitto-0ql).
+	fresh, expired := partitionPendingDispatchEntries(entries, true)
 	now := time.Now()
 	claimable := make([]PendingDispatchEntry, 0, len(fresh))
 	for i := range fresh {
@@ -332,8 +346,10 @@ func (s *FilePendingDispatchStore) Requeue(workspaceUUID string, entries []Pendi
 	// the same expiry classification Load/Claim use so an already-expired
 	// input entry is silently excluded from the merge instead of being
 	// written back to disk; it was already logged and dropped once by
-	// whichever Claim() actually removed it.
-	entries, _ = partitionPendingDispatchEntries(entries)
+	// whichever Claim() actually removed it. Requeue merges back the remnants
+	// of a flush attempt on a live workspace, so it uses the recoverable
+	// budget for symmetry with Claim (mitto-0ql).
+	entries, _ = partitionPendingDispatchEntries(entries, true)
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -453,7 +469,32 @@ func upsertPendingDispatchEntries(current, updates []PendingDispatchEntry) []Pen
 	return merged
 }
 
-func partitionPendingDispatchEntries(entries []PendingDispatchEntry) (fresh, expired []PendingDispatchEntry) {
+// dispatchErrEarnsTransientBudget reports whether a persisted entry's LastError
+// qualifies it for the extended pendingDispatchMaxAgeTransient budget instead
+// of the ordinary 24h age cap. The unconditional transient classes
+// (isTransientAuxUnavailableDispatchErr: deadline / cancellation / saturation)
+// always qualify. The "no shared process for workspace ... (auxiliary sessions
+// require an active workspace)" class (isNonRetryableDispatchErr) qualifies
+// ONLY when the workspace is still recoverable — i.e. live (Claim/Requeue) or
+// registered-but-suspended (the sweep, keyed on registry membership) — because
+// that error string is identical whether the workspace is merely suspended
+// (will reopen and deliver its close-phase memory batch) or is orphaned/removed
+// from folders.json (gone forever, must drop+audit at the ordinary cap,
+// mitto-f81). The recoverability discriminator therefore lives at the call
+// sites that know process liveness / registry membership, never in the error
+// string itself (mitto-0ql).
+func dispatchErrEarnsTransientBudget(lastError string, recoverableWorkspace bool) bool {
+	if lastError == "" {
+		return false
+	}
+	err := errors.New(lastError)
+	if isTransientAuxUnavailableDispatchErr(err) {
+		return true
+	}
+	return recoverableWorkspace && isNonRetryableDispatchErr(err)
+}
+
+func partitionPendingDispatchEntries(entries []PendingDispatchEntry, recoverableWorkspace bool) (fresh, expired []PendingDispatchEntry) {
 	now := time.Now()
 	cutoff := now.Add(-pendingDispatchMaxAge)
 	transientCutoff := now.Add(-pendingDispatchMaxAgeTransient)
@@ -463,9 +504,11 @@ func partitionPendingDispatchEntries(entries []PendingDispatchEntry) (fresh, exp
 			// earns the extended budget instead of the ordinary age cap — mirrors
 			// the max-attempts cap-exhaustion site's transient-retention logic
 			// (isTransientAuxUnavailableDispatchErr), so classification is
-			// consistent across both cap-enforcement points.
-			if entry.LastError != "" && isTransientAuxUnavailableDispatchErr(errors.New(entry.LastError)) &&
-				entry.SavedAt.After(transientCutoff) {
+			// consistent across both cap-enforcement points. mitto-0ql widens
+			// this to the "no shared process" class when the workspace is still
+			// recoverable (see dispatchErrEarnsTransientBudget).
+			if entry.SavedAt.After(transientCutoff) &&
+				dispatchErrEarnsTransientBudget(entry.LastError, recoverableWorkspace) {
 				fresh = append(fresh, entry)
 				continue
 			}
@@ -547,7 +590,18 @@ func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDis
 // the number actually flushed or pruned), or an error only when spoolDir
 // itself cannot be listed. A missing spoolDir (nothing spooled yet) is not
 // an error — it returns (0, nil).
-func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool) (int, error) {
+// workspaceExists reports whether a workspace UUID is still registered (present
+// in the in-memory workspace registry / folders.json). It distinguishes a
+// merely-suspended workspace — no live shared process right now, but still
+// reachable, so a reopen will flush its spool — from a truly orphaned one
+// (removed from the registry, will never be dispatchable again). The
+// suspended-vs-orphaned distinction cannot be made from a spool entry's
+// LastError (both record the identical "no shared process for workspace"
+// string), so it is supplied here, at the only site with registry visibility,
+// and forwarded into the age-cap budget decision (mitto-0ql). A nil predicate
+// means "treat every non-dispatchable workspace as orphaned" — the
+// pre-mitto-0ql behavior (ordinary 24h cap, mitto-f81 drop+audit).
+func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool, workspaceExists func(workspaceUUID string) bool) (int, error) {
 	dirEntries, err := os.ReadDir(spoolDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -579,17 +633,24 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 			continue
 		}
 
-		// Not currently dispatchable — most commonly an orphaned workspace
-		// that will never become dispatchable again. Do not attempt a flush;
-		// just let Load's age-cap enforcement prune expired entries and
-		// remove the spool file once nothing fresh remains. Unlike
-		// FlushPendingDispatches' own age-cap enforcement (Claim, whose
-		// Expired field is already logged at mitto-3421's original site),
-		// this path never previously surfaced what it dropped — an orphaned
-		// workspace's close-phase memory batch (extract-memories-on-close,
-		// memorize-preferences, etc.) aged out with zero audit trail
-		// (mitto-f81). Use LoadWithExpired so that gap is closed here too.
-		_, expired, loadErr := ageStore.LoadWithExpired(workspaceUUID)
+		// Not currently dispatchable — either an orphaned workspace that will
+		// never become dispatchable again, or one merely suspended that a
+		// reopen will flush. Do not attempt a flush; let the age-cap
+		// enforcement prune expired entries and remove the spool file once
+		// nothing fresh remains. Unlike FlushPendingDispatches' own age-cap
+		// enforcement (Claim, whose Expired field is already logged at
+		// mitto-3421's original site), this path never previously surfaced
+		// what it dropped — an orphaned workspace's close-phase memory batch
+		// (extract-memories-on-close, memorize-preferences, etc.) aged out
+		// with zero audit trail (mitto-f81). Use LoadWithExpired so that gap
+		// is closed here too.
+		//
+		// mitto-0ql: a still-registered (suspended) workspace is recoverable,
+		// so its "no shared process" batch earns the extended transient budget
+		// and survives until reopen; an orphaned (unregistered) workspace is
+		// not, so its batch still drops+audits at the ordinary 24h cap.
+		recoverable := workspaceExists != nil && workspaceExists(workspaceUUID)
+		_, expired, loadErr := ageStore.LoadWithExpired(workspaceUUID, recoverable)
 		if loadErr != nil {
 			return swept, fmt.Errorf("failed to age-prune pending dispatch spool for workspace %s: %w", workspaceUUID, loadErr)
 		}

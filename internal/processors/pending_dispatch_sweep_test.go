@@ -59,8 +59,10 @@ func TestSweepPendingDispatchDir_DrainsOrphanedWorkspaceSpool(t *testing.T) {
 	// The orphaned workspace is never dispatchable: no live process today,
 	// and by definition of "orphaned" (per the bug) it never will be again.
 	isDispatchable := func(workspaceUUID string) bool { return false }
+	// nil workspaceExists => treat every non-dispatchable workspace as orphaned
+	// (mitto-0ql back-compat default): the ordinary age cap prunes it.
 
-	swept, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable)
+	swept, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, nil)
 	if err != nil {
 		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
 	}
@@ -124,8 +126,12 @@ func TestSweepPendingDispatchDir_OrphanedWorkspaceDropIsAudited(t *testing.T) {
 	})
 
 	isDispatchable := func(workspaceUUID string) bool { return false }
+	// Orphaned: not registered, so workspaceExists reports false and the "no
+	// shared process" batch is NOT granted the transient budget — it drops at
+	// the ordinary cap and is audited (mitto-0ql keeps mitto-f81 intact).
+	workspaceExists := func(workspaceUUID string) bool { return false }
 
-	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable); err != nil {
+	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists); err != nil {
 		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
 	}
 
@@ -154,4 +160,72 @@ func TestSweepPendingDispatchDir_OrphanedWorkspaceDropIsAudited(t *testing.T) {
 	t.Fatalf("SweepPendingDispatchDir() silently dropped an undeliverable close-phase memory batch "+
 		"for orphaned workspace %s (processor %q) with no audit WARN (mitto-f81); captured records: %+v",
 		orphanUUID, processorName, handler.snapshot())
+}
+
+// TestSweepPendingDispatchDir_SuspendedWorkspaceRetainsNoSharedProcessBatch
+// pins mitto-0ql: a workspace that is currently non-dispatchable (no live
+// shared ACP process) but STILL REGISTERED (workspaceExists reports true — its
+// sessions are merely suspended, not deleted) must NOT have its close-phase
+// memory batch dropped at the ordinary 24h age cap merely because the recorded
+// LastError is the "no shared process for workspace ... (auxiliary sessions
+// require an active workspace)" string. That error is identical to the
+// orphaned case (TestSweepPendingDispatchDir_OrphanedWorkspaceDropIsAudited
+// above), so the suspended-vs-orphaned distinction is made by registry
+// membership, not the error string: a suspended workspace is recoverable (a
+// reopen fires wireProcessorPendingDispatch -> FlushPendingDispatches and
+// delivers the batch), so it earns the extended pendingDispatchMaxAgeTransient
+// budget and survives on disk until then.
+//
+// Production evidence: dispatch_id 60cd4a8c (close-phase memory batch,
+// workspace 736f40f8, still holding one suspended session) was persisted with
+// exactly this error and was heading toward a silent drop at ~24h even though
+// a single reopen would have delivered it.
+func TestSweepPendingDispatchDir_SuspendedWorkspaceRetainsNoSharedProcessBatch(t *testing.T) {
+	spoolDir := t.TempDir()
+	const suspendedUUID = "ws-suspended-but-registered"
+	const processorName = "extract-memories-on-close+memorize-preferences+auggie-update-rules+curate-memories-on-close"
+	const auxUnavailableErr = "failed to get auxiliary session: no shared process for workspace " +
+		suspendedUUID + " (auxiliary sessions require an active workspace)"
+
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	// Aged past the ordinary 24h cap but well within the extended transient
+	// budget, so the outcome hinges purely on the recoverable classification.
+	aged := PendingDispatchEntry{
+		WorkspaceUUID: suspendedUUID,
+		Name:          processorName,
+		Prompt:        "persist memories",
+		SavedAt:       time.Now().Add(-(pendingDispatchMaxAge + time.Hour)),
+		Attempts:      1,
+		LastError:     auxUnavailableErr,
+	}
+	if err := store.Replace(suspendedUUID, []PendingDispatchEntry{aged}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", slog.New(&recordingLogHandler{}))
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(context.Context, string, string, string) error {
+		t.Fatal("suspended (non-dispatchable) workspace must not be flushed via promptFunc; its batch should be retained until a real reopen")
+		return nil
+	})
+
+	// Not dispatchable right now, but still registered => recoverable.
+	isDispatchable := func(workspaceUUID string) bool { return false }
+	workspaceExists := func(workspaceUUID string) bool { return workspaceUUID == suspendedUUID }
+
+	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists); err != nil {
+		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
+	}
+
+	remaining, err := store.Load(suspendedUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("mitto-0ql: a suspended-but-registered workspace's close-phase memory batch "+
+			"(LastError=%q, aged %s past the ordinary %s cap) was dropped by the sweep instead of "+
+			"being retained within the extended transient budget (%s) until the workspace is reopened; "+
+			"remaining entries = %d, want 1",
+			auxUnavailableErr, time.Hour, pendingDispatchMaxAge, pendingDispatchMaxAgeTransient, len(remaining))
+	}
 }

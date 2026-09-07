@@ -1871,6 +1871,19 @@ func isSaturationDispatchErr(err error) bool {
 // the error from a persisted string via errors.New, so this is necessarily a
 // substring match rather than errors.Is/isSaturationDispatchErr's sentinel
 // check).
+//
+// mitto-0ql: the "no shared process for workspace ... (auxiliary sessions
+// require an active workspace)" shape (isNonRetryableDispatchErr) is
+// deliberately NOT classified transient here, even though a *suspended* (but
+// still-existing) workspace clears it on reopen. The error string is
+// identical whether the workspace is merely suspended (will reopen) or
+// orphaned (removed from folders.json, gone forever), so it cannot be the
+// discriminator: mitto-f81 requires an orphaned workspace's aged batch to
+// drop+audit at the ordinary cap, and broadening the classifier would retain
+// orphaned batches for the full 7-day transient budget too. The
+// suspended-vs-orphaned distinction is instead made by workspace existence in
+// SweepPendingDispatchDir's non-dispatchable branch (pending_dispatch.go),
+// which is the only site with access to that signal.
 func isTransientAuxUnavailableDispatchErr(err error) bool {
 	if err == nil {
 		return false

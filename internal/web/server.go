@@ -407,6 +407,7 @@ func startPendingDispatchSweep(
 	auxMgr *auxiliary.WorkspaceAuxiliaryManager,
 	spoolDir string,
 	logger *slog.Logger,
+	workspaceExists func(workspaceUUID string) bool,
 ) (stop func()) {
 	procMgr := processors.NewManager("", logger)
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{BaseDir: spoolDir})
@@ -436,7 +437,7 @@ func startPendingDispatchSweep(
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				swept, err := processors.SweepPendingDispatchDir(procMgr, spoolDir, isDispatchable)
+				swept, err := processors.SweepPendingDispatchDir(procMgr, spoolDir, isDispatchable, workspaceExists)
 				if err != nil {
 					if logger != nil {
 						logger.Warn("pending-dispatch sweep failed", "error", err)
@@ -814,8 +815,16 @@ func NewServer(config Config) (*Server, error) {
 	var pendingDispatchSweepStop func()
 	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
 		if pendingDispatchDir, direrr := appdir.PendingProcessorDispatchDir(); direrr == nil {
+			// workspaceExists reports registry membership so the sweep can tell a
+			// merely-suspended workspace (recoverable — a reopen will flush its
+			// spool) from a truly orphaned one (mitto-0ql). A suspended
+			// workspace's "no shared process" close-phase memory batch then earns
+			// the extended transient budget instead of dropping at the 24h cap.
+			workspaceExists := func(workspaceUUID string) bool {
+				return sessionMgr != nil && sessionMgr.GetWorkspaceByUUID(workspaceUUID) != nil
+			}
 			pendingDispatchSweepStop = startPendingDispatchSweep(
-				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger,
+				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger, workspaceExists,
 			)
 		} else {
 			logger.Warn("pending-dispatch sweep disabled: cannot resolve spool dir", "error", direrr)

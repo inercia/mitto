@@ -405,6 +405,74 @@ func TestFlushPendingDispatches_AgeCapDropsSaturationOnlyBatch(t *testing.T) {
 	}
 }
 
+// TestFlushPendingDispatches_ClaimRetainsNoSharedProcessBatch pins the
+// flush-path half of mitto-0ql. Claim runs only during a flush, which fires
+// only for a workspace with a live shared process (a reopen trigger, or the
+// sweep's dispatchable branch), so a persisted "no shared process for
+// workspace ... (auxiliary sessions require an active workspace)" error
+// (isNonRetryableDispatchErr) is necessarily STALE and recoverable at that
+// point — the process is back. Claim therefore passes recoverableWorkspace=true
+// to partitionPendingDispatchEntries, which grants that error class the
+// extended pendingDispatchMaxAgeTransient budget (dispatchErrEarnsTransientBudget)
+// instead of dropping it at the ordinary 24h cap.
+//
+// Without this, the reopen path itself would silently discard the batch: the
+// sweep might retain a suspended workspace's aged "no shared process" batch,
+// but the very Claim that a reopen triggers to deliver it would then partition
+// it into Expired (the error is not one of isTransientAuxUnavailableDispatchErr's
+// unconditional classes) — losing it at the moment of recovery. The
+// suspended-vs-orphaned distinction is made by the caller (workspace liveness /
+// registry membership), never by the error string, since both cases record the
+// identical error (see
+// TestSweepPendingDispatchDir_SuspendedWorkspaceRetainsNoSharedProcessBatch and
+// TestSweepPendingDispatchDir_OrphanedWorkspaceDropIsAudited).
+//
+// Production evidence: dispatch_id 60cd4a8c
+// (extract-memories-on-close+memorize-preferences+auggie-update-rules+curate-memories-on-close,
+// workspace 736f40f8) was persisted 2026-09-06T10:23:50 with
+// LastError="...no shared process for workspace 736f40f8-... (auxiliary
+// sessions require an active workspace)" and was heading toward a silent drop
+// at the 24h cap (~2026-09-07T10:23) even though a single session reopen would
+// have delivered it.
+//
+// This test asserts the batch stays out of claim.Expired and remains claimable
+// past pendingDispatchMaxAge (up to pendingDispatchMaxAgeTransient).
+func TestFlushPendingDispatches_ClaimRetainsNoSharedProcessBatch(t *testing.T) {
+	const wsUUID = "ws-agecap-no-shared-process-drop"
+	const memoryBatchName = "extract-memories-on-close+memorize-preferences+auggie-update-rules+curate-memories-on-close"
+	noSharedProcessErr := "failed to get auxiliary session: no shared process for workspace " +
+		wsUUID + " (auxiliary sessions require an active workspace)"
+
+	store := &FilePendingDispatchStore{BaseDir: t.TempDir()}
+	staleSavedAt := time.Now().Add(-(pendingDispatchMaxAge + time.Hour))
+	if _, err := store.Append(PendingDispatchEntry{
+		WorkspaceUUID: wsUUID, Name: memoryBatchName, Prompt: "memory batch prompt",
+		TimeoutSeconds: 1, SavedAt: staleSavedAt, Attempts: 1, LastError: noSharedProcessErr,
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	claim, err := store.Claim(wsUUID)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+
+	for _, expired := range claim.Expired {
+		if expired.Name == memoryBatchName {
+			t.Fatalf("mitto-0ql: a purely-\"no shared process\" close-phase memory batch (LastError=%q) "+
+				"was silently discarded by Claim at the 24h age-cap (SavedAt=%s, pendingDispatchMaxAge=%s) "+
+				"— Claim must pass recoverableWorkspace=true so dispatchErrEarnsTransientBudget grants this "+
+				"class the extended transient budget (pendingDispatchMaxAgeTransient=%s), otherwise the "+
+				"reopen-triggered flush loses the batch at the moment of recovery",
+				expired.LastError, staleSavedAt, pendingDispatchMaxAge, pendingDispatchMaxAgeTransient)
+		}
+	}
+	if len(claim.Entries) != 1 {
+		t.Fatalf("claim.Entries = %d entries, want 1 (the no-shared-process batch should remain "+
+			"claimable, not expired)", len(claim.Entries))
+	}
+}
+
 // TestFlushPendingDispatches_RequeueMustNotResurrectAlreadyExpiredEntry
 // reproduces mitto-unc's REOPENED (P1) recurrence gap #2 (double-drop): an
 // overlapping, slower flush pass captures an entry via an EARLIER Claim()
