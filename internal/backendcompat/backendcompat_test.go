@@ -69,6 +69,40 @@ func TestAgentRefFromACPServerName_EmptyRejected(t *testing.T) {
 	}
 }
 
+func TestAgentRefFromStableID_OK(t *testing.T) {
+	ref, err := AgentRefFromStableID("auggie")
+	if err != nil {
+		t.Fatalf("AgentRefFromStableID() error = %v", err)
+	}
+	if ref.Backend != BackendIDForACP || ref.Provider != "auggie" {
+		t.Fatalf("unexpected AgentRef: %+v", ref)
+	}
+}
+
+func TestAgentRefFromStableID_EmptyRejected(t *testing.T) {
+	if _, err := AgentRefFromStableID(""); err == nil {
+		t.Fatal("AgentRefFromStableID(\"\") error = nil, want error")
+	}
+}
+
+func TestAgentRefFromStableID_DiffersFromServerNameWhenIdentitiesDiverge(t *testing.T) {
+	// A configured ACP server display name (e.g. a renamed profile) may
+	// differ from the underlying agent's stable identity (e.g. its ACPId).
+	// Both helpers must independently reflect their own input rather than
+	// collapsing to a shared identifier space.
+	byServerName, err := AgentRefFromACPServerName("Auggie (Opus)")
+	if err != nil {
+		t.Fatalf("AgentRefFromACPServerName() error = %v", err)
+	}
+	byStableID, err := AgentRefFromStableID("auggie")
+	if err != nil {
+		t.Fatalf("AgentRefFromStableID() error = %v", err)
+	}
+	if byServerName.Provider == byStableID.Provider {
+		t.Fatalf("expected divergent Provider values, got both = %q", byServerName.Provider)
+	}
+}
+
 func TestSessionRefFromMetadata_DoesNotCollapseIdentitySpaces(t *testing.T) {
 	meta := session.Metadata{
 		SessionID:    "mitto-conv-123",
