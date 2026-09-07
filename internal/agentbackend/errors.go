@@ -21,6 +21,16 @@ var (
 	ErrSessionNotFound = errors.New("agentbackend: session not found")
 	// ErrCancelled is returned when an in-flight operation was cancelled.
 	ErrCancelled = errors.New("agentbackend: operation cancelled")
+	// ErrConflictingIdentity is returned when a legacy and a neutral
+	// identity field both name the same entity but disagree (e.g. an old
+	// alias name and a new BackendID/ProviderID pointing at different
+	// things). Callers must reject rather than silently preferring one
+	// side (see docs/devel/agent-backend-architecture.md, mitto-lrt.5).
+	ErrConflictingIdentity = errors.New("agentbackend: conflicting legacy/neutral identity fields")
+	// ErrAmbiguousAlias is returned when a legacy alias/name resolves to
+	// two or more candidate backends/providers with no unambiguous winner.
+	// Callers must reject rather than guessing.
+	ErrAmbiguousAlias = errors.New("agentbackend: alias resolves to more than one candidate")
 )
 
 // UnsupportedError reports that a specific Feature is not supported by a
