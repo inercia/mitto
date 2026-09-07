@@ -146,11 +146,30 @@ separated interfaces (`Connection`, `ProviderDiscovery`, `SessionOps`,
 `EventDelivery`, optional `ClientServices`) described in §1–§5, plus a
 non-process in-memory fake proving the contracts don't collapse into an ACP
 alias layer. It is purely additive: `internal/conversation` and
-`internal/acpproc` are untouched, and bridging an ACP adapter onto these
-contracts is deferred to mitto-lrt.6 (adapter), .7 (lifecycle), .8 (event
-projection). `internal/agentbackend` must never import `acp-go-sdk`, an AHP
-client, `internal/acp`, `internal/acpproc`, `internal/web`,
-`internal/conversation`, or `os/exec` — enforced by an import-guard test.
+`internal/acpproc` are untouched. `internal/agentbackend` must never import
+`acp-go-sdk`, an AHP client, `internal/acp`, `internal/acpproc`,
+`internal/web`, `internal/conversation`, or `os/exec` — enforced by an
+import-guard test.
+
+**ACP adapter realized (mitto-lrt.6):** the ACP-to-neutral bridge now lives in
+`internal/acpbackend`, an additive, standalone package that implements all five
+neutral contracts (`Connection`, `ProviderDiscovery`, `SessionOps`,
+`EventDelivery`, optional `ClientServices`) by wrapping the existing
+`conversation.SharedProcess`. Dependency direction: `internal/acpbackend`
+imports `internal/agentbackend` + `acp-go-sdk` + `internal/conversation` (the
+last for the `SharedProcess` handle it wraps) — it is the protocol-specific home
+for the SDK, so the `internal/agentbackend` import guard above stays intact; it
+is **not** imported *by* `internal/conversation` in this increment.
+Translators are pure functions with unit coverage: content blocks,
+stop-reason/outcome, three-state capabilities, model/mode/config state, and
+error mapping to the neutral sentinels. Inbound ACP notifications translate to
+neutral `Event`s tagged `Origin=OriginLocal`. **Still deferred:** wiring the
+adapter into `BackgroundSession` (mitto-lrt.7, lifecycle) and extracting the
+sequence/streaming projection with full tool-call/plan event payload modeling
+(mitto-lrt.8, event projection). Documented shims/gaps to remove alongside that
+later work: the synthesized `ConversationID` in `NewSession` (real Mitto IDs
+arrive with the .7 wiring); dropped Audio/embedded-Resource content blocks and
+deferred non-message `SessionUpdate` kinds (modeled in .8).
 
 ## 7. Migration matrix (proposed)
 
