@@ -231,12 +231,12 @@ func TestReconcileDatabaseMode_SharedWithoutRemoteIsActionableAndDoesNotMutate(t
 // considers metadata.json alone sufficient (Dolt-backed DBs may have no
 // config.yaml at all), so this is a reachable state, not merely a race window.
 //
-// This test currently FAILS (red): ReconcileDatabaseMode(shared) returns a
-// non-nil error here, which the HTTP handler (writeBeadsDatabaseModeError ->
-// writeBeadsError) turns into a bare HTTP 500 on GET /api/issues/database-mode
-// (Cluster A in the bead). The fix phase must make this assertion pass by
-// tolerating the missing-config.yaml diagnostic the same way an already-absent
-// key is tolerated.
+// Before the fix, ReconcileDatabaseMode(shared) returned a non-nil error
+// here, which the HTTP handler (writeBeadsDatabaseModeError ->
+// writeBeadsError) turned into a bare HTTP 500 on GET
+// /api/issues/database-mode (Cluster A in the bead). The fix now tolerates
+// the missing-config.yaml diagnostic the same way an already-absent key is
+// tolerated, so this test asserts success (err == nil) and passes.
 func TestReconcileDatabaseMode_SharedUnsetMissingConfigYAML_ReturnsError(t *testing.T) {
 	dir := initializedDir(t)
 	const wantStderr = "no config.yaml found in BEADS_DIR (/tmp/example/.beads) (run 'bd init' first)"
