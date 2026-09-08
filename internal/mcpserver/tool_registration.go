@@ -18,6 +18,9 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 			"To CREATE a new conversation, use 'mitto_conversation_new' instead. Always available. " +
 			"All parameters are optional filters — omit them to list all conversations. " +
 			"Optionally filter by workspace UUID using the 'workspace' parameter to list only conversations in a specific workspace. " +
+			"Optionally filter by ACP server name using the 'acp_server' parameter (exact match), " +
+			"or its exact alias 'agent' (also accepts a case-insensitive match of a configured server name; " +
+			"'acp_server' and 'agent' must agree if both are given). " +
 			"Optionally provide 'self_id' for permission-aware listing: without it, all conversations are returned (backward compatible); " +
 			"with 'self_id' but without the 'Can interact with other workspaces' flag, only the caller's own workspace conversations are returned. " +
 			selfIDNote,

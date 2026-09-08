@@ -57,10 +57,17 @@ type MetricsOutput struct {
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.
 // All fields are optional — when omitted, no filtering is applied for that field.
 type ListConversationsInput struct {
-	WorkingDir  *string `json:"working_dir,omitempty"`  // Filter by workspace folder (exact match)
-	Archived    *bool   `json:"archived,omitempty"`     // Filter by archived status (true = only archived, false = only active)
-	IsRunning   *bool   `json:"is_running,omitempty"`   // Filter by running status (true = only running, false = only stopped)
-	ACPServer   *string `json:"acp_server,omitempty"`   // Filter by ACP server name (exact match)
+	WorkingDir *string `json:"working_dir,omitempty"` // Filter by workspace folder (exact match)
+	Archived   *bool   `json:"archived,omitempty"`    // Filter by archived status (true = only archived, false = only active)
+	IsRunning  *bool   `json:"is_running,omitempty"`  // Filter by running status (true = only running, false = only stopped)
+	ACPServer  *string `json:"acp_server,omitempty"`  // Filter by ACP server name (exact match)
+	// Agent is an optional exact alias for ACPServer (mitto-lrt.17, mirrors
+	// mitto_conversation_new's acp_server/agent alias, mitto-lrt.13): if only
+	// one of acp_server/agent is set, it filters by it; if both are set, they
+	// must resolve to the same configured server or the call errors. Unlike
+	// acp_server (exact match only), agent additionally accepts a
+	// case-insensitive alias of a configured server name.
+	Agent       *string `json:"agent,omitempty"`        // Filter by agent/backend name — alias for acp_server
 	ExcludeSelf *string `json:"exclude_self,omitempty"` // Exclude this session ID from results (typically your own session)
 	SelfID      string  `json:"self_id,omitempty"`      // Optional: enables permission-aware listing (scoped to caller's workspace unless flag set)
 	Workspace   *string `json:"workspace,omitempty"`    // Optional: filter by workspace UUID
