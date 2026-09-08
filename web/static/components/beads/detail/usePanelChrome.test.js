@@ -364,3 +364,83 @@ describe("usePanelChrome — three-state shortcut rendering", () => {
     expect(missing.tip).toBe('Prompt "Ghost prompt" not found');
   });
 });
+
+// mitto-12r: "Go to conversation" balloon button, inserted between the
+// fullscreen and close buttons, shown only when the open issue resolves to a
+// linked conversation in issueSessionMap AND onOpenConversation was passed.
+describe("usePanelChrome — 'Go to conversation' toolbar button", () => {
+  const issue = { id: "mitto-12r", status: "open" };
+
+  function byTestId(bag, id) {
+    return bag.headerToolbarItems.find((it) => it.testId === id);
+  }
+
+  test("present when the open issue has a linked session and onOpenConversation is set", async () => {
+    freshMount();
+    const onOpenConversation = jest.fn();
+    const bag = await render(
+      baseArgs({
+        data: issue,
+        issueSessionMap: { "mitto-12r": "session-abc" },
+        onOpenConversation,
+      }),
+    );
+    const item = byTestId(bag, "beads-panel-open-conversation");
+    expect(item).toBeDefined();
+    expect(item.tip).toBe("Go to conversation");
+    expect(item.ariaLabel).toBe("Go to conversation");
+
+    // Positioned immediately before Close and immediately after Fullscreen.
+    const ids = bag.headerToolbarItems.map((it) => it.testId);
+    const fsIdx = ids.indexOf("beads-panel-fullscreen");
+    const openIdx = ids.indexOf("beads-panel-open-conversation");
+    const closeIdx = ids.indexOf("beads-panel-close");
+    expect(openIdx).toBe(fsIdx + 1);
+    expect(closeIdx).toBe(openIdx + 1);
+  });
+
+  test("absent when the open issue has no linked session", async () => {
+    freshMount();
+    const bag = await render(
+      baseArgs({
+        data: issue,
+        issueSessionMap: {},
+        onOpenConversation: jest.fn(),
+      }),
+    );
+    expect(byTestId(bag, "beads-panel-open-conversation")).toBeUndefined();
+  });
+
+  test("absent when onOpenConversation is not provided, even with a linked session", async () => {
+    freshMount();
+    const bag = await render(
+      baseArgs({
+        data: issue,
+        issueSessionMap: { "mitto-12r": "session-abc" },
+        onOpenConversation: undefined,
+      }),
+    );
+    expect(byTestId(bag, "beads-panel-open-conversation")).toBeUndefined();
+  });
+
+  test("clicking it closes the panel and focuses the linked conversation", async () => {
+    freshMount();
+    const onClose = jest.fn();
+    const onOpenConversation = jest.fn();
+    const bag = await render(
+      baseArgs({
+        data: issue,
+        onClose,
+        issueSessionMap: { "mitto-12r": "session-abc" },
+        onOpenConversation,
+      }),
+    );
+    const item = byTestId(bag, "beads-panel-open-conversation");
+    item.onClick();
+
+    // handleClose defers the actual onClose call behind the fade-out timer,
+    // so assert onOpenConversation fired synchronously with the right id and
+    // trust the existing handleClose coverage for the close side-effect.
+    expect(onOpenConversation).toHaveBeenCalledWith("session-abc");
+  });
+});
