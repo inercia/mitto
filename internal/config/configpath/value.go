@@ -2,10 +2,52 @@ package configpath
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// ToJSON converts v into a plain JSON-shaped Go value (nil, bool, int64,
+// float64, string, []interface{}, or whatever KindJSON already decoded:
+// nil/bool/int64/float64/string/[]interface{}/map[string]interface{}).
+//
+// This is the single source of truth for Value->JSON conversion, shared by:
+//   - internal/config/configsvc's write path (mutate.go's valueToJSON is a
+//     thin in-package delegate kept for that package's existing call sites);
+//   - the CLI's live mode (internal/cmd/config_set.go), which must convert a
+//     typed Value into pkg/api's untyped ConfigPatchOp.Value before sending
+//     it over the wire to POST /api/config/patch — offline mode needs no
+//     such conversion, since configsvc.Mutate consumes typed Values
+//     directly (mitto-4rz.5 Plan, decision 3).
+func (v Value) ToJSON() (interface{}, error) {
+	switch v.Kind {
+	case KindNull:
+		return nil, nil
+	case KindBool:
+		return v.Bool, nil
+	case KindInt:
+		return v.Int, nil
+	case KindFloat:
+		return v.Float, nil
+	case KindString:
+		return v.Str, nil
+	case KindList:
+		out := make([]interface{}, len(v.List))
+		for i, el := range v.List {
+			cv, err := el.ToJSON()
+			if err != nil {
+				return nil, err
+			}
+			out[i] = cv
+		}
+		return out, nil
+	case KindJSON:
+		return v.JSON, nil
+	default:
+		return nil, fmt.Errorf("unknown value kind %d", v.Kind)
+	}
+}
 
 var (
 	integerTokenRE = regexp.MustCompile(`^-?[0-9]+$`)

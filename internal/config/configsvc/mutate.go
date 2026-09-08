@@ -1,8 +1,6 @@
 package configsvc
 
 import (
-	"fmt"
-
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config/configpath"
 	"github.com/inercia/mitto/internal/fileutil"
@@ -225,32 +223,10 @@ func containsRedactedPlaceholder(v interface{}) bool {
 }
 
 // valueToJSON converts a resolved configpath.Value into a plain
-// JSON-shaped Go value (nil/bool/int64/float64/string/[]interface{}).
+// JSON-shaped Go value (nil/bool/int64/float64/string/[]interface{}). It
+// delegates to the exported configpath.Value.ToJSON (mitto-4rz.5), the
+// single source of truth for this conversion, so this package and the CLI's
+// live `config set` mode (internal/cmd/config_set.go) can never drift.
 func valueToJSON(v configpath.Value) (interface{}, error) {
-	switch v.Kind {
-	case configpath.KindNull:
-		return nil, nil
-	case configpath.KindBool:
-		return v.Bool, nil
-	case configpath.KindInt:
-		return v.Int, nil
-	case configpath.KindFloat:
-		return v.Float, nil
-	case configpath.KindString:
-		return v.Str, nil
-	case configpath.KindList:
-		out := make([]interface{}, len(v.List))
-		for i, el := range v.List {
-			cv, err := valueToJSON(el)
-			if err != nil {
-				return nil, err
-			}
-			out[i] = cv
-		}
-		return out, nil
-	case configpath.KindJSON:
-		return v.JSON, nil
-	default:
-		return nil, fmt.Errorf("unknown value kind %d", v.Kind)
-	}
+	return v.ToJSON()
 }
