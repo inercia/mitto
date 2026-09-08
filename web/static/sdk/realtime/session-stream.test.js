@@ -320,6 +320,31 @@ describe("SessionStream: open / message / close lifecycle", () => {
     expect(h.stream.lastSeenSeq()).toBe(7);
   });
 
+  test("connected message with an optional \"backend\" descriptor (mitto-lrt.12) passes through verbatim", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const received = [];
+    h.stream.on("message", (m) => received.push(m));
+    const backend = {
+      agent_ref: { backend: "acp", provider: "Auggie" },
+      session_ref: { conversation_id: "conv-1", provider: "Auggie", provider_session: "upstream-1" },
+      capabilities: { images: "supported", terminals: "unknown" },
+    };
+    ws.onmessage({ data: JSON.stringify({ type: "connected", data: { session_id: "conv-1", backend } }) });
+    expect(received).toHaveLength(1);
+    expect(received[0].data.backend).toEqual(backend);
+  });
+
+  test("connected message with no \"backend\" key (legacy server) omits it, not a null placeholder", () => {
+    const h = makeHarness();
+    const ws = openStream(h);
+    const received = [];
+    h.stream.on("message", (m) => received.push(m));
+    ws.onmessage({ data: JSON.stringify({ type: "connected", data: { session_id: "conv-2" } }) });
+    expect(received).toHaveLength(1);
+    expect("backend" in received[0].data).toBe(false);
+  });
+
   test("malformed JSON is logged and does not emit \"message\" or throw", () => {
     const h = makeHarness();
     const ws = openStream(h);

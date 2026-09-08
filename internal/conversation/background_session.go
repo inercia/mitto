@@ -680,6 +680,14 @@ type BackgroundSessionTestOpts struct {
 	PromptResolver          PromptResolver
 	PromptFragmentsResolver PromptFragmentsResolver
 	ContextFlushCommand     string
+	// AgentSupportsImages, AgentModels and ConfigOptions expose the
+	// otherwise-private capability/model/config-option state so external
+	// packages (e.g. internal/web/handlers' neutral descriptor projection,
+	// mitto-lrt.12) can unit-test consumers of AgentSupportsImages(),
+	// AgentModels() and ConfigOptions() without a live ACP process.
+	AgentSupportsImages bool
+	AgentModels         *SessionModelState
+	ConfigOptions       []SessionConfigOption
 }
 
 // NewTestBackgroundSession creates a BackgroundSession from test options.
@@ -696,6 +704,9 @@ func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession
 		promptResolver:          opts.PromptResolver,
 		promptFragmentsResolver: opts.PromptFragmentsResolver,
 		contextFlushCommand:     opts.ContextFlushCommand,
+		agentSupportsImages:     opts.AgentSupportsImages,
+		agentModels:             opts.AgentModels,
+		configOptions:           opts.ConfigOptions,
 	}
 	return bs
 }
