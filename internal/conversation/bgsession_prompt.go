@@ -1485,6 +1485,19 @@ func (bs *BackgroundSession) pdClearAuthGuidanceSurfaced() {
 	bs.authGuidanceMu.Unlock()
 }
 
+// pdNotifyAgentAuthState invokes the onAgentAuthStateChanged hook, when set,
+// reporting whether the agent's CLI currently requires re-authentication
+// (mitto-3du). Called from handlePromptError's auth branch (required=true)
+// and handlePromptSuccess (required=false, guarded by the prior-surfaced
+// flag) to drive a workspace-scoped sidebar health pill via a global
+// broadcast, so unattended/loop sessions with no attached client still
+// surface the state.
+func (bs *BackgroundSession) pdNotifyAgentAuthState(required bool) {
+	if bs.onAgentAuthStateChanged != nil {
+		bs.onAgentAuthStateChanged(bs.persistedID, bs.workspaceUUID, bs.workingDir, required)
+	}
+}
+
 func (bs *BackgroundSession) pdResetPromptingStateForAbort() {
 	bs.promptMu.Lock()
 	bs.isPrompting = false

@@ -148,6 +148,12 @@ type promptDeps interface {
 	pdAuthGuidanceAlreadySurfaced() bool
 	pdMarkAuthGuidanceSurfaced()
 	pdClearAuthGuidanceSurfaced()
+	// pdNotifyAgentAuthState (mitto-3du) reports agent auth-required state
+	// changes to drive a workspace-scoped sidebar health pill, fed by the same
+	// auth-expiry signal as pdMarkAuthGuidanceSurfaced/pdClearAuthGuidanceSurfaced
+	// above. Called with true from handlePromptError's auth branch and false
+	// from handlePromptSuccess, guarded there by the prior-surfaced flag.
+	pdNotifyAgentAuthState(required bool)
 	// pdRecordSessionChange assigns a seq, persists a session-change timeline
 	// event via the recorder, and notifies observers. Used for the model-override pill.
 	pdRecordSessionChange(kind, value, previousValue string)
@@ -1477,7 +1483,15 @@ func (p promptDispatcher) handlePromptSuccess(
 	// mitto-6vs: a successful prompt means the CLI is authenticated again —
 	// re-arm the auth-expiry guidance dedupe guard so a future re-expiry
 	// surfaces a fresh durable record instead of staying silently suppressed.
+	// mitto-3du: read the prior state BEFORE clearing it, so the "cleared"
+	// broadcast fires only when guidance had actually been surfaced — an
+	// ordinary successful prompt on a never-degraded workspace must not spam
+	// a clear.
+	wasAuthGuidanceSurfaced := d.pdAuthGuidanceAlreadySurfaced()
 	d.pdClearAuthGuidanceSurfaced()
+	if wasAuthGuidanceSurfaced {
+		d.pdNotifyAgentAuthState(false)
+	}
 
 	// Apply any config changes deferred during this turn before dispatching
 	// the next queued message, so the queued prompt runs under the new config.
@@ -1693,6 +1707,7 @@ func (p promptDispatcher) handlePromptError(
 		}
 		d.pdRefreshNextSeq()
 		d.pdMarkAuthGuidanceSurfaced()
+		d.pdNotifyAgentAuthState(true)
 	}
 
 	d.pdNotifyObservers(func(o SessionObserver) {

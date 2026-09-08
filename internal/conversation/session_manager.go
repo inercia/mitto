@@ -1609,6 +1609,47 @@ func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaitin
 	}
 }
 
+// broadcastAgentAuthState is the BackgroundSessionConfig.OnAgentAuthStateChanged
+// hook (mitto-3du): broadcasts a workspace-scoped "agent auth required"/"cleared"
+// event on /api/events so the sidebar health pill updates even for unattended/loop
+// sessions with no attached client. Mirrors OnStreamingStateChanged/
+// OnConfigOptionChanged (session-level broadcast via sm.eventsManager directly,
+// no separate internal/web.Server method — SessionManager has no reference back
+// to Server). Resolves a friendly workspace name via GetWorkspaceByUUID, same as
+// the ACP-process-manager-level health broadcasts in internal/web/server.go.
+func (sm *SessionManager) broadcastAgentAuthState(sessionID, workspaceUUID, workingDir string, required bool) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+	if em == nil {
+		return
+	}
+
+	workspaceName := ""
+	if ws := sm.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+		workspaceName = ws.Name
+	}
+
+	msgType := WSMsgTypeAgentAuthRequired
+	if !required {
+		msgType = WSMsgTypeAgentAuthCleared
+	}
+	em.Broadcast(msgType, map[string]interface{}{
+		"session_id":     sessionID,
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Info("Broadcast agent auth state",
+			"session_id", sessionID,
+			"workspace_uuid", workspaceUUID,
+			"required", required,
+			"clients", em.ClientCount())
+	}
+}
+
 // IsWaitingForChildren returns whether a session is currently blocked on mitto_children_tasks_wait.
 func (sm *SessionManager) IsWaitingForChildren(sessionID string) bool {
 	sm.waitingForChildrenMu.RLock()
@@ -2294,6 +2335,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 				})
 			}
 		},
+		OnAgentAuthStateChanged: sm.broadcastAgentAuthState,
 		OnTitleGenerated: func(sessionID, title string) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
@@ -2923,6 +2965,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 				})
 			}
 		},
+		OnAgentAuthStateChanged: sm.broadcastAgentAuthState,
 		OnTitleGenerated: func(sessionID, title string) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{

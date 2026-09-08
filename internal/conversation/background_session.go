@@ -206,6 +206,14 @@ type BackgroundSession struct {
 	// onStreamingStateChanged is called when the session's streaming state changes.
 	onStreamingStateChanged func(sessionID string, isStreaming bool)
 
+	// onAgentAuthStateChanged is called when the agent's authentication-required
+	// state changes (mitto-3du): true when a prompt fails with the durable
+	// auth-expiry guidance first surfaced (mitto-6vs's -32000 "Authentication
+	// required" detection); false when a later prompt succeeds after that
+	// guidance was surfaced. Drives a workspace-scoped sidebar health pill via
+	// a global /api/events broadcast so unattended/loop sessions surface too.
+	onAgentAuthStateChanged func(sessionID, workspaceUUID, workingDir string, required bool)
+
 	// onUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	onUIPromptStateChanged func(sessionID string, isWaiting bool)
 
@@ -508,6 +516,10 @@ type BackgroundSessionConfig struct {
 	// It's called with true when streaming starts (user sends prompt) and false when it ends.
 	OnStreamingStateChanged func(sessionID string, isStreaming bool)
 
+	// OnAgentAuthStateChanged is called when the agent's authentication-required
+	// state changes (mitto-3du). See BackgroundSession.onAgentAuthStateChanged.
+	OnAgentAuthStateChanged func(sessionID, workspaceUUID, workingDir string, required bool)
+
 	// OnUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	OnUIPromptStateChanged func(sessionID string, isWaiting bool)
 
@@ -748,6 +760,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		runner:                         cfg.Runner,
 		lease:                          cfg.BackendLease,
 		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
+		onAgentAuthStateChanged:        cfg.OnAgentAuthStateChanged,
 		onUIPromptStateChanged:         cfg.OnUIPromptStateChanged,
 		onUIPromptTimeout:              cfg.OnUIPromptTimeout,
 		onPlanStateChanged:             cfg.OnPlanStateChanged,

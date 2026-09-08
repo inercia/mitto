@@ -171,6 +171,9 @@ type fakePromptDeps struct {
 	authGuidanceSurfaced   bool
 	markAuthGuidanceCalls  int
 	clearAuthGuidanceCalls int
+
+	// === New in mitto-3du: agent auth-required sidebar health pill ===
+	agentAuthStateCalls []bool
 }
 
 func newFakePromptDeps() *fakePromptDeps {
@@ -407,6 +410,11 @@ func (f *fakePromptDeps) pdClearAuthGuidanceSurfaced() {
 	defer f.mu.Unlock()
 	f.authGuidanceSurfaced = false
 	f.clearAuthGuidanceCalls++
+}
+func (f *fakePromptDeps) pdNotifyAgentAuthState(required bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agentAuthStateCalls = append(f.agentAuthStateCalls, required)
 }
 func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
 	f.mu.Lock()
