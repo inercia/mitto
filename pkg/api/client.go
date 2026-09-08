@@ -63,6 +63,20 @@ func WithBearerToken(token string) Option {
 	return WithTokenSupplier(func() (string, error) { return token, nil })
 }
 
+// WithAPIPrefix overrides the default "/mitto" API URL prefix used to build
+// request URLs (apiURL joins baseURL + apiPrefix + path). Set this to match
+// a server started with a non-default web.api_prefix (see
+// internal/config's WebConfig.APIPrefix; a running server's actual value is
+// also readable from instance.json's api_prefix field). An empty string is
+// a valid, meaningful value — it means the server was configured with
+// prefixing disabled entirely (unprefixed paths), NOT "use the default";
+// omit this option altogether to keep the zero-config "/mitto" default.
+func WithAPIPrefix(prefix string) Option {
+	return func(client *Client) {
+		client.apiPrefix = prefix
+	}
+}
+
 // WithTokenSupplier configures the client to authenticate every request with
 // an "Authorization: Bearer <token>" header, where the token is resolved by
 // calling supplier immediately before each request. This allows callers to
@@ -192,6 +206,12 @@ func (c *Client) Logout(ctx context.Context) error {
 // BaseURL returns the base URL of the client.
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+// APIPrefix returns the API URL prefix currently configured on the client
+// (see WithAPIPrefix), e.g. "/mitto" or "" (disabled).
+func (c *Client) APIPrefix() string {
+	return c.apiPrefix
 }
 
 // newRequest builds an HTTP request against the Mitto API and decorates it

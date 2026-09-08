@@ -777,13 +777,21 @@ func NewServer(config Config) (*Server, error) {
 	// Set API prefix on CSRF manager for exempt path matching
 	csrfMgr.SetAPIPrefix(apiPrefix)
 
-	// Let CSRF exempt requests carrying a valid shared bearer token (mitto-7gta.26).
-	// CSRF wraps OUTSIDE auth (see the handler chain below), so it cannot read an
-	// auth decision from context; ValidateBearerRequest lets it validate the token
-	// independently instead of merely detecting the Authorization header.
-	if authMgr != nil {
-		csrfMgr.SetTokenAuthChecker(authMgr.ValidateBearerRequest)
-	}
+	// Let CSRF exempt requests carrying a valid shared bearer token
+	// (mitto-7gta.26) OR a valid instance-bearer token (mitto-4rz.3, for
+	// POST /api/config/patch). CSRF wraps OUTSIDE auth (see the handler
+	// chain below), so it cannot read an auth decision from context; both
+	// checks VALIDATE the token independently instead of merely detecting
+	// the Authorization header. Always set (not gated on authMgr != nil) so
+	// an external POST /api/config/patch carrying a valid instance bearer
+	// is never spuriously CSRF-blocked even when no global auth is
+	// configured at all.
+	csrfMgr.SetTokenAuthChecker(func(r *http.Request) bool {
+		if authMgr != nil && authMgr.ValidateBearerRequest(r) {
+			return true
+		}
+		return validateInstanceBearer(r)
+	})
 
 	// Initialize access logger (nil if disabled)
 	var accessLogger *AccessLogger
@@ -1695,7 +1703,8 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess(), s.authManager.HasPasskeyEnabled()
 		},
-		RotateSharedToken: s.rotateSharedToken,
+		RotateSharedToken:      s.rotateSharedToken,
+		ValidateInstanceBearer: validateInstanceBearer,
 		ImprovePrompt: func() func(context.Context, string, string) (string, error) {
 			if s.auxiliaryManager == nil {
 				return nil

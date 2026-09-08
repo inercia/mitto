@@ -45,7 +45,7 @@ server-touching commands, and vice versa.
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--url`        | SDK `baseURL`                                                                                                                                                                                                                                                         |
 | `--token`      | `api.WithBearerToken`                                                                                                                                                                                                                                                 |
-| `--api-prefix` | `api.WithAPIPrefix` (new option, `mitto-rwxq.7`)                                                                                                                                                                                                                      |
+| `--api-prefix` | `api.WithAPIPrefix` (`mitto-rwxq.7`)                                                                                                                                                                                                                                  |
 | `--timeout`    | `api.WithTimeout`                                                                                                                                                                                                                                                     |
 | `--output`     | `table` (default) \| `json` \| `yaml`                                                                                                                                                                                                                                 |
 | `--no-color`   | forces glamour's notty style                                                                                                                                                                                                                                          |
@@ -58,11 +58,9 @@ explicit flag > MITTO_URL / MITTO_TOKEN / MITTO_API_PREFIX env
               > instance.json (mitto-pscc.2) > error
 ```
 
-`NO_COLOR` (env) is equivalent to `--no-color`. `--api-prefix` cannot be
-honored until `mitto-rwxq.7` adds `WithAPIPrefix` (`api.New` hardcodes
-`/mitto` today) — until then the flag is accepted but only the default
-prefix works, and `conversation list` filters client-side pending that
-same issue's `ListSessions` filter arguments.
+`NO_COLOR` (env) is equivalent to `--no-color`. `--api-prefix` is honored via
+`api.WithAPIPrefix` (`mitto-rwxq.7`); `conversation list` still filters
+client-side pending that same issue's `ListSessions` filter arguments.
 
 ## 3. `PersistentPreRunE` must be skipped
 

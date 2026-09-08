@@ -167,22 +167,15 @@ func TestResolveTarget_TokenNeverLeaksInErrors(t *testing.T) {
 
 // --- newClient ----------------------------------------------------------
 
-func TestNewClient_RejectsNonDefaultAPIPrefix(t *testing.T) {
+func TestNewClient_HonorsNonDefaultAPIPrefix(t *testing.T) {
 	clearServerEnv(t)
 	f := &serverFlags{URL: "http://example:8080", Token: "t", APIPrefix: "/other", Timeout: time.Second}
-	_, err := newClient(f)
-	if err == nil {
-		t.Fatal("expected an error for a non-default --api-prefix")
+	c, err := newClient(f)
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
 	}
-	var ec *exitCodeError
-	if !errors.As(err, &ec) {
-		t.Fatalf("expected *exitCodeError, got %T: %v", err, err)
-	}
-	if ec.ExitCode() != exitUsage {
-		t.Errorf("ExitCode() = %d, want %d (usage)", ec.ExitCode(), exitUsage)
-	}
-	if !strings.Contains(err.Error(), "mitto-rwxq.7") {
-		t.Errorf("error should reference the tracking issue: %v", err)
+	if c.APIPrefix() != "/other" {
+		t.Errorf("APIPrefix() = %q, want %q", c.APIPrefix(), "/other")
 	}
 }
 

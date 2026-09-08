@@ -32,17 +32,41 @@ const lockPollInterval = 50 * time.Millisecond
 // "another offline writer" and "a live running server" concurrently.
 // Returns an unlock func to call (via defer) once the caller is done.
 func acquireOfflineLock() (func(), error) {
-	return acquireOfflineLockWithTimeout(lockAcquireTimeout)
+	return acquireLock(lockAcquireTimeout, false)
 }
 
 // acquireOfflineLockWithTimeout is acquireOfflineLock with an explicit
 // contention timeout, split out so tests can use a short timeout instead
 // of waiting the full production default.
 func acquireOfflineLockWithTimeout(timeout time.Duration) (func(), error) {
-	if running, err := runningServerDetected(); err != nil {
-		return nil, err
-	} else if running {
-		return nil, newErr(ErrKindLocked, "", "a running Mitto server/app owns settings.json; stop it before mutating settings offline")
+	return acquireLock(timeout, false)
+}
+
+// acquireInProcessLock is acquireOfflineLock's live-safe counterpart
+// (mitto-4rz.3): it still takes the advisory flock below — serializing this
+// call against any other configsvc writer, including another goroutine in
+// THIS SAME process, since lock_unix.go's flock(2) is scoped to the open
+// file description created by tryFlock's os.OpenFile, not the process, so
+// two concurrent callers here still correctly contend/block each other —
+// but it SKIPS the runningServerDetected refusal below. That refusal exists
+// to stop an OFFLINE (separate-process) mutation from racing a live
+// server's own settings.json; it must not also stop the live server itself
+// from mutating its own settings, which is exactly what a live web handler
+// (the caller here) needs to do.
+func acquireInProcessLock() (func(), error) {
+	return acquireLock(lockAcquireTimeout, true)
+}
+
+// acquireLock implements the shared body of the three lock entry points
+// above: skipRunningCheck selects whether the runningServerDetected refusal
+// applies (false for offline callers, true for in-process/live callers).
+func acquireLock(timeout time.Duration, skipRunningCheck bool) (func(), error) {
+	if !skipRunningCheck {
+		if running, err := runningServerDetected(); err != nil {
+			return nil, err
+		} else if running {
+			return nil, newErr(ErrKindLocked, "", "a running Mitto server/app owns settings.json; stop it before mutating settings offline")
+		}
 	}
 
 	dir, err := appdir.Dir()

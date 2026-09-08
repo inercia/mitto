@@ -471,6 +471,21 @@ type Deps struct {
 	// when nothing is remembered or when either identifier is empty. May be
 	// nil; the GET handler treats that as "conversation scope disabled".
 	GetRememberedConversationArgs func(sessionID, promptName string) (map[string]string, error)
+
+	// ValidateInstanceBearer reports whether r carries a valid
+	// "Authorization: Bearer <token>" matching the CURRENT
+	// $MITTO_DIR/instance.json token (mitto-4rz.3). It gates
+	// GET /api/config/snapshot and POST /api/config/patch INDEPENDENTLY of
+	// whether global auth (Simple/Cloudflare/shared-token, via AuthManager)
+	// is configured — AuthManager may be nil, and even when non-nil only
+	// adopts the instance token as ITS shared token when Simple/Cloudflare
+	// auth is enabled (see internal/cmd/web.go), so it cannot serve as this
+	// gate. There is deliberately NO loopback exemption and NO cookie/
+	// session fallback here: the instance-bearer requirement applies
+	// regardless of how the request arrived. May be nil; the two config
+	// handlers then respond 503 (service unavailable) rather than allow
+	// through.
+	ValidateInstanceBearer func(r *http.Request) bool
 }
 
 // Handlers groups the REST API handler methods extracted from the web server.
