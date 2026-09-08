@@ -93,6 +93,16 @@ type BackendLease interface {
 	// it never kills a shared OS process or a remote host session that
 	// other leases/clients may still own ("detach, not kill").
 	Detach()
+	// Bind attaches this lease to the concrete provider session identity
+	// established by a deferred handshake (AcquireRequest.DeferSession): a
+	// DeferSession lease is returned before any session/new|load|resume RPC
+	// runs, so it starts with no session identity. A caller that completes
+	// its own deferred handshake afterwards calls Bind with the resulting
+	// agentbackend.SessionRef so later Detach/Reconnect calls target the
+	// real session instead of treating the lease as unbound. Implementations
+	// for leases that already carry a session identity from AcquireSession
+	// itself (i.e. every non-deferred acquisition) may treat Bind as a no-op.
+	Bind(ref agentbackend.SessionRef)
 	// Reconnect attempts to re-establish a lost connection for this lease.
 	// Implementations must coalesce concurrent callers (single-flight)
 	// rather than duplicating work or replaying a possibly already-accepted

@@ -93,6 +93,12 @@ func (l *fakeRemoteLease) Detach() {
 	l.detached = true
 }
 
+// Bind is a no-op for the fake remote backend: DeferSession is an ACP-only
+// concept (see AcquireRequest.DeferSession doc) that this fake never
+// produces an unbound lease for — every fakeRemoteLease is already bound to
+// a concrete session identity by AcquireSession itself.
+func (l *fakeRemoteLease) Bind(ref agentbackend.SessionRef) {}
+
 // Terminate is unsupported for the fake remote backend: it has no local
 // process/restart concept, so it must fail closed with a typed
 // *agentbackend.UnsupportedError rather than faking success.

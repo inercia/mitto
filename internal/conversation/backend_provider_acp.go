@@ -148,6 +148,18 @@ func (l *acpLease) Detach() {
 	l.process.UnregisterSession(l.sessionID)
 }
 
+// Bind attaches this lease to the real ACP session ID established by a
+// deferred handshake (AcquireRequest.DeferSession): AcquireSession returns
+// such a lease with sessionID empty, so Detach/Reconnect have nothing to
+// target until the caller's own session/new|load|resume RPC completes and
+// calls Bind with the resulting identity.
+func (l *acpLease) Bind(ref agentbackend.SessionRef) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.ref = ref
+	l.sessionID = acp.SessionId(ref.ProviderSession)
+}
+
 // Terminate restarts the underlying shared OS process (generation-fenced, so
 // concurrent Terminate/restart callers observing the same death only cause
 // one actual restart). Always supported for ACP.

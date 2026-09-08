@@ -11,6 +11,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -61,7 +62,23 @@ func (bs *BackgroundSession) prepareSharedACPSession(sharedProcess SharedProcess
 }
 
 func (bs *BackgroundSession) completeDeferredHandshake() error {
-	return bs.handshaker.completeDeferredHandshake(bs)
+	if err := bs.handshaker.completeDeferredHandshake(bs); err != nil {
+		return err
+	}
+	// Bind the deferred lease (AcquireRequest.DeferSession) to the real ACP
+	// session ID established by the handshake above (mitto-lrt.18), so
+	// killACPProcess's shared-mode teardown can route through lease.Detach()
+	// instead of unregistering from sharedProcess directly. Idempotent: a
+	// no-op re-bind when completeDeferredHandshake itself was a no-op because
+	// the handshake had already completed on an earlier call (prewarm or a
+	// prior prompt).
+	if bs.lease != nil && bs.acpID != "" {
+		bs.lease.Bind(agentbackend.SessionRef{
+			ConversationID:  bs.persistedID,
+			ProviderSession: agentbackend.ProviderSessionID(bs.acpID),
+		})
+	}
+	return nil
 }
 
 // PrewarmACPSession completes the deferred ACP session/new handshake in the background

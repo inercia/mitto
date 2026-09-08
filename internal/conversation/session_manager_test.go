@@ -3419,10 +3419,13 @@ func TestSessionManager_GetSharedProcess_RoutesThroughInjectedBackendProvider(t 
 	ws := &config.WorkspaceSettings{UUID: "ws-provider-1", WorkingDir: "/tmp"}
 	acpEnv := map[string]string{"FOO": "bar"}
 
-	got := sm.getSharedProcess(ws, "echo test", "/tmp", acpEnv, nil)
+	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", acpEnv, nil)
 
 	if got != proc {
 		t.Fatalf("getSharedProcess = %v, want %v (the process exposed by the injected provider's lease)", got, proc)
+	}
+	if gotLease != provider.lease {
+		t.Errorf("getSharedProcess lease = %v, want %v (the lease returned by the injected provider)", gotLease, provider.lease)
 	}
 	if calls := provider.callCount(); calls != 1 {
 		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
@@ -3454,10 +3457,13 @@ func TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic(t 
 	sm.SetBackendProvider(provider)
 
 	ws := &config.WorkspaceSettings{UUID: "ws-provider-2", WorkingDir: "/tmp"}
-	got := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
 
 	if got != nil {
 		t.Fatalf("getSharedProcess = %v, want nil on provider AcquireSession error", got)
+	}
+	if gotLease != nil {
+		t.Errorf("getSharedProcess lease = %v, want nil on provider AcquireSession error", gotLease)
 	}
 	if calls := provider.callCount(); calls != 1 {
 		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
@@ -3478,9 +3484,12 @@ func TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager(t
 	// Deliberately do NOT call SetBackendProvider — backendProvider stays nil.
 
 	ws := &config.WorkspaceSettings{UUID: "ws-provider-3", WorkingDir: "/tmp"}
-	got := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
 
 	if got != proc {
 		t.Fatalf("getSharedProcess = %v, want %v (direct ProcessManager fallback with a nil provider)", got, proc)
+	}
+	if gotLease != nil {
+		t.Errorf("getSharedProcess lease = %v, want nil (the pm fallback path carries no lease)", gotLease)
 	}
 }

@@ -321,6 +321,15 @@ type BackgroundSession struct {
 	// slot on the shared process. nil = legacy per-session process ownership.
 	sharedProcess SharedProcess
 
+	// lease is the BackendLease (mitto-lrt.7/lrt.18) backing sharedProcess, when a
+	// BackendProvider was injected (SessionManager.SetBackendProvider). It is
+	// acquired with AcquireRequest.DeferSession, so it starts unbound and is
+	// bound to the real ACP session ID by completeDeferredHandshake once that
+	// RPC completes. killACPProcess prefers lease.Detach() over unregistering
+	// from sharedProcess directly when non-nil. nil whenever no BackendProvider
+	// is injected (the common case today) — that path is unaffected.
+	lease BackendLease
+
 	// Lazy ACP session handshake for shared-process sessions.
 	// When pendingShared is true, session/new has not yet been called;
 	// it is deferred to the first prompt to avoid blocking the create path
@@ -540,6 +549,11 @@ type BackgroundSessionConfig struct {
 	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
 	SharedProcess SharedProcess
 
+	// BackendLease is the BackendLease (mitto-lrt.7/lrt.18) backing SharedProcess,
+	// when a BackendProvider was injected. Nil whenever no BackendProvider is
+	// injected — that path is unaffected. See the BackgroundSession.lease field doc.
+	BackendLease BackendLease
+
 	// StderrPatterns holds per-agent compiled stderr patterns (crash / ignore /
 	// degraded classes; mitto-k6h). Nil means only the hardcoded baseline
 	// applies. Compiled once by the web layer from agent metadata.yaml.
@@ -732,6 +746,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		workspaceUUID:                  cfg.WorkspaceUUID,
 		acpServer:                      cfg.ACPServer,
 		runner:                         cfg.Runner,
+		lease:                          cfg.BackendLease,
 		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
 		onUIPromptStateChanged:         cfg.OnUIPromptStateChanged,
 		onUIPromptTimeout:              cfg.OnUIPromptTimeout,
@@ -996,6 +1011,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		workspaceUUID:                  config.WorkspaceUUID,
 		acpServer:                      config.ACPServer,
 		runner:                         config.Runner,
+		lease:                          config.BackendLease,
 		onStreamingStateChanged:        config.OnStreamingStateChanged,
 		onUIPromptStateChanged:         config.OnUIPromptStateChanged,
 		onUIPromptTimeout:              config.OnUIPromptTimeout,
