@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
@@ -3365,5 +3366,121 @@ func TestSessionManager_ResumeSession_AgentQueryClosed_DoesNotCountAsHardFailure
 	if updated.Archived {
 		t.Error("bug reproduced (mitto-hjx classification gap): session was auto-archived after a single " +
 			"transient query-closed resume failure")
+	}
+}
+
+// recordingBackendProvider is a BackendProvider fake that records the last
+// AcquireRequest it received and returns a preset lease/error. Used to prove
+// SessionManager.getSharedProcess routes production process acquisition
+// through an injected BackendProvider (mitto-lrt.16) rather than calling
+// ProcessManager directly, without depending on any real ACP process.
+type recordingBackendProvider struct {
+	mu      sync.Mutex
+	lastReq AcquireRequest
+	calls   int
+	lease   BackendLease
+	err     error
+}
+
+func (p *recordingBackendProvider) AcquireSession(_ context.Context, req AcquireRequest) (BackendLease, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	p.lastReq = req
+	return p.lease, p.err
+}
+
+func (p *recordingBackendProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func (p *recordingBackendProvider) requestSnapshot() AcquireRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastReq
+}
+
+// TestSessionManager_GetSharedProcess_RoutesThroughInjectedBackendProvider
+// proves the mitto-lrt.16 wiring: when a BackendProvider is injected,
+// getSharedProcess (the single chokepoint used by create, load/resume,
+// foreground wake, startup stagger, and concurrent-recycle retry) acquires
+// via BackendProvider.AcquireSession with DeferSession set — preserving the
+// mitto-220 deferred-session RPC pattern — and returns the process exposed
+// by the resulting lease's LocalProcess() escape hatch, rather than calling
+// ProcessManager.GetOrCreateProcess directly.
+func TestSessionManager_GetSharedProcess_RoutesThroughInjectedBackendProvider(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	proc := newFakeBackendSharedProcess()
+	provider := &recordingBackendProvider{lease: &acpLease{process: proc}}
+	sm.SetBackendProvider(provider)
+
+	ws := &config.WorkspaceSettings{UUID: "ws-provider-1", WorkingDir: "/tmp"}
+	acpEnv := map[string]string{"FOO": "bar"}
+
+	got := sm.getSharedProcess(ws, "echo test", "/tmp", acpEnv, nil)
+
+	if got != proc {
+		t.Fatalf("getSharedProcess = %v, want %v (the process exposed by the injected provider's lease)", got, proc)
+	}
+	if calls := provider.callCount(); calls != 1 {
+		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
+	}
+	req := provider.requestSnapshot()
+	if !req.DeferSession {
+		t.Error("AcquireRequest.DeferSession = false, want true (must preserve the mitto-220 deferred-session RPC pattern)")
+	}
+	if req.Workspace != ws {
+		t.Errorf("AcquireRequest.Workspace = %v, want %v", req.Workspace, ws)
+	}
+	if req.ACPCommand != "echo test" || req.ACPCwd != "/tmp" {
+		t.Errorf("AcquireRequest ACPCommand/ACPCwd = %q/%q, want %q/%q", req.ACPCommand, req.ACPCwd, "echo test", "/tmp")
+	}
+	if !req.Prewarm {
+		t.Error("AcquireRequest.Prewarm = false, want true")
+	}
+}
+
+// TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic
+// proves that when the injected BackendProvider fails to acquire (e.g. the
+// classified-error taxonomy surfaces a hard failure), getSharedProcess
+// returns nil (triggering the existing per-session fallback in callers)
+// instead of panicking or silently falling through to a second acquisition
+// attempt via ProcessManager.
+func TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	provider := &recordingBackendProvider{err: agentbackend.ErrNotConnected}
+	sm.SetBackendProvider(provider)
+
+	ws := &config.WorkspaceSettings{UUID: "ws-provider-2", WorkingDir: "/tmp"}
+	got := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+
+	if got != nil {
+		t.Fatalf("getSharedProcess = %v, want nil on provider AcquireSession error", got)
+	}
+	if calls := provider.callCount(); calls != 1 {
+		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
+	}
+}
+
+// TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager
+// proves the nil-BackendProvider fallback (the common case: no
+// SetBackendProvider call, mirroring every pre-mitto-lrt.16 test) still
+// delegates to ProcessManager.GetOrCreateProcess byte-identically, so
+// injecting the seam does not change behavior for callers/tests that never
+// inject a provider.
+func TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	proc := newFakeBackendSharedProcess()
+	pm := &fakeBackendProcessManager{process: proc}
+	sm.SetACPProcessManager(pm)
+	// Deliberately do NOT call SetBackendProvider — backendProvider stays nil.
+
+	ws := &config.WorkspaceSettings{UUID: "ws-provider-3", WorkingDir: "/tmp"}
+	got := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+
+	if got != proc {
+		t.Fatalf("getSharedProcess = %v, want %v (direct ProcessManager fallback with a nil provider)", got, proc)
 	}
 }

@@ -358,6 +358,79 @@ func TestACPBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession
 	}
 }
 
+// TestACPBackendProvider_AcquireSession_DeferSession_SkipsRPCReturnsProcessOnlyLease
+// proves the mitto-lrt.16 AcquireRequest.DeferSession contract: the provider
+// still gets/creates the shared process, but skips the NewSession/
+// LoadSession/ResumeSession RPC entirely, returning a lease whose
+// LocalProcess() exposes the acquired process and whose SessionHandle() is
+// (nil, false) until a caller performs its own deferred handshake.
+func TestACPBackendProvider_AcquireSession_DeferSession_SkipsRPCReturnsProcessOnlyLease(t *testing.T) {
+	tests := []struct {
+		name   string
+		intent Intent
+	}{
+		{"new", IntentNew},
+		{"load", IntentLoad},
+		{"resume", IntentResume},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := newFakeBackendSharedProcess()
+			// Pre-set every handle/err so a wrongly-issued RPC would be
+			// immediately observable via newCalls or a returned handle.
+			proc.newHandle = &SessionHandle{SessionID: "should-not-be-returned"}
+			proc.loadHandle = &SessionHandle{SessionID: "should-not-be-returned"}
+			proc.resumeHandle = &SessionHandle{SessionID: "should-not-be-returned"}
+			provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+
+			lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+				Intent:       tt.intent,
+				Session:      agentbackend.SessionRef{ProviderSession: "existing-session"},
+				DeferSession: true,
+			})
+			if err != nil {
+				t.Fatalf("AcquireSession: unexpected error: %v", err)
+			}
+			if proc.newCalls != 0 {
+				t.Errorf("NewSession calls = %d, want 0 (DeferSession must skip the RPC)", proc.newCalls)
+			}
+			gotProc, ok := lease.LocalProcess()
+			if !ok || gotProc != proc {
+				t.Fatalf("LocalProcess() = (%v, %v), want (%v, true)", gotProc, ok, proc)
+			}
+			if handle, ok := lease.SessionHandle(); ok || handle != nil {
+				t.Errorf("SessionHandle() = (%v, %v), want (nil, false) — RPC must not have run", handle, ok)
+			}
+		})
+	}
+}
+
+// TestACPLease_Detach_DeferSessionNeverBound_NoOpsSafely proves that
+// detaching a DeferSession lease that was never bound to a real ACP session
+// ID (sessionID still "") is a safe no-op — it must not call
+// UnregisterSession with a bogus empty ID, and State() still reports
+// Disconnected afterwards.
+func TestACPLease_Detach_DeferSessionNeverBound_NoOpsSafely(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+		Intent:       IntentNew,
+		DeferSession: true,
+	})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	lease.Detach()
+
+	if len(proc.unregistered) != 0 {
+		t.Fatalf("unregistered = %v, want none (unbound lease must not unregister a bogus empty session ID)", proc.unregistered)
+	}
+	if got := lease.State(); got != agentbackend.LifecycleDisconnected {
+		t.Errorf("State() after Detach = %v, want LifecycleDisconnected", got)
+	}
+}
+
 // TestACPLease_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt
 // proves the mitto-lrt.7 acceptance criterion "uncertain-delivery cases
 // surface actionable states instead of duplicating work": a caller whose
