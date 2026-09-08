@@ -1118,6 +1118,90 @@ func TestStartupConstraintRecovery_RetriesTransientRebindFailure(t *testing.T) {
 	t.Fatal("recovery goroutine gave up after one failed rebind attempt instead of retrying")
 }
 
+// TestStartupConstraintRecovery_NeverGivesUpOnPermanentlyGoneModel reproduces
+// mitto-uex: a loop conversation pinned (via baselineModel) to an ACP model
+// that has dropped out of the live catalog (model-catalog drift, e.g. the
+// running Auggie build no longer advertises "claude-opus-4-8") hits a
+// PERMANENT "conversation model %q is no longer available" error from
+// applyConfigConstraints' apply() closure (config_manager.go), because the
+// target can never be found in opt.Options again.
+//
+// recoverStartupConstraintAfterRestart (bgsession_callbacks.go) does not
+// distinguish this PERMANENT condition from the TRANSIENT ones it was built
+// for (mitto-qy0j process replacement, mitto-3ml live-but-saturated retry):
+// its retryTimer branch just re-calls applyConfigConstraints every
+// startupConstraintLiveRetryInterval forever, with no bounded attempt count
+// and no terminal state (no fallback to an available model, no loop
+// auto-pause, no single operator notification). Since the pinned model can
+// never reappear in the catalog, this retry can never succeed — yet nothing
+// ever makes the recovery goroutine stop, producing the reported unbounded
+// WARN ("failed to auto-select option") / ERROR ("Failed to deliver loop
+// prompt") storm.
+//
+// This test gives the recovery goroutine a generous bounded window (hundreds
+// of retry intervals) to reach a terminal state and give up
+// (startupConstraintRecovery == false) despite the shared process never being
+// replaced and the session never being closed. It currently FAILS: recovery
+// keeps retrying indefinitely and never gives up.
+func TestStartupConstraintRecovery_NeverGivesUpOnPermanentlyGoneModel(t *testing.T) {
+	origLiveRetry := startupConstraintLiveRetryInterval
+	startupConstraintLiveRetryInterval = time.Millisecond
+	defer func() { startupConstraintLiveRetryInterval = origLiveRetry }()
+
+	shared := newFakeSharedProcess() // ProcessDone() never closes: process stays alive
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		acpID:         "acp-session-gone-model",
+		sharedProcess: shared,
+		workingDir:    "/tmp/test",
+		baselineModel: "claude-opus-4-8", // pinned model, absent from the catalog below
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+		configOptions: []SessionConfigOption{{
+			ID: ConfigOptionCategoryModel, Category: ConfigOptionCategoryModel, CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{{Value: "m-1", Name: "Model 1"}, {Value: "m-2", Name: "Model 2"}},
+		}},
+		observers: make(map[SessionObserver]struct{}),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("expected the permanently-gone baseline model to fail the startup constraint")
+	}
+
+	// Give the recovery goroutine a generous bounded window (hundreds of
+	// startupConstraintLiveRetryInterval ticks) to notice the failure can
+	// never be transient — the pinned model is structurally absent from
+	// opt.Options/AvailableModels and cannot ever "come back" — and give up.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !bs.startupConstraintRecovery.Load() {
+			// Recovery gave up. It must not have falsely marked the
+			// constraint ready for a model that never became available.
+			if bs.startupConfigConstraintsReady() {
+				t.Fatal("recovery must not mark the constraint ready for a permanently unavailable model")
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatal("mitto-uex: recoverStartupConstraintAfterRestart never gives up retrying a " +
+		"PERMANENTLY unavailable pinned baseline model (dropped from the ACP catalog) — it " +
+		"keeps retrying forever on startupConstraintLiveRetryInterval with no terminal state " +
+		"(fallback to an available model, loop auto-pause, or a single operator notification), " +
+		"unlike the transient saturation/process-replacement cases (mitto-qy0j/mitto-3ml) this " +
+		"recovery path was designed for")
+}
+
 // TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the
 // in-memory flag and IsSelfDestructRequested reflects it. The flag drives the
 // deferred deletion triggered at the end of a turn in PromptWithMeta.

@@ -513,6 +513,15 @@ func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, gen
 // doc) so tests exercising the process-replacement path don't also perturb
 // this timer — so a saturation window that clears without a process
 // replacement still unblocks the queue.
+//
+// Permanent give-up on catalog drift (mitto-uex): the retryTimer branch above
+// only helps when the SAME pinned model can eventually succeed (transient
+// saturation/cold-agent). When the pinned model is confirmed permanently
+// absent from the live catalog (isModelPermanentlyUnavailableError), no
+// number of retries against the current generation can ever succeed, so this
+// loop gives up immediately instead of retrying forever, logs a WARN, and
+// emits exactly one OnError notification — replacing what was previously an
+// unbounded WARN/ERROR storm with no terminal state.
 func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGeneration int, failedProcessDone <-chan struct{}, retryInterval time.Duration) {
 	defer func() {
 		bs.startupConstraintRecovery.Store(false)
@@ -558,7 +567,8 @@ func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGenerati
 			// fired) — retry the constraint directly, without restarting, in
 			// case the shared process merely recovered from saturation on
 			// its own (mitto-3ml).
-			if err := bs.applyConfigConstraints(ConfigOptionCategoryModel); err == nil {
+			err := bs.applyConfigConstraints(ConfigOptionCategoryModel)
+			if err == nil {
 				bs.startupConstraintMu.Lock()
 				// Only clear the sticky failure if no newer generation has
 				// since begun its own attempt (mitto-qori generation guard,
@@ -571,6 +581,24 @@ func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGenerati
 					bs.TryProcessQueuedMessage()
 					return
 				}
+			} else if isModelPermanentlyUnavailableError(err) {
+				// mitto-uex: the pinned baseline model is confirmed absent from
+				// the live ACP catalog (model-catalog drift), not merely cold or
+				// saturated — retrying it every retryInterval can never succeed,
+				// unlike the transient cases this loop was built for
+				// (mitto-qy0j/mitto-3ml). Give up now instead of retrying
+				// forever (the previously unbounded WARN "failed to
+				// auto-select option" / ERROR "Failed to deliver loop prompt"
+				// storm), and surface exactly ONE operator-facing notification
+				// so the blocked conversation/loop is not left silently stuck.
+				if bs.logger != nil {
+					bs.logger.Warn("Startup model recovery giving up: pinned model permanently unavailable",
+						"session_id", bs.persistedID, "generation", failedGeneration, "error", err)
+				}
+				bs.notifyObservers(func(o SessionObserver) {
+					o.OnError("The model pinned to this conversation is no longer available (" + err.Error() + "). Pick a different model to resume.")
+				})
+				return
 			}
 
 		case <-bs.ctx.Done():

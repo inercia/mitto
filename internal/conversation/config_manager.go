@@ -4,6 +4,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -16,6 +17,22 @@ import (
 // constraintModelSwitchCallerBudget is the context timeout for the async ACP-server
 // constraint auto-select model switch (mitto-f7q, Option 4).
 const constraintModelSwitchCallerBudget = 90 * time.Second
+
+// errModelPermanentlyUnavailable marks a startup model-constraint failure as
+// PERMANENT: the pinned baseline model is confirmed absent from the live ACP
+// model catalog (model-catalog drift), as opposed to the TRANSIENT failures
+// isRetryableModelPreferenceError already recognizes (deadline/saturation/
+// connection), which can succeed on a later retry. recoverStartupConstraintAfterRestart
+// (bgsession_callbacks.go) uses isModelPermanentlyUnavailableError to give up
+// its retry loop instead of retrying forever, since the pinned value can never
+// reappear in opt.Options (mitto-uex).
+var errModelPermanentlyUnavailable = errors.New("model permanently unavailable")
+
+// isModelPermanentlyUnavailableError reports whether err wraps
+// errModelPermanentlyUnavailable.
+func isModelPermanentlyUnavailableError(err error) bool {
+	return errors.Is(err, errModelPermanentlyUnavailable)
+}
 
 // constraintModelSwitchChildStartupJitter bounds the randomized startup delay for child sessions.
 const constraintModelSwitchChildStartupJitter = 5 * time.Second
@@ -441,7 +458,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 					return c.setActiveModelOnly(d, ctx, target)
 				}
 			}
-			return fmt.Errorf("conversation model %q is no longer available", target)
+			return fmt.Errorf("conversation model %q is no longer available: %w", target, errModelPermanentlyUnavailable)
 		}
 		return c.setConfigOptionWithOpts(d, ctx, opt.ID, matchedValue, false, false)
 	}
