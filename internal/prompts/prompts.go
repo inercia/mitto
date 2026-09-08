@@ -1309,6 +1309,31 @@ func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 	return false
 }
 
+// IsSpecificToBackend returns true if the prompt is specifically targeted at
+// the given backend/provider type via a neutral Backend.MatchesServerType(...)
+// selector (mitto-lrt.10). This is the protocol-agnostic sibling of
+// IsSpecificToACP: it recognizes the "Backend.*" CEL vocabulary instead of
+// "ACP.*", but is otherwise identical in behavior (same false-for-empty-arg
+// rule, same false-for-generic-prompt rule). A prompt may use either or both
+// selectors in its enabledWhen expression without the two interfering with
+// each other — see FilterPromptsSpecificToBackend and the "conflicting
+// selectors" test coverage.
+func (p *PromptFile) IsSpecificToBackend(backendType string) bool {
+	if backendType == "" {
+		return false
+	}
+
+	if p.EnabledWhen != "" {
+		lowerExpr := strings.ToLower(p.EnabledWhen)
+		lowerType := strings.ToLower(backendType)
+		if strings.Contains(lowerExpr, "backend.matchesservertype") && strings.Contains(lowerExpr, lowerType) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ToWebPrompt converts the PromptFile to a WebPrompt for API responses.
 // File-based prompts are marked with Source=PromptSourceFile.
 func (p *PromptFile) ToWebPrompt() WebPrompt {
@@ -1643,6 +1668,27 @@ func FilterPromptsSpecificToACP(prompts []*PromptFile, acpServer string) []*Prom
 	result := make([]*PromptFile, 0)
 	for _, p := range prompts {
 		if p.IsSpecificToACP(acpServer) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// FilterPromptsSpecificToBackend filters prompts to only include those
+// specifically targeted at the given backend/provider type via a neutral
+// Backend.MatchesServerType(...) selector (mitto-lrt.10). Generic prompts
+// (with no such selector in enabledWhen) are excluded. If backendType is
+// empty, returns nil. This is the protocol-agnostic sibling of
+// FilterPromptsSpecificToACP; a prompt matched by one is not necessarily
+// matched by the other, since each recognizes a different CEL vocabulary.
+func FilterPromptsSpecificToBackend(prompts []*PromptFile, backendType string) []*PromptFile {
+	if backendType == "" || len(prompts) == 0 {
+		return nil
+	}
+
+	result := make([]*PromptFile, 0)
+	for _, p := range prompts {
+		if p.IsSpecificToBackend(backendType) {
 			result = append(result, p)
 		}
 	}

@@ -257,6 +257,22 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		{"matchesServerType list none match", `ACP.MatchesServerType(["cursor", "claude-code"])`, augCtx, false},
 		{"matchesServerType empty list", `ACP.MatchesServerType([])`, augCtx, false},
 
+		// Backend.MatchesServerType is a neutral alias (mitto-lrt.10) that
+		// expands to the exact same underlying call as ACP.MatchesServerType
+		// — every case above must render identically under the new name.
+		{"backend alias: type match", `Backend.MatchesServerType("augment")`, augCtx, true},
+		{"backend alias: no match", `Backend.MatchesServerType("claude-code")`, augCtx, false},
+		{"backend alias: case insensitive", `Backend.MatchesServerType("AUGMENT")`, augCtx, true},
+		{"backend alias: fail-open empty acp", `Backend.MatchesServerType("anything")`, noACPCtx, true},
+		{"backend alias: list one matches", `Backend.MatchesServerType(["augment", "claude-code"])`, augCtx, true},
+
+		// Conflicting/combined old+new selectors in one expression: legacy
+		// ACP.* and neutral Backend.* must coexist without interfering with
+		// each other (mitto-lrt.10 acceptance criteria).
+		{"legacy and neutral selector agree (AND)", `ACP.MatchesServerType("augment") && Backend.MatchesServerType("augment")`, augCtx, true},
+		{"legacy true, neutral false (AND short-circuits false)", `ACP.MatchesServerType("augment") && Backend.MatchesServerType("claude-code")`, augCtx, false},
+		{"legacy false, neutral true (OR)", `ACP.MatchesServerType("claude-code") || Backend.MatchesServerType("augment")`, augCtx, true},
+
 		// Tools.HasAllPatterns — single string arg. augCtx's per-server map
 		// only knows "mitto"/"jira"/"github"; "slack" is an unknown server,
 		// so it fails OPEN under the per-server model (mitto-sys.1) — unlike
