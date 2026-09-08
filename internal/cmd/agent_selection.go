@@ -63,3 +63,21 @@ func resolveServerSelector(cfg *config.Config, acpValue, agentValue string) (*co
 		return acpSrv, nil
 	}
 }
+
+// resolveConversationNewACPServer implements the --acp/--agent precedence for
+// `conversation new` (mitto-lrt.13). Unlike resolveServerSelector, this
+// subcommand talks to the REST API without local server config, so alias
+// resolution here is a literal string comparison, not a canonical-name
+// lookup: if only one of acp/agent is set, it wins; if both are set, they
+// must be identical, otherwise this returns an actionable conflict error.
+func resolveConversationNewACPServer(acp, agent string) (string, error) {
+	if agent == "" {
+		return acp, nil
+	}
+	if acp != "" && acp != agent {
+		return "", fmt.Errorf(
+			"--acp %q and --agent %q disagree; specify only one (or use identical values)",
+			acp, agent)
+	}
+	return agent, nil
+}

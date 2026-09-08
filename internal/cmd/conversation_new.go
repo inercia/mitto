@@ -85,16 +85,9 @@ func runConversationNew(cmd *cobra.Command, args []string) error {
 		return newExitCodeError(exitUsage, fmt.Errorf("--wait requires --prompt or --prompt-name"))
 	}
 
-	// --agent is an exact alias for --acp (mitto-lrt.13): if only one is set,
-	// it wins; if both are set they must agree.
-	acpServer := conversationNewFlags.ACP
-	if conversationNewFlags.Agent != "" {
-		if acpServer != "" && acpServer != conversationNewFlags.Agent {
-			return newExitCodeError(exitUsage, fmt.Errorf(
-				"--acp %q and --agent %q disagree; specify only one (or use identical values)",
-				acpServer, conversationNewFlags.Agent))
-		}
-		acpServer = conversationNewFlags.Agent
+	acpServer, err := resolveConversationNewACPServer(conversationNewFlags.ACP, conversationNewFlags.Agent)
+	if err != nil {
+		return newExitCodeError(exitUsage, err)
 	}
 
 	promptArgs, err := parseSendArgs(conversationNewFlags.Args)
