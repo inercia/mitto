@@ -353,8 +353,11 @@ func TestSync_EmptyWhenUpToDate(t *testing.T) {
 }
 
 // TestSync_PromptCompleteCountMatchesSettledLifecycle reproduces mitto-2vcp:
-// prompt_complete exposes a count before the after-phase processor_run is persisted,
-// while a subsequent sync observes the settled event log.
+// prompt_complete exposes a pre-after-processor snapshot count, while a
+// subsequent sync observes the settled event log. The count is snapshotted
+// before the final agent_message markdown flush and before after-phase
+// processors run, so both the trailing agent_message and the after-phase
+// processor_run settle after the reported count.
 func TestSync_PromptCompleteCountMatchesSettledLifecycle(t *testing.T) {
 	c := api.New(testServerURL)
 
@@ -376,15 +379,31 @@ func TestSync_PromptCompleteCountMatchesSettledLifecycle(t *testing.T) {
 	}
 
 	syncEvents, settledEventCount := syncSession(t, ctx, c, session.SessionID, 0)
-	lateType := "none"
-	if len(syncEvents) > result.EventCount {
-		lateType = syncEvents[result.EventCount].Type
-	}
+
+	// The prompt_complete count is a pre-after-processor snapshot (mitto-2vcp):
+	// the settled log always grows past it, since the final agent_message flush
+	// and the after-phase processor_run are both persisted after the count is
+	// taken.
 	if settledEventCount <= result.EventCount {
 		t.Fatalf("expected settled sync count after prompt_complete: prompt=%d settled=%d",
 			result.EventCount, settledEventCount)
 	}
-	if lateType != "processor_run" {
-		t.Fatalf("first event after prompt_complete count = %s, want processor_run", lateType)
+
+	// The documented late-lifecycle guarantee is that the after-phase
+	// processor_run settles after the prompt_complete snapshot. Assert it
+	// appears somewhere in the settled tail rather than at an exact index: the
+	// trailing agent_message flush also settles after the snapshot and can
+	// precede the processor_run.
+	var lateTypes []string
+	sawLateProcessorRun := false
+	for i := result.EventCount; i < len(syncEvents); i++ {
+		lateTypes = append(lateTypes, syncEvents[i].Type)
+		if syncEvents[i].Type == "processor_run" {
+			sawLateProcessorRun = true
+		}
+	}
+	if !sawLateProcessorRun {
+		t.Fatalf("expected an after-phase processor_run in the settled tail after prompt_complete count=%d, got %v",
+			result.EventCount, lateTypes)
 	}
 }
