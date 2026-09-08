@@ -3926,7 +3926,7 @@ function App() {
                     <div class="flex items-center justify-center py-2 text-sm">
                       <span
                         class="skeleton skeleton-text skeleton-text-readable"
-                        >Establishing ACP session...</span
+                        >Establishing agent session...</span
                       >
                     </div>
                   `}

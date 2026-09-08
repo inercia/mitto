@@ -601,7 +601,7 @@ function ParamField({
           class="input input-sm w-full"
           value=${value}
           onInput=${(e) => onChange(name, e.target.value)}
-          placeholder="Agent (ACP server) name"
+          placeholder="Agent name"
         />
       `;
     } else {

@@ -119,7 +119,7 @@ export function WorkspaceEditor({
         <div class="space-y-4">
           <div>
             <label class="block text-sm text-mitto-text-muted mb-1"
-              >ACP Server</label
+              >Agent</label
             >
             <select
               value=${editAcpServer}
@@ -137,7 +137,7 @@ export function WorkspaceEditor({
           </div>
           <div>
             <label class="block text-sm text-mitto-text-muted mb-1"
-              >ACP Command Override (optional)</label
+              >Agent Command Override (optional)</label
             >
             <input
               type="text"
@@ -151,7 +151,7 @@ export function WorkspaceEditor({
               style="height: 38px; box-sizing: border-box"
             />
             <p class="text-xs text-mitto-text-muted mt-1">
-              Custom command line for running the ACP server. Leave empty to use
+              Custom command line for running the agent. Leave empty to use
               the default.
             </p>
           </div>
@@ -205,7 +205,7 @@ export function WorkspaceEditor({
               if (!srvValue) return null;
               return html`
                 <p class="text-xs text-mitto-text-muted mt-1">
-                  Using ACP server default: ${srvValue}
+                  Using agent default: ${srvValue}
                 </p>
               `;
             })()}
