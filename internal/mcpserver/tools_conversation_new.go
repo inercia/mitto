@@ -26,8 +26,14 @@ type ConversationStartInput struct {
 	InitialPromptDelay string            `json:"initial_prompt_delay,omitempty"` // Optional: delay initial prompt delivery (RFC 3339 timestamp or relative duration like "5m", "1h")
 	Arguments          map[string]string `json:"arguments,omitempty"`            // Optional: values for Go-template .Args placeholders in the initial prompt when sent
 	ACPServer          string            `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
-	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
-	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
+	// Agent is an optional exact alias for ACPServer (mitto-lrt.13): if only
+	// one of acp_server/agent is set, it wins; if both are set, they must
+	// resolve to the same configured server or the call errors. Unlike
+	// acp_server (exact match only), agent additionally accepts a
+	// case-insensitive alias of a configured server name.
+	Agent      string `json:"agent,omitempty"`
+	BeadsIssue string `json:"beads_issue,omitempty"` // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
+	Workspace  string `json:"workspace,omitempty"`   // Optional workspace UUID for cross-workspace operations
 	// ModelTag, when non-empty, pins the new conversation's active model from the
 	// first turn to the first available model whose profile carries this tag (see
 	// config.ProfilesByTag + SelectPreferredModel). Applied through the same
@@ -163,10 +169,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// Cross-workspace support: if workspace UUID is provided, resolve and potentially confirm
 	var targetWorkspace *config.WorkspaceSettings
 	if input.Workspace != "" {
-		// Cannot specify both workspace and acp_server
-		if input.ACPServer != "" {
+		// Cannot specify both workspace and acp_server/agent
+		if input.ACPServer != "" || input.Agent != "" {
 			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"cannot specify both 'workspace' and 'acp_server' — workspace already determines the ACP server")
+				"cannot specify both 'workspace' and 'acp_server'/'agent' — workspace already determines the ACP server")
 		}
 
 		// Resolve workspace UUID
@@ -425,7 +431,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	} else {
 		acpServerName = sourceMeta.ACPServer // Default: inherit from parent
 		targetWorkingDir = sourceMeta.WorkingDir
-		if input.ACPServer != "" {
+		if input.ACPServer != "" || input.Agent != "" {
 			// Validate the requested ACP server exists in config
 			s.mu.RLock()
 			cfg := s.config
@@ -434,12 +440,16 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			if cfg == nil {
 				return nil, ConversationStartOutput{}, fmt.Errorf("server configuration not available")
 			}
-			if _, err := cfg.GetServer(input.ACPServer); err != nil {
+			requested, resolveErr := resolveAgentOrACPServerName(cfg, input.ACPServer, input.Agent)
+			if resolveErr != nil {
+				return nil, ConversationStartOutput{}, resolveErr
+			}
+			if _, err := cfg.GetServer(requested); err != nil {
 				return nil, ConversationStartOutput{}, fmt.Errorf(
 					"ACP server '%s' not found. Available servers: %v",
-					input.ACPServer, cfg.ServerNames())
+					requested, cfg.ServerNames())
 			}
-			acpServerName = input.ACPServer
+			acpServerName = requested
 		}
 
 		// Validate that a workspace exists for the folder + ACP server combination.
