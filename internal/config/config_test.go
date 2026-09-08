@@ -2983,27 +2983,29 @@ func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
 		t.Fatalf("Parse(embedded default) failed: %v", err)
 	}
 
-	want := map[string]string{
-		"conversations": "Commit changes",
-		"beadsIssue":    "Start work",
-		"tasksList":     "Overview",
+	want := map[string][]string{
+		"conversations": {"Commit changes"},
+		"beadsIssue":    {"Start work", "Discuss a topic"},
+		"tasksList":     {"Overview"},
 	}
 
 	if len(cfg.Shortcuts) != len(want) {
 		t.Fatalf("embedded default Shortcuts sections = %d, want %d (%v)", len(cfg.Shortcuts), len(want), cfg.Shortcuts)
 	}
-	for section, wantPrompt := range want {
+	for section, wantPrompts := range want {
 		buttons, ok := cfg.Shortcuts[section]
 		if !ok {
 			t.Errorf("embedded default missing shortcuts section %q", section)
 			continue
 		}
-		if len(buttons) != 1 {
-			t.Errorf("section %q buttons = %d, want 1", section, len(buttons))
+		if len(buttons) != len(wantPrompts) {
+			t.Errorf("section %q buttons = %d, want %d", section, len(buttons), len(wantPrompts))
 			continue
 		}
-		if buttons[0].Prompt != wantPrompt {
-			t.Errorf("section %q prompt = %q, want %q", section, buttons[0].Prompt, wantPrompt)
+		for i, wantPrompt := range wantPrompts {
+			if buttons[i].Prompt != wantPrompt {
+				t.Errorf("section %q prompt[%d] = %q, want %q", section, i, buttons[i].Prompt, wantPrompt)
+			}
 		}
 	}
 }
