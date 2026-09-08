@@ -195,3 +195,99 @@ func TestParseJSONValue_NestingLimit(t *testing.T) {
 		t.Fatalf("expected limit error, got %v", err)
 	}
 }
+
+// --- Value.ToJSON (mitto-4rz.5) ---------------------------------------------
+
+// TestValue_ToJSON_Scalars pins the pure Kind->interface{} conversion for
+// every scalar Kind, the single source of truth shared by configsvc's
+// write path and the CLI's live `config set` mode (see value.go's doc
+// comment on ToJSON).
+func TestValue_ToJSON_Scalars(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Value
+		want interface{}
+	}{
+		{"null", Value{Kind: KindNull}, nil},
+		{"bool true", Value{Kind: KindBool, Bool: true}, true},
+		{"bool false", Value{Kind: KindBool, Bool: false}, false},
+		{"int", Value{Kind: KindInt, Int: 42}, int64(42)},
+		{"negative int", Value{Kind: KindInt, Int: -7}, int64(-7)},
+		{"float", Value{Kind: KindFloat, Float: 3.14}, 3.14},
+		{"string", Value{Kind: KindString, Str: "hello"}, "hello"},
+		{"empty string", Value{Kind: KindString, Str: ""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.in.ToJSON()
+			if err != nil {
+				t.Fatalf("ToJSON() error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ToJSON() = %#v (%T), want %#v (%T)", got, got, tc.want, tc.want)
+			}
+		})
+	}
+}
+
+// TestValue_ToJSON_List pins recursive conversion of a KindList's elements
+// (produced by a `--set` brace list, e.g. `{a,1,true,null}`), each of which
+// converts independently per its own Kind.
+func TestValue_ToJSON_List(t *testing.T) {
+	v := Value{Kind: KindList, List: []Value{
+		{Kind: KindString, Str: "a"},
+		{Kind: KindInt, Int: 1},
+		{Kind: KindBool, Bool: true},
+		{Kind: KindNull},
+	}}
+	got, err := v.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON() error: %v", err)
+	}
+	want := []interface{}{"a", int64(1), true, nil}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ToJSON() = %#v, want %#v", got, want)
+	}
+}
+
+// TestValue_ToJSON_List_Empty pins that an explicit `--set foo={}` (empty
+// list, distinct from null/absent per docs/config/config-cli.md) converts to
+// a non-nil empty []interface{}, not a nil slice that would round-trip as
+// JSON null instead of [].
+func TestValue_ToJSON_List_Empty(t *testing.T) {
+	v := Value{Kind: KindList, List: []Value{}}
+	got, err := v.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON() error: %v", err)
+	}
+	arr, ok := got.([]interface{})
+	if !ok || arr == nil || len(arr) != 0 {
+		t.Errorf("ToJSON() = %#v (%T), want a non-nil empty []interface{}", got, got)
+	}
+}
+
+// TestValue_ToJSON_JSON pins that a KindJSON value (produced by
+// `--set-json`) passes its already-decoded JSON payload through unchanged,
+// object/array/scalar alike.
+func TestValue_ToJSON_JSON(t *testing.T) {
+	payload := map[string]interface{}{"a": int64(1), "b": []interface{}{int64(1), int64(2)}}
+	v := Value{Kind: KindJSON, JSON: payload}
+	got, err := v.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, payload) {
+		t.Errorf("ToJSON() = %#v, want %#v", got, payload)
+	}
+}
+
+// TestValue_ToJSON_UnknownKind_Errors pins that an invalid/zero-initialized
+// Kind (never produced by the parser, but a defensive guard against a future
+// added Kind forgetting to extend this switch) is a hard error, not a silent
+// nil.
+func TestValue_ToJSON_UnknownKind_Errors(t *testing.T) {
+	v := Value{Kind: ValueKind(99)}
+	if _, err := v.ToJSON(); err == nil {
+		t.Fatalf("expected an error for an unknown Value.Kind")
+	}
+}
