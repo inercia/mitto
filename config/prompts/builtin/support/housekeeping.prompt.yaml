@@ -12,7 +12,14 @@ target:
   reuse:
     title: true
     coalesce: true
+parameters:
+  - name: StaleDays
+    type: text
+    group: Advanced
+    required: false
+    description: 'After how many days of no activity a tracked ticket is auto-closed as stale (default 10). Applies regardless of state:* — an unposted draft untouched this long is treated as abandoned.'
 prompt: |-
+  {{- $staleDays := Arg "StaleDays" "10" -}}
   # Support — Housekeeping
 
   {{ template "_shared/session-context" . }}
@@ -76,7 +83,7 @@ prompt: |-
   | `awaiting-customer` | we posted a reply, waiting on the customer |
   | `awaiting-us` | customer responded, our turn to act |
   | `resolved` | answered/accepted (also `bd close <id>`) |
-  | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
+  | `stale` | auto-closed after {{ $staleDays }}+ days of inactivity, regardless of state:* (also `bd close <id>`) |
   | `out-of-scope` | not our area / not something we will pursue (also `bd close <id>`) |
 
   > 🚫 **A closed bead is terminal — respect it.** Any ticket that has been `bd close`d (states
@@ -174,11 +181,15 @@ prompt: |-
   A ticket is a **stale candidate** when, based on the thread activity and bead content, it no longer
   needs our attention. Signals (any of):
 
-  - **Aged out — 10+ days of inactivity.** The primary rule (same as **"Support: watch channel"**):
-    find tracked issues with no activity for **10+ days**
-    (`bd list -l support-question --status open,in_progress --updated-before <cutoff> --all`, e.g.
-    cutoff `date -u -v-10d +%Y-%m-%d`). Verify each is truly stale (no recent comments, no open
-    blockers, no unanswered customer message). These close to `state:stale`.
+  - **Aged out — {{ $staleDays }}+ days of inactivity (applies to EVERY open state, including
+    `drafting`).** The primary rule (same as **"Support: watch channel"**): find tracked issues with
+    no activity for **{{ $staleDays }}+ days**
+    (`bd list -l support-question --status open,in_progress --updated-before <cutoff> --all`, cutoff
+    `date -u -v-{{ $staleDays }}d +%Y-%m-%d`). Every bead this filter returns is aged-out **regardless
+    of its `state:*` label** — do **not** exempt `state:drafting`; a draft untouched for
+    {{ $staleDays }}+ days was never approved and is abandoned (the draft text stays in the bead's
+    comment history). The only legitimate skip is a bead the sweep has not reconciled yet even though
+    its thread moved within the last {{ $staleDays }} days. These close to `state:stale`.
   - The thread was **resolved** (positive reaction on our answer, a "thanks / that worked / got it",
     or it concluded with no open question). These close to `state:resolved`.
   - **No activity for a long time** and the ball was on the customer (`state:awaiting-customer` /
@@ -199,15 +210,19 @@ prompt: |-
       (`state:resolved` for a genuinely-answered thread, `state:out-of-scope` for a not-our-area /
       won't-pursue ticket, otherwise `state:stale` for aged-out / abandoned / obsolete / gone) with
       `bd update <id> --remove-label state:<prev> --add-label state:<resolved|stale|out-of-scope>`,
-      then `bd close <id> -r "housekeeping: <reason>"` (use `"auto-closed: no activity for 10+ days"`
+      then `bd close <id> -r "housekeeping: <reason>"` (use `"auto-closed: no activity for {{ $staleDays }}+ days"`
       for the aged-out rule, `"out-of-scope: <reason>"` for the out-of-scope rule).
     - **"Flag only"** → for each, add label `needs-review` and a `[STATE]` comment with the reason;
       do NOT close.
     - **"Let me pick"** → present the candidates as a second `mitto_ui_options` (or `mitto_ui_form`
       with a checkbox per candidate) and act only on the chosen ones (close them; leave the rest).
     - **"Skip"** (or timeout) → change nothing in this step.
-  - Never close a ticket in `state:drafting` (a reply is pending your approval) without explicit
-    confirmation — surface it separately rather than auto-closing.
+  - A `state:drafting` ticket that is **not** aged-out (its thread moved within the last
+    {{ $staleDays }} days) still must **not** be closed here — a reply is pending your approval, so
+    leave it for **"Support: reply to user"**. But a `drafting` ticket that **is** aged-out per the
+    rule above is an abandoned draft: include it in the stale-candidate list like any other so the
+    `mitto_ui_options` confirmation covers it (this sweep is interactive, so the human still sees and
+    approves the close).
 
   ## Step 5: Re-evaluate the remaining open tickets
 
