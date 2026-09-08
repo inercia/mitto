@@ -36,6 +36,12 @@ func resolveTarget(f *serverFlags) (*target, error) {
 		return t, nil
 	}
 
+	// APIPrefix is never required to resolve successfully: if no source
+	// (flag/env/instance.json) supplies it, t.APIPrefix stays "" and
+	// newClient simply omits api.WithAPIPrefix, letting api.New's
+	// zero-config "/mitto" default apply. Only URL and Token are mandatory
+	// for a usable target, so the instance-file-missing/stale/corrupt error
+	// paths below must not treat a missing APIPrefix as fatal.
 	inst, err := instancefile.Read()
 	switch {
 	case err == nil:
@@ -44,17 +50,17 @@ func resolveTarget(f *serverFlags) (*target, error) {
 		// A stale instance still carries a usable url/pid for the error
 		// message below (never the token), but its fields must not be used
 		// to fill in target: the process that wrote it is gone.
-		if t.URL == "" || t.Token == "" || t.APIPrefix == "" {
+		if t.URL == "" || t.Token == "" {
 			return nil, fmt.Errorf("mitto server not running (recorded instance at %s, pid %d, is no longer running); start it with `mitto web` or pass --url/--token", inst.URL, inst.PID)
 		}
 		return t, nil
 	case errors.Is(err, instancefile.ErrNotFound):
-		if t.URL == "" || t.Token == "" || t.APIPrefix == "" {
+		if t.URL == "" || t.Token == "" {
 			return nil, fmt.Errorf("mitto server not running (no instance file); start it with `mitto web` or pass --url/--token")
 		}
 		return t, nil
 	default: // ErrCorrupt or unexpected
-		if t.URL == "" || t.Token == "" || t.APIPrefix == "" {
+		if t.URL == "" || t.Token == "" {
 			return nil, fmt.Errorf("failed to read instance file: %w", err)
 		}
 		return t, nil

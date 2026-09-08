@@ -165,6 +165,43 @@ func TestResolveTarget_TokenNeverLeaksInErrors(t *testing.T) {
 	})
 }
 
+// TestResolveTarget_MissingAPIPrefixAloneIsNotFatal pins the fix for the
+// zero-config default: when --url/--token (or their env equivalents) are
+// given but no APIPrefix can be resolved from any source and no
+// instance.json exists, resolveTarget must still succeed with an empty
+// APIPrefix rather than erroring — newClient's doc comment promises that
+// api.New's "/mitto" default applies in that case.
+func TestResolveTarget_MissingAPIPrefixAloneIsNotFatal(t *testing.T) {
+	clearServerEnv(t)
+	// No instance.json written -> ErrNotFound path for the prefix lookup.
+	got, err := resolveTarget(&serverFlags{URL: "http://flag:3", Token: "flag-token"})
+	if err != nil {
+		t.Fatalf("resolveTarget: unexpected error when only APIPrefix is unresolved: %v", err)
+	}
+	if got.URL != "http://flag:3" || got.Token != "flag-token" {
+		t.Errorf("got %+v, want url/token from flags", got)
+	}
+	if got.APIPrefix != "" {
+		t.Errorf("APIPrefix = %q, want empty so newClient falls back to api.New's default", got.APIPrefix)
+	}
+}
+
+// TestNewClient_MissingAPIPrefixFallsBackToDefault exercises the same
+// scenario through newClient end-to-end: no APIPrefix resolves anywhere,
+// but the client is still constructed successfully with api.New's
+// zero-config "/mitto" default.
+func TestNewClient_MissingAPIPrefixFallsBackToDefault(t *testing.T) {
+	clearServerEnv(t)
+	f := &serverFlags{URL: "http://example:8080", Token: "t", Timeout: time.Second}
+	c, err := newClient(f)
+	if err != nil {
+		t.Fatalf("newClient: unexpected error when only APIPrefix is unresolved: %v", err)
+	}
+	if c.APIPrefix() != "/mitto" {
+		t.Errorf("APIPrefix() = %q, want the zero-config default %q", c.APIPrefix(), "/mitto")
+	}
+}
+
 // --- newClient ----------------------------------------------------------
 
 func TestNewClient_HonorsNonDefaultAPIPrefix(t *testing.T) {
