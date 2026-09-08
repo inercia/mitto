@@ -30,6 +30,9 @@ cmd/mitto/            → Entry point only (minimal code)
 cmd/mitto-app/        → macOS native app entry point
 internal/cmd/         → CLI commands (Cobra-based)
 internal/acp/         → ACP protocol client (SDK wrapper)
+internal/agentbackend/→ Protocol-neutral backend contracts (Connection, ProviderDiscovery, SessionOps, EventDelivery, optional ClientServices) + in-memory FakeHost — the seam a second upstream protocol (e.g. AHP) plugs into. Import-guarded: MUST NOT transitively import acp-go-sdk, internal/acp, internal/acpproc, internal/web, internal/conversation, or os/exec (see docs/devel/agent-backend-architecture.md, mitto-lrt.4)
+internal/backendcompat/→ Legacy→neutral bridge (mitto-lrt.5): maps config.ACPServer/session.Metadata → agentbackend value types via dependency inversion (agentbackend stays a pure leaf). Byte-identical persistence — nothing on disk changes; neutral views computed on demand. AgentRef identity = (Backend, Provider), SessionRef never collapses SessionID vs ACPSessionID, ResolveProviderAlias mirrors migration_001 semantics but rejects ambiguous canonical sets
+internal/acpbackend/  → ACP-to-neutral adapter (mitto-lrt.6, additive): wraps conversation.SharedProcess and implements all five agentbackend contracts (Connection, ProviderDiscovery, SessionOps, EventDelivery, optional ClientServices) via pure translators (content, outcome, capabilities, state, errors) + ack-gated model/mode setters + inbound ACP→neutral event translation (Origin=OriginLocal). This is the protocol-specific home for acp-go-sdk that agentbackend's own import guard forbids agentbackend itself from depending on. NOT imported by internal/conversation in this increment — live wiring into BackgroundSession is deferred to mitto-lrt.7, event-projection extraction to mitto-lrt.8
 internal/agents/      → Agent definitions (metadata, commands, mcp-list); Manager looks up agents by acpId
 internal/auxiliary/   → Hidden ACP session for utility tasks
 internal/config/      → Configuration loading (YAML/JSON)
@@ -56,6 +59,7 @@ web/static/           → Frontend (Preact/HTM)
 - **Never** import `internal/cmd` from other internal packages
 - **Never** import CLI-specific code in `internal/acp`, `internal/session`, or `internal/web`
 - Session package is completely independent of ACP, CLI, and Web
+- **`internal/agentbackend` is a hard boundary**: enforced by `internal/agentbackend/imports_test.go` (transitive `go list -deps -json` scan). If the guard trips, do NOT relax the forbidden list — either introduce a neutral type here or keep the offending symbol in a higher package (see `.augment/rules/01-go-conventions.md` → "Transitive Import Guards").
 
 ## Key Utility Packages
 
