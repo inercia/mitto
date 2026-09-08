@@ -178,6 +178,18 @@ export function createClient(options?: {}): {
         externalStatus: any;
         supportedRunners: any;
         runnerDefaults: any;
+        webauthn: {
+            registerBegin: (opts: any) => Promise<any>;
+            registerFinish: (credential: object, opts: any) => Promise<any>;
+            list: (opts: any) => Promise<Array<{
+                id: string;
+                created_at: string;
+                last_used_at: string;
+            }>>;
+            delete: (id: string, opts: any) => Promise<any>;
+            loginBegin: (opts: any) => Promise<any>;
+            loginFinish: (assertion: object, opts: any) => Promise<any>;
+        };
     };
     workspaces: {
         list: (params?: object, opts?: import("./core/transport.js").RequestOptions) => Promise<{
