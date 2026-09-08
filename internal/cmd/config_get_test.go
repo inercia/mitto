@@ -269,6 +269,63 @@ func TestConfigGet_Offline_StoredNull_IsFoundNotMissing(t *testing.T) {
 	}
 }
 
+// TestConfigGet_Offline_SubtreeLookup pins the acceptance criterion that a
+// path resolving to a whole object (subtree) is returned as structured
+// output, not rejected — only --raw insists on a scalar.
+func TestConfigGet_Offline_SubtreeLookup(t *testing.T) {
+	clearServerEnv(t)
+	withConfigGetModes(t, true, false, false, false)
+	withConfigGetFlags(t, serverFlags{Output: "json"})
+	writeConfigGetSettings(t, `{"web":{"port":9999,"external_port":1234}}`)
+
+	cmd, out, _ := newConfigGetTestCmd()
+	if err := runConfigGet(cmd, []string{"web"}); err != nil {
+		t.Fatalf("runConfigGet: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "port") || !strings.Contains(got, "9999") || !strings.Contains(got, "external_port") {
+		t.Errorf("subtree stdout = %q, want the whole web object with both fields", got)
+	}
+}
+
+// TestConfigGet_Offline_EscapedMapKey pins the acceptance criterion for
+// escaped map keys: a stored key that itself contains dots is addressable
+// via backslash-escaped path segments, resolving to a single key rather
+// than being split into a nested lookup.
+func TestConfigGet_Offline_EscapedMapKey(t *testing.T) {
+	clearServerEnv(t)
+	withConfigGetModes(t, true, false, false, true)
+	withConfigGetFlags(t, serverFlags{Output: "json"})
+	writeConfigGetSettings(t, `{"my.dotted.key":"value123"}`)
+
+	cmd, out, _ := newConfigGetTestCmd()
+	if err := runConfigGet(cmd, []string{`my\.dotted\.key`}); err != nil {
+		t.Fatalf("runConfigGet: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "value123" {
+		t.Errorf("escaped-key stdout = %q, want value123", out.String())
+	}
+}
+
+// TestConfigGet_Offline_YAMLOutput pins the acceptance criterion for YAML
+// output: --output yaml renders the resolved value as YAML using the
+// canonical JSON field names.
+func TestConfigGet_Offline_YAMLOutput(t *testing.T) {
+	clearServerEnv(t)
+	withConfigGetModes(t, true, false, false, false)
+	withConfigGetFlags(t, serverFlags{Output: "yaml"})
+	writeConfigGetSettings(t, `{"web":{"port":9999}}`)
+
+	cmd, out, _ := newConfigGetTestCmd()
+	if err := runConfigGet(cmd, []string{"web"}); err != nil {
+		t.Fatalf("runConfigGet: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "port:") || !strings.Contains(got, "9999") {
+		t.Errorf("yaml stdout = %q, want YAML-style `port:` mapping", got)
+	}
+}
+
 // --- usage errors (mode/flag validation) -----------------------------------
 
 func TestConfigGet_Effective_WithoutOffline_UsageError(t *testing.T) {
