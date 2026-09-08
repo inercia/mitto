@@ -22,6 +22,9 @@ func TestClassifyOutcome(t *testing.T) {
 		{"wrapped UnsupportedError struct", fmt.Errorf("dispatch failed: %w", &agentbackend.UnsupportedError{Feature: "title-gen"}), OutcomeUnsupported},
 		{"saturated umbrella sentinel", acperrors.ErrSharedProcessSaturated, OutcomeRetryable},
 		{"reactive saturation", acperrors.ErrProcessSaturated, OutcomeRetryable},
+		{"proactive busy load-shedding", acperrors.ErrProcessBusy, OutcomeRetryable},
+		{"mcp-init gated", acperrors.ErrMCPInitGated, OutcomeRetryable},
+		{"wrapped proactive busy", fmt.Errorf("dispatch failed: %w", acperrors.ErrProcessBusy), OutcomeRetryable},
 		{"unrecognized error", errors.New("boom"), OutcomeError},
 	}
 
