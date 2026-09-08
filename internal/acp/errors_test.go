@@ -859,9 +859,10 @@ func TestFormatACPError_UpstreamHTTP500_mitto_bfu(t *testing.T) {
 // breaking your request into smaller steps" instead of naming the transient
 // provider outage. IsUpstreamUnavailableError already classifies this error
 // correctly (used by the loop-runner retry path); only the user-facing
-// FormatACPError wording is wrong. This test is expected to FAIL until the
-// ordering is fixed so the upstream-unavailable branch takes priority over
-// the tool-timeout branch for this error shape (mitto-ofe Fix phase).
+// FormatACPError wording was wrong. FormatACPErrorWithContext has since been
+// reordered so the upstream-unavailable branch takes priority over the
+// tool-timeout branch for this error shape (mitto-ofe Fix phase); this test
+// now asserts that fix and must pass.
 func TestFormatACPError_UpstreamTimeoutWording_mitto_ofe(t *testing.T) {
 	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: The operation was aborted due to timeout","data":{"apiStatus":"unavailable"}}`)
 
