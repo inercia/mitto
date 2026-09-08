@@ -167,6 +167,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 	var (
 		loadedSeqs []int64
 		loaded     = make(chan struct{})
+		loadedOnce sync.Once
 	)
 
 	callbacks2 := api.SessionCallbacks{
@@ -178,7 +179,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 				}
 			}
 			mu.Unlock()
-			close(loaded)
+			loadedOnce.Do(func() { close(loaded) })
 		},
 	}
 
@@ -293,6 +294,7 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 	var (
 		syncedEvents []api.SyncEvent
 		synced       = make(chan struct{})
+		syncedOnce   sync.Once
 	)
 
 	callbacks2 := api.SessionCallbacks{
@@ -300,7 +302,7 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 			mu.Lock()
 			syncedEvents = append(syncedEvents, events...)
 			mu.Unlock()
-			close(synced)
+			syncedOnce.Do(func() { close(synced) })
 		},
 	}
 
@@ -332,6 +334,91 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 	}
 
 	t.Logf("Sync after seq %d returned %d events", firstLastSeq, len(syncedEvents))
+}
+
+// TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback reproduces
+// mitto-nhq deterministically, without relying on CI-only port-5757
+// contamination: TestSequenceNumberSyncAfterReconnect's OnEventsLoaded
+// callback above (:299-304) — and the identical sibling pattern in
+// TestSequenceNumberPersistedAcrossReconnect (:172-183) — call
+// close(<chan>) UNCONDITIONALLY. pkg/api/session.go's handleMessage (case
+// "events_loaded", :747-777) invokes OnEventsLoaded once per delivered
+// events_loaded WebSocket frame, so ANY second delivery (handshake
+// auto-load + an explicit LoadEvents call, a hasMore paginated batch, or
+// contaminated CI message delivery) double-closes the channel and panics
+// with "close of closed channel" — crashing the whole test binary, exactly
+// as reported.
+//
+// This test forces two events_loaded deliveries deterministically via two
+// sequential, non-overlapping LoadEvents calls (spaced apart so the
+// server's per-connection loadEventsMu TryLock, internal/web/session_ws.go
+// handleLoadEventsAsync, does not silently drop the second one as
+// "already in progress"). It reproduced a panic ("close of closed
+// channel") when its OnEventsLoaded callback closed `synced`
+// unconditionally; the callback (and the two sibling patterns above, at
+// :181 and :303) is now guarded with sync.Once — see also the pre-existing
+// safe patterns at chatui_smoke_test.go:69-71 (loadedOnce.Do) and
+// session_edge_cases_test.go:229-236 (syncOnce.Do). Do not delete or skip
+// this test; it must complete cleanly, having observed >= 2 deliveries,
+// with no panic.
+func TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	defer ts.Client.DeleteSession(session.SessionID)
+
+	var (
+		mu         sync.Mutex
+		deliveries int
+		synced     = make(chan struct{})
+		syncedOnce sync.Once
+	)
+
+	// Guarded with sync.Once (mitto-nhq fix) so a second events_loaded
+	// delivery does not double-close `synced` and panic.
+	callbacks := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
+			mu.Lock()
+			deliveries++
+			mu.Unlock()
+			syncedOnce.Do(func() { close(synced) })
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, session.SessionID, callbacks)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// First delivery: succeeds, closes `synced`.
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("first LoadEvents failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// Second delivery, sent only after the first has fully completed (lock
+	// released, response received) so it is not silently dropped by the
+	// server's concurrent-load guard: double-closes `synced` and panics.
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("second LoadEvents failed: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+
+	mu.Lock()
+	got := deliveries
+	mu.Unlock()
+	if got < 2 {
+		t.Fatalf("expected at least 2 events_loaded deliveries to force the double-close, got %d", got)
+	}
 }
 
 // TestMultipleClientsReceiveSameSeqs verifies that multiple clients connected
