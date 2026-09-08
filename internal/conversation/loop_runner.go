@@ -2713,9 +2713,10 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		} else {
 			if r.logger != nil {
 				backoffMsg := "Loop prompt failed, backing off next run"
-				if failureClass == "upstream_provider_unavailable" {
+				switch failureClass {
+				case "upstream_provider_unavailable":
 					backoffMsg = "Loop delivery hit a transient upstream provider outage; backing off next run (auto-retrying, not a broken loop)"
-				} else if failureClass == "auth_required" {
+				case "auth_required":
 					backoffMsg = "Loop delivery failed: agent CLI authentication expired; backing off next run (re-authenticate the agent CLI, e.g. claude auth login)"
 				}
 				r.logger.Warn(backoffMsg,
@@ -2740,9 +2741,10 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 	// still get the same trigger-agnostic failure accounting logged.
 	if r.logger != nil {
 		notAdvancedMsg := "Loop prompt failed, schedule not advanced"
-		if failureClass == "upstream_provider_unavailable" {
+		switch failureClass {
+		case "upstream_provider_unavailable":
 			notAdvancedMsg = "Loop delivery hit a transient upstream provider outage; schedule not advanced (auto-retrying, not a broken loop)"
-		} else if failureClass == "auth_required" {
+		case "auth_required":
 			notAdvancedMsg = "Loop delivery failed: agent CLI authentication expired; schedule not advanced (re-authenticate the agent CLI, e.g. claude auth login)"
 		}
 		r.logger.Warn(notAdvancedMsg,

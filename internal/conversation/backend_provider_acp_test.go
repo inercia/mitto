@@ -283,9 +283,9 @@ type gatingSharedProcess struct {
 }
 
 func (g *gatingSharedProcess) ResumeSession(ctx context.Context, id, cwd string, servers []acp.McpServer) (*SessionHandle, error) {
-	g.fakeBackendSharedProcess.mu.Lock()
+	g.mu.Lock()
 	*g.calls++
-	g.fakeBackendSharedProcess.mu.Unlock()
+	g.mu.Unlock()
 	<-g.gate
 	return g.handle, nil
 }
