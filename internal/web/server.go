@@ -565,6 +565,12 @@ func NewServer(config Config) (*Server, error) {
 		return config.MittoConfig.ModelProfilesByTag(tag)
 	}
 	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
+	// Inject the protocol-neutral backend acquisition seam (mitto-lrt.7/
+	// mitto-lrt.16) against the SAME underlying process manager as above, so
+	// SessionManager.getSharedProcess routes production process acquisition
+	// through BackendProvider.AcquireSession (byte-identical delegation;
+	// see the backendProvider field doc in session_manager.go).
+	sessionMgr.SetBackendProvider(conversation.NewACPBackendProvider(acpProcessManagerAdapter{acpProcessMgr}))
 
 	// Apply the prompt inactivity watchdog cancellation timeout from settings. This
 	// breaks the GC deadlock where a wedged shared ACP process pins a session as

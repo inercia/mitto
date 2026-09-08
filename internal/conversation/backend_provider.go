@@ -66,6 +66,16 @@ type AcquireRequest struct {
 	MCPServers []acp.McpServer
 	// Prewarm requests the underlying process manager pre-warm the process.
 	Prewarm bool
+
+	// DeferSession requests process-only acquisition: AcquireSession gets/
+	// creates the backend process but skips the NewSession/LoadSession/
+	// ResumeSession RPC, returning a lease whose SessionHandle is nil. This
+	// preserves the mitto-220 deferred-session pattern (the session RPC is
+	// deferred to the first prompt, with its own resume→load→new fallback
+	// hardening) for callers that need eager, cheap process acquisition
+	// through this seam without firing a blocking session RPC yet. Ignored
+	// by non-ACP backends, which have no equivalent split.
+	DeferSession bool
 }
 
 // BackendLease models ownership of one acquired backend session.

@@ -46,6 +46,21 @@ func (p *acpBackendProvider) AcquireSession(ctx context.Context, req AcquireRequ
 		return nil, agentbackend.ErrNotConnected
 	}
 
+	// DeferSession: return a process-only lease, skipping the session RPC
+	// entirely (see AcquireRequest.DeferSession doc). The lease's
+	// SessionHandle is nil until the caller performs its own deferred
+	// handshake via LocalProcess() and, once that completes, callers still
+	// route teardown through the SharedProcess directly today — lease-based
+	// Detach/Bind for the deferred path is follow-up work.
+	if req.DeferSession {
+		return &acpLease{
+			process:    process,
+			ref:        req.Session,
+			cwd:        req.CWD,
+			mcpServers: req.MCPServers,
+		}, nil
+	}
+
 	providerSessionID := string(req.Session.ProviderSession)
 	var handle *SessionHandle
 	switch req.Intent {
@@ -122,8 +137,14 @@ func (l *acpLease) Capabilities() agentbackend.Capabilities {
 
 // Detach unregisters this session from the shared process's multiplex layer.
 // It never kills the shared OS process, which other sessions may still own.
+// A lease acquired with AcquireRequest.DeferSession and never bound to a real
+// ACP session ID (sessionID still "") has nothing registered to unregister —
+// detaching it is a safe no-op rather than unregistering a bogus empty ID.
 func (l *acpLease) Detach() {
 	l.detached.Store(true)
+	if l.sessionID == "" {
+		return
+	}
 	l.process.UnregisterSession(l.sessionID)
 }
 

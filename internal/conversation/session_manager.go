@@ -179,12 +179,19 @@ type SessionManager struct {
 	// backendProvider is the optional protocol-neutral backend acquisition
 	// seam (mitto-lrt.7; see backend_provider.go). It mirrors
 	// acpProcessManager's injection pattern but returns a BackendLease
-	// (ownership) rather than a bare SharedProcess. Nil in production today
-	// — routing SessionManager's own acquisition call sites through it is
-	// deferred to a follow-up increment to keep this seam's introduction
-	// additive and zero-risk to the existing ACP hot path; NewACPBackendProvider
-	// already implements it against the SAME ProcessManager set above, proven
-	// by dedicated tests (backend_provider_acp_test.go).
+	// (ownership) rather than a bare SharedProcess. Injected in production
+	// (internal/web/server.go) against the SAME ProcessManager set above via
+	// NewACPBackendProvider (proven byte-identical by
+	// backend_provider_acp_test.go); getSharedProcess routes process
+	// acquisition through it with AcquireRequest.DeferSession, covering
+	// every production call site that funnels through that one chokepoint
+	// (create, load/resume, foreground wake, startup stagger, concurrent-
+	// recycle retry — mitto-lrt.16). A nil provider (tests that never call
+	// SetBackendProvider) falls back byte-identically to calling
+	// ProcessManager directly. Routing BackgroundSession's own teardown
+	// (Detach) and reconnect through a bound BackendLease — which requires
+	// threading the lease through the deferred session/new handshake — is
+	// left to a follow-up increment.
 	backendProvider BackendProvider
 
 	// auxiliaryManager provides workspace-scoped auxiliary tasks (title generation,
@@ -1270,12 +1277,55 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 // acpCommand, acpCwd, acpEnv are the resolved ACP connection parameters
 // (from resolveWorkspaceACPLocked or directly from global config).
 // The caller must NOT hold sm.mu when calling this method.
+//
+// This is the single chokepoint every production process-acquisition path
+// (create, load/resume, foreground wake, startup stagger via
+// EnsureWorkspaceProcess, concurrent-recycle retry) funnels through. When a
+// BackendProvider is injected (mitto-lrt.16; see the backendProvider field
+// doc), acquisition routes through BackendProvider.AcquireSession with
+// DeferSession set — preserving the mitto-220 deferred-session RPC pattern —
+// and the resulting SharedProcess is extracted via the ACP-only LocalProcess
+// escape hatch. This delegates to the SAME ProcessManager.GetOrCreateProcess
+// call with the SAME arguments as the fallback path below, so behavior is
+// unchanged; only the injected-provider case newly exercises the seam. A nil
+// BackendProvider (e.g. in tests that never call SetBackendProvider) falls
+// back byte-identically to calling ProcessManager directly.
 func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) SharedProcess {
 	sm.mu.RLock()
 	pm := sm.acpProcessManager
+	provider := sm.backendProvider
 	sm.mu.RUnlock()
 
-	if pm == nil || workspace == nil || workspace.UUID == "" {
+	if workspace == nil || workspace.UUID == "" {
+		return nil
+	}
+
+	if provider != nil {
+		lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+			Workspace:    workspace,
+			ACPCommand:   acpCommand,
+			ACPCwd:       acpCwd,
+			ACPEnv:       acpEnv,
+			Runner:       r,
+			Prewarm:      true,
+			DeferSession: true,
+		})
+		if err != nil {
+			if sm.logger != nil {
+				sm.logger.Warn("Failed to acquire shared ACP process via BackendProvider, falling back to per-session",
+					"workspace_uuid", workspace.UUID,
+					"error", err)
+			}
+			return nil
+		}
+		process, ok := lease.LocalProcess()
+		if !ok || process == nil {
+			return nil
+		}
+		return process
+	}
+
+	if pm == nil {
 		return nil
 	}
 
