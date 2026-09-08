@@ -3732,6 +3732,132 @@ func TestListConversationsFiltering(t *testing.T) {
 	})
 }
 
+// TestListConversationsAgentFilterAlias covers the 'agent' filter alias added
+// to mitto_conversation_list (mitto-lrt.17), mirroring mitto_conversation_new's
+// acp_server/agent alias semantics: agent accepts a case-insensitive alias of a
+// configured server name, and acp_server/agent must agree if both are set.
+func TestListConversationsAgentFilterAlias(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	sessions := []session.Metadata{
+		{SessionID: "session-auggie", Name: "Auggie Session", ACPServer: "auggie", WorkingDir: "/workspace/a"},
+		{SessionID: "session-claude", Name: "Claude Session", ACPServer: "claude-code", WorkingDir: "/workspace/a"},
+	}
+	for _, meta := range sessions {
+		if err := store.Create(meta); err != nil {
+			t.Fatalf("Failed to create session %s: %v", meta.SessionID, err)
+		}
+	}
+
+	cfg := &config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "auggie", Command: "auggie --acp"},
+			{Name: "claude-code", Command: "claude-code --acp"},
+		},
+	}
+
+	srv, err := NewServer(
+		Config{Port: 0},
+		Dependencies{Store: store, Config: cfg},
+	)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	ctx := context.Background()
+	handler := srv.createListConversationsHandler(nil)
+
+	t.Run("agent alias, exact match", func(t *testing.T) {
+		agent := "auggie"
+		_, output, err := handler(ctx, nil, ListConversationsInput{Agent: &agent})
+		if err != nil {
+			t.Fatalf("handler returned error: %v", err)
+		}
+		if len(output.Conversations) != 1 || output.Conversations[0].SessionID != "session-auggie" {
+			t.Fatalf("expected only session-auggie, got %+v", output.Conversations)
+		}
+	})
+
+	t.Run("agent alias, case-insensitive match", func(t *testing.T) {
+		agent := "Claude-Code"
+		_, output, err := handler(ctx, nil, ListConversationsInput{Agent: &agent})
+		if err != nil {
+			t.Fatalf("handler returned error: %v", err)
+		}
+		if len(output.Conversations) != 1 || output.Conversations[0].SessionID != "session-claude" {
+			t.Fatalf("expected only session-claude, got %+v", output.Conversations)
+		}
+	})
+
+	t.Run("acp_server and agent agree", func(t *testing.T) {
+		acp := "auggie"
+		agent := "AUGGIE"
+		_, output, err := handler(ctx, nil, ListConversationsInput{ACPServer: &acp, Agent: &agent})
+		if err != nil {
+			t.Fatalf("handler returned error: %v", err)
+		}
+		if len(output.Conversations) != 1 || output.Conversations[0].SessionID != "session-auggie" {
+			t.Fatalf("expected only session-auggie, got %+v", output.Conversations)
+		}
+	})
+
+	t.Run("acp_server and agent disagree returns actionable error", func(t *testing.T) {
+		acp := "auggie"
+		agent := "claude-code"
+		_, _, err := handler(ctx, nil, ListConversationsInput{ACPServer: &acp, Agent: &agent})
+		if err == nil {
+			t.Fatal("expected error for conflicting acp_server/agent")
+		}
+		if !strings.Contains(err.Error(), "resolve to different servers") {
+			t.Errorf("expected actionable conflict message, got: %v", err)
+		}
+	})
+
+	t.Run("unknown agent alias passes through verbatim, matching nothing", func(t *testing.T) {
+		// backendcompat.ResolveProviderAlias leaves an unresolvable alias
+		// unchanged rather than erroring (e.g. the provider was renamed away
+		// from or deleted) — mirrors the exact-match-only contract for
+		// acp_server. No session has this ACPServer, so 0 results.
+		agent := "nonexistent-agent"
+		_, output, err := handler(ctx, nil, ListConversationsInput{Agent: &agent})
+		if err != nil {
+			t.Fatalf("handler returned error: %v", err)
+		}
+		if len(output.Conversations) != 0 {
+			t.Errorf("expected 0 conversations, got %d", len(output.Conversations))
+		}
+	})
+
+	t.Run("agent set but config unavailable returns error", func(t *testing.T) {
+		noCfgSrv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+		if err != nil {
+			t.Fatalf("NewServer failed: %v", err)
+		}
+		noCfgHandler := noCfgSrv.createListConversationsHandler(nil)
+		agent := "auggie"
+		_, _, err = noCfgHandler(ctx, nil, ListConversationsInput{Agent: &agent})
+		if err == nil {
+			t.Fatal("expected error when config is unavailable but agent filter is set")
+		}
+	})
+
+	t.Run("acp_server-only path unaffected by agent field being absent", func(t *testing.T) {
+		acp := "claude-code"
+		_, output, err := handler(ctx, nil, ListConversationsInput{ACPServer: &acp})
+		if err != nil {
+			t.Fatalf("handler returned error: %v", err)
+		}
+		if len(output.Conversations) != 1 || output.Conversations[0].SessionID != "session-claude" {
+			t.Fatalf("expected only session-claude, got %+v", output.Conversations)
+		}
+	})
+}
+
 // =============================================================================
 // ListConversations Workspace Enrichment and Permission Tests
 // =============================================================================
