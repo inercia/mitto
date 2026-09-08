@@ -410,3 +410,51 @@ change; live `BackgroundSession`/`mcpserver` wiring is deferred.
   value). Its zero value is the closed default (loopback, no auth, tools NOT
   relayed); `Validate()` rejects any remote binding that skips TLS, an auth
   scheme, or a credential reference.
+
+## 11. Neutral REST/WS contracts & SDK compatibility (mitto-lrt.12)
+
+Additive, behavior-preserving surfacing of the §5 neutral descriptors on the
+existing REST and WebSocket wire, plus matching Go/JavaScript SDK types. No
+legacy field is renamed or removed in this increment.
+
+- **Additive `backend` block.** REST session responses
+  (`GET /api/sessions/{id}`, `GET /api/workspaces/{uuid}/sessions`) and the
+  `connected` / `acp_started` WebSocket snapshots may carry an optional
+  `backend` object projecting `agentbackend.AgentRef` / `SessionRef` /
+  capabilities / model / config options. It rides alongside — never in place of
+  — the existing `acp_server` / `acp_session_id` / `acp_ready` fields, which
+  keep their current meaning and remain the source of truth for legacy clients.
+  See [protocol-spec.md § Optional `backend` descriptor](websockets/protocol-spec.md#optional-backend-descriptor-additive).
+- **Never synthesized.** `BuildNeutralBackendDescriptor`
+  (`internal/web/handlers/neutral_dto.go`) returns the block only when the
+  server can actually compute it: absent on legacy records, when there is no
+  `SessionManager`, or when identity/live state is unavailable. A client that
+  sees no `backend` key must treat it as "not available", not as an error — so
+  the block can be withheld freely without breaking any consumer.
+- **Identifier spaces never collapse.** `session_ref.conversation_id`
+  (Mitto-owned) and `session_ref.provider_session` (upstream-assigned) stay
+  distinct on the wire, mirroring the §5/`backendcompat` invariant that a
+  `SessionRef` never conflates the two.
+- **Tri-state capabilities on the wire.** Capability values serialize as the
+  strings `"unknown"` / `"supported"` / `"unsupported"` (via
+  `agentbackend.CapabilityState.String()`), keyed by `Feature` name, so
+  `unknown` is never conflated with `unsupported` across the language boundary.
+- **No credential leakage, no cursor replacement.** The block never serializes
+  a `CredentialRef` value and never introduces a host cursor that would
+  supplant the native `seq` ordering; because it rides inside the
+  reconnect-authoritative snapshots, no new event type is added and reconnect
+  remains the single source of truth.
+- **SDK mirrors.** The Go SDK (`pkg/api/backend.go`) and the JavaScript SDK
+  JSDoc typedefs (`web/static/sdk/realtime/events.js`) mirror these shapes
+  field-for-field and are pinned by parity/golden tests
+  (`neutral_dto_test.go`, `pkg/api/backend_test.go`,
+  `web/static/sdk/realtime/session-stream.test.js`).
+
+**Deprecation policy.** This epic introduces no deprecations. The `acp_*`
+fields and ACP-specific event names (`acp_started` / `acp_stopped` /
+`acp_start_failed`) are preserved as-is per the §7 migration matrix; a future
+second backend gets its own parallel fields/event names rather than overloading
+these. Any eventual deprecation of a legacy field would follow the additive
+migration matrix (new field ships and bakes first; the legacy field is retired
+only in a later, separately-tracked step), never as a silent breaking change
+inside an additive increment like this one.

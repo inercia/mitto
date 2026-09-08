@@ -235,20 +235,70 @@ Sent immediately after WebSocket upgrade. Includes last prompt info for delivery
     "is_running": true,
     "is_prompting": false,
     "last_user_prompt_id": "p-1738396800-xyz",
-    "last_user_prompt_seq": 42
+    "last_user_prompt_seq": 42,
+    "backend": {
+      "agent_ref": { "backend": "acp", "provider": "auggie" },
+      "session_ref": {
+        "conversation_id": "20260201-120000-abc12345",
+        "provider": "auggie",
+        "provider_session": "sess-9f3a"
+      },
+      "capabilities": {
+        "images": "supported",
+        "files": "supported",
+        "terminals": "unknown",
+        "permissions": "supported",
+        "model_selection": "supported",
+        "mode_selection": "unsupported"
+      }
+    }
   }
 }
 ```
 
-| Field                  | Type   | Description                                      |
-| ---------------------- | ------ | ------------------------------------------------ |
-| `session_id`           | string | Session identifier                               |
-| `client_id`            | string | Unique ID for this WebSocket client              |
-| `acp_server`           | string | ACP server name                                  |
-| `is_running`           | bool   | Whether ACP process is active                    |
-| `is_prompting`         | bool   | Whether agent is currently responding            |
-| `last_user_prompt_id`  | string | Last prompt ID (for delivery verification)       |
-| `last_user_prompt_seq` | int64  | Last prompt sequence (for delivery verification) |
+| Field                  | Type   | Description                                                                 |
+| ---------------------- | ------ | -------------------------------------------------------------------------- |
+| `session_id`           | string | Session identifier                                                         |
+| `client_id`            | string | Unique ID for this WebSocket client                                        |
+| `acp_server`           | string | ACP server name                                                            |
+| `is_running`           | bool   | Whether ACP process is active                                              |
+| `is_prompting`         | bool   | Whether agent is currently responding                                      |
+| `last_user_prompt_id`  | string | Last prompt ID (for delivery verification)                                 |
+| `last_user_prompt_seq` | int64  | Last prompt sequence (for delivery verification)                           |
+| `backend`              | object | **Optional**, additive protocol-neutral descriptor — see below (mitto-lrt.12) |
+
+#### Optional backend descriptor (additive)
+
+`connected` and [`acp_started`](#acp_started--acp-connection-started) snapshots
+may carry an optional, additive `backend` object that mirrors the reviewed
+protocol-neutral descriptors (`agentbackend.AgentRef` / `SessionRef` /
+capabilities / model / config options) alongside — never in place of — the
+existing `acp_server` / `acp_session_id` / `acp_ready` fields, which keep their
+current meaning. The block is **behavior-preserving and never synthesized**: it
+is present only when the server can actually compute it, so legacy clients that
+ignore unknown keys are unaffected, and a client seeing no `backend` key must
+treat it as "not available" (older server, or no identity/live state), not as
+an error. Because it rides inside the reconnect-authoritative snapshots, no new
+event type is introduced and no duplicate toasts/state transitions occur.
+
+| Field                       | Type            | Description                                                                                                                   |
+| --------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `agent_ref.backend`         | string          | Backend implementation kind (e.g. `"acp"`)                                                                                   |
+| `agent_ref.provider`        | string          | Provider id on that backend                                                                                                  |
+| `session_ref.conversation_id` | string        | Mitto-owned conversation id (kept distinct from the upstream id — the two identifier spaces never collapse)                  |
+| `session_ref.provider`      | string          | Provider owning this session                                                                                                 |
+| `session_ref.provider_session` | string       | Upstream-assigned session id (optional; empty when the upstream has not assigned one yet)                                    |
+| `capabilities`              | object          | Feature name → tri-state string, one of `"unknown"`, `"supported"`, `"unsupported"` (see below). Present only with live state |
+| `model`                     | object          | `{ current_id, available[] }` mirror of available/selected models (optional)                                                 |
+| `config_options`            | array           | Neutral mirror of session config options `{ id, category, current, values[] }` (optional)                                   |
+
+Capability keys are the `agentbackend.Feature` names: `images`, `files`,
+`terminals`, `permissions`, `model_selection`, `mode_selection`. The tri-state
+distinguishes `unknown` (not yet determinable — e.g. during cold init, or a
+feature Mitto does not model for this backend) from `unsupported` (the backend
+positively does not offer it); the two are never conflated. No credentials are
+ever serialized in this block, and it never carries a host cursor that would
+replace the native `seq` ordering.
 
 #### `session_gone` — Terminal: session no longer exists
 
@@ -389,10 +439,13 @@ Sent when the ACP process is gracefully terminated (e.g., session archived).
 
 #### `acp_started` — ACP connection started
 
-Sent when the ACP process is started (e.g., session unarchived).
+Sent when the ACP process is started (e.g., session unarchived). Like
+`connected`, this snapshot may carry the optional, additive
+[`backend`](#optional-backend-descriptor-additive) descriptor (present only when
+computable); older servers and legacy clients are unaffected by its absence.
 
 ```json
-{ "type": "acp_started", "data": { "session_id": "..." } }
+{ "type": "acp_started", "data": { "session_id": "...", "backend": { "agent_ref": { "backend": "acp", "provider": "auggie" } } } }
 ```
 
 #### `acp_start_failed` — ACP process failed to start
