@@ -231,6 +231,34 @@ teardown through `Detach()`, `Reconnect` single-flight wiring, and
 `ClassifyAcquireError`-driven lifecycle decisions — are the deferred remainder,
 tracked by **mitto-lrt.18**.
 
+**Update (mitto-lrt.18):** the deferred lease _operations_ are now wired into
+production, completing mitto-lrt.16's remainder. `getSharedProcess` returns the
+acquired `BackendLease` (previously discarded after `LocalProcess()`), which is
+stored on `BackgroundSession.lease` and bound to the real ACP session ID via the
+new neutral `BackendLease.Bind` seam once the deferred `session/new` handshake
+resolves `bs.acpID` (`completeDeferredHandshake`). Teardown then routes through
+`BackendLease.Detach()` in `killACPProcess` — the single chokepoint every
+archive/unarchive/delete, parent-child cascade, and loop-suspension path funnels
+through via `Close()` — instead of the direct `SharedProcess.UnregisterSession`
+call; a bound lease's `Detach` is byte-identical to that direct call, an unbound
+lease is a safe no-op, and a `nil` lease (nil-provider tests) keeps the direct
+fallback. The acquire-error path annotates an advisory `lifecycle_state` from
+`ClassifyAcquireError` on its existing `Warn`, leaving the fall-back-to-nil
+outcome and `ACPStartFailureCount`/auto-archive semantics unchanged.
+
+**Reconnect — fresh-acquire equivalence (mitto-lrt.18; criterion closed on this
+basis).** There is deliberately **no** in-place `BackendLease.Reconnect` call
+site in production. The only reconnect path, `SessionManager.ResumeSession`,
+rebuilds a **fresh** `BackgroundSession` that re-acquires through
+`getSharedProcess` — so resume already flows through the new lease-acquisition
+path. Rewiring the in-place restart (`restartACPProcessFromGeneration`) to
+`lease.Reconnect` was rejected because it would risk the two ADR invariants
+_no silent replacement session_ and _no replay of a possibly-accepted prompt_;
+`acpLease.Reconnect` (single-flight, coalescing) remains implemented and
+unit-tested for any future in-place site but is intentionally unused in
+production. The `Reconnect` acceptance criterion is therefore closed on this
+documented fresh-acquire equivalence rather than by wiring a new call site.
+
 **Event projection & durable replay realized (mitto-lrt.8):** a new,
 additive, protocol-neutral leaf package `internal/eventprojection` consumes
 `agentbackend.Event` and emits sequence-numbered `ProjectedEvent`s to a
@@ -512,8 +540,11 @@ the `BackendProvider`/`BackendLease` ownership seam
 (`internal/conversation/backend_provider.go`, mitto-lrt.7): mitto-lrt.16 wired
 its _acquisition_ path into production, so a non-nil `BackendProvider` is now
 the normal state and the `nil`-provider byte-identical fallback survives only
-for tests. The seam's remaining lease _operations_
-(detach/reconnect/lifecycle-state) are still deferred (mitto-lrt.18).
+for tests. mitto-lrt.18 then landed the seam's remaining lease _operations_ —
+lease storage/binding on `BackgroundSession`, `Detach` teardown routing,
+`ClassifyAcquireError` advisory lifecycle-state, and the documented `Reconnect`
+fresh-acquire equivalence — so no part of the `BackendProvider`/`BackendLease`
+seam remains deferred.
 
 **Bounded AHP experiment.** `docs/devel/ahp-feasibility.md` (mitto-lrt.3)
 records a **research-only, blocked-on-runtime-validation** finding: AHP v0.9.0
@@ -589,9 +620,14 @@ created by this ticket:
   remainder (lease storage on `BackgroundSession`, `Detach` teardown routing,
   `Reconnect` single-flight wiring, `ClassifyAcquireError` lifecycle decisions,
   archive/cascade/suspension lease routing) is tracked by **`mitto-lrt.18`**.
-- **`mitto-lrt.18`** — wire the deferred `BackendLease` operations
-  (teardown/reconnect/lifecycle-state) into production, completing the
-  remainder of mitto-lrt.16.
+- **`mitto-lrt.18`** — _lease operations landed._ The deferred `BackendLease`
+  operations now run in production: the lease is stored on `BackgroundSession`
+  and bound across the deferred handshake, teardown routes through `Detach()`,
+  `ClassifyAcquireError` drives advisory lifecycle-state on the acquire-error
+  path, and the `Reconnect` criterion is closed on the documented fresh-acquire
+  equivalence (`ResumeSession` re-acquires a fresh session through the lease
+  path; no in-place `Reconnect` site, to preserve the no-silent-replacement and
+  no-prompt-replay invariants). Completes mitto-lrt.16.
 - **`mitto-lrt.17`** — CLI chat selection funnel + `mitto_conversation_list`
   agent-filter alias (deferred remainder of mitto-lrt.13's `--agent`/`--acp`
   alias work).

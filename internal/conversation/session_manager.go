@@ -188,10 +188,12 @@ type SessionManager struct {
 	// (create, load/resume, foreground wake, startup stagger, concurrent-
 	// recycle retry — mitto-lrt.16). A nil provider (tests that never call
 	// SetBackendProvider) falls back byte-identically to calling
-	// ProcessManager directly. Routing BackgroundSession's own teardown
-	// (Detach) and reconnect through a bound BackendLease — which requires
-	// threading the lease through the deferred session/new handshake — is
-	// left to a follow-up increment.
+	// ProcessManager directly. BackgroundSession's own teardown now routes
+	// through a bound BackendLease (Detach): getSharedProcess returns the
+	// lease, which is stored on BackgroundSession and bound to the real ACP
+	// session ID across the deferred session/new handshake (mitto-lrt.18).
+	// Reconnect stays fresh-acquire via ResumeSession (no in-place Reconnect
+	// site — see docs/devel/agent-backend-architecture.md for the equivalence).
 	backendProvider BackendProvider
 
 	// auxiliaryManager provides workspace-scoped auxiliary tasks (title generation,
