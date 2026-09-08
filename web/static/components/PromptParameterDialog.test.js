@@ -202,11 +202,19 @@ function renderWorkspaceFolderControl({
   workingDir,
 }) {
   const seen = new Set();
-  const folders = (workspaces || []).filter((ws) => {
-    if (!ws.working_dir || seen.has(ws.working_dir)) return false;
-    seen.add(ws.working_dir);
-    return true;
-  });
+  const folders = (workspaces || [])
+    .filter((ws) => {
+      if (!ws.working_dir || seen.has(ws.working_dir)) return false;
+      seen.add(ws.working_dir);
+      return true;
+    })
+    .sort((a, b) =>
+      (a.name || getBasename(a.working_dir)).localeCompare(
+        b.name || getBasename(b.working_dir),
+        undefined,
+        { sensitivity: "base" },
+      ),
+    );
   if (loadingWorkspaces) {
     return { kind: "spinner" };
   }
@@ -280,6 +288,26 @@ describe("workspaceFolder render branch", () => {
       });
       expect(result.kind).toBe("select");
       expect(result.options).toHaveLength(3);
+    });
+
+    test("sorts folders alphabetically by display label (case-insensitive)", () => {
+      const unsorted = [
+        { uuid: "u1", name: "trips", working_dir: "/home/user/trips" },
+        { uuid: "u2", name: "cgw-mono", working_dir: "/home/user/cgw-mono" },
+        { uuid: "u3", name: "Blog", working_dir: "/home/user/blog" },
+        { uuid: "u4", name: "agentgateway", working_dir: "/home/user/ag" },
+      ];
+      const result = renderWorkspaceFolderControl({
+        loadingWorkspaces: false,
+        workspaces: unsorted,
+        workingDir: "/other",
+      });
+      expect(result.options.map((o) => o.label)).toEqual([
+        "agentgateway",
+        "Blog",
+        "cgw-mono",
+        "trips",
+      ]);
     });
 
     test("option value equals working_dir (the absolute path)", () => {
