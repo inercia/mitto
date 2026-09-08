@@ -151,8 +151,8 @@ export function WorkspaceEditor({
               style="height: 38px; box-sizing: border-box"
             />
             <p class="text-xs text-mitto-text-muted mt-1">
-              Custom command line for running the agent. Leave empty to use
-              the default.
+              Custom command line for running the agent. Leave empty to use the
+              default.
             </p>
           </div>
           <div>
@@ -332,7 +332,7 @@ export function WorkspaceEditor({
         <div class="space-y-4">
           <div class="flex items-center justify-between">
             <p class="text-sm text-mitto-text-muted">
-              MCP servers configured for this workspace's ACP
+              MCP servers configured for this workspace's
               agent${mcpTools?.agent_name ? ` (${mcpTools.agent_name})` : ""}.
             </p>
             <div class="flex items-center gap-0.5">

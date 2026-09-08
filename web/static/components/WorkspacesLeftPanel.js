@@ -219,8 +219,8 @@ export function WorkspacesLeftPanel({
           !folderCanAddServer
             ? "opacity-40 pointer-events-none"
             : ""}"
-          data-tip="Add ACP server to folder"
-          aria-label="Add ACP server to folder"
+          data-tip="Add agent to folder"
+          aria-label="Add agent to folder"
         >
           <${ServerIcon} className="w-4 h-4" />
         </button>

@@ -62,7 +62,8 @@ export function useWorkspaceMcpActions({
       setNeedsRestart(false);
     } catch (err) {
       setError(
-        "Failed to restart ACP: " + errorMessage(err, "Failed to restart ACP"),
+        "Failed to restart agent: " +
+          errorMessage(err, "Failed to restart agent"),
       );
     } finally {
       setRestarting(false);
@@ -88,10 +89,10 @@ export function useWorkspaceMcpActions({
       const plural = affected === 1 ? "" : "s";
       const verb = affected === 1 ? "is" : "are";
       setConfirmDialog({
-        title: "Restart ACP?",
+        title: "Restart Agent?",
         message:
           `There ${verb} ${affected} conversation${plural} with an agent actively ` +
-          `responding in this workspace. Restarting the ACP server now will ` +
+          `responding in this workspace. Restarting the agent now will ` +
           `interrupt the response${plural} and may lose unsaved work.`,
         confirmLabel: "Restart",
         confirmVariant: "danger",

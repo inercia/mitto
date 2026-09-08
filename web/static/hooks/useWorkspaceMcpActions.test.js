@@ -127,7 +127,9 @@ describe("useWorkspaceMcpActions — handleRestartAcp", () => {
       setError,
     });
     await handleRestartAcp();
-    expect(setError).toHaveBeenCalledWith("Failed to restart ACP: agent busy");
+    expect(setError).toHaveBeenCalledWith(
+      "Failed to restart agent: agent busy",
+    );
   });
 
   test("no-ops without a selected workspace", async () => {
@@ -190,7 +192,7 @@ describe("useWorkspaceMcpActions — handleRestartAcpClick", () => {
     });
     await handleRestartAcpClick();
     expect(setConfirmDialog).toHaveBeenCalledTimes(1);
-    expect(setConfirmDialog.mock.calls[0][0].title).toBe("Restart ACP?");
+    expect(setConfirmDialog.mock.calls[0][0].title).toBe("Restart Agent?");
     expect(
       global.fetch.mock.calls.some((c) =>
         String(c[0]).includes("/restart-acp"),

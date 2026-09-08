@@ -1060,7 +1060,7 @@ export function SessionPanel({
           ${sessionInfo?.acp_server &&
           html`<span
             class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
-            data-tip="ACP Server"
+            data-tip="Agent"
             >${sessionInfo.acp_server}</span
           >`}
           ${sessionInfo?.runner_type &&
