@@ -431,6 +431,38 @@ func TestACPLease_Detach_DeferSessionNeverBound_NoOpsSafely(t *testing.T) {
 	}
 }
 
+// TestACPLease_Bind_AttachesSessionIDEnablingDetach proves the mitto-lrt.18
+// Bind seam: a DeferSession lease starts with sessionID empty (see
+// TestACPLease_Detach_DeferSessionNeverBound_NoOpsSafely, where Detach is a
+// safe no-op on such a lease). Once the caller completes its own deferred
+// handshake and calls Bind with the resulting identity, Ref() reflects it and
+// a subsequent Detach() must actually unregister that real session — proving
+// Bind is not itself a no-op and genuinely changes Detach's target.
+func TestACPLease_Bind_AttachesSessionIDEnablingDetach(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+		Intent:       IntentNew,
+		DeferSession: true,
+	})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	ref := agentbackend.SessionRef{ConversationID: "conv-1", ProviderSession: "bound-sess-1"}
+	lease.Bind(ref)
+
+	if got := lease.Ref(); got != ref {
+		t.Errorf("Ref() after Bind = %+v, want %+v", got, ref)
+	}
+
+	lease.Detach()
+
+	if len(proc.unregistered) != 1 || proc.unregistered[0] != acp.SessionId("bound-sess-1") {
+		t.Fatalf("unregistered = %v, want exactly [bound-sess-1] (Bind must attach the real session ID so Detach targets it, not no-op)", proc.unregistered)
+	}
+}
+
 // TestACPLease_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt
 // proves the mitto-lrt.7 acceptance criterion "uncertain-delivery cases
 // surface actionable states instead of duplicating work": a caller whose
