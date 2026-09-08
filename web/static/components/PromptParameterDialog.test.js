@@ -550,7 +550,7 @@ function renderAcpServerControl({ loadingWorkspaces, acpServers }) {
     return { kind: "spinner" };
   }
   if (!acpServers || acpServers.length === 0) {
-    return { kind: "textInput", placeholder: "Agent (ACP server) name" };
+    return { kind: "textInput", placeholder: "Agent name" };
   }
   const options = acpServers.map((s) => ({ value: s.name, label: s.name }));
   return { kind: "select", options };
@@ -589,7 +589,7 @@ describe("acpServer render branch", () => {
         acpServers: [],
       });
       expect(result.kind).toBe("textInput");
-      expect(result.placeholder).toBe("Agent (ACP server) name");
+      expect(result.placeholder).toBe("Agent name");
     });
 
     test("renders text input when acpServers is null", () => {
