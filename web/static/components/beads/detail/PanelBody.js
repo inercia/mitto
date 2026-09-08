@@ -484,7 +484,7 @@ export function BeadsDetailPanelBody({
                             type="button"
                             onClick=${() => {
                               if (labels.labelsBusy) return;
-                              labels.mutateLabel("remove", l);
+                              labels.removeLabelLocal(l);
                             }}
                             aria-disabled=${labels.labelsBusy ? "true" : "false"}
                             class="inline-flex items-center opacity-60 hover:opacity-100 hover:text-red-400 cursor-pointer tooltip tooltip-bottom ${labels.labelsBusy
@@ -606,8 +606,8 @@ export function BeadsDetailPanelBody({
                     deps=${deps.deps}
                     depsLoading=${deps.depsLoading}
                     depsBusy=${deps.depsBusy}
-                    changeDepType=${deps.changeDepType}
-                    mutateDep=${deps.mutateDep}
+                    changeDepTypeLocal=${deps.changeDepTypeLocal}
+                    removeDepLocal=${deps.removeDepLocal}
                     onSelectIssue=${onSelectIssue}
                     newDepType=${deps.newDepType}
                     setNewDepType=${deps.setNewDepType}

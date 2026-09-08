@@ -6,33 +6,44 @@
 // Tangles handled at the boundary:
 //   * fetchDeps (deps cluster in the composer) writes to labels state on
 //     issue refresh — the composer reads labels.setLabels from the returned
-//     bag to keep that call site working.
+//     bag to keep that call site working. setLabels resets BOTH the working
+//     set and the persisted baseline so a refresh is never seen as dirty.
 //   * Effect 1124 (issue-switch reset) resets labels state — same setter
 //     access pattern; the effect stays inline in the composer.
-//   * mutateLabel needs to invoke fetchDeps (composer) after add/remove — it
-//     is passed via `fetchDepsRef` (a ref the composer sets after fetchDeps
-//     is defined). This preserves hook-order in the composer without a
-//     forward-reference problem.
+//   * Label edits are staged in-memory (addLabelLocal / removeLabelLocal) and
+//     only written to bd when the panel's Save button runs the composer's
+//     combined save, which calls persistLabels() to diff the working set
+//     against the baseline and issue the necessary add/remove calls.
 
 const { useState, useEffect, useCallback, useRef } = window.preact;
 
 import { getSdkClient } from "../../../utils/sdkClient.js";
 import { errorMessage } from "../../../utils/sdkErrors.js";
 
+// Order-insensitive equality for two label arrays. Used to derive labelsDirty
+// (working set vs the persisted baseline).
+function labelSetsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const setB = new Set(b);
+  for (const x of a) if (!setB.has(x)) return false;
+  return true;
+}
+
 export function useIssueLabels({
   data,
   workingDir,
   showToast,
-  fetchDepsRef,
-  onUpdated,
   isOpen,
   creating,
 }) {
-  // Labels shown in view mode. `labels` mirrors the issue's current labels
-  // (refreshed via fetchDeps); `labelsBusy` gates add/remove requests;
-  // `newLabel` backs the add-label input; `allLabels` holds the workspace-wide
-  // label suggestions rendered in the add-label datalist.
-  const [labels, setLabels] = useState([]);
+  // Labels shown in view mode. `labels` holds the in-memory working set the
+  // user edits; `labelsBaseline` mirrors what is persisted in bd, so the diff
+  // between the two drives `labelsDirty` and the persistLabels reconciler.
+  // `labelsBusy` gates the Save-time persist; `newLabel` backs the add-label
+  // input; `allLabels` holds the workspace-wide label suggestions rendered in
+  // the add-label datalist.
+  const [labels, setLabelsRaw] = useState([]);
+  const [labelsBaseline, setLabelsBaseline] = useState([]);
   const [labelsBusy, setLabelsBusy] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [allLabels, setAllLabels] = useState([]);
@@ -40,6 +51,29 @@ export function useIssueLabels({
   // button); `labelInputRef` lets us focus it as soon as it opens.
   const [addingLabel, setAddingLabel] = useState(false);
   const labelInputRef = useRef(null);
+
+  // Authoritative setter used by the composer's fetchDeps refresh and the
+  // issue-switch reset effect: sets BOTH the working set and the baseline so a
+  // server refresh (or a reset) starts clean (labelsDirty === false).
+  const setLabels = useCallback((next) => {
+    setLabelsRaw(next);
+    setLabelsBaseline(next);
+  }, []);
+
+  // Stage a label add/remove in memory only. Persisted later by persistLabels
+  // when the panel's Save button runs.
+  const addLabelLocal = useCallback((label) => {
+    const value = (label || "").trim();
+    if (!value) return;
+    setLabelsRaw((prev) => (prev.includes(value) ? prev : [...prev, value]));
+  }, []);
+  const removeLabelLocal = useCallback((label) => {
+    setLabelsRaw((prev) => prev.filter((l) => l !== label));
+  }, []);
+
+  // Dirty when the working set differs from the persisted baseline (never in
+  // create mode, where labels are handled separately).
+  const labelsDirty = !creating && !labelSetsEqual(labels, labelsBaseline);
 
   // Fetch the workspace's unique labels to suggest when adding a label. bd
   // returns [{label,count}, ...]; we keep only the names. Refreshed when the
@@ -66,60 +100,63 @@ export function useIssueLabels({
     if (isOpen && !creating) fetchAllLabels();
   }, [isOpen, creating, fetchAllLabels]);
 
-  // Add or remove a label on the current issue, then refresh the issue (so the
-  // labels list stays current) and notify the parent list. Mirrors mutateDep.
-  const mutateLabel = useCallback(
-    async (action, label) => {
-      const value = (label || "").trim();
-      if (!data || !data.id || !value) return false;
-      setLabelsBusy(true);
-      try {
+  // Reconcile the in-memory working set against the persisted baseline by
+  // issuing the necessary bd add/remove calls, then advance the baseline so the
+  // panel is no longer dirty. Called by the composer's combined Save handler.
+  // Toasts on failure and returns a boolean so the caller can bail before
+  // saving the other (view-mode) fields. No-op (returns true) when nothing
+  // changed.
+  const persistLabels = useCallback(async () => {
+    if (!data || !data.id) return true;
+    const baseSet = new Set(labelsBaseline);
+    const workSet = new Set(labels);
+    const toAdd = labels.filter((l) => !baseSet.has(l));
+    const toRemove = labelsBaseline.filter((l) => !workSet.has(l));
+    if (toAdd.length === 0 && toRemove.length === 0) return true;
+    setLabelsBusy(true);
+    try {
+      for (const label of toRemove) {
         await getSdkClient().issues.labels(
           data.id,
           { working_dir: workingDir },
-          { label: value, action },
+          { label, action: "remove" },
         );
-        showToast &&
-          showToast({
-            style: "success",
-            title:
-              action === "add"
-                ? `Added label "${value}"`
-                : `Removed label "${value}"`,
-          });
-        if (fetchDepsRef && fetchDepsRef.current) {
-          await fetchDepsRef.current(false);
-        }
-        if (action === "add") fetchAllLabels();
-        onUpdated && onUpdated();
-        return true;
-      } catch (err) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: errorMessage(err, `Failed to ${action} label`),
-          });
-        return false;
-      } finally {
-        setLabelsBusy(false);
       }
-    },
-    [
-      data && data.id,
-      workingDir,
-      showToast,
-      fetchDepsRef,
-      fetchAllLabels,
-      onUpdated,
-    ],
-  );
+      for (const label of toAdd) {
+        await getSdkClient().issues.labels(
+          data.id,
+          { working_dir: workingDir },
+          { label, action: "add" },
+        );
+      }
+      setLabelsBaseline(labels);
+      if (toAdd.length > 0) fetchAllLabels();
+      return true;
+    } catch (err) {
+      showToast &&
+        showToast({
+          style: "error",
+          title: errorMessage(err, "Failed to save labels"),
+        });
+      return false;
+    } finally {
+      setLabelsBusy(false);
+    }
+  }, [
+    data && data.id,
+    workingDir,
+    labels,
+    labelsBaseline,
+    showToast,
+    fetchAllLabels,
+  ]);
 
-  const handleAddLabel = useCallback(async () => {
+  const handleAddLabel = useCallback(() => {
     const value = newLabel.trim();
     if (!value || labelsBusy) return;
-    const ok = await mutateLabel("add", value);
-    if (ok) setNewLabel("");
-  }, [newLabel, labelsBusy, mutateLabel]);
+    addLabelLocal(value);
+    setNewLabel("");
+  }, [newLabel, labelsBusy, addLabelLocal]);
 
   // Focus the add-label input as soon as the "+" reveals it.
   useEffect(() => {
@@ -130,13 +167,16 @@ export function useIssueLabels({
     labels,
     setLabels,
     labelsBusy,
+    labelsDirty,
     newLabel,
     setNewLabel,
     allLabels,
     addingLabel,
     setAddingLabel,
     labelInputRef,
-    mutateLabel,
+    addLabelLocal,
+    removeLabelLocal,
+    persistLabels,
     handleAddLabel,
   };
 }
