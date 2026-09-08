@@ -217,6 +217,20 @@ neutral `Event`s now has a projection engine to route through
 (mitto-lrt.8, below), but live-wiring either seam into the production data
 path remains deferred to mitto-lrt.12+.
 
+**Update (mitto-lrt.16):** the _acquisition_ half of the ownership seam is now
+wired into production. `SessionManager.getSharedProcess` — the single chokepoint
+every production acquisition path funnels through (create/load/resume,
+foreground wake, startup stagger, concurrent-recycle retry) — routes through
+`BackendProvider.AcquireSession` with `DeferSession: true` (preserving the
+mitto-220 deferred-`session/new` pattern), and `internal/web/server.go` injects
+the ACP provider against the same underlying `ProcessManager`. A non-nil
+`BackendProvider` is therefore the normal production state; the `nil`-provider
+byte-identical fallback survives only for tests. The remaining lease
+_operations_ — storing the `BackendLease` on `BackgroundSession`, routing
+teardown through `Detach()`, `Reconnect` single-flight wiring, and
+`ClassifyAcquireError`-driven lifecycle decisions — are the deferred remainder,
+tracked by **mitto-lrt.18**.
+
 **Event projection & durable replay realized (mitto-lrt.8):** a new,
 additive, protocol-neutral leaf package `internal/eventprojection` consumes
 `agentbackend.Event` and emits sequence-numbered `ProjectedEvent`s to a
@@ -485,19 +499,21 @@ startup replay, mid-stream cancel/`after_seq`, failed tool-call status) remain
 the executable proof of "ACP is unchanged" and are re-run as part of this
 ticket's verification pass (see below).
 
-**Additive, tested, not production-wired.** `internal/agentbackend` (neutral
-contracts + `FakeHost`, mitto-lrt.4), `internal/backendcompat` (legacy↔neutral
-bridge, mitto-lrt.5), `internal/acpbackend` (ACP-to-neutral adapter,
-mitto-lrt.6), `internal/conversation/backend_provider.go`
-(`BackendProvider`/`BackendLease` ownership seam, mitto-lrt.7),
-`internal/eventprojection` (+ `eventprojectionsession`, durable replay/dedup,
-mitto-lrt.8), `internal/agents/availability.go` (four-state
-`AvailabilityState`, mitto-lrt.9), the client-services/permissions/MCP-binding
-contracts (§10, mitto-lrt.11), and the neutral REST/WS `backend` block + SDK
-mirrors (§11, mitto-lrt.12) are all real, merged, unit-tested code — but a
-`nil BackendProvider` remains the common production state and every caller
-still falls back to the pre-existing `ProcessManager`/`SharedProcess` path
-unconditionally.
+**Additive, tested, mostly not-yet-production-wired.** `internal/agentbackend`
+(neutral contracts + `FakeHost`, mitto-lrt.4), `internal/backendcompat`
+(legacy↔neutral bridge, mitto-lrt.5), `internal/acpbackend` (ACP-to-neutral
+adapter, mitto-lrt.6), `internal/eventprojection` (+ `eventprojectionsession`,
+durable replay/dedup, mitto-lrt.8), `internal/agents/availability.go`
+(four-state `AvailabilityState`, mitto-lrt.9), the
+client-services/permissions/MCP-binding contracts (§10, mitto-lrt.11), and the
+neutral REST/WS `backend` block + SDK mirrors (§11, mitto-lrt.12) are all real,
+merged, unit-tested code that remains inert in production. The one exception is
+the `BackendProvider`/`BackendLease` ownership seam
+(`internal/conversation/backend_provider.go`, mitto-lrt.7): mitto-lrt.16 wired
+its _acquisition_ path into production, so a non-nil `BackendProvider` is now
+the normal state and the `nil`-provider byte-identical fallback survives only
+for tests. The seam's remaining lease _operations_
+(detach/reconnect/lifecycle-state) are still deferred (mitto-lrt.18).
 
 **Bounded AHP experiment.** `docs/devel/ahp-feasibility.md` (mitto-lrt.3)
 records a **research-only, blocked-on-runtime-validation** finding: AHP v0.9.0
@@ -566,10 +582,16 @@ All shims and gaps identified during .4–.14 that were still open at epic
 completion are tracked as already-open follow-up beads, not new work items
 created by this ticket:
 
-- **`mitto-lrt.16`** — wire the production `SessionManager`/`BackgroundSession`
-  acquisition call sites through the mitto-lrt.7 `BackendProvider`/
-  `BackendLease` seam (today `nil` in production; ACP acquisition still goes
-  directly through `ProcessManager.GetOrCreateProcess`).
+- **`mitto-lrt.16`** — _acquisition wiring landed._ Every production
+  `SessionManager`/`BackgroundSession` acquisition call site now routes through
+  the mitto-lrt.7 `BackendProvider`/`BackendLease` seam via `getSharedProcess`;
+  the ACP provider is injected in `internal/web/server.go`. The deferred
+  remainder (lease storage on `BackgroundSession`, `Detach` teardown routing,
+  `Reconnect` single-flight wiring, `ClassifyAcquireError` lifecycle decisions,
+  archive/cascade/suspension lease routing) is tracked by **`mitto-lrt.18`**.
+- **`mitto-lrt.18`** — wire the deferred `BackendLease` operations
+  (teardown/reconnect/lifecycle-state) into production, completing the
+  remainder of mitto-lrt.16.
 - **`mitto-lrt.17`** — CLI chat selection funnel + `mitto_conversation_list`
   agent-filter alias (deferred remainder of mitto-lrt.13's `--agent`/`--acp`
   alias work).
