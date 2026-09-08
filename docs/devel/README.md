@@ -52,7 +52,7 @@ This directory contains technical documentation for developers working on Mitto.
 
 ### Analysis
 
-- **[Agent/Backend Architecture](agent-backend-architecture.md)** — Design decision record proposing `AgentDefinition`/`BackendConnection`/`AgentRef` identities, ownership boundaries between locally-launched and remotely-attached backends, and a migration matrix, in preparation for a second upstream protocol alongside ACP
+- **[Agent/Backend Architecture](agent-backend-architecture.md)** — Design decision record for `AgentDefinition`/`BackendConnection`/`AgentRef` identities and ownership boundaries between locally-launched and remotely-attached backends, in preparation for a second upstream protocol alongside ACP. The neutral contracts, ACP adapter, and event-projection engine are implemented and tested but additive-only (production ACP is unchanged); see §12 for the realized-state summary, support matrix, and remaining follow-up work (mitto-lrt.16, mitto-lrt.17)
 
 - **[AHP Feasibility](ahp-feasibility.md)** — Bounded evidence-matrix investigation of Mitto as a Go client of an external Agent Host Protocol (AHP) host (Claude as first candidate); confirms a published Go AHP SDK exists (correcting prior research) and records a blocked-on-runtime-validation decision pending host/auth availability and dependency authorization
 

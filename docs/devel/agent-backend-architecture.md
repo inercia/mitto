@@ -1,13 +1,19 @@
 # Agent/Backend Identities and Ownership Boundaries — Design Decision Record
 
-Status: proposed (mitto-lrt.1). Scope: **naming and boundaries only** — this
-record does not mandate a giant `Agent` interface, a global ACP→Agent rename,
-or any code change. It exists to validate identities and ownership rules
-_before_ Mitto adds a second upstream protocol (a prospective Agent Host
-Protocol / AHP **client**, not an AHP server) alongside ACP. Concrete
-contracts and the actual adapter implementation are tracked as follow-up
-issues under the `mitto-lrt` epic once the open questions below are
-resolved.
+Status: **staged rollout, ACP unchanged** (mitto-lrt.1–.15). The neutral
+contracts, ACP adapter, and event-projection engine described below are
+**implemented and tested** (each proven by unit tests and a non-process fake),
+but are **additive and not yet wired into the production
+`SessionManager`/`BackgroundSession` acquisition path** — every existing ACP
+code path is byte-identical to before this epic. See
+[§12 Realized State Summary, Support Matrix & Remaining Work](#12-realized-state-summary-support-matrix--remaining-work)
+for the authoritative current-vs-remaining breakdown. Scope remains
+**naming, boundaries, and additive contracts only** — this record does not
+mandate a giant `Agent` interface, a global ACP→Agent rename, or any
+behavior change to shipped ACP. It exists to validate identities and
+ownership rules for a second upstream protocol (a prospective Agent Host
+Protocol / AHP **client**, not an AHP server) alongside ACP; adopting AHP in
+production is a separate, unmade decision (§8, §12).
 
 ## Context
 
@@ -159,7 +165,7 @@ neutral contracts (`Connection`, `ProviderDiscovery`, `SessionOps`,
 imports `internal/agentbackend` + `acp-go-sdk` + `internal/conversation` (the
 last for the `SharedProcess` handle it wraps) — it is the protocol-specific home
 for the SDK, so the `internal/agentbackend` import guard above stays intact; it
-is **not** imported *by* `internal/conversation` in this increment.
+is **not** imported _by_ `internal/conversation` in this increment.
 Translators are pure functions with unit coverage: content blocks,
 stop-reason/outcome, three-state capabilities, model/mode/config state, and
 error mapping to the neutral sentinels. Inbound ACP notifications translate to
@@ -181,7 +187,7 @@ protocol-neutral acquisition + ownership seam, `BackendProvider` /
 `BackendLease` (`internal/conversation/backend_provider.go`), mirroring the
 existing `ProcessManager` dependency-inversion pattern (`SetACPProcessManager`).
 `BackendProvider.AcquireSession` acquires a lease for a `New`/`Load`/`Resume`
-intent; `BackendLease` models *ownership* of one acquired session —
+intent; `BackendLease` models _ownership_ of one acquired session —
 `Ref`/`State`/`Capabilities`/`Detach`/`Reconnect`/`Terminate` — with ACP-only
 `LocalProcess()`/`SessionHandle()` escape hatches so the existing
 prompt/streaming data path keeps flowing through `SharedProcess`/`SessionHandle`
@@ -217,6 +223,7 @@ additive, protocol-neutral leaf package `internal/eventprojection` consumes
 caller-supplied `ProjectionSink`. Design mirrors the .4/.6/.7/.9 formula
 (pure package + fake + import guard; **not** wired into
 `BackgroundSession`/`SessionManager` this increment). Key pieces:
+
 - **`Projector`** (`projection.go`): coalesces consecutive same-kind/
   same-origin `EventAgentMessage`/`EventAgentThought` chunks to a logical
   boundary (content-agnostic — no markdown/HTML awareness, unlike
@@ -235,8 +242,8 @@ caller-supplied `ProjectionSink`. Design mirrors the .4/.6/.7/.9 formula
   crash-consistency ordering is `sink.Emit()` (the durable event write)
   **then** `CheckpointStore.Save()` — proven against `agentbackend.FakeHost`'s
   existing `ResumeSession` sequence-gap signal.
-  **Explicit non-guarantee:** this gives at-most-once *projection* into a
-  sink, never exactly-once *side-effect execution* by whatever consumes the
+  **Explicit non-guarantee:** this gives at-most-once _projection_ into a
+  sink, never exactly-once _side-effect execution_ by whatever consumes the
   sink's output (see package doc).
 - **Prompt correlation** (`correlation.go`): `PromptCorrelation` links an
   optimistic local prompt ID to the upstream identity that later echoes it;
@@ -458,3 +465,129 @@ these. Any eventual deprecation of a legacy field would follow the additive
 migration matrix (new field ships and bakes first; the legacy field is retired
 only in a later, separately-tracked step), never as a silent breaking change
 inside an additive increment like this one.
+
+## 12. Realized state summary, support matrix & remaining work (mitto-lrt.15)
+
+This section reconciles §1–§11 above (written incrementally as each slice
+landed) into one authoritative picture of what is **shipped**, what is
+**additive-but-inert**, what is a **bounded experiment**, and what is
+explicitly **not** in scope.
+
+**Shipped, unchanged.** ACP (`internal/acp`, `internal/acpproc`,
+`internal/conversation`) behaves exactly as before this epic. No production
+call site was modified to route through `internal/agentbackend`,
+`internal/acpbackend`, `internal/eventprojection`, or a `BackendProvider`
+lease — every one of those is proven only via unit tests and the
+`agentbackend.FakeHost` non-process fake, never against a live ACP process in
+production. The `docs/devel/acp-behavior-baseline.md` regression baseline
+(mitto-lrt.2) plus its 5 targeted integration tests (lifecycle re-archive,
+startup replay, mid-stream cancel/`after_seq`, failed tool-call status) remain
+the executable proof of "ACP is unchanged" and are re-run as part of this
+ticket's verification pass (see below).
+
+**Additive, tested, not production-wired.** `internal/agentbackend` (neutral
+contracts + `FakeHost`, mitto-lrt.4), `internal/backendcompat` (legacy↔neutral
+bridge, mitto-lrt.5), `internal/acpbackend` (ACP-to-neutral adapter,
+mitto-lrt.6), `internal/conversation/backend_provider.go`
+(`BackendProvider`/`BackendLease` ownership seam, mitto-lrt.7),
+`internal/eventprojection` (+ `eventprojectionsession`, durable replay/dedup,
+mitto-lrt.8), `internal/agents/availability.go` (four-state
+`AvailabilityState`, mitto-lrt.9), the client-services/permissions/MCP-binding
+contracts (§10, mitto-lrt.11), and the neutral REST/WS `backend` block + SDK
+mirrors (§11, mitto-lrt.12) are all real, merged, unit-tested code — but a
+`nil BackendProvider` remains the common production state and every caller
+still falls back to the pre-existing `ProcessManager`/`SharedProcess` path
+unconditionally.
+
+**Bounded AHP experiment.** `docs/devel/ahp-feasibility.md` (mitto-lrt.3)
+records a **research-only, blocked-on-runtime-validation** finding: AHP v0.9.0
+has a published Go client and its own capability/session model, but no
+reachable host and no dependency authorization exist yet. No AHP dependency is
+vendored and no AHP code exists in this repository. Adopting AHP in production
+is a distinct, future, separately-approved decision (§8, §9) — this epic does
+not make it, and remote AHP crash-resilience is explicitly **not** guaranteed
+by this design (a remote host's own agent process can still crash; only local
+ACP subprocess lifecycle is Mitto-owned, per §2).
+
+**Future production adapter (not started).** Wiring any second protocol
+adapter into `BackgroundSession`/`SessionManager` production call sites,
+adding a backend-picker UI, or replacing the native frontend protocol are all
+out of scope for the entire `mitto-lrt` epic, not just this ticket.
+
+### Support matrix
+
+| Dimension               | ACP (shipped)                                    | Neutral contracts + fake (additive)                   | AHP (experiment)                                     |
+| ----------------------- | ------------------------------------------------ | ----------------------------------------------------- | ---------------------------------------------------- |
+| Production traffic      | 100% — sole production path                      | 0% — unit/fake-tested only                            | 0% — no runtime access                               |
+| Tested version(s)       | `github.com/coder/acp-go-sdk` pinned in `go.mod` | N/A (in-memory `FakeHost`, no external server)        | spec `v0.9.0` (2026-08-28), Go client inspected      |
+| Host/auth requirements  | local subprocess, agent-specific auth            | none (in-process fake)                                | host + `auth/required` handshake — unavailable today |
+| Remote privacy/security | N/A (local process)                              | N/A                                                   | unresolved — no reachable host to evaluate against   |
+| Reliability evidence    | full regression baseline (mitto-lrt.2)           | unit tests + fake integration only                    | none — blocked on runtime validation                 |
+| Capability discovery    | ACP `initialize` handshake                       | three-state (`unknown`/`supported`/`unsupported`), §5 | AHP `initialize` handshake (spec-level only)         |
+
+### Behavioral guarantees (documented, enforced in code)
+
+- **Legacy alias precedence.** `backendcompat.ResolveProviderAlias` resolves a
+  possibly-stale ACP server name against live config: **exact match first**,
+  then **case-insensitive match**; a name not found at all is returned
+  **unchanged** (never erroring — the provider may simply have been deleted).
+  An **ambiguous** canonical set (two configured server names folding to the
+  same lowercase form) is **rejected** via `agentbackend.ErrAmbiguousAlias`
+  rather than silently picking one, unlike the historical
+  `migration_001_normalize_acp.go` behavior it otherwise mirrors.
+  `ReconcileProviderID` applies the same fail-closed rule when a legacy name
+  and a neutral `ProviderID` disagree: `agentbackend.ErrConflictingIdentity`,
+  never a silent pick.
+- **Configuration backup and rollback limits.** `config.SaveSettings` writes a
+  single-generation `settings.json.bak` snapshot (overwritten on every save)
+  before an atomic write — this is a **one-step** rollback safety net, not a
+  version history; there is no proposed schema migration or bulk rewrite of
+  existing `events.jsonl` session data (§7). Rolling back a workspace/server
+  config change further than the last save requires external version control
+  (this repo's own git history), not a Mitto-native mechanism.
+- **Unsupported-adapter fail-closed.** Every optional capability
+  (`ClientServices`, `TerminalServices`, `MCPBinder`, `ResourceOwner`, etc.)
+  returns `agentbackend.ErrUnsupported` / `*agentbackend.UnsupportedError`
+  rather than faking success or silently degrading; `RejectIfHostOwned` and
+  the tri-state `PermissionUnknown == denied` rule (§10) both fail closed by
+  construction — an indeterminate or host-owned state never grants access.
+- **No automatic migration of existing ACP sessions.** Per §7's migration
+  matrix, an archived conversation is never silently migrated to a different
+  backend/protocol on unarchive — explicit user action would be required, and
+  no such UI/flow exists (or is planned) in this epic.
+- **No native frontend protocol replacement.** The Web/CLI/SDK frontends keep
+  talking to Mitto's own REST/WebSocket contract unchanged; §11's `backend`
+  block is strictly additive (never synthesized when unavailable, §11) and no
+  frontend surface requires a second protocol to function.
+
+### Remaining shims and follow-up owners
+
+All shims and gaps identified during .4–.14 that were still open at epic
+completion are tracked as already-open follow-up beads, not new work items
+created by this ticket:
+
+- **`mitto-lrt.16`** — wire the production `SessionManager`/`BackgroundSession`
+  acquisition call sites through the mitto-lrt.7 `BackendProvider`/
+  `BackendLease` seam (today `nil` in production; ACP acquisition still goes
+  directly through `ProcessManager.GetOrCreateProcess`).
+- **`mitto-lrt.17`** — CLI chat selection funnel + `mitto_conversation_list`
+  agent-filter alias (deferred remainder of mitto-lrt.13's `--agent`/`--acp`
+  alias work).
+
+No other shims from the epic remain open: the `acpbackend` "bare marker"
+tool-call/plan payload shim was closed by mitto-lrt.8 (full
+`ToolCallPayload`/`PlanPayload` translation), and the dropped
+Audio/embedded-Resource content blocks plus deferred non-message
+`SessionUpdate` kinds remain a documented, intentional non-goal (no
+`EventKind` slot allocated) rather than an open shim requiring a tracked
+owner.
+
+### Verification evidence (this ticket)
+
+Full local gate (`make fmt`, format check, lint, Go unit, JS/bun unit,
+`make build-mock-acp`, integration, targeted `-race`, and the ACP-vs-fake
+contract parity suites already delivered by .4/.6/.7/.8) was re-run as part of
+closing this ticket; results and the mitto-lrt.2 baseline comparison are
+recorded on the bead's tracker comments (`bd show mitto-lrt.15
+--include-comments`) rather than duplicated here, to avoid this document
+drifting out of sync with the next gate run.
