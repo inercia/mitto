@@ -633,6 +633,24 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 			"Please start a new conversation. You can ask the agent to summarize the key points first if needed."
 	}
 
+	// Upstream provider unavailable — either a network-level connect-timeout
+	// brownout (UND_ERR_CONNECT_TIMEOUT to xlb.api.augmentcode.com, mitto-gbf5)
+	// or an application-level HTTP 5xx whose data.apiStatus is "unavailable"
+	// (mitto-bfu). Checked before the generic "aborted due to timeout" branch
+	// below (mitto-ofe): during the morning cold-start spike, a provider
+	// outage's message sometimes also contains "aborted due to timeout", and
+	// that branch used to fire first — misreporting a transient, self-healing
+	// upstream outage as a generic tool-call timeout ("break your request
+	// into smaller steps"). Checking the structured apiStatus marker first
+	// keeps this transient provider outage named for the user — distinct from
+	// an opaque agent "internal error", a tool timeout, a "request was
+	// cancelled", or an auth/config problem — and framed as self-healing.
+	if IsUpstreamUnavailableError(err) {
+		return "The AI agent's upstream API is temporarily unavailable (provider " +
+			"outage). This is transient and Mitto will retry automatically — " +
+			"please try again in a moment."
+	}
+
 	// Timeout errors from ACP server (tool execution took too long)
 	if strings.Contains(errMsg, "aborted due to timeout") {
 		return "A tool operation timed out. The AI agent's tool call took too long to complete. " +
@@ -654,19 +672,6 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 	// misleading "request was cancelled" message.
 	if isAgentBusyError(err) {
 		return "The agent is busy — please try again in a moment."
-	}
-
-	// Upstream provider unavailable — either a network-level connect-timeout
-	// brownout (UND_ERR_CONNECT_TIMEOUT to xlb.api.augmentcode.com, mitto-gbf5)
-	// or an application-level HTTP 5xx whose data.apiStatus is "unavailable"
-	// (mitto-bfu). Checked before the generic context-cancelled and -32603
-	// branches so this transient provider outage is named for the user —
-	// distinct from an opaque agent "internal error", a "request was
-	// cancelled", or an auth/config problem — and framed as self-healing.
-	if IsUpstreamUnavailableError(err) {
-		return "The AI agent's upstream API is temporarily unavailable (provider " +
-			"outage). This is transient and Mitto will retry automatically — " +
-			"please try again in a moment."
 	}
 
 	// Context cancelled (user cancelled or session closed)
