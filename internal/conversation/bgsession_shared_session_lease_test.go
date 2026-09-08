@@ -24,11 +24,17 @@ import (
 )
 
 // recordingBackendLease is a spyBackendLease variant that records every Bind
-// call's argument, used to assert the exact SessionRef passed.
+// call's argument, used to assert the exact SessionRef passed. refToReturn
+// lets a test simulate a deferred lease that already carries a Provider
+// identity from AcquireSession, so Bind's preservation of that field can be
+// asserted.
 type recordingBackendLease struct {
 	spyBackendLease
-	bindCalls []agentbackend.SessionRef
+	refToReturn agentbackend.SessionRef
+	bindCalls   []agentbackend.SessionRef
 }
+
+func (l *recordingBackendLease) Ref() agentbackend.SessionRef { return l.refToReturn }
 
 func (l *recordingBackendLease) Bind(ref agentbackend.SessionRef) {
 	l.bindCalls = append(l.bindCalls, ref)
@@ -58,6 +64,37 @@ func TestBackgroundSession_CompleteDeferredHandshake_BindsLeaseToResolvedACPID(t
 	want := agentbackend.SessionRef{ConversationID: "conv-1", ProviderSession: "acp-sess-1"}
 	if got := lease.bindCalls[0]; got != want {
 		t.Errorf("Bind() arg = %+v, want %+v", got, want)
+	}
+}
+
+// TestBackgroundSession_CompleteDeferredHandshake_PreservesExistingProvider
+// proves the fix for the review comment on completeDeferredHandshake: a
+// deferred lease's Ref() already carries Provider (set at AcquireSession
+// time), and Bind must preserve it rather than overwriting it with a blank
+// SessionRef that loses backend/provider identity.
+func TestBackgroundSession_CompleteDeferredHandshake_PreservesExistingProvider(t *testing.T) {
+	lease := &recordingBackendLease{
+		refToReturn: agentbackend.SessionRef{
+			ConversationID: "stale-conv-id",
+			Provider:       "acp",
+		},
+	}
+	bs := &BackgroundSession{
+		persistedID: "conv-1",
+		acpID:       "acp-sess-1",
+		lease:       lease,
+	}
+
+	if err := bs.completeDeferredHandshake(); err != nil {
+		t.Fatalf("completeDeferredHandshake: %v", err)
+	}
+
+	if len(lease.bindCalls) != 1 {
+		t.Fatalf("Bind() calls = %d, want 1", len(lease.bindCalls))
+	}
+	want := agentbackend.SessionRef{ConversationID: "conv-1", Provider: "acp", ProviderSession: "acp-sess-1"}
+	if got := lease.bindCalls[0]; got != want {
+		t.Errorf("Bind() arg = %+v, want %+v (Provider must be preserved)", got, want)
 	}
 }
 

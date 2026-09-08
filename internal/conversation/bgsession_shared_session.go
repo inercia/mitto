@@ -72,11 +72,19 @@ func (bs *BackgroundSession) completeDeferredHandshake() error {
 	// no-op re-bind when completeDeferredHandshake itself was a no-op because
 	// the handshake had already completed on an earlier call (prewarm or a
 	// prior prompt).
+	//
+	// Bind's SessionRef is derived from the lease's existing Ref() rather
+	// than built from scratch: for a deferred lease, AcquireSession already
+	// populated Provider (it carries the backend/provider identity assigned
+	// at acquire time), and only ConversationID/ProviderSession legitimately
+	// change here. Starting from a blank SessionRef would silently wipe
+	// Provider, breaking any later routing/diagnostics that key off
+	// lease.Ref().Provider.
 	if bs.lease != nil && bs.acpID != "" {
-		bs.lease.Bind(agentbackend.SessionRef{
-			ConversationID:  bs.persistedID,
-			ProviderSession: agentbackend.ProviderSessionID(bs.acpID),
-		})
+		ref := bs.lease.Ref()
+		ref.ConversationID = bs.persistedID
+		ref.ProviderSession = agentbackend.ProviderSessionID(bs.acpID)
+		bs.lease.Bind(ref)
 	}
 	return nil
 }
