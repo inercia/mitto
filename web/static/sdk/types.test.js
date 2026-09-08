@@ -72,6 +72,16 @@ describe("SDK type declarations (mitto-7gta.20)", () => {
     expect(dts).toMatch(/RequestOptions/);
   });
 
+  test("core/transport.d.ts's RequestOptions exposes suppressUnauthorizedRedirect (mitto-4mz / mitto-2f6)", () => {
+    // Regression guard for mitto-2f6: the committed .d.ts previously lagged
+    // this source-level JSDoc addition, and `tsc --noEmit` above only checks
+    // the *source*'s validity — it would stay green even if the committed
+    // types/ went stale again. Asserting on the checked-in declaration
+    // content (not just tsc's exit code) is what actually catches that.
+    const dts = readType("core/transport.d.ts");
+    expect(dts).toMatch(/suppressUnauthorizedRedirect\?:\s*boolean;/);
+  });
+
   test("resource methods document their trailing opts bag as RequestOptions, not a bare object", () => {
     // The bead calls for real "request option" typedefs, so the documented
     // `opts` params must reference core/transport.js's RequestOptions rather
@@ -88,6 +98,22 @@ describe("SDK type declarations (mitto-7gta.20)", () => {
       const dts = readType(rel);
       expect(dts).toMatch(/opts\?:\s*import\(["'][^"']*core\/transport\.js["']\)\.RequestOptions/);
       expect(dts).not.toMatch(/opts\?:\s*object/);
+    }
+  });
+
+  test("misc resource + createClient() expose the full webauthn method surface (mitto-4mz / mitto-2f6)", () => {
+    // Same freshness-regression rationale as the transport test above: the
+    // committed types/ previously lagged the webauthn methods that mitto-4mz
+    // added to the SDK source's JSDoc.
+    const miscDts = readType("resources/misc.d.ts");
+    const indexDts = readType("index.d.ts");
+    for (const dts of [miscDts, indexDts]) {
+      expect(dts).toMatch(/webauthn:\s*\{/);
+      expect(dts).toMatch(/registerBegin:\s*\(opts:\s*any\)\s*=>\s*Promise<any>/);
+      expect(dts).toMatch(/registerFinish:\s*\(credential:\s*object,\s*opts:\s*any\)\s*=>\s*Promise<any>/);
+      expect(dts).toMatch(/delete:\s*\(id:\s*string,\s*opts:\s*any\)\s*=>\s*Promise<any>/);
+      expect(dts).toMatch(/loginBegin:\s*\(opts:\s*any\)\s*=>\s*Promise<any>/);
+      expect(dts).toMatch(/loginFinish:\s*\(assertion:\s*object,\s*opts:\s*any\)\s*=>\s*Promise<any>/);
     }
   });
 });
