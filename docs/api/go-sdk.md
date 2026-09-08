@@ -53,6 +53,30 @@ for ev, err := range sess.Events(ctx) {
 }
 ```
 
+## Config snapshot & patch
+
+`ConfigSnapshot`/`ConfigPatch` read and write the server's `settings.json`
+through the authenticated `GET /api/config/snapshot` and `POST /api/config/patch`
+resources (mitto-4rz.3). Both require an instance-bearer token — construct the
+client with `api.WithBearerToken(token)` (or `api.WithTokenSupplier` for
+rotation) using the current `$MITTO_DIR/instance.json` token; the gate is
+independent of any other configured auth.
+
+```go
+snap, err := c.ConfigSnapshot(ctx) // {Exists, Revision, Config} — secrets redacted
+res, err := c.ConfigPatch(ctx, api.ConfigPatchRequest{
+    Ops:      []api.ConfigPatchOp{{Path: "task_label_colors[0].color", Value: "#ef4444"}},
+    Revision: snap.Revision, // optimistic concurrency; omit to skip the precondition
+})
+// res.Applied[i].Status ∈ {"applied","restart_required","apply_failed","would_apply"}
+```
+
+Set `ConfigPatchRequest.DryRun` to validate and plan without persisting. Error
+mapping follows the taxonomy below: a stale `Revision` is `ErrConflict` (409),
+a rejected/read-only field `ErrForbidden` (403), and an unknown field or invalid
+structure `ErrBadRequest` (400). Non-default API prefixes are supported via
+`api.WithAPIPrefix`.
+
 ## Error model
 
 Non-2xx responses are `*api.APIError`. Branch with `errors.Is` against
