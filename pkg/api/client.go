@@ -249,6 +249,12 @@ type SessionInfo struct {
 	// resolved workspace's friendly display name, so `conversation list
 	// --workspace` can match by name without a separate workspaces request.
 	WorkspaceName string `json:"workspace_name,omitempty"`
+	// Backend mirrors handlers.SessionListResponse.Backend /
+	// handlers.NeutralBackendDescriptor (mitto-lrt.12): an optional,
+	// additive protocol-neutral descriptor. nil when the server payload
+	// omitted it (legacy server, or identity not computable for this
+	// session) — never synthesized client-side.
+	Backend *BackendDescriptor `json:"backend,omitempty"`
 }
 
 // CreateSessionRequest represents a request to create a new session.

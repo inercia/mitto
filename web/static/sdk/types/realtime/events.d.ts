@@ -246,6 +246,140 @@ export type RunMcpInstallCommandPayload = {
     command: string;
 };
 /**
+ * Neutral agent/provider identity (mirrors Go `agentbackend.AgentRef`).
+ */
+export type BackendAgentRef = {
+    /**
+     * - Backend implementation kind (e.g. `"acp"`).
+     */
+    backend: string;
+    /**
+     * - Provider id on that backend.
+     */
+    provider: string;
+};
+/**
+ * Neutral session identity (mirrors Go `agentbackend.SessionRef`). Keeps the
+ * Mitto-owned conversation id and the upstream provider session id distinct.
+ */
+export type BackendSessionRef = {
+    /**
+     * - Mitto-owned conversation identifier.
+     */
+    conversation_id: string;
+    /**
+     * - Provider owning this session.
+     */
+    provider: string;
+    /**
+     * - Upstream-assigned session id.
+     */
+    provider_session?: string;
+};
+/**
+ * One selectable model (mirrors Go `agentbackend.ModelDescriptor`).
+ */
+export type BackendModelOption = {
+    /**
+     * - Model id used to select this model.
+     */
+    id: string;
+    /**
+     * - Human-readable label.
+     */
+    name?: string;
+    /**
+     * - Optional longer description.
+     */
+    description?: string;
+};
+/**
+ * A session's available models and the currently selected one.
+ */
+export type BackendModelState = {
+    /**
+     * - Currently selected model id.
+     */
+    current_id?: string;
+    /**
+     * - Selectable models.
+     */
+    available?: BackendModelOption[];
+};
+/**
+ * One selectable value of a {@link BackendConfigOption}.
+ */
+export type BackendConfigOptionValue = {
+    /**
+     * - Identifier used when setting this option.
+     */
+    value: string;
+    /**
+     * - Human-readable name.
+     */
+    name?: string;
+    /**
+     * - What this value does.
+     */
+    description?: string;
+};
+/**
+ * A neutral mirror of a session-level configuration knob (e.g. model or mode
+ * selection exposed as a generic option).
+ */
+export type BackendConfigOption = {
+    /**
+     * - Option identifier.
+     */
+    id: string;
+    /**
+     * - Semantic category (e.g. `"model"`, `"mode"`).
+     */
+    category?: string;
+    /**
+     * - Currently selected value.
+     */
+    current?: string;
+    /**
+     * - Available values.
+     */
+    values?: BackendConfigOptionValue[];
+};
+/**
+ * Optional, additive protocol-neutral descriptor (mitto-lrt.12) embedded in
+ * `connected`/`acp_started` snapshots and REST session responses. Every
+ * field is present only when the server could actually compute it; absent
+ * on legacy/older servers or when identity/live state isn't available for a
+ * session — never synthesized. Capability values are one of `"unknown"`,
+ * `"supported"`, `"unsupported"`, keyed by feature name (e.g. `"images"`,
+ * `"files"`, `"terminals"`, `"permissions"`, `"model_selection"`,
+ * `"mode_selection"`).
+ */
+export type BackendDescriptor = {
+    /**
+     * - Neutral agent/provider identity.
+     */
+    agent_ref?: BackendAgentRef;
+    /**
+     * - Neutral session identity.
+     */
+    session_ref?: BackendSessionRef;
+    /**
+     * - Feature name -> capability state.
+     */
+    capabilities?: {
+        [x: string]: string;
+    };
+    /**
+     * - Available/current model, if known.
+     */
+    model?: BackendModelState;
+    /**
+     * - Neutral config options mirror.
+     */
+    config_options?: BackendConfigOption[];
+};
+/**
  * Payload of {@link EVENTS.CONNECTED} (`connected`).
  */
 export type ConnectedPayload = {
@@ -277,6 +411,10 @@ export type ConnectedPayload = {
      * - Last prompt seq, for delivery verification.
      */
     last_user_prompt_seq: number;
+    /**
+     * - Optional protocol-neutral backend descriptor.
+     */
+    backend?: BackendDescriptor;
 };
 /**
  * Payload of {@link EVENTS.SESSION_SWITCHED} (`session_switched`).
@@ -1097,6 +1235,10 @@ export type AcpStartedPayload = {
      * - Session whose ACP process started.
      */
     session_id: string;
+    /**
+     * - Optional protocol-neutral backend descriptor.
+     */
+    backend?: BackendDescriptor;
 };
 /**
  * Payload of {@link EVENTS.ACP_STOPPED} (`acp_stopped`).

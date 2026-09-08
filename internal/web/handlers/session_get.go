@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -83,6 +84,23 @@ func (h *Handlers) HandleGetSession(w http.ResponseWriter, r *http.Request, sess
 			return
 		}
 
-		writeJSONOK(w, meta)
+		// Wrap meta with the optional neutral backend descriptor (mitto-lrt.12)
+		// rather than adding the field to session.Metadata itself, since
+		// Metadata is the persisted-on-disk shape and must stay byte-identical.
+		var bs *conversation.BackgroundSession
+		if h.deps.SessionManager != nil {
+			bs = h.deps.SessionManager.GetSession(sessionID)
+		}
+		writeJSONOK(w, sessionGetResponse{
+			Metadata: meta,
+			Backend:  BuildNeutralBackendDescriptor(meta, bs),
+		})
 	}
+}
+
+// sessionGetResponse extends session.Metadata with the optional additive
+// neutral backend descriptor for GET /api/sessions/{id} (mitto-lrt.12).
+type sessionGetResponse struct {
+	session.Metadata
+	Backend *NeutralBackendDescriptor `json:"backend,omitempty"`
 }

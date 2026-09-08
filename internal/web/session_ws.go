@@ -23,6 +23,7 @@ import (
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
 
@@ -532,8 +533,10 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 	}
 
 	// Get session metadata if available
+	var connMeta session.Metadata
 	if c.store != nil {
 		if meta, err := c.store.GetMetadata(c.sessionID); err == nil {
+			connMeta = meta
 			data["name"] = meta.Name
 			data["beads_issue"] = meta.BeadsIssue
 			data["origin_prompt_name"] = meta.OriginPromptName
@@ -641,6 +644,14 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 		data["agent_supports_images"] = bs.AgentSupportsImages()
 		data["workspace_uuid"] = bs.GetWorkspaceUUID()
 		data["acp_ready"] = bs.IsACPReady()
+	}
+
+	// Optional, additive protocol-neutral descriptor (mitto-lrt.12). This
+	// snapshot is authoritative after reconnect (no alias event, no
+	// duplicate toast); absent when identity cannot be computed (e.g. no
+	// store/metadata available).
+	if desc := handlers.BuildNeutralBackendDescriptor(connMeta, bs); desc != nil {
+		data["backend"] = desc
 	}
 
 	// Include processor stats
@@ -2988,6 +2999,20 @@ func (c *SessionWSClient) buildACPStartedPayload() map[string]interface{} {
 			data["processor_last_names"] = procLastNames
 		}
 	}
+
+	// Optional, additive protocol-neutral descriptor (mitto-lrt.12), same
+	// shape as the "connected" snapshot's "backend" block. Snapshots stay
+	// authoritative after reconnect — no alias event, no duplicate toast.
+	var acpStartedMeta session.Metadata
+	if c.store != nil {
+		if meta, err := c.store.GetMetadata(c.sessionID); err == nil {
+			acpStartedMeta = meta
+		}
+	}
+	if desc := handlers.BuildNeutralBackendDescriptor(acpStartedMeta, c.bgSession); desc != nil {
+		data["backend"] = desc
+	}
+
 	return data
 }
 
