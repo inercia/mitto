@@ -1343,6 +1343,32 @@ in MCP-init) is detected — before the process is necessarily stopped.
 
 `state` is one of `process_saturated`, `mcp_init_gated`, `mcp_init_wedged`, or `""`.
 
+#### `agent_auth_required` / `agent_auth_cleared` — Sidebar auth-required health pill (mitto-3du)
+
+Drives a per-workspace sidebar health pill from the same durable auth-expiry
+signal recorded by mitto-6vs (JSON-RPC `-32000 "Authentication required"`).
+`agent_auth_required` fires once per outage streak, from a prompt's auth-error
+branch; `agent_auth_cleared` fires once a later prompt succeeds, but only when
+guidance had actually been surfaced for that workspace — an ordinary
+successful prompt in a workspace that was never degraded never fires a clear.
+Both are broadcast on the global `/api/events` bus (not the per-session
+socket) so unattended/loop sessions with no attached client still update the
+sidebar.
+
+```json
+{
+  "type": "agent_auth_required",
+  "data": {
+    "session_id": "...",
+    "workspace_uuid": "...",
+    "workspace_name": "...",
+    "working_dir": "..."
+  }
+}
+```
+
+`agent_auth_cleared` carries the identical payload shape.
+
 #### `mcp_initializing` — Agent blocked on MCP server startup
 
 Informational "session/new may take longer than usual" hint; not an error.

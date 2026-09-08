@@ -142,3 +142,41 @@ describe("SessionList.js: category-filter dropdown Loops subsection (mitto-k53.3
     expect(snippet).toMatch(/opt\.indent\s*\n\s*\? "pl-2"/);
   });
 });
+
+describe("SessionList.js: agent auth-required sidebar health pill (mitto-3du)", () => {
+  test("accepts a getAgentAuthStateForWorkingDir prop", () => {
+    expect(listJs).toMatch(/getAgentAuthStateForWorkingDir,/);
+  });
+
+  test("folder-group header renders the lock pill only when required is truthy, keyed by folder.workingDir", () => {
+    const idx = listJs.indexOf(
+      '<span class="badge badge-sm badge-ghost shrink-0 tabular-nums"\n                  >${totalSessions}</span\n                >',
+    );
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = listJs.slice(idx, idx + 900);
+
+    // Gated on both an existing folder.workingDir AND the lookup returning
+    // a truthy `required` — never renders when either is missing/falsy.
+    expect(snippet).toMatch(/\$\{folder\.workingDir &&/);
+    expect(snippet).toMatch(
+      /getAgentAuthStateForWorkingDir\?\.\(folder\.workingDir\)\s*\n\s*\?\.required &&/,
+    );
+
+    // Warning-styled badge with the reused LockIcon and a stable test hook
+    // for any future DOM-level test.
+    expect(snippet).toMatch(/badge-sm badge-warning badge-soft/);
+    expect(snippet).toMatch(/data-testid="agent-auth-required-pill"/);
+    expect(snippet).toMatch(/<\$\{LockIcon\} className="w-3 h-3" \/>/);
+
+    // Accessible + hover affordance pointing at CLI re-authentication.
+    expect(snippet).toMatch(/Agent needs re-authentication/);
+    expect(snippet).toMatch(/aria-label="Agent needs re-authentication"/);
+  });
+
+  test("imports LockIcon from the shared Icons module", () => {
+    const idx = listJs.indexOf('} from "./Icons.js";');
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = listJs.slice(Math.max(0, idx - 400), idx);
+    expect(snippet).toMatch(/\n\s*LockIcon,\n/);
+  });
+});

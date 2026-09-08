@@ -3493,3 +3493,101 @@ func TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager(t
 		t.Errorf("getSharedProcess lease = %v, want nil (the pm fallback path carries no lease)", gotLease)
 	}
 }
+
+// --- mitto-3du: broadcastAgentAuthState tests ---
+
+// recordedBroadcast captures one EventsBroadcaster.Broadcast call.
+type recordedBroadcast struct {
+	msgType string
+	data    map[string]interface{}
+}
+
+// fakeAgentAuthEventsBroadcaster is a minimal EventsBroadcaster test double
+// that records every broadcast, letting tests assert on msgType and payload
+// without wiring a real web.GlobalEventsManager.
+type fakeAgentAuthEventsBroadcaster struct {
+	mu    sync.Mutex
+	calls []recordedBroadcast
+}
+
+func (f *fakeAgentAuthEventsBroadcaster) Broadcast(msgType string, data interface{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, _ := data.(map[string]interface{})
+	f.calls = append(f.calls, recordedBroadcast{msgType: msgType, data: m})
+}
+
+func (f *fakeAgentAuthEventsBroadcaster) ClientCount() int { return 0 }
+
+// TestSessionManager_BroadcastAgentAuthState_Required_ResolvesWorkspaceName
+// verifies the OnAgentAuthStateChanged hook (broadcastAgentAuthState) emits
+// WSMsgTypeAgentAuthRequired with a fully-populated payload, resolving the
+// friendly workspace name via GetWorkspaceByUUID (mitto-3du plan decision #1:
+// global /api/events broadcast so unattended/loop sessions surface too).
+func TestSessionManager_BroadcastAgentAuthState_Required_ResolvesWorkspaceName(t *testing.T) {
+	workspaces := []config.WorkspaceSettings{
+		{UUID: "ws-1", Name: "My Workspace", ACPServer: "server1", WorkingDir: "/path1"},
+	}
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
+	fb := &fakeAgentAuthEventsBroadcaster{}
+	sm.SetEventsManager(fb)
+
+	sm.broadcastAgentAuthState("sess-1", "ws-1", "/path1", true)
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(fb.calls))
+	}
+	call := fb.calls[0]
+	if call.msgType != WSMsgTypeAgentAuthRequired {
+		t.Fatalf("msgType = %q, want %q", call.msgType, WSMsgTypeAgentAuthRequired)
+	}
+	want := map[string]interface{}{
+		"session_id":     "sess-1",
+		"workspace_uuid": "ws-1",
+		"workspace_name": "My Workspace",
+		"working_dir":    "/path1",
+	}
+	for k, v := range want {
+		if call.data[k] != v {
+			t.Errorf("payload[%q] = %v, want %v (full payload: %+v)", k, call.data[k], v, call.data)
+		}
+	}
+}
+
+// TestSessionManager_BroadcastAgentAuthState_ClearedUsesClearedMessageType
+// verifies required=false broadcasts WSMsgTypeAgentAuthCleared (not the
+// Required type), and that an unresolvable workspace UUID degrades to an
+// empty workspace_name rather than erroring.
+func TestSessionManager_BroadcastAgentAuthState_ClearedUsesClearedMessageType(t *testing.T) {
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{AutoApprove: true})
+	fb := &fakeAgentAuthEventsBroadcaster{}
+	sm.SetEventsManager(fb)
+
+	sm.broadcastAgentAuthState("sess-2", "unknown-ws", "/path2", false)
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(fb.calls))
+	}
+	call := fb.calls[0]
+	if call.msgType != WSMsgTypeAgentAuthCleared {
+		t.Fatalf("msgType = %q, want %q", call.msgType, WSMsgTypeAgentAuthCleared)
+	}
+	if call.data["workspace_name"] != "" {
+		t.Fatalf("workspace_name = %q, want empty string for an unresolvable UUID", call.data["workspace_name"])
+	}
+}
+
+// TestSessionManager_BroadcastAgentAuthState_NoEventsManager_NoPanic verifies
+// the hook is a safe no-op before SetEventsManager has been called (e.g. an
+// auth failure racing very early session setup).
+func TestSessionManager_BroadcastAgentAuthState_NoEventsManager_NoPanic(t *testing.T) {
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{AutoApprove: true})
+	sm.broadcastAgentAuthState("sess-3", "ws-x", "/path3", true) // must not panic
+}

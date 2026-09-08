@@ -3648,6 +3648,92 @@ func TestPromptDispatcher_HandlePromptError_AuthError_RecordsDurableGuidanceOnce
 	}
 }
 
+// TestPromptDispatcher_HandlePromptError_AuthError_NotifiesAgentAuthState is the
+// mitto-3du companion to the mitto-6vs durable-guidance test above: it verifies
+// pdNotifyAgentAuthState(true) fires exactly once per outage streak (piggybacking
+// on the same pdHasRecorder-gated, pdAuthGuidanceAlreadySurfaced-deduped block as
+// the durable transcript record), and that handlePromptSuccess fires
+// pdNotifyAgentAuthState(false) exactly once when a prior failure had surfaced
+// guidance — driving the sidebar health pill through required -> cleared ->
+// required across a re-armed streak.
+func TestPromptDispatcher_HandlePromptError_AuthError_NotifiesAgentAuthState(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasRecorder = true
+
+	authErr := &fakeAuthError{}
+
+	// First auth failure of the streak: required=true fires once.
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.agentAuthStateCalls) != 1 || d.agentAuthStateCalls[0] != true {
+		t.Fatalf("expected [true] after first auth failure, got %v", d.agentAuthStateCalls)
+	}
+
+	// Second consecutive auth failure in the same streak: deduped, no repeat call.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.agentAuthStateCalls) != 1 {
+		t.Fatalf("expected still [true] after second consecutive auth failure (deduped), got %v",
+			d.agentAuthStateCalls)
+	}
+
+	// A successful prompt clears: required=false fires exactly once, since
+	// guidance had been surfaced by the failures above.
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	p.handlePromptSuccess(d, 1, 1, resp, "msg", PromptMeta{}, time.Now(), time.Now())
+	if len(d.agentAuthStateCalls) != 2 || d.agentAuthStateCalls[1] != false {
+		t.Fatalf("expected [true,false] after a successful prompt clears the guard, got %v",
+			d.agentAuthStateCalls)
+	}
+
+	// A fresh auth-outage streak must notify required=true again.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.agentAuthStateCalls) != 3 || d.agentAuthStateCalls[2] != true {
+		t.Fatalf("expected [true,false,true] after a re-armed auth failure, got %v",
+			d.agentAuthStateCalls)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptSuccess_NeverSurfaced_DoesNotNotifyAgentAuthState
+// pins the anti-spam guarantee (mitto-3du plan decision #2): an ordinary
+// successful prompt in a workspace that was never auth-degraded must not fire
+// pdNotifyAgentAuthState at all, so the sidebar never sees a spurious clear.
+func TestPromptDispatcher_HandlePromptSuccess_NeverSurfaced_DoesNotNotifyAgentAuthState(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	p.handlePromptSuccess(d, 0, 0, resp, "msg", PromptMeta{}, time.Now(), time.Now())
+
+	if len(d.agentAuthStateCalls) != 0 {
+		t.Fatalf("expected no pdNotifyAgentAuthState calls for a never-degraded workspace, got %v",
+			d.agentAuthStateCalls)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_AuthError_NoRecorder_DoesNotNotifyAgentAuthState
+// documents that the mitto-3du sidebar broadcast piggybacks on the same
+// pdHasRecorder-gated block as the mitto-6vs durable guidance record: an auth
+// failure on a session with no recorder attached does not fire
+// pdNotifyAgentAuthState(true) either. Flagged in the Testing bead comment for
+// the Review phase to confirm this coupling is intentional.
+func TestPromptDispatcher_HandlePromptError_AuthError_NoRecorder_DoesNotNotifyAgentAuthState(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasRecorder = false
+
+	authErr := &fakeAuthError{}
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+
+	if len(d.agentAuthStateCalls) != 0 {
+		t.Fatalf("expected no pdNotifyAgentAuthState calls when pdHasRecorder()==false, got %v",
+			d.agentAuthStateCalls)
+	}
+}
+
 // containsSubstring is a simple helper to avoid importing strings in test.
 func containsSubstring(s, sub string) bool {
 	for i := 0; i <= len(s)-len(sub); i++ {

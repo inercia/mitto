@@ -50,6 +50,23 @@ export const EVENTS = Object.freeze({
   MEMORY_RECYCLED: "memory_recycled",
   AGENT_RECYCLED: "agent_recycled",
   AGENT_DEGRADED: "agent_degraded",
+  /**
+   * Sidebar health pill (mitto-3du): a session's agent hit an
+   * authentication-required failure (JSON-RPC -32000 "Authentication
+   * required"), reusing the durable auth-expiry signal recorded by
+   * mitto-6vs. Fired once per outage streak; broadcast on the global
+   * `/api/events` bus so unattended/loop sessions with no attached client
+   * still surface the pill.
+   */
+  AGENT_AUTH_REQUIRED: "agent_auth_required",
+  /**
+   * Companion to {@link EVENTS.AGENT_AUTH_REQUIRED}: a prompt succeeded
+   * after auth guidance had previously been surfaced for the workspace.
+   * Not fired on every successful prompt — only when the prior state was
+   * actually "required" — so it never spams a clear for a workspace that
+   * was never degraded.
+   */
+  AGENT_AUTH_CLEARED: "agent_auth_cleared",
   MCP_INITIALIZING: "mcp_initializing",
   MCP_INIT_TIMED_OUT: "mcp_init_timed_out",
   PREWARM_PIN_ALERT: "prewarm_pin_alert",
@@ -781,6 +798,27 @@ export function isCommandType(type) {
  * @property {string} state - One of `process_saturated`, `mcp_init_gated`,
  *   `mcp_init_wedged`, or `""` on recovery.
  * @property {boolean} degraded - Whether the agent is currently degraded.
+ */
+
+/**
+ * Payload of {@link EVENTS.AGENT_AUTH_REQUIRED} (`agent_auth_required`).
+ * Same shape as {@link AgentAuthClearedPayload}.
+ * @typedef {Object} AgentAuthRequiredPayload
+ * @property {string} session_id - Session whose prompt hit the auth failure.
+ * @property {string} workspace_uuid - Affected workspace.
+ * @property {string} workspace_name - Workspace display name.
+ * @property {string} working_dir - Workspace working directory.
+ */
+
+/**
+ * Payload of {@link EVENTS.AGENT_AUTH_CLEARED} (`agent_auth_cleared`).
+ * Same shape as {@link AgentAuthRequiredPayload}.
+ * @typedef {Object} AgentAuthClearedPayload
+ * @property {string} session_id - Session whose prompt recovered from the
+ *   auth failure.
+ * @property {string} workspace_uuid - Affected workspace.
+ * @property {string} workspace_name - Workspace display name.
+ * @property {string} working_dir - Workspace working directory.
  */
 
 /**
