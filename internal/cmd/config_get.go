@@ -229,8 +229,27 @@ func emitResolvedValue(cmd *cobra.Command, pathStr string, val interface{}, prov
 	if label == "" {
 		label = "(whole config)"
 	}
+	// emit()'s normalizeForEmptyCollections treats a literal nil as "empty
+	// list" and renders it as [] — the convention for zero-result list
+	// commands (conversation list, etc.). That's wrong here: nil can also
+	// mean "the stored value at this path is a genuine JSON null", which
+	// must round-trip as null (see the missing-vs-null distinction
+	// documented in docs/config/config-cli.md), not silently become [].
+	// jsonNull sidesteps the collision: a non-nil interface value that
+	// always marshals to the JSON literal null.
+	if val == nil {
+		val = jsonNull{}
+	}
 	return emit(cmd, &configGetFlags, val, genericValueTableFn(label, val))
 }
+
+// jsonNull renders as the JSON literal null in every output format
+// (json/yaml/table, via genericValueTableFn's own json.Marshal), while being
+// a non-nil interface value so it is never mistaken by emit()'s
+// normalizeForEmptyCollections for an empty list result.
+type jsonNull struct{}
+
+func (jsonNull) MarshalJSON() ([]byte, error) { return []byte("null"), nil }
 
 // renderRawScalar prints v with no JSON/YAML quoting, for shell scripting.
 // It rejects objects/arrays (exit 2) rather than dumping their Go/JSON

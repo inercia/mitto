@@ -150,3 +150,41 @@ func TestSnapshot_SecretRedaction_LeafParentAndWhole(t *testing.T) {
 		t.Fatalf("mcp subtree not fully redacted in whole-doc read: %#v", data["mcp"])
 	}
 }
+
+// TestSnapshot_Get_DynamicRootSubpath_Redacted is a regression test for a
+// bug found and fixed while implementing mitto-4rz.4: redactTree's
+// dynamic-root check only fired when the accumulated prefix had length 1,
+// which holds for GetWhole's incremental walk but not for Get(path), which
+// passes the full terminal path in a single call. That let a direct Get()
+// on a sub-path of a redacted dynamic root (e.g. "mcp.port", "mcp.host")
+// return its raw stored value unredacted, even though the same value was
+// already correctly hidden when reached via GetWhole (the test above only
+// exercised the whole-mcp-subtree case, not this direct-subpath one).
+func TestSnapshot_Get_DynamicRootSubpath_Redacted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, dir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	writeRawSettings(t, dir, `{"mcp": {"host": "127.0.0.1", "port": 5757}}`)
+
+	snap, err := ReadSnapshot()
+	if err != nil {
+		t.Fatalf("ReadSnapshot: %v", err)
+	}
+
+	for _, sub := range []string{"mcp.port", "mcp.host"} {
+		t.Run(sub, func(t *testing.T) {
+			fv, err := snap.Get(mustPath(t, sub))
+			if err != nil {
+				t.Fatalf("Get(%s): %v", sub, err)
+			}
+			if !fv.Redacted {
+				t.Fatalf("%s: Redacted = false, want true (dynamic-root subpath must inherit the root's redaction)", sub)
+			}
+			if fv.Value != RedactedPlaceholder {
+				t.Fatalf("%s: Value = %#v, want the raw stored value to be hidden behind RedactedPlaceholder", sub, fv.Value)
+			}
+		})
+	}
+}
