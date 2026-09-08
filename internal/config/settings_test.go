@@ -41,6 +41,35 @@ func TestLoadSettings_CreatesDefaultSettings(t *testing.T) {
 	_ = cfg // config is valid even with no servers
 }
 
+// TestGlobalUI_ReadsFromDisk pins the mitto-4rz.3 addition: GlobalUI must
+// read settings.json fresh (mirroring GlobalShortcuts/GlobalTaskLabelColors)
+// so a configsvc live patch to the "ui" field is observable immediately,
+// without going through a Settings-struct setter/save round-trip. There is
+// no SetGlobalUI in this bead's scope, so the raw file is written directly,
+// as configsvc.Mutate itself would.
+func TestGlobalUI_ReadsFromDisk(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	// No settings.json yet: GlobalUI must return the zero value, not error.
+	if got := GlobalUI(); got != (UIConfig{}) {
+		t.Fatalf("GlobalUI() with no settings.json = %+v, want zero value", got)
+	}
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	raw := `{"ui":{"confirmations":{"delete_conversation":"never"}}}`
+	if err := os.WriteFile(settingsPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	got := GlobalUI()
+	if got.Confirmations == nil || got.Confirmations.DeleteConversation != "never" {
+		t.Fatalf("GlobalUI() = %+v, want Confirmations.DeleteConversation = \"never\"", got)
+	}
+}
+
 func TestGlobalShortcuts_RoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv(appdir.MittoDirEnv, tmpDir)

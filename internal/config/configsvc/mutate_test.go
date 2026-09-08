@@ -7,6 +7,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config/configpath"
+	"github.com/inercia/mitto/internal/instancefile"
 )
 
 func setupTempMitto(t *testing.T) string {
@@ -282,5 +283,117 @@ func TestMutate_RevisionMismatch_Rejected(t *testing.T) {
 	cerr, ok := err.(*Error)
 	if !ok || cerr.Kind != ErrKindRevisionMismatch {
 		t.Fatalf("expected ErrKindRevisionMismatch, got %v", err)
+	}
+}
+
+// writeRunningInstance writes an instance.json recording this test process's
+// own PID (always "live"), simulating a currently-running Mitto server —
+// the exact scenario acquireOfflineLock's runningServerDetected check exists
+// to exclude (mirrors TestLock_RunningServerExcluded in lock_test.go).
+func writeRunningInstance(t *testing.T) {
+	t.Helper()
+	if err := instancefile.Write(&instancefile.Instance{
+		PID:   os.Getpid(),
+		URL:   "http://127.0.0.1:1",
+		Token: "irrelevant-for-this-test",
+	}); err != nil {
+		t.Fatalf("instancefile.Write: %v", err)
+	}
+}
+
+// TestMutate_InProcess_BypassesRunningServerRefusal is the core mitto-4rz.3
+// contract for Layer 1: a live web handler (InProcess: true) must be able to
+// mutate settings.json even while instance.json names a running server (this
+// process itself) — the offline path (InProcess: false, the default) must
+// still refuse in that exact situation.
+func TestMutate_InProcess_BypassesRunningServerRefusal(t *testing.T) {
+	setupTempMitto(t)
+	writeRunningInstance(t)
+
+	ops := mustOpSet(t, mustAssignJSON(t, "web.port", "9090"))
+
+	// Offline path: refused because a "running server" (this test's own PID
+	// via instance.json) is detected.
+	_, err := Mutate(MutateRequest{Set: ops})
+	cerr, ok := err.(*Error)
+	if !ok || cerr.Kind != ErrKindLocked {
+		t.Fatalf("offline Mutate: expected ErrKindLocked while a running server is detected, got %v", err)
+	}
+
+	// In-process path: same running-server condition, but must succeed since
+	// the caller IS that running server.
+	res, err := Mutate(MutateRequest{Set: ops, InProcess: true})
+	if err != nil {
+		t.Fatalf("in-process Mutate: unexpected error despite InProcess=true: %v", err)
+	}
+	if len(res.Applied) != 1 || res.Applied[0] != "web.port" {
+		t.Fatalf("in-process Mutate: Applied = %v, want [web.port]", res.Applied)
+	}
+
+	snap, err := ReadSnapshot()
+	if err != nil {
+		t.Fatalf("ReadSnapshot: %v", err)
+	}
+	fv, _ := snap.Get(mustPath(t, "web.port"))
+	if n, ok := asInt(fv.Value); !ok || n != 9090 {
+		t.Fatalf("web.port after in-process Mutate = %v, want 9090", fv.Value)
+	}
+}
+
+// TestMutate_AppliedFields_ReportsCanonicalFieldAndLiveness pins
+// MutateResult.AppliedFields (mitto-4rz.3): each applied op must report the
+// registry's canonical Field and Liveness so a live caller (the web patch
+// handler) can classify application without re-consulting the registry.
+func TestMutate_AppliedFields_ReportsCanonicalFieldAndLiveness(t *testing.T) {
+	setupTempMitto(t)
+
+	ops := mustOpSet(t,
+		mustAssignJSON(t, "web.port", "9090"),
+		mustAssignJSON(t, "task_label_colors", `[{"label":"x","color":"#ffffff"}]`),
+	)
+	res, err := Mutate(MutateRequest{Set: ops})
+	if err != nil {
+		t.Fatalf("Mutate: %v", err)
+	}
+	if len(res.AppliedFields) != 2 {
+		t.Fatalf("AppliedFields = %+v, want 2 entries", res.AppliedFields)
+	}
+
+	byPath := map[string]AppliedField{}
+	for _, af := range res.AppliedFields {
+		byPath[af.Path] = af
+	}
+
+	port, ok := byPath["web.port"]
+	if !ok || port.Field != "web.port" || port.Liveness != LivenessRequiresRestart {
+		t.Fatalf("web.port AppliedField = %+v, want Field=web.port Liveness=LivenessRequiresRestart", port)
+	}
+	colors, ok := byPath["task_label_colors"]
+	if !ok || colors.Field != "task_label_colors" || colors.Liveness != LivenessLive {
+		t.Fatalf("task_label_colors AppliedField = %+v, want Field=task_label_colors Liveness=LivenessLive", colors)
+	}
+}
+
+// TestMutate_DryRun_StillReportsAppliedFields confirms a dry-run reports the
+// same AppliedFields metadata as a real write (so a caller can preview
+// per-key Liveness/Status without persisting), despite not touching disk.
+func TestMutate_DryRun_StillReportsAppliedFields(t *testing.T) {
+	setupTempMitto(t)
+
+	ops := mustOpSet(t, mustAssignJSON(t, "shortcuts", `{"conversations":[{"icon":"","prompt":"Commit"}]}`))
+	res, err := Mutate(MutateRequest{Set: ops, DryRun: true})
+	if err != nil {
+		t.Fatalf("Mutate dry-run: %v", err)
+	}
+	if len(res.AppliedFields) != 1 || res.AppliedFields[0].Field != "shortcuts" || res.AppliedFields[0].Liveness != LivenessLive {
+		t.Fatalf("AppliedFields = %+v, want [{Field:shortcuts Liveness:LivenessLive}]", res.AppliedFields)
+	}
+
+	snap, err := ReadSnapshot()
+	if err != nil {
+		t.Fatalf("ReadSnapshot: %v", err)
+	}
+	if snap.Exists {
+		t.Fatalf("dry-run created/wrote settings.json; snap.Exists = true")
 	}
 }
