@@ -62,7 +62,14 @@ like auggie, claude-code, and others that implement ACP.`,
 		// server-touching commands, resolved entirely via flags/env/
 		// instance.json in conversation_client.go, and must not block on a
 		// Keychain prompt when run non-interactively (e.g. from a script).
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents" || cmd.Parent().Name() == "conversation" || cmd.Parent().Name() == "auth") {
+		// config get is scoped by exact leaf name + parent (not the whole
+		// "config" tree) so this skip never changes config create's existing
+		// pre-run behavior: it is a read-only, offline-capable command like
+		// conversation/auth above and must not touch Keychain, deploy
+		// builtins, or run config.LoadSettingsWithFallback (which can itself
+		// migrate/dedup-save) just to display a value (mitto-4rz.4).
+		isConfigGet := cmd.Name() == "get" && cmd.Parent() != nil && cmd.Parent().Name() == "config"
+		if cmd.Name() == "help" || cmd.Name() == "completion" || isConfigGet || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents" || cmd.Parent().Name() == "conversation" || cmd.Parent().Name() == "auth") {
 			return nil
 		}
 

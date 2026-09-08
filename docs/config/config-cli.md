@@ -1,12 +1,71 @@
 # `mitto config get` / `mitto config set` — CLI Contract
 
-> **Status:** contract + pure parser only (bead `mitto-4rz.1`). Neither
-> `config get` nor `config set` is wired to a live command yet — no
-> persistence, no server calls, no CLI flags exist today. This document
-> specifies the intended contract so later beads (`mitto-4rz.2`+) implement
-> it consistently. The parser living in `internal/config/configpath`
-> implements only the path/value grammar described below; it never reads
-> files, calls the network, or touches CLI globals.
+> **Status:** `mitto config get [PATH]` is wired and live (bead `mitto-4rz.4`,
+> composing the pure parser from `mitto-4rz.1`, the snapshot service from
+> `mitto-4rz.2`, and the authenticated snapshot resource from `mitto-4rz.3`).
+> `mitto config set` is still contract-only — no persistence, no server
+> calls, no CLI flags exist for it yet. The parser living in
+> `internal/config/configpath` implements only the path/value grammar
+> described below; it never reads files, calls the network, or touches CLI
+> globals.
+
+## `mitto config get [PATH]`
+
+Reads one value by dotted/indexed `PATH` (same grammar as `config set`
+below), or the whole config when `PATH` is omitted.
+
+- **Default (live)**: talks to a running `mitto web` server, resolved via
+  `--url`/`--token`/`--api-prefix` flags, `$MITTO_URL`/`$MITTO_TOKEN`/
+  `$MITTO_API_PREFIX`, or `instance.json` — same precedence as `mitto
+  conversation`/`mitto auth` (`docs/devel/cli-conversation.md` §2). Returns
+  the server's `settings.json`, always redacted server-side. A remote/auth/
+  transport error is reported as-is and never silently falls back to
+  reading local disk. If `--url`/`$MITTO_URL` is given explicitly without an
+  explicit `--token`/`$MITTO_TOKEN`, the command refuses to attach the local
+  `instance.json` bearer token to that target (exit 2) rather than risk
+  sending this machine's credential to an unrelated host.
+- **`--offline`**: reads local `settings.json` directly — no server, no
+  network, no Keychain access, no first-run creation/migration. Required for
+  `--effective` and `--explain` (below), since the live snapshot resource
+  reports only the redacted stored document with no per-path provenance.
+- **`--effective`**: when a path has no stored value but this service knows
+  a compile-time default for it (`web.port`, `web.external_port`,
+  `mcp.host`, `mcp.port`), show that default instead of a not-found error.
+  Without `--effective`, an unstored-but-defaultable path is still
+  "not found" — the default view is always "stored". Offline only.
+- **`--explain`**: alongside the value, show `provenance`
+  (`stored`/`effective`) and whether the value was redacted. Requires
+  `--offline` and a `PATH` (there is nothing to explain for the whole doc).
+- **`--raw`**: print a bare scalar with no JSON/YAML quoting (for shell
+  scripting); errors (exit 2) if the resolved value is an object or array.
+- **`--output json|yaml|table`**: defaults to `json`. Table output is
+  unstable and not meant to be parsed by scripts (same convention as
+  `mitto conversation`).
+
+Every mode always redacts secrets (`web.auth.simple.password`,
+`web.auth.shared_token`, the whole `mcp` subtree) — there is no
+`--show-secrets` escape hatch.
+
+**Exit codes** (shared with `mitto conversation`/`mitto auth`, see
+`docs/devel/cli-conversation.md` §5): `0` success, `1` generic error, `2`
+usage error (bad path, invalid flag combination, `--effective`/`--explain`
+without `--offline`), `3` server unreachable, `4` auth failure, `5` path (or
+whole config) not found. A path that resolves to a stored JSON `null` is a
+**successful** read (exit 0, prints `null`) — distinct from a missing path
+(exit 5).
+
+**Examples:**
+
+```zsh
+mitto config get web.port                                # live, JSON
+mitto config get --raw web.port                           # bare scalar: 8080
+mitto config get --offline --effective mcp.port           # compile-time default
+mitto config get --offline --explain 'task_label_colors[0].color'
+mitto config get --offline --output yaml                  # whole config as YAML
+```
+
+Quote array-indexed paths in zsh (`[0]` is glob-special), same as `config
+set` below.
 
 ## Vocabulary: settings.json JSON tags
 

@@ -40,11 +40,21 @@ func navigate(doc interface{}, path configpath.Path) (interface{}, bool) {
 func redactTree(node interface{}, prefix configpath.Path, reg *Registry) (interface{}, bool) {
 	if len(prefix) > 0 {
 		if e, ok := reg.Lookup(prefix); ok && e.Redact {
-			// An exact-match redacted leaf, or the root of a redacted
-			// dynamic subtree (e.g. "mcp"): stop here, whole value hidden.
-			if !e.Dynamic || prefix[len(prefix)-1].Key == e.Path || len(prefix) == 1 {
-				return RedactedPlaceholder, true
-			}
+			// Registry.Lookup matches a dynamic root (e.g. "mcp") on
+			// prefix[0].Key alone, regardless of how many segments follow —
+			// "the whole subtree is a secret" per the registry's own
+			// contract, not just its root key. Always stop and hide the
+			// whole value here: for an exact-match redacted leaf (e.g.
+			// "web.auth.shared_token") this is the only place Lookup can
+			// ever match; for a dynamic root it must fire for the root
+			// itself (prefix len 1, GetWhole's incremental walk) AND for
+			// any path strictly beneath it queried directly (Get(path)
+			// passes the full terminal path as prefix in one call, so
+			// "arrived at the root" cannot be inferred from prefix length
+			// there). A narrower check here previously let requests for a
+			// path under a dynamic redacted root (e.g. "mcp.port") return
+			// the raw stored value un-redacted.
+			return RedactedPlaceholder, true
 		}
 	}
 	switch t := node.(type) {
