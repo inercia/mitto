@@ -1,0 +1,33 @@
+{{- /*
+  jira/reopen-detect — compute the two timestamps the auto-reopen heuristic
+  needs: T_close (the bead's `closed_at`) and T_reopen (the most recent JIRA
+  status transition INTO a non-terminal status, read from
+  `changelog.histories`). This fragment only PREPARES data — it never writes
+  to the bead; the companion `jira/shared/reopen-reconcile` fragment compares
+  the two. Extracted per mitto-5yh from pull-issue Step 6.5 so the batch sync
+  (sync-tasks) can reuse the identical heuristic.
+
+  Requires the caller to have fetched the ticket with the changelog expanded
+  (`expand="...,changelog"` on the MCP path, or `jira issue view <KEY>
+  --history` on the CLI path) and to have loaded the bead's `closed_at`. On a
+  batch-search caller (sync-tasks), the search payload truncates
+  `changelog.histories` just as it elides comments — reload the changelog via
+  the per-issue endpoint before invoking this fragment.
+
+  Callers pass a dict:
+    "Target"      — bead-id placeholder text (e.g. "{{ $target }}" for a
+                    per-bead prompt, or "<id>" for the sync-tasks batch loop).
+                    Required.
+    "Key"         — JIRA-key placeholder text. Optional, defaults to "<KEY>".
+    "CloseSource" — short phrase naming where the bead's `closed_at` was
+                    loaded (e.g. "Step 1's `bd show --json`"). Optional.
+*/ -}}
+{{- $target := .Target -}}
+{{- $key := "<KEY>" -}}{{- if .Key }}{{ $key = .Key }}{{ end -}}
+{{- $src := .CloseSource -}}
+Compute two timestamps for the auto-reopen decision. This only prepares data — it never writes to the bead.
+
+- **`T_close`** — the bead `{{ $target }}`'s `closed_at` field{{ if $src }} (from {{ $src }}){{ end }}. If the bead is still open (`closed_at` is null / empty), leave `T_reopen` unset and skip the rest — the auto-reopen branch will not fire.
+- **`T_reopen`** — walk the JIRA ticket `{{ $key }}`'s `changelog.histories` newest first and find the **most recent** entry whose `items[]` contains a `field == "status"` transition whose `toString` is **not** on the terminal-status allow-list (case-insensitive, exact match). `T_reopen` is that entry's `created` timestamp. If no such transition exists, leave `T_reopen` unset.
+
+On the CLI fallback, `changelog.histories` is not machine-readable JSON — parse the `jira issue view {{ $key }} --history` output for the most recent `Status` change whose target name is not on the terminal allow-list and use that row's timestamp as `T_reopen`.
