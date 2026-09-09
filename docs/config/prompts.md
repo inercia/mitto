@@ -140,6 +140,35 @@ configuration is required. The prompts use the same YAML format as global prompt
 `prompts_dirs` configured in `.mittorc`. Prompts with the same name in higher-priority
 sources will override those in `.mitto/prompts/`.
 
+#### Save a conversation's workflow as a prompt
+
+Use **Agents & Mitto → Save as prompt** from the prompt picker or the conversation
+context menu after working through a useful procedure. It runs in that existing
+conversation and prefers a **Reasoning** model, with **Smart** as a fallback.
+It is available in non-loop conversations with history and **Can prompt user**
+enabled, since reviewing and confirming the draft requires interactive dialogs.
+
+- **PromptName**: a display name, such as `Debug pod`. The dialog always opens;
+  if you leave the name blank, the agent proposes one and asks before saving.
+- **Context**: optional multiline instructions selecting what to capture or omit,
+  such as “Only the read-only Kubernetes diagnosis; exclude deployment changes.”
+
+The agent extracts reusable steps, decision points, prerequisites, and useful
+inputs from the conversation rather than copying its transcript or incident IDs.
+It proposes improvements, asks focused questions when necessary, and presents a
+draft for editing and save confirmation. Secrets and prior one-off approvals are
+not carried into the new prompt.
+
+For `Debug pod`, the result is `.mitto/prompts/debug-pod.prompt.yaml` in the
+conversation's project folder. The `.prompt.yaml` suffix is required: a plain
+`debug-pod.yaml` file is not discovered. Existing filenames or prompt names require
+explicit overwrite/override approval, including names inherited from builtins.
+Cancelling or letting confirmation time out leaves files unchanged.
+
+The agent validates the saved prompt where tooling is available without executing
+the generated workflow. Project prompts are reloaded without restarting Mitto;
+select the saved prompt in a fresh conversation to repeat the procedure.
+
 ### 5. Workspace `.mittorc` File
 
 Define workspace-specific prompts in a `.mittorc` file at the root of your project:

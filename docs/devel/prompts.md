@@ -59,6 +59,19 @@ dropup but hides it from the loop prompt selector (which otherwise includes all
 on the frontend (`promptMenuExcludes` / `promptMenuIncludes` in
 `web/static/utils/prompts.js`); the backend ignores them during validation.
 
+**Conversation-derived authoring:** `misc/save-as-prompt.prompt.yaml` deliberately
+uses `menus: prompts, conversation, !promptsLoop`, with no `target` or `loop` block,
+so both entry points preserve the history being distilled. `Session.HasMessages`
+and `!Session.IsLoopConversation`, plus `Permissions.CanPromptUser`, gate the
+interactive authoring workflow. The
+`PromptName` field uses `required: false, show: always`: this opens the parameter
+dialog without hiding the menu item under plain-text type gating; a missing name
+is resolved by the agent before saving. Future-run template examples in the body
+use escaped Go-template literals so the authoring dispatch cannot bake its own
+session/arguments into the saved prompt. Metadata and render branches are pinned
+in `internal/prompts/save_as_prompt_test.go`. See the
+[user guide](../config/prompts.md#save-a-conversations-workflow-as-a-prompt).
+
 ### Type-based menu gating
 
 Independently of `menus`, a prompt that declares `parameters` is subject to
