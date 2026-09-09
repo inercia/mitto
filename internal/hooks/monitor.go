@@ -47,6 +47,17 @@ var (
 	monitorMaxConsecutiveRestarts = 2
 )
 
+const (
+	// flapHistoryWindow is the rolling window used to compute recent flap
+	// frequency for observability (mitto-3sl: "flap tracking"). Purely
+	// additive — it does not affect the confirm/backoff/circuit-breaker
+	// behavior above, which is unchanged.
+	flapHistoryWindow = 24 * time.Hour
+	// maxFlapHistoryEvents bounds the in-memory flap-event ring buffer so a
+	// long-running process with many flaps cannot grow this slice unbounded.
+	maxFlapHistoryEvents = 64
+)
+
 // HealthMonitorConfig contains the configuration for a HealthMonitor.
 type HealthMonitorConfig struct {
 	Address   string
@@ -67,6 +78,11 @@ type HealthMonitor struct {
 	done         chan struct{}
 	mu           sync.Mutex
 	restartCount int
+	// flapTimes records the timestamp of each confirmed-unreachable -> restart
+	// event ("flap"), bounded to maxFlapHistoryEvents, so recent flap frequency
+	// is observable (mitto-3sl) without reconstructing it from log windows.
+	// Guarded by mu.
+	flapTimes []time.Time
 }
 
 // NewHealthMonitor creates a new health monitor.
@@ -210,15 +226,19 @@ func (m *HealthMonitor) run(ctx context.Context) {
 		}
 
 		restartsSinceRecovery++
+		now := time.Now()
 		m.mu.Lock()
 		m.restartCount++
 		attempt := m.restartCount
+		m.recordFlapLocked(now)
+		flapsInWindow := m.flapCountSinceLocked(now.Add(-flapHistoryWindow))
 		m.mu.Unlock()
 
 		logger.Warn("External address unreachable (confirmed after retries), restarting hooks",
 			"address", m.cfg.Address,
 			"attempt", attempt,
 			"consecutive_failures", consecutiveFailures,
+			"flaps_last_24h", flapsInWindow,
 		)
 
 		// Notify UI
@@ -258,6 +278,38 @@ func jitter(d time.Duration) time.Duration {
 	// factor ∈ [0.8, 1.2)
 	factor := 0.8 + 0.4*rand.Float64()
 	return time.Duration(float64(d) * factor)
+}
+
+// recordFlapLocked appends a flap timestamp to the bounded history, trimming
+// to the most recent maxFlapHistoryEvents entries. Caller must hold m.mu.
+func (m *HealthMonitor) recordFlapLocked(t time.Time) {
+	m.flapTimes = append(m.flapTimes, t)
+	if len(m.flapTimes) > maxFlapHistoryEvents {
+		m.flapTimes = m.flapTimes[len(m.flapTimes)-maxFlapHistoryEvents:]
+	}
+}
+
+// flapCountSinceLocked returns the number of recorded flaps at or after
+// `since`. Caller must hold m.mu.
+func (m *HealthMonitor) flapCountSinceLocked(since time.Time) int {
+	count := 0
+	for _, t := range m.flapTimes {
+		if !t.Before(since) {
+			count++
+		}
+	}
+	return count
+}
+
+// FlapStats returns the total number of restarts ever recorded and the number
+// of flaps within the trailing `window` duration (e.g. flapHistoryWindow).
+// This makes flap frequency (mitto-3sl) programmatically observable instead
+// of requiring manual log-window analysis; it does not affect monitor
+// behavior.
+func (m *HealthMonitor) FlapStats(window time.Duration) (total int, inWindow int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.restartCount, m.flapCountSinceLocked(time.Now().Add(-window))
 }
 
 // checkHealth performs an HTTP GET to the health endpoint at the external address.
