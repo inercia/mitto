@@ -94,12 +94,31 @@ var filePathPattern = regexp.MustCompile(
 		`|` +
 		`/[^\s<>"'\x60]+` + // Absolute: /path/to/file
 		`|` +
-		`\.[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_.\-]+)+` + // Hidden dir: .augment/rules/file.md
+		`\.[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_.\-]+)+(?::[0-9]+(?::[0-9]+)?)?` + // Hidden dir: .augment/rules/file.md[:line[:col]]
 		`|` +
-		`[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_.\-]+)+` + // Relative without ./: src/main.go
+		`[a-zA-Z0-9_-]+(?:/[a-zA-Z0-9_.\-]+)+(?::[0-9]+(?::[0-9]+)?)?` + // Relative without ./: src/main.go[:line[:col]]
 		`)` +
 		`(?:[\s<>"'\x60]|$)`, // End of string, whitespace, <, >, ", ', or backtick
 )
+
+// lineColSuffixPattern matches an optional trailing ":<line>" or
+// ":<line>:<col>" suffix on a file path (e.g. "docs/report.md:67" or
+// "docs/report.md:67:12"), commonly produced when an agent or tool points at
+// a specific source location (mitto-3u7). The suffix must be purely digits at
+// the very end of the string, so Windows drive letters (C:\...) and URL
+// schemes (already excluded upstream by the "://" checks) are never affected.
+var lineColSuffixPattern = regexp.MustCompile(`^(.+):([0-9]+)(?::[0-9]+)?$`)
+
+// splitLineSuffix strips a trailing ":<line>" (or ":<line>:<col>") suffix from
+// path, returning the base path and the line number. ok is false when no such
+// suffix is present, in which case base equals path and line is empty.
+func splitLineSuffix(path string) (base, line string, ok bool) {
+	m := lineColSuffixPattern.FindStringSubmatch(path)
+	if m == nil {
+		return path, "", false
+	}
+	return m[1], m[2], true
+}
 
 // codeTagPattern matches content inside <code> tags (for skipping in regular text).
 var codeTagPattern = regexp.MustCompile(`(?s)<code[^>]*>.*?</code>`)
@@ -318,14 +337,23 @@ func (fl *FileLinker) processInlineCodeTags(html string) string {
 
 		content := html[contentStart:contentEnd]
 
+		// Strip an optional trailing ":<line>" (or ":<line>:<col>") suffix
+		// before validating the path exists on disk (mitto-3u7): validatePath
+		// does a literal os.Stat, which fails when a line-number suffix is
+		// baked into the filename (e.g. "file.md:67" is not a real file).
+		lookupContent, line, hasLineSuffix := splitLineSuffix(content)
+		if !hasLineSuffix {
+			lookupContent = content
+		}
+
 		// Validate the path
-		info := fl.validatePath(content)
+		info := fl.validatePath(lookupContent)
 		if !info.safe || !info.exists {
 			continue
 		}
 
 		// Create link that wraps the entire <code> tag
-		linkURL := fl.buildLinkURL(content, info.realPath)
+		linkURL := fl.buildLinkURL(lookupContent, info.realPath, line)
 		class := "file-link"
 		if info.isDir {
 			class += " dir-link"
@@ -420,20 +448,29 @@ func (fl *FileLinker) processAnchorHrefs(html string) string {
 			continue
 		}
 
+		// Strip an optional trailing ":<line>" (or ":<line>:<col>") suffix
+		// before validating the path exists on disk (mitto-3u7): validatePath
+		// does a literal os.Stat, which fails when a line-number suffix is
+		// baked into the filename (e.g. "file.md:67" is not a real file).
+		lookupHref, line, hasLineSuffix := splitLineSuffix(href)
+		if !hasLineSuffix {
+			lookupHref = href
+		}
+
 		// Validate the path (with caching)
 		var info *pathInfo
-		if cached, ok := fl.statCache.Load(href); ok {
+		if cached, ok := fl.statCache.Load(lookupHref); ok {
 			info = cached.(*pathInfo)
 		} else {
-			info = fl.validatePath(href)
-			fl.statCache.Store(href, info)
+			info = fl.validatePath(lookupHref)
+			fl.statCache.Store(lookupHref, info)
 		}
 		if !info.safe || !info.exists {
 			continue
 		}
 
 		// Build the new href URL
-		linkURL := fl.buildLinkURL(href, info.realPath)
+		linkURL := fl.buildLinkURL(lookupHref, info.realPath, line)
 
 		// Determine CSS class
 		class := "file-link"
@@ -489,12 +526,17 @@ func (fl *FileLinker) buildNewAnchorTag(preHrefAttrs, postHrefAttrs, newHref, ad
 	return fmt.Sprintf(`<a href="%s" class="%s">`, newHref, finalClass)
 }
 
-// buildLinkURL creates the viewer URL for a file link.
-func (fl *FileLinker) buildLinkURL(displayPath, realPath string) string {
+// buildLinkURL creates the viewer URL for a file link. line, when non-empty,
+// is appended as "&line=N" so the viewer opens scrolled to that line
+// (mitto-3u7; the viewer already supports the "line" query parameter).
+func (fl *FileLinker) buildLinkURL(displayPath, realPath, line string) string {
 	relativePath := strings.TrimPrefix(displayPath, "./")
 	u := fl.config.APIPrefix + "/viewer.html?ws=" + url.QueryEscape(fl.config.WorkspaceUUID) + "&path=" + url.QueryEscape(relativePath)
 	if fl.config.WorkspacePath != "" {
 		u += "&ws_path=" + url.QueryEscape(fl.config.WorkspacePath)
+	}
+	if line != "" {
+		u += "&line=" + url.QueryEscape(line)
 	}
 	return u
 }
@@ -539,24 +581,35 @@ func (fl *FileLinker) processPath(path string) string {
 		return ""
 	}
 
+	// Strip an optional trailing ":<line>" (or ":<line>:<col>") suffix before
+	// validating the path exists on disk (mitto-3u7): validatePath does a
+	// literal os.Stat, which fails when a line-number suffix is baked into
+	// the filename (e.g. "file.md:67" is not a real file). The base path is
+	// used for lookups/cache keys; the original text (with suffix) is still
+	// shown as the link's display text.
+	lookupPath, line, hasLineSuffix := splitLineSuffix(path)
+	if !hasLineSuffix {
+		lookupPath = path
+	}
+
 	// Check cache first
-	if cached, ok := fl.statCache.Load(path); ok {
+	if cached, ok := fl.statCache.Load(lookupPath); ok {
 		info := cached.(*pathInfo)
 		if !info.safe || !info.exists {
 			return ""
 		}
-		return fl.createLink(path, info.realPath, info.isDir)
+		return fl.createLink(path, lookupPath, info.realPath, info.isDir, line)
 	}
 
 	// Validate and get path info
-	info := fl.validatePath(path)
-	fl.statCache.Store(path, info)
+	info := fl.validatePath(lookupPath)
+	fl.statCache.Store(lookupPath, info)
 
 	if !info.safe || !info.exists {
 		return ""
 	}
 
-	return fl.createLink(path, info.realPath, info.isDir)
+	return fl.createLink(path, lookupPath, info.realPath, info.isDir, line)
 }
 
 // ClearCache clears the stat cache. Useful for testing.
@@ -645,9 +698,12 @@ func (fl *FileLinker) isSensitivePath(path string) bool {
 	return false
 }
 
-// createLink generates an HTML anchor tag for a file path.
-func (fl *FileLinker) createLink(displayPath, realPath string, isDir bool) string {
-	linkURL := fl.buildLinkURL(displayPath, realPath)
+// createLink generates an HTML anchor tag for a file path. displayPath is the
+// text shown to the user (may still carry a trailing ":<line>" suffix);
+// hrefPath is the base path (suffix already stripped) used to build the
+// viewer URL; line, when non-empty, is appended as "&line=N" (mitto-3u7).
+func (fl *FileLinker) createLink(displayPath, hrefPath, realPath string, isDir bool, line string) string {
+	linkURL := fl.buildLinkURL(hrefPath, realPath, line)
 
 	// Escape display path for HTML
 	escapedDisplay := EscapeHTML(displayPath)

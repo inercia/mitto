@@ -121,6 +121,58 @@ describe("globalHandlers viewer.html click handler — missing ws_path fallback 
   });
 });
 
+describe("globalHandlers click handler — catch-all for unhandled relative hrefs (mitto-3u7)", () => {
+  let openSpy;
+
+  beforeEach(() => {
+    // Browser mode: isNativeApp() returns true only when window.mittoPickFolder
+    // is a function; leave every native binding unset so the handler routes
+    // through the browser branch.
+    delete window.mittoPickFolder;
+    delete window.mittoOpenViewer;
+    delete window.mittoOpenFileURL;
+    delete window.mittoOpenExternalURL;
+
+    window.mittoApiPrefix = "";
+
+    openSpy = jest.spyOn(window, "open").mockImplementation(() => null);
+    document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    openSpy.mockRestore();
+  });
+
+  function clickAnchor(href) {
+    const a = document.createElement("a");
+    a.setAttribute("href", href);
+    a.textContent = "link";
+    document.body.appendChild(a);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    a.dispatchEvent(event);
+    return event;
+  }
+
+  test("an unhandled relative href with a line-number suffix must never navigate the main window", () => {
+    // Bug mitto-3u7: an agent-generated link like "some/path/file.md:67"
+    // (trailing line-number suffix) is a RELATIVE href that matches none of
+    // the existing branches (not a beads ref, not /viewer.html?, not
+    // file://, not /api/files?, not http(s)://). Today the click handler
+    // never calls preventDefault() for it, so the browser/WKWebView performs
+    // its default top-level navigation to that relative path -> 404,
+    // blowing the user out of the app UI.
+    const event = clickAnchor("some/path/file.md:67");
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  test("a plain relative href (no scheme) is also caught by the safety-net catch-all", () => {
+    const event = clickAnchor("README.md");
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+});
+
 describe("isOverHorizontallyScrollable — data-mitto-no-swipe opt-out (mitto-7c98)", () => {
   let fromPointSpy;
 

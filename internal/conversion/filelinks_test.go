@@ -867,6 +867,67 @@ func TestFileLinker_URLsInBackticks(t *testing.T) {
 	}
 }
 
+// TestFileLinker_LineNumberSuffix_mitto3u7 reproduces mitto-3u7: a markdown
+// link whose target carries a trailing `:<line>` suffix (e.g. `file.md:67`,
+// produced by agents pointing at a specific source line) is NOT linkified
+// today. validatePath() os.Stat()s the literal path "docs/report.md:67",
+// which does not exist as a file on disk, so processAnchorHrefs (and the
+// plain-text / inline-code paths) leave the href/text completely untouched.
+//
+// EXPECTED (post-fix) behavior asserted below: the trailing `:67` should be
+// stripped before validating the base path, and — once the base path is
+// confirmed to exist — the viewer URL should be built for the base path with
+// `&line=67` appended, so the viewer opens scrolled to that line.
+//
+// This test currently FAILS (reproducing the bug) because that stripping is
+// not implemented yet.
+func TestFileLinker_LineNumberSuffix_mitto3u7(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0755); err != nil {
+		t.Fatalf("Failed to create docs directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "report.md"), []byte("# Report"), 0644); err != nil {
+		t.Fatalf("Failed to create .md file: %v", err)
+	}
+
+	linker := NewFileLinker(FileLinkerConfig{
+		WorkingDir:    tmpDir,
+		WorkspaceUUID: "test-uuid-line",
+		Enabled:       true,
+		APIPrefix:     "/mitto",
+	})
+
+	t.Run("anchor href with line suffix is linkified to base path + &line=", func(t *testing.T) {
+		result := linker.LinkFilePaths(`<a href="docs/report.md:67">report</a>`)
+
+		if !containsString(result, `path=docs%2Freport.md`) {
+			t.Errorf("Expected result to contain viewer path for the base file (line suffix stripped)\nOutput: %s", result)
+		}
+		if !containsString(result, `&line=67`) {
+			t.Errorf("Expected result to contain &line=67\nOutput: %s", result)
+		}
+		if !containsString(result, `class="file-link"`) {
+			t.Errorf("Expected result to contain class=\"file-link\"\nOutput: %s", result)
+		}
+		if containsString(result, `href="docs/report.md:67"`) {
+			t.Errorf("href should have been rewritten, not left as the literal :67 path\nOutput: %s", result)
+		}
+	})
+
+	t.Run("plain text path with line suffix is linkified", func(t *testing.T) {
+		result := linker.LinkFilePaths("See docs/report.md:67 for details")
+
+		if !containsString(result, `viewer.html`) {
+			t.Errorf("Expected plain-text path with line suffix to be linkified\nOutput: %s", result)
+		}
+		if !containsString(result, `&line=67`) {
+			t.Errorf("Expected result to contain &line=67\nOutput: %s", result)
+		}
+	})
+}
+
 func TestFileLinker_BackwardCompatibility(t *testing.T) {
 	tmpDir := t.TempDir()
 

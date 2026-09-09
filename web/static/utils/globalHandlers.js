@@ -11,6 +11,8 @@ import {
   fixViewerURLIfNeeded,
   isNonViewableExtension,
   getAPIPrefix,
+  buildWorkspaceViewerURL,
+  openViewerUrl,
 } from "./index.js";
 
 // =============================================================================
@@ -155,6 +157,39 @@ document.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
     openExternalURL(href);
+    return;
+  }
+
+  // Safety net (mitto-3u7): catch-all for any remaining relative/local link.
+  //
+  // Every branch above already handles /viewer.html?, file://, /api/files?,
+  // and http(s):// links. A relative href that reaches this point (e.g. an
+  // agent-generated link the backend linkifier didn't recognize — a ":line"
+  // suffix pointing at a file that doesn't exist, or content from an older
+  // recording) would otherwise fall through to the browser's default
+  // top-level navigation, which 404s and blows the user out of the app's
+  // main WKWebView. Never let that happen: unconditionally block the default
+  // navigation for anything that isn't an in-page fragment or a
+  // non-navigational scheme (mailto:, tel:, javascript:, data:, or any
+  // "scheme://" URL), and best-effort route it through the internal viewer.
+  const hrefLower = href.toLowerCase();
+  const hasScheme =
+    hrefLower.includes("://") ||
+    hrefLower.startsWith("mailto:") ||
+    hrefLower.startsWith("tel:") ||
+    hrefLower.startsWith("javascript:") ||
+    hrefLower.startsWith("data:");
+  if (!href.startsWith("#") && !hasScheme) {
+    console.warn(
+      "[Mitto] Unhandled relative link caught by safety-net catch-all — routing through viewer:",
+      href,
+    );
+    e.preventDefault();
+    e.stopPropagation();
+    const viewerUrl = buildWorkspaceViewerURL(href);
+    if (viewerUrl) {
+      openViewerUrl(viewerUrl);
+    }
   }
 });
 
