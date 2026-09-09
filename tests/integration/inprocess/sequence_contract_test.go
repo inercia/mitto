@@ -341,29 +341,31 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 
 // TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback reproduces
 // mitto-nhq deterministically, without relying on CI-only port-5757
-// contamination: TestSequenceNumberSyncAfterReconnect's OnEventsLoaded
-// callback above (:299-304) — and the identical sibling pattern in
-// TestSequenceNumberPersistedAcrossReconnect (:172-183) — call
-// close(<chan>) UNCONDITIONALLY. pkg/api/session.go's handleMessage (case
-// "events_loaded", :747-777) invokes OnEventsLoaded once per delivered
-// events_loaded WebSocket frame, so ANY second delivery (handshake
-// auto-load + an explicit LoadEvents call, a hasMore paginated batch, or
-// contaminated CI message delivery) double-closes the channel and panics
-// with "close of closed channel" — crashing the whole test binary, exactly
-// as reported.
+// contamination: TestSequenceNumberSyncAfterReconnect's second-connection
+// OnEventsLoaded callback above — and the identical sibling pattern in
+// TestSequenceNumberPersistence's second-connection OnEventsLoaded
+// callback — used to call close(<chan>) UNCONDITIONALLY. pkg/api/session.go's
+// handleMessage (case "events_loaded") invokes OnEventsLoaded once per
+// delivered events_loaded WebSocket frame, so ANY second delivery
+// (handshake auto-load + an explicit LoadEvents call, a hasMore paginated
+// batch, or contaminated CI message delivery) double-closes the channel
+// and panics with "close of closed channel" — crashing the whole test
+// binary, exactly as reported.
 //
 // This test forces two events_loaded deliveries deterministically via two
-// sequential, non-overlapping LoadEvents calls (spaced apart so the
+// sequential, non-overlapping LoadEvents calls, synchronized on the first
+// delivery being observed by the callback (not a fixed sleep) so the
 // server's per-connection loadEventsMu TryLock, internal/web/session_ws.go
 // handleLoadEventsAsync, does not silently drop the second one as
-// "already in progress"). It reproduced a panic ("close of closed
+// "already in progress". It reproduced a panic ("close of closed
 // channel") when its OnEventsLoaded callback closed `synced`
-// unconditionally; the callback (and the two sibling patterns above, at
-// :181 and :303) is now guarded with sync.Once — see also the pre-existing
-// safe patterns at chatui_smoke_test.go:69-71 (loadedOnce.Do) and
-// session_edge_cases_test.go:229-236 (syncOnce.Do). Do not delete or skip
-// this test; it must complete cleanly, having observed >= 2 deliveries,
-// with no panic.
+// unconditionally; the callback (and the two sibling OnEventsLoaded
+// patterns above, in TestSequenceNumberPersistence and
+// TestSequenceNumberSyncAfterReconnect) is now guarded with sync.Once —
+// see also the pre-existing safe patterns in chatui_smoke_test.go
+// (loadedOnce.Do) and session_edge_cases_test.go (syncOnce.Do). Do not
+// delete or skip this test; it must complete cleanly, having observed >= 2
+// deliveries, with no panic.
 func TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback(t *testing.T) {
 	ts := SetupTestServer(t)
 
@@ -402,39 +404,47 @@ func TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
-	// First delivery: succeeds, closes `synced`.
+	// First delivery: succeeds, closes `synced`. Wait for the callback to
+	// actually observe it (not a fixed sleep) so the server's
+	// per-connection loadEventsMu is known to be released before firing
+	// the second LoadEvents call below — otherwise the second call could be
+	// silently dropped as "already in progress" instead of forcing the
+	// double-close.
 	if err := ws.LoadEvents(50, 0, 0); err != nil {
 		t.Fatalf("first LoadEvents failed: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return deliveries >= 1
+	}, "first events_loaded delivery")
 
-	// Second delivery, sent only after the first has fully completed (lock
-	// released, response received) so it is not silently dropped by the
-	// server's concurrent-load guard: double-closes `synced` and panics.
+	// Second delivery: sent only after the first was observed above, so it
+	// is not silently dropped by the server's concurrent-load guard.
+	// Waiting for the callback to observe it too (rather than a fixed
+	// sleep) double-closes `synced` and panics.
 	if err := ws.LoadEvents(50, 0, 0); err != nil {
 		t.Fatalf("second LoadEvents failed: %v", err)
 	}
-	time.Sleep(1 * time.Second)
-
-	mu.Lock()
-	got := deliveries
-	mu.Unlock()
-	if got < 2 {
-		t.Fatalf("expected at least 2 events_loaded deliveries to force the double-close, got %d", got)
-	}
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return deliveries >= 2
+	}, "second events_loaded delivery")
 }
 
 // TestPromptComplete_DoubleDeliveryPanicsUnguardedCloseCallback is the
-// regression test for mitto-w0a: three OnPromptComplete callbacks in this
-// file (originally at :55, :134, :251, pre-fix) used to call close(<chan>)
-// UNCONDITIONALLY, unlike the OnEventsLoaded callbacks above which mitto-nhq
-// guarded with sync.Once. pkg/api/session.go's handleMessage (case
-// "prompt_complete") invokes OnPromptComplete once per delivered
-// prompt_complete WebSocket frame, so ANY second delivery on the same
-// connection (e.g. a second prompt sent before the connection is closed)
-// double-closed the channel and panicked with "close of closed channel" —
-// crashing the whole test binary (exit 2) and masking other results, exactly
-// as reported on PR #73.
+// regression test for mitto-w0a: the three OnPromptComplete callbacks in
+// this file (in TestSequenceNumberMonotonicity, TestSequenceNumberPersistence,
+// and TestSequenceNumberSyncAfterReconnect, pre-fix) used to call
+// close(<chan>) UNCONDITIONALLY, unlike the OnEventsLoaded callbacks above
+// which mitto-nhq guarded with sync.Once. pkg/api/session.go's
+// handleMessage (case "prompt_complete") invokes OnPromptComplete once per
+// delivered prompt_complete WebSocket frame, so ANY second delivery on the
+// same connection (e.g. a second prompt sent before the connection is
+// closed) double-closed the channel and panicked with "close of closed
+// channel" — crashing the whole test binary (exit 2) and masking other
+// results, exactly as reported on PR #73.
 //
 // This test forces two prompt_complete deliveries deterministically by
 // sending two sequential prompts on the same connection/callbacks, waiting
