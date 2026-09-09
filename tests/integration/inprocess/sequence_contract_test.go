@@ -36,9 +36,10 @@ func TestSequenceNumberMonotonicity(t *testing.T) {
 
 	// Track sequence numbers
 	var (
-		mu       sync.Mutex
-		seqs     []int64
-		complete = make(chan struct{})
+		mu           sync.Mutex
+		seqs         []int64
+		complete     = make(chan struct{})
+		completeOnce sync.Once
 	)
 
 	callbacks := api.SessionCallbacks{
@@ -52,7 +53,7 @@ func TestSequenceNumberMonotonicity(t *testing.T) {
 			mu.Unlock()
 		},
 		OnPromptComplete: func(eventCount int) {
-			close(complete)
+			completeOnce.Do(func() { close(complete) })
 		},
 	}
 
@@ -123,6 +124,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 		mu            sync.Mutex
 		streamingSeqs []int64
 		complete      = make(chan struct{})
+		completeOnce  sync.Once
 	)
 
 	callbacks1 := api.SessionCallbacks{
@@ -131,7 +133,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 			// We'll verify via events_loaded
 		},
 		OnPromptComplete: func(eventCount int) {
-			close(complete)
+			completeOnce.Do(func() { close(complete) })
 		},
 	}
 	// Suppress unused variable warning
@@ -167,6 +169,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 	var (
 		loadedSeqs []int64
 		loaded     = make(chan struct{})
+		loadedOnce sync.Once
 	)
 
 	callbacks2 := api.SessionCallbacks{
@@ -178,7 +181,7 @@ func TestSequenceNumberPersistence(t *testing.T) {
 				}
 			}
 			mu.Unlock()
-			close(loaded)
+			loadedOnce.Do(func() { close(loaded) })
 		},
 	}
 
@@ -231,9 +234,10 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 
 	// First connection - send prompt and track last seq
 	var (
-		mu       sync.Mutex
-		lastSeq  int64
-		complete = make(chan struct{})
+		mu           sync.Mutex
+		lastSeq      int64
+		complete     = make(chan struct{})
+		completeOnce sync.Once
 	)
 
 	callbacks1 := api.SessionCallbacks{
@@ -247,7 +251,7 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 			mu.Unlock()
 		},
 		OnPromptComplete: func(eventCount int) {
-			close(complete)
+			completeOnce.Do(func() { close(complete) })
 		},
 	}
 
@@ -293,6 +297,7 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 	var (
 		syncedEvents []api.SyncEvent
 		synced       = make(chan struct{})
+		syncedOnce   sync.Once
 	)
 
 	callbacks2 := api.SessionCallbacks{
@@ -300,7 +305,7 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 			mu.Lock()
 			syncedEvents = append(syncedEvents, events...)
 			mu.Unlock()
-			close(synced)
+			syncedOnce.Do(func() { close(synced) })
 		},
 	}
 
@@ -332,6 +337,187 @@ func TestSequenceNumberSyncAfterReconnect(t *testing.T) {
 	}
 
 	t.Logf("Sync after seq %d returned %d events", firstLastSeq, len(syncedEvents))
+}
+
+// TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback reproduces
+// mitto-nhq deterministically, without relying on CI-only port-5757
+// contamination: TestSequenceNumberSyncAfterReconnect's second-connection
+// OnEventsLoaded callback above — and the identical sibling pattern in
+// TestSequenceNumberPersistence's second-connection OnEventsLoaded
+// callback — used to call close(<chan>) UNCONDITIONALLY. pkg/api/session.go's
+// handleMessage (case "events_loaded") invokes OnEventsLoaded once per
+// delivered events_loaded WebSocket frame, so ANY second delivery
+// (handshake auto-load + an explicit LoadEvents call, a hasMore paginated
+// batch, or contaminated CI message delivery) double-closes the channel
+// and panics with "close of closed channel" — crashing the whole test
+// binary, exactly as reported.
+//
+// This test forces two events_loaded deliveries deterministically via two
+// sequential, non-overlapping LoadEvents calls, synchronized on the first
+// delivery being observed by the callback (not a fixed sleep) so the
+// server's per-connection loadEventsMu TryLock, internal/web/session_ws.go
+// handleLoadEventsAsync, does not silently drop the second one as
+// "already in progress". It reproduced a panic ("close of closed
+// channel") when its OnEventsLoaded callback closed `synced`
+// unconditionally; the callback (and the two sibling OnEventsLoaded
+// patterns above, in TestSequenceNumberPersistence and
+// TestSequenceNumberSyncAfterReconnect) is now guarded with sync.Once —
+// see also the pre-existing safe patterns in chatui_smoke_test.go
+// (loadedOnce.Do) and session_edge_cases_test.go (syncOnce.Do). Do not
+// delete or skip this test; it must complete cleanly, having observed >= 2
+// deliveries, with no panic.
+func TestEventsLoaded_DoubleDeliveryPanicsUnguardedCloseCallback(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	defer ts.Client.DeleteSession(session.SessionID)
+
+	var (
+		mu         sync.Mutex
+		deliveries int
+		synced     = make(chan struct{})
+		syncedOnce sync.Once
+	)
+
+	// Guarded with sync.Once (mitto-nhq fix) so a second events_loaded
+	// delivery does not double-close `synced` and panic.
+	callbacks := api.SessionCallbacks{
+		OnEventsLoaded: func(events []api.SyncEvent, hasMore bool, isPrompting bool) {
+			mu.Lock()
+			deliveries++
+			mu.Unlock()
+			syncedOnce.Do(func() { close(synced) })
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, session.SessionID, callbacks)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// First delivery: succeeds, closes `synced`. Wait for the callback to
+	// actually observe it (not a fixed sleep) so the server's
+	// per-connection loadEventsMu is known to be released before firing
+	// the second LoadEvents call below — otherwise the second call could be
+	// silently dropped as "already in progress" instead of forcing the
+	// double-close.
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("first LoadEvents failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return deliveries >= 1
+	}, "first events_loaded delivery")
+
+	// Second delivery: sent only after the first was observed above, so it
+	// is not silently dropped by the server's concurrent-load guard.
+	// Waiting for the callback to observe it too (rather than a fixed
+	// sleep) double-closes `synced` and panics.
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("second LoadEvents failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return deliveries >= 2
+	}, "second events_loaded delivery")
+}
+
+// TestPromptComplete_DoubleDeliveryPanicsUnguardedCloseCallback is the
+// regression test for mitto-w0a: the three OnPromptComplete callbacks in
+// this file (in TestSequenceNumberMonotonicity, TestSequenceNumberPersistence,
+// and TestSequenceNumberSyncAfterReconnect, pre-fix) used to call
+// close(<chan>) UNCONDITIONALLY, unlike the OnEventsLoaded callbacks above
+// which mitto-nhq guarded with sync.Once. pkg/api/session.go's
+// handleMessage (case "prompt_complete") invokes OnPromptComplete once per
+// delivered prompt_complete WebSocket frame, so ANY second delivery on the
+// same connection (e.g. a second prompt sent before the connection is
+// closed) double-closed the channel and panicked with "close of closed
+// channel" — crashing the whole test binary (exit 2) and masking other
+// results, exactly as reported on PR #73.
+//
+// This test forces two prompt_complete deliveries deterministically by
+// sending two sequential prompts on the same connection/callbacks, waiting
+// for the first completion before sending the second — mirroring the safe
+// sendAndWait pattern in slow_client_test.go (which uses an atomic counter).
+// The callback below is now guarded with sync.Once (mitto-w0a fix), so this
+// test completes cleanly having observed >= 2 completions, with no panic —
+// do not delete or skip this test; it is the permanent regression guard for
+// the root cause.
+func TestPromptComplete_DoubleDeliveryPanicsUnguardedCloseCallback(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	session, err := ts.Client.CreateSession(api.CreateSessionRequest{})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	defer ts.Client.DeleteSession(session.SessionID)
+
+	var (
+		mu           sync.Mutex
+		completes    int
+		complete     = make(chan struct{})
+		completeOnce sync.Once
+	)
+
+	// Guarded close(complete) (mitto-w0a fix) — a second prompt_complete
+	// delivery on the same connection must not double-close the channel.
+	callbacks := api.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			mu.Lock()
+			completes++
+			mu.Unlock()
+			completeOnce.Do(func() { close(complete) })
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, session.SessionID, callbacks)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	time.Sleep(300 * time.Millisecond)
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// First prompt: completes, closes `complete`.
+	if err := ws.SendPrompt("First message"); err != nil {
+		t.Fatalf("first SendPrompt failed: %v", err)
+	}
+	select {
+	case <-complete:
+	case <-time.After(20 * time.Second):
+		t.Fatal("timeout waiting for first prompt completion")
+	}
+
+	// Second prompt on the SAME connection/callbacks: its prompt_complete
+	// delivery double-closes `complete` and panics — exactly the reported
+	// symptom (mitto-w0a).
+	if err := ws.SendPrompt("Second message"); err != nil {
+		t.Fatalf("second SendPrompt failed: %v", err)
+	}
+
+	waitFor(t, 20*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return completes >= 2
+	}, "second prompt completion")
 }
 
 // TestMultipleClientsReceiveSameSeqs verifies that multiple clients connected

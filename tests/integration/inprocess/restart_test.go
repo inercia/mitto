@@ -186,7 +186,16 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 			// with a stale attempt count) is still in flight. This is critical also
 			// because restartACPProcess applies exponential backoff (3s, 6s, 12s)
 			// before actually starting the new process.
-			waitFor(t, 30*time.Second, func() bool {
+			//
+			// The wait budget is 45s (not the worst-case backoff step of 12s) because
+			// under CI load the full cycle also includes: original crash detection +
+			// process teardown, the exponential backoff sleep itself, new process
+			// startup/handshake, the automatic retry of the identical crashing prompt,
+			// and that retry's own crash-detection + teardown — all serialized before
+			// "Please resend your message" is emitted. A tight 30s budget was
+			// observed to flake when CI scheduling delays stacked on top of these
+			// steps (mitto-w0a).
+			waitFor(t, 45*time.Second, func() bool {
 				found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 				return found
 			}, fmt.Sprintf("crash %d: restart completion", i))
