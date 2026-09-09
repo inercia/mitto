@@ -28,7 +28,7 @@
 //                        (e.g. "flex flex-col flex-1 min-h-0 overflow-hidden") for
 //                        dialogs that own their internal scroll/layout.
 
-const { html, useEffect, useRef } = window.preact;
+const { html, useLayoutEffect, useRef } = window.preact;
 
 import { CloseIcon } from "./Icons.js";
 
@@ -88,7 +88,14 @@ export function Modal({
   const tokenRef = useRef(null);
   if (tokenRef.current === null) tokenRef.current = {};
 
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so the window keydown listener attaches
+  // synchronously as part of the render commit, before preact.render()
+  // returns control to the caller. useEffect defers its flush via
+  // requestAnimationFrame (see vendor/preact-hooks.js n.diffed), leaving a
+  // window where the modal DOM exists but Escape isn't wired up yet — a
+  // real race under CPU contention (mitto-d2h: Escape pressed the instant
+  // the dialog appears could be silently dropped).
+  useLayoutEffect(() => {
     if (!isOpen) return undefined;
 
     const token = tokenRef.current;
