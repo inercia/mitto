@@ -52,4 +52,24 @@ const (
 	// Mirrors web.WSMsgTypeNotification; kept locally so the conversation
 	// package can emit workspace-scoped notifications without importing web.
 	WSMsgTypeNotification = "notification"
+
+	// WSMsgTypeAgentAuthRequired notifies that a session's agent hit an
+	// authentication-required failure (mitto-3du), reusing the durable
+	// auth-expiry signal recorded by mitto-6vs (JSON-RPC -32000
+	// "Authentication required"). Fired once per outage streak from
+	// handlePromptError's auth branch, guarded by the same
+	// pdAuthGuidanceAlreadySurfaced dedupe used for the transcript guidance.
+	// Broadcast on /api/events (not a per-session observer) so unattended/loop
+	// sessions with no attached client still surface the pill. Data:
+	// { "session_id": string, "workspace_uuid": string, "workspace_name": string,
+	//   "working_dir": string }
+	WSMsgTypeAgentAuthRequired = "agent_auth_required"
+
+	// WSMsgTypeAgentAuthCleared notifies that a session's agent recovered from
+	// an "agent_auth_required" state: a prompt succeeded after that guidance
+	// had previously been surfaced. Not fired on every successful prompt —
+	// only when the prior state was actually "required" — so it never spams a
+	// clear for a workspace that was never degraded. Data: same shape as
+	// WSMsgTypeAgentAuthRequired.
+	WSMsgTypeAgentAuthCleared = "agent_auth_cleared"
 )

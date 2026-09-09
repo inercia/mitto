@@ -243,3 +243,74 @@ func TestHandleGetSession_ParentSessionID(t *testing.T) {
 		t.Errorf("ParentSessionID = %q, want %q", response.ParentSessionID, "parent-session-1")
 	}
 }
+
+// TestHandleGetSession_BackendDescriptor_IdentityWithoutLiveSession covers
+// the mitto-lrt.12 additive "backend" descriptor on GET /api/sessions/{id}:
+// identity is computed from persisted metadata alone (no SessionManager, so
+// no live BackgroundSession is attached), and legacy fields (acp_server,
+// acp_session_id) keep their existing meaning unchanged alongside it.
+func TestHandleGetSession_BackendDescriptor_IdentityWithoutLiveSession(t *testing.T) {
+	store, h := newGetSessionHandlers(t)
+
+	meta := session.Metadata{
+		SessionID:    "test-session-backend",
+		ACPServer:    "Auggie",
+		ACPSessionID: "upstream-99",
+		WorkingDir:   "/tmp",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/test-session-backend", nil)
+	w := httptest.NewRecorder()
+	h.HandleGetSession(w, req, "test-session-backend", false)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp sessionGetResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%q)", err, w.Body.String())
+	}
+	// Legacy fields keep their current meaning.
+	if resp.ACPServer != "Auggie" || resp.ACPSessionID != "upstream-99" {
+		t.Errorf("legacy fields changed: ACPServer=%q ACPSessionID=%q", resp.ACPServer, resp.ACPSessionID)
+	}
+	if resp.Backend == nil {
+		t.Fatal("expected a non-nil Backend descriptor (identity is computable from persisted metadata)")
+	}
+	if resp.Backend.AgentRef == nil || resp.Backend.AgentRef.Provider != "Auggie" {
+		t.Errorf("Backend.AgentRef = %+v, want Provider=Auggie", resp.Backend.AgentRef)
+	}
+	if resp.Backend.Capabilities != nil {
+		t.Errorf("expected no capabilities without a live BackgroundSession, got %+v", resp.Backend.Capabilities)
+	}
+}
+
+// TestHandleGetSession_BackendDescriptor_AbsentWhenACPServerEmpty pins the
+// "never synthesized" contract: a legacy/malformed session record with no
+// ACPServer must omit the "backend" key entirely rather than fabricate one.
+func TestHandleGetSession_BackendDescriptor_AbsentWhenACPServerEmpty(t *testing.T) {
+	store, h := newGetSessionHandlers(t)
+
+	if err := store.Create(session.Metadata{SessionID: "test-session-no-acp", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/test-session-no-acp", nil)
+	w := httptest.NewRecorder()
+	h.HandleGetSession(w, req, "test-session-no-acp", false)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["backend"]; ok {
+		t.Errorf("expected no \"backend\" key when ACPServer is empty, got %v", raw["backend"])
+	}
+}

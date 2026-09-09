@@ -1935,3 +1935,87 @@ func TestSendSessionConnected_NoArchive(t *testing.T) {
 		})
 	}
 }
+
+// TestSendSessionConnected_BackendDescriptor pins the mitto-lrt.12 additive
+// "backend" descriptor riding inside the "connected" snapshot: present with
+// neutral identity when metadata carries an ACPServer (bs nil — no live
+// BackgroundSession attached, e.g. archived/suspended or resuming), and
+// absent (never synthesized) for a legacy/malformed record with none. The
+// snapshot is also authoritative across repeated calls (simulating
+// reconnect): each call recomputes the same descriptor from current store
+// state rather than caching/aliasing a stale one.
+func TestSendSessionConnected_BackendDescriptor(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const withACP = "test-backend-desc-with-acp"
+	const withoutACP = "test-backend-desc-without-acp"
+	if err := store.Create(session.Metadata{SessionID: withACP, ACPServer: "Auggie", ACPSessionID: "upstream-7"}); err != nil {
+		t.Fatalf("store.Create(withACP): %v", err)
+	}
+	if err := store.Create(session.Metadata{SessionID: withoutACP}); err != nil {
+		t.Fatalf("store.Create(withoutACP): %v", err)
+	}
+
+	readBackend := func(sessionID string) (map[string]interface{}, bool) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: sessionID,
+			server:    &Server{config: Config{ACPServer: "Auggie"}},
+			wsConn:    &WSConn{send: mockWS.send},
+			store:     store,
+		}
+		client.sendSessionConnected(nil)
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			backend, ok := msg.Data["backend"]
+			if !ok {
+				return nil, false
+			}
+			m, ok := backend.(map[string]interface{})
+			if !ok {
+				t.Fatalf("backend field is not an object: %T", backend)
+			}
+			return m, true
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected connected message on send channel, got none")
+			return nil, false
+		}
+	}
+
+	// Identity computable: "backend" present with the expected neutral shape,
+	// on two successive calls (reconnect-snapshot authority).
+	for i := 0; i < 2; i++ {
+		backend, present := readBackend(withACP)
+		if !present {
+			t.Fatalf("call %d: expected \"backend\" key when ACPServer is set", i)
+		}
+		agentRef, _ := backend["agent_ref"].(map[string]interface{})
+		if agentRef["provider"] != "Auggie" || agentRef["backend"] != "acp" {
+			t.Errorf("call %d: agent_ref = %+v, want provider=Auggie backend=acp", i, agentRef)
+		}
+		sessionRef, _ := backend["session_ref"].(map[string]interface{})
+		if sessionRef["conversation_id"] != withACP || sessionRef["provider_session"] != "upstream-7" {
+			t.Errorf("call %d: session_ref = %+v, unexpected shape", i, sessionRef)
+		}
+		// No credentials of any kind ride in the neutral block.
+		if _, ok := backend["credential_ref"]; ok {
+			t.Errorf("call %d: unexpected credential_ref key in backend descriptor", i)
+		}
+	}
+
+	// Never synthesized: no ACPServer on record means no "backend" key at all.
+	if _, present := readBackend(withoutACP); present {
+		t.Error("expected no \"backend\" key when ACPServer is empty (must never be synthesized)")
+	}
+}

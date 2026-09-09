@@ -249,18 +249,42 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 		return nil
 	}
 
+	// mitto-220: recompute the MCP servers immediately before the deferred
+	// session/new RPC fires, instead of reusing the snapshot prepareSharedACPSession
+	// took at conversation-creation time. session/new is deliberately deferred to
+	// the first prompt, which can happen long after the conversation was prepared
+	// (e.g. a session recreated during a cold app boot). If the global MCP
+	// server's SSE listener — or the agent's advertised McpCapabilities.Http —
+	// was not yet ready when the stale snapshot was captured, that session was
+	// permanently stuck without the mitto-apvg HTTP transport binding: the
+	// legacy ACP-observed correlation fallback it fell back to never establishes
+	// self_id reliably (ambiguous_self_id / correlation-rendezvous timeouts).
+	// Recomputing here uses whatever is available right now. hsStartMcpServer
+	// (RegisterSession) is idempotent — re-registering an already-registered
+	// session updates it in place without rotating its binding token — so this
+	// is safe to call unconditionally on every deferred handshake.
+	var caps acp.AgentCapabilities
+	if sharedCaps := d.hsGetSharedProcess().Capabilities(); sharedCaps != nil {
+		caps = *sharedCaps
+	}
+	mcpServers := d.hsStartMcpServer(caps)
+	if mcpServers == nil {
+		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
+	}
+	d.hsSetPendingSharedMcpServers(mcpServers)
+
 	// Cold-start diagnostics (mitto-3mv): if the shared process's MCP-init
 	// window is still open, mark the boundary so the closing MCP-init phase
 	// (emitted from completeDeferredHandshake) has a duration to report.
 	if sp := d.hsGetSharedProcess(); sp != nil && !sp.MCPInitDone() {
 		d.hsColdPhase("mcp_init_wait_begin",
-			"has_mcp_servers", len(d.hsGetPendingSharedMcpServers()) > 0,
+			"has_mcp_servers", len(mcpServers) > 0,
 			"deferred", true)
 		d.hsMarkMcpInitStart()
 	}
 
 	newStart := time.Now()
-	handle, err := d.hsGetSharedProcess().NewSession(d.hsColdTraceCtx(d.hsSessionCtx()), d.hsGetPendingSharedWorkingDir(), d.hsGetPendingSharedMcpServers())
+	handle, err := d.hsGetSharedProcess().NewSession(d.hsColdTraceCtx(d.hsSessionCtx()), d.hsGetPendingSharedWorkingDir(), mcpServers)
 	if err != nil {
 		d.hsColdPhase("session_new_failed",
 			"rpc_ms", time.Since(newStart).Milliseconds(),

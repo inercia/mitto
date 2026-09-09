@@ -2130,6 +2130,31 @@ export function useWebSocket({
         }
         break;
 
+      case "agent_auth_required":
+        // Server notifies that a session's agent hit an authentication-required
+        // failure (mitto-3du), reusing mitto-6vs's durable auth-expiry signal.
+        // Broadcast on /api/events so unattended/loop sessions with no attached
+        // client still surface a sidebar health pill.
+        console.warn("Agent auth required:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:agent_auth_required", { detail: msg.data }),
+          );
+        }
+        break;
+
+      case "agent_auth_cleared":
+        // Server notifies that a session's agent recovered from an
+        // "agent_auth_required" state (a prompt succeeded after guidance had
+        // previously been surfaced).
+        console.log("Agent auth cleared:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:agent_auth_cleared", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "acp_start_failed":
         // Server notifies that the ACP server failed to start
         console.error("ACP start failed:", msg.data);

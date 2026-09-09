@@ -78,7 +78,7 @@ var publicAPIPaths = map[string]bool{
 2. AuthMiddleware checks:
    a. Is auth enabled? No → pass through
    b. Is external connection? Yes → require auth
-   c. Is loopback IP on internal listener? Yes → bypass auth
+   c. Is loopback IP on internal listener? Yes → bypass auth AND CSRF (mitto-aha: known gap, not "safe by localhost")
    d. Is IP in allow list? Yes → bypass auth
    e. Is public path? Yes → pass through
    f. Has valid session cookie? Yes → pass through

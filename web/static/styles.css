@@ -2198,6 +2198,22 @@ mitto-action {
   margin-bottom: 0;
 }
 
+/* Task-label color-preset picker (TaskLabelColorsEditor) opens UPWARD: the
+   editor's rows sit near the bottom of the scrollable Workspaces/Settings
+   dialog, so a default downward popover is clipped by the dialog edge. Same
+   rationale as the config selectors above — daisyUI's dropdown-top placement
+   relies on CSS anchor positioning (unavailable in WKWebView), so pin explicit
+   physical insets here. Unlayered styles.css beats the layered z-50 utility. */
+.task-label-color-dropdown .dropdown-content {
+  top: auto;
+  bottom: 100%;
+  left: 0;
+  right: auto;
+  margin-top: 0;
+  margin-bottom: 0.375rem;
+  z-index: 999;
+}
+
 .chat-input-context-pct {
   font-size: 11px;
   white-space: nowrap;

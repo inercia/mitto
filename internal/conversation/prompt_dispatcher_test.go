@@ -166,6 +166,14 @@ type fakePromptDeps struct {
 
 	// restoreBaselineCalls counts pdRestoreBaselineIfOverride invocations.
 	restoreBaselineCalls int
+
+	// === New in mitto-6vs: durable auth-expiry guidance dedupe ===
+	authGuidanceSurfaced   bool
+	markAuthGuidanceCalls  int
+	clearAuthGuidanceCalls int
+
+	// === New in mitto-3du: agent auth-required sidebar health pill ===
+	agentAuthStateCalls []bool
 }
 
 func newFakePromptDeps() *fakePromptDeps {
@@ -385,6 +393,28 @@ func (f *fakePromptDeps) pdRestoreBaselineIfOverride() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.restoreBaselineCalls++
+}
+func (f *fakePromptDeps) pdAuthGuidanceAlreadySurfaced() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authGuidanceSurfaced
+}
+func (f *fakePromptDeps) pdMarkAuthGuidanceSurfaced() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authGuidanceSurfaced = true
+	f.markAuthGuidanceCalls++
+}
+func (f *fakePromptDeps) pdClearAuthGuidanceSurfaced() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authGuidanceSurfaced = false
+	f.clearAuthGuidanceCalls++
+}
+func (f *fakePromptDeps) pdNotifyAgentAuthState(required bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.agentAuthStateCalls = append(f.agentAuthStateCalls, required)
 }
 func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
 	f.mu.Lock()
@@ -3554,6 +3584,153 @@ func TestPromptDispatcher_HandlePromptError_AuthError_QueueNotAdvanced(t *testin
 	}
 	if d.restoreBaselineCalls != 1 {
 		t.Fatalf("expected restoreBaselineIfOverride to still be called for auth error, got %d", d.restoreBaselineCalls)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_AuthError_RecordsDurableGuidanceOnce
+// is the mitto-6vs regression test: handlePromptError's auth branch must
+// persist the friendly re-auth guidance via pdRecordErrorEvent so it survives
+// in unattended/loop-driven sessions with no client attached (previously it
+// only fired a transient OnError notification). The record must be deduped —
+// a second consecutive auth failure in the same outage streak must NOT write
+// a second identical transcript entry — and re-armed by
+// pdClearAuthGuidanceSurfaced once handlePromptSuccess observes a successful
+// prompt (the CLI is authenticated again).
+func TestPromptDispatcher_HandlePromptError_AuthError_RecordsDurableGuidanceOnce(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasRecorder = true
+
+	authErr := &fakeAuthError{}
+
+	// First auth failure of the streak: durable record written, guard armed.
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected 1 durable error event after first auth failure, got %d: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
+	}
+	if d.markAuthGuidanceCalls != 1 {
+		t.Fatalf("expected pdMarkAuthGuidanceSurfaced called once, got %d", d.markAuthGuidanceCalls)
+	}
+	if !d.authGuidanceSurfaced {
+		t.Fatal("expected authGuidanceSurfaced=true after first auth failure")
+	}
+
+	// Second consecutive auth failure in the same streak: must NOT re-record.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected still 1 durable error event after second consecutive auth failure "+
+			"(dedupe must suppress repeat records), got %d: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
+	}
+	if d.markAuthGuidanceCalls != 1 {
+		t.Fatalf("expected pdMarkAuthGuidanceSurfaced still called only once, got %d", d.markAuthGuidanceCalls)
+	}
+
+	// A successful prompt re-arms the guard (CLI is authenticated again).
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	p.handlePromptSuccess(d, 1, 1, resp, "msg", PromptMeta{}, time.Now(), time.Now())
+	if d.clearAuthGuidanceCalls != 1 {
+		t.Fatalf("expected pdClearAuthGuidanceSurfaced called once on success, got %d", d.clearAuthGuidanceCalls)
+	}
+	if d.authGuidanceSurfaced {
+		t.Fatal("expected authGuidanceSurfaced=false after a successful prompt")
+	}
+
+	// A fresh auth-outage streak must record durable guidance again.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.recordedErrorEvents) != 2 {
+		t.Fatalf("expected 2 durable error events after a re-armed auth failure, got %d: %v",
+			len(d.recordedErrorEvents), d.recordedErrorEvents)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_AuthError_NotifiesAgentAuthState is the
+// mitto-3du companion to the mitto-6vs durable-guidance test above: it verifies
+// pdNotifyAgentAuthState(true) fires exactly once per outage streak (piggybacking
+// on the same pdHasRecorder-gated, pdAuthGuidanceAlreadySurfaced-deduped block as
+// the durable transcript record), and that handlePromptSuccess fires
+// pdNotifyAgentAuthState(false) exactly once when a prior failure had surfaced
+// guidance — driving the sidebar health pill through required -> cleared ->
+// required across a re-armed streak.
+func TestPromptDispatcher_HandlePromptError_AuthError_NotifiesAgentAuthState(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasRecorder = true
+
+	authErr := &fakeAuthError{}
+
+	// First auth failure of the streak: required=true fires once.
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.agentAuthStateCalls) != 1 || d.agentAuthStateCalls[0] != true {
+		t.Fatalf("expected [true] after first auth failure, got %v", d.agentAuthStateCalls)
+	}
+
+	// Second consecutive auth failure in the same streak: deduped, no repeat call.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.agentAuthStateCalls) != 1 {
+		t.Fatalf("expected still [true] after second consecutive auth failure (deduped), got %v",
+			d.agentAuthStateCalls)
+	}
+
+	// A successful prompt clears: required=false fires exactly once, since
+	// guidance had been surfaced by the failures above.
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	p.handlePromptSuccess(d, 1, 1, resp, "msg", PromptMeta{}, time.Now(), time.Now())
+	if len(d.agentAuthStateCalls) != 2 || d.agentAuthStateCalls[1] != false {
+		t.Fatalf("expected [true,false] after a successful prompt clears the guard, got %v",
+			d.agentAuthStateCalls)
+	}
+
+	// A fresh auth-outage streak must notify required=true again.
+	autoRetried = false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+	if len(d.agentAuthStateCalls) != 3 || d.agentAuthStateCalls[2] != true {
+		t.Fatalf("expected [true,false,true] after a re-armed auth failure, got %v",
+			d.agentAuthStateCalls)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptSuccess_NeverSurfaced_DoesNotNotifyAgentAuthState
+// pins the anti-spam guarantee (mitto-3du plan decision #2): an ordinary
+// successful prompt in a workspace that was never auth-degraded must not fire
+// pdNotifyAgentAuthState at all, so the sidebar never sees a spurious clear.
+func TestPromptDispatcher_HandlePromptSuccess_NeverSurfaced_DoesNotNotifyAgentAuthState(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	p.handlePromptSuccess(d, 0, 0, resp, "msg", PromptMeta{}, time.Now(), time.Now())
+
+	if len(d.agentAuthStateCalls) != 0 {
+		t.Fatalf("expected no pdNotifyAgentAuthState calls for a never-degraded workspace, got %v",
+			d.agentAuthStateCalls)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_AuthError_NoRecorder_DoesNotNotifyAgentAuthState
+// documents that the mitto-3du sidebar broadcast piggybacks on the same
+// pdHasRecorder-gated block as the mitto-6vs durable guidance record: an auth
+// failure on a session with no recorder attached does not fire
+// pdNotifyAgentAuthState(true) either. Flagged in the Testing bead comment for
+// the Review phase to confirm this coupling is intentional.
+func TestPromptDispatcher_HandlePromptError_AuthError_NoRecorder_DoesNotNotifyAgentAuthState(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasRecorder = false
+
+	authErr := &fakeAuthError{}
+	autoRetried := false
+	p.handlePromptError(d, authErr, &autoRetried, 0, false)
+
+	if len(d.agentAuthStateCalls) != 0 {
+		t.Fatalf("expected no pdNotifyAgentAuthState calls when pdHasRecorder()==false, got %v",
+			d.agentAuthStateCalls)
 	}
 }
 

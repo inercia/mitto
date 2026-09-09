@@ -220,6 +220,36 @@ func TestReconcileDatabaseMode_SharedWithoutRemoteIsActionableAndDoesNotMutate(t
 	}
 }
 
+// TestReconcileDatabaseMode_SharedUnsetMissingConfigYAML_ReturnsError reproduces
+// mitto-fh9: switching to (or reconciling) shared mode on a Dolt-backed database
+// that has no .beads/config.yaml (or has it momentarily absent mid-rewrite) fails
+// with a bare error instead of being tolerated as an idempotent no-op. bd's real
+// diagnostic for this case is "no config.yaml found in BEADS_DIR (...) (run 'bd
+// init' first)" (captured verbatim from the 2026-09-07 production log), which
+// isConfigKeyAlreadyAbsent does not recognize as "guard already absent" — unlike
+// the "not set"/"no such key" messages it does tolerate. isInitialized(dir)
+// considers metadata.json alone sufficient (Dolt-backed DBs may have no
+// config.yaml at all), so this is a reachable state, not merely a race window.
+//
+// Before the fix, ReconcileDatabaseMode(shared) returned a non-nil error
+// here, which the HTTP handler (writeBeadsDatabaseModeError ->
+// writeBeadsError) turned into a bare HTTP 500 on GET
+// /api/issues/database-mode (Cluster A in the bead). The fix now tolerates
+// the missing-config.yaml diagnostic the same way an already-absent key is
+// tolerated, so this test asserts success (err == nil) and passes.
+func TestReconcileDatabaseMode_SharedUnsetMissingConfigYAML_ReturnsError(t *testing.T) {
+	dir := initializedDir(t)
+	const wantStderr = "no config.yaml found in BEADS_DIR (/tmp/example/.beads) (run 'bd init' first)"
+	runner := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte(`[{"name":"origin"}]`)},
+		{stderr: wantStderr, err: errors.New("exit status 1")},
+	}}
+	err := newClient(runner).ReconcileDatabaseMode(context.Background(), dir, workspaces.BeadsDatabaseModeShared)
+	if err != nil {
+		t.Fatalf("ReconcileDatabaseMode(shared) error = %v, want nil (missing config.yaml on unset must be tolerated as an idempotent no-op, mitto-fh9)", err)
+	}
+}
+
 func assertRunnerArgs(t *testing.T, calls []runnerCall, want [][]string) {
 	t.Helper()
 	if len(calls) != len(want) {

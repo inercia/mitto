@@ -843,8 +843,8 @@ export function WorkspacesDialog({
                           No workspaces configured
                         </p>
                         <p>
-                          Add a workspace to specify a folder where an ACP
-                          server will operate.
+                          Add a workspace to specify a folder where an agent
+                          will operate.
                         </p>
                         <p class="text-xs">
                           Click the
@@ -922,8 +922,7 @@ export function WorkspacesDialog({
           ${orphanedWorkspaces.length > 0 &&
           html`
             <p class="text-xs text-mitto-warning">
-              ⚠ ${orphanedWorkspaces.length} workspace(s) hidden: missing ACP
-              server
+              ⚠ ${orphanedWorkspaces.length} workspace(s) hidden: missing agent
             </p>
           `}
           ${error && html`<p class="text-xs text-mitto-danger">${error}</p>`}
@@ -940,13 +939,13 @@ export function WorkspacesDialog({
                 ? "btn-warning"
                 : "btn-outline btn-warning"}"
               data-tip=${needsRestart
-                ? "Restart ACP to apply MCP changes to active conversations"
-                : "Restart the ACP server for this workspace"}
+                ? "Restart the agent to apply MCP changes to active conversations"
+                : "Restart the agent for this workspace"}
               data-testid="ws-restart-acp"
             >
               ${restarting
                 ? html`<${SpinnerIcon} className="w-4 h-4" /> Restarting...`
-                : "Restart ACP"}
+                : "Restart Agent"}
             </button>
           `}
           <button

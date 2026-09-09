@@ -26,6 +26,12 @@ keywords:
   - parent child
   - cascade delete
   - loop
+  - killACPProcess
+  - BackendLease
+  - Detach
+  - fresh-acquire
+  - Reconnect
+  - lease binding
 ---
 
 # Session Lifecycle Management
@@ -100,6 +106,8 @@ Death detection (three layers): OS polling (~2s), `conn.Done()` EOF (~seconds), 
 
 When ACP handshake times out transiently, `BackgroundSession.InitializeWithACP()` defers retry up to 3 attempts with exponential backoff. The error event is persisted in the session event log (viewable in UI). Retries happen deferred in a separate goroutine to avoid blocking session creation or WebSocket initialization. After 3 attempts, the session enters error state with guidance.
 
+**Deferred-shared `session/new`: recompute env-dependent params at RPC time (mitto-220)**: on the deferred-shared ACP path, `prepareSharedACPSession` computes eagerly at conversation-creation, but the actual `session/new` fires on the first prompt. Any parameter that depends on system state which can evolve between prepare and dispatch (agent capabilities, `SessionHTTPBinding` readiness, listener port availability) MUST be recomputed at dispatch time — `ensureSharedACPSession` re-invokes `hsStartMcpServer` with `sharedProcess.Capabilities()` immediately before the RPC. Persisting the prepare-time snapshot forwards a stale/empty MCP servers list and permanently miswires the session (no error, no retry, no self-heal). Safe because `RegisterSession` on the global MCP server is idempotent. Pinned by `TestHandshaker_EnsureSharedACPSession_RecomputesMcpServersAtDeferredTime`.
+
 ## Shared Handshake Budget: Stale vs. Cold-Timeout (anti-regression)
 
 `internal/conversation/shared_session_handshaker.go` bounds concurrent `session/load` + `session/new` handshakes with **one shared deadline** to prevent stacking (`mitto-1ut`). The budget cap MUST be **released** for the `session/new` fallback when the `session/load` probe **timed out** (process genuinely cold) — otherwise `session/new` inherits only `budget − probeTimeout` (e.g. `240s − 45s = 195s`), less than a single `MCPInitTimeout` attempt (240s), guaranteeing starvation. Only cap the fallback when the probe **fast-failed** (JSON-RPC `-32602` stale). Track this via `probeTimedOut`. Test seam: `loadBlocksUntilCtxDone` in `fakeSharedProcess` (`TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline`). Pre-attempt cancellations in `acpproc/shared_acp_process.go` emit a self-diagnosing error (elapsed vs. per-attempt budget) instead of a raw deadline.
@@ -145,6 +153,49 @@ Send `session_gone` (NOT generic error — clients stop reconnecting on `session
 `DeleteChildSessions`: lists children → gracefully stops each (30s timeout) → `store.Delete` → broadcasts `session_deleted`.
 
 **Anti-patterns**: Never archive a child directly. Never allow loop config on a child.
+
+## `killACPProcess` — Single Teardown Chokepoint (mitto-lrt.18)
+
+`BackgroundSession.killACPProcess()` (`internal/conversation/bgsession_acp_process.go`) is THE single funnel for every session-closure path — archive/unarchive/delete, parent-child cascade, and GC loop suspension all flow through `CloseSession → bs.Close(reason) → bs.killACPProcess()`. Verified by grep: exactly one call site fans out to all closure paths.
+
+**Shared-mode teardown routes through `BackendLease.Detach()` when a lease is bound** (mitto-lrt.18):
+
+```go
+if bs.sharedProcess != nil {
+    if bs.lease != nil {
+        bs.lease.Detach() // detach-not-kill, bound or unbound
+        return
+    }
+    if bs.acpID != "" {
+        bs.sharedProcess.UnregisterSession(acp.SessionId(bs.acpID))
+    }
+    return
+}
+```
+
+- **Bound lease** → `Detach()` is byte-identical to the old direct `UnregisterSession(acp.SessionId(bs.acpID))` call — it just goes through the lease seam.
+- **Unbound lease** (bound but `acpID` empty, e.g. handshake never completed) → `Detach()` is a documented safe no-op, matching the pre-lease `acpID != ""` guard.
+- **Nil lease** (no `BackendProvider` injected, e.g. unit tests that never call `SetBackendProvider`) → falls back byte-identically to the direct `UnregisterSession` path.
+
+**Anti-pattern — do NOT bypass `killACPProcess` for a new closure path.** Adding a "closure" caller that goes direct to `sharedProcess.UnregisterSession` silently skips the lease's `Detach`. Today that's byte-identical for ACP, but non-ACP adapters (future AHP host, remote backends) attach non-trivial teardown semantics to `Detach()`. Route new closures through `killACPProcess` (via `Close(reason)`) — do NOT duplicate its logic elsewhere.
+
+## Reconnect — Fresh-Acquire Equivalence (mitto-lrt.18)
+
+**There is deliberately NO in-place `BackendLease.Reconnect` call site in production.** `SessionManager.ResumeSession` rebuilds a fresh `BackgroundSession` that re-acquires through the `BackendProvider` lease path — a fresh acquire IS the reconnect. `acpLease.Reconnect` stays implemented + tested (single-flight semantics preserved) but is intentionally unused in production.
+
+Rewiring `restartACPProcessFromGeneration` to `lease.Reconnect` was EXPLICITLY REJECTED because it would risk two invariants:
+- **no-silent-replacement-session** — an in-place `Reconnect` could return a fresh remote session under a still-live `sessionID` without callers knowing.
+- **no-replay-of-possibly-accepted-prompt** — a coalesced `Reconnect` could re-drive a prompt whose delivery was already accepted upstream.
+
+**Anti-pattern**: Do NOT "clean up code duplication" by wiring `lease.Reconnect` into `restartACPProcessFromGeneration`. The fresh-acquire equivalence is load-bearing, not oversight. If a future non-ACP backend needs in-place `Reconnect`, add a NEW call site rather than folding it into the existing restart path. See `docs/devel/agent-backend-architecture.md` § "Reconnect — fresh-acquire equivalence".
+
+## Lease Binding Across the Deferred Handshake (mitto-lrt.18)
+
+`BackgroundSession.completeDeferredHandshake()` (`bgsession_shared_session.go`) calls `bs.lease.Bind(agentbackend.SessionRef{ConversationID: bs.persistedID, ProviderSession: bs.acpID})` immediately after the deferred `session/new` (mitto-220 pattern) succeeds and `bs.acpID` is resolved. Guarded on `bs.lease != nil && bs.acpID != ""`; idempotent across repeat calls (prewarm + first prompt both invoke it — second `Bind` is harmless).
+
+`BackendLease.Bind(ref)` is the seam that lets a `DeferSession` lease — returned with `sessionID` empty — be attached to the real ACP session ID once the caller completes its own deferred handshake. Before Bind, the lease's `Detach()` is a safe no-op; after Bind, `Detach()` unregisters the real session from the multiplex layer.
+
+**`ClassifyAcquireError` is advisory only**: `session_manager.go`'s `getSharedProcess` acquire-error branch logs a `lifecycle_state` field (Reconnecting/Disconnected/Stopped) alongside the existing Warn, but the fall-back-to-nil OUTCOME and `ACPStartFailureCount`/auto-archive semantics are UNCHANGED. Auto-archive-on-failure counters still classify off the original `err` via `errors.Is/As` at the resume-failure site (mirrors the mitto-hjx facet D carve-out above). Do NOT let the advisory state drive outcome decisions — that would re-couple lifecycle counters to transient acquire failures.
 
 ## Loop Prompt Name Resolution
 

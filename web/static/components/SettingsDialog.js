@@ -389,7 +389,7 @@ export function AutoChildrenEditor({
   }));
 
   const profileOptions = [
-    { value: "", label: "Default (ACP server criteria)" },
+    { value: "", label: "Default (agent criteria)" },
     ...(modelProfiles || []).map((p) => ({ value: p.name, label: p.name })),
   ];
 
@@ -968,7 +968,7 @@ function ServerEditForm({
         <label class="label">Initial Model (optional)</label>
         <p class="text-xs text-mitto-text-muted mb-2">
           Apply this model as the baseline for every new conversation created
-          with this ACP server
+          with this agent
         </p>
         <div class="flex items-center gap-2">
           <div class="flex-1 min-w-0">
@@ -1173,7 +1173,7 @@ function ServerEditForm({
               </div>
             `}
         <p class="text-xs text-mitto-text-muted mt-2">
-          These environment variables will be set when starting the ACP server
+          These environment variables will be set when starting the agent
           process.
         </p>
       </div>
@@ -1505,7 +1505,7 @@ function ACPServerDeleteWizard({
       return {
         key: f.working_dir,
         kind: "reassign",
-        text: `${label} → reassign to "${choice.newServer}": ${total} conversation(s) will keep working on the new ACP.`,
+        text: `${label} → reassign to "${choice.newServer}": ${total} conversation(s) will keep working on the new agent.`,
       };
     }
     return {
@@ -1607,7 +1607,7 @@ function ACPServerDeleteWizard({
     <${Modal}
       isOpen=${isOpen}
       onClose=${step === "executing" ? undefined : onClose}
-      title=${`Delete ACP server "${serverName}"`}
+      title=${`Delete agent "${serverName}"`}
       testid="acp-delete-wizard"
       boxClass="max-w-2xl"
       footer=${footer}
@@ -1616,7 +1616,7 @@ function ACPServerDeleteWizard({
       html`
         <div class="space-y-3 text-sm">
           <p>
-            Deleting ACP server
+            Deleting agent
             <span class="font-semibold">"${serverName}"</span> will affect the
             following folders. You'll be asked what to do for each.
           </p>
@@ -1670,7 +1670,7 @@ function ACPServerDeleteWizard({
             ? html`
                 <div class="form-control">
                   <label class="label pb-1">
-                    <span class="label-text">Choose the new ACP:</span>
+                    <span class="label-text">Choose the new agent:</span>
                   </label>
                   <select
                     class="select select-bordered select-sm w-full"
@@ -1710,7 +1710,7 @@ function ACPServerDeleteWizard({
                   class="alert alert-warning alert-soft text-sm"
                 >
                   <div>
-                    No other ACP server is configured for this folder.
+                    No other agent is configured for this folder.
                     Continuing will
                     <span class="font-semibold">DELETE</span>
                     ${" "}${folderTotal(currentFolder)} conversation(s) in
@@ -1788,7 +1788,7 @@ function ACPServerDeleteWizard({
         <div class="space-y-2 text-sm">
           <div role="alert" class="alert alert-success alert-soft text-sm">
             <div>
-              Deleted ACP server
+              Deleted agent
               <span class="font-semibold">"${serverName}"</span>.
             </div>
           </div>
@@ -2789,20 +2789,20 @@ export function SettingsDialog({
     }
 
     if (acpServers.length === 0) {
-      setError("At least one ACP server is required");
+      setError("At least one agent is required");
       setActiveTab("servers");
       return;
     }
 
-    // Validate all ACP servers have required fields
+    // Validate all agents have required fields
     for (const srv of acpServers) {
       if (!srv.name || !srv.name.trim()) {
-        setError("All ACP servers must have a name");
+        setError("All agents must have a name");
         setActiveTab("servers");
         return;
       }
       if (!srv.command || !srv.command.trim()) {
-        setError(`ACP server "${srv.name}" must have a command`);
+        setError(`Agent "${srv.name}" must have a command`);
         setActiveTab("servers");
         return;
       }
@@ -2813,7 +2813,7 @@ export function SettingsDialog({
       (n, i) => serverNames.indexOf(n) !== i,
     );
     if (duplicates.length > 0) {
-      setError(`Duplicate ACP server name: "${duplicates[0]}"`);
+      setError(`Duplicate agent name: "${duplicates[0]}"`);
       setActiveTab("servers");
       return;
     }
@@ -3356,7 +3356,7 @@ export function SettingsDialog({
   //     is authoritative for on-disk state and still removes the server).
   const removeServer = async (serverName) => {
     if (acpServers.length <= 1) {
-      setError("At least one ACP server is required");
+      setError("At least one agent is required");
       return;
     }
     setError("");
@@ -3621,7 +3621,7 @@ export function SettingsDialog({
 
   // Define navigation items for sidebar
   const navItems = [
-    { id: "servers", label: "ACP Servers", icon: ServerIcon },
+    { id: "servers", label: "Agents", icon: ServerIcon },
     { id: "models", label: "Models", icon: LayersIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
@@ -3700,7 +3700,7 @@ export function SettingsDialog({
                   <div class="space-y-4">
                     <div class="flex items-center justify-between">
                       <p class="text-mitto-text-muted text-sm">
-                        ACP servers are AI coding assistants.${" "}
+                        Agents are AI coding assistants.${" "}
                         <a
                           href="https://agentclientprotocol.com/overview/agents"
                           onClick=${(e) => {
@@ -3848,14 +3848,14 @@ export function SettingsDialog({
                       </fieldset>
                     `}
                     <fieldset class="fieldset pt-2">
-                      <legend class="fieldset-legend">ACP Servers</legend>
+                      <legend class="fieldset-legend">Agents</legend>
                       ${acpServers.length === 0
                         ? html`
                             <div class="text-center py-8 text-mitto-text-muted">
                               <${ServerEmptyIcon}
                                 className="w-12 h-12 mx-auto mb-2 opacity-50"
                               />
-                              <p>No ACP servers configured.</p>
+                              <p>No agents configured.</p>
                               <p class="text-xs mt-1">
                                 Click + to add a server.
                               </p>
@@ -5549,7 +5549,7 @@ export function SettingsDialog({
                           />
                           <span class="text-xs text-mitto-text-muted"
                             >(fixed port — the address must be known in advance
-                            so ACP servers can connect)</span
+                            so agents can connect)</span
                           >
                         </div>
                         <p class="text-xs text-mitto-text-muted">
@@ -6651,7 +6651,7 @@ export function SettingsDialog({
         <div class="space-y-2 text-sm">
           <p>${deleteBlockedInfo.message}</p>
           <p class="text-mitto-text-muted text-xs">
-            RC-file ACP servers are managed in
+            RC-file agents are managed in
             <code class="text-xs">~/.mittorc</code> and cannot be removed from
             the settings dialog.
           </p>
@@ -6732,7 +6732,7 @@ export function SettingsDialog({
           }
           const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
           showToast(
-            `Deleted ACP server "${deleteWizardName}"${detail}`,
+            `Deleted agent "${deleteWizardName}"${detail}`,
             "success",
           );
         }

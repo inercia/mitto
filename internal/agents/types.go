@@ -121,9 +121,16 @@ type StderrPatterns struct {
 
 // AgentMetadata holds the parsed content of a metadata.yaml file.
 type AgentMetadata struct {
-	Name        string         `yaml:"name" json:"name"`
-	DisplayName string         `yaml:"displayName" json:"display_name"`
-	ACPId       string         `yaml:"acpId" json:"acp_id"`
+	Name        string `yaml:"name" json:"name"`
+	DisplayName string `yaml:"displayName" json:"display_name"`
+	ACPId       string `yaml:"acpId" json:"acp_id"`
+	// AgentID is an optional, explicit stable identifier for this agent,
+	// independent of DisplayName (which may be freely renamed) and of
+	// DirName (which is a filesystem detail). When set, it takes precedence
+	// over ACPId/Name/DirName for AgentDefinition.StableID() (mitto-lrt.9).
+	// Most definitions can omit this and rely on the ACPId/Name/DirName
+	// fallback chain instead.
+	AgentID     string         `yaml:"agentId,omitempty" json:"agent_id,omitempty"`
 	Description string         `yaml:"description" json:"description"`
 	Website     string         `yaml:"website,omitempty" json:"website,omitempty"`
 	Repository  string         `yaml:"repository,omitempty" json:"repository,omitempty"`
@@ -164,6 +171,28 @@ type AgentDefinition struct {
 
 	// AvailableCommands lists which command scripts exist for this agent
 	AvailableCommands []AgentCommand `json:"available_commands"`
+}
+
+// StableID returns a stable, display-name-independent identifier for this
+// agent definition, used to correlate it with runtime provider/backend
+// descriptors (agentbackend.ProviderID) without depending on a mutable
+// display name (see docs/devel/agent-backend-architecture.md, mitto-lrt.9).
+//
+// Precedence: Metadata.AgentID (explicit override) > Metadata.ACPId (the
+// existing stable ACP identifier) > Metadata.Name > DirName (last-resort
+// fallback, always non-empty for a loaded definition). Renaming
+// Metadata.DisplayName never changes the result.
+func (a *AgentDefinition) StableID() string {
+	switch {
+	case a.Metadata.AgentID != "":
+		return a.Metadata.AgentID
+	case a.Metadata.ACPId != "":
+		return a.Metadata.ACPId
+	case a.Metadata.Name != "":
+		return a.Metadata.Name
+	default:
+		return a.DirName
+	}
 }
 
 // HasCommand returns true if the agent has the given command script.

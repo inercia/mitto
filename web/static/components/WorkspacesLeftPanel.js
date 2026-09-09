@@ -193,8 +193,8 @@ export function WorkspacesLeftPanel({
           workspaces.length <= 1
             ? "opacity-40 pointer-events-none"
             : ""}"
-          data-tip="Delete selected ACP server"
-          aria-label="Delete selected ACP server"
+          data-tip="Delete selected agent"
+          aria-label="Delete selected agent"
         >
           <${TrashIcon} className="w-4 h-4" />
         </button>
@@ -219,8 +219,8 @@ export function WorkspacesLeftPanel({
           !folderCanAddServer
             ? "opacity-40 pointer-events-none"
             : ""}"
-          data-tip="Add ACP server to folder"
-          aria-label="Add ACP server to folder"
+          data-tip="Add agent to folder"
+          aria-label="Add agent to folder"
         >
           <${ServerIcon} className="w-4 h-4" />
         </button>

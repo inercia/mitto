@@ -694,8 +694,8 @@ export function DependenciesViewField({
   deps,
   depsLoading,
   depsBusy,
-  changeDepType,
-  mutateDep,
+  changeDepTypeLocal,
+  removeDepLocal,
   onSelectIssue,
   newDepType,
   setNewDepType,
@@ -733,7 +733,7 @@ export function DependenciesViewField({
                 disabled=${depsBusy}
                 onInput=${(e) => {
                   if (e.target.value !== (d.dependency_type || "blocks"))
-                    changeDepType(d.id, e.target.value);
+                    changeDepTypeLocal(d.id, e.target.value);
                 }}
               >
                 ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
@@ -751,7 +751,7 @@ export function DependenciesViewField({
                 type="button"
                 onClick=${() => {
                   if (depsBusy) return;
-                  mutateDep("remove", d.id);
+                  removeDepLocal(d.id);
                 }}
                 aria-disabled=${depsBusy ? "true" : "false"}
                 class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${depsBusy ? "opacity-40 pointer-events-none" : ""}"

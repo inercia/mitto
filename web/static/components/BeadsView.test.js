@@ -1400,6 +1400,14 @@ describe("task label title backgrounds (mitto-ggs6)", () => {
     expect(source).toMatch(
       /class="list-row[\s\S]{0,200}style="transform: translateX\(\$\{swipeOffset\}px\);\$\{labelBackground/,
     );
+    // The inline background must be !important so it wins over the broad
+    // "!important" hover rules in styles-v2.css (e.g.
+    // ".cursor-pointer:not(.bg-mitto-accent):hover"), which would otherwise
+    // repaint the label-colored card near-white on hover and hide its white
+    // title text (white-on-white).
+    expect(source).toMatch(
+      /background-color: \$\{labelBackground\} !important;/,
+    );
   });
 
   test("an open BeadsView refetches mappings when the global event arrives", () => {
@@ -2513,5 +2521,68 @@ describe("mitto-9vh: BeadsDetailPanelBody suppresses Retry on gone loadError", (
     // block; PanelBody.js line ~98-170 in the current implementation).
     const branch = source.slice(isLoadingIdx, isLoadingIdx + 3000);
     expect(branch).not.toMatch(/<span>\s*\$\{\s*loadError\s*\}\s*<\/span>/);
+  });
+});
+
+// =============================================================================
+// mitto-12r — "Go to conversation" balloon button threading
+// =============================================================================
+//
+// The button itself (placement/visibility/click wiring) is exercised against
+// the real hook in usePanelChrome.test.js, which mounts usePanelChrome
+// directly. A pure DOM/render test of BeadsView is impractical here (see the
+// mitto-zbfq / mitto-19j convention above), so this suite is a structural
+// source-code assertion that issueSessionMap/onOpenConversation are actually
+// threaded from BeadsView's two BeadsDetailPanel render call sites (the main
+// tasks-list panel and the standalone BeadsIssueView) down to the panel.
+
+describe("mitto-12r: issueSessionMap/onOpenConversation threading", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  test("BeadsView's own BeadsDetailPanel render passes issueSessionMap and onOpenConversation", () => {
+    // Isolate the outer BeadsView's render of BeadsDetailPanel from the
+    // BeadsIssueView one by anchoring on a prop unique to that call site.
+    const anchorIdx = source.indexOf("createParentId=${createParent}");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    const block = source.slice(anchorIdx, anchorIdx + 400);
+    expect(block).toMatch(/issueSessionMap=\$\{issueSessionMap\}/);
+    expect(block).toMatch(/onOpenConversation=\$\{onOpenConversation\}/);
+  });
+
+  test("BeadsIssueView's BeadsDetailPanel render passes issueSessionMap and onOpenConversation", () => {
+    // "onRetry=${refresh}" is unique to the BeadsIssueView call site (the
+    // outer BeadsView's own render uses "createParentId=${createParent}"
+    // instead), so it disambiguates the two <${BeadsDetailPanel}> renders.
+    const anchorIdx = source.indexOf("onRetry=${refresh}");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    const block = source.slice(anchorIdx, anchorIdx + 300);
+    expect(block).toMatch(/issueSessionMap=\$\{issueSessionMap\}/);
+    expect(block).toMatch(/onOpenConversation=\$\{onOpenConversation\}/);
+  });
+
+  test("BeadsIssueView accepts issueSessionMap and onOpenConversation params", () => {
+    const startMarker = "function BeadsIssueView(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const closeParenIdx = source.indexOf(") {", startIdx);
+    const params = source.slice(startIdx, closeParenIdx);
+    expect(params).toMatch(/issueSessionMap/);
+    expect(params).toMatch(/onOpenConversation/);
+  });
+
+  test("BeadsDetailPanel accepts and forwards issueSessionMap/onOpenConversation to useBeadsDetailPanel", () => {
+    const startMarker = "export function BeadsDetailPanel(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const bodyEndIdx = source.indexOf("useBeadsDetailPanel({", startIdx);
+    const closeCallIdx = source.indexOf("});", bodyEndIdx);
+    const block = source.slice(startIdx, closeCallIdx);
+    // Accepted as a param (destructured in the function signature).
+    expect(block).toMatch(/issueSessionMap,/);
+    expect(block).toMatch(/onOpenConversation,/);
+    // Forwarded verbatim into the useBeadsDetailPanel({...}) call.
+    const forwardBlock = source.slice(bodyEndIdx, closeCallIdx);
+    expect(forwardBlock).toMatch(/issueSessionMap,/);
+    expect(forwardBlock).toMatch(/onOpenConversation,/);
   });
 });

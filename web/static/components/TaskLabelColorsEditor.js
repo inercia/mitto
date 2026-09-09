@@ -64,7 +64,7 @@ export function TaskLabelColorsEditor({
                 class="input input-sm flex-1"
               />
               <div class="join">
-                <div class="dropdown join-item">
+                <div class="dropdown task-label-color-dropdown join-item">
                   <div
                     tabindex="0"
                     role="button"
@@ -80,11 +80,22 @@ export function TaskLabelColorsEditor({
                   ></div>
                   <div
                     tabindex="0"
-                    class="dropdown-content z-50 p-2 w-48 bg-base-200 rounded-box shadow-xl"
+                    class="dropdown-content z-50 p-2 bg-base-200 rounded-box shadow-xl"
                     role="listbox"
                     aria-label="Preset colors"
                   >
-                    <div class="flex flex-wrap gap-1">
+                    <!-- Fixed-column grid via inline style: this project ships a
+                         precompiled Tailwind snapshot, so grid-cols-* / w-*
+                         utilities not already emitted render as no-ops (the old
+                         w-48 was absent, so the popover shrink-wrapped to one
+                         swatch and the 12 colors stacked into a tall,
+                         downward-clipped column). Inline styles are immune to
+                         that. Grid lives on this INNER wrapper, never on
+                         .dropdown-content, so daisyUI's display:none collapse
+                         still applies (see IconPicker.js). -->
+                    <div
+                      style="display: grid; grid-template-columns: repeat(6, 1.5rem); gap: 0.25rem;"
+                    >
                       ${TASK_LABEL_COLOR_PRESETS.map((hex) => {
                         const isSelected =
                           (entry.color || "").toLowerCase() === hex;

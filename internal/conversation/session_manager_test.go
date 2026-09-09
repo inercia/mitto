@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
@@ -3366,4 +3367,227 @@ func TestSessionManager_ResumeSession_AgentQueryClosed_DoesNotCountAsHardFailure
 		t.Error("bug reproduced (mitto-hjx classification gap): session was auto-archived after a single " +
 			"transient query-closed resume failure")
 	}
+}
+
+// recordingBackendProvider is a BackendProvider fake that records the last
+// AcquireRequest it received and returns a preset lease/error. Used to prove
+// SessionManager.getSharedProcess routes production process acquisition
+// through an injected BackendProvider (mitto-lrt.16) rather than calling
+// ProcessManager directly, without depending on any real ACP process.
+type recordingBackendProvider struct {
+	mu      sync.Mutex
+	lastReq AcquireRequest
+	calls   int
+	lease   BackendLease
+	err     error
+}
+
+func (p *recordingBackendProvider) AcquireSession(_ context.Context, req AcquireRequest) (BackendLease, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	p.lastReq = req
+	return p.lease, p.err
+}
+
+func (p *recordingBackendProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func (p *recordingBackendProvider) requestSnapshot() AcquireRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastReq
+}
+
+// TestSessionManager_GetSharedProcess_RoutesThroughInjectedBackendProvider
+// proves the mitto-lrt.16 wiring: when a BackendProvider is injected,
+// getSharedProcess (the single chokepoint used by create, load/resume,
+// foreground wake, startup stagger, and concurrent-recycle retry) acquires
+// via BackendProvider.AcquireSession with DeferSession set — preserving the
+// mitto-220 deferred-session RPC pattern — and returns the process exposed
+// by the resulting lease's LocalProcess() escape hatch, rather than calling
+// ProcessManager.GetOrCreateProcess directly.
+func TestSessionManager_GetSharedProcess_RoutesThroughInjectedBackendProvider(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	proc := newFakeBackendSharedProcess()
+	provider := &recordingBackendProvider{lease: &acpLease{process: proc}}
+	sm.SetBackendProvider(provider)
+
+	ws := &config.WorkspaceSettings{UUID: "ws-provider-1", WorkingDir: "/tmp"}
+	acpEnv := map[string]string{"FOO": "bar"}
+
+	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", acpEnv, nil)
+
+	if got != proc {
+		t.Fatalf("getSharedProcess = %v, want %v (the process exposed by the injected provider's lease)", got, proc)
+	}
+	if gotLease != provider.lease {
+		t.Errorf("getSharedProcess lease = %v, want %v (the lease returned by the injected provider)", gotLease, provider.lease)
+	}
+	if calls := provider.callCount(); calls != 1 {
+		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
+	}
+	req := provider.requestSnapshot()
+	if !req.DeferSession {
+		t.Error("AcquireRequest.DeferSession = false, want true (must preserve the mitto-220 deferred-session RPC pattern)")
+	}
+	if req.Workspace != ws {
+		t.Errorf("AcquireRequest.Workspace = %v, want %v", req.Workspace, ws)
+	}
+	if req.ACPCommand != "echo test" || req.ACPCwd != "/tmp" {
+		t.Errorf("AcquireRequest ACPCommand/ACPCwd = %q/%q, want %q/%q", req.ACPCommand, req.ACPCwd, "echo test", "/tmp")
+	}
+	if !req.Prewarm {
+		t.Error("AcquireRequest.Prewarm = false, want true")
+	}
+}
+
+// TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic
+// proves that when the injected BackendProvider fails to acquire (e.g. the
+// classified-error taxonomy surfaces a hard failure), getSharedProcess
+// returns nil (triggering the existing per-session fallback in callers)
+// instead of panicking or silently falling through to a second acquisition
+// attempt via ProcessManager.
+func TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	provider := &recordingBackendProvider{err: agentbackend.ErrNotConnected}
+	sm.SetBackendProvider(provider)
+
+	ws := &config.WorkspaceSettings{UUID: "ws-provider-2", WorkingDir: "/tmp"}
+	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+
+	if got != nil {
+		t.Fatalf("getSharedProcess = %v, want nil on provider AcquireSession error", got)
+	}
+	if gotLease != nil {
+		t.Errorf("getSharedProcess lease = %v, want nil on provider AcquireSession error", gotLease)
+	}
+	if calls := provider.callCount(); calls != 1 {
+		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
+	}
+}
+
+// TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager
+// proves the nil-BackendProvider fallback (the common case: no
+// SetBackendProvider call, mirroring every pre-mitto-lrt.16 test) still
+// delegates to ProcessManager.GetOrCreateProcess byte-identically, so
+// injecting the seam does not change behavior for callers/tests that never
+// inject a provider.
+func TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	proc := newFakeBackendSharedProcess()
+	pm := &fakeBackendProcessManager{process: proc}
+	sm.SetACPProcessManager(pm)
+	// Deliberately do NOT call SetBackendProvider — backendProvider stays nil.
+
+	ws := &config.WorkspaceSettings{UUID: "ws-provider-3", WorkingDir: "/tmp"}
+	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+
+	if got != proc {
+		t.Fatalf("getSharedProcess = %v, want %v (direct ProcessManager fallback with a nil provider)", got, proc)
+	}
+	if gotLease != nil {
+		t.Errorf("getSharedProcess lease = %v, want nil (the pm fallback path carries no lease)", gotLease)
+	}
+}
+
+// --- mitto-3du: broadcastAgentAuthState tests ---
+
+// recordedBroadcast captures one EventsBroadcaster.Broadcast call.
+type recordedBroadcast struct {
+	msgType string
+	data    map[string]interface{}
+}
+
+// fakeAgentAuthEventsBroadcaster is a minimal EventsBroadcaster test double
+// that records every broadcast, letting tests assert on msgType and payload
+// without wiring a real web.GlobalEventsManager.
+type fakeAgentAuthEventsBroadcaster struct {
+	mu    sync.Mutex
+	calls []recordedBroadcast
+}
+
+func (f *fakeAgentAuthEventsBroadcaster) Broadcast(msgType string, data interface{}) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, _ := data.(map[string]interface{})
+	f.calls = append(f.calls, recordedBroadcast{msgType: msgType, data: m})
+}
+
+func (f *fakeAgentAuthEventsBroadcaster) ClientCount() int { return 0 }
+
+// TestSessionManager_BroadcastAgentAuthState_Required_ResolvesWorkspaceName
+// verifies the OnAgentAuthStateChanged hook (broadcastAgentAuthState) emits
+// WSMsgTypeAgentAuthRequired with a fully-populated payload, resolving the
+// friendly workspace name via GetWorkspaceByUUID (mitto-3du plan decision #1:
+// global /api/events broadcast so unattended/loop sessions surface too).
+func TestSessionManager_BroadcastAgentAuthState_Required_ResolvesWorkspaceName(t *testing.T) {
+	workspaces := []config.WorkspaceSettings{
+		{UUID: "ws-1", Name: "My Workspace", ACPServer: "server1", WorkingDir: "/path1"},
+	}
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces:  workspaces,
+		AutoApprove: true,
+	})
+	fb := &fakeAgentAuthEventsBroadcaster{}
+	sm.SetEventsManager(fb)
+
+	sm.broadcastAgentAuthState("sess-1", "ws-1", "/path1", true)
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(fb.calls))
+	}
+	call := fb.calls[0]
+	if call.msgType != WSMsgTypeAgentAuthRequired {
+		t.Fatalf("msgType = %q, want %q", call.msgType, WSMsgTypeAgentAuthRequired)
+	}
+	want := map[string]interface{}{
+		"session_id":     "sess-1",
+		"workspace_uuid": "ws-1",
+		"workspace_name": "My Workspace",
+		"working_dir":    "/path1",
+	}
+	for k, v := range want {
+		if call.data[k] != v {
+			t.Errorf("payload[%q] = %v, want %v (full payload: %+v)", k, call.data[k], v, call.data)
+		}
+	}
+}
+
+// TestSessionManager_BroadcastAgentAuthState_ClearedUsesClearedMessageType
+// verifies required=false broadcasts WSMsgTypeAgentAuthCleared (not the
+// Required type), and that an unresolvable workspace UUID degrades to an
+// empty workspace_name rather than erroring.
+func TestSessionManager_BroadcastAgentAuthState_ClearedUsesClearedMessageType(t *testing.T) {
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{AutoApprove: true})
+	fb := &fakeAgentAuthEventsBroadcaster{}
+	sm.SetEventsManager(fb)
+
+	sm.broadcastAgentAuthState("sess-2", "unknown-ws", "/path2", false)
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.calls) != 1 {
+		t.Fatalf("expected 1 broadcast, got %d", len(fb.calls))
+	}
+	call := fb.calls[0]
+	if call.msgType != WSMsgTypeAgentAuthCleared {
+		t.Fatalf("msgType = %q, want %q", call.msgType, WSMsgTypeAgentAuthCleared)
+	}
+	if call.data["workspace_name"] != "" {
+		t.Fatalf("workspace_name = %q, want empty string for an unresolvable UUID", call.data["workspace_name"])
+	}
+}
+
+// TestSessionManager_BroadcastAgentAuthState_NoEventsManager_NoPanic verifies
+// the hook is a safe no-op before SetEventsManager has been called (e.g. an
+// auth failure racing very early session setup).
+func TestSessionManager_BroadcastAgentAuthState_NoEventsManager_NoPanic(t *testing.T) {
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{AutoApprove: true})
+	sm.broadcastAgentAuthState("sess-3", "ws-x", "/path3", true) // must not panic
 }

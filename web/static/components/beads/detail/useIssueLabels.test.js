@@ -4,8 +4,10 @@
  * The hook had no prior test file (mitto-90f.7 PR-12 extracted it verbatim
  * with no accompanying tests), so this is dedicated new coverage for the
  * migration onto getSdkClient(). Covers fetchAllLabels (GET
- * /api/issues/labels), mutateLabel (POST .../labels), and the
- * fetchDepsRef bridge mutateLabel uses to trigger a full issue refresh.
+ * /api/issues/labels), the in-memory staging helpers (addLabelLocal /
+ * removeLabelLocal / labelsDirty), and the persistLabels reconciler that diffs
+ * the working set against the baseline and issues the POST .../labels calls on
+ * Save.
  *
  * Harness mirrors useIssueDependencies.test.js: `useState` is backed by a
  * per-test cell array (indexed by call order) so a setter invoked mid-test
@@ -131,66 +133,129 @@ describe("useIssueLabels — fetchAllLabels effect", () => {
   });
 });
 
-describe("useIssueLabels — mutateLabel", () => {
-  test("add: POSTs {label, action}, toasts, refreshes deps, and re-fetches suggestions", async () => {
+describe("useIssueLabels — in-memory staging", () => {
+  test("addLabelLocal stages a trimmed label with no network call and marks dirty", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    // Seed the baseline via the authoritative setter so dirty starts false.
+    bag.setLabels(["a"]);
+    bag = await render(args);
+    expect(bag.labels).toEqual(["a"]);
+    expect(bag.labelsDirty).toBe(false);
+
+    bag.addLabelLocal("  b  ");
+    bag = await render(args);
+    expect(bag.labels).toEqual(["a", "b"]);
+    expect(bag.labelsDirty).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("addLabelLocal ignores blanks and duplicates", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setLabels(["a"]);
+    bag = await render(args);
+    bag.addLabelLocal("   ");
+    bag.addLabelLocal("a");
+    bag = await render(args);
+    expect(bag.labels).toEqual(["a"]);
+    expect(bag.labelsDirty).toBe(false);
+  });
+
+  test("removeLabelLocal stages a removal and marks dirty (no network)", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setLabels(["a", "b"]);
+    bag = await render(args);
+    bag.removeLabelLocal("a");
+    bag = await render(args);
+    expect(bag.labels).toEqual(["b"]);
+    expect(bag.labelsDirty).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("labelsDirty stays false in create mode even when sets differ", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs({ creating: true });
+    let bag = await render(args);
+    bag.addLabelLocal("x");
+    bag = await render(args);
+    expect(bag.labelsDirty).toBe(false);
+  });
+});
+
+describe("useIssueLabels — persistLabels", () => {
+  test("diffs baseline vs working set: issues remove + add, advances baseline, re-fetches suggestions", async () => {
     freshMount();
     global.fetch = jest.fn(() =>
       Promise.resolve(fakeResponse({ status: 204 })),
     );
-    const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const fetchDepsRef = { current: jest.fn(() => Promise.resolve()) };
-    const bag = await render(baseArgs({ showToast, onUpdated, fetchDepsRef }));
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setLabels(["keep", "drop"]);
+    bag = await render(args);
+    bag.removeLabelLocal("drop");
+    bag.addLabelLocal("new");
+    bag = await render(args);
+    expect(bag.labelsDirty).toBe(true);
 
-    const ok = await bag.mutateLabel("add", "  urgent  ");
+    const ok = await bag.persistLabels();
     await flush();
-
     expect(ok).toBe(true);
-    const [url, init] = global.fetch.mock.calls[0];
-    expect(String(url)).toContain("/api/issues/mitto-abc/labels");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ label: "urgent", action: "add" });
-    expect(showToast).toHaveBeenCalledWith({
-      style: "success",
-      title: 'Added label "urgent"',
-    });
-    expect(fetchDepsRef.current).toHaveBeenCalledWith(false);
-    expect(onUpdated).toHaveBeenCalledTimes(1);
-    // action === "add" also re-fetches the workspace label suggestions.
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    expect(String(global.fetch.mock.calls[1][0])).toContain(
-      "/api/issues/labels",
-    );
+
+    const bodies = global.fetch.mock.calls
+      .map((c) => c[1] && c[1].body)
+      .filter(Boolean)
+      .map((b) => JSON.parse(b));
+    expect(bodies).toContainEqual({ label: "drop", action: "remove" });
+    expect(bodies).toContainEqual({ label: "new", action: "add" });
+    // An add also refreshes the workspace label suggestions (GET, no body).
+    expect(
+      global.fetch.mock.calls.some(
+        (c) =>
+          String(c[0]).includes("/api/issues/labels") &&
+          !(c[1] && c[1].body),
+      ),
+    ).toBe(true);
+
+    // Baseline advanced to the working set, so the panel is no longer dirty.
+    bag = await render(args);
+    expect(bag.labelsDirty).toBe(false);
   });
 
-  test("remove: does NOT re-fetch label suggestions", async () => {
+  test("no-op returns true with no network call when not dirty", async () => {
     freshMount();
-    global.fetch = jest.fn(() =>
-      Promise.resolve(fakeResponse({ status: 204 })),
-    );
-    const bag = await render(baseArgs());
-
-    await bag.mutateLabel("remove", "urgent");
-    await flush();
-
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
-      label: "urgent",
-      action: "remove",
-    });
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setLabels(["a"]);
+    bag = await render(args);
+    const ok = await bag.persistLabels();
+    expect(ok).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  test("failure: error toast, no fetchDepsRef call, no onUpdated, returns false", async () => {
+  test("failure: error toast, returns false, baseline unchanged (stays dirty)", async () => {
     freshMount();
     global.fetch = jest.fn(() =>
       Promise.resolve(fakeResponse({ status: 500 })),
     );
     const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const fetchDepsRef = { current: jest.fn() };
-    const bag = await render(baseArgs({ showToast, onUpdated, fetchDepsRef }));
+    const args = baseArgs({ showToast });
+    let bag = await render(args);
+    bag.setLabels(["a"]);
+    bag = await render(args);
+    bag.addLabelLocal("b");
+    bag = await render(args);
 
-    const ok = await bag.mutateLabel("add", "urgent");
+    const ok = await bag.persistLabels();
     await flush();
 
     expect(ok).toBe(false);
@@ -198,26 +263,8 @@ describe("useIssueLabels — mutateLabel", () => {
       style: "error",
       title: "Request failed with status 500",
     });
-    expect(fetchDepsRef.current).not.toHaveBeenCalled();
-    expect(onUpdated).not.toHaveBeenCalled();
-  });
-
-  test("no-op when the label is blank after trimming", async () => {
-    freshMount();
-    global.fetch = jest.fn();
-    const bag = await render(baseArgs());
-    const ok = await bag.mutateLabel("add", "   ");
-    expect(ok).toBe(false);
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  test("tolerates a missing fetchDepsRef.current (bridge not wired yet)", async () => {
-    freshMount();
-    global.fetch = jest.fn(() =>
-      Promise.resolve(fakeResponse({ status: 204 })),
-    );
-    const bag = await render(baseArgs({ fetchDepsRef: { current: null } }));
-    await expect(bag.mutateLabel("remove", "urgent")).resolves.toBe(true);
+    bag = await render(args);
+    expect(bag.labelsDirty).toBe(true);
   });
 });
 
@@ -226,28 +273,23 @@ describe("useIssueLabels — handleAddLabel", () => {
     freshMount();
     global.fetch = jest.fn();
     const bag = await render(baseArgs());
-    await bag.handleAddLabel();
+    bag.handleAddLabel();
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  test("trims newLabel, adds it, and clears the input on success", async () => {
+  test("trims newLabel, stages it in-memory, and clears the input (no network)", async () => {
     freshMount();
-    global.fetch = jest.fn(() =>
-      Promise.resolve(fakeResponse({ status: 204 })),
-    );
+    global.fetch = jest.fn();
     const args = baseArgs();
     let bag = await render(args);
     bag.setNewLabel("  urgent  ");
     bag = await render(args);
 
-    await bag.handleAddLabel();
-    await flush();
-
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({
-      label: "urgent",
-      action: "add",
-    });
+    bag.handleAddLabel();
     bag = await render(args);
+
+    expect(bag.labels).toContain("urgent");
     expect(bag.newLabel).toBe("");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

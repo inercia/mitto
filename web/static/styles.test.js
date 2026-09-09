@@ -150,9 +150,7 @@ describe("styles.css — mitto-2fx.6 dedup of filter-tab-pulse ::before layer", 
       ".filter-tab-streaming::before",
     );
     const hasSlateBg = bodies.some((b) =>
-      /background-color:\s*rgba\(\s*51\s*,\s*65\s*,\s*85\s*,\s*1\s*\)/.test(
-        b,
-      ),
+      /background-color:\s*rgba\(\s*51\s*,\s*65\s*,\s*85\s*,\s*1\s*\)/.test(b),
     );
     expect(hasSlateBg).toBe(true);
 
@@ -382,7 +380,7 @@ describe("sidebar-streaming-ring marker classes wired in JSX", () => {
  * replaced with a static `…` glyph. Pin the removal at the source level so a
  * future refactor cannot silently re-introduce an always-mounted spinner on:
  *
- *   - MessageList.js — the agent-working chip and the "Establishing ACP
+ *   - MessageList.js — the agent-working chip and the "Establishing agent
  *     session..." status line.
  *   - PromptParameterDialog.js — the 10 placeholder branches that render
  *     while the beadsId / sessionId / childSessions / workspaceId / folder /
@@ -404,7 +402,7 @@ describe("mitto-2fx.5 — no always-mounted loading-spinner on steady surfaces",
 
   test("MessageList.js: no loading-spinner class anywhere", () => {
     // MessageList renders on every conversation view; its only two prior
-    // spinner spans (agent-working chip + "Establishing ACP session...") were
+    // spinner spans (agent-working chip + "Establishing agent session...") were
     // replaced with the trailing "…" already carried in each message string.
     expect(messageListJs).not.toMatch(/loading-spinner/);
   });
@@ -415,8 +413,8 @@ describe("mitto-2fx.5 — no always-mounted loading-spinner on steady surfaces",
     expect(messageListJs).toMatch(/Working\$\{agentWorking\.toolTitle/);
   });
 
-  test("MessageList.js: ACP-session status message still shows the loading cue", () => {
-    expect(messageListJs).toMatch(/Establishing ACP session\.\.\./);
+  test("MessageList.js: agent-session status message still shows the loading cue", () => {
+    expect(messageListJs).toMatch(/Establishing agent session\.\.\./);
   });
 
   test("PromptParameterDialog.js: no loading-spinner class anywhere", () => {
@@ -500,6 +498,8 @@ describe("styles.css — mitto-47l composer full collapse (REOPENED v2)", () => 
   test("ChatInput.js: restore pill is only rendered while isScrollCompact and restores + focuses on tap", () => {
     expect(chatInputJs).toMatch(/\$\{isScrollCompact &&\s*\n\s*html`/);
     expect(chatInputJs).toMatch(/chat-input-restore-pill/);
-    expect(chatInputJs).toMatch(/setIsScrollCollapsed\(false\);\s*\n\s*requestAnimationFrame\(\(\) => textareaRef\.current\?\.focus\(\)\);/);
+    expect(chatInputJs).toMatch(
+      /setIsScrollCollapsed\(false\);\s*\n\s*requestAnimationFrame\(\(\) => textareaRef\.current\?\.focus\(\)\);/,
+    );
   });
 });

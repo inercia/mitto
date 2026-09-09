@@ -536,11 +536,19 @@ function ParamField({
     }
   } else if (type === "workspaceFolder") {
     const seen = new Set();
-    const folders = (workspaces || []).filter((ws) => {
-      if (!ws.working_dir || seen.has(ws.working_dir)) return false;
-      seen.add(ws.working_dir);
-      return true;
-    });
+    const folders = (workspaces || [])
+      .filter((ws) => {
+        if (!ws.working_dir || seen.has(ws.working_dir)) return false;
+        seen.add(ws.working_dir);
+        return true;
+      })
+      .sort((a, b) =>
+        (a.name || getBasename(a.working_dir)).localeCompare(
+          b.name || getBasename(b.working_dir),
+          undefined,
+          { sensitivity: "base" },
+        ),
+      );
     if (loadingWorkspaces) {
       control = html`<span class="text-mitto-text-muted text-xs opacity-60"
         >…</span
@@ -601,7 +609,7 @@ function ParamField({
           class="input input-sm w-full"
           value=${value}
           onInput=${(e) => onChange(name, e.target.value)}
-          placeholder="Agent (ACP server) name"
+          placeholder="Agent name"
         />
       `;
     } else {

@@ -116,6 +116,14 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 	// Config and discovery endpoints.
 	routes = append(routes,
 		apiRoute{pattern: "/api/config", handler: http.HandlerFunc(s.apiHandlers.HandleConfigRoute)},
+		// Authenticated config snapshot/patch API (mitto-4rz.3): gated by a
+		// dedicated instance-bearer guard (Deps.ValidateInstanceBearer),
+		// independent of whether global auth is enabled. Intentionally NOT
+		// added to publicAPIPaths and NOT localhost-restricted — reachable
+		// via the external listener too, as long as the caller presents the
+		// current $MITTO_DIR/instance.json bearer token.
+		apiRoute{method: "GET", pattern: "/api/config/snapshot", handler: http.HandlerFunc(s.apiHandlers.HandleConfigSnapshot)},
+		apiRoute{method: "POST", pattern: "/api/config/patch", handler: http.HandlerFunc(s.apiHandlers.HandleConfigPatch)},
 		apiRoute{pattern: "/api/agents/types", handler: http.HandlerFunc(s.apiHandlers.HandleAgentTypes)},
 		apiRoute{pattern: "/api/agents/scan", handler: http.HandlerFunc(s.apiHandlers.HandleScanAgents)},
 		apiRoute{pattern: "/api/agents/confirm", handler: http.HandlerFunc(s.apiHandlers.HandleConfirmAgents)},

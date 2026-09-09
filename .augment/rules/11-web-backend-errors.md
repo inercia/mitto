@@ -29,6 +29,28 @@ All HTTP errors must use one of 9 canonical error codes. Map from status → cod
 | 429    | `rate_limited`  | Rate limit exceeded                      |
 | 500    | `server_error`  | Server error / internal error            |
 
+### Domain-Specific Codes
+
+Some subsystems layer additional codes on top of the 9 canonical set. Add new ones sparingly and only when the frontend needs to branch on the specific class:
+
+| Code                            | Status | Meaning                                                                 |
+|---------------------------------|--------|-------------------------------------------------------------------------|
+| `beads_schema_skew`             | 409    | bd database is behind bd binary schema and remote-backed (needs migrate) |
+| `beads_migrate_publish_failed`  | 500    | `bd migrate schema` succeeded but `bd dolt push` failed                  |
+| `beads_open_children`           | 409    | bd refused to close an epic that still has open child issues (mitto-phg) |
+
+## Beads Classifier / Error-Code Convention
+
+Any bd-CLI business-rule rejection that today falls through to a generic 500 in `writeBeadsError` (`internal/web/handlers/beads.go`) MUST be promoted via a 3-file convention (see `beads-bd-cli-business-rule-rejection-classifier-mitto-phg` memory for the full pattern):
+
+1. **Classifier** in `internal/beads/beads.go`: `Is<Rejection>(err error) bool` matching a stable substring of bd's stderr via `strings.Contains(strings.ToLower(StderrOf(err)), "…")`. Do not parse exit codes (bd collapses on exit 1). Guard `err == nil` first.
+2. **Constant** in `internal/web/handlers/helpers.go`: `errCodeBeads<X> = "beads_<x>"` next to the existing `errCodeBeadsSchemaSkew` / `errCodeBeadsMigratePublishFailed`. Point the doc-comment at `writeBeadsError`.
+3. **Branch** in `writeBeadsError`: added BEFORE the terminal 5xx fallback, uses `writeJSON` directly (not `writeErrorJSON`) with an `errorEnvelope` carrying `details.stderr` when present. Log at `Warn` (nil-guarded) — the terminal branch logs at `Error`, so classifying prevents alert noise on expected rejections.
+
+Frontend surfaces the resulting envelope via `beadsErrorFrom(err, fallback)` from `web/static/utils/sdkErrors.js` — never `errorMessage()`, which drops `details.stderr`. Test each new classifier with a `stubBeadsClient` variant in `internal/web/handlers/beads_test.go` (see `epicOpenChildrenClient` for shape) plus a `TestHandleBeads*_ReturnsActionable4xx` that pins status, `error.code`, and `error.details.stderr`.
+
+**Anti-pattern**: substring-matching bd stderr from outside `internal/beads` — every substring test belongs on a named classifier so all callers get consistent behavior.
+
 ## Response Envelope Format
 
 All errors are returned as JSON envelopes (no plain-text bodies):

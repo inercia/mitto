@@ -1589,6 +1589,75 @@ func TestIsSpecificToACP(t *testing.T) {
 	}
 }
 
+// TestIsSpecificToBackend mirrors TestIsSpecificToACP but for the neutral
+// Backend.MatchesServerType(...) selector (mitto-lrt.10).
+func TestIsSpecificToBackend(t *testing.T) {
+	tests := []struct {
+		name        string
+		enabledWhen string
+		backendType string
+		want        bool
+	}{
+		{"empty enabledWhen is not specific", "", "auggie", false},
+		{"empty backend type", `Backend.MatchesServerType("auggie")`, "", false},
+		{"exact match single", `Backend.MatchesServerType("auggie")`, "auggie", true},
+		{"case insensitive match", `Backend.MatchesServerType("Auggie")`, "auggie", true},
+		{"no match", `Backend.MatchesServerType("claude-code")`, "auggie", false},
+		{"multiple backends with match", `Backend.MatchesServerType(["claude-code", "auggie"])`, "auggie", true},
+		{"legacy ACP.* selector does not satisfy the neutral check", `ACP.MatchesServerType("auggie")`, "auggie", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &PromptFile{EnabledWhen: tt.enabledWhen}
+			got := p.IsSpecificToBackend(tt.backendType)
+			if got != tt.want {
+				t.Errorf("IsSpecificToBackend(%q) = %v, want %v", tt.backendType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsSpecificToACPAndBackend_CoexistInOneExpression pins the behavior of
+// combining a legacy ACP.* selector and a neutral Backend.* selector in one
+// enabledWhen expression (mitto-lrt.10 acceptance criteria: "conflicting
+// new/old selectors are tested"). Both IsSpecificToACP and IsSpecificToBackend
+// use the pre-existing naive substring match (unchanged, to keep legacy
+// behavior byte-identical): each recognizes its OWN macro-name substring
+// ("acp.matchesservertype" / "backend.matchesservertype") plus ANY server
+// name literal present anywhere in the expression — this test documents
+// that scoping, rather than asserting stricter per-clause isolation that
+// the existing (preserved) implementation does not actually provide.
+func TestIsSpecificToACPAndBackend_CoexistInOneExpression(t *testing.T) {
+	combined := &PromptFile{EnabledWhen: `ACP.MatchesServerType("claude-code") && Backend.MatchesServerType("auggie")`}
+
+	if !combined.IsSpecificToACP("claude-code") {
+		t.Error(`IsSpecificToACP("claude-code") = false, want true`)
+	}
+	if !combined.IsSpecificToBackend("auggie") {
+		t.Error(`IsSpecificToBackend("auggie") = false, want true`)
+	}
+	// Neither classifier fires for a name mentioned nowhere in the expression.
+	if combined.IsSpecificToACP("cursor") {
+		t.Error(`IsSpecificToACP("cursor") = true, want false (name not present in the expression)`)
+	}
+	if combined.IsSpecificToBackend("cursor") {
+		t.Error(`IsSpecificToBackend("cursor") = true, want false (name not present in the expression)`)
+	}
+
+	// A prompt using ONLY the legacy selector is never classified as
+	// backend-specific, and vice versa: the macro-name substring (not the
+	// server name) is what actually distinguishes the two selectors.
+	acpOnly := &PromptFile{EnabledWhen: `ACP.MatchesServerType("auggie")`}
+	if acpOnly.IsSpecificToBackend("auggie") {
+		t.Error("IsSpecificToBackend must not fire for a prompt using only the legacy ACP.* selector")
+	}
+	backendOnly := &PromptFile{EnabledWhen: `Backend.MatchesServerType("auggie")`}
+	if backendOnly.IsSpecificToACP("auggie") {
+		t.Error("IsSpecificToACP must not fire for a prompt using only the neutral Backend.* selector")
+	}
+}
+
 func TestCollectRequiredToolPatterns(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "P1", EnabledWhen: `Tools.HasAllPatterns(["jira_*", "slack_*"])`},
@@ -1831,6 +1900,42 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 	filtered = FilterPromptsSpecificToACP(nil, "auggie")
 	if filtered != nil {
 		t.Errorf("FilterPromptsSpecificToACP(nil) = %v, want nil", filtered)
+	}
+}
+
+// TestFilterPromptsSpecificToBackend mirrors TestFilterPromptsSpecificToACP
+// for the neutral Backend.* selector (mitto-lrt.10), including a prompt that
+// uses both the legacy and neutral selectors together.
+func TestFilterPromptsSpecificToBackend(t *testing.T) {
+	prompts := []*PromptFile{
+		{Name: "All Backends", EnabledWhen: ""},
+		{Name: "Claude Only (legacy)", EnabledWhen: `ACP.MatchesServerType("claude-code")`},
+		{Name: "Auggie Only (neutral)", EnabledWhen: `Backend.MatchesServerType("auggie")`},
+		{Name: "Both selectors", EnabledWhen: `ACP.MatchesServerType("claude-code") && Backend.MatchesServerType("auggie")`},
+	}
+
+	filtered := FilterPromptsSpecificToBackend(prompts, "auggie")
+	if len(filtered) != 2 {
+		t.Fatalf("FilterPromptsSpecificToBackend(auggie) returned %d prompts, want 2", len(filtered))
+	}
+	for _, p := range filtered {
+		if p.Name == "All Backends" || p.Name == "Claude Only (legacy)" {
+			t.Errorf("FilterPromptsSpecificToBackend(auggie) should not include %q", p.Name)
+		}
+	}
+
+	// The legacy-only prompt is untouched by the neutral filter, and vice
+	// versa — the two selectors coexist without interference.
+	legacyFiltered := FilterPromptsSpecificToACP(prompts, "claude-code")
+	if len(legacyFiltered) != 2 {
+		t.Errorf("FilterPromptsSpecificToACP(claude-code) returned %d prompts, want 2 (unaffected by Backend.* additions)", len(legacyFiltered))
+	}
+
+	if filtered := FilterPromptsSpecificToBackend(prompts, ""); filtered != nil {
+		t.Errorf("FilterPromptsSpecificToBackend('') = %v, want nil", filtered)
+	}
+	if filtered := FilterPromptsSpecificToBackend(nil, "auggie"); filtered != nil {
+		t.Errorf("FilterPromptsSpecificToBackend(nil) = %v, want nil", filtered)
 	}
 }
 

@@ -76,6 +76,35 @@ useLayoutEffect(() => {
 
 **Separate concerns**: `useLayoutEffect` for session switch (instant), `useEffect` for streaming (smooth scroll).
 
+## Streaming Bottom-Growth: NO `scrollTop` Compensation (mitto-u5r)
+
+`.messages-container-reverse` is a **normal top-anchored** `display:block` scroller (`scrollTop=0` = visual top). `flex-col-reverse` is on the **inner** wrapper only (DOM ordering) — it does NOT make the scroller bottom-anchored. Bottom growth extends the document below the viewport, so a scrolled-up reader's `scrollTop` is naturally stable in both WebKit and Chromium.
+
+- **Anti-pattern**: `container.scrollTop += scrollHeightDelta` on bottom growth CAUSES per-chunk upward drift of `delta` px — it does not fix drift. The only legitimate `scrollTop += heightDiff` in `useScrollManagement.js` is prepend/"load more" restoration (top growth). Top and bottom growth are **not symmetric**.
+- Regression guard: `useScrollManagement.test.js` asserts `scrollTop` stays put on streaming bottom growth. See memory `streaming-scroll-drift-compensation-mitto-u5r` for empirical proof.
+- **Layout-probe fixtures**: For scroll/anchoring questions prefer a standalone HTML fixture replicating the exact CSS run on Playwright WebKit + Chromium — headless-WebKit-against-the-live-app is too flaky (WebKit crashes, composer race) for a clean A/B.
+
+## Two-Signal Scroll Pattern (mitto-47l)
+
+`useScrollManagement` exports **two independent** scroll-tied signals — do NOT
+substitute one for the other:
+
+| Signal | Threshold | Purpose |
+|--------|-----------|---------|
+| `isUserAtBottom` | tight (~50px) | prompt-responsive: auto-scroll on new content, show "scroll-to-bottom" button |
+| `isScrolledUp` | asymmetric hysteresis (collapse >160px, expand <60px) + debounced collapse (250ms) | UI-affinity: mobile composer collapse — stays put across streaming layout jitter |
+
+`isScrolledUp` is **not** the inverse of `isUserAtBottom`. The dead-band absorbs
+the moving bottom during streaming; only the collapse (hide) transition is
+debounced (expand is immediate); `scrollToBottom` cancels any pending collapse
+so a streaming re-pin never commits a transient hide. Any new scroll-tied
+UI-affinity transition (header condensation, toolbar auto-hide, etc.) should
+reuse `isScrolledUp` — do NOT invent a fresh threshold-only or debounce-only
+variant, and do NOT key UI-affinity off `isUserAtBottom`. See
+`web/static/hooks/useScrollManagement.js` and the debounced-collapse describe
+block in `web/static/components/ChatInput.test.js` for the reference impl and
+regression pins.
+
 ## Adding New Session Properties (Checklist)
 
 When adding a new field to session state (e.g., `loop_enabled`), **three places** in the frontend must all be updated or the value will be silently dropped:

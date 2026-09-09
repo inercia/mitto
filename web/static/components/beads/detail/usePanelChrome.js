@@ -51,6 +51,7 @@ import {
   CollapseIcon,
   CloseIcon,
   LightningIcon,
+  ChatBubbleIcon,
   getPromptIcon,
   getPromptIconOrDefault,
 } from "../../Icons.js";
@@ -70,6 +71,12 @@ export function usePanelChrome({
   onToggleDefer,
   onRunPrompt,
   onFetchPrompts,
+  // mitto-12r: id of the conversation linked to the open issue (looked up by
+  // the caller in its issueSessionMap) and the handler that focuses it. Both
+  // are optional — when either is missing the "Go to conversation" toolbar
+  // button below is omitted entirely.
+  issueSessionMap,
+  onOpenConversation,
 }) {
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -381,6 +388,12 @@ export function usePanelChrome({
   // standalone fullscreen button: a prompts trigger, Close/Reopen, Defer/Undefer,
   // a destructive Delete set apart by a separator, then the per-folder shortcut
   // buttons (separated), a spacer, then fullscreen at the right edge.
+  // mitto-12r: id of the conversation linked to the open issue, if any. Only
+  // present when the caller passed a non-empty issueSessionMap and the open
+  // issue's id resolves in it.
+  const linkedSessionId =
+    data && issueSessionMap ? issueSessionMap[data.id] : undefined;
+
   const headerToolbarItems = useMemo(() => {
     if (!data) return [];
     // Per-folder shortcut buttons (beadsIssue section). Three states:
@@ -490,6 +503,21 @@ export function usePanelChrome({
         ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
         onClick: () => setFullscreen((f) => !f),
       },
+      ...(linkedSessionId && onOpenConversation
+        ? [
+            {
+              kind: "button",
+              testId: "beads-panel-open-conversation",
+              icon: html`<${ChatBubbleIcon} className="w-4 h-4" />`,
+              tip: "Go to conversation",
+              ariaLabel: "Go to conversation",
+              onClick: () => {
+                handleClose();
+                onOpenConversation(linkedSessionId);
+              },
+            },
+          ]
+        : []),
       {
         kind: "button",
         testId: "beads-panel-close",
@@ -512,6 +540,8 @@ export function usePanelChrome({
     issueShortcutPromptMap,
     issueShortcutMetaMap,
     handleClose,
+    linkedSessionId,
+    onOpenConversation,
   ]);
 
   return {

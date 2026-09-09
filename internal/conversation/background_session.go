@@ -206,6 +206,14 @@ type BackgroundSession struct {
 	// onStreamingStateChanged is called when the session's streaming state changes.
 	onStreamingStateChanged func(sessionID string, isStreaming bool)
 
+	// onAgentAuthStateChanged is called when the agent's authentication-required
+	// state changes (mitto-3du): true when a prompt fails with the durable
+	// auth-expiry guidance first surfaced (mitto-6vs's -32000 "Authentication
+	// required" detection); false when a later prompt succeeds after that
+	// guidance was surfaced. Drives a workspace-scoped sidebar health pill via
+	// a global /api/events broadcast so unattended/loop sessions surface too.
+	onAgentAuthStateChanged func(sessionID, workspaceUUID, workingDir string, required bool)
+
 	// onUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	onUIPromptStateChanged func(sessionID string, isWaiting bool)
 
@@ -321,6 +329,15 @@ type BackgroundSession struct {
 	// slot on the shared process. nil = legacy per-session process ownership.
 	sharedProcess SharedProcess
 
+	// lease is the BackendLease (mitto-lrt.7/lrt.18) backing sharedProcess, when a
+	// BackendProvider was injected (SessionManager.SetBackendProvider). It is
+	// acquired with AcquireRequest.DeferSession, so it starts unbound and is
+	// bound to the real ACP session ID by completeDeferredHandshake once that
+	// RPC completes. killACPProcess prefers lease.Detach() over unregistering
+	// from sharedProcess directly when non-nil. nil whenever no BackendProvider
+	// is injected (the common case today) — that path is unaffected.
+	lease BackendLease
+
 	// Lazy ACP session handshake for shared-process sessions.
 	// When pendingShared is true, session/new has not yet been called;
 	// it is deferred to the first prompt to avoid blocking the create path
@@ -402,6 +419,15 @@ type BackgroundSession struct {
 	queueErrMu         sync.Mutex
 	lastQueueSendError string
 	lastQueueSendErrAt time.Time
+
+	// authGuidanceSurfaced dedupes the durable auth-expiry ("-32000
+	// Authentication required") guidance recorded by handlePromptError
+	// (mitto-6vs). Set on the first auth failure of a streak so repeated
+	// failures (manual resends, repeated loop boot-pulses) don't write N
+	// identical transcript entries; cleared on the next successful prompt so
+	// the message re-arms after the user re-authenticates.
+	authGuidanceMu       sync.Mutex
+	authGuidanceSurfaced bool
 
 	// Loop continuation marker (mitto-5xjn). lastTurnScheduledLoop records whether
 	// the most recent COMMITTED dispatch was a scheduled (non-forced, non-FreshContext)
@@ -490,6 +516,10 @@ type BackgroundSessionConfig struct {
 	// It's called with true when streaming starts (user sends prompt) and false when it ends.
 	OnStreamingStateChanged func(sessionID string, isStreaming bool)
 
+	// OnAgentAuthStateChanged is called when the agent's authentication-required
+	// state changes (mitto-3du). See BackgroundSession.onAgentAuthStateChanged.
+	OnAgentAuthStateChanged func(sessionID, workspaceUUID, workingDir string, required bool)
+
 	// OnUIPromptStateChanged is called when a blocking UI prompt starts or ends.
 	OnUIPromptStateChanged func(sessionID string, isWaiting bool)
 
@@ -530,6 +560,11 @@ type BackgroundSessionConfig struct {
 
 	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
 	SharedProcess SharedProcess
+
+	// BackendLease is the BackendLease (mitto-lrt.7/lrt.18) backing SharedProcess,
+	// when a BackendProvider was injected. Nil whenever no BackendProvider is
+	// injected — that path is unaffected. See the BackgroundSession.lease field doc.
+	BackendLease BackendLease
 
 	// StderrPatterns holds per-agent compiled stderr patterns (crash / ignore /
 	// degraded classes; mitto-k6h). Nil means only the hardcoded baseline
@@ -671,6 +706,14 @@ type BackgroundSessionTestOpts struct {
 	PromptResolver          PromptResolver
 	PromptFragmentsResolver PromptFragmentsResolver
 	ContextFlushCommand     string
+	// AgentSupportsImages, AgentModels and ConfigOptions expose the
+	// otherwise-private capability/model/config-option state so external
+	// packages (e.g. internal/web/handlers' neutral descriptor projection,
+	// mitto-lrt.12) can unit-test consumers of AgentSupportsImages(),
+	// AgentModels() and ConfigOptions() without a live ACP process.
+	AgentSupportsImages bool
+	AgentModels         *SessionModelState
+	ConfigOptions       []SessionConfigOption
 }
 
 // NewTestBackgroundSession creates a BackgroundSession from test options.
@@ -687,6 +730,9 @@ func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession
 		promptResolver:          opts.PromptResolver,
 		promptFragmentsResolver: opts.PromptFragmentsResolver,
 		contextFlushCommand:     opts.ContextFlushCommand,
+		agentSupportsImages:     opts.AgentSupportsImages,
+		agentModels:             opts.AgentModels,
+		configOptions:           opts.ConfigOptions,
 	}
 	return bs
 }
@@ -712,7 +758,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		workspaceUUID:                  cfg.WorkspaceUUID,
 		acpServer:                      cfg.ACPServer,
 		runner:                         cfg.Runner,
+		lease:                          cfg.BackendLease,
 		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
+		onAgentAuthStateChanged:        cfg.OnAgentAuthStateChanged,
 		onUIPromptStateChanged:         cfg.OnUIPromptStateChanged,
 		onUIPromptTimeout:              cfg.OnUIPromptTimeout,
 		onPlanStateChanged:             cfg.OnPlanStateChanged,
@@ -976,6 +1024,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		workspaceUUID:                  config.WorkspaceUUID,
 		acpServer:                      config.ACPServer,
 		runner:                         config.Runner,
+		lease:                          config.BackendLease,
 		onStreamingStateChanged:        config.OnStreamingStateChanged,
 		onUIPromptStateChanged:         config.OnUIPromptStateChanged,
 		onUIPromptTimeout:              config.OnUIPromptTimeout,

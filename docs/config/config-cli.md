@@ -1,12 +1,122 @@
 # `mitto config get` / `mitto config set` — CLI Contract
 
-> **Status:** contract + pure parser only (bead `mitto-4rz.1`). Neither
-> `config get` nor `config set` is wired to a live command yet — no
-> persistence, no server calls, no CLI flags exist today. This document
-> specifies the intended contract so later beads (`mitto-4rz.2`+) implement
-> it consistently. The parser living in `internal/config/configpath`
-> implements only the path/value grammar described below; it never reads
-> files, calls the network, or touches CLI globals.
+> **Status:** Both `mitto config get [PATH]` (bead `mitto-4rz.4`) and `mitto
+> config set` (bead `mitto-4rz.5`) are wired and live, composing the pure
+> parser from `mitto-4rz.1`, the snapshot/mutate service from `mitto-4rz.2`,
+> and the authenticated snapshot/patch resources from `mitto-4rz.3`. The
+> parser living in `internal/config/configpath` still implements only the
+> path/value grammar described below; it never reads files or calls the
+> network itself — `config set`'s CLI layer (`internal/cmd/config_set.go`)
+> owns dispatch (offline vs. live), `--set-file`/stdin reading, and output.
+
+## `mitto config get [PATH]`
+
+Reads one value by dotted/indexed `PATH` (same grammar as `config set`
+below), or the whole config when `PATH` is omitted.
+
+- **Default (live)**: talks to a running `mitto web` server, resolved via
+  `--url`/`--token`/`--api-prefix` flags, `$MITTO_URL`/`$MITTO_TOKEN`/
+  `$MITTO_API_PREFIX`, or `instance.json` — same precedence as `mitto
+  conversation`/`mitto auth` (`docs/devel/cli-conversation.md` §2). Returns
+  the server's `settings.json`, always redacted server-side. A remote/auth/
+  transport error is reported as-is and never silently falls back to
+  reading local disk. If `--url`/`$MITTO_URL` is given explicitly without an
+  explicit `--token`/`$MITTO_TOKEN`, the command refuses to attach the local
+  `instance.json` bearer token to that target (exit 2) rather than risk
+  sending this machine's credential to an unrelated host.
+- **`--offline`**: reads local `settings.json` directly — no server, no
+  network, no Keychain access, no first-run creation/migration. Required for
+  `--effective` and `--explain` (below), since the live snapshot resource
+  reports only the redacted stored document with no per-path provenance.
+- **`--effective`**: when a path has no stored value but this service knows
+  a compile-time default for it (`web.port`, `web.external_port`,
+  `mcp.host`, `mcp.port`), show that default instead of a not-found error.
+  Without `--effective`, an unstored-but-defaultable path is still
+  "not found" — the default view is always "stored". Offline only.
+- **`--explain`**: alongside the value, show `provenance`
+  (`stored`/`effective`) and whether the value was redacted. Requires
+  `--offline` and a `PATH` (there is nothing to explain for the whole doc).
+- **`--raw`**: print a bare scalar with no JSON/YAML quoting (for shell
+  scripting); errors (exit 2) if the resolved value is an object or array.
+- **`--output json|yaml|table`**: defaults to `json`. Table output is
+  unstable and not meant to be parsed by scripts (same convention as
+  `mitto conversation`).
+
+Every mode always redacts secrets (`web.auth.simple.password`,
+`web.auth.shared_token`, the whole `mcp` subtree) — there is no
+`--show-secrets` escape hatch.
+
+**Exit codes** (shared with `mitto conversation`/`mitto auth`, see
+`docs/devel/cli-conversation.md` §5): `0` success, `1` generic error, `2`
+usage error (bad path, invalid flag combination, `--effective`/`--explain`
+without `--offline`), `3` server unreachable, `4` auth failure, `5` path (or
+whole config) not found. A path that resolves to a stored JSON `null` is a
+**successful** read (exit 0, prints `null`) — distinct from a missing path
+(exit 5).
+
+**Examples:**
+
+```zsh
+mitto config get web.port                                # live, JSON
+mitto config get --raw web.port                           # bare scalar: 8080
+mitto config get --offline --effective mcp.port           # compile-time default
+mitto config get --offline --explain 'task_label_colors[0].color'
+mitto config get --offline --output yaml                  # whole config as YAML
+```
+
+Quote array-indexed paths in zsh (`[0]` is glob-special), same as `config
+set` below.
+
+## `mitto config set`
+
+Writes one or more values via `--set`/`--set-string`/`--set-json`/
+`--set-file` (see "Supported syntax" below for the grammar and precedence
+rules). At least one is required; all four are repeatable and mixable in a
+single invocation.
+
+- **Default (live)**: applies the batch via `POST /api/config/patch` on a
+  running `mitto web` server, resolved the same way as `config get`
+  (`--url`/`--token`/`--api-prefix`, env vars, or `instance.json`).
+- **`--offline`**: writes local `settings.json` directly — no server, no
+  network, no Keychain access — via the same validated batch-mutate service
+  used by the live handler. Refuses while a `mitto web` server is detected
+  running against the same `settings.json` (avoids two writers racing).
+- **`--dry-run`**: validates the whole batch (including redaction and
+  registry checks) without persisting anything; reports `would_apply` per
+  key instead of `applied`/`restart_required`.
+- **`--revision REV`**: optimistic-concurrency token from a previously-read
+  snapshot's revision; a stale value fails the whole batch (exit 1) rather
+  than silently overwriting a concurrent writer.
+
+Output is a JSON/YAML/table report of each resolved key's outcome
+(`applied`, `restart_required`, or `would_apply` for `--dry-run`), plus the
+new `revision` after a successful non-dry-run write.
+
+**Exit codes** (shared table, see `docs/devel/cli-conversation.md` §5): `0`
+success; `2` usage error (bad path/value syntax, limit exceeded, an
+ancestor/descendant conflict, an unknown/rejected/read-only field, or a
+value that fails its field's validator); `5` settings file not found
+(`--offline` when `settings.json` has never been created); `1` generic
+error (concurrent-writer lock detected, a stale `--revision`, or an I/O
+failure) — live mode additionally uses `3`/`4` for an unreachable server or
+an authentication failure, per the shared table.
+
+**Examples:**
+
+```zsh
+mitto config set --set web.port=9090                       # live
+mitto config set --offline --dry-run --set web.port=9090   # validate only
+mitto config set --set 'task_label_colors[0].color=#ef4444'
+mitto config set --set-json 'shortcuts={"tasksList":[{"icon":"star","prompt":"review"}]}'
+mitto config set --set-file 'shortcuts.tasksList[0].prompt=./prompt.txt'
+mitto config set --set-file 'shortcuts.tasksList[0].prompt=-' <<< "typed at a prompt"
+
+# Optimistic concurrency: reuse the revision a prior successful (non-dry-run)
+# write reported, so a stale write fails loudly instead of clobbering a
+# concurrent change:
+rev=$(mitto config set --set web.port=9090 --output json | jq -r .revision)
+mitto config set --revision "$rev" --set web.port=9091
+```
 
 ## Vocabulary: settings.json JSON tags
 

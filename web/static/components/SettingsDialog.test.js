@@ -575,7 +575,7 @@ async function removeServer(client, serverName, acpServersCount, setters) {
     setDeleteWizardPlan,
   } = setters;
   if (acpServersCount <= 1) {
-    setError("At least one ACP server is required");
+    setError("At least one agent is required");
     return;
   }
   setError("");
@@ -733,7 +733,7 @@ describe("SettingsDialog.removeServer", () => {
     expect(setDeleteWizardPlan).toHaveBeenCalledWith(plan);
   });
 
-  test("blocks deletion locally when it is the last remaining ACP server", async () => {
+  test("blocks deletion locally when it is the last remaining agent", async () => {
     const client = { acpServers: { prepareDelete: jest.fn() } };
     const setError = jest.fn();
     await removeServer(client, "only-server", 1, {
@@ -745,7 +745,7 @@ describe("SettingsDialog.removeServer", () => {
     });
     expect(client.acpServers.prepareDelete).not.toHaveBeenCalled();
     expect(setError).toHaveBeenCalledWith(
-      "At least one ACP server is required",
+      "At least one agent is required",
     );
   });
 });

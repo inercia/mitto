@@ -593,9 +593,17 @@ func sessionHasModelTagMacro(eh cel.MacroExprFactory, target celast.Expr, args [
 }
 
 // acpMatchesServerTypeMacro rewrites ACP.MatchesServerType(t) ->
-// __mitto_matchesServerType(ACP.Name, ACP.Type, t).
+// __mitto_matchesServerType(ACP.Name, ACP.Type, t). It also accepts the
+// "Backend" receiver identifier as a neutral, protocol-agnostic alias for
+// the exact same expansion (mitto-lrt.10): Backend.MatchesServerType(t) is
+// byte-identical in behavior to ACP.MatchesServerType(t), since both source
+// the same ACP.Name/ACP.Type activation values — Mitto has only one backend
+// protocol today. This lets prompts written against a neutral "Backend.*"
+// vocabulary evaluate identically to existing "ACP.*" prompts without any
+// new context field, while existing ACP.* expressions are completely
+// unaffected.
 func acpMatchesServerTypeMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "ACP") {
+	if !isIdent(target, "ACP") && !isIdent(target, "Backend") {
 		return nil, nil
 	}
 	return eh.NewCall("__mitto_matchesServerType", eh.NewIdent("ACP.Name"), eh.NewIdent("ACP.Type"), args[0]), nil

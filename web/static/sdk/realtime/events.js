@@ -50,6 +50,23 @@ export const EVENTS = Object.freeze({
   MEMORY_RECYCLED: "memory_recycled",
   AGENT_RECYCLED: "agent_recycled",
   AGENT_DEGRADED: "agent_degraded",
+  /**
+   * Sidebar health pill (mitto-3du): a session's agent hit an
+   * authentication-required failure (JSON-RPC -32000 "Authentication
+   * required"), reusing the durable auth-expiry signal recorded by
+   * mitto-6vs. Fired once per outage streak; broadcast on the global
+   * `/api/events` bus so unattended/loop sessions with no attached client
+   * still surface the pill.
+   */
+  AGENT_AUTH_REQUIRED: "agent_auth_required",
+  /**
+   * Companion to {@link EVENTS.AGENT_AUTH_REQUIRED}: a prompt succeeded
+   * after auth guidance had previously been surfaced for the workspace.
+   * Not fired on every successful prompt — only when the prior state was
+   * actually "required" — so it never spams a clear for a workspace that
+   * was never degraded.
+   */
+  AGENT_AUTH_CLEARED: "agent_auth_cleared",
   MCP_INITIALIZING: "mcp_initializing",
   MCP_INIT_TIMED_OUT: "mcp_init_timed_out",
   PREWARM_PIN_ALERT: "prewarm_pin_alert",
@@ -240,6 +257,72 @@ export function isCommandType(type) {
 // --- Connection & session lifecycle ------------------------------------------
 
 /**
+ * Neutral agent/provider identity (mirrors Go `agentbackend.AgentRef`).
+ * @typedef {Object} BackendAgentRef
+ * @property {string} backend - Backend implementation kind (e.g. `"acp"`).
+ * @property {string} provider - Provider id on that backend.
+ */
+
+/**
+ * Neutral session identity (mirrors Go `agentbackend.SessionRef`). Keeps the
+ * Mitto-owned conversation id and the upstream provider session id distinct.
+ * @typedef {Object} BackendSessionRef
+ * @property {string} conversation_id - Mitto-owned conversation identifier.
+ * @property {string} provider - Provider owning this session.
+ * @property {string} [provider_session] - Upstream-assigned session id.
+ */
+
+/**
+ * One selectable model (mirrors Go `agentbackend.ModelDescriptor`).
+ * @typedef {Object} BackendModelOption
+ * @property {string} id - Model id used to select this model.
+ * @property {string} [name] - Human-readable label.
+ * @property {string} [description] - Optional longer description.
+ */
+
+/**
+ * A session's available models and the currently selected one.
+ * @typedef {Object} BackendModelState
+ * @property {string} [current_id] - Currently selected model id.
+ * @property {BackendModelOption[]} [available] - Selectable models.
+ */
+
+/**
+ * One selectable value of a {@link BackendConfigOption}.
+ * @typedef {Object} BackendConfigOptionValue
+ * @property {string} value - Identifier used when setting this option.
+ * @property {string} [name] - Human-readable name.
+ * @property {string} [description] - What this value does.
+ */
+
+/**
+ * A neutral mirror of a session-level configuration knob (e.g. model or mode
+ * selection exposed as a generic option).
+ * @typedef {Object} BackendConfigOption
+ * @property {string} id - Option identifier.
+ * @property {string} [category] - Semantic category (e.g. `"model"`, `"mode"`).
+ * @property {string} [current] - Currently selected value.
+ * @property {BackendConfigOptionValue[]} [values] - Available values.
+ */
+
+/**
+ * Optional, additive protocol-neutral descriptor (mitto-lrt.12) embedded in
+ * `connected`/`acp_started` snapshots and REST session responses. Every
+ * field is present only when the server could actually compute it; absent
+ * on legacy/older servers or when identity/live state isn't available for a
+ * session — never synthesized. Capability values are one of `"unknown"`,
+ * `"supported"`, `"unsupported"`, keyed by feature name (e.g. `"images"`,
+ * `"files"`, `"terminals"`, `"permissions"`, `"model_selection"`,
+ * `"mode_selection"`).
+ * @typedef {Object} BackendDescriptor
+ * @property {BackendAgentRef} [agent_ref] - Neutral agent/provider identity.
+ * @property {BackendSessionRef} [session_ref] - Neutral session identity.
+ * @property {Object<string, string>} [capabilities] - Feature name -> capability state.
+ * @property {BackendModelState} [model] - Available/current model, if known.
+ * @property {BackendConfigOption[]} [config_options] - Neutral config options mirror.
+ */
+
+/**
  * Payload of {@link EVENTS.CONNECTED} (`connected`).
  * @typedef {Object} ConnectedPayload
  * @property {string} session_id - Session identifier.
@@ -249,6 +332,7 @@ export function isCommandType(type) {
  * @property {boolean} is_prompting - Whether the agent is currently responding.
  * @property {string} last_user_prompt_id - Last prompt ID, for delivery verification.
  * @property {number} last_user_prompt_seq - Last prompt seq, for delivery verification.
+ * @property {BackendDescriptor} [backend] - Optional protocol-neutral backend descriptor.
  */
 
 /**
@@ -644,6 +728,7 @@ export function isCommandType(type) {
  * Payload of {@link EVENTS.ACP_STARTED} (`acp_started`).
  * @typedef {Object} AcpStartedPayload
  * @property {string} session_id - Session whose ACP process started.
+ * @property {BackendDescriptor} [backend] - Optional protocol-neutral backend descriptor.
  */
 
 /**
@@ -713,6 +798,27 @@ export function isCommandType(type) {
  * @property {string} state - One of `process_saturated`, `mcp_init_gated`,
  *   `mcp_init_wedged`, or `""` on recovery.
  * @property {boolean} degraded - Whether the agent is currently degraded.
+ */
+
+/**
+ * Payload of {@link EVENTS.AGENT_AUTH_REQUIRED} (`agent_auth_required`).
+ * Same shape as {@link AgentAuthClearedPayload}.
+ * @typedef {Object} AgentAuthRequiredPayload
+ * @property {string} session_id - Session whose prompt hit the auth failure.
+ * @property {string} workspace_uuid - Affected workspace.
+ * @property {string} workspace_name - Workspace display name.
+ * @property {string} working_dir - Workspace working directory.
+ */
+
+/**
+ * Payload of {@link EVENTS.AGENT_AUTH_CLEARED} (`agent_auth_cleared`).
+ * Same shape as {@link AgentAuthRequiredPayload}.
+ * @typedef {Object} AgentAuthClearedPayload
+ * @property {string} session_id - Session whose prompt recovered from the
+ *   auth failure.
+ * @property {string} workspace_uuid - Affected workspace.
+ * @property {string} workspace_name - Workspace display name.
+ * @property {string} working_dir - Workspace working directory.
  */
 
 /**

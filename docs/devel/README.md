@@ -52,9 +52,15 @@ This directory contains technical documentation for developers working on Mitto.
 
 ### Analysis
 
+- **[Agent/Backend Architecture](agent-backend-architecture.md)** — Design decision record for `AgentDefinition`/`BackendConnection`/`AgentRef` identities and ownership boundaries between locally-launched and remotely-attached backends, in preparation for a second upstream protocol alongside ACP. The neutral contracts, ACP adapter, and event-projection engine are implemented and tested but additive-only (production ACP is unchanged); see §12 for the realized-state summary, support matrix, and remaining follow-up work (mitto-lrt.16, mitto-lrt.17)
+
+- **[AHP Feasibility](ahp-feasibility.md)** — Bounded evidence-matrix investigation of Mitto as a Go client of an external Agent Host Protocol (AHP) host (Claude as first candidate); confirms a published Go AHP SDK exists (correcting prior research) and records a blocked-on-runtime-validation decision pending host/auth availability and dependency authorization
+
 - **[Session Resume Analysis](session-resume-analysis.md)** — ACP session resume support analysis, UNSTABLE API usage, implementation plan
 
-- **[Task Automation Manager](task-automation-manager.md)** — Design proposal to replace the `Loop processing tasks` supervisor prompt with a shared Go scheduler: hybrid architecture, deterministic vs semantic boundary, scheduling/fairness, migration plan, and open questions
+- **[ACP Behavior Regression Baseline](acp-behavior-baseline.md)** — Executable regression baseline recorded before backend-boundary extraction: provenance, methodology, and a behavior-to-test coverage matrix
+
+- **[Task Automation Manager](task-automation-manager.md)** — Beads-backed automation design: native claims and ticket-resident workflow state, shared Go scheduling, per-item LLM supervisors, customizable phases, recovery, migration, and open questions with possible solutions
 
 ### Debugging & Tools
 
@@ -62,47 +68,47 @@ This directory contains technical documentation for developers working on Mitto.
 
 ## Quick Links
 
-| Topic                     | Document                                               | Key Sections                                           |
-| ------------------------- | ------------------------------------------------------ | ------------------------------------------------------ |
-| Package structure         | [Architecture](architecture.md)                        | Component Breakdown                                    |
-| Configuration             | [Architecture](architecture.md)                        | `internal/config`                                      |
-| ACP architecture          | [ACP Architecture](acp.md)                             | Shared process, multiplexing, concurrency              |
-| ACP client                | [ACP Architecture](acp.md)                             | `internal/acp`                                         |
-| Process GC tiers          | [ACP Architecture](acp.md)                             | Multi-Tier GC, loop suspend, memory recycle            |
-| Memory recycling          | [ACP Architecture](acp.md)                             | Tier 4 — Memory-Bloat Recycling, Configuration         |
-| Inactivity watchdog       | [ACP Architecture](acp.md)                             | Prompt Inactivity Watchdog                             |
-| Feature flags             | [Architecture](architecture.md)                        | Advanced Settings                                      |
-| Event types               | [Session Management](session-management.md)            | Event Types                                            |
-| Session settings          | [Session Management](session-management.md)            | Advanced Settings                                      |
-| Queue API                 | [Message Queue](message-queue.md)                      | REST API                                               |
-| Queue titles              | [Message Queue](message-queue.md)                      | Title Generation                                       |
-| Loop multi-trigger        | [Message Queue](message-queue.md)                      | Loop Prompts: Multi-Trigger Architecture               |
-| Loop onCompletion         | [Message Queue](message-queue.md)                      | Loop Prompts: On-Completion Delivery                   |
-| Loop onTasks              | [Message Queue](message-queue.md)                      | Loop Prompts: On-Tasks Delivery                        |
-| Prompt menus              | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                                |
-| Prompt dispatch           | [Prompt Menus & Dispatch](prompts.md)                  | The two start behaviors, deferred resolution           |
-| REST endpoints            | [Web Interface](web-interface.md)                      | REST API Endpoints                                     |
-| Streaming pipeline        | [Web Interface](web-interface.md)                      | Streaming Response Handling                            |
-| WebSocket protocol        | [WebSocket Docs](websockets/protocol-spec.md)          | All message types and formats                          |
-| Sequence numbers          | [WebSocket Docs](websockets/sequence-numbers.md)       | Assignment, contract, guarantees                       |
-| Reconnection & sync       | [WebSocket Docs](websockets/synchronization.md)        | Gap detection, dedup, circuit breaker                  |
-| Communication flows       | [WebSocket Docs](websockets/communication-flows.md)    | Golden path and corner case diagrams                   |
-| Mobile support            | [WebSocket Docs](websockets/synchronization.md)        | Mobile Wake Resync, Zombie Detection                   |
-| Workspace API             | [Workspaces](workspaces.md)                            | Workspace REST API                                     |
-| Action buttons            | [Follow-up Suggestions](follow-up-suggestions.md)      | Persistence, Lifecycle                                 |
-| Callback endpoints        | [Callbacks](callbacks.md)                              | Public API, Token Lifecycle, Security                  |
-| SDK design (JS)           | [JS Client Library](js-client-library.md)              | Layout, Distribution, Contract, Stability Promise      |
-| SDK usage (JS)            | [JavaScript SDK Reference](../api/README.md)           | Getting Started, Client Config, Auth, REST, Realtime   |
-| SDK design (Go)           | [Go Client Library](go-client-library.md)              | Layout, Object Model, Error Model, Streaming API       |
-| API stability tiers       | [API Stability Tiers](api-stability.md)                | Tiers, `external-stable`, Deprecation Window, Register |
-| CLI conversation commands | [CLI Conversation Commands](cli-conversation.md)       | Command tree, Output contract, Exit codes              |
-| MCP debugging             | [MCP Servers](mcp.md)                                  | Global Debug Server                                    |
-| Session MCP               | [MCP Servers](mcp.md)                                  | Per-Session MCP Servers                                |
-| Settings API              | [MCP Servers](mcp.md)                                  | Advanced Settings API                                  |
-| Restricted runners        | [Restricted Runner Integration](restricted-runners.md) | Architecture, Runner Types, Config Hierarchy           |
-| Message processors        | [Message Processing Pipeline](processors.md)           | Pipeline, Processor Types, Variable Substitution       |
-| Session resume            | [Session Resume Analysis](session-resume-analysis.md)  | ACP resume support, UNSTABLE API, implementation plan  |
-| Task automation           | [Task Automation Manager](task-automation-manager.md)  | Hybrid arch, deterministic vs semantic, migration plan |
+| Topic                     | Document                                               | Key Sections                                            |
+| ------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
+| Package structure         | [Architecture](architecture.md)                        | Component Breakdown                                     |
+| Configuration             | [Architecture](architecture.md)                        | `internal/config`                                       |
+| ACP architecture          | [ACP Architecture](acp.md)                             | Shared process, multiplexing, concurrency               |
+| ACP client                | [ACP Architecture](acp.md)                             | `internal/acp`                                          |
+| Process GC tiers          | [ACP Architecture](acp.md)                             | Multi-Tier GC, loop suspend, memory recycle             |
+| Memory recycling          | [ACP Architecture](acp.md)                             | Tier 4 — Memory-Bloat Recycling, Configuration          |
+| Inactivity watchdog       | [ACP Architecture](acp.md)                             | Prompt Inactivity Watchdog                              |
+| Feature flags             | [Architecture](architecture.md)                        | Advanced Settings                                       |
+| Event types               | [Session Management](session-management.md)            | Event Types                                             |
+| Session settings          | [Session Management](session-management.md)            | Advanced Settings                                       |
+| Queue API                 | [Message Queue](message-queue.md)                      | REST API                                                |
+| Queue titles              | [Message Queue](message-queue.md)                      | Title Generation                                        |
+| Loop multi-trigger        | [Message Queue](message-queue.md)                      | Loop Prompts: Multi-Trigger Architecture                |
+| Loop onCompletion         | [Message Queue](message-queue.md)                      | Loop Prompts: On-Completion Delivery                    |
+| Loop onTasks              | [Message Queue](message-queue.md)                      | Loop Prompts: On-Tasks Delivery                         |
+| Prompt menus              | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                                 |
+| Prompt dispatch           | [Prompt Menus & Dispatch](prompts.md)                  | The two start behaviors, deferred resolution            |
+| REST endpoints            | [Web Interface](web-interface.md)                      | REST API Endpoints                                      |
+| Streaming pipeline        | [Web Interface](web-interface.md)                      | Streaming Response Handling                             |
+| WebSocket protocol        | [WebSocket Docs](websockets/protocol-spec.md)          | All message types and formats                           |
+| Sequence numbers          | [WebSocket Docs](websockets/sequence-numbers.md)       | Assignment, contract, guarantees                        |
+| Reconnection & sync       | [WebSocket Docs](websockets/synchronization.md)        | Gap detection, dedup, circuit breaker                   |
+| Communication flows       | [WebSocket Docs](websockets/communication-flows.md)    | Golden path and corner case diagrams                    |
+| Mobile support            | [WebSocket Docs](websockets/synchronization.md)        | Mobile Wake Resync, Zombie Detection                    |
+| Workspace API             | [Workspaces](workspaces.md)                            | Workspace REST API                                      |
+| Action buttons            | [Follow-up Suggestions](follow-up-suggestions.md)      | Persistence, Lifecycle                                  |
+| Callback endpoints        | [Callbacks](callbacks.md)                              | Public API, Token Lifecycle, Security                   |
+| SDK design (JS)           | [JS Client Library](js-client-library.md)              | Layout, Distribution, Contract, Stability Promise       |
+| SDK usage (JS)            | [JavaScript SDK Reference](../api/README.md)           | Getting Started, Client Config, Auth, REST, Realtime    |
+| SDK design (Go)           | [Go Client Library](go-client-library.md)              | Layout, Object Model, Error Model, Streaming API        |
+| API stability tiers       | [API Stability Tiers](api-stability.md)                | Tiers, `external-stable`, Deprecation Window, Register  |
+| CLI conversation commands | [CLI Conversation Commands](cli-conversation.md)       | Command tree, Output contract, Exit codes               |
+| MCP debugging             | [MCP Servers](mcp.md)                                  | Global Debug Server                                     |
+| Session MCP               | [MCP Servers](mcp.md)                                  | Per-Session MCP Servers                                 |
+| Settings API              | [MCP Servers](mcp.md)                                  | Advanced Settings API                                   |
+| Restricted runners        | [Restricted Runner Integration](restricted-runners.md) | Architecture, Runner Types, Config Hierarchy            |
+| Message processors        | [Message Processing Pipeline](processors.md)           | Pipeline, Processor Types, Variable Substitution        |
+| Session resume            | [Session Resume Analysis](session-resume-analysis.md)  | ACP resume support, UNSTABLE API, implementation plan   |
+| Task automation           | [Task Automation Manager](task-automation-manager.md)  | Beads claims/state, LLM supervision, workflow decisions |
 
 ## Additional Documentation
 

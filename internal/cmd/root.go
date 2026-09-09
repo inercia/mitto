@@ -19,13 +19,18 @@ import (
 var (
 	// Global flags
 	acpServerName string
-	configPath    string // Legacy YAML config override
-	autoApprove   bool
-	debug         bool
-	logLevel      string   // --log-level flag (debug, info, warn, error)
-	dirFlags      []string // --dir flags: can be "path" or "server:path"
-	logFile       string
-	logComponents string
+	// agentServerName is an exact alias for acpServerName (--agent, mitto-lrt.13),
+	// generalizing the CLI's ACP-specific selection vocabulary toward
+	// protocol-neutral "agent/backend" terminology while --acp remains primary
+	// and unchanged.
+	agentServerName string
+	configPath      string // Legacy YAML config override
+	autoApprove     bool
+	debug           bool
+	logLevel        string   // --log-level flag (debug, info, warn, error)
+	dirFlags        []string // --dir flags: can be "path" or "server:path"
+	logFile         string
+	logComponents   string
 
 	// Loaded configuration
 	cfg *config.Config
@@ -57,7 +62,14 @@ like auggie, claude-code, and others that implement ACP.`,
 		// server-touching commands, resolved entirely via flags/env/
 		// instance.json in conversation_client.go, and must not block on a
 		// Keychain prompt when run non-interactively (e.g. from a script).
-		if cmd.Name() == "help" || cmd.Name() == "completion" || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents" || cmd.Parent().Name() == "conversation" || cmd.Parent().Name() == "auth") {
+		// config get is scoped by exact leaf name + parent (not the whole
+		// "config" tree) so this skip never changes config create's existing
+		// pre-run behavior: it is a read-only, offline-capable command like
+		// conversation/auth above and must not touch Keychain, deploy
+		// builtins, or run config.LoadSettingsWithFallback (which can itself
+		// migrate/dedup-save) just to display a value (mitto-4rz.4).
+		isConfigGet := cmd.Name() == "get" && cmd.Parent() != nil && cmd.Parent().Name() == "config"
+		if cmd.Name() == "help" || cmd.Name() == "completion" || isConfigGet || cmd.Parent() != nil && (cmd.Parent().Name() == "prompts" || cmd.Parent().Name() == "processors" || cmd.Parent().Name() == "agents" || cmd.Parent().Name() == "conversation" || cmd.Parent().Name() == "auth") {
 			return nil
 		}
 
@@ -190,6 +202,7 @@ func Execute() error {
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&acpServerName, "acp", "", "ACP server name to use (defaults to first in config)")
+	rootCmd.PersistentFlags().StringVar(&agentServerName, "agent", "", "Agent/backend name to use — alias for --acp (must resolve to the same configured server if both are set)")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Configuration file path (YAML or JSON format, overrides settings.json)")
 	// Default to true until we implement a proper permission UI in the frontend.
 	// TODO: Change default to false once permission dialog is implemented.
@@ -202,13 +215,19 @@ func init() {
 }
 
 // getSelectedServer returns the ACP server to use based on flags and config.
+// --agent is an exact alias for --acp (mitto-lrt.13); see resolveServerSelector
+// for the precedence/conflict rule when both are set.
 func getSelectedServer() (*config.ACPServer, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("configuration not loaded")
 	}
 
-	if acpServerName != "" {
-		return cfg.GetServer(acpServerName)
+	selected, err := resolveServerSelector(cfg, acpServerName, agentServerName)
+	if err != nil {
+		return nil, err
+	}
+	if selected != nil {
+		return selected, nil
 	}
 
 	server := cfg.DefaultServer()

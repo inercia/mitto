@@ -106,6 +106,7 @@ import {
   decideLoopAction,
   makeLoopNow,
   useMCPInitState,
+  useAgentAuthState,
 } from "./hooks/index.js";
 
 // Import components
@@ -939,6 +940,14 @@ function App() {
       getMCPInitState(sessionInfo?.workspace_uuid, sessionInfo?.working_dir),
     [getMCPInitState, sessionInfo?.workspace_uuid, sessionInfo?.working_dir],
   );
+
+  // Per-workspace "agent auth required" state (mitto-3du): drives a sidebar
+  // folder-group health pill when a workspace's agent hit an
+  // authentication-required failure (mitto-6vs's durable auth-expiry
+  // signal), cleared on the next successful prompt. Threaded down to
+  // SessionList as a getter (not a single derived value) since the sidebar
+  // needs ALL folders, not just the active session's.
+  const { getAgentAuthStateForWorkingDir } = useAgentAuthState();
 
   // Get the current draft for the active session (null key = no session)
   const currentDraft = sessionDrafts[activeSessionId ?? "__no_session__"] || "";
@@ -3926,7 +3935,7 @@ function App() {
                     <div class="flex items-center justify-center py-2 text-sm">
                       <span
                         class="skeleton skeleton-text skeleton-text-readable"
-                        >Establishing ACP session...</span
+                        >Establishing agent session...</span
                       >
                     </div>
                   `}
@@ -4104,6 +4113,8 @@ function App() {
                 onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
                 onRunBeadsPrompt=${handleRunBeadsPrompt}
                 onReturnToConversation=${handleReturnFromBeadsIssue}
+                issueSessionMap=${beadsIssueSessionMap}
+                onOpenConversation=${focusSession}
               />
             `
           : ""}
@@ -4171,6 +4182,7 @@ function App() {
             onAddFolder=${handleAddFolderOpen}
             onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
             onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
+            getAgentAuthStateForWorkingDir=${getAgentAuthStateForWorkingDir}
             configReadonly=${configReadonly}
             rcFilePath=${rcFilePath}
             badgeClickEnabled=${badgeClickEnabled}

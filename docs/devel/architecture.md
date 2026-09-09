@@ -209,6 +209,59 @@ Dependency rule: `internal/web` depends on `internal/conversation`; `internal/co
 - **Observer pattern** (`observer.go`): `SessionObserver` interface for broadcasting events to transports.
 - **Supporting types**: action buttons, title generation, model-state mapping, constraints, available commands, `SessionInfo`, WebSocket event type constants. (ACP error classification and restart constants live in `internal/acp`, not here.)
 
+### Agent/Backend Seam - Protocol-Neutral Backend Contracts
+
+Additive, protocol-neutral layer preparing Mitto for a second upstream protocol
+alongside ACP (see [Agent/Backend Architecture](agent-backend-architecture.md)
+for the full design record). **Tested but not yet wired into the production
+`SessionManager`/`BackgroundSession` acquisition path** — `internal/conversation`
+and `internal/web` are unchanged today; live production wiring is tracked as a
+follow-up (`mitto-lrt.16`).
+
+```
+native clients (CLI / Web / SDKs)
+        |
+        v
+internal/conversation  (domain: SharedProcess, SessionHandle, SessionCallbacks)
+        |
+        v
+   [neutral seam: internal/agentbackend contracts]
+        |
+        +--> internal/acpbackend  --> internal/acp + internal/acpproc  (ACP, shipped, unchanged)
+        +--> (future) external-host adapter  --> second upstream protocol
+```
+
+**Key Components:**
+
+- **`internal/agentbackend`** — the pure-leaf neutral contract package: typed
+  identifiers (`AgentRef`, `SessionRef`, `BackendConnection`), neutral
+  prompt/outcome/capability/state/event types, and small separated interfaces
+  (`Connection`, `ProviderDiscovery`, `SessionOps`, `EventDelivery`, optional
+  `ClientServices`), plus an in-memory `FakeHost` proving the contracts don't
+  collapse into an ACP-only alias layer. Import-guarded (`imports_test.go`):
+  must never import `acp-go-sdk`, `internal/acp`, `internal/acpproc`,
+  `internal/web`, `internal/conversation`, or `os/exec`.
+- **`internal/backendcompat`** — dependency-inversion bridge mapping legacy
+  persisted shapes (`config.ACPServer`, `session.Metadata`) to neutral
+  `agentbackend` types by reference, without `agentbackend` itself knowing
+  about config or session. Byte-identical persistence — nothing on disk
+  changes. `ResolveProviderAlias` resolves a possibly-stale ACP server name
+  (exact match, then case-insensitive) and rejects an ambiguous canonical set
+  via `agentbackend.ErrAmbiguousAlias` rather than silently picking one.
+- **`internal/acpbackend`** — the protocol-specific ACP-to-neutral adapter:
+  wraps `conversation.SharedProcess` and implements all five neutral contracts
+  via pure translators (content, outcome, capabilities, state, errors). This is
+  the home for `acp-go-sdk` that `agentbackend`'s own import guard forbids
+  `agentbackend` from depending on; it is not imported _by_
+  `internal/conversation` in this increment.
+- **`internal/eventprojection`** — protocol-neutral leaf package that consumes
+  `agentbackend.Event` and emits sequence-numbered, deduplicated
+  `ProjectedEvent`s to a caller-supplied `ProjectionSink`, with a durable
+  session-sidecar-backed `CheckpointStore` implementation kept in the sibling
+  package `internal/eventprojection/eventprojectionsession` to preserve the
+  same import-guard boundary. Not wired into `BackgroundSession`/
+  `SessionManager` in this increment.
+
 ### `internal/web` - Web Interface Server
 
 Provides the HTTP/WebSocket delivery layer and infrastructure wiring that serves the conversation domain. It no longer owns `BackgroundSession` or `SessionManager` — those live in `internal/conversation`. The web package provides the concrete implementations of the domain interfaces (`acpProcessManagerAdapter`, `GlobalEventsManager`) and wires everything together via `Server`.

@@ -110,12 +110,7 @@ prompt: |
 
   ## Step 6.5 — Detect a JIRA reopen after a local close
 
-  Compute two timestamps used by Step 7.5's auto-reopen branch. This step only prepares data — it never writes to the bead.
-
-  - **`T_close`** — the bead's `closed_at` field from Step 1's `bd show --json`. If the bead is still open (`closed_at` is null / empty), skip the rest of this step and leave `T_reopen` unset; Step 7.5's auto-reopen branch will not fire.
-  - **`T_reopen`** — walk the JIRA ticket's `changelog.histories` (from Step 2) newest first and find the **most recent** entry whose `items[]` contains a `field == "status"` transition whose `toString` is **not** on the terminal-status allow-list from Step 7 (case-insensitive, exact match). `T_reopen` is that entry's `created` timestamp. If no such transition exists, leave `T_reopen` unset.
-
-  On the CLI fallback, `changelog.histories` is not machine-readable JSON — parse the `jira issue view <KEY> --history` output for the most recent `Status` change whose target name is not on the terminal allow-list and use that row's timestamp as `T_reopen`.
+  {{ template "jira/shared/reopen-detect" (dict "Target" $target "CloseSource" "Step 1's `bd show --json`") }}
 
   Both `T_close` and `T_reopen` are just captured here; Step 7.5 compares them.
 
@@ -143,19 +138,7 @@ prompt: |
 
   If the bead's `status` is `closed` and the JIRA status `name` is **not** on that allow-list (case-insensitive, exact match), the two sides disagree about whether the work is done.
 
-  **Auto-reopen (unambiguous branch, evaluated first)** — before prompting, compare `T_reopen` and `T_close` from Step 6.5 with a **60s skew tolerance** (JIRA server time vs local `bd` time can drift). If `T_reopen` is set and `T_reopen > T_close + 60s`, the JIRA reopen strictly followed our local close — the remote team has explicitly picked the work back up and the bead should follow JIRA. Auto-reopen locally, skip the interactive prompt entirely, and record the outcome in the Step 8 summary. This is safe to do without user confirmation because reopening is strictly additive — it never drops local work — mirroring the "act automatically only when the signal is unambiguous" rule already used for closes in Step 7.
-
-  In interactive mode:
-
-  ```bash
-  bd reopen {{ $target }} --reason "Auto-reopened: JIRA <KEY> reopened at <T_reopen> after local close at <T_close>"
-  ```
-
-  Then add a Step 8 row with `↔️ reopened (JIRA reopened after local close)` in the "Change / notes" column and do **not** run the three-option prompt below for this bead.
-
-  In silent mode, preserve the "never write in silent mode" invariant: do **not** run `bd reopen`; instead record `⚠️ JIRA reopened at <T_reopen> after local close — reopen pending next interactive run` in the Step 8 table and let Step 8's `mitto_ui_notify` surface it so a human can force-run this prompt.
-
-  Fall through to the manual reconciliation prompt below only when the auto-reopen branch does **not** fire — i.e. `T_reopen` is unset (JIRA never left a terminal status, or the changelog contained no status transitions), or `T_reopen ≤ T_close + 60s` (the reopen predates or is contemporaneous with our close, so the local close was deliberate against an already-open JIRA — a human decision).
+  {{ template "jira/shared/reopen-reconcile" (dict "Target" $target "Summary" "the Step 8 summary") }}
 
   **Interactive mode** — present a `mitto_ui_options` prompt with question `"Bead <beadId> is closed locally but JIRA <KEY> is still \"<status>\". How should we reconcile?"` and these options (labels exactly as shown):
 

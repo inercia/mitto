@@ -15,9 +15,12 @@ import (
 // newFlags holds the flags for `conversation new`, per the design decisions
 // recorded on mitto-pscc.5 (Plan comment).
 type newFlags struct {
-	Title       string
-	Dir         string
-	ACP         string
+	Title string
+	Dir   string
+	ACP   string
+	// Agent is an exact alias for ACP (mitto-lrt.13): if only one of ACP/Agent
+	// is set, it wins; if both are set they must be identical.
+	Agent       string
 	Prompt      string
 	PromptName  string
 	Args        []string
@@ -54,6 +57,7 @@ func init() {
 	conversationNewCmd.Flags().StringVar(&f.Title, "title", "", "Conversation title/name")
 	conversationNewCmd.Flags().StringVar(&f.Dir, "dir", "", "Working directory for the conversation (default: current directory)")
 	conversationNewCmd.Flags().StringVar(&f.ACP, "acp", "", "ACP server to use")
+	conversationNewCmd.Flags().StringVar(&f.Agent, "agent", "", "Agent/backend to use — alias for --acp (must be identical if both are set)")
 	conversationNewCmd.Flags().StringVar(&f.Prompt, "prompt", "", `Initial prompt text (alternative to --prompt-name; "-" reads stdin)`)
 	conversationNewCmd.Flags().StringVar(&f.PromptName, "prompt-name", "", "Seed the queue with a named workspace prompt instead of free text")
 	conversationNewCmd.Flags().StringArrayVar(&f.Args, "arg", nil, "key=value argument for --prompt-name (repeatable)")
@@ -79,6 +83,11 @@ func runConversationNew(cmd *cobra.Command, args []string) error {
 	}
 	if conversationNewFlags.Wait && !promptChanged && !promptNameChanged {
 		return newExitCodeError(exitUsage, fmt.Errorf("--wait requires --prompt or --prompt-name"))
+	}
+
+	acpServer, err := resolveConversationNewACPServer(conversationNewFlags.ACP, conversationNewFlags.Agent)
+	if err != nil {
+		return newExitCodeError(exitUsage, err)
 	}
 
 	promptArgs, err := parseSendArgs(conversationNewFlags.Args)
@@ -110,7 +119,7 @@ func runConversationNew(cmd *cobra.Command, args []string) error {
 	req := api.CreateSessionRequest{
 		Name:       conversationNewFlags.Title,
 		WorkingDir: dir,
-		ACPServer:  conversationNewFlags.ACP,
+		ACPServer:  acpServer,
 	}
 	if promptNameChanged && !conversationNewFlags.Wait {
 		req.InitialPromptName = conversationNewFlags.PromptName

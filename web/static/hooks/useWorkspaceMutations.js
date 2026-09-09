@@ -204,9 +204,7 @@ export function useWorkspaceMutations({
       if (!ws) return;
       const altName = getUnusedServer(ws.working_dir, ws.acp_server);
       if (!altName) {
-        setError(
-          "Cannot duplicate: all ACP servers already used for this folder",
-        );
+        setError("Cannot duplicate: all agents already used for this folder");
         return;
       }
       const altSrv = acpServers.find((s) => s.name === altName);
@@ -250,7 +248,7 @@ export function useWorkspaceMutations({
     if (!firstWs) return;
     const unusedServer = getUnusedServer(firstWs.working_dir, null);
     if (!unusedServer) {
-      setError("All ACP servers are already assigned to this folder");
+      setError("All agents are already assigned to this folder");
       return;
     }
     const server = acpServers.find((s) => s.name === unusedServer);

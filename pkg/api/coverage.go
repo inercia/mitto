@@ -67,6 +67,10 @@ var RouteCoverage = map[string]string{
 	"GET /api/auth-info":          "GetAuthInfo",
 	"POST /api/auth/rotate-token": "RotateSharedToken",
 
+	// mitto-4rz.3: instance-bearer-gated config snapshot/patch API.
+	"GET /api/config/snapshot": "ConfigSnapshot",
+	"POST /api/config/patch":   "ConfigPatch",
+
 	"GET /api/slack/apps":                                          "ListSlackApps",
 	"POST /api/slack/apps":                                         "CreateSlackApp",
 	"GET /api/slack/apps/{appId}":                                  "GetSlackApp",

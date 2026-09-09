@@ -21,15 +21,16 @@ var _ handshakeDeps = (*fakeHandshakeDeps)(nil)
 type fakeSharedProcess struct {
 	mu sync.Mutex
 
-	caps               *acp.AgentCapabilities
-	processDone        chan struct{}
-	newSessionHandle   *SessionHandle
-	newSessionErr      error
-	newSessionCalls    []string // recorded workingDirs
-	loadSessionHandle  *SessionHandle
-	loadSessionErr     error
-	loadSessionCalls   []string // recorded acp_session_ids
-	registeredSessions []acp.SessionId
+	caps                 *acp.AgentCapabilities
+	processDone          chan struct{}
+	newSessionHandle     *SessionHandle
+	newSessionErr        error
+	newSessionCalls      []string        // recorded workingDirs
+	newSessionMcpServers []acp.McpServer // mitto-220: mcpServers seen on the last NewSession call
+	loadSessionHandle    *SessionHandle
+	loadSessionErr       error
+	loadSessionCalls     []string // recorded acp_session_ids
+	registeredSessions   []acp.SessionId
 
 	// mitto-1ut: budget observability. recommendedLoadTimeout is returned by
 	// RecommendedLoadTimeout; the *Deadline fields capture the ctx deadline (if
@@ -78,10 +79,11 @@ func newFakeSharedProcess() *fakeSharedProcess {
 
 func (f *fakeSharedProcess) Capabilities() *acp.AgentCapabilities { return f.caps }
 func (f *fakeSharedProcess) ProcessDone() <-chan struct{}         { return f.processDone }
-func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.newSessionCalls = append(f.newSessionCalls, cwd)
+	f.newSessionMcpServers = mcpServers
 	f.newCtxDeadline, f.newCtxHasDeadline = ctx.Deadline()
 	return f.newSessionHandle, f.newSessionErr
 }
@@ -188,9 +190,16 @@ type fakeHandshakeDeps struct {
 	appliedModels    []*SessionModelState
 	synthesizedCalls int // mitto-886: hsApplySynthesizedModelsIfEmpty invocations
 	startMcpCalls    int
-	stopMcpCalls     int
-	processDonesSet  int
-	niledCreation    int
+	startMcpCapsSeen []acp.AgentCapabilities // mitto-220: caps observed on each hsStartMcpServer call, in order
+	// startMcpServerFunc, when set, lets a test control hsStartMcpServer's
+	// return value based on the caps it's invoked with (mitto-220: simulating
+	// the MCP HTTP binding becoming available between prepare and the deferred
+	// session/new call). Defaults to nil (existing tests get the legacy nil
+	// return).
+	startMcpServerFunc func(acp.AgentCapabilities) []acp.McpServer
+	stopMcpCalls       int
+	processDonesSet    int
+	niledCreation      int
 
 	// === New in mitto-s9g2: ACP context virginity tracking ===
 	markFreshCalls   int
@@ -273,10 +282,15 @@ func (f *fakeHandshakeDeps) hsSetResumeMethod(method string) {
 }
 func (f *fakeHandshakeDeps) hsGetResumeMethod() string { return f.resumeMethod }
 
-func (f *fakeHandshakeDeps) hsStartMcpServer(_ acp.AgentCapabilities) []acp.McpServer {
+func (f *fakeHandshakeDeps) hsStartMcpServer(caps acp.AgentCapabilities) []acp.McpServer {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.startMcpCalls++
+	f.startMcpCapsSeen = append(f.startMcpCapsSeen, caps)
+	fn := f.startMcpServerFunc
+	f.mu.Unlock()
+	if fn != nil {
+		return fn(caps)
+	}
 	return nil
 }
 func (f *fakeHandshakeDeps) hsStopMcpServer() {
@@ -455,6 +469,81 @@ func TestHandshaker_EnsureSharedACPSession_RPCError_LeavesPending(t *testing.T) 
 	}
 	if !d.pending {
 		t.Fatal("expected pendingShared to remain true after RPC error (retryable)")
+	}
+}
+
+// TestHandshaker_EnsureSharedACPSession_RecomputesMcpServersAtDeferredTime
+// covers mitto-220: prepareSharedACPSession snapshots the MCP servers (and
+// with it, the mitto-apvg HTTP transport binding) at conversation-creation
+// time. session/new is deliberately deferred to the first prompt, which can
+// fire long after that snapshot — e.g. once the global MCP server's SSE
+// listener (or the agent's advertised McpCapabilities.Http) has come up. This
+// test simulates exactly that: at prepare time the snapshot is empty (as if
+// the HTTP binding were not yet available), but by the time
+// ensureSharedACPSession actually issues session/new, the capabilities/binding
+// are ready. The recomputed value — NOT the stale empty snapshot — must be
+// what's sent to NewSession, otherwise the conversation is permanently stuck
+// on the legacy, unreliable ACP-observed correlation path.
+func TestHandshaker_EnsureSharedACPSession_RecomputesMcpServersAtDeferredTime(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	d.pending = true
+	d.pendingDir = "my/working/dir"
+	// Stale snapshot as prepareSharedACPSession would have left it when the
+	// HTTP binding was not yet available at prepare time.
+	d.pendingMcpSrv = []acp.McpServer{}
+
+	fp := newFakeSharedProcess()
+	// By the time the deferred session/new fires, the agent's capabilities
+	// (read live from the shared process) advertise MCP HTTP support.
+	fp.caps = &acp.AgentCapabilities{McpCapabilities: acp.McpCapabilities{Http: true}}
+	d.sharedProcess = fp
+
+	wantServers := []acp.McpServer{{Http: &acp.McpServerHttpInline{
+		Type: "http",
+		Name: "mitto",
+		Url:  "http://127.0.0.1:5757/mcp",
+		Headers: []acp.HttpHeader{{
+			Name:  "Mitto-Session-Binding",
+			Value: "freshly-issued-token",
+		}},
+	}}}
+	// Simulates startSessionMcpServer: only returns the HTTP entry once caps
+	// actually advertise Http (i.e. the "binding now available" moment).
+	d.startMcpServerFunc = func(caps acp.AgentCapabilities) []acp.McpServer {
+		if !caps.McpCapabilities.Http {
+			return []acp.McpServer{}
+		}
+		return wantServers
+	}
+
+	err := c.ensureSharedACPSession(d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if d.startMcpCalls == 0 {
+		t.Fatal("expected hsStartMcpServer to be called again at deferred session/new time, got 0 calls")
+	}
+	lastCaps := d.startMcpCapsSeen[len(d.startMcpCapsSeen)-1]
+	if !lastCaps.McpCapabilities.Http {
+		t.Fatalf("expected hsStartMcpServer to be called with live (Http=true) capabilities, got %+v", lastCaps)
+	}
+
+	if len(fp.newSessionMcpServers) != 1 {
+		t.Fatalf("expected NewSession to receive 1 recomputed McpServer, got %d: %+v",
+			len(fp.newSessionMcpServers), fp.newSessionMcpServers)
+	}
+	got := fp.newSessionMcpServers[0]
+	if got.Http == nil || got.Http.Url != wantServers[0].Http.Url || len(got.Http.Headers) != 1 ||
+		got.Http.Headers[0].Value != "freshly-issued-token" {
+		t.Fatalf("NewSession did not receive the recomputed HTTP binding, got %+v", got)
+	}
+
+	// The pending snapshot itself must also be updated (not left stale), so
+	// any other reader of hsGetPendingSharedMcpServers sees the live value.
+	if len(d.pendingMcpSrv) != 1 || d.pendingMcpSrv[0].Http == nil {
+		t.Fatalf("expected pendingMcpSrv snapshot to be refreshed with the HTTP binding, got %+v", d.pendingMcpSrv)
 	}
 }
 

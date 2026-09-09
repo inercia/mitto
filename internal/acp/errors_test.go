@@ -849,6 +849,40 @@ func TestFormatACPError_UpstreamHTTP500_mitto_bfu(t *testing.T) {
 	}
 }
 
+// TestFormatACPError_UpstreamTimeoutWording_mitto_ofe reproduces mitto-ofe: a
+// branch-ordering defect in FormatACPErrorWithContext. When an upstream
+// provider outage (data.apiStatus:"unavailable", mitto-bfu's authoritative
+// marker) happens to render its message with the substring "aborted due to
+// timeout" — observed during the morning cold-start spike — the generic
+// tool-timeout branch (checked earlier in the function) matches first and
+// wins, so the message is misreported as "A tool operation timed out... Try
+// breaking your request into smaller steps" instead of naming the transient
+// provider outage. IsUpstreamUnavailableError already classifies this error
+// correctly (used by the loop-runner retry path); only the user-facing
+// FormatACPError wording was wrong. FormatACPErrorWithContext has since been
+// reordered so the upstream-unavailable branch takes priority over the
+// tool-timeout branch for this error shape (mitto-ofe Fix phase); this test
+// now asserts that fix and must pass.
+func TestFormatACPError_UpstreamTimeoutWording_mitto_ofe(t *testing.T) {
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: The operation was aborted due to timeout","data":{"apiStatus":"unavailable"}}`)
+
+	if !IsUpstreamUnavailableError(err) {
+		t.Fatalf("IsUpstreamUnavailableError(%v) = false, want true (data.apiStatus:\"unavailable\" is the authoritative marker)", err)
+	}
+
+	got := FormatACPError(err)
+
+	if containsIgnoreCase(got, "tool operation") || containsIgnoreCase(got, "smaller steps") {
+		t.Errorf("FormatACPError(err) = %q; an upstream provider outage (apiStatus:unavailable) must not be shaped as a generic tool timeout (mitto-ofe)", got)
+	}
+	if !containsIgnoreCase(got, "unavailable") {
+		t.Errorf("FormatACPError(err) = %q; want a message naming the upstream provider outage (mitto-ofe)", got)
+	}
+	if !containsIgnoreCase(got, "retry") {
+		t.Errorf("FormatACPError(err) = %q; want the message to frame the outage as transient/auto-retrying (mitto-ofe)", got)
+	}
+}
+
 // TestFormatACPError_AgentInternalJSError_mitto_3sc reproduces mitto-3sc: an
 // agent-internal (Auggie) minified-JS TypeError ("n.map is not a function")
 // returned as the result of the session/prompt RPC at turn completion,

@@ -162,6 +162,13 @@ func (m *Manager) ListAgentNames() ([]string, error) {
 
 // RunCommand executes an agent command script with the given arguments.
 // Uses DefaultTimeout if no timeout is set on the context.
+//
+// Only ever call this for an agentName resolved via ListAgents/GetAgent —
+// i.e. a known local AgentDefinition (always ProviderReach == ReachLocal,
+// see AgentDefinition.Reach). Never call it for a provider that is only
+// host-advertised (ReachRemote in ComposeAvailability's terms): a remote
+// provider has no local scripts, and selecting one must never run
+// install/status/mcp-* just because it was selected (mitto-lrt.9 DD4).
 func (m *Manager) RunCommand(ctx context.Context, agentName string, command AgentCommand, input interface{}) (*CommandResult, error) {
 	agent, err := m.GetAgent(agentName)
 	if err != nil {

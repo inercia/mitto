@@ -6561,6 +6561,86 @@ func TestLoopRunner_DeliveryFailure_UpstreamOutage_ClassifiedInWarn(t *testing.T
 	}
 }
 
+// TestLoopRunner_DeliveryFailure_AuthError_ClassifiedDistinctly is the
+// mitto-6vs regression test: an agent CLI auth-expiry error (-32000
+// "Authentication required", the JSON-RPC shape Claude Code emits when the
+// OAuth token expires) delivered through handleDeliveryFailure must be
+// classified as failure_class="auth_required" with a distinct, actionable
+// WARN message — mirroring the upstream_provider_unavailable classification
+// above — while the counter/backoff behavior stays identical to a generic
+// failure (schedule deferred, not advanced; loop not auto-paused under the
+// ceiling). handlePromptError already persists the durable transcript
+// record before this delivery-failure path runs, so no double-record is
+// expected here — only the WARN classification.
+func TestLoopRunner_DeliveryFailure_AuthError_ClassifiedDistinctly(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "auth-required-outage"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+
+	// Exact -32000 "Authentication required" shape mitto-r5o/IsAuthError match.
+	authErr := fmt.Errorf(`{"code":-32000,"message":"Authentication required"}`)
+
+	// Sanity: the classifier agrees this is an auth error.
+	if !mittoAcp.IsAuthError(authErr) {
+		t.Fatalf("test precondition failed: IsAuthError(authErr) = false, want true")
+	}
+
+	// One scheduled delivery failure — under the ceiling, so backoff only.
+	runner.handleDeliveryFailure(sessionID, "cc-agent", loop, loopStore, authErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
+
+	// The loop must NOT be auto-paused (single failure, under the ceiling) —
+	// classification must not change backoff/ceiling behavior.
+	after, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !after.Enabled {
+		t.Fatalf("loop.Enabled = false after a single auth-required failure; " +
+			"want true (mitto-6vs: classification must not change backoff/ceiling behavior)")
+	}
+
+	// Exactly one WARN, carrying failure_class=auth_required and an
+	// actionable re-authenticate message.
+	warns := handler.warnOrHigher()
+	if len(warns) != 1 {
+		msgs := make([]string, 0, len(warns))
+		for _, r := range warns {
+			msgs = append(msgs, fmt.Sprintf("level=%s msg=%q", r.Level, r.Message))
+		}
+		t.Fatalf("WARN-or-higher count = %d, want 1. records: %s", len(warns), strings.Join(msgs, "; "))
+	}
+	got, ok := slogRecordStringAttr(warns[0], "failure_class")
+	if !ok {
+		t.Fatalf("WARN record has no failure_class attribute (mitto-6vs)")
+	}
+	if got != "auth_required" {
+		t.Errorf("failure_class = %q, want %q (mitto-6vs)", got, "auth_required")
+	}
+	if !strings.Contains(warns[0].Message, "authentication expired") {
+		t.Errorf("WARN message = %q, want it to mention the agent CLI authentication expired (mitto-6vs)", warns[0].Message)
+	}
+}
+
 // errBareInvalidArgument400 mirrors the bead's own log evidence: a bare
 // httpStatus:400/apiStatus:invalidArgument envelope with NO token/length
 // corroborating phrase — the exact shape IsContextTooLargeError declines to

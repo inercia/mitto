@@ -144,3 +144,22 @@ if strings.Contains(err.Error(), "session not started") {
 
 - **Nil vs empty slices**: `json.Marshal` encodes nil as `null`, empty as `[]`. ACP rejects `null` where array is required. Always initialize: `MCPServers: []MCPServer{}`. Mark with `// Must be empty array, not nil — ACP validates this`.
 - **`omitempty` on bool**: Never use `omitempty` on `bool` fields where `false` is meaningful — Go omits `false` as zero value. Example: `LoopEnabled bool` must NOT have `omitempty`.
+
+## Transitive Import Guards
+
+When a package must stay dependency-isolated (a neutral seam, a leaf domain package, a "must not know about the outside world" utility), enforce the boundary with a `*_test.go` that shells out to `go list -deps -json .` and flags any forbidden transitive import. Architectural boundaries that aren't type-enforced silently rot.
+
+Canonical instances (grep and reuse verbatim — do not reinvent):
+- `internal/stats/stats_test.go` — forbids `internal/web`, `internal/conversation`.
+- `internal/agentbackend/imports_test.go` — mitto-lrt.4: forbids `github.com/coder/acp-go-sdk`, `internal/acp`, `internal/acpproc`, `internal/web`, `internal/conversation`, and `os/exec`.
+
+Required conventions:
+- `if testing.Short() { t.Skip(...) }` at the top — shells out to the Go toolchain.
+- Iteratively decode with `json.NewDecoder(...).Decode(&pkg)` in a `for dec.More()` loop; the output is a concatenated object stream, NOT a JSON array.
+- Match with `pkg.ImportPath == bad || strings.HasPrefix(pkg.ImportPath, bad+"/")` (catches subpackages, avoids `internal/acpprocsomethingelse` false positives).
+- Inspect each package's `Imports` list so the failure message points at the exact edge that pulled the forbidden dep in — not just "X depends on Y".
+- Assert the target package itself appeared in the stream (`sawSelf`) so a broken `go list` invocation can't trivially pass.
+
+The test file may `import "os/exec"` (to invoke `go list`) even when the guard's own forbidden list bans `os/exec` — the check only walks the non-test import graph reported by `go list -deps` on the package. This asymmetry is intentional and load-bearing; do not add a special-case allowlist for it.
+
+If a guard trips: introduce a neutral type in the guarded package, or keep the offending symbol in a higher package that already imports the forbidden dep. Do NOT relax the forbidden list to make a build green.

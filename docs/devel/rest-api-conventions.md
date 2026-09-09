@@ -202,12 +202,25 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 
 ### 7.4 Configuration & Flags
 
-| Current path           | Method(s) | Target path                   | Method(s) | Classification | Reason / notes                                   |
-| ---------------------- | --------- | ----------------------------- | --------- | -------------- | ------------------------------------------------ |
-| `/api/config`          | GET       | `/api/config`                 | GET       | keep           | Global config; correct                           |
-| `/api/advanced-flags`  | GET       | `/api/config/flags`           | GET       | migrate        | Nest under `/api/config`                         |
-| `/api/external-status` | GET       | `/api/config/external-status` | GET       | migrate        | Nest under `/api/config`                         |
-| `/api/ui-preferences`  | GET, PUT  | `/api/config/ui-preferences`  | GET, PUT  | migrate        | Nest under `/api/config`; replace PUT with PATCH |
+| Current path            | Method(s) | Target path                   | Method(s) | Classification | Reason / notes                                                       |
+| ----------------------- | --------- | ----------------------------- | --------- | -------------- | ------------------------------------------------------------------- |
+| `/api/config`           | GET       | `/api/config`                 | GET       | keep           | Global config; correct                                              |
+| `/api/config/snapshot`  | GET       | `/api/config/snapshot`        | GET       | keep           | Redacted settings.json snapshot; instance-bearer gated (mitto-4rz.3) |
+| `/api/config/patch`     | POST      | `/api/config/patch`           | POST      | keep           | Batched, validated settings.json write; instance-bearer gated (mitto-4rz.3) |
+| `/api/advanced-flags`   | GET       | `/api/config/flags`           | GET       | migrate        | Nest under `/api/config`                                            |
+| `/api/external-status`  | GET       | `/api/config/external-status` | GET       | migrate        | Nest under `/api/config`                                            |
+| `/api/ui-preferences`   | GET, PUT  | `/api/config/ui-preferences`  | GET, PUT  | migrate        | Nest under `/api/config`; replace PUT with PATCH                    |
+
+> **Instance-bearer gate (mitto-4rz.3).** `/api/config/snapshot` and
+> `/api/config/patch` are the CLI/SDK-facing config resources. They require an
+> `Authorization: Bearer <token>` matching the current
+> `$MITTO_DIR/instance.json` token, validated **independently** of whether
+> global auth is enabled and with **no** loopback exemption and **no**
+> cookie/session fallback. They are intentionally not in `publicAPIPaths` and
+> not localhost-restricted, so an external caller presenting the instance token
+> is accepted; a cookie-only request is rejected. Secrets (e.g.
+> `web.auth.simple.password`, `web.auth.shared_token`, the whole `mcp` subtree)
+> are redacted from snapshots, patch responses, errors, and dry-run plans.
 
 ### 7.5 Issues (Beads)
 

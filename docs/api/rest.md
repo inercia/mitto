@@ -107,6 +107,34 @@ discovery: `advancedFlags`, `externalStatus`, `supportedRunners`,
 `runnerDefaults` (also reachable via `client.misc`, same function objects —
 not `client.config`, which is the resolved SDK config; see [Client](client.md)).
 
+### Authenticated snapshot/patch (`GET /api/config/snapshot`, `POST /api/config/patch`)
+
+These CLI/SDK-facing config resources (mitto-4rz.3) sit alongside the UI's
+`GET`/`POST /api/config` and are wrapped by the **Go** SDK
+(`ConfigSnapshot`/`ConfigPatch`, see [Go SDK](go-sdk.md)) — they are not part of
+the JavaScript `client`. Both require an `Authorization: Bearer <token>`
+matching the current `$MITTO_DIR/instance.json` token, validated independently
+of global auth, with no loopback exemption and no cookie/session fallback (a
+cookie-only request is rejected).
+
+- **`GET /api/config/snapshot`** → `{ exists, revision, config }`. `config` is a
+  fully-redacted view of `settings.json` (secrets such as
+  `web.auth.simple.password`, `web.auth.shared_token`, and the whole `mcp`
+  subtree never appear). `revision` is an opaque optimistic-concurrency token.
+  Reads are allowed even when the config source is read-only.
+- **`POST /api/config/patch`** — body `{ ops: [{ path, value }], revision?,
+  dry_run? }`, where `path` uses the dotted/indexed `mitto config set` syntax
+  (e.g. `web.port`, `task_label_colors[0].color`). Response: `{ dry_run,
+  applied: [{ path, status }], revision? }`. Per-key `status` is `applied`,
+  `restart_required` (persisted; no automatic restart), `apply_failed`
+  (persisted but the in-memory refresh failed), or `would_apply` (dry-run
+  only). A live field such as `task_label_colors` persists once, refreshes
+  in-memory config, and broadcasts `task_label_colors_updated`. A stale
+  `revision` fails the whole batch with `409 conflict` and writes nothing;
+  a rejected/read-only field is `403 forbidden`; an unknown field or invalid
+  structure is `400 bad_request`. `dry_run: true` validates and plans only —
+  no persistence, Keychain mutation, listener restart, or broadcast.
+
 ## `client.issues`
 
 `working_dir` is a **required** query param on every method except

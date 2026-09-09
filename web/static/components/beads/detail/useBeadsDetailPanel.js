@@ -62,6 +62,12 @@ export function useBeadsDetailPanel({
   canGoForward,
   onGoBack,
   onGoForward,
+  // mitto-12r: map of issue id -> linked conversation session id, and the
+  // handler to focus a conversation. Forwarded to usePanelChrome so its
+  // header toolbar can show a "Go to conversation" button for issues that
+  // have one.
+  issueSessionMap,
+  onOpenConversation,
 }) {
   const isOpen = isCreating || !!issue || !!isLoading;
   const lastIssueRef = useRef(issue);
@@ -111,20 +117,18 @@ export function useBeadsDetailPanel({
     onUpdated,
   });
 
-  // fetchDepsRef bridges the labels/comments -> deps callback tangle:
-  // useIssueLabels.mutateLabel and useIssueComments.handleCommentBlur both
-  // call fetchDepsRef.current(false) after a mutation to trigger a full
-  // issue refresh. The composer creates the ref once and hands the same
-  // instance to labels, comments, AND useIssueDependencies (which populates
-  // fetchDepsRef.current = fetchDeps internally). Kept in the composer so
-  // one ref is shared across the three sub-hooks.
+  // fetchDepsRef bridges the comments -> deps callback tangle:
+  // useIssueComments.handleCommentBlur calls fetchDepsRef.current(false) after
+  // a successful POST to trigger a full issue refresh. The composer creates the
+  // ref once and hands the same instance to comments AND useIssueDependencies
+  // (which populates fetchDepsRef.current = fetchDeps internally). Labels no
+  // longer use this bridge — their edits are staged in-memory and persisted on
+  // Save via labels.persistLabels().
   const fetchDepsRef = useRef(null);
   const labels = useIssueLabels({
     data,
     workingDir,
     showToast,
-    fetchDepsRef,
-    onUpdated,
     isOpen,
     creating,
   });
@@ -139,18 +143,21 @@ export function useBeadsDetailPanel({
     fetchDepsRef,
     onUpdated,
   });
-  // Dependencies cluster (deps list + add-dep draft + depsBusy + fetchDeps /
-  // mutateDep / handleAddDep / changeDepType) now lives in
-  // useIssueDependencies (mitto-90f.7 PR-17). Sub-hook is called AFTER
-  // labels/comments/viewEdit so their setters (which fetchDeps fans out to
-  // on every issue refresh) are available. It internally populates
-  // fetchDepsRef.current = fetchDeps so the labels/comments bridge is live.
+  // Dependencies cluster (deps working set + baseline + add-dep draft +
+  // depsBusy + fetchDeps / addDepLocal / removeDepLocal / changeDepTypeLocal /
+  // persistDeps / handleAddDep) now lives in useIssueDependencies
+  // (mitto-90f.7 PR-17). Sub-hook is called AFTER labels/comments/viewEdit so
+  // their setters (which fetchDeps fans out to on every issue refresh) are
+  // available. It internally populates fetchDepsRef.current = fetchDeps so the
+  // comments bridge is live. Edits are staged in-memory and written on Save via
+  // persistDeps().
   const deps = useIssueDependencies({
     data,
+    allIssues,
+    creating,
     workingDir,
     showToast,
     fetchDepsRef,
-    onUpdated,
     setLabels: labels.setLabels,
     setComments: comments.setComments,
     setNotes: viewEdit.setNotes,
@@ -212,6 +219,30 @@ export function useBeadsDetailPanel({
     [creating, allIssues, data && data.id],
   );
 
+  // Combined Save for view mode: persist staged label + dependency edits first
+  // (bailing out if either fails so we don't half-save), then persist the
+  // view-mode fields. When only labels/deps changed, handleViewSave
+  // short-circuits (no dirty fields), so surface the success toast + parent
+  // refresh here instead.
+  const handleCombinedSave = useCallback(async () => {
+    const labelsWereDirty = labels.labelsDirty;
+    const depsWereDirty = deps.depsDirty;
+    if (labelsWereDirty) {
+      const ok = await labels.persistLabels();
+      if (!ok) return;
+    }
+    if (depsWereDirty) {
+      const ok = await deps.persistDeps();
+      if (!ok) return;
+    }
+    if (viewEdit.viewDirty) {
+      await viewEdit.handleViewSave();
+    } else if (labelsWereDirty || depsWereDirty) {
+      showToast && showToast({ style: "success", title: "Changes saved" });
+      onUpdated && onUpdated();
+    }
+  }, [labels, deps, viewEdit, showToast, onUpdated]);
+
   // Panel chrome/shell cluster (mitto-90f.7 PR-15): open/close fade, outside-
   // click detection, confirm-close dialog, kebab context menu + panelMenuItems,
   // headerToolbarItems, per-folder shortcut buttons, isMobile / fullscreen /
@@ -237,8 +268,8 @@ export function useBeadsDetailPanel({
     isOpen,
     data,
     creating,
-    viewDirty: viewEdit.viewDirty,
-    savingView: viewEdit.savingView,
+    viewDirty: viewEdit.viewDirty || labels.labelsDirty || deps.depsDirty,
+    savingView: viewEdit.savingView || labels.labelsBusy || deps.depsBusy,
     initialFullscreen,
     workingDir,
     statusBusy,
@@ -248,6 +279,8 @@ export function useBeadsDetailPanel({
     onToggleDefer,
     onRunPrompt,
     onFetchPrompts,
+    issueSessionMap,
+    onOpenConversation,
   });
 
   // Sibling comment-edit cleanup on issue switch. The view-edit reset that
@@ -260,7 +293,7 @@ export function useBeadsDetailPanel({
     comments.setCommentDraft("");
   }, [data && data.id]);
 
-  // fetchDeps, mutateDep, handleAddDep, changeDepType, and the
+  // fetchDeps, the staged dep mutators, persistDeps, and the
   // fetchDepsRef.current = fetchDeps bridge assignment now live inside
   // useIssueDependencies (mitto-90f.7 PR-17). The trigger effect below is
   // the ONE cross-cluster site that still touches deps + labels + comments +
@@ -308,8 +341,8 @@ export function useBeadsDetailPanel({
     setFullscreen,
     createParentId,
     submitting: create.submitting,
-    viewDirty: viewEdit.viewDirty,
-    savingView: viewEdit.savingView,
+    viewDirty: viewEdit.viewDirty || labels.labelsDirty || deps.depsDirty,
+    savingView: viewEdit.savingView || labels.labelsBusy || deps.depsBusy,
     description: create.description,
     setDescription: create.setDescription,
     createEditorApiRef: create.createEditorApiRef,
@@ -356,8 +389,8 @@ export function useBeadsDetailPanel({
       deps: deps.deps,
       depsLoading: deps.depsLoading,
       depsBusy: deps.depsBusy,
-      changeDepType: deps.changeDepType,
-      mutateDep: deps.mutateDep,
+      changeDepTypeLocal: deps.changeDepTypeLocal,
+      removeDepLocal: deps.removeDepLocal,
       newDepType: deps.newDepType,
       setNewDepType: deps.setNewDepType,
       newDepId: deps.newDepId,
@@ -369,7 +402,7 @@ export function useBeadsDetailPanel({
     handlers: {
       handleClose,
       handleSave: create.handleSave,
-      handleViewSave: viewEdit.handleViewSave,
+      handleViewSave: handleCombinedSave,
       handleDiscardAndClose,
       handleTitleKeyDown: viewEdit.handleTitleKeyDown,
       handleAssigneeKeyDown: viewEdit.handleAssigneeKeyDown,

@@ -109,6 +109,19 @@ func TestHandleListSessions_WorkspaceIdentity(t *testing.T) {
 		t.Errorf("unresolved session WorkspaceName = %q, want empty", unresolved.WorkspaceName)
 	}
 
+	// mitto-lrt.12: the optional additive "backend" descriptor rides inside
+	// SessionListResponse whenever a SessionManager is wired (identity is
+	// computable from meta.ACPServer for all three fixtures here).
+	for id, r := range byID {
+		if r.Backend == nil {
+			t.Errorf("session %s: expected a non-nil Backend descriptor, got nil", id)
+			continue
+		}
+		if r.Backend.AgentRef == nil || r.Backend.AgentRef.Provider != acpServer {
+			t.Errorf("session %s: Backend.AgentRef = %+v, want Provider=%q", id, r.Backend.AgentRef, acpServer)
+		}
+	}
+
 	// omitempty: the raw JSON for the unresolved session must not carry the
 	// workspace keys at all, not just empty strings — this is what lets old
 	// SDK/CLI clients ignore the fields entirely when unset.
@@ -126,5 +139,41 @@ func TestHandleListSessions_WorkspaceIdentity(t *testing.T) {
 		if _, ok := r["workspace_name"]; ok {
 			t.Errorf("unresolved session JSON unexpectedly has workspace_name key: %v", r["workspace_name"])
 		}
+	}
+}
+
+// TestHandleListSessions_NoSessionManager_BackendAbsent pins legacy behavior
+// (mitto-lrt.12): without a SessionManager wired (e.g. a minimal Handlers as
+// used by other unit tests), the "backend" computation is skipped entirely
+// and the JSON key stays absent — same as before this feature existed.
+func TestHandleListSessions_NoSessionManager_BackendAbsent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{SessionID: "no-sm-session", ACPServer: "Auggie", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	h := New(Deps{Store: store}) // no SessionManager
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	h.HandleListSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var raw []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(raw))
+	}
+	if _, ok := raw[0]["backend"]; ok {
+		t.Errorf("expected no \"backend\" key without a SessionManager, got %v", raw[0]["backend"])
 	}
 }

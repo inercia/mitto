@@ -314,7 +314,7 @@ export function MessageList({
                       <p
                         class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
                       >
-                        Establishing ACP session...
+                        Establishing agent session...
                       </p>
                     `}
                     ${connected &&

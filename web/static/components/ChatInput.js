@@ -733,7 +733,12 @@ export function ChatInput({
     const ta = textboxRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = ta.scrollHeight + "px";
+    // Add the border delta: the textarea is box-sizing:border-box with a 1px
+    // border, and scrollHeight EXCLUDES the border, so height = scrollHeight
+    // leaves the border-box ~2px too short and it shows its own scrollbar
+    // stacked next to the wrapper's. See mitto_ui_textbox double-scrollbar fix.
+    ta.style.height =
+      ta.scrollHeight + (ta.offsetHeight - ta.clientHeight) + "px";
   }, [activeUIPrompt?.requestId, activeUIPrompt?.promptType]);
 
   // Clean up toolbar hide timeout on unmount
@@ -1989,14 +1994,20 @@ export function ChatInput({
                         <textarea
                           ref=${textboxRef}
                           autocorrect="off"
-                          class="ui-textbox-textarea textarea textarea-sm w-full resize-none"
+                          class="ui-textbox-textarea textarea textarea-sm w-full resize-none overflow-hidden"
                           style="min-height: 120px;"
                           maxlength=${16384}
                           onInput=${(e) => {
                             setTextboxValue(e.target.value);
                             e.target.style.height = "auto";
+                            // Add the border delta so the border-box textarea
+                            // isn't left ~2px short (which would show its own
+                            // scrollbar next to the wrapper's); overflow-hidden
+                            // above makes the wrapper the sole scroll container.
                             e.target.style.height =
-                              e.target.scrollHeight + "px";
+                              e.target.scrollHeight +
+                              (e.target.offsetHeight - e.target.clientHeight) +
+                              "px";
                           }}
                         >
 ${activeUIPrompt.text || ""}</textarea
@@ -2339,7 +2350,6 @@ ${activeUIPrompt.text || ""}</textarea
           </button>
         </div>
       `}
-
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
@@ -2516,9 +2526,9 @@ ${activeUIPrompt.text || ""}</textarea
           class="max-w-4xl mx-auto chat-input-container ${isScrollCompact
             ? "chat-input-container--compact"
             : ""}"
-          onClick=${
-            isScrollCompact ? () => setIsScrollCollapsed(false) : undefined
-          }
+          onClick=${isScrollCompact
+            ? () => setIsScrollCollapsed(false)
+            : undefined}
         >
           <div class="chat-input-box" ref=${dropupRef}>
             <!-- Slash command picker - expands from bottom of the box -->

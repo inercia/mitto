@@ -275,7 +275,7 @@ export function useBackgroundNotifications({
           .join(" — ");
         showToast({
           style: "error",
-          title: data.user_message || "ACP Server Error",
+          title: data.user_message || "Agent Error",
           message: detail,
           duration: 30000,
         });

@@ -176,6 +176,26 @@ type SessionManager struct {
 	// When nil, legacy per-session process ownership is used.
 	acpProcessManager ProcessManager
 
+	// backendProvider is the optional protocol-neutral backend acquisition
+	// seam (mitto-lrt.7; see backend_provider.go). It mirrors
+	// acpProcessManager's injection pattern but returns a BackendLease
+	// (ownership) rather than a bare SharedProcess. Injected in production
+	// (internal/web/server.go) against the SAME ProcessManager set above via
+	// NewACPBackendProvider (proven byte-identical by
+	// backend_provider_acp_test.go); getSharedProcess routes process
+	// acquisition through it with AcquireRequest.DeferSession, covering
+	// every production call site that funnels through that one chokepoint
+	// (create, load/resume, foreground wake, startup stagger, concurrent-
+	// recycle retry — mitto-lrt.16). A nil provider (tests that never call
+	// SetBackendProvider) falls back byte-identically to calling
+	// ProcessManager directly. BackgroundSession's own teardown now routes
+	// through a bound BackendLease (Detach): getSharedProcess returns the
+	// lease, which is stored on BackgroundSession and bound to the real ACP
+	// session ID across the deferred session/new handshake (mitto-lrt.18).
+	// Reconnect stays fresh-acquire via ResumeSession (no in-place Reconnect
+	// site — see docs/devel/agent-backend-architecture.md for the equivalence).
+	backendProvider BackendProvider
+
 	// auxiliaryManager provides workspace-scoped auxiliary tasks (title generation,
 	// follow-up analysis, conversation summaries, etc.).
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
@@ -1079,6 +1099,22 @@ func (sm *SessionManager) SetACPProcessManager(pm ProcessManager) {
 	sm.acpProcessManager = pm
 }
 
+// SetBackendProvider sets the optional protocol-neutral backend acquisition
+// provider (mitto-lrt.7). See the backendProvider field doc for scope notes.
+func (sm *SessionManager) SetBackendProvider(p BackendProvider) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.backendProvider = p
+}
+
+// GetBackendProvider returns the currently-injected backend provider, or nil
+// if none was set.
+func (sm *SessionManager) GetBackendProvider() BackendProvider {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.backendProvider
+}
+
 // ACPProcessCount returns the number of active shared ACP processes.
 // Returns 0 when shared-process mode is disabled. Used by tests to assert that
 // sessions in subdirectories share a single process.
@@ -1230,7 +1266,7 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 	// Resolve ACP command/cwd/env via registry (self-locking).
 	acpCommand, acpCwd, acpEnv := sm.wsRegistry.ResolveWorkspaceACP(ws)
 
-	p := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
+	p, _ := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
 	}
@@ -1243,13 +1279,74 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 // acpCommand, acpCwd, acpEnv are the resolved ACP connection parameters
 // (from resolveWorkspaceACPLocked or directly from global config).
 // The caller must NOT hold sm.mu when calling this method.
-func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) SharedProcess {
+//
+// This is the single chokepoint every production process-acquisition path
+// (create, load/resume, foreground wake, startup stagger via
+// EnsureWorkspaceProcess, concurrent-recycle retry) funnels through. When a
+// BackendProvider is injected (mitto-lrt.16; see the backendProvider field
+// doc), acquisition routes through BackendProvider.AcquireSession with
+// DeferSession set — preserving the mitto-220 deferred-session RPC pattern —
+// and the resulting SharedProcess is extracted via the ACP-only LocalProcess
+// escape hatch. This delegates to the SAME ProcessManager.GetOrCreateProcess
+// call with the SAME arguments as the fallback path below, so behavior is
+// unchanged; only the injected-provider case newly exercises the seam. A nil
+// BackendProvider (e.g. in tests that never call SetBackendProvider) falls
+// back byte-identically to calling ProcessManager directly.
+//
+// The second return value is the BackendLease backing the returned process
+// (mitto-lrt.18), so callers that construct a BackgroundSession can store it
+// and later route teardown through lease.Detach() instead of unregistering
+// from the SharedProcess directly. It is nil whenever no BackendProvider is
+// injected, the acquire failed, or the process came from the pm fallback
+// path below — all byte-identical fallback cases carry no lease.
+func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) (SharedProcess, BackendLease) {
 	sm.mu.RLock()
 	pm := sm.acpProcessManager
+	provider := sm.backendProvider
 	sm.mu.RUnlock()
 
-	if pm == nil || workspace == nil || workspace.UUID == "" {
-		return nil
+	if workspace == nil || workspace.UUID == "" {
+		return nil, nil
+	}
+
+	if provider != nil {
+		lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+			Workspace:    workspace,
+			ACPCommand:   acpCommand,
+			ACPCwd:       acpCwd,
+			ACPEnv:       acpEnv,
+			Runner:       r,
+			Prewarm:      true,
+			DeferSession: true,
+		})
+		if err != nil {
+			if sm.logger != nil {
+				// ClassifyAcquireError (mitto-lrt.18) is purely advisory here: it
+				// enriches the log with the neutral lifecycle-state taxonomy
+				// (Reconnecting for busy/saturated/concurrent-recycle,
+				// Disconnected for connection-unavailable/session-missing,
+				// Stopped for a permanent ACP classification) WITHOUT changing the
+				// fall-back-to-nil outcome below or ACPStartFailureCount/
+				// auto-archive semantics — those still key off the original err
+				// via errors.Is/As at the resume-failure site, unaffected by this
+				// advisory classification.
+				lifecycleState, _ := ClassifyAcquireError(err)
+				sm.logger.Warn("Failed to acquire shared ACP process via BackendProvider, falling back to per-session",
+					"workspace_uuid", workspace.UUID,
+					"lifecycle_state", lifecycleState,
+					"error", err)
+			}
+			return nil, nil
+		}
+		process, ok := lease.LocalProcess()
+		if !ok || process == nil {
+			return nil, nil
+		}
+		return process, lease
+	}
+
+	if pm == nil {
+		return nil, nil
 	}
 
 	process, err := pm.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
@@ -1259,9 +1356,9 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 				"workspace_uuid", workspace.UUID,
 				"error", err)
 		}
-		return nil
+		return nil, nil
 	}
-	return process
+	return process, nil
 }
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
@@ -1508,6 +1605,47 @@ func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaitin
 		sm.logger.Debug("Broadcast session waiting for children",
 			"session_id", sessionID,
 			"is_waiting", isWaiting,
+			"clients", em.ClientCount())
+	}
+}
+
+// broadcastAgentAuthState is the BackgroundSessionConfig.OnAgentAuthStateChanged
+// hook (mitto-3du): broadcasts a workspace-scoped "agent auth required"/"cleared"
+// event on /api/events so the sidebar health pill updates even for unattended/loop
+// sessions with no attached client. Mirrors OnStreamingStateChanged/
+// OnConfigOptionChanged (session-level broadcast via sm.eventsManager directly,
+// no separate internal/web.Server method — SessionManager has no reference back
+// to Server). Resolves a friendly workspace name via GetWorkspaceByUUID, same as
+// the ACP-process-manager-level health broadcasts in internal/web/server.go.
+func (sm *SessionManager) broadcastAgentAuthState(sessionID, workspaceUUID, workingDir string, required bool) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+	if em == nil {
+		return
+	}
+
+	workspaceName := ""
+	if ws := sm.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+		workspaceName = ws.Name
+	}
+
+	msgType := WSMsgTypeAgentAuthRequired
+	if !required {
+		msgType = WSMsgTypeAgentAuthCleared
+	}
+	em.Broadcast(msgType, map[string]interface{}{
+		"session_id":     sessionID,
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Info("Broadcast agent auth state",
+			"session_id", sessionID,
+			"workspace_uuid", workspaceUUID,
+			"required", required,
 			"clients", em.ClientCount())
 	}
 }
@@ -2079,7 +2217,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		effectiveWs = sm.wsRegistry.GetDefaultWorkspace()
 	}
 	sharedProcessStart := time.Now()
-	sharedProcess := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
+	sharedProcess, sharedLease := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
 	sharedProcessDuration := time.Since(sharedProcessStart)
 
 	// Capture timing before the prewarm goroutine so create latency is not inflated.
@@ -2136,6 +2274,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
 		SharedProcess:                  sharedProcess,              // Shared ACP process (nil = legacy mode)
+		BackendLease:                   sharedLease,                // Backing BackendLease (nil = legacy mode / no provider injected)
 		PruneConfig:                    pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
 		PromptResolver:                 sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
 		PromptFragmentsResolver:        sm.promptFragmentsResolver, // Workspace-scoped prompt fragments
@@ -2196,6 +2335,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 				})
 			}
 		},
+		OnAgentAuthStateChanged: sm.broadcastAgentAuthState,
 		OnTitleGenerated: func(sessionID, title string) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
@@ -2650,7 +2790,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// budget so background sessions are never stranded if the process never warms;
 	// getSharedProcess is idempotent so the later call reuses the same instance.
 	if !foreground {
-		if warmGate := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r); warmGate != nil && !warmGate.MCPInitDone() {
+		if warmGate, _ := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r); warmGate != nil && !warmGate.MCPInitDone() {
 			if waitBudget := warmGate.RecommendedLoadTimeout(true); waitBudget > 0 {
 				waitCtx, waitCancel := context.WithTimeout(context.Background(), waitBudget)
 				warmed := warmGate.WaitForMCPInit(waitCtx)
@@ -2723,7 +2863,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// IMPORTANT: Do NOT fall back to an arbitrary default workspace here. For resumed
 	// sessions, foundWs has already been resolved against the session's ACP server.
 	// Falling back again would risk mixing different ACP servers on the same folder.
-	sharedProcess := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+	sharedProcess, sharedLease := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
 
 	// Build pruning configuration from global settings (with default)
 	pruneConfig := sm.buildPruneConfig()
@@ -2763,6 +2903,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
 		SharedProcess:                  sharedProcess,              // Shared ACP process (nil = legacy mode)
+		BackendLease:                   sharedLease,                // Backing BackendLease (nil = legacy mode / no provider injected)
 		PruneConfig:                    pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
 		PromptResolver:                 sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
 		PromptFragmentsResolver:        sm.promptFragmentsResolver, // Workspace-scoped prompt fragments
@@ -2824,6 +2965,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 				})
 			}
 		},
+		OnAgentAuthStateChanged: sm.broadcastAgentAuthState,
 		OnTitleGenerated: func(sessionID, title string) {
 			if sm.eventsManager != nil {
 				sm.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
@@ -2860,7 +3002,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			sm.logger.Info("Resume raced a concurrent shared-process recycle; retrying with a freshly-created process",
 				"session_id", sessionID)
 		}
-		cfg.SharedProcess = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+		cfg.SharedProcess, cfg.BackendLease = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
 		bs, err = ResumeBackgroundSession(cfg)
 	}
 	// Release the startup semaphore now that the expensive ACP work is done.

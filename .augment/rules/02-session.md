@@ -114,6 +114,25 @@ type Metadata struct {
 - `Store.PruneKeepLast` (REST "keep exactly N") passes `Slack: -1` to preserve exact-trim semantics.
 - Seq / `MaxSeq` semantics untouched. Regression: `TestStore_PruneIfNeeded_WriteAmplificationAtCap`.
 
+### Session-dir removal must retry (`mitto-s5d`)
+
+`Store.deleteLocked` (`internal/session/store.go`) removes the session directory
+via `removeAllWithRetry(sessionDir)`, NOT raw `os.RemoveAll`. `os.RemoveAll`
+walks the tree and can lose to a concurrent background writer (events.jsonl
+append, `processor_state.json` save on AgentResponded, log flush) that touches
+the dir between the final listing and the rmdir call — the rmdir then fails
+with ENOTEMPTY (`unlinkat ...: directory not empty`) even though every other
+file was already removed, leaving an orphaned dir + a "conversation not found"
+registry entry. `removeAllWithRetry` is bounded (`maxAttempts=6`, backoff
+10→20→40→80→160 ms, ~310 ms cumulative). Any new code path that deletes a
+per-session directory MUST use `removeAllWithRetry`, not raw `os.RemoveAll`.
+Do NOT raise the budget to mask genuine "won't delete" failures; do NOT turn
+`removeAllWithRetry` into a general FS-retry helper without a second concrete
+use case. Complementary to `mitto-32ef` (writer-side `WriteJSONAtomicIfDirExists`
++ startup orphan sweep): mitto-32ef stops POST-delete recreation, mitto-s5d
+stops DURING-delete failure. Regression:
+`TestDelete_TransientBlockDuringRemoveAll_ShouldRetryNotOrphan`.
+
 ### Store two-level locking (`mitto-pkeh`)
 
 `Store.mu` is a lifecycle and all-store-operation gate, not the mutex for every

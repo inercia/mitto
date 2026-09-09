@@ -53,6 +53,23 @@ export const EVENTS: Readonly<{
     MEMORY_RECYCLED: "memory_recycled";
     AGENT_RECYCLED: "agent_recycled";
     AGENT_DEGRADED: "agent_degraded";
+    /**
+     * Sidebar health pill (mitto-3du): a session's agent hit an
+     * authentication-required failure (JSON-RPC -32000 "Authentication
+     * required"), reusing the durable auth-expiry signal recorded by
+     * mitto-6vs. Fired once per outage streak; broadcast on the global
+     * `/api/events` bus so unattended/loop sessions with no attached client
+     * still surface the pill.
+     */
+    AGENT_AUTH_REQUIRED: "agent_auth_required";
+    /**
+     * Companion to {@link EVENTS.AGENT_AUTH_REQUIRED}: a prompt succeeded
+     * after auth guidance had previously been surfaced for the workspace.
+     * Not fired on every successful prompt — only when the prior state was
+     * actually "required" — so it never spams a clear for a workspace that
+     * was never degraded.
+     */
+    AGENT_AUTH_CLEARED: "agent_auth_cleared";
     MCP_INITIALIZING: "mcp_initializing";
     MCP_INIT_TIMED_OUT: "mcp_init_timed_out";
     PREWARM_PIN_ALERT: "prewarm_pin_alert";
@@ -246,6 +263,140 @@ export type RunMcpInstallCommandPayload = {
     command: string;
 };
 /**
+ * Neutral agent/provider identity (mirrors Go `agentbackend.AgentRef`).
+ */
+export type BackendAgentRef = {
+    /**
+     * - Backend implementation kind (e.g. `"acp"`).
+     */
+    backend: string;
+    /**
+     * - Provider id on that backend.
+     */
+    provider: string;
+};
+/**
+ * Neutral session identity (mirrors Go `agentbackend.SessionRef`). Keeps the
+ * Mitto-owned conversation id and the upstream provider session id distinct.
+ */
+export type BackendSessionRef = {
+    /**
+     * - Mitto-owned conversation identifier.
+     */
+    conversation_id: string;
+    /**
+     * - Provider owning this session.
+     */
+    provider: string;
+    /**
+     * - Upstream-assigned session id.
+     */
+    provider_session?: string;
+};
+/**
+ * One selectable model (mirrors Go `agentbackend.ModelDescriptor`).
+ */
+export type BackendModelOption = {
+    /**
+     * - Model id used to select this model.
+     */
+    id: string;
+    /**
+     * - Human-readable label.
+     */
+    name?: string;
+    /**
+     * - Optional longer description.
+     */
+    description?: string;
+};
+/**
+ * A session's available models and the currently selected one.
+ */
+export type BackendModelState = {
+    /**
+     * - Currently selected model id.
+     */
+    current_id?: string;
+    /**
+     * - Selectable models.
+     */
+    available?: BackendModelOption[];
+};
+/**
+ * One selectable value of a {@link BackendConfigOption}.
+ */
+export type BackendConfigOptionValue = {
+    /**
+     * - Identifier used when setting this option.
+     */
+    value: string;
+    /**
+     * - Human-readable name.
+     */
+    name?: string;
+    /**
+     * - What this value does.
+     */
+    description?: string;
+};
+/**
+ * A neutral mirror of a session-level configuration knob (e.g. model or mode
+ * selection exposed as a generic option).
+ */
+export type BackendConfigOption = {
+    /**
+     * - Option identifier.
+     */
+    id: string;
+    /**
+     * - Semantic category (e.g. `"model"`, `"mode"`).
+     */
+    category?: string;
+    /**
+     * - Currently selected value.
+     */
+    current?: string;
+    /**
+     * - Available values.
+     */
+    values?: BackendConfigOptionValue[];
+};
+/**
+ * Optional, additive protocol-neutral descriptor (mitto-lrt.12) embedded in
+ * `connected`/`acp_started` snapshots and REST session responses. Every
+ * field is present only when the server could actually compute it; absent
+ * on legacy/older servers or when identity/live state isn't available for a
+ * session — never synthesized. Capability values are one of `"unknown"`,
+ * `"supported"`, `"unsupported"`, keyed by feature name (e.g. `"images"`,
+ * `"files"`, `"terminals"`, `"permissions"`, `"model_selection"`,
+ * `"mode_selection"`).
+ */
+export type BackendDescriptor = {
+    /**
+     * - Neutral agent/provider identity.
+     */
+    agent_ref?: BackendAgentRef;
+    /**
+     * - Neutral session identity.
+     */
+    session_ref?: BackendSessionRef;
+    /**
+     * - Feature name -> capability state.
+     */
+    capabilities?: {
+        [x: string]: string;
+    };
+    /**
+     * - Available/current model, if known.
+     */
+    model?: BackendModelState;
+    /**
+     * - Neutral config options mirror.
+     */
+    config_options?: BackendConfigOption[];
+};
+/**
  * Payload of {@link EVENTS.CONNECTED} (`connected`).
  */
 export type ConnectedPayload = {
@@ -277,6 +428,10 @@ export type ConnectedPayload = {
      * - Last prompt seq, for delivery verification.
      */
     last_user_prompt_seq: number;
+    /**
+     * - Optional protocol-neutral backend descriptor.
+     */
+    backend?: BackendDescriptor;
 };
 /**
  * Payload of {@link EVENTS.SESSION_SWITCHED} (`session_switched`).
@@ -1097,6 +1252,10 @@ export type AcpStartedPayload = {
      * - Session whose ACP process started.
      */
     session_id: string;
+    /**
+     * - Optional protocol-neutral backend descriptor.
+     */
+    backend?: BackendDescriptor;
 };
 /**
  * Payload of {@link EVENTS.ACP_STOPPED} (`acp_stopped`).
@@ -1254,6 +1413,51 @@ export type AgentDegradedPayload = {
      * - Whether the agent is currently degraded.
      */
     degraded: boolean;
+};
+/**
+ * Payload of {@link EVENTS.AGENT_AUTH_REQUIRED} (`agent_auth_required`).
+ * Same shape as {@link AgentAuthClearedPayload}.
+ */
+export type AgentAuthRequiredPayload = {
+    /**
+     * - Session whose prompt hit the auth failure.
+     */
+    session_id: string;
+    /**
+     * - Affected workspace.
+     */
+    workspace_uuid: string;
+    /**
+     * - Workspace display name.
+     */
+    workspace_name: string;
+    /**
+     * - Workspace working directory.
+     */
+    working_dir: string;
+};
+/**
+ * Payload of {@link EVENTS.AGENT_AUTH_CLEARED} (`agent_auth_cleared`).
+ * Same shape as {@link AgentAuthRequiredPayload}.
+ */
+export type AgentAuthClearedPayload = {
+    /**
+     * - Session whose prompt recovered from the
+     * auth failure.
+     */
+    session_id: string;
+    /**
+     * - Affected workspace.
+     */
+    workspace_uuid: string;
+    /**
+     * - Workspace display name.
+     */
+    workspace_name: string;
+    /**
+     * - Workspace working directory.
+     */
+    working_dir: string;
 };
 /**
  * Payload of {@link EVENTS.MCP_INITIALIZING} (`mcp_initializing`).

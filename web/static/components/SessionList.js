@@ -63,6 +63,7 @@ import {
   BroomIcon,
   LightningIcon,
   PinIcon,
+  LockIcon,
   getPromptIconOrDefault,
 } from "./Icons.js";
 
@@ -221,6 +222,7 @@ export function SessionList({
   onBadgeClick,
   onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
   onUnpinFolder, // Called with (workingDir) to unpin a pinned empty folder from the sidebar
+  getAgentAuthStateForWorkingDir, // (mitto-3du) (workingDir) => { required, firstSeenAt } | null — folder-group health pill
   // Configurable "Open ▸" submenu targets (mitto-bbi). Each entry:
   // {id,label,icon,command,enabled,builtin}. Only entries with enabled===true
   // appear in the folder context-menu submenu. Callback: onOpenTarget(workingDir, id).
@@ -1309,6 +1311,22 @@ export function SessionList({
                 <span class="badge badge-sm badge-ghost shrink-0 tabular-nums"
                   >${totalSessions}</span
                 >
+                ${folder.workingDir &&
+                getAgentAuthStateForWorkingDir?.(folder.workingDir)
+                  ?.required &&
+                html`
+                  <span
+                    class="badge badge-sm badge-warning badge-soft shrink-0"
+                    data-tip="Agent needs re-authentication — re-authenticate the CLI"
+                    aria-label="Agent needs re-authentication"
+                    data-testid="agent-auth-required-pill"
+                    ...${rowTipHandlers(
+                      "Agent needs re-authentication — re-authenticate the CLI",
+                    )}
+                  >
+                    <${LockIcon} className="w-3 h-3" />
+                  </span>
+                `}
                 ${(() => {
                   const folderCreating = creatingWorkingDirs.has(
                     folder.workingDir,

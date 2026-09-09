@@ -913,6 +913,18 @@ func SetGlobalShortcuts(sections map[string][]ShortcutButton) error {
 	return SaveSettings(settings)
 }
 
+// GlobalUI returns the desktop-app UI configuration stored in settings.json,
+// or the zero value if settings cannot be read. Mirrors GlobalShortcuts /
+// GlobalTaskLabelColors; used by the live "ui" field refresh after a
+// configsvc patch (mitto-4rz.3) so Config.UI does not go stale in memory.
+func GlobalUI() UIConfig {
+	settings, err := loadRawSettings()
+	if err != nil || settings == nil {
+		return UIConfig{}
+	}
+	return settings.UI
+}
+
 // GlobalTaskLabelColors returns the ordered task-label color mapping stored in
 // settings.json, or nil if none is configured or settings cannot be read.
 func GlobalTaskLabelColors() []TaskLabelColor {

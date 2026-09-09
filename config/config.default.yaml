@@ -126,6 +126,7 @@ shortcuts:
     - prompt: Commit changes
   beadsIssue:
     - prompt: Start work
+    - prompt: Discuss a topic
   tasksList:
     - prompt: Overview
 

@@ -438,6 +438,40 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 			}
 		}
 
+		// B.5) Resolve the effective ACP-server-name filter, honoring the
+		// optional 'agent' alias (mitto-lrt.17) with the same
+		// precedence/conflict/ambiguity semantics as mitto_conversation_new's
+		// acp_server/agent alias. When only acp_server is set (or neither),
+		// keep the historical exact-match behavior without touching config —
+		// this preserves the acp_server=="" edge case unchanged. When agent
+		// is set, resolve via resolveAgentOrACPServerName, which also handles
+		// the both-set-but-disagree conflict.
+		var acpServerFilter *string
+		if input.ACPServer != nil || input.Agent != nil {
+			var acpVal, agentVal string
+			if input.ACPServer != nil {
+				acpVal = *input.ACPServer
+			}
+			if input.Agent != nil {
+				agentVal = *input.Agent
+			}
+			if agentVal == "" {
+				acpServerFilter = &acpVal
+			} else {
+				s.mu.RLock()
+				cfg := s.config
+				s.mu.RUnlock()
+				if cfg == nil {
+					return nil, ListConversationsOutput{}, fmt.Errorf("server configuration not available")
+				}
+				resolved, resolveErr := resolveAgentOrACPServerName(cfg, acpVal, agentVal)
+				if resolveErr != nil {
+					return nil, ListConversationsOutput{}, resolveErr
+				}
+				acpServerFilter = &resolved
+			}
+		}
+
 		sessions, err := store.List()
 		if err != nil {
 			return nil, ListConversationsOutput{}, fmt.Errorf("failed to list sessions: %w", err)
@@ -457,7 +491,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 			if input.Archived != nil && meta.Archived != *input.Archived {
 				continue
 			}
-			if input.ACPServer != nil && meta.ACPServer != *input.ACPServer {
+			if acpServerFilter != nil && meta.ACPServer != *acpServerFilter {
 				continue
 			}
 			if input.ExcludeSelf != nil && meta.SessionID == *input.ExcludeSelf {

@@ -60,7 +60,16 @@ const acpInitializeAttemptTimeout = 25 * time.Second
 func (bs *BackgroundSession) killACPProcess() {
 	if bs.sharedProcess != nil {
 		// Shared mode: we don't own the OS process.
-		// Just unregister this session so it stops receiving events.
+		// Detach (not kill) this session so it stops receiving events. Prefer
+		// routing through the BackendLease (mitto-lrt.18) when one is bound —
+		// for ACP, lease.Detach() unregisters from the multiplex layer exactly
+		// like the direct call below, and is a safe no-op when unbound. Fall
+		// back to the direct call when no BackendProvider was injected
+		// (bs.lease is nil; unaffected today).
+		if bs.lease != nil {
+			bs.lease.Detach()
+			return
+		}
 		if bs.acpID != "" {
 			bs.sharedProcess.UnregisterSession(acp.SessionId(bs.acpID))
 		}

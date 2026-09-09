@@ -25,7 +25,12 @@ parameters:
     type: text
     group: Advanced
     required: false
-    description: 'How many days of channel history to scan each run (default 2).'
+    description: 'How many days of channel history to scan each run. Defaults to StaleDays (so each run re-scans the whole staleness window and no aged-out thread is missed).'
+  - name: StaleDays
+    type: text
+    group: Advanced
+    required: false
+    description: 'After how many days of no activity a tracked ticket is auto-closed as stale (default 10). Applies regardless of state:* — an unposted draft untouched this long is treated as abandoned.'
 enabledWhen: '!Session.IsChild && CommandExists("bd") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
 loop:
   trigger: [schedule]
@@ -37,7 +42,8 @@ loop:
 prompt: |-
   {{- $channel := .Args.SlackChannelID -}}
   {{- $ws := .Args.SlackWorkspaceURL -}}
-  {{- $days := Arg "LookbackDays" "2" -}}
+  {{- $staleDays := Arg "StaleDays" "10" -}}
+  {{- $days := Arg "LookbackDays" $staleDays -}}
   # Support — Watch Channel (Triage + Keep Beads in Sync)
 
   {{ template "_shared/session-context" . }}
@@ -161,7 +167,7 @@ prompt: |-
     | `awaiting-customer` | we posted a reply, waiting on the customer |
     | `awaiting-us` | customer responded, our turn to act |
     | `resolved` | answered/accepted (also `bd close <id>`) |
-    | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
+    | `stale` | auto-closed after {{ $staleDays }}+ days of inactivity, regardless of state:* (also `bd close <id>`) |
     | `out-of-scope` | not our area / not something we will pursue (also `bd close <id>`) |
 
     > 🚫 **A closed bead is terminal — respect it.** Any ticket already `bd close`d (states `resolved`,
@@ -183,7 +189,7 @@ prompt: |-
   |----------|----------------------|------|
   | **P1** | HIGH — actionable, waiting on **your** approval | A draft (reply **or** clarifying question) is ready and pending your OK to post — typically `state:drafting`. Bump to **P0** only if that draft answers an escalation / outage / broad-impact thread (you are the bottleneck on an urgent fix). |
   | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
-  | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
+  | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the {{ $staleDays }}-day auto-close as time passes). |
 
   ## Channel playbook gate: read before triage
 
@@ -209,12 +215,28 @@ prompt: |-
 
   - Verify the database (`bd list`; if none, `bd init`).
   - Load tracked questions: `bd list -l support-question --all` and review their `state:*` labels.
-  - **Auto-close stale:** find tracked issues with no activity for **10+ days**
-    (`bd list -l support-question --status open,in_progress --updated-before <cutoff> --all`, e.g.
-    cutoff `date -u -v-10d +%Y-%m-%d`). For each, verify it is truly stale (no recent comments, no
-    open blockers, no unanswered customer message), then
-    `bd update <id> --remove-label state:<prev> --add-label state:stale` and
-    `bd close <id> -r "auto-closed: no activity for 10+ days"`.
+  - **Auto-close stale (aged-out — applies to EVERY open state, including `drafting`).** Find tracked
+    issues with no activity for **{{ $staleDays }}+ days**
+    (`bd list -l support-question --status open,in_progress --updated-before <cutoff> --all`, cutoff
+    `date -u -v-{{ $staleDays }}d +%Y-%m-%d`). Every bead this filter returns is aged-out **regardless
+    of its `state:*` label** — do **not** exempt `state:drafting`. A draft that has sat unposted and
+    untouched for {{ $staleDays }}+ days was never approved and its thread has gone quiet, so it is
+    **abandoned**: close it as stale (the draft text stays preserved in the bead's comment history).
+    The only legitimate skip is a bead the loop simply has not reconciled yet even though its thread
+    moved within the last {{ $staleDays }} days — if in doubt, re-fetch that one thread once; if its
+    newest message is still older than the cutoff, it is stale.
+    - **This close runs in BOTH run modes and must never be dropped.** It is the loop's core hygiene
+      action and it is safe — the draft text stays preserved in the bead's comment history, so a
+      close is recoverable. On a **silent** run, close directly with no dialog. On an **interactive**
+      run you MAY first surface the aged-out batch once via `mitto_ui_options` (short
+      `timeout_seconds`, e.g. 60s) for a quick veto — but if nobody answers before the timeout,
+      **fall through and close them anyway**, exactly as a silent run would. **Never defer or skip
+      the close merely because a confirmation dialog timed out or went unanswered** — an unanswered
+      dialog is a proceed, not a hold.
+    - For each stale bead:
+      `bd update <id> --remove-label state:<prev> --add-label state:stale` then
+      `bd close <id> -r "auto-closed: no activity for {{ $staleDays }}+ days"`. Record every
+      auto-close in the Step 5 summary so the run's `mitto_ui_notify` surfaces the closed drafts.
   - **Out-of-scope close:** if a tracked ticket is **not our area / not something we will pursue**
     (wrong team, out of our expertise, explicitly declined), close it to
     `state:out-of-scope`: `bd update <id> --remove-label state:<prev> --add-label state:out-of-scope`

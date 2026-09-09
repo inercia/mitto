@@ -80,6 +80,12 @@ type SessionListResponse struct {
 	// WorkspaceSettings). Included so CLI/UI consumers can filter or display
 	// by name without a second round trip to a workspaces endpoint.
 	WorkspaceName string `json:"workspace_name,omitempty"`
+	// Backend is an optional, additive protocol-neutral descriptor
+	// (mitto-lrt.12). Present only when computable (meta.ACPServer is set);
+	// never synthesized. Legacy fields above (ACPServer/ACPSessionID via the
+	// embedded session.Metadata) keep their current meaning unchanged —
+	// this is purely an additive mirror for neutral-aware consumers.
+	Backend *NeutralBackendDescriptor `json:"backend,omitempty"`
 }
 
 // HandleListSessions handles GET /api/sessions
@@ -170,6 +176,13 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 					response[i].WorkspaceName = ws.Name
 				}
 			}
+
+			// Optional neutral backend descriptor (mitto-lrt.12). bs is nil for
+			// a session that isn't currently running (e.g. archived/suspended);
+			// BuildNeutralBackendDescriptor still computes identity from meta in
+			// that case and simply omits the live-state sub-blocks.
+			bs := h.deps.SessionManager.GetSession(meta.SessionID)
+			response[i].Backend = BuildNeutralBackendDescriptor(meta, bs)
 		}
 	}
 

@@ -4,12 +4,11 @@
  * The hook had no prior test file (mitto-90f.7 PR-17 extracted it verbatim
  * with no accompanying tests), so this is dedicated new coverage for the
  * migration onto getSdkClient(), mirroring the precedent set by S2's
- * folder-config hook tests. Focuses on the three network-bearing operations:
- * fetchDeps (GET /api/issues/{id}), mutateDep (POST .../dependencies), and
- * changeDepType's two-step remove-then-add flow, which the Implementation
- * comment specifically calls out as needing its exact original control flow
- * preserved (a failed remove returns early with no re-fetch; a failed add
- * still triggers fetchDeps+onUpdated).
+ * folder-config hook tests. Covers fetchDeps (GET /api/issues/{id}), the
+ * in-memory staging helpers (addDepLocal / removeDepLocal / changeDepTypeLocal
+ * / depsDirty), and the persistDeps reconciler that diffs the working set
+ * against the baseline and issues the POST .../dependencies calls on Save
+ * (remove, add, and a type change as remove + re-add).
  *
  * Harness: `useState`/`useCallback` are destructured from `window.preact` at
  * module-load time. `useCallback` is stubbed as an identity function (no
@@ -82,10 +81,11 @@ function freshMount() {
 function baseArgs(overrides = {}) {
   return {
     data: { id: "mitto-abc" },
+    allIssues: [],
+    creating: false,
     workingDir: "/tmp/wsA",
     showToast: jest.fn(),
     fetchDepsRef: { current: null },
-    onUpdated: jest.fn(),
     setLabels: jest.fn(),
     setComments: jest.fn(),
     setNotes: jest.fn(),
@@ -158,74 +158,177 @@ describe("useIssueDependencies — fetchDeps", () => {
   });
 });
 
-describe("useIssueDependencies — mutateDep", () => {
-  test("add: POSTs {depends_on, type, action} and refreshes on success", async () => {
+describe("useIssueDependencies — in-memory staging", () => {
+  test("addDepLocal stages a trimmed edge (title/status from allIssues), marks dirty, no network", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs({
+      allIssues: [{ id: "mitto-x", title: "X issue", status: "open" }],
+    });
+    let bag = await render(args);
+    // Seed the baseline via the authoritative setter so dirty starts false.
+    bag.setDeps([
+      { id: "mitto-a", title: "A", status: "open", dependency_type: "blocks" },
+    ]);
+    bag = await render(args);
+    expect(bag.deps.map((d) => d.id)).toEqual(["mitto-a"]);
+    expect(bag.depsDirty).toBe(false);
+
+    bag.addDepLocal("  mitto-x  ", "related");
+    bag = await render(args);
+    expect(bag.deps.map((d) => d.id)).toEqual(["mitto-a", "mitto-x"]);
+    expect(bag.deps.find((d) => d.id === "mitto-x")).toEqual({
+      id: "mitto-x",
+      title: "X issue",
+      status: "open",
+      dependency_type: "related",
+    });
+    expect(bag.depsDirty).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("addDepLocal ignores blanks and duplicate ids", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setDeps([{ id: "mitto-a", dependency_type: "blocks" }]);
+    bag = await render(args);
+    bag.addDepLocal("   ", "blocks");
+    bag.addDepLocal("mitto-a", "related");
+    bag = await render(args);
+    expect(bag.deps.map((d) => d.id)).toEqual(["mitto-a"]);
+    expect(bag.depsDirty).toBe(false);
+  });
+
+  test("removeDepLocal stages a removal and marks dirty (no network)", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setDeps([
+      { id: "mitto-a", dependency_type: "blocks" },
+      { id: "mitto-b", dependency_type: "blocks" },
+    ]);
+    bag = await render(args);
+    bag.removeDepLocal("mitto-a");
+    bag = await render(args);
+    expect(bag.deps.map((d) => d.id)).toEqual(["mitto-b"]);
+    expect(bag.depsDirty).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("changeDepTypeLocal restages the edge type and marks dirty (no network)", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setDeps([{ id: "mitto-a", dependency_type: "blocks" }]);
+    bag = await render(args);
+    bag.changeDepTypeLocal("mitto-a", "related");
+    bag = await render(args);
+    expect(bag.deps[0].dependency_type).toBe("related");
+    expect(bag.depsDirty).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("depsDirty stays false in create mode even when sets differ", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs({ creating: true });
+    let bag = await render(args);
+    bag.addDepLocal("mitto-x", "blocks");
+    bag = await render(args);
+    expect(bag.depsDirty).toBe(false);
+  });
+});
+
+describe("useIssueDependencies — persistDeps", () => {
+  test("diffs baseline vs working: remove, add, and type-change (remove+re-add); advances baseline", async () => {
     freshMount();
     global.fetch = jest.fn(() =>
       Promise.resolve(fakeResponse({ status: 204 })),
     );
-    const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const bag = await render(baseArgs({ showToast, onUpdated }));
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setDeps([
+      { id: "keep", dependency_type: "blocks" },
+      { id: "drop", dependency_type: "blocks" },
+      { id: "retype", dependency_type: "blocks" },
+    ]);
+    bag = await render(args);
+    bag.removeDepLocal("drop");
+    bag.changeDepTypeLocal("retype", "related");
+    bag.addDepLocal("new", "parent-child");
+    bag = await render(args);
+    expect(bag.depsDirty).toBe(true);
 
-    const ok = await bag.mutateDep("add", "mitto-dep", "related");
+    const ok = await bag.persistDeps();
     await flush();
-
     expect(ok).toBe(true);
-    // Two fetches: the mutation POST, then fetchDeps' GET refresh.
-    expect(global.fetch).toHaveBeenCalledTimes(2);
-    const [url, init] = global.fetch.mock.calls[0];
-    expect(String(url)).toContain("/api/issues/mitto-abc/dependencies");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({
-      depends_on: "mitto-dep",
-      action: "add",
+
+    const bodies = global.fetch.mock.calls
+      .map((c) => c[1] && c[1].body)
+      .filter(Boolean)
+      .map((b) => JSON.parse(b));
+    // "drop" removed outright.
+    expect(bodies).toContainEqual({ depends_on: "drop", action: "remove" });
+    // "retype" is a remove followed by a re-add with the new type.
+    expect(bodies).toContainEqual({ depends_on: "retype", action: "remove" });
+    expect(bodies).toContainEqual({
+      depends_on: "retype",
       type: "related",
+      action: "add",
     });
-    expect(showToast).toHaveBeenCalledWith({
-      style: "success",
-      title: "Added dependency on mitto-dep",
+    // "new" added.
+    expect(bodies).toContainEqual({
+      depends_on: "new",
+      type: "parent-child",
+      action: "add",
     });
-    expect(onUpdated).toHaveBeenCalledTimes(1);
+    // "keep" is untouched — no POST references it.
+    expect(bodies.some((b) => b.depends_on === "keep")).toBe(false);
+
+    // Baseline advanced to the working set, so the panel is no longer dirty.
+    bag = await render(args);
+    expect(bag.depsDirty).toBe(false);
   });
 
-  test("remove: defaults omit `type` and never call onUpdated on failure", async () => {
+  test("no-op returns true with no network call when not dirty", async () => {
+    freshMount();
+    global.fetch = jest.fn();
+    const args = baseArgs();
+    let bag = await render(args);
+    bag.setDeps([{ id: "a", dependency_type: "blocks" }]);
+    bag = await render(args);
+    const ok = await bag.persistDeps();
+    expect(ok).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("failure: error toast, returns false, baseline unchanged (stays dirty)", async () => {
     freshMount();
     global.fetch = jest.fn(() =>
-      Promise.resolve(
-        fakeResponse({ status: 409, body: { error: "conflict" } }),
-      ),
+      Promise.resolve(fakeResponse({ status: 500 })),
     );
     const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const bag = await render(baseArgs({ showToast, onUpdated }));
+    const args = baseArgs({ showToast });
+    let bag = await render(args);
+    bag.setDeps([{ id: "a", dependency_type: "blocks" }]);
+    bag = await render(args);
+    bag.addDepLocal("b", "blocks");
+    bag = await render(args);
 
-    const ok = await bag.mutateDep("remove", "mitto-dep");
+    const ok = await bag.persistDeps();
     await flush();
 
     expect(ok).toBe(false);
-    const [, init] = global.fetch.mock.calls[0];
-    expect(JSON.parse(init.body)).toEqual({
-      depends_on: "mitto-dep",
-      action: "remove",
-    });
-    // errorMessage(err, fallback) prefers the SDK error's own message (here
-    // the flat `error` code from the 409 body) over the local fallback text —
-    // the fallback only applies to message-less errors (e.g. a network
-    // failure).
     expect(showToast).toHaveBeenCalledWith({
       style: "error",
-      title: "conflict",
+      title: "Request failed with status 500",
     });
-    expect(onUpdated).not.toHaveBeenCalled();
-  });
-
-  test("no-op when dependsOn is empty", async () => {
-    freshMount();
-    global.fetch = jest.fn();
-    const bag = await render(baseArgs());
-    await bag.mutateDep("add", "");
-    expect(global.fetch).not.toHaveBeenCalled();
+    bag = await render(args);
+    expect(bag.depsDirty).toBe(true);
   });
 });
 
@@ -234,116 +337,31 @@ describe("useIssueDependencies — handleAddDep", () => {
     freshMount();
     global.fetch = jest.fn();
     const bag = await render(baseArgs());
-    await bag.handleAddDep();
+    bag.handleAddDep();
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  test("trims newDepId, calls mutateDep, and clears the draft on success", async () => {
+  test("trims newDepId, stages it in-memory with the chosen type, and clears the draft (no network)", async () => {
     freshMount();
-    global.fetch = jest.fn(() =>
-      Promise.resolve(fakeResponse({ status: 204 })),
-    );
-    const args = baseArgs();
+    global.fetch = jest.fn();
+    const args = baseArgs({
+      allIssues: [{ id: "mitto-dep2", title: "Dep 2", status: "open" }],
+    });
     let bag = await render(args);
-    // Simulate typing into the add-dep draft, then a re-render so the next
-    // handleAddDep closure reads the updated state.
+    // Simulate choosing a type and typing into the add-dep draft, then a
+    // re-render so the next handleAddDep closure reads the updated state.
+    bag.setNewDepType("related");
     bag.setNewDepId("  mitto-dep2  ");
     bag = await render(args);
 
-    await bag.handleAddDep();
-    await flush();
-
-    const [url, init] = global.fetch.mock.calls[0];
-    expect(String(url)).toContain("/api/issues/mitto-abc/dependencies");
-    expect(JSON.parse(init.body).depends_on).toBe("mitto-dep2");
-    // Draft is cleared after a successful add; a subsequent render observes it.
+    bag.handleAddDep();
     bag = await render(args);
+
+    const added = bag.deps.find((d) => d.id === "mitto-dep2");
+    expect(added).toBeTruthy();
+    expect(added.dependency_type).toBe("related");
+    // Draft is cleared after staging; a subsequent render observes it.
     expect(bag.newDepId).toBe("");
-  });
-});
-
-describe("useIssueDependencies — changeDepType", () => {
-  test("success: remove then add, single success toast, one refresh", async () => {
-    freshMount();
-    global.fetch = jest.fn(() =>
-      Promise.resolve(fakeResponse({ status: 204 })),
-    );
-    const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const bag = await render(baseArgs({ showToast, onUpdated }));
-
-    await bag.changeDepType("mitto-dep", "related");
-    await flush();
-
-    // remove POST, add POST, then fetchDeps' GET refresh.
-    expect(global.fetch).toHaveBeenCalledTimes(3);
-    const removeBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    const addBody = JSON.parse(global.fetch.mock.calls[1][1].body);
-    expect(removeBody).toEqual({ depends_on: "mitto-dep", action: "remove" });
-    expect(addBody).toEqual({
-      depends_on: "mitto-dep",
-      type: "related",
-      action: "add",
-    });
-    expect(showToast).toHaveBeenCalledWith({
-      style: "success",
-      title: "Changed mitto-dep to related",
-    });
-    expect(onUpdated).toHaveBeenCalledTimes(1);
-  });
-
-  test("remove fails: error toast, no add call, no refresh, no onUpdated", async () => {
-    freshMount();
-    global.fetch = jest.fn(() =>
-      Promise.resolve(fakeResponse({ status: 500 })),
-    );
-    const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const bag = await render(baseArgs({ showToast, onUpdated }));
-
-    await bag.changeDepType("mitto-dep", "related");
-    await flush();
-
-    // Only the failed remove POST — no add attempt, no fetchDeps refresh.
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(showToast).toHaveBeenCalledWith({
-      style: "error",
-      title: "Request failed with status 500",
-    });
-    expect(onUpdated).not.toHaveBeenCalled();
-  });
-
-  test("remove succeeds, add fails: error toast for add, but STILL refreshes and notifies", async () => {
-    freshMount();
-    let call = 0;
-    global.fetch = jest.fn(() => {
-      call += 1;
-      // 1st call = remove (succeeds), 2nd call = add (fails), 3rd = fetchDeps GET.
-      if (call === 2) return Promise.resolve(fakeResponse({ status: 500 }));
-      return Promise.resolve(fakeResponse({ status: 204 }));
-    });
-    const showToast = jest.fn();
-    const onUpdated = jest.fn();
-    const bag = await render(baseArgs({ showToast, onUpdated }));
-
-    await bag.changeDepType("mitto-dep", "related");
-    await flush();
-
-    expect(global.fetch).toHaveBeenCalledTimes(3);
-    expect(showToast).toHaveBeenCalledWith({
-      style: "error",
-      title: "Request failed with status 500",
-    });
-    // Preserves the original control flow: a failed add still triggers the
-    // refresh + parent notification so the UI reflects the successful remove.
-    expect(onUpdated).toHaveBeenCalledTimes(1);
-  });
-
-  test("no-op when depsBusy (initial state false, so this pins the guard exists)", async () => {
-    freshMount();
-    global.fetch = jest.fn();
-    const bag = await render(baseArgs());
-    await bag.changeDepType("", "related");
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });

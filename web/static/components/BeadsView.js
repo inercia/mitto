@@ -204,6 +204,11 @@ export function BeadsDetailPanel({
   canGoForward,
   onGoBack,
   onGoForward,
+  // mitto-12r: map of issue id -> linked conversation session id, and the
+  // handler to focus a conversation. Forwarded so the header toolbar can
+  // show a "Go to conversation" button for issues that have one.
+  issueSessionMap,
+  onOpenConversation,
 }) {
   const h = useBeadsDetailPanel({
     issue,
@@ -231,6 +236,8 @@ export function BeadsDetailPanel({
     canGoForward,
     onGoBack,
     onGoForward,
+    issueSessionMap,
+    onOpenConversation,
   });
 
   if (!h.shouldRender) return null;
@@ -331,6 +338,12 @@ export function BeadsIssueView({
   onFetchBeadsPrompts,
   onRunBeadsPrompt,
   onReturnToConversation,
+  // mitto-12r: map of issue id -> linked conversation session id, and the
+  // handler to focus a conversation. Forwarded to BeadsDetailPanel so the
+  // header toolbar can show a "Go to conversation" button for issues that
+  // have one.
+  issueSessionMap,
+  onOpenConversation,
 }) {
   // In-viewer navigation history stack (mitto-qluh.1). `history` is a list of
   // issue IDs the user has visited via related-issue clicks; `pos` is the index
@@ -791,6 +804,8 @@ export function BeadsIssueView({
         canGoForward=${canGoForward}
         onGoBack=${goBack}
         onGoForward=${goForward}
+        issueSessionMap=${issueSessionMap}
+        onOpenConversation=${onOpenConversation}
       />
       <${ConfirmDialog}
         isOpen=${!!deleteTarget}
@@ -924,9 +939,13 @@ function BeadsIssueRow({
       </div>
       <!-- Swipeable content (the original list-row card). When a task-label
       color is configured, it is applied as the whole card's background here
-      (inline, so it takes precedence over the bgTone/hover Tailwind
-      utilities — the label color intentionally wins) rather than just
-      behind the title text. -->
+      (inline) rather than just behind the title text. It is marked
+      !important so the label color wins in every state — including hover.
+      Plain inline styles lose to the broad "!important" hover rules in
+      styles-v2.css: ".cursor-pointer:not(.bg-mitto-accent):hover" (meant for
+      the session list, but this card is also a cursor-pointer) would
+      otherwise repaint the card near-white on hover, hiding the white title
+      text; only an inline !important outranks a stylesheet !important. -->
       <div
         data-has-context-menu
         onClick=${handleClick}
@@ -935,7 +954,7 @@ function BeadsIssueRow({
           ? ""
           : "transition-all duration-200"}"
         style="transform: translateX(${swipeOffset}px);${labelBackground
-          ? ` background-color: ${labelBackground};`
+          ? ` background-color: ${labelBackground} !important;`
           : ""}"
       >
         ${children}
@@ -3327,6 +3346,8 @@ export function BeadsView({
       canGoForward=${canGoForward}
       onGoBack=${goBack}
       onGoForward=${goForward}
+      issueSessionMap=${issueSessionMap}
+      onOpenConversation=${onOpenConversation}
     />
     </div>
 

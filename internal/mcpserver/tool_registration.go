@@ -18,6 +18,9 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 			"To CREATE a new conversation, use 'mitto_conversation_new' instead. Always available. " +
 			"All parameters are optional filters — omit them to list all conversations. " +
 			"Optionally filter by workspace UUID using the 'workspace' parameter to list only conversations in a specific workspace. " +
+			"Optionally filter by ACP server name using the 'acp_server' parameter (exact match), " +
+			"or its exact alias 'agent' (also accepts a case-insensitive match of a configured server name; " +
+			"'acp_server' and 'agent' must agree if both are given). " +
 			"Optionally provide 'self_id' for permission-aware listing: without it, all conversations are returned (backward compatible); " +
 			"with 'self_id' but without the 'Can interact with other workspaces' flag, only the caller's own workspace conversations are returned. " +
 			selfIDNote,
@@ -205,7 +208,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"This spawns a separate AI agent that can work independently on the task you specify. " +
 			"Use this to delegate work, run background tasks, or parallelize complex work across multiple agents. " +
 			"The new conversation inherits your workspace configuration. By default it also inherits your ACP server, " +
-			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder) " +
+			"but you can specify a different one via the optional 'acp_server' parameter (must have a workspace configured for the current folder), " +
+			"or its exact alias 'agent' (also accepts a case-insensitive match of a configured server name; 'acp_server' and 'agent' must agree if both are given) " +
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
 			"Instead of an inline 'initial_prompt', you may provide 'prompt_name' to use a predefined prompt by name (resolved the same way as 'mitto_prompt_get', case-insensitive) as the initial prompt — 'prompt_name' and 'initial_prompt' are mutually exclusive. " +

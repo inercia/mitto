@@ -129,6 +129,7 @@ func (s *SlackSource) run(ctx context.Context, accept func(Event) error, observe
 func (s *SlackSource) handleObservedSocketEventDurableWithContext(ctx context.Context, evt socketmode.Event, client *socketmode.Client, selfUserID string,
 	listEventAuthorizations func(context.Context, string) ([]slack.EventAuthorization, error), accept func(Event) error, observe func(SourceObservation),
 ) error {
+	s.logConnectionLifecycle(evt)
 	if evt.Type == socketmode.EventTypeHello {
 		notifySourceObserver(observe, SourceTransportReady)
 	}
@@ -150,6 +151,41 @@ func (s *SlackSource) handleObservedSocketEventDurableWithContext(ctx context.Co
 		notifySourceObserver(observe, SourceEnvelopeIgnored)
 	}
 	return err
+}
+
+// logConnectionLifecycle surfaces Socket Mode connection-lifecycle and error
+// frames so a recurring disconnect (which otherwise leaves no trace, because
+// socketmode.Client reconnects internally) is diagnosable. It logs only the
+// disconnect reason and connection metadata — never payloads, message content,
+// or tokens. Disconnect frames carry Slack's reason on evt.Request.Reason
+// ("refresh_requested", "too_many_connections", "warning", ...).
+func (s *SlackSource) logConnectionLifecycle(evt socketmode.Event) {
+	if s.logger == nil {
+		return
+	}
+	switch evt.Type {
+	case socketmode.EventTypeDisconnect:
+		reason := ""
+		if evt.Request != nil {
+			reason = evt.Request.Reason
+		}
+		s.logger.Info("slackbridge: socket mode disconnected", "reason", reason)
+	case socketmode.EventTypeConnectionError:
+		attrs := []any{}
+		if connErr, ok := evt.Data.(*slack.ConnectionErrorEvent); ok && connErr != nil {
+			attrs = append(attrs, "attempt", connErr.Attempt, "backoff", connErr.Backoff.String())
+			if connErr.ErrorObj != nil {
+				attrs = append(attrs, "error", scrubSlackError(connErr.ErrorObj))
+			}
+		}
+		s.logger.Warn("slackbridge: socket mode connection error", attrs...)
+	case socketmode.EventTypeInvalidAuth:
+		s.logger.Error("slackbridge: socket mode authentication rejected by Slack (invalid_auth)")
+	case socketmode.EventTypeIncomingError:
+		if incErr, ok := evt.Data.(*slack.IncomingEventError); ok && incErr != nil && incErr.ErrorObj != nil {
+			s.logger.Warn("slackbridge: socket mode incoming error", "error", scrubSlackError(incErr.ErrorObj))
+		}
+	}
 }
 
 func notifySourceObserver(observe func(SourceObservation), observation SourceObservation) {
