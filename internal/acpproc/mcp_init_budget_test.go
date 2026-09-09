@@ -531,3 +531,69 @@ func TestColdMCPBudget_ExtendedRetryLoopAllowsAttempt2(t *testing.T) {
 			wedgeErr)
 	}
 }
+
+// TestColdMCPBudget_SaturatedProcessDoesNotGetExtendedBudget is the mitto-a9m
+// reproduction.
+//
+// coldMCPBudget grants the extended 240s (MCPInitTimeout) budget to EVERY
+// cold session/new attempt (mcpInitDone=false) unconditionally — it never
+// consults saturation state (isSaturated()). When the shared process is
+// ALREADY saturated (three consecutive session RPC timeouts tripped
+// saturatedUntil into the future, mitto-13ck.2) but has not yet completed one
+// successful cold-start session RPC, a subsequent session/new (e.g. the
+// foreground-resume fallback that fires right after a stale session/load
+// probe, see shared_session_handshaker.go staleLoadProbeTimeout) STILL pays
+// the full per-attempt/total MCPInitTimeout dead-wait (up to 240s) on a
+// create that is very likely doomed — instead of failing fast with the
+// normal bounded budget and letting the caller's bounded-retry path
+// (mitto-nf6) take over.
+//
+// Evidence (bead mitto-a9m, Window 41): foreground resume of session
+// 20260803-104410-aa02c3ef timed out at rpc_ms=240001 TWICE (11:03:05,
+// 11:07:07) while the shared process (ws da4bafec) was under concurrent load
+// (live_acp_processes=12, open_mcp_sse_streams=92, concurrent_prompting=3)
+// — hallmark saturation conditions — leaving the conversation unavailable to
+// the focused user for ~8 minutes.
+//
+// EXPECTED-AFTER-FIX: coldMCPBudget must return the NORMAL bounded budget
+// (sessionCreateAttemptTimeout/sessionCreateTotalBudget, extended=false) once
+// the process isSaturated(), even though mcpInitDone is still false —
+// reserving the 240s extension for a genuinely cold, NON-saturated first
+// create. Today (pre-fix) this test FAILS: coldMCPBudget ignores saturation
+// entirely and returns the full 240s extended budget regardless.
+func TestColdMCPBudget_SaturatedProcessDoesNotGetExtendedBudget(t *testing.T) {
+	p := &SharedACPProcess{}
+	p.config.MCPInitTimeout = 240 * time.Second
+	// Process has NOT yet completed a successful cold-start session RPC —
+	// the precondition that currently forces the extended-budget branch.
+	// (mcpInitDone defaults to false via the zero-value atomic.Bool.)
+
+	// Trip saturation directly, mirroring the existing pattern used
+	// throughout this package (e.g. TestGetOrCreateAuxiliarySession_
+	// SaturatedBails, TestSaturationStateMachine_EscalatingCooldown): set
+	// saturatedUntil into the future so isSaturated() reports true without
+	// any state-mutating side effects.
+	p.saturatedUntil = time.Now().Add(30 * time.Second)
+
+	if !p.isSaturated() {
+		t.Fatalf("preconditions: expected isSaturated()=true after forcing saturatedUntil into the future")
+	}
+
+	perAttempt, total, extended := p.coldMCPBudget(true /*hasMCPServers*/)
+	if extended {
+		t.Errorf("coldMCPBudget granted the extended MCP-init budget (perAttempt=%v, total=%v) "+
+			"to a SATURATED process that has not yet completed a cold-start session RPC. "+
+			"A doomed session/new on an already-saturated process now dead-waits up to "+
+			"MCPInitTimeout (240s) instead of failing fast with the normal bounded budget "+
+			"(%v/%v) and falling to the bounded resume-retry path (mitto-nf6) — this is the "+
+			"root cause of the mitto-a9m foreground-resume stall (rpc_ms=240001 x2, bead "+
+			"Window 41).",
+			perAttempt, total, sessionCreateAttemptTimeout, sessionCreateTotalBudget)
+	}
+	if perAttempt != sessionCreateAttemptTimeout {
+		t.Errorf("perAttempt=%v, want normal bounded budget %v once saturated", perAttempt, sessionCreateAttemptTimeout)
+	}
+	if total != sessionCreateTotalBudget {
+		t.Errorf("total=%v, want normal bounded budget %v once saturated", total, sessionCreateTotalBudget)
+	}
+}

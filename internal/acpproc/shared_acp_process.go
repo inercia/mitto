@@ -1425,6 +1425,17 @@ func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, 
 // MCPInitTimeout, sized above the agent's own MCP-init wait (e.g. Auggie's 225 s)
 // plus margin.
 //
+// SATURATION OVERRIDE (mitto-a9m): the extended budget is withheld when the
+// process is currently saturated (IsSaturated), even if mcpInitDone is still
+// false. A cold-but-saturated process is very likely to time out on this
+// create anyway; dead-waiting up to MCPInitTimeout (e.g. 240s) on a doomed
+// attempt is what stalled foreground resumes for minutes. Falling back to the
+// normal bounded budget lets the call fail fast and hand off to the caller's
+// bounded resume-retry path (mitto-nf6) instead. IsSaturated is the
+// NON-mutating read (unlike the private isSaturated, which self-clears into
+// probe mode on cooldown expiry) — a pure budget read must not perturb the
+// saturation state machine as a side effect.
+//
 // hasMCPServers is retained on the signature for observability / future gating.
 func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Duration, total time.Duration, extended bool) {
 	_ = hasMCPServers // reserved for future per-request gating
@@ -1432,6 +1443,9 @@ func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Du
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
 	if p.mcpInitDone.Load() && !p.mcpInitInProgress.Load() {
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
+	if p.IsSaturated() {
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
 	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true
