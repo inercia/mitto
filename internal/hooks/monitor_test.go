@@ -106,3 +106,119 @@ func TestHealthMonitor_SustainedUnreachability_RestartChurnIsUnbounded(t *testin
 			countAfterFirstBatch, countAfterSustainedFailure)
 	}
 }
+
+// TestHealthMonitor_FlapStats_BoundsRingBuffer verifies mitto-3sl's flap-history
+// ring buffer never grows past maxFlapHistoryEvents, while FlapStats' total
+// restart count keeps counting unboundedly (it mirrors restartCount, which is
+// a plain monotonic counter, not the bounded ring buffer).
+func TestHealthMonitor_FlapStats_BoundsRingBuffer(t *testing.T) {
+	m := NewHealthMonitor(HealthMonitorConfig{Address: "http://example.invalid"})
+
+	base := time.Now()
+	const totalFlaps = maxFlapHistoryEvents + 10
+
+	for i := 0; i < totalFlaps; i++ {
+		m.mu.Lock()
+		m.restartCount++
+		m.recordFlapLocked(base.Add(time.Duration(i) * time.Second))
+		m.mu.Unlock()
+	}
+
+	m.mu.Lock()
+	bufLen := len(m.flapTimes)
+	m.mu.Unlock()
+	if bufLen != maxFlapHistoryEvents {
+		t.Fatalf("expected flapTimes bounded to %d entries, got %d", maxFlapHistoryEvents, bufLen)
+	}
+
+	total, inWindow := m.FlapStats(flapHistoryWindow)
+	if total != totalFlaps {
+		t.Fatalf("expected FlapStats total (mirrors restartCount) = %d, got %d", totalFlaps, total)
+	}
+	// All recorded flaps are within seconds of "now", well inside the 24h
+	// window, so the windowed count should equal the bounded buffer length.
+	if inWindow != maxFlapHistoryEvents {
+		t.Fatalf("expected FlapStats inWindow = %d (bounded buffer, all recent), got %d", maxFlapHistoryEvents, inWindow)
+	}
+}
+
+// TestHealthMonitor_FlapStats_WindowExcludesOldEvents verifies FlapStats'
+// windowed count only includes flaps at or after the trailing window cutoff,
+// while the total keeps counting every restart ever recorded.
+func TestHealthMonitor_FlapStats_WindowExcludesOldEvents(t *testing.T) {
+	m := NewHealthMonitor(HealthMonitorConfig{Address: "http://example.invalid"})
+
+	now := time.Now()
+	m.mu.Lock()
+	m.restartCount = 3
+	m.recordFlapLocked(now.Add(-48 * time.Hour)) // outside a 24h window
+	m.recordFlapLocked(now.Add(-1 * time.Hour))  // inside a 24h window
+	m.recordFlapLocked(now)                      // inside a 24h window
+	m.mu.Unlock()
+
+	total, inWindow := m.FlapStats(24 * time.Hour)
+	if total != 3 {
+		t.Fatalf("expected FlapStats total = 3, got %d", total)
+	}
+	if inWindow != 2 {
+		t.Fatalf("expected FlapStats inWindow = 2 (excluding the 48h-old flap), got %d", inWindow)
+	}
+}
+
+// TestHealthMonitor_SustainedUnreachability_FlapStatsTracksRestarts is an
+// integration-style test (mirrors TestHealthMonitor_SustainedUnreachability_
+// RestartChurnIsUnbounded's harness) verifying that FlapStats reflects the
+// real restarts performed by HealthMonitor.run() during a sustained outage —
+// not just the lower-level ring-buffer unit behavior above.
+func TestHealthMonitor_SustainedUnreachability_FlapStatsTracksRestarts(t *testing.T) {
+	srv := httptest.NewServer(nil)
+	unreachableAddr := srv.URL
+	srv.Close()
+
+	origInitial, origCheck, origPostRestart := monitorInitialDelay, monitorCheckInterval, monitorPostRestartDelay
+	origPreRestart, origReqTimeout, origMaxCheck := monitorPreRestartWait, monitorRequestTimeout, monitorMaxCheckInterval
+	origRetries, origRetryDelay := monitorFailureRetries, monitorRetryDelay
+	defer func() {
+		monitorInitialDelay, monitorCheckInterval, monitorPostRestartDelay = origInitial, origCheck, origPostRestart
+		monitorPreRestartWait, monitorRequestTimeout, monitorMaxCheckInterval = origPreRestart, origReqTimeout, origMaxCheck
+		monitorFailureRetries, monitorRetryDelay = origRetries, origRetryDelay
+	}()
+	monitorInitialDelay = 1 * time.Millisecond
+	monitorCheckInterval = 5 * time.Millisecond
+	monitorPostRestartDelay = 2 * time.Millisecond
+	monitorPreRestartWait = 1 * time.Millisecond
+	monitorRequestTimeout = 50 * time.Millisecond
+	monitorMaxCheckInterval = 20 * time.Millisecond
+	monitorFailureRetries = 2
+	monitorRetryDelay = 1 * time.Millisecond
+
+	var restartCount atomic.Int64
+	m := NewHealthMonitor(HealthMonitorConfig{
+		Address:   unreachableAddr,
+		APIPrefix: "",
+		UpHook:    config.WebHook{Command: "exit 0", Name: "up"},
+		DownHook:  config.WebHook{Command: "exit 0", Name: "down"},
+		Port:      0,
+		OnRestart: func(attempt int) {
+			restartCount.Add(1)
+		},
+	})
+
+	m.Start()
+	defer m.Stop()
+
+	waitForRestartCountAtLeast(t, &restartCount, 2, 2*time.Second)
+
+	total, inWindow := m.FlapStats(flapHistoryWindow)
+	observedRestarts := restartCount.Load()
+	if int64(total) < observedRestarts {
+		t.Fatalf("expected FlapStats total >= observed restarts %d, got %d", observedRestarts, total)
+	}
+	// Every flap just happened, so all of them must fall within the 24h window.
+	if inWindow != total {
+		t.Fatalf("expected FlapStats inWindow == total (all flaps are recent): inWindow=%d total=%d", inWindow, total)
+	}
+	if inWindow == 0 {
+		t.Fatalf("expected at least one flap recorded in the window, got 0")
+	}
+}
