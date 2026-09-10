@@ -338,6 +338,14 @@ dispatch ID. The auxiliary response must acknowledge that ID and report how many
 records/files it saved (zero is valid). Mitto removes the entry only after that terminal
 acknowledgement; failures and process crashes leave it available for retry.
 
+`conversationClosed` batches additionally take a **spool-first** shortcut: they fire right
+after a turn ends, when the shared ACP process is almost always still busy serving that
+turn's own RPCs. Rather than attempt an auxiliary session that would be shed immediately and
+then ride out a busy-window retry loop before spooling anyway, Mitto predicts the shed and
+writes straight to the same durable spool with zero RPC attempts. Recovery is identical
+(live-session flush plus the periodic sweep); this is an expected, planned deferral logged at
+INFO rather than an error.
+
 Prompt-mode processors use the `prompt` field (mutually exclusive with `text` and
 `command`). The prompt template supports all standard `@mitto:variable` placeholders.
 To access live conversation history, the auxiliary agent calls the
