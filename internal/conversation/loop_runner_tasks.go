@@ -447,6 +447,17 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 			} else if errors.Is(err, ErrSessionBusy) {
 				// Benign, expected outcome already owned by the busy/quiescence
 				// path — no self-heal needed, no error logging.
+			} else if errors.Is(err, ErrMCPInitGated) {
+				// Agent is still cold-starting; preserve the pending delta and
+				// retry on the normal quiescence cadence WITHOUT bumping the
+				// delivery-failure counter — this is not a real failure
+				// (mitto-tgx).
+				r.markTasksRefirePending(sessionID)
+				r.armTasksRebase(sessionID, loopStore)
+				if r.logger != nil {
+					r.logger.Debug("onTasks: firing deferred; shared process is MCP-init gated",
+						"session_id", sessionID)
+				}
 			} else {
 				// Durable delivery failure (e.g. an ACP handshake error) is
 				// deferrable, not terminal (mitto-c9kp). Self-heal identically
@@ -499,6 +510,14 @@ func tasksDeltaIsMaterial(delta *config.TasksDelta) bool {
 // the final error (nil on success) and whether every attempt was exhausted on
 // a transient error, for the retries_exhausted log marker.
 func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.TasksDelta, onAccepted func()) (err error, exhausted bool) {
+	// mitto-tgx: bail before attempting prompt preparation (which would
+	// otherwise fail against a cold-starting agent and burn the delivery-
+	// failure ceiling) when the shared process is gated on MCP init. Callers
+	// treat ErrMCPInitGated as a benign, non-counted defer — mirroring how
+	// ErrSessionBusy is already handled below.
+	if r.sessionMCPInitGated(sessionID) {
+		return ErrMCPInitGated, false
+	}
 	maxAttempts := 1 + len(tasksTransientRetryDelays)
 	var lastAttempt int
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -627,6 +646,24 @@ func (r *LoopRunner) isSessionBusy(sessionID string) bool {
 		return true
 	}
 	return r.sessionManager.IsWaitingForChildren(sessionID)
+}
+
+// sessionMCPInitGated reports whether sessionID's shared ACP process is
+// currently gated on MCP-server initialization (cold-start in progress or
+// timed out) — see BackgroundSession.IsMCPInitGated. Used by the onTasks fire
+// path and the runOnStart boot pulse (mitto-tgx) to defer dispatch against an
+// agent that is not yet usable instead of attempting prompt preparation and
+// failing. Fails open (false) when the session manager or session handle is
+// unavailable, matching isSessionBusy's fail-safe shape.
+func (r *LoopRunner) sessionMCPInitGated(sessionID string) bool {
+	if r.sessionManager == nil {
+		return false
+	}
+	bs := r.sessionManager.GetSession(sessionID)
+	if bs == nil {
+		return false
+	}
+	return bs.IsMCPInitGated()
 }
 
 // markTasksRefirePending sets the sticky per-session flag consumed by
@@ -782,6 +819,17 @@ func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopSt
 			} else if errors.Is(err, ErrSessionBusy) {
 				// Benign, expected outcome already owned by the busy/quiescence
 				// path — no self-heal needed, no error logging.
+			} else if errors.Is(err, ErrMCPInitGated) {
+				// Agent is still cold-starting; preserve the pending delta and
+				// retry on the normal quiescence cadence WITHOUT bumping the
+				// delivery-failure counter — this is not a real failure
+				// (mitto-tgx).
+				r.markTasksRefirePending(sessionID)
+				r.armTasksRebase(sessionID, loopStore)
+				if r.logger != nil {
+					r.logger.Debug("onTasks: settled firing deferred; shared process is MCP-init gated",
+						"session_id", sessionID)
+				}
 			} else {
 				// Durable delivery failure (e.g. an ACP handshake error) is
 				// deferrable, not terminal (mitto-c9kp). Self-heal identically
@@ -920,6 +968,14 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 			r.markTasksRefirePending(sessionID)
 			r.armTasksRebaseAfter(sessionID, loopStore, r.eventCooldownRemaining(loop))
 			return
+		case tasksRefireMCPInitGated:
+			// Agent is still cold-starting: preserve the pre-run baseline and
+			// sticky pending marker, then retry on the normal quiescence
+			// cadence WITHOUT bumping the delivery-failure counter — this is
+			// not a real failure (mitto-tgx).
+			r.markTasksRefirePending(sessionID)
+			r.armTasksRebase(sessionID, loopStore)
+			return
 		case tasksRefireNotWarranted:
 			// No pending problem to preserve — clear any stale counter and
 			// fall through to the plain baseline rebase below.
@@ -1031,6 +1087,12 @@ const (
 	// tasksRefireCooldownDeferred means a material delta was blocked only by
 	// the temporary cooldown. The caller MUST preserve it and retry at expiry.
 	tasksRefireCooldownDeferred
+	// tasksRefireMCPInitGated means a fire was warranted but skipped because
+	// the shared process is currently gated on MCP-server initialization
+	// (mitto-tgx). Like tasksRefireCooldownDeferred, the caller MUST preserve
+	// the delta and retry — but WITHOUT counting this against
+	// maxTasksRefireDeliveryFailures, since the agent simply is not warm yet.
+	tasksRefireMCPInitGated
 )
 
 // maybeFireAccumulatedDelta wires evaluateAccumulatedDelta to the firing side
@@ -1060,6 +1122,13 @@ func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, meta session.Me
 		if errors.Is(err, ErrPromptResolveFailed) {
 			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 			return tasksRefireDeliveryFailed
+		}
+		if errors.Is(err, ErrMCPInitGated) {
+			if r.logger != nil {
+				r.logger.Debug("onTasks: re-fire deferred; shared process is MCP-init gated",
+					"session_id", sessionID)
+			}
+			return tasksRefireMCPInitGated
 		}
 		if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
 			if exhausted {

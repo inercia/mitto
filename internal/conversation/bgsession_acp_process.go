@@ -465,6 +465,43 @@ type mcpInitProgressProvider interface {
 	MCPInitInProgress() bool
 }
 
+// mcpInitTimedOutProvider is the sibling optional interface to
+// mcpInitProgressProvider, exposing the "agent explicitly reported its
+// internal MCP-init wait timed out" signal. Kept separate (rather than
+// folding into mcpInitProgressProvider) so existing SharedProcess fakes that
+// only implement MCPInitInProgress are unaffected.
+type mcpInitTimedOutProvider interface {
+	MCPInitTimedOut() bool
+}
+
+// IsMCPInitGated reports whether this session's shared ACP process is
+// currently gated on MCP-server initialization — either the agent explicitly
+// reported its internal MCP-init wait timed out, or a cold-start handshake is
+// actively in progress and has never completed. Mirrors
+// acpproc.processMCPInitGated (mitto-337) so callers outside internal/acpproc
+// — notably LoopRunner's onTasks fire path and boot-pulse dispatch
+// (mitto-tgx) — can defer work against an agent that is not yet usable
+// instead of attempting it and failing. Fails open (returns false) when there
+// is no shared process or it does not expose the optional MCP-init signals,
+// so a healthy loop is never wedged by an unrelated process type.
+func (bs *BackgroundSession) IsMCPInitGated() bool {
+	if bs == nil {
+		return false
+	}
+	sp := bs.sharedProcess
+	if sp == nil {
+		return false
+	}
+	var timedOut, inProgress bool
+	if p, ok := sp.(mcpInitTimedOutProvider); ok {
+		timedOut = p.MCPInitTimedOut()
+	}
+	if p, ok := sp.(mcpInitProgressProvider); ok {
+		inProgress = p.MCPInitInProgress()
+	}
+	return timedOut || (inProgress && !sp.MCPInitDone())
+}
+
 // startPromptInactivityWatchdog launches a background goroutine that watches for a
 // live-but-unresponsive agent during a prompt. Unlike the process-death and
 // connection-EOF monitors, this catches the case where the agent stays alive with an

@@ -215,6 +215,14 @@ var (
 	// non-error outcome: callers log it at Debug and do not count it as a
 	// delivery failure.
 	ErrLoopDispatchCoalesced = errors.New("loop dispatch coalesced: another trigger is already in flight")
+	// ErrMCPInitGated signals that the fire was skipped because the target
+	// session's shared ACP process is currently gated on MCP-server
+	// initialization (cold-start in progress or timed out) — see
+	// BackgroundSession.IsMCPInitGated. Like ErrSessionBusy, this is an
+	// expected, non-error outcome: callers defer the pending work and retry
+	// once the agent warms up, without counting it as a delivery failure
+	// (mitto-tgx).
+	ErrMCPInitGated = errors.New("fire deferred: shared process is gated on MCP initialization")
 )
 
 // transientRaceState tracks a session's consecutive ErrPromptTransientCompileRace
@@ -1521,6 +1529,23 @@ func (r *LoopRunner) fireOnStartPulses() {
 		}
 		r.runOnStartFiredMu.Unlock()
 		if alreadyFired {
+			continue
+		}
+
+		// mitto-tgx: defer the pulse without consuming it or touching the
+		// failure classifier when the shared process is still cold-starting
+		// (MCP init in progress or timed out) — attempting dispatch now would
+		// only fail prompt preparation. Roll back the once-per-process guard
+		// so a later tick of this per-tick loop (mitto-wyob) retries once the
+		// agent warms up, exactly like the isContention rollback below.
+		if r.sessionMCPInitGated(meta.SessionID) {
+			r.runOnStartFiredMu.Lock()
+			delete(r.runOnStartFired, meta.SessionID)
+			r.runOnStartFiredMu.Unlock()
+			if r.logger != nil {
+				r.logger.Debug("Boot pulse deferred, shared process is MCP-init gated",
+					"session_id", meta.SessionID)
+			}
 			continue
 		}
 
