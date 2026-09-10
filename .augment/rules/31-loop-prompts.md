@@ -171,6 +171,14 @@ If found and still idle, RE-PROMPT it instead of spawning a duplicate.
 
 ## Gate Testing Before External Actions
 
+**GitHub feedback dedup (mitto-tbs):** the own-PR babysitters use
+`github/shared/pr-feedback-checkpoint` (comment ID + edit timestamp, actual
+outcome, prior objections), not child `updatedAt` or thread creation time.
+New author replies/general PR comments must reach an idle existing child even
+when no unresolved review threads exist. Forward the shared author-aware policy,
+verified identity, full discussion, checkpoint and parent's interaction mode;
+a one-off child of a silent loop must not assume the user is present.
+
 When a loop prompt spawns a fixer for CI failures, instruct it to run the full local gate suite BEFORE pushing:
 `make fmt-check` → `make lint` → `make test` → `make build-mock-acp && make test-integration`. Full local validation breaks the incremental fix-one-reveal-next cycle that wastes CI runs.
 
@@ -218,6 +226,24 @@ When an `onTasks` loop is busy (child driver still running), fs-watcher fires do
 - Anti-flap window default: `config.DefaultRunOnStartAntiFlapSeconds = 60` seconds (not minutes). Only suppresses if the loop actually ran within that window.
 - Historical root cause of `prompt "X" not found` at boot: prompts-cache warmed before the fragment registry — fixed by `mitto-g61` / commit `2fd8e7b3` (`internal/web/server.go` now calls `prompts.SetCurrentFragments(reg)` BEFORE starting the prompts watcher).
 - Diagnosis path: grep `Firing loop boot pulse`, `Boot pulse delivery failed`, `Re-armed runOnStart boot pulse after delivery failure`, and the eventual auto-stop record by `session_id`.
+
+## Synchronous `PromptWithMeta` Failure MUST Route Through `handleDeliveryFailure`
+
+`LoopRunner.PromptWithMeta` can fail SYNCHRONOUSLY before `deliverPrompt`'s async `OnComplete` callback ever runs (canonical trigger: a permanently-unready model pin returning `"the conversation model is still initializing; please retry"` from the pre-dispatch model-readiness precheck; also queue-full pre-check, cancelled session context, etc). Every periodic trigger path in `internal/conversation/loop_runner*.go` MUST route those synchronous errors through `r.handleDeliveryFailure(...)` after Debug-returning on the two known-benign sentinels `ErrSessionBusy` and `ErrLoopDispatchCoalesced` — a bare `logger.Warn/Error(...) + return` final branch is the mitto-efw anti-pattern and lets the loop re-fire forever with no auto-pause (`deliveryFailures` never increments, `MaxLoopDeliveryFailures=8` never trips, `StoppedReasonDeliveryFailures` is never recorded).
+
+Wire (`mitto-efw`, commit `c008137b`) — three periodic-trigger call sites, each passing the trigger-appropriate `resetTimer`/`forced`/`firedBy`:
+
+- `checkSession` (scheduled path) → `handleDeliveryFailure(..., true, false, session.TriggerSchedule, bs.acpContextTurnsSinceReset())`
+- `fireOnCompletion` (onCompletion re-arm) → `handleDeliveryFailure(..., true, true, session.TriggerOnCompletion, contextTurns)`
+- `fireOnChild` (onChild fire, `default` err branch) → `handleDeliveryFailure(..., true, true, session.TriggerOnChild, contextTurns)`
+
+`contextTurns` is pulled from `sessionManager.GetSession(sessionID).acpContextTurnsSinceReset()` when the `BackgroundSession` is live, else `contextTurnsUnknown` — required so the oversized-context corroboration classifier (mitto-5se) works on the synchronous branch too. Every classifier already inside `handleDeliveryFailure` (upstream-provider-unavailable mitto-bfu, oversized-context mitto-5se, auth-required mitto-6vs, agent-internal-deadline/query-closed mitto-hjx) auto-covers all three paths — no per-trigger fan-out needed for a new classifier.
+
+Intentionally excluded (do NOT extend this pattern):
+- `onTasks` — has its own distinct BOUNDED self-heal counter, not the trigger-agnostic `deliveryFailures` ceiling.
+- Manual `Run Now` (`mitto_conversation_run_loop_now`) and Slack-bridge triggers — not periodic, not part of a storm; a sync failure is user-visible and does not warrant auto-pause.
+
+Regression pin: `TestLoopRunner_CheckSession_SynchronousGenericFailure_MustAutoPauseAtCeiling` (`internal/conversation/loop_runner_test.go`). Distinct from the mitto-uex catalog-drift storm (which lives INSIDE `bgsession_callbacks.go` `recoverStartupConstraintAfterRestart`, retrying `applyConfigConstraints` — not `PromptWithMeta`); a permanently-gone pinned model can trip BOTH storms and needs BOTH fixes to fully quiet.
 
 ## Sending Prompts Inside a Running Loop Iteration
 
@@ -298,6 +324,50 @@ processors can consume them without importing `internal/cel` directly
 `internal/config/cel_shim.go`, or the build breaks with an `undefined` error
 from `internal/processors`. Do NOT redefine the struct in the shim — that
 creates two incompatible types.
+
+## Idle-Poll Guard (mitto-d6h)
+
+`mitto_conversation_wait` has NO per-turn call budget server-side —
+`internal/mcpserver/tools_wait.go` `handleBeadsIssuesReachedState` blocks
+each call independently to its own timeout/predicate with no cross-call
+dedup. A loop-supervisor prompt whose empty-pass yield paragraph only says
+"end the turn" is not enough: a deviating agent will interpret "sets empty
+but deferred beads exist" as license to `mitto_conversation_wait` on the
+deferred beads to become eligible, spinning hundreds of waits in a single
+turn (observed 203 waits between 09:35 and 13:26 in one conversation before
+the fix; context compaction did not end polling).
+
+**Rule**: any loop-supervisor prompt with a "nothing eligible → yield"
+branch MUST carry an explicit paragraph forbidding BOTH:
+
+1. `mitto_conversation_wait` calls to poll for eligibility, and
+2. re-running its own enumeration step within the same turn.
+
+Name the sanctioned yield mechanism (end the turn; next `onTasks` re-fire
+produces a fresh view) side-by-side with the anti-poll guard. Pair it with
+the existing `mitto_conversation_update(loop_enabled: false)` guard (do not
+disable the loop just because sets were empty) so both the disable-vector
+AND the poll-vector are closed. Any legitimate bead-state wait (e.g.
+`beads_issues_reached_state` in §B/§C) MUST make explicit that it only
+blocks on beads THIS pass already dispatched — never as a discovery
+mechanism for future eligibility.
+
+Canonical fix: `config/prompts/builtin/beads-issues/loop-processing.prompt.yaml`
+Step 6, pinned by `TestBeadsLoopPrompts_Defects_mittoD6h_NoIdlePollGuard`
+(`config/beads_loop_prompts_defects_test.go`). The test slices Step 6 by
+its `## Step 6 …` and `## Step 7` headings and asserts two literal
+substrings; both phrases MUST live on a single unbroken YAML source line
+because go-yaml folded-scalar wrapping is invisible to `strings.Contains`.
+General lesson for prompt-content regression tests: keep required literal
+phrases short enough to never wrap, use YAML `|` literal-block scalar to
+disable folding, or assert on a whitespace-normalized render.
+
+Deliberately not done: no server-side per-turn `mitto_conversation_wait`
+budget was added — the guard lives in prompt contract only, because the
+failure mode is exclusively supervisor-loop-shaped and a global runtime
+budget risks breaking legitimate long child waits. Escalate to a
+tool-level budget only if the same pattern reproduces in a non-loop
+prompt.
 
 ## Schema-Extension Pattern for New Loop Fields
 

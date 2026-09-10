@@ -140,6 +140,29 @@ async function stubNativeApp(page) {
 
 Same rule applies when patching backend config the frontend reads once via `fetchConfig()` on mount (e.g. `ui.mac.open_in` targets): PATCH it in `beforeEach` **before** the first `navigateAndWait`, otherwise the mount reads stale defaults.
 
+## On-Demand Performance Profiling
+
+When triaging a "UI feels sluggish / device gets hot" report, prefer a small Playwright `page.evaluate()` sweep over a full DevTools performance capture — it produces reproducible numeric evidence in seconds:
+
+```javascript
+const stats = await page.evaluate(() => ({
+  activeAnimations: document.getAnimations().length,
+  infiniteAnimations: document.getAnimations().filter((a) => {
+    const t = a.effect && a.effect.getTiming();
+    return t && (t.iterations === Infinity || t.iterations > 1e6);
+  }).length,
+  longTasks: performance.getEntriesByType("longtask").length,
+}));
+```
+
+`document.getAnimations()` (Web Animations API) enumerates BOTH CSS-declared animations/transitions AND JS-driven ones — including transitions mid-flight. Filter by `iterations === Infinity || iterations > 1e6` to isolate the ones that keep the compositor pinned. On a healthy view this is `0` or a small constant (spinner, cursor blink).
+
+**What this rules IN**: infinite CSS animations firing per frame, backdrop-filter spam, runaway timers.
+
+**What this does NOT measure**: network-driven amplification (WebSocket reconnects triggering full event replays on a large session). Those look small on loopback and only surface at scale over a slow link — see `.augment/rules/23-web-frontend-mobile.md` § Reconnect Replay Amplification and beads memory `mobile-safari-tunnel-replay-amplification`.
+
+Keep such scripts as **on-demand diagnostics** (`tests/tools/` or `/tmp`); do NOT wire them into the CI suite as assertions — the numbers depend on system load. See beads memory `playwright-getanimations-ondemand-profiling` for the full pattern.
+
 ## Browser-Specific Issues
 
 | Issue | Browser | Cause |

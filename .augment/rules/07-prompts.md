@@ -162,6 +162,8 @@ Shared body text can be factored into **fragments** invoked from any `.prompt.ya
 
 `MergePrompts()` filters disabled; `MergePromptsKeepDisabled()` keeps `enabled:false` for dialogs. PromptsCache auto-refreshes `MITTO_DIR/prompts/` on changes.
 
+**Builtin prompt names are globally unique across the whole merge**: two builtins declaring the same `name:` silently override each other regardless of their subdirectory under `config/prompts/builtin/` — the `menus:` filter runs AFTER the merge collapses the name, so a `beadsIssues`-only newcomer colliding with a `code`-menu incumbent is NOT safe just because the menu lists are disjoint (`resolvePromptByName` picks whichever survives the merge). Before adding a new builtin, grep `config/prompts/builtin/**/*.prompt.yaml` for the target `name:`; on collision, rename either side (canonical precedent: `code/explain.prompt.yaml` was renamed from `Explain` to `Explain code` when `beads-issues/explain.prompt.yaml` was introduced). Pin any new menu-scoped builtin with a focused test in `internal/prompts/` asserting the exact `name:`, `group:`, `menus:`, parameter set, and required body sections (shape: `internal/prompts/explain_prompt_test.go`).
+
 ## API & Toggle
 
 `GET /api/workspace-prompts?dir=...&session_id=...` (fully merged), `include_global=true` (disabled too), `PUT /api/workspace-prompts/toggle-enabled` (toggle state). Disable: set `enabled: false` in `.mitto/prompts/*.prompt.yaml` or `.mittorc`. Re-enable: remove the `enabled: false` entry.

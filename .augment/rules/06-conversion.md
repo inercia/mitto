@@ -62,6 +62,21 @@ func ProcessHTML(html string) string {
 
 **Edge cases handled:** Trailing punctuation stripped, balanced parentheses preserved, URLs in code blocks NOT linked, partial URLs NOT linked.
 
+### `:line[:col]` suffix handling (mitto-3u7)
+
+Paths with a trailing `:<line>` or `:<line>:<col>` suffix are supported across all three link paths (`processAnchorHrefs`, `processInlineCodeTags`, `processPath`/`createLink`). The pattern is:
+
+1. `splitLineSuffix(path)` (regex `^(.+):([0-9]+)(?::[0-9]+)?$`) peels the suffix off before validation.
+2. `validatePath` / `os.Stat` runs against the **stripped base path** — `statCache` is also keyed on the stripped form so `file.md:10` and `file.md:42` share one entry.
+3. `buildLinkURL(display, real, line)` appends `&line=N` to the viewer URL; the viewer already honors `?line=`.
+4. `createLink(displayPath, hrefPath, ...)` keeps `displayPath` (with suffix) distinct from `hrefPath` (stripped) so link text still shows the location while the href is a real file.
+
+**Invariants** — do NOT relax these when extending trailing-metadata handling:
+
+- The suffix regex must be **purely digits anchored at end-of-string**, so Windows drive letters (`C:\...`) and URL scheme colons (`http://`) are never matched. URL scheme collisions are additionally excluded upstream by the `://` check.
+- NEVER pass the suffixed string to `validatePath` — `os.Stat` will fail and the link silently drops.
+- `displayPath` and `hrefPath` in `createLink` are DISTINCT parameters; collapsing them re-introduces the `os.Stat` failure and drops all `:line` links.
+
 ## Regex Patterns
 
 ### HTML Processing with Skip Regions

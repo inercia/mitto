@@ -62,6 +62,10 @@ Single bordered container: textarea + bottom toolbar (left/center/right). **No e
 - **Context %**: Primary from ACP `context_usage`, fallback: `input_tokens ÷ getContextWindowSize()`
 - **Shortcuts**: `Enter`=send · `Shift+Enter`=newline · `Cmd/Ctrl+Enter`=queue
 
+### Conversation Column Width (960px cap)
+
+The message stream and every ChatInput wrapper (textarea container, action-buttons carousel, banners, loop bar, UI-prompt panel, scroll-collapsed button) share a **single width cap** of `max-w-[60rem] mx-auto` (960px). This is the visual "sweet spot" between the too-narrow `max-w-4xl` (896px) and the too-wide `max-w-5xl` (1024px), and MUST stay in sync across `MessageList.js` (1 wrapper) and `ChatInput.js` (8 wrappers) — otherwise the composer and stream visibly drift apart on large screens. Any new full-width wrapper added to either file must use the same `max-w-[60rem] mx-auto` pair. `max-w-[60rem]` is a Tailwind **arbitrary value** and requires a CSS regeneration to be emitted into the precompiled `web/static/tailwind.css` (see the `tailwind-precompiled-jit-class-gotcha` memory).
+
 ### Named-Prompt Sends
 
 Menu prompt selections (prompts menu, Cmd+/ slash picker) call `onSend("", [], [], { promptName })` — **never the full prompt body**. All menus go through the shared helper `web/static/hooks/useConversationSeeding.js` (`seedConversationWithPrompt` for existing conversations, `startConversationWithPrompt` for atomic create+seed). Named prompts render in the message list as `NamedPromptPill` (`[data-testid="named-prompt-pill"]`); the queue dropdown shows `msg.prompt_name || msg.title`. The backend resolves name → text at dispatch in the target conversation's context.

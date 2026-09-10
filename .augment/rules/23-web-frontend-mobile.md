@@ -131,6 +131,25 @@ case "agent_thought":
 | `setQueueDropdownHeight(height)` | Persist height (clamped to 100-500px)             |
 | `getQueueHeightConstraints()`    | Get min/max/default constraints                   |
 
+## Reconnect Replay Amplification (Large-Session Mobile Heat)
+
+Mobile Safari + cloudflared tunnel + a session with a large event history (~1000+) can produce sustained CPU and palpable device heat that is NOT attributable to any single component — it is an emergent architectural pattern:
+
+1. iOS Safari drops WebSockets aggressively on backgrounding / network switches; tunnels raise the drop rate above native-LAN because mobile radios treat the extra hop as unreliable.
+2. Every reconnect requests events since `lastKnownSeqRef`; on first-load or after a stale-recovery cooldown that is the ENTIRE session history — hundreds to thousands of WS dispatches + re-renders per replay.
+3. Mobile CPUs are small and thermal-capped, so per-replay work that is invisible on desktop (~50–100 ms) accumulates into throttling and heat over minutes.
+
+Diagnostic fingerprint: heat scales with `(reconnects/min × events-in-session)`. If either factor is small (short session OR stable connection) the heat is nil. Ruling this pattern in/out does NOT require chasing individual components — a Playwright loopback profile of the affected view showing bounded animations and no runaway timers is EXPECTED and NOT contradictory to the user report.
+
+Mitigation options (pick per severity; none is a full fix alone):
+
+- Extend `APP_ACTIVATE_RESYNC_DEBOUNCE_MS` into a general per-session reconnect throttle so back-to-back drops share ONE replay.
+- Auto-enable the OPT-IN `.reduce-animations` class (`web/static/styles.css` ~L2485–2575) for mobile UAs.
+- Serve replays as a compact snapshot (single delta) once the delta exceeds M events — backend change in `internal/web/session_ws.go`.
+- Cap `lastKnownSeqRef` recovery to the last K messages and lazy-load the rest on scroll.
+
+See beads memory `mobile-safari-tunnel-replay-amplification` for the full diagnostic playbook.
+
 ## Mobile Browser Debugging
 
 ### iOS Safari Remote Debugging

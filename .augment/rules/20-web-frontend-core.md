@@ -98,6 +98,18 @@ Use `looksLikeFilePath()` to detect paths, build viewer URL with `workspace UUID
 onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openViewer(viewerUrl); }}
 ```
 
+### Global click-handler safety-net catch-all (mitto-3u7)
+
+`web/static/utils/globalHandlers.js`'s document-level click handler terminates in a **FINAL catch-all branch** after every specific route (`/viewer.html?`, `file://`, `/api/files?`, `http(s)://`). Any anchor whose href is neither an in-page fragment (`#…`) nor a non-navigational scheme (`mailto:`, `tel:`, `javascript:`, `data:`, or any `scheme://` URL) is unconditionally `preventDefault()`+`stopPropagation()`'d and best-effort routed through the internal viewer via `buildWorkspaceViewerURL(href)` + `openViewerUrl(...)`.
+
+**Why**: under the macOS WKWebView, an unhandled relative href falls through to the OS-level top navigation, 404s, and blows the user out of the app's main WebView (no back button in a WKWebView — requires relaunch). The catch-all defends against agent-generated or stale-recording links the backend linkifier didn't recognize.
+
+**Invariants** for any future addition to `globalHandlers.js` click routing:
+
+- The catch-all MUST remain the **LAST** branch. Adding a new specific branch below it means unhandled links resume falling through to the browser and the WKWebView bailout regresses.
+- Never let the default action run for a relative link, even when `buildWorkspaceViewerURL` returns falsy — `preventDefault` happens BEFORE the viewer-URL nullability check.
+- Scheme detection uses lowercased `hrefLower.includes("://")` + explicit `startsWith("mailto:"|"tel:"|"javascript:"|"data:")`. Do NOT swap the `://` check for a `URL` constructor — relative hrefs would resolve against `document.baseURI` and become absolute, defeating the guard.
+
 ## Context Menu Positioning: useLayoutEffect
 
 Use `useLayoutEffect` (runs BEFORE paint) to clamp position, not `useEffect` or `useMemo` (both measure too late/early). Key on `items.length` to re-run on content changes. Clamp with `Math.max(margin, calculated)` and add `max-h-[95vh] overflow-y-auto` for scrolling.
