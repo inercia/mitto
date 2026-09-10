@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -836,6 +837,82 @@ prompt: hi
 				t.Fatalf("ParsePromptFile: err = %v, want a successful migrate+bind", err)
 			}
 			tc.want(t, prompt)
+		})
+	}
+}
+
+// TestParsePromptFile_PreferredModelsBareStringShorthand pins mitto-ebh: a
+// bare-string preferredModels value (either the whole field, or individual
+// list items) used to make the whole prompt file fail to parse with "cannot
+// unmarshal !!str `Reasoning` into prompts.PromptPreferredModel". It must
+// now be tolerated as shorthand for {modelTag: <value>}.
+func TestParsePromptFile_PreferredModelsBareStringShorthand(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []PromptPreferredModel
+	}{
+		{
+			name: "scalar shorthand for the whole field",
+			body: `name: "x"
+preferredModels: Reasoning
+prompt: hi
+`,
+			want: []PromptPreferredModel{{ModelTag: "Reasoning"}},
+		},
+		{
+			name: "list of bare strings",
+			body: `name: "x"
+preferredModels: [Reasoning, Coding]
+prompt: hi
+`,
+			want: []PromptPreferredModel{{ModelTag: "Reasoning"}, {ModelTag: "Coding"}},
+		},
+		{
+			name: "mixed list of bare strings and structured entries",
+			body: `name: "x"
+preferredModels:
+  - Reasoning
+  - modelName: "Claude Sonnet 4"
+prompt: hi
+`,
+			want: []PromptPreferredModel{{ModelTag: "Reasoning"}, {ModelName: "Claude Sonnet 4"}},
+		},
+		{
+			name: "already-structured list is left untouched",
+			body: `name: "x"
+preferredModels:
+  - modelTag: Reasoning
+  - modelName: "Claude Sonnet 4"
+prompt: hi
+`,
+			want: []PromptPreferredModel{{ModelTag: "Reasoning"}, {ModelName: "Claude Sonnet 4"}},
+		},
+		{
+			name: "absent field stays nil",
+			body: `name: "x"
+prompt: hi
+`,
+			want: nil,
+		},
+		{
+			name: "explicit null stays nil (no spurious empty entry)",
+			body: `name: "x"
+preferredModels: null
+prompt: hi
+`,
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, err := ParsePromptFile("bare-preferred-models.prompt.yaml", []byte(tc.body), time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile: err = %v, want a successful parse (bare-string preferredModels must be tolerated)", err)
+			}
+			if !reflect.DeepEqual(prompt.PreferredModels, tc.want) {
+				t.Errorf("PreferredModels = %+v, want %+v", prompt.PreferredModels, tc.want)
+			}
 		})
 	}
 }

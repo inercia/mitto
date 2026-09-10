@@ -274,6 +274,19 @@ Backend calls `selectPreferredModel()` to pick the best matching active model. I
 
 Old glob-string form (`- "*sonnet*"`) is **removed** — hard cutover, no fallback.
 
+**Bare-string shorthand (mitto-ebh)**: unlike the removed glob form above, a plain
+scalar tag name IS tolerated — it's shorthand for `{modelTag: <value>}`, applied via
+an in-memory `*yaml.Node` normalization pass (`normalizePreferredModelsShorthand`,
+`internal/prompts/prompts.go`) run in `parsePromptFileData` before `doc.Decode`,
+mirroring the `migrateLegacyTargetReuseKeys` / `migrateLegacyPromptKeyAliases`
+precedent so this shape mismatch never evicts the whole prompt (mitto-a4yg). Accepted
+both as the whole field (`preferredModels: Reasoning`) and as individual list items
+(`preferredModels: [Reasoning, Coding]`, freely mixed with structured entries). A bare
+string always resolves as `modelTag`, never `modelName`; an unresolvable tag is
+skipped by `SelectPreferredModel` rather than failing to parse. Unlike its sibling
+migrations this does not log a WARN — it's a documented, first-class shorthand, not a
+deprecated form.
+
 ## Parameter Value Caching (`cache` block)
 
 An optional `cache` sub-block on any `PromptParameter` enables per-conversation caching:

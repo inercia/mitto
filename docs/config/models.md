@@ -161,6 +161,25 @@ preferredModels:
 - If the current model **already satisfies** the resolved profile, it is kept — no
   needless model switch. Otherwise the preference is applied.
 
+### Bare-string shorthand
+
+A `preferredModels:` entry (or the whole field) may also be a **bare string**, which
+is shorthand for `{modelTag: <value>}`:
+
+```yaml
+preferredModels: Reasoning # shorthand for: preferredModels: [{modelTag: Reasoning}]
+
+preferredModels: [Reasoning, Coding] # each bare string -> {modelTag: <value>}
+
+preferredModels: # shorthand can be mixed with structured entries
+  - Reasoning
+  - modelName: Claude Sonnet 4
+```
+
+A bare string always resolves as a `modelTag`, never a `modelName`. A value that is
+not a real tag simply resolves to nothing and is skipped, falling through to the next
+preference (or the session baseline) — it never fails to parse.
+
 ## Priority: list order = priority
 
 Both halves of resolution — the `preferredModels:` list on a prompt _and_ the `models:`

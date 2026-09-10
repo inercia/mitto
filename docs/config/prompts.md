@@ -1345,9 +1345,14 @@ baseline model is not changed, no `session_change` event is recorded, and the
 baseline is restored after the prompt completes. Manual model selection in the
 UI, by contrast, updates the baseline persistently.
 
+A bare string is also accepted as shorthand for `{modelTag: <value>}`, either for
+the whole field or for individual list entries (`preferredModels: Reasoning`,
+`preferredModels: [Reasoning, Coding]`); mixed lists of shorthand and structured
+entries are fine too.
+
 See [Models — Referenced by prompts (`preferredModels`)](models.md#referenced-by-prompts-preferredmodels)
-for the profile schema, tag-resolution semantics, and priority-by-list-order
-rules.
+for the profile schema, tag-resolution semantics, bare-string shorthand, and
+priority-by-list-order rules.
 
 ## Prompt Arguments
 

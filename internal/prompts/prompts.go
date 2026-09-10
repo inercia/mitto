@@ -1090,6 +1090,83 @@ func renameAliasKeysInMapping(path, pathPrefix string, mapping *yaml.Node, level
 	return changed
 }
 
+// normalizePreferredModelsShorthand rewrites the top-level preferredModels
+// node, in place, so a bare-string shorthand expands into the structured
+// PromptPreferredModel form ({modelTag: <value>}) before doc.Decode runs.
+// Two shapes are accepted:
+//
+//	preferredModels: Reasoning            -> [{modelTag: Reasoning}]
+//	preferredModels: [Reasoning, Coding]  -> [{modelTag: Reasoning}, {modelTag: Coding}]
+//
+// A bare string is always treated as a modelTag (see docs/config/models.md §
+// "Referenced by prompts"): SelectPreferredModel gracefully skips a tag that
+// resolves to no available profile and falls through to the next preference
+// (or the session baseline), so a value that turns out not to be a real tag
+// degrades instead of failing to parse. Already-structured mapping entries,
+// and an explicit/implicit null value, are left untouched — yaml.v3 already
+// unmarshals a null scalar into a nil slice without error. Mirrors the
+// migrateLegacyTargetReuseKeys / migrateLegacyPromptKeyAliases precedent
+// immediately above: an in-memory *yaml.Node rewrite run in
+// parsePromptFileData BEFORE doc.Decode, so this scalar-vs-slice /
+// scalar-vs-mapping shape mismatch never evicts the whole prompt file from
+// the registry (mitto-a4yg precedent; reported by mitto-ebh). Unlike its
+// siblings this is a documented, first-class accepted shorthand rather than
+// a deprecated legacy form, so it does not log a WARN. Returns whether
+// anything was rewritten.
+func normalizePreferredModelsShorthand(doc *yaml.Node) bool {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return false
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		k, v := root.Content[i], root.Content[i+1]
+		if k.Kind != yaml.ScalarNode || k.Value != "preferredModels" {
+			continue
+		}
+		switch v.Kind {
+		case yaml.ScalarNode:
+			if v.Tag == "!!null" {
+				return false
+			}
+			root.Content[i+1] = &yaml.Node{
+				Kind:    yaml.SequenceNode,
+				Tag:     "!!seq",
+				Content: []*yaml.Node{modelTagShorthandNode(v.Value)},
+			}
+			return true
+		case yaml.SequenceNode:
+			changed := false
+			for j, item := range v.Content {
+				if item.Kind == yaml.ScalarNode && item.Tag != "!!null" {
+					v.Content[j] = modelTagShorthandNode(item.Value)
+					changed = true
+				}
+			}
+			return changed
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// modelTagShorthandNode builds a {modelTag: <value>} mapping node used by
+// normalizePreferredModelsShorthand to expand a bare-string preferredModels
+// entry into the structured PromptPreferredModel shape.
+func modelTagShorthandNode(value string) *yaml.Node {
+	return &yaml.Node{
+		Kind: yaml.MappingNode,
+		Tag:  "!!map",
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "modelTag"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+		},
+	}
+}
+
 // promptFileKnownKeys enumerates the keys valid directly under a prompt
 // file's document root (top-level frontmatter), mirroring PromptFile's yaml
 // tags. Used by collectUnknownPromptKeys (mitto-yo8o) to flag typo'd or
@@ -1516,6 +1593,7 @@ func parsePromptFileData(path string, data []byte, modTime time.Time, fragments 
 	}
 	migrateLegacyTargetReuseKeys(path, &doc)
 	migrateLegacyPromptKeyAliases(path, &doc)
+	normalizePreferredModelsShorthand(&doc)
 
 	// Warn (non-fatal) on typo'd or misplaced top-level / target.* keys
 	// (mitto-yo8o). Runs after the legacy target.reuse* migration above so
