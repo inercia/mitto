@@ -128,6 +128,13 @@ func (h *Handlers) HandleSessionFlushRoute(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// HandleSessionRetitleRoute handles POST /api/sessions/{id}/retitle.
+func (h *Handlers) HandleSessionRetitleRoute(w http.ResponseWriter, r *http.Request) {
+	if id, ok := sessionIDFromPath(w, r); ok {
+		h.HandleSessionRetitle(w, r, id)
+	}
+}
+
 // HandleSessionUIPromptAcknowledgeRoute handles POST /api/sessions/{id}/ui-prompt/acknowledge.
 func (h *Handlers) HandleSessionUIPromptAcknowledgeRoute(w http.ResponseWriter, r *http.Request) {
 	if id, ok := sessionIDFromPath(w, r); ok {

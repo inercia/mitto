@@ -18,6 +18,15 @@ var GenerateTitlePromptTemplate string
 //go:embed prompts/generate_queued_message_title.txt
 var GenerateQueuedMessageTitlePromptTemplate string
 
+// GenerateTitleFromContextPromptTemplate is used to (re)generate a short
+// title for a conversation from an extended, multi-turn context excerpt
+// (mitto-yv2) rather than only the initial message — see
+// conversation.BuildTitleContext. Use with fmt.Sprintf, passing the composed
+// context text.
+//
+//go:embed prompts/generate_title_from_context.txt
+var GenerateTitleFromContextPromptTemplate string
+
 // ImprovePromptTemplate is used to enhance a user's prompt to make it
 // clearer, more specific, and more effective. Use with fmt.Sprintf,
 // passing the original user prompt.

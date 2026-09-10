@@ -205,6 +205,7 @@ export function SessionList({
   onDelete,
   onArchive,
   onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
+  onAutoRename, // Called with (session) to force title regeneration from extended context
   onClose,
   workspaces,
   theme,
@@ -1033,6 +1034,7 @@ export function SessionList({
         onDelete=${onDelete}
         onArchive=${onArchive}
         onSetColor=${onSetColor}
+        onAutoRename=${onAutoRename}
         workspaceColor=${workspace?.color || null}
         workspaceCode=${workspace?.code || null}
         workspaceName=${workspace?.name || null}

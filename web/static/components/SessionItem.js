@@ -136,6 +136,7 @@ export function SessionItem({
   onDelete,
   onArchive,
   onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
+  onAutoRename, // Called with (session) to force title regeneration from extended context
   workspaceColor = null,
   workspaceCode = null,
   workspaceName = null,
@@ -417,6 +418,7 @@ export function SessionItem({
     onFetchConversationPrompts,
     onSendPromptToConversation,
     onSetColor,
+    onAutoRename,
   });
 
   // Handle click - only select if not swiping/revealed

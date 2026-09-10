@@ -66,6 +66,7 @@ export function createSessionsResource(config) {
       }),
 
     flush: (id, opts) => call("POST", `/api/sessions/${enc(id)}/flush`, opts),
+    retitle: (id, opts) => call("POST", `/api/sessions/${enc(id)}/retitle`, opts),
     /** @param {number} [keepLast] - defaults server-side (session.DefaultPruneKeepLast)
      *  @param {import("../core/transport.js").RequestOptions} [opts] -
      *   forwarded to request() (e.g. headers, signal) */

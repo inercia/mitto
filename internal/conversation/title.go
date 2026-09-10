@@ -109,6 +109,16 @@ type TitleGenerationConfig struct {
 	// OnTitleGenerated is called when a title is successfully generated and saved.
 	// It receives the session ID and the generated title.
 	OnTitleGenerated func(sessionID, title string)
+	// Force, when true, requests an explicit user-driven title regeneration
+	// (the "Auto-rename" context-menu action, mitto-yv2) rather than the
+	// normal initial/upgrade auto-title flow. It bypasses the quick-fallback
+	// write, the SessionNeedsTitle early-return gates (so a conversation that
+	// already has a title — including an explicitly renamed one — can still
+	// be regenerated), and uses Message as an extended context excerpt (see
+	// BuildTitleContext) sent via GenerateTitleFromContext instead of
+	// GenerateTitle. On success, NameExplicit is set (not just preserved) so
+	// a later internal auto-title retry cannot clobber the fresh result.
+	Force bool
 }
 
 type titleJobKey struct {
@@ -208,23 +218,27 @@ const (
 func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 	// Immediately set a quick fallback title from the message text.
 	// This gives the conversation a title right away without waiting for the
-	// auxiliary session.
-	quickTitle := GenerateQuickTitle(cfg.Message)
-	if quickTitle != "" && cfg.Store != nil {
-		fallbackSet := false
-		if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
-			if m.Name == "" { // Only set if no title yet
-				m.Name = quickTitle
-				m.NameIsFallback = true // mitto-ee3: mark so retryIfNeeded can upgrade later
-				fallbackSet = true
-			}
-		}); err == nil && fallbackSet {
-			if cfg.Logger != nil {
-				cfg.Logger.Debug("Set quick fallback title", "session_id", cfg.SessionID, "title", quickTitle)
-			}
-			// Notify immediately so UI updates
-			if cfg.OnTitleGenerated != nil {
-				cfg.OnTitleGenerated(cfg.SessionID, quickTitle)
+	// auxiliary session. Skipped for a forced regenerate: the conversation
+	// already has a title (that's the whole point of forcing), so a fallback
+	// derived from a context excerpt would be low quality and pointless.
+	if !cfg.Force {
+		quickTitle := GenerateQuickTitle(cfg.Message)
+		if quickTitle != "" && cfg.Store != nil {
+			fallbackSet := false
+			if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
+				if m.Name == "" { // Only set if no title yet
+					m.Name = quickTitle
+					m.NameIsFallback = true // mitto-ee3: mark so retryIfNeeded can upgrade later
+					fallbackSet = true
+				}
+			}); err == nil && fallbackSet {
+				if cfg.Logger != nil {
+					cfg.Logger.Debug("Set quick fallback title", "session_id", cfg.SessionID, "title", quickTitle)
+				}
+				// Notify immediately so UI updates
+				if cfg.OnTitleGenerated != nil {
+					cfg.OnTitleGenerated(cfg.SessionID, quickTitle)
+				}
 			}
 		}
 	}
@@ -260,7 +274,9 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		waitForQuiescence := false
 		for attempt := 0; ; attempt++ {
 			pendingRecovery := attempt > titleMaxRetries
-			if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+			// A forced regenerate must proceed even if the session already has
+			// a final/explicit title — that's the explicit user request.
+			if !cfg.Force && pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
 				return
 			}
 			if attempt > 0 {
@@ -295,7 +311,7 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 				} else {
 					time.Sleep(delay)
 				}
-				if pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
+				if !cfg.Force && pendingRecovery && !SessionNeedsTitle(cfg.Store, cfg.SessionID) {
 					return
 				}
 			}
@@ -303,7 +319,13 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 
 			// The 20-minute budget covers auxiliary session setup and the prompt itself.
 			ctx, cancel := context.WithTimeout(context.Background(), titleSessionCreateTimeout)
-			title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
+			if cfg.Force {
+				// Message carries a composed multi-turn context excerpt (see
+				// BuildTitleContext), not a single initial message.
+				title, lastErr = cfg.AuxiliaryManager.GenerateTitleFromContext(ctx, cfg.WorkspaceUUID, cfg.Message)
+			} else {
+				title, lastErr = cfg.AuxiliaryManager.GenerateTitle(ctx, cfg.WorkspaceUUID, cfg.Message)
+			}
 			cancel()
 
 			if lastErr == nil && title != "" {
@@ -393,12 +415,19 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 		if cfg.Store != nil {
 			if err := cfg.Store.UpdateMetadata(cfg.SessionID, func(m *session.Metadata) {
 				// mitto-808: an explicit rename may have landed while this
-				// generation was in flight — never clobber it.
-				if m.NameExplicit {
+				// generation was in flight — never clobber it. A forced
+				// regenerate (mitto-yv2) is itself an explicit user request,
+				// so it intentionally overrides this guard.
+				if !cfg.Force && m.NameExplicit {
 					return
 				}
 				m.Name = title
 				m.NameIsFallback = false // mitto-ee3: real title replaces the quick fallback
+				if cfg.Force {
+					// Treat the explicit regenerate like a rename so a later
+					// internal auto-title retry can't clobber it.
+					m.NameExplicit = true
+				}
 			}); err != nil {
 				if cfg.Logger != nil {
 					cfg.Logger.Error("Failed to update session name", "error", err, "session_id", cfg.SessionID)
@@ -416,4 +445,84 @@ func GenerateAndSetTitle(cfg TitleGenerationConfig) {
 			cfg.OnTitleGenerated(cfg.SessionID, title)
 		}
 	}()
+}
+
+// titleContextMaxUserPrompts bounds how many of the most recent user prompts
+// BuildTitleContext includes in the composed context excerpt.
+const titleContextMaxUserPrompts = 5
+
+// titleContextMaxChars caps the composed context excerpt length sent to the
+// auxiliary session (mirrors the truncation used elsewhere, e.g.
+// AnalyzeFollowUpQuestions' maxLen).
+const titleContextMaxChars = 4000
+
+// BuildTitleContext composes a short transcript excerpt from a session's
+// recorded events for context-aware title regeneration (mitto-yv2): the last
+// titleContextMaxUserPrompts user prompts (oldest first) plus the most recent
+// agent response, HTML-stripped. If the composed text exceeds
+// titleContextMaxChars, the oldest user prompts are dropped first (the
+// excerpt stays most-recent-biased) before falling back to a hard cut.
+// Returns "" if the session has no store, no persisted ID, or no events yet.
+func BuildTitleContext(store *session.Store, sessionID string) string {
+	if store == nil || sessionID == "" {
+		return ""
+	}
+	events, err := store.ReadEvents(sessionID)
+	if err != nil || len(events) == 0 {
+		return ""
+	}
+
+	// Collect up to the last N user prompts, newest first, then reverse to
+	// chronological order.
+	var userPrompts []string
+	for i := len(events) - 1; i >= 0 && len(userPrompts) < titleContextMaxUserPrompts; i-- {
+		if events[i].Type != session.EventTypeUserPrompt {
+			continue
+		}
+		data, derr := session.DecodeEventData(events[i])
+		if derr != nil {
+			continue
+		}
+		d, ok := data.(session.UserPromptData)
+		if !ok {
+			continue
+		}
+		msg := strings.TrimSpace(d.Message)
+		if msg == "" {
+			continue
+		}
+		userPrompts = append(userPrompts, msg)
+	}
+	for i, j := 0, len(userPrompts)-1; i < j; i, j = i+1, j-1 {
+		userPrompts[i], userPrompts[j] = userPrompts[j], userPrompts[i]
+	}
+
+	lastAgentMsg := strings.TrimSpace(session.GetLastAgentMessage(events))
+
+	compose := func(prompts []string) string {
+		var b strings.Builder
+		for _, p := range prompts {
+			b.WriteString("User: ")
+			b.WriteString(p)
+			b.WriteString("\n")
+		}
+		if lastAgentMsg != "" {
+			b.WriteString("Assistant: ")
+			b.WriteString(lastAgentMsg)
+			b.WriteString("\n")
+		}
+		return strings.TrimSpace(b.String())
+	}
+
+	text := compose(userPrompts)
+	// Drop oldest user prompts first so the excerpt stays most-recent-biased.
+	for len(text) > titleContextMaxChars && len(userPrompts) > 0 {
+		userPrompts = userPrompts[1:]
+		text = compose(userPrompts)
+	}
+	// Fallback hard cut (e.g. the agent response alone exceeds the cap).
+	if len(text) > titleContextMaxChars {
+		text = text[:titleContextMaxChars]
+	}
+	return text
 }

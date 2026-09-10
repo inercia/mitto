@@ -23,6 +23,7 @@ export function createSessionsResource(config: import("../core/config.js").Resol
     /** @param {object} settings - map of setting name -> bool, merged server-side */
     updateSettings: (id: any, settings: object, opts: any) => Promise<any>;
     flush: (id: any, opts: any) => Promise<any>;
+    retitle: (id: any, opts: any) => Promise<any>;
     /** @param {number} [keepLast] - defaults server-side (session.DefaultPruneKeepLast)
      *  @param {import("../core/transport.js").RequestOptions} [opts] -
      *   forwarded to request() (e.g. headers, signal) */

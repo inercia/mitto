@@ -45,6 +45,33 @@ func (bs *BackgroundSession) TriggerTitleGenerationFromLoop(prompt, promptName s
 	bs.titleCoord.triggerFromLoop(bs, prompt, promptName)
 }
 
+// ForceRegenerateTitle forces async title regeneration using extended
+// conversation context (the last few user prompts plus the most recent agent
+// response), bypassing the SessionNeedsTitle/NameExplicit gates. This is the
+// backend entry point for the explicit user-facing "Auto-rename" context-menu
+// action (mitto-yv2): it works even when the conversation already has a
+// title, including one set by an explicit rename. No-op (with a debug log) if
+// the session has no recorded events yet to build context from.
+func (bs *BackgroundSession) ForceRegenerateTitle() {
+	contextText := BuildTitleContext(bs.store, bs.persistedID)
+	if contextText == "" {
+		if bs.logger != nil {
+			bs.logger.Debug("Cannot force-regenerate title: no conversation context yet", "session_id", bs.persistedID)
+		}
+		return
+	}
+	GenerateAndSetTitle(TitleGenerationConfig{
+		Store:            bs.store,
+		SessionID:        bs.persistedID,
+		Message:          contextText,
+		Logger:           bs.logger,
+		WorkspaceUUID:    bs.workspaceUUID,
+		AuxiliaryManager: bs.auxiliaryManager,
+		OnTitleGenerated: bs.onTitleGenerated,
+		Force:            true,
+	})
+}
+
 // --- titleDeps implementation (supplies live session dependencies to titleCoordinator) ---
 
 // sessionHasNoTitle reports whether the session currently lacks a name.

@@ -2920,6 +2920,29 @@ function App() {
     [activeSessionId, showToast],
   );
 
+  const handleAutoRename = useCallback(
+    async (session) => {
+      const sessionId = session?.session_id || activeSessionId;
+      if (!sessionId) return;
+      try {
+        await getSdkClient().sessions.retitle(sessionId);
+        showToast({
+          style: "success",
+          title: "Regenerating conversation title\u2026",
+          duration: 3000,
+        });
+      } catch (err) {
+        console.error("Failed to auto-rename conversation:", err);
+        showToast({
+          style: "error",
+          title: errorMessage(err, "Failed to auto-rename conversation"),
+          duration: 4000,
+        });
+      }
+    },
+    [activeSessionId, showToast],
+  );
+
   const {
     contextMenu: headerMenu,
     promptGroupItems: headerPromptGroupItems,
@@ -2941,6 +2964,7 @@ function App() {
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
     onSetColor: handleSetSessionColor,
+    onAutoRename: activeSessionId ? handleAutoRename : undefined,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
     onCopyConversationName: activeSessionId
       ? handleCopyConversationName
@@ -4171,6 +4195,7 @@ function App() {
             onDelete=${handleDeleteSession}
             onArchive=${handleArchiveSession}
             onSetColor=${handleSetSessionColor}
+            onAutoRename=${handleAutoRename}
             onClose=${() => setShowSidebar(false)}
             workspaces=${workspaces}
             theme=${theme}

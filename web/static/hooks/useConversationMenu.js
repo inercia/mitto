@@ -21,6 +21,7 @@ import {
   CheckIcon,
   PaletteIcon,
   CircleIcon,
+  MagicWandIcon,
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
 import { CONVERSATION_COLORS } from "../constants.js";
@@ -51,6 +52,7 @@ export function useConversationMenu({
   flushCommand = "", // optional: when non-empty, shows "Flush context" item
   onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
   onSetColor, // optional: (session, hexColor) => void — shows "Change color" submenu
+  onAutoRename, // optional: (session) => void — shows "Auto-rename" item; forces title regeneration from extended context
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -168,6 +170,19 @@ export function useConversationMenu({
         icon: html`<${EditIcon} />`,
         onClick: () => onRename && onRename(session),
       },
+      // "Auto-rename" — only shown when the caller provides the callback.
+      // Forces title regeneration from extended conversation context, even
+      // when the conversation already has a title (mitto-yv2).
+      ...(onAutoRename
+        ? [
+            {
+              label: "Auto-rename",
+              icon: html`<${MagicWandIcon} />`,
+              title: "Regenerate the title from the conversation content",
+              onClick: () => onAutoRename(session),
+            },
+          ]
+        : []),
       // "Copy" — only shown when caller provides at least one copy callback.
       // When any of the three sibling callbacks are supplied (mitto-a6v1),
       // this becomes a "Copy" entry with a 4-action submenu (same shape as
@@ -300,6 +315,7 @@ export function useConversationMenu({
     flushCommand,
     onFlushContext,
     onSetColor,
+    onAutoRename,
   ]);
 
   return {

@@ -17,6 +17,7 @@ export function createClient(options?: {}): {
         getSettings: (id: any, opts: any) => Promise<any>;
         updateSettings: (id: any, settings: object, opts: any) => Promise<any>;
         flush: (id: any, opts: any) => Promise<any>;
+        retitle: (id: any, opts: any) => Promise<any>;
         prune: (id: any, keepLast?: number, opts?: import("./core/transport.js").RequestOptions) => Promise<any>;
         getCallback: (id: any, opts: any) => Promise<any>;
         createCallback: (id: any, opts: any) => Promise<any>;

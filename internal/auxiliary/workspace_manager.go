@@ -206,6 +206,31 @@ func (m *WorkspaceAuxiliaryManager) GenerateTitle(ctx context.Context, workspace
 	return title, nil
 }
 
+// GenerateTitleFromContext generates a short title for a conversation from an
+// extended, multi-turn context excerpt (e.g. the last few user prompts plus
+// the most recent agent response) rather than only the initial message
+// (mitto-yv2). Used by the explicit "Auto-rename" forced-regenerate path so a
+// conversation that has drifted topic gets an accurate title. Mirrors
+// GenerateTitle's response cleanup (trimQuotes + 50-char cap).
+func (m *WorkspaceAuxiliaryManager) GenerateTitleFromContext(ctx context.Context, workspaceUUID, contextText string) (string, error) {
+	prompt := fmt.Sprintf(GenerateTitleFromContextPromptTemplate, contextText)
+
+	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeTitleGen, prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate title from context: %w", err)
+	}
+
+	// Clean up the response - remove quotes, trim whitespace
+	title := trimQuotes(response)
+
+	// Limit title length
+	if len(title) > 50 {
+		title = title[:47] + "..."
+	}
+
+	return title, nil
+}
+
 // GenerateQueuedMessageTitle generates a short title for a queued message.
 // The title is meant to be a brief summary (2-3 words) to help identify the message in the queue.
 func (m *WorkspaceAuxiliaryManager) GenerateQueuedMessageTitle(ctx context.Context, workspaceUUID, message string) (string, error) {
