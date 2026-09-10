@@ -163,9 +163,17 @@ func (r *LoopRunner) fireOnChild(parentID string, event session.ChildEvent, chil
 		// the onTasks and scheduled fire paths (mitto-uhnc).
 		r.handlePromptResolveFailure(parentID, meta.Name, loop, loopStore, err)
 	default:
-		if r.logger != nil {
-			r.logger.Warn("onChild: fire failed",
-				"parent_id", parentID, "child_id", childID, "event", string(event), "error", err)
+		// A synchronous PromptWithMeta failure (mitto-efw) never reaches
+		// deliverPrompt's OnComplete callback, so route it through the same
+		// trigger-agnostic ceiling as every other delivery-failure path —
+		// otherwise deliveryFailures never increments and this onChild fire
+		// re-fires forever with only a bare WARN log.
+		contextTurns := contextTurnsUnknown
+		if r.sessionManager != nil {
+			if bs := r.sessionManager.GetSession(parentID); bs != nil {
+				contextTurns = bs.acpContextTurnsSinceReset()
+			}
 		}
+		r.handleDeliveryFailure(parentID, meta.Name, loop, loopStore, err, true, true, session.TriggerOnChild, contextTurns)
 	}
 }

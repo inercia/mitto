@@ -7727,6 +7727,119 @@ func TestLoopRunner_FireOnStartPulses_SynchronousFailure_RearmsUntilCeiling(t *t
 	}
 }
 
+// TestLoopRunner_CheckSession_SynchronousGenericFailure_MustAutoPauseAtCeiling
+// reproduces mitto-efw: on the scheduled poll path, deliverPrompt's error is
+// returned to checkSession SYNCHRONOUSLY when PromptWithMeta fails before the
+// async turn starts (e.g. waitForStartupModel's "the conversation model is
+// still initializing; please retry" precheck in bgsession_prompt.go, hit when
+// a session's model pin never becomes ready — a retired/unavailable model).
+// checkSession's bare `else` branch (loop_runner.go, next to the
+// ErrPromptResolveFailed special case) only logs "Failed to deliver loop
+// prompt" for this kind of error and returns — it never calls
+// handleDeliveryFailure, so deliveryFailures never increments, the
+// MaxLoopDeliveryFailures ceiling never trips, no schedule backoff is
+// applied, and no auto-pause notification fires. Contrast the async
+// OnComplete path (TestLoopRunner_RunOnStartAsyncFailure_RearmsUntilDeliveryFailureCeiling
+// and friends), which already routes through handleDeliveryFailure correctly.
+//
+// This test drives the real checkSession -> deliverPrompt -> PromptWithMeta
+// chain against a minimal BackgroundSession whose startup constraints are
+// permanently stuck pending (startupConstraintPending > 0 forever, simulating
+// a model pin that never resolves), forcing PromptWithMeta to fail
+// synchronously with the "still initializing" sessionError on every attempt —
+// exactly the observed storm signature. It asserts the loop auto-pauses with
+// StoppedReasonDeliveryFailures after MaxLoopDeliveryFailures consecutive
+// scheduled attempts, matching the async ceiling. Today it does not: the loop
+// stays Enabled forever and this test fails.
+func TestLoopRunner_CheckSession_SynchronousGenericFailure_MustAutoPauseAtCeiling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "sync-generic-failure"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Triggers:  []session.LoopTrigger{session.TriggerSchedule},
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyMinutes},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	shared := newFakeSharedProcess()
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: shared,
+		acpID:         "acp-sess-1",
+		pendingConfig: make(map[string]string),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+	// Permanently-stuck startup constraint: pending count never returns to
+	// zero, so startupConfigConstraintsReady() always reports false while
+	// waitForStartupConfigConstraints() (a WaitGroup with a zero count here)
+	// never blocks — PromptWithMeta's precheck fails synchronously, every
+	// call, exactly like a retired/unavailable model pin that never resolves.
+	bs.startupConstraintPending.Store(1)
+	sm.AddSessionForTest(bs)
+
+	var autoStopCalls int
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetMinLoopCompletionDelaySeconds(0)
+	runner.SetOnLoopAutoStopped(func(string, *session.LoopPrompt) { autoStopCalls++ })
+
+	// Bare-else path never advances NextScheduledAt (only the OnComplete
+	// success/failure paths do), so force the schedule leg due before every
+	// tick to reproduce the real ~1/min re-fire storm.
+	for attempt := 1; attempt <= MaxLoopDeliveryFailures; attempt++ {
+		loop, err := loopStore.Get()
+		if err != nil {
+			t.Fatalf("attempt %d: loopStore.Get() error = %v", attempt, err)
+		}
+		if !loop.Enabled {
+			t.Fatalf("attempt %d: loop already disabled before reaching the ceiling (want exactly %d attempts)",
+				attempt, MaxLoopDeliveryFailures)
+		}
+		past := time.Now().UTC().Add(-time.Minute)
+		loop.NextScheduledAt = &past
+		if err := writeTestLoopFile(store.SessionDir(sessionID)+"/loop.json", loop); err != nil {
+			t.Fatalf("attempt %d: writeTestLoopFile() error = %v", attempt, err)
+		}
+
+		runner.checkSession(meta, time.Now().UTC())
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("loop.Enabled = true after %d consecutive synchronous scheduled-delivery failures; want false "+
+			"(mitto-efw: a synchronous PromptWithMeta error on the scheduled path must count toward "+
+			"MaxLoopDeliveryFailures and auto-pause, like the async OnComplete path does)", MaxLoopDeliveryFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonDeliveryFailures)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+}
+
 // TestLoopRunner_FireOnStartPulses_OncePerProcess verifies that a second
 // invocation of fireOnStartPulses is a no-op for a session already flagged in
 // runOnStartFired — protecting against duplicate deliveries.
