@@ -999,6 +999,97 @@ func migrateLegacyTargetReuseKeys(path string, doc *yaml.Node) bool {
 	return true
 }
 
+// legacyPromptKeyAlias describes a single non-canonical (typically snake_case)
+// key alias that should be silently renamed in memory onto its canonical
+// camelCase key. level is "root" for keys valid directly under the document
+// root, or "target" for keys valid under the nested target: mapping.
+type legacyPromptKeyAlias struct {
+	level    string
+	old, new string
+}
+
+// legacyPromptKeyAliases enumerates known non-canonical key aliases for
+// prompt-file keys. mitto_prompt_update's MCP tool params (internal/mcpserver
+// /types.go) use snake_case (e.g. background_color), but the on-disk schema
+// and PromptFile/PromptTarget struct tags use camelCase (backgroundColor) —
+// so a prompt saved via that tool trips the unknown-key WARN and silently
+// drops the value (mitto-p58). Add further aliases here as they're
+// discovered rather than special-casing each one at the call site.
+var legacyPromptKeyAliases = []legacyPromptKeyAlias{
+	{level: "root", old: "background_color", new: "backgroundColor"},
+	{level: "target", old: "background_color", new: "backgroundColor"},
+}
+
+// migrateLegacyPromptKeyAliases renames any known key alias
+// (legacyPromptKeyAliases) onto its canonical key, in place, at both the
+// document root and the nested target: mapping. Mirrors the
+// migrateLegacyTargetReuseKeys precedent immediately above: an in-memory
+// *yaml.Node rewrite, run in parsePromptFileData BEFORE
+// collectUnknownPromptKeys and doc.Decode, so (a) the misleading
+// "unrecognised key" WARN never fires for an aliased key and (b) its value
+// binds onto the canonical field instead of being silently dropped by
+// yaml.v3. A rename is skipped whenever the canonical key is already present
+// in the same mapping, so an explicit canonical value is never clobbered.
+// Emits one WARN per rename (never a file-level error, per the mitto-a4yg
+// precedent). Returns whether anything was renamed.
+func migrateLegacyPromptKeyAliases(path string, doc *yaml.Node) bool {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return false
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return false
+	}
+
+	changed := renameAliasKeysInMapping(path, "", root, "root")
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		k := root.Content[i]
+		if k.Kind == yaml.ScalarNode && k.Value == "target" && root.Content[i+1].Kind == yaml.MappingNode {
+			if renameAliasKeysInMapping(path, "target.", root.Content[i+1], "target") {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// renameAliasKeysInMapping renames, in place, any key in mapping matching an
+// entry of legacyPromptKeyAliases whose level equals level, provided the
+// canonical key is not already present in the same mapping. pathPrefix is
+// used only for the WARN's dotted-path context (e.g. "target.").
+func renameAliasKeysInMapping(path, pathPrefix string, mapping *yaml.Node, level string) bool {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return false
+	}
+	changed := false
+	for _, alias := range legacyPromptKeyAliases {
+		if alias.level != level {
+			continue
+		}
+		oldIdx, newPresent := -1, false
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			k := mapping.Content[i]
+			if k.Kind != yaml.ScalarNode {
+				continue
+			}
+			switch k.Value {
+			case alias.old:
+				oldIdx = i
+			case alias.new:
+				newPresent = true
+			}
+		}
+		if oldIdx == -1 || newPresent {
+			continue // no legacy key present, or canonical key already present (never clobber)
+		}
+		mapping.Content[oldIdx].Value = alias.new
+		slog.Warn("prompt file uses a legacy key alias and was migrated in memory",
+			"path", path, "old_key", pathPrefix+alias.old, "new_key", pathPrefix+alias.new)
+		changed = true
+	}
+	return changed
+}
+
 // promptFileKnownKeys enumerates the keys valid directly under a prompt
 // file's document root (top-level frontmatter), mirroring PromptFile's yaml
 // tags. Used by collectUnknownPromptKeys (mitto-yo8o) to flag typo'd or
@@ -1028,9 +1119,10 @@ var promptTargetKnownKeys = map[string]bool{
 // PromptFile.Warnings so it survives to the UI (mitto-tigh's channel), not
 // just a slog line.
 //
-// Must run AFTER migrateLegacyTargetReuseKeys so already-migrated legacy
-// target.reuse* flat keys are not misreported as unknown (mirrors the
-// ordering constraint that migration precedes the loop.* strict pass).
+// Must run AFTER migrateLegacyTargetReuseKeys and migrateLegacyPromptKeyAliases
+// so already-migrated legacy target.reuse* flat keys and key aliases (e.g.
+// background_color) are not misreported as unknown (mirrors the ordering
+// constraint that migration precedes the loop.* strict pass).
 func collectUnknownPromptKeys(doc *yaml.Node) []string {
 	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return nil
@@ -1423,6 +1515,7 @@ func parsePromptFileData(path string, data []byte, modTime time.Time, fragments 
 		return nil, migrated, result, fmt.Errorf("failed to parse prompt file %s: %w", path, err)
 	}
 	migrateLegacyTargetReuseKeys(path, &doc)
+	migrateLegacyPromptKeyAliases(path, &doc)
 
 	// Warn (non-fatal) on typo'd or misplaced top-level / target.* keys
 	// (mitto-yo8o). Runs after the legacy target.reuse* migration above so
