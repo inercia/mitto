@@ -8,9 +8,11 @@
     3. Emit a concise handoff message + disable this conversation's loop
 
   Consumers:
-    * "short" style (feature-phase-*, fix-phase-*): single-line handoff
-      comment starting with "Blocked at <BlockedAt>. What I tried:";
-      Step 3 references the "driver loop".
+    * "short" style (feature-phase-*, fix-phase-*): handoff comment whose
+      FIRST line is `[deferred: <now-RFC3339>]` (so the orchestrator's
+      Step 2Z can undefer on human reply, mitto-8sb), followed by
+      "Blocked at <BlockedAt>. What I tried:"; Step 3 references the
+      "driver loop".
     * "long" style (mention-phase-*): multi-line handoff comment starting
       with `[deferred: <now-RFC3339>]` so the orchestrator's Step 2Z can
       undefer on human reply; Step 3 references the "router loop".
@@ -112,10 +114,12 @@ the `{{ .Label }}` label. Instead:
    bd update {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} --add-label needs-human --defer <when>
    ```
 
-2. Write a structured handoff comment:
+2. Write a structured handoff comment (the FIRST line must be the `[deferred: <ts>]`
+   marker so the orchestrator's Step 2Z can undefer on human reply):
 
    ```bash
-   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "Blocked at {{ .BlockedAt }}. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
+   Blocked at {{ .BlockedAt }}. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
    ```
 
 3. End with a concise handoff message naming the blocker and the single thing

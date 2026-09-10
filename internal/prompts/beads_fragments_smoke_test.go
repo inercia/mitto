@@ -718,8 +718,9 @@ func TestBlockedDeferLoopDriverFragmentRenders(t *testing.T) {
 			"Use this whenever a run cannot make progress autonomously",
 			"advance the state label in this case. Instead:",
 			"bd update mitto-abc --add-label needs-human --defer <when>   # e.g. tomorrow / +1d",
-			`Write a **structured handoff** comment on the bead:`,
-			`bd comment mitto-abc "Blocked at <stage>.`,
+			`the FIRST line must be the`,
+			`bd comment mitto-abc "[deferred: <now-RFC3339>]`,
+			"Blocked at <stage>.",
 			"End the iteration with a concise handoff",
 			"(interactive runs also `mitto_ui_notify`)",
 			`mitto_conversation_update(self_id: "sess-1"`,
@@ -835,7 +836,7 @@ func TestBlockedDeferHandoffFragmentRenders(t *testing.T) {
 		}
 		// Style-specific hallmarks.
 		if c.style == "short" {
-			want := "bd comment mitto-abc \"Blocked at " + c.blockedAt + "."
+			want := "bd comment mitto-abc \"[deferred: <now-RFC3339>]\n   Blocked at " + c.blockedAt + "."
 			if !strings.Contains(out, want) {
 				t.Errorf("%q (short): missing short-form handoff %q", c.name, want)
 			}
@@ -907,6 +908,98 @@ func TestBlockedDeferHandoffFragmentRenders(t *testing.T) {
 		want := "bd update " + fallback[c.name] + " --add-label needs-human"
 		if !strings.Contains(out, want) {
 			t.Errorf("%q (nolink): missing fallback %q", c.name, want)
+		}
+	}
+}
+
+// TestBlockedDeferHandoffShortStyleCommentsLeadWithDeferredMarker reproduces
+// mitto-8sb: the short-style consumers of blocked-defer-handoff.tmpl (the
+// three fix-phase-* prompts, which invoke the fragment without a Style arg
+// and so default to "short") render a Step 4 handoff `bd comment` whose
+// quoted text starts with "Blocked at <stage>." instead of the canonical
+// "[deferred: <RFC3339>]" marker. The orchestrator's Step 2Z undefer scan
+// (loop-processing.prompt.yaml) only auto-undefers a needs-human bead whose
+// most recent comment's FIRST line matches "[deferred: <RFC3339-timestamp>]";
+// without that marker it treats the bead as legacy/hand-labelled and skips
+// it forever, so a bead deferred by any fix-phase driver never auto-resumes
+// on human reply.
+//
+// This test currently FAILS for all three fix-phase-* prompts: their
+// short-style handoff comment's first line is "Blocked at <stage>." rather
+// than "[deferred: ...]". It pins the fix's contract structurally (the
+// marker must be the quoted comment's first line) without hardcoding the
+// exact body wording the fix phase chooses for the rest of the message.
+func TestBlockedDeferHandoffShortStyleCommentsLeadWithDeferredMarker(t *testing.T) {
+	prev := CurrentFragments()
+	t.Cleanup(func() { SetCurrentFragments(prev) })
+
+	builtinDir := "../../config/prompts/builtin"
+	reg, loadErrs, err := LoadFragmentsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadFragmentsFromDir(builtin): %v", err)
+	}
+	if len(loadErrs) != 0 {
+		t.Fatalf("LoadFragmentsFromDir(builtin) per-file errors: %+v", loadErrs)
+	}
+	SetCurrentFragments(reg)
+
+	list, err := LoadPromptsFromDir(builtinDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir(builtin): %v", err)
+	}
+	byName := map[string]string{}
+	for _, p := range list {
+		byName[p.Name] = p.Content
+	}
+
+	linkedCtx := &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "sess-1", Name: "N", HasMessages: true, BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+		Args:    map[string]string{"Commit": "true"},
+	}
+	linkedFuncs := cel.BuildTemplateFuncMap(linkedCtx)
+
+	// mitto-8sb's reported symptom is the reproduce phase; the same
+	// short-style fragment invocation also drives investigate and fix, so
+	// all three siblings are pinned here (per the bead's "sibling phase
+	// templates with the same pattern" scope).
+	for _, name := range []string{
+		"Bug fix — reproduce phase",
+		"Bug fix — investigate phase",
+		"Bug fix — fix phase",
+	} {
+		body, ok := byName[name]
+		if !ok {
+			t.Fatalf("prompt %q not found", name)
+		}
+		out, err := RenderPromptTemplate(name, body, linkedCtx, linkedFuncs)
+		if err != nil {
+			t.Fatalf("render %q: %v", name, err)
+		}
+
+		step4 := strings.Index(out, "## Step 4")
+		if step4 == -1 {
+			t.Fatalf("%q: could not locate the '## Step 4' heading in rendered output", name)
+		}
+		tail := out[step4:]
+
+		const marker = `bd comment mitto-abc "`
+		start := strings.Index(tail, marker)
+		if start == -1 {
+			t.Fatalf("%q: could not locate the Step 4 'bd comment' block in rendered output", name)
+		}
+		quoted := tail[start+len(marker):]
+		// The quoted comment's first line is everything up to the first
+		// newline (a fixed, multi-line body) or, for today's still-buggy
+		// single-line short-style body, up to the closing quote.
+		firstLine := quoted
+		if nl := strings.IndexByte(quoted, '\n'); nl != -1 {
+			firstLine = quoted[:nl]
+		} else if end := strings.Index(quoted, `"`); end != -1 {
+			firstLine = quoted[:end]
+		}
+
+		if !strings.HasPrefix(firstLine, "[deferred:") {
+			t.Errorf("%q: Step 4 handoff comment does not lead with the canonical [deferred: <ts>] marker (mitto-8sb); first line was %q", name, firstLine)
 		}
 	}
 }

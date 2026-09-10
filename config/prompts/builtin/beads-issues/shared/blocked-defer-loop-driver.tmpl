@@ -46,10 +46,12 @@ advance the state label in this case. Instead:
    bd update {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
    ```
 
-2. Write a **structured handoff** comment on the bead:
+2. Write a **structured handoff** comment on the bead (the FIRST line must be the
+   `[deferred: <ts>]` marker so the orchestrator's Step 2Z can undefer on human reply):
 
    ```bash
-   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+   bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
+   Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
    ```
 
 3. End the iteration with a concise handoff message naming the blocker and the single
