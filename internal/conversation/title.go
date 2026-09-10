@@ -25,6 +25,14 @@ var (
 	reMarkdownEmph  = regexp.MustCompile(`\*{1,2}([^*]+)\*{1,2}`)
 	reMarkdownUnder = regexp.MustCompile(`_{1,2}([^_]+)_{1,2}`)
 	reWhitespace    = regexp.MustCompile(`\s+`)
+	// reTemplateAction matches Go-template action directives (e.g. the
+	// `{{ template "_shared/session-context" . }}` fragment include that
+	// opens every JIRA/GitHub builtin prompt). Title generation runs on raw
+	// prompt text before fragment expansion, so without this an unstripped
+	// directive's tokens ("template", "{{", "}}") leak into the generated
+	// title (mitto-6my). Non-greedy so multiple directives on one line are
+	// each removed individually.
+	reTemplateAction = regexp.MustCompile(`\{\{.*?\}\}`)
 )
 
 const (
@@ -40,6 +48,9 @@ const (
 func GenerateQuickTitle(message string) string {
 	s := message
 
+	// Strip Go-template action directives first (mitto-6my) so leftover
+	// "{{"/"}}"/"template" tokens don't survive into the extracted title.
+	s = reTemplateAction.ReplaceAllString(s, " ")
 	// Strip fenced code blocks first (multi-line)
 	s = reFencedCode.ReplaceAllString(s, " ")
 	// Strip inline code
@@ -216,6 +227,14 @@ const (
 // Before launching the async goroutine, it synchronously sets a quick fallback title extracted
 // from the message text so the UI shows something immediately without waiting for the auxiliary.
 func GenerateAndSetTitle(cfg TitleGenerationConfig) {
+	// mitto-6my: strip raw Go-template action directives (e.g. the fragment
+	// include that opens every JIRA/GitHub builtin prompt) before feeding
+	// the message to either the quick fallback or the LLM titler below —
+	// this runs on raw prompt text before fragment expansion, so without
+	// this both paths would otherwise leak "{{"/"}}"/"template" tokens into
+	// the generated title.
+	cfg.Message = reTemplateAction.ReplaceAllString(cfg.Message, " ")
+
 	// Immediately set a quick fallback title from the message text.
 	// This gives the conversation a title right away without waiting for the
 	// auxiliary session. Skipped for a forced regenerate: the conversation

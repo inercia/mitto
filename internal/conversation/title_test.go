@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/session"
@@ -346,6 +347,33 @@ func TestGenerateQuickTitle(t *testing.T) {
 				t.Errorf("GenerateQuickTitle(%q) = %q, want %q", tt.message, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestGenerateQuickTitle_TemplateFragmentDirectiveNotLeaked reproduces
+// mitto-6my: a conversation's auto-generated title can leak a raw,
+// un-expanded Go-template directive when the prompt body begins with a
+// fragment include such as `{{ template "_shared/session-context" . }}`
+// (every JIRA/GitHub builtin prompt opens this way). Title generation is fed
+// the prompt text BEFORE Go-template fragment expansion, and
+// GenerateQuickTitle has no rule for `{{ ... }}` template actions among its
+// precompiled regexps (reFencedCode..reWhitespace) — so the directive's
+// tokens survive into the extracted title.
+//
+// EXPECTED TO FAIL on current tree: GenerateQuickTitle("{{ template
+// \"_shared/session-context\" . }}\n\n# JIRA: Pull a ticket") currently
+// returns `Template "_shared/session-context" . }} JIRA` — the unmatched
+// "}}" and the literal word "template" leak through. Will pass after the Fix
+// phase adds a `{{...}}` stripping pass.
+func TestGenerateQuickTitle_TemplateFragmentDirectiveNotLeaked(t *testing.T) {
+	message := "{{ template \"_shared/session-context\" . }}\n\n# JIRA: Pull a ticket"
+
+	got := GenerateQuickTitle(message)
+
+	lower := strings.ToLower(got)
+	if strings.Contains(got, "{{") || strings.Contains(got, "}}") || strings.Contains(lower, "template") {
+		t.Fatalf("mitto-6my: GenerateQuickTitle(%q) = %q leaks a raw Go-template "+
+			"directive (contains '{{', '}}', or 'template')", message, got)
 	}
 }
 
