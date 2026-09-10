@@ -1,0 +1,93 @@
+icon: chat-bubble
+name: Explain
+menus: beadsIssues
+parameters:
+  - name: IssueID
+    type: beadsId
+    description: The beads issue to explain
+description: Explain this bead in plain language — its purpose, deferred rationale, progress and evidence, and related tickets — read-only
+backgroundColor: '#B2EBF2'
+group: Tasks
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Explain This Issue
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  The **target bead** is `{{ .Args.IssueID }}`. This is a **read-only** explanation — do not
+  modify the bead, run any write commands, or start implementation.
+
+  ## Step 1 — Load the bead's full detail
+
+  {{ template "beads-issues/shared/load-context-min" .Args.IssueID }}
+
+  If `bd show` reports the bead as **deferred** (a `deferred` status, a future `defer_until` /
+  snooze timestamp, or a `needs-human` label), also load the discussion — the deferral reason is
+  recorded there, not in the bead body:
+
+  ```bash
+  bd comments {{ .Args.IssueID }}     # look for the newest [deferred: <ts>] marker
+  ```
+
+  If the bead has children (an epic) or is linked to other beads, gather that structure too:
+
+  ```bash
+  bd show {{ .Args.IssueID }} --children --json   # child issues, if this is an epic
+  bd dep list {{ .Args.IssueID }}                 # blockers, dependents, and related links
+  ```
+
+  ## Step 2 — Gather progress evidence
+
+  Do not judge status from the description alone — check whether the work has actually happened:
+
+  ```bash
+  git log --oneline --all | grep -i "{{ .Args.IssueID }}"   # commits citing this bead
+  git branch -a | grep -i "{{ .Args.IssueID }}"             # branches for this bead
+  ```
+
+  If commits or branches are found, briefly inspect them (e.g. `git show <sha> --stat`) to see what
+  was actually changed, and note whether the acceptance criteria appear to be met.
+
+  ## Step 3 — Explain
+
+  Present a concise, plain-language explanation — no jargon left undefined, no invented details.
+  Ground every claim in what you loaded in Steps 1–2; if something is unknown, say so rather than
+  guessing.
+
+  ### `{{ .Args.IssueID }}` — `<Title>`
+
+  #### Purpose
+
+  In one or two sentences, what problem does this bead solve and why does it matter? Pull this from
+  the description/acceptance criteria — do not editorialize beyond what the bead actually says.
+
+  #### Deferred rationale
+
+  Include this section **only if the bead is deferred** (`deferred` status, a future `defer_until` /
+  snooze timestamp, or a `needs-human` label) — omit it entirely otherwise, do not render an empty or
+  "not deferred" placeholder. When deferred, cover:
+
+  - **Deferred since** — the timestamp of the newest `[deferred: <ts>]` comment (or `defer_until`).
+  - **Why it was deferred** — the recorded root cause, quoted or summarised from the comment's `Why:`
+    line. If no `[deferred: …]` comment exists, say so explicitly and infer the likely cause from the
+    dependency tree and recent comments, clearly labelled as an inference.
+  - **What is needed to resume** — the concrete question, decision, or external action blocking it.
+
+  #### Progress & evidence
+
+  What has actually been done, backed by the evidence from Step 2 (commits, branches, or an explicit
+  "no evidence of work found"). Note which acceptance criteria appear met vs. still open.
+
+  #### Related tickets
+
+  List parents, children, blockers/blocked, and `relates_to` links surfaced by
+  `bd dep tree {{ .Args.IssueID }}`, `bd dep list {{ .Args.IssueID }}`, and `--children` for an
+  epic, each as `<id> — <title> (<relationship>)`. If there are none, say so.
+
+  > ⚠️ **This is a read-only explanation.** No code changes and no beads updates were performed.
+
+  ## Final step — Offer to delete this conversation
+
+  {{ template "_shared/offer-delete-conversation" . }}

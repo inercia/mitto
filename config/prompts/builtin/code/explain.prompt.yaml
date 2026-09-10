@@ -1,5 +1,5 @@
 icon: chat-bubble
-name: Explain
+name: Explain code
 menus: prompts, !promptsLoop
 description: Explain the code or concept we just discussed
 group: Documentation
