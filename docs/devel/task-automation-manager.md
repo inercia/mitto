@@ -422,10 +422,16 @@ Expected relative effort:
 
 ## Migration Plan
 
-**Basic recovery must work before live autonomous dispatch**, even with one
-worker. The old passive protocol leaves status `open` and relies on a reaper
-that scans `open + in-flight`; replacing it requires adapting all relevant
-claim/cleanup consumers, not just changing one command to `--claim`.
+**Hard constraint:** the programmatic scheduler and existing supervisor loops
+**must not run concurrently for the same folder.** The **primary** interlock is
+the durable bead lease (pending the R1 exclusivity verification), which is the
+only guard that also holds across two Mitto processes. A folder-level advisory
+marker (bead label or `folders.json` flag) is the secondary guard. Detecting
+active conversations originating from `Loop processing tasks` is a **fragile
+fallback only** — it relies on the same conversation-classification technique
+this rewrite exists to eliminate (see Risk Register R4), so it must not be the
+load-bearing mechanism. On onboarding, the manager either remains blocked for a
+folder until the marker/lease is clear, or offers an explicit migration action.
 
 1. **Contracts and adapter:** verify native claim identity/conflicts and
    metadata preservation. Define main/phase identities, outcomes, ownership,
@@ -482,153 +488,101 @@ no-progress retries, duplicate writers, human interventions, and recovery
 success. Compare against the existing flows on representative bugs/features;
 fewer supervisor turns alone does not establish better quality or lower cost.
 
+## Critique / Risk Register
+
+This section is a deliberately adversarial review of the design above. The
+architecture is sound and worth building, but several load-bearing statements
+elsewhere in this document read as more settled in prose than they are in fact.
+It separates **verified** claims from **assumptions that must be proven before
+build**, and ranks the risks that most threaten feasibility.
+
+### Is the new system equivalent or better?
+
+Answered along the two axes this document already separates — the honest answer
+differs by axis:
+
+| Axis                                                                                           | Verdict                        | Rationale                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Mechanical scheduling** (pick / lease / fairness / caps / observability)                     | **Better**                     | Tested Go state transitions beat prose re-executed every turn; cross-folder fairness and global caps are impossible from inside a single folder's loop today.                  |
+| **Semantic supervision** (already-landed-fix, prose disjointness, implicit-dependency ranking) | **Not equivalent, as written** | Moving scheduling to Go removes the place these judgments happen _inline_. They are correctly parked with the LLM (§3), but must return as extra verifier/ranker worker turns. |
+
+Net: **better on reliability, observability, and fairness; roughly lateral on
+cost; a regression risk on semantic judgment quality unless verifier workers are
+explicitly funded.** The cost motivation ("every reconciliation is a premium
+turn") is only half true — mechanical ticks become effectively free, but
+semantic verification still costs turns. Whether the net cost win survives
+depends entirely on how often verification is needed (see Open Question #8).
+
+### Load-bearing risks
+
+| ID  | Severity        | Risk                                                                                                                                                                                                                                                                                                                                                                                            | Evidence / mitigation                                                                                                                                                                                                                                     |
+| --- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | **Critical**    | **Claim exclusivity is assumed, not verified.** The entire Beads-native ownership boundary rests on `bd update --claim` being a _fail-if-held_ mutex. The installed CLI help says only "sets assignee to you, status to in_progress; **idempotent if already claimed by you**" — it is **silent on the foreign-claim case**, which strongly implies it overwrites rather than rejects.          | Verify empirically before any other work. If `--claim` is atomic-but-not-exclusive, ownership needs an explicit compare-and-swap on `claimed_by` (a read-check-write is a TOCTOU race), and the "no Mitto-side lease" simplification is back in question. |
+| R2  | **High**        | **The reused semaphore is the wrong primitive and is in-memory only.** `tryReserveWorkspaceSlot` serializes _loop dispatch_ keyed by `WorkingDir+ACPServer` at `DefaultLoopWorkspaceConcurrency = 1`; it does not model "worker capacity," so it cannot express per-folder **Maximum workers** > 1. It is a process-local map, giving **zero** cross-process protection (see Open Question #5). | Model worker capacity as its own concept. Be explicit that per-folder concurrency > 1 is only safe with git worktrees (see R3); otherwise cap serial. Do not conflate "shared-ACP dispatch serialization" with "how many beads may be in flight."         |
+| R3  | **High**        | **The shared working tree — not disjointness knowledge — is the concurrency blocker.** Stage 4 gates parallelism on a `work_paths` manifest, but even _perfect_ disjointness does not make two agents editing **one git working tree** safe (git index, build outputs, test runs collide).                                                                                                      | Real parallelism requires **git worktrees or strict serialization**. Name this explicitly; today's safe answer is serial. Matches the recorded concurrent-driver working-tree hazard.                                                                     |
+| R4  | **Medium-High** | **The migration guard uses the very technique being deprecated.** Detecting "active conversations originating from `Loop processing tasks`" is exactly the conversation-classification fragility listed as a _motivation_ for the rewrite (§Motivation).                                                                                                                                        | Make the durable bead lease the **primary** cross-process interlock during overlap, and replace origin-sniffing with a folder-level advisory marker (bead label or `folders.json` flag). See the revised Migration Plan constraint below.                 |
+| R5  | **Medium**      | **An event-driven Go reconciler is a dispatch-storm risk.** "Reacts to every relevant event" across all folders is the fan-out pattern that produced the mitto-hjx aggregate storm (thousands of retry failures + a healthy loop auto-archived under saturation).                                                                                                                               | Any new dispatch-fanout path must route through an admission barrier (`observeSustainedBusy`/`clearSustainedBusy` or equivalent) and coalesce redundant ticks. Design this in from the start, not as a later patch.                                       |
+| R6  | **Medium**      | **The no-progress circuit breaker false-positives on legitimate idle.** `tasksNoProgressLimit = 3` auto-pauses onTasks loops whose touched-bead set repeats, and already misfires on "at concurrency cap / all filtered" states.                                                                                                                                                                | A Go manager that idles correctly ("nothing ready") must not inherit or trip this breaker; ensure the "nothing to do" state produces no churn and no auto-pause.                                                                                          |
+| R7  | **Medium**      | **Claim close/release is subtler than "unset the lease."** `claimed_by`/`claim_heartbeat_at` are _liveness_ keys, but `claimed_at` is a _historical fact_ that must be promoted to `work_started_at` before unset (mitto-v3en) or cycle-time signal is destroyed.                                                                                                                               | A Go reimplementation of claim/close must reproduce the promotion logic in `shared/claim-clear.tmpl`, not blindly unset the `claim_*` group.                                                                                                              |
+
+### Corrections to earlier sections
+
+- **§Scheduling & Fairness overstates the semaphore reuse.** The existing
+  per-workspace semaphore protects shared-ACP _dispatch_ (default cap 1); it is
+  not a worker-capacity model and provides no cross-process guarantee. Treat it
+  as one input, not the concurrency solution.
+- **§Motivation's cost claim is only half true.** Replace "every reconciliation
+  is a premium model turn" with the axis-split verdict above: mechanical ticks
+  become free; semantic verification still costs turns.
+- **§Migration Plan's primary interlock is inverted.** The durable bead lease
+  should be the _primary_ cross-process guard during the overlap window; the
+  conversation-origin check is fragile and should be demoted or replaced.
+- **§Migration Plan's "parity" is only mechanically measurable.** The shadow
+  evaluator (stage 1) cannot compute the semantic decisions (landed-fix,
+  disjointness, implicit deps), so it diverges from the current loops _by
+  construction_ on exactly the hard cases. Scope "parity" to the deterministic
+  subset and measure judgment quality separately.
+
 ## Open Questions
 
-Every option below must respect Beads-only workflow state and native claiming.
-No question is an invitation to add an alternate database or automatic lease
-takeover. Recommendations identify a starting point, not a settled schema.
+Items marked **[verify first]** gate the design; items marked **[partially
+resolved]** already have a mechanism in the codebase that this document should
+adopt rather than re-derive.
 
-### Q1. What is the durable claim identity?
-
-- **Options:** conversation-derived actor, or stable execution-derived actor
-  recorded in the claim and linked to a replaceable conversation in metadata.
-- **Trade-off:** conversation IDs are easy to inspect, but replacement after
-  loss needs handoff; execution IDs survive replacement but must never be shared
-  by simultaneously active workers.
-- **Recommendation:** prototype a unique execution-derived owner, with explicit
-  conversation association and one live executor. Contract-test `--actor`,
-  same-owner idempotency, foreign-owner failure, and restart identification.
-
-### Q2. Who applies and enforces orchestration updates?
-
-- **Options:** supervisor runs `bd` directly; or a narrow backend adapter applies
-  native claims and targeted Beads updates on the supervisor's behalf.
-- **Trade-off:** direct CLI is simple but has weak structural enforcement; an
-  adapter can validate ownership, attempts, and transitions but adds API work.
-- **Recommendation:** use a narrow validated adapter for orchestration writes,
-  with Beads still the only store. Define per-field writers and preserve human
-  edits. Investigate conditional updates before promising race-free concurrent
-  metadata changes; a claim does not imply every write is owner-checked.
-
-### Q3. How many phase beads should be created?
-
-- **Options:** every named phase gets a bead; group several steps into one
-  delegated work bead; or keep inline steps as main-bead metadata.
-- **Trade-off:** fine granularity improves claims/audit/retry isolation but
-  increases ticket noise, CLI traffic, and possible upstream synchronization.
-- **Recommendation:** one bead per independently delegated unit, created only
-  when authorized. Tag its automation role explicitly, group it in the UI, and
-  define whether internal phases are exported upstream without hiding ordinary
-  user subtasks. All delegate-owned work still has its own claim.
-
-### Q4. How are claim/start and phase-creation gaps reconciled?
-
-- **Options:** preallocate a session ID and store intent before activation; or
-  create an inert session, claim, and activate only after association persists.
-- **Trade-off:** either order has an incomplete-operation window. Retrying a
-  session start or child creation blindly can duplicate work even with claims.
-- **Recommendation:** select one explicit order, identify attempts in Beads,
-  and reconcile before retrying. A serialized owner searches children before
-  repeating an uncertain create. Test every boundary; do not promise exactly
-  once or use session existence alone as proof of ownership.
-
-### Q5. How is stalled ownership handed off?
-
-- **Options:** resume the same verified owner; operator-authorized release and
-  new claim after stopping the old executor; or leave blocked for inspection.
-- **Trade-off:** conservative recovery may leave work waiting, but time-based
-  reassignment can introduce concurrent writers.
-- **Recommendation:** same-owner resume for known interrupted local work;
-  explicit handoff for replacement, recording reason and evidence in Beads.
-  Define whether any demonstrably stopped local case may be automated later.
-  Foreign ownership and uncertain liveness never authorize takeover.
-
-### Q6. What is the multi-folder and multi-process scope?
-
-- **Options:** one manager per local Beads/execution domain; multiple processes
-  sharing one authoritative Beads store; or independent replicated copies.
-- **Trade-off:** native claims can coordinate against a common authority, but
-  asynchronous copies cannot be assumed to reject competing claims globally.
-  Two managers resuming the same actor can also bypass claim conflict semantics.
-- **Recommendation:** one active local manager initially. Cross-process exclusion
-  is an **unverified prerequisite**, not a guarantee supplied by an in-process
-  singleton or mutex. Identify and test a process-lifetime exclusion mechanism
-  without adding a workflow store or replacing native ticket claims. Canonicalize
-  database and working-tree identities so workspace aliases are not separate
-  ownership domains. Block autonomous recovery when exclusivity cannot be
-  established, and defer multi-manager support pending verified semantics.
-
-### Q7. What is frozen when a workflow starts?
-
-- **Options:** workflow name/version only; ordered steps and arguments; or a
-  self-contained snapshot including selected prompt/fragment definitions.
-- **Trade-off:** references are compact but mutable prompts can change meaning;
-  complete snapshots are reproducible but enlarge tickets and need size limits.
-- **Recommendation:** store resolved sequence, arguments, and definition
-  versions in Beads, plus enough immutable content to reconstruct execution
-  without a second store. A hash alone is insufficient if its content is lost.
-  Decide metadata versus a structured Beads comment after testing size limits.
-  Never snapshot credentials; resolve them through existing secure facilities.
-
-### Q8. How should rework, reopening, and review independence work?
-
-- **Options:** reopen a phase bead, append attempt records on it, or create a
-  new attempt bead; review in the supervisor or use an independent verifier.
-- **Trade-off:** reuse reduces clutter; separate attempts preserve clear claims
-  and evidence. Independent verification adds cost but reduces self-confirmation.
-- **Recommendation:** new beads for substantial rework, bounded attempts, and
-  revision-bound acceptance. Use independent verification for higher-risk work.
-  Reopened symptoms require reassessment: a previously green reproduction test
-  or landed commit alone does not prove the new report is resolved.
-
-### Q9. What does closing the main bead mean?
-
-- **Options:** locally accepted implementation; submitted PR; merged change;
-  or deployed and externally verified behavior.
-- **Trade-off:** early closure improves throughput but may misrepresent delivery;
-  waiting for deployment may require human/external work outside this repository.
-- **Recommendation:** explicit per-folder/workflow completion policy recorded
-  on the bead, separating engineering acceptance from submission milestones.
-  Only the supervisor's acceptance for the current code and requirements plus
-  required policy permits closure. Re-read live requirements before closing;
-  atomic protection against edits racing that check remains part of Q2's
-  conditional-update investigation. For epics, closed children are necessary
-  where configured, not integration proof.
-
-### Q10. What do pause, cancellation, and budgets guarantee?
-
-- **Options:** stop admission only, pause between phases, or cancel active
-  execution; limits per phase, per main bead, and/or per folder.
-- **Trade-off:** immediate cancellation may leave uncommitted work or uncertain
-  external actions; boundary pauses finish safely but are not immediate stops.
-- **Recommendation:** distinct controls, no destructive rollback by default,
-  and durable per-bead pause/recovery reason and consumed-attempt counters.
-  Start with elapsed-time, attempt, and spawn limits; cost limits require
-  reliable usage accounting. Settle how active work quiesces during Beads outages
-  without claiming it can persist new state while the store is unavailable.
-
-### Q11. How are workflows exposed and merged?
-
-- **Options:** per-type presets with full folder replacement; per-step patches;
-  or arbitrary user-authored graphs.
-- **Trade-off:** patch merging is flexible but makes effective ordering and
-  mandatory gates harder to understand; arbitrary graphs greatly enlarge scope.
-- **Recommendation:** per-type presets and explicit folder replacement first,
-  validated against required gates, with a preview of the effective sequence.
-  Show internal phase prompts in the workflow picker without exposing them as
-  ordinary chat actions. Defer graph editing and append/patch semantics.
-
-### Q12. What evidence and history are retained?
-
-- **Options:** verbose inline reports, compact structured metadata with comments,
-  or references to externally retained test/diff artifacts.
-- **Trade-off:** large reports inflate Beads; artifact references can expire;
-  conversation cleanup may otherwise erase the only useful evidence.
-- **Recommendation:** keep decisions, outcome, tested revision, command/result
-  summaries, and enough recovery context in Beads before any conversation
-  cleanup. References may supplement but not replace essential workflow facts.
-  Define report-size/retention limits and interaction with task upstream sync;
-  do not create an automatic task-deletion policy as part of this feature.
+1. **Claim exclusivity, then durability. [verify first]** _Before_ asking whether
+   the lease is durable enough, confirm the more fundamental property: does
+   `bd update --claim` **reject** a claim already held by another actor, or does
+   it silently overwrite it? The CLI help implies the latter. If it is not
+   exclusive, define a compare-and-swap contract on `claimed_by`. Only then:
+   are `in-flight` + `claimed_by` + `claim_heartbeat_at` sufficient as the sole
+   durable lease, or is a Mitto-side record needed to survive a `bd` reset?
+2. **Worker→manager metadata channel. [partially resolved]** A durable,
+   suspension-surviving channel already exists: the per-session
+   `child-reports.json` sidecar plus `session.Store.ReadSessionSidecarJSON` /
+   `WriteSessionSidecarJSON` (mitto-wubj). The manager should read structured
+   worker results from there. The genuinely open part is the **payload schema**
+   (verified-landed flag, `work_paths`, deferral cause) — see #7.
+3. **Crash-window recovery. [partially resolved]** The heartbeat key
+   `claim_heartbeat_at` and the reaper/peer-driver semantics already encoded in
+   `shared/claim-clear.tmpl` are the existing primitives. The open decision is
+   the exact reconciliation for a crash _between_ lease acquisition and worker
+   spawn — heartbeat TTL vs. explicit orphan sweep — expressed in terms of those
+   keys, not designed from scratch.
+4. **Reopen-episode boundary.** Deterministic rule for attributing terminal
+   labels to the current vs a prior episode without semantic inspection.
+5. **Duplicate Mitto processes.** Two Mitto instances sharing a folder — the
+   in-memory semaphore (R2) does not cover this. Is a process-level advisory
+   lock in the folder needed, or does the durable bead lease (pending R1)
+   suffice?
+6. **Global vs per-folder caps interaction.** Precedence and starvation
+   behavior when both are configured.
+7. **Structured `work_paths` schema.** Where it lives (the #2 sidecar is the
+   likely home), who writes it, and its TTL/staleness policy before it can gate
+   parallelism — noting that disjointness alone is insufficient without git
+   worktrees (R3).
+8. **Verifier-worker cost.** Whether landed-fix verification warrants a
+   dedicated cheap-model worker vs folding it into the closing worker's turn.
+   This directly determines whether the cost win in the Risk Register survives.
 
 ## References
 
