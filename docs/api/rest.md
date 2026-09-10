@@ -35,6 +35,7 @@ boundaries, etc.). Responses: `null` for 204/205/empty, JSON when
 | `changes(id, opts)`                                            | `GET /api/sessions/{id}/changes`                  |
 | `getSettings(id, opts)` / `updateSettings(id, settings, opts)` | `GET`/`PATCH /api/sessions/{id}/settings`         |
 | `flush(id, opts)`                                              | `POST /api/sessions/{id}/flush`                   |
+| `retitle(id, opts)`                                            | `POST /api/sessions/{id}/retitle`                 |
 | `prune(id, keepLast, opts)`                                    | `POST /api/sessions/{id}/prune`                   |
 | `get/create/revokeCallback(id, opts)`                          | `GET`/`POST`/`DELETE /api/sessions/{id}/callback` |
 | `getUserData(id, opts)` / `setUserData(id, body, opts)`        | `GET`/`PUT /api/sessions/{id}/user-data`          |
