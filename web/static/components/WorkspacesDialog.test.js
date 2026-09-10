@@ -8,6 +8,8 @@
  */
 
 import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 /**
  * Duplicated from WorkspacesDialog.js for testing (the component imports
@@ -600,3 +602,181 @@ describe("effective-runner-config load effect (loadEffectiveRunnerConfig)", () =
     expect(client.workspaces.getEffectiveRunnerConfig).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// mitto-m3e reproduction: Save resets the active tab back to General.
+//
+// The auto-select-initial-folder effect in WorkspacesDialog.js (lines
+// ~555-570) lists `groupedWorkspaces` in its dependency array. Save calls
+// setWorkspaces(updated) (useWorkspacesSaveCoordinator.js:162), producing a
+// new `workspaces` array identity, which recomputes the groupedWorkspaces
+// useMemo (line ~224) to a new identity, which re-fires this effect and
+// forces activeTab back to "general" even when the user only saved -- no
+// folder/tab navigation occurred.
+//
+// This must be a *mounted* preact-hooks test (unlike the pure-function
+// duplicates above) because the bug is specifically about effect
+// re-invocation triggered by useMemo dependency identity, which a plain
+// function cannot reproduce. Uses the isolated child-process harness
+// pattern from SlackSubscriptionEditor.test.js / WorkspaceFolderBeadsTab.
+// test.js to avoid leaking the mocked window.preact global into other test
+// files.
+// ---------------------------------------------------------------------------
+
+const autoSelectChildRun =
+  process.env.MITTO_WORKSPACES_DIALOG_AUTOSELECT_TEST_CHILD === "1";
+
+if (autoSelectChildRun) {
+  const preact = await import("../vendor/preact.js");
+  const hooks = await import("../vendor/preact-hooks.js");
+  const previousPreact = window.preact;
+  window.preact = { ...preact, ...hooks };
+
+  // Duplicated (not imported -- WorkspacesDialog.js pulls in getSdkClient
+  // and a dozen folder/workspace hooks that would need heavy mocking) from
+  // WorkspacesDialog.js: the groupedWorkspaces useMemo (line ~224) and the
+  // auto-select-initial-folder effect (lines ~554-580), including the
+  // hasAutoSelectedRef once-per-open-session guard (mitto-m3e fix). Keep in
+  // sync with the implementation.
+  function AutoSelectHarness({
+    initialWorkspaces,
+    isOpen,
+    initialWorkingDir,
+    initialTab,
+    onState,
+  }) {
+    const [workspaces, setWorkspaces] = hooks.useState(initialWorkspaces);
+    const [selectedFolder, setSelectedFolder] = hooks.useState(null);
+    const [activeTab, setActiveTab] = hooks.useState("general");
+    const hasAutoSelectedRef = hooks.useRef(false);
+
+    const groupedWorkspaces = hooks.useMemo(() => {
+      const groups = new Map();
+      workspaces.forEach((ws) => {
+        const displayName = ws.name || ws.working_dir;
+        if (!groups.has(displayName)) {
+          groups.set(displayName, { displayName, workspaces: [] });
+        }
+        groups.get(displayName).workspaces.push(ws);
+      });
+      return Array.from(groups.values());
+    }, [workspaces]);
+
+    hooks.useEffect(() => {
+      if (!isOpen) {
+        hasAutoSelectedRef.current = false;
+        return;
+      }
+      if (hasAutoSelectedRef.current) return;
+      if (initialWorkingDir && groupedWorkspaces.length > 0) {
+        const matchingGroup = groupedWorkspaces.find((g) =>
+          g.workspaces.some((ws) => ws.working_dir === initialWorkingDir),
+        );
+        if (matchingGroup) {
+          hasAutoSelectedRef.current = true;
+          setSelectedFolder(matchingGroup.displayName);
+          setActiveTab(initialTab || "general");
+        }
+      }
+    }, [isOpen, initialWorkingDir, initialTab, groupedWorkspaces]);
+
+    onState({ activeTab, selectedFolder, setActiveTab, setWorkspaces });
+    return preact.h("div", { "data-testid": "auto-select-harness" });
+  }
+
+  function mount(props) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    let latest = null;
+    preact.render(
+      preact.h(AutoSelectHarness, {
+        ...props,
+        onState: (s) => {
+          latest = s;
+        },
+      }),
+      container,
+    );
+    return { container, getState: () => latest };
+  }
+
+  function unmount(container) {
+    preact.render(null, container);
+    container.remove();
+  }
+
+  async function waitFor(predicate, message) {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      if (predicate()) return;
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    throw new Error(`Timed out waiting for ${message}`);
+  }
+
+  describe("WorkspacesDialog auto-select-initial-folder effect (mitto-m3e)", () => {
+    test("Save must NOT reset the active tab back to General", async () => {
+      const workspaces = [
+        { name: "Alpha", working_dir: "/repo/alpha" },
+        { name: "Beta", working_dir: "/repo/beta" },
+      ];
+      const { container, getState } = mount({
+        initialWorkspaces: workspaces,
+        isOpen: true,
+        initialWorkingDir: "/repo/alpha",
+        initialTab: null,
+      });
+      try {
+        // Auto-select ran on open: folder = Alpha (initialTab is null, so
+        // activeTab defaults to "general" -- unchanged by the effect here).
+        await waitFor(
+          () => getState().selectedFolder === "Alpha",
+          "auto-select on open",
+        );
+        expect(getState().activeTab).toBe("general");
+
+        // User switches to the Tasks tab.
+        getState().setActiveTab("tasks");
+        await waitFor(
+          () => getState().activeTab === "tasks",
+          "tab switched to Tasks",
+        );
+
+        // Simulate Save: useWorkspacesSaveCoordinator.js:162 calls
+        // setWorkspaces(updated) with a NEW array (same content, new
+        // identity) -- isOpen/initialWorkingDir/initialTab are unchanged.
+        getState().setWorkspaces([...workspaces]);
+        // Give the (buggy) effect a chance to re-fire before asserting.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(getState().activeTab).toBe("tasks");
+      } finally {
+        unmount(container);
+      }
+    });
+  });
+
+  window.preact = previousPreact;
+} else {
+  describe("WorkspacesDialog auto-select-initial-folder effect (mitto-m3e)", () => {
+    test("passes mounted reproduction in an isolated process", () => {
+      const result = spawnSync(
+        process.execPath,
+        ["test", fileURLToPath(import.meta.url)],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MITTO_WORKSPACES_DIALOG_AUTOSELECT_TEST_CHILD: "1",
+          },
+          timeout: 30_000,
+        },
+      );
+      if (result.status !== 0) {
+        throw new Error(
+          `Isolated auto-select-effect test failed:\n${result.stdout}\n${result.stderr}`,
+        );
+      }
+    });
+  });
+}

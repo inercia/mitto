@@ -97,6 +97,12 @@ export function WorkspacesDialog({
   // so we hand the desired tab off here and consume it there.
   const pendingInitialTabRef = useRef(null);
 
+  // Guards the auto-select-initial-folder effect (below) so it runs only once per
+  // dialog "open session" rather than on every groupedWorkspaces identity change
+  // (e.g. Save rebuilding the workspaces array, mitto-m3e). Reset when isOpen goes
+  // false so a subsequent re-open still honors initialWorkingDir/initialTab.
+  const hasAutoSelectedRef = useRef(false);
+
   // Tracks previously-selected workspace key so useWorkspaceEdits can flush
   // transient edit fields back into the workspaces array on selection change.
   // Owned by the shell (not useWorkspaceEdits) to break the circular dep
@@ -551,13 +557,23 @@ export function WorkspacesDialog({
     }
   }, [isOpen]);
 
-  // Auto-select the folder matching initialWorkingDir when dialog opens and data is loaded
+  // Auto-select the folder matching initialWorkingDir when dialog opens and data is loaded.
+  // hasAutoSelectedRef makes this run only once per "open session": it is reset when the
+  // dialog closes, so a re-open still honors initialWorkingDir/initialTab, but a later
+  // groupedWorkspaces identity change while already open (e.g. Save rebuilding the
+  // workspaces array, mitto-m3e) does not re-run the tab reset.
   useEffect(() => {
-    if (isOpen && initialWorkingDir && groupedWorkspaces.length > 0) {
+    if (!isOpen) {
+      hasAutoSelectedRef.current = false;
+      return;
+    }
+    if (hasAutoSelectedRef.current) return;
+    if (initialWorkingDir && groupedWorkspaces.length > 0) {
       const matchingGroup = groupedWorkspaces.find((g) =>
         g.workspaces.some((ws) => ws.working_dir === initialWorkingDir),
       );
       if (matchingGroup) {
+        hasAutoSelectedRef.current = true;
         // Hand the desired tab to the folder-population effect (keyed on selectedFolder),
         // which would otherwise force "general". Also set it directly for the case where
         // selectedFolder is unchanged (reopening on the same folder) and that effect won't run.
