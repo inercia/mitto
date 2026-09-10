@@ -78,7 +78,7 @@ func TestDispatchWithRetry_TrackedCompletionPersistsBeforeExecutionAndAcknowledg
 		return PromptCompletion{SaveCount: 2, SaveCountKnown: true}, nil
 	})
 
-	m.dispatchWithRetry(workspaceUUID, "extract-memories-on-close", "persist memories", time.Second, "skip", "fail")
+	m.dispatchWithRetry(workspaceUUID, "extract-memories-on-close", "persist memories", time.Second, "skip", "fail", false)
 	entries, err := store.Load(workspaceUUID)
 	if err != nil {
 		t.Fatalf("Load() after completion error = %v", err)
@@ -101,7 +101,7 @@ func TestDispatchWithRetry_TrackedFailureReleasesDurableClaimForRetry(t *testing
 		return PromptCompletion{}, errors.New("auxiliary terminal failure")
 	})
 
-	m.dispatchWithRetry(workspaceUUID, "memory", "persist", time.Second, "skip", "fail")
+	m.dispatchWithRetry(workspaceUUID, "memory", "persist", time.Second, "skip", "fail", false)
 	entries, err := store.Load(workspaceUUID)
 	if err != nil {
 		t.Fatalf("Load() after failure error = %v", err)

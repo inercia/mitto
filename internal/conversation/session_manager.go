@@ -741,6 +741,18 @@ func closeProcessorRunPersistenceImpossible(reason string) bool {
 	}
 }
 
+// wouldShedProactiveAuxProvider is an optional ProcessManager capability
+// (mitto-z4w): reports whether a proactive-bail auxiliary session create for a
+// workspace would currently be shed. Checked via a type assertion on
+// sm.acpProcessManager rather than added to the ProcessManager interface
+// itself, so existing test ProcessManager fakes that implement only the
+// methods they exercise keep compiling. The production acpProcessManagerAdapter
+// (internal/web) satisfies this by promoting *acpproc.ACPProcessManager's
+// WouldShedProactiveAux method via embedding.
+type wouldShedProactiveAuxProvider interface {
+	WouldShedProactiveAux(workspaceUUID string) bool
+}
+
 // ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a session
 // being archived. It resolves the session's working directory and workspace from the
 // store (the live BackgroundSession is typically already gone by the time archive
@@ -828,6 +840,21 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		procMgr.SetPromptCompletionFunc(func(ctx context.Context, wsUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
 			saveCount, err := auxMgr.PromptProcessorTracked(ctx, wsUUID, processorName, dispatchID, prompt)
 			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
+		})
+	}
+
+	// Wire the proactive spool-first deferral seam (mitto-z4w): close-phase
+	// batches fire right after a turn ends, when the shared process is almost
+	// always still busy serving that turn's RPCs, so an immediate dispatch
+	// attempt would be shed and then ride out a busy-window retry loop before
+	// spooling anyway. wouldShedProactiveAuxProvider is an optional capability
+	// (checked via type assertion, not added to the ProcessManager interface)
+	// so test ProcessManager fakes that don't implement it are unaffected; the
+	// production acpProcessManagerAdapter satisfies it by promoting
+	// ACPProcessManager.WouldShedProactiveAux via embedding.
+	if shedder, ok := pm.(wouldShedProactiveAuxProvider); ok {
+		procMgr.SetShouldDeferDispatchFunc(func(wsUUID string) bool {
+			return shedder.WouldShedProactiveAux(wsUUID)
 		})
 	}
 

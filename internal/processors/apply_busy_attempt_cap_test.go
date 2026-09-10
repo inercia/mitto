@@ -75,7 +75,7 @@ func TestDispatchWithRetry_SustainedNonClearingBusy_NoAttemptCountCircuitBreaker
 	})
 
 	m.dispatchWithRetry(workspaceUUID, "extract-memories-on-close", "prompt", timeout,
-		"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed")
+		"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed", false)
 
 	if got := calls.Load(); got > int32(maxReasonableAttempts) {
 		t.Fatalf("promptFunc call count = %d, want <= %d (a reasonable attempt-count circuit breaker) — "+

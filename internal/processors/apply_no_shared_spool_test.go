@@ -36,7 +36,7 @@ func TestDispatchWithRetry_SaturationThenNoSharedProcess_PersistsBatch(t *testin
 	})
 
 	m.dispatchWithRetry(workspaceUUID, "close-memory-batch", "durable prompt",
-		time.Second, "dispatch skipped", "dispatch failed")
+		time.Second, "dispatch skipped", "dispatch failed", false)
 
 	if attempts != 2 {
 		t.Fatalf("dispatch attempts = %d, want 2 (saturation followed by GC recycle)", attempts)
@@ -97,7 +97,7 @@ func TestDispatchWithRetry_ThreeCloseBatchesSurviveHealthRecycle(t *testing.T) {
 	names := []string{"close-child-1", "close-child-2", "close-child-3"}
 	for _, name := range names {
 		m.dispatchWithRetry(workspaceUUID, name, "durable "+name,
-			time.Second, "dispatch skipped", "dispatch failed")
+			time.Second, "dispatch skipped", "dispatch failed", false)
 	}
 
 	entries, err := store.Load(workspaceUUID)

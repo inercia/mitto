@@ -74,7 +74,7 @@ func TestDispatchWithRetry_SustainedProcessBusy_PersistsInsteadOfRidingOutBusyWi
 	})
 
 	m.dispatchWithRetry(workspaceUUID, "extract-memories-on-close", "prompt", time.Second,
-		"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed")
+		"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed", false)
 
 	entries, err := store.Load(workspaceUUID)
 	if err != nil {

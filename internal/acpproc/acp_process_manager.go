@@ -1249,6 +1249,64 @@ func isProactiveBailPurpose(purpose string) bool {
 	}
 }
 
+// processBusyByActiveRPCs reports whether process is already serving at least
+// auxSessionCreateBusyRPCThreshold concurrent user-facing RPCs. Factored out
+// so the live proactive bail below and WouldShedProactiveAux (mitto-z4w)
+// share one definition and cannot drift apart.
+func processBusyByActiveRPCs(process *SharedACPProcess) bool {
+	return process.ActiveRPCs() >= auxSessionCreateBusyRPCThreshold
+}
+
+// processMCPInitGated reports whether process is currently gated on its MCP
+// handshake (mitto-337) — either it has explicitly timed out, or a cold-start
+// handshake is actively in progress and has never completed. Factored out so
+// the live bail below and WouldShedProactiveAux (mitto-z4w) share one
+// definition and cannot drift apart.
+func processMCPInitGated(process *SharedACPProcess) bool {
+	return process.MCPInitTimedOut() || (process.MCPInitInProgress() && !process.MCPInitDone())
+}
+
+// wouldShedProactiveAuxForProcess reports whether a proactive-bail auxiliary
+// session create against process would currently be shed, mirroring EXACTLY
+// the pre-RPC bails in getOrCreateAuxiliarySession: no live process, process
+// saturation, the ActiveRPCs threshold, MCP-init gating, and a recent
+// agent-internal-deadline hit. A nil process (no shared process for the
+// workspace yet) is treated as "would shed" since any attempt would fail
+// outright for a different reason (mitto-z4w).
+func wouldShedProactiveAuxForProcess(process *SharedACPProcess) bool {
+	if process == nil {
+		return true
+	}
+	if process.IsSaturated() {
+		return true
+	}
+	if processBusyByActiveRPCs(process) {
+		return true
+	}
+	if processMCPInitGated(process) {
+		return true
+	}
+	if process.RecentlyHitAgentInternalDeadline() {
+		return true
+	}
+	return false
+}
+
+// WouldShedProactiveAux reports whether a proactive-bail auxiliary session
+// create for workspaceUUID would currently be shed by getOrCreateAuxiliarySession
+// (mitto-z4w). Callers with latency-tolerant, durably-spooled work — e.g.
+// close-phase processor batches — can use this predicate to route straight to
+// their durable spool instead of issuing a doomed session/new that would be
+// shed immediately and then ride out a busy-window retry loop before
+// eventually spooling anyway. A nil manager reports true (fail toward
+// deferral, never toward a doomed attempt).
+func (m *ACPProcessManager) WouldShedProactiveAux(workspaceUUID string) bool {
+	if m == nil {
+		return true
+	}
+	return wouldShedProactiveAuxForProcess(m.GetProcess(workspaceUUID))
+}
+
 // getOrCreateAuxiliarySession returns an existing auxiliary session or creates a new one.
 //
 // Locking design (mitto-w19): auxMu is held ONLY briefly around map reads/writes, never
@@ -1394,7 +1452,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// human is actively waiting (improve-prompt) are exempt — they are not
 	// background pre-warming and should not be sacrificed for load-shedding.
 	if isProactiveBailPurpose(purpose) {
-		if active := process.ActiveRPCs(); active >= auxSessionCreateBusyRPCThreshold {
+		if active := process.ActiveRPCs(); processBusyByActiveRPCs(process) {
 			if m.logger != nil {
 				// mitto-13n.3: demoted from Info to Debug (61 occurrences observed
 				// on 2026-08-05) — deliberately NOT surfaced by the degraded-state
@@ -1434,7 +1492,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	//     MCPInitInProgress() alone (would also bail the normal per-session
 	//     warm re-handshake agents like Auggie run on every session/new,
 	//     mitto-29q).
-	if process.MCPInitTimedOut() || (process.MCPInitInProgress() && !process.MCPInitDone()) {
+	if processMCPInitGated(process) {
 		if m.logger != nil {
 			// mitto-13n.3: demoted from Info to Debug, same rationale as the
 			// process_saturated bail above.

@@ -74,7 +74,7 @@ func TestDispatchWithRetry_SustainedNonClearingBusy_ConcurrentDispatchesDoNotCoa
 			defer wg.Done()
 			<-start
 			m.dispatchWithRetry(workspaceUUID, name, "prompt", perDispatchTimeout,
-				"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed")
+				"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed", false)
 		}()
 	}
 

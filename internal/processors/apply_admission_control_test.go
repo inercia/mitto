@@ -80,7 +80,7 @@ func TestDispatchPromptBatch_PostTurnCluster_NoAdmissionControl_StampedesSharedP
 			defer wg.Done()
 			<-start
 			m.dispatchWithRetry(workspaceUUID, name, "prompt", time.Second,
-				"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed")
+				"prompt-mode processor dispatch skipped", "prompt-mode processor dispatch failed", false)
 		}()
 	}
 	close(start)

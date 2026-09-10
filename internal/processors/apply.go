@@ -358,6 +358,19 @@ type Manager struct {
 	// exhausted retries are only logged, matching pre-fix behavior.
 	notifyFunc NotifyFunc
 
+	// shouldDeferDispatchFunc is an optional predicate consulted at the top of
+	// dispatchWithRetry, before the admission gate and RPC loop, for dispatches
+	// marked deferrableWhenBusy (currently: close-phase/ApplyOnClose only). If
+	// set and it reports true for a workspace, the batch is persisted straight
+	// to the durable pending-dispatch spool and dispatchWithRetry returns
+	// without attempting any RPC — avoiding a doomed auxiliary session/new that
+	// would be shed immediately and then ride out a busy-window retry loop
+	// before eventually spooling anyway (mitto-z4w). Set by the web layer via
+	// SetShouldDeferDispatchFunc, typically wrapping
+	// ACPProcessManager.WouldShedProactiveAux. nil means never defer, matching
+	// pre-fix behavior.
+	shouldDeferDispatchFunc func(workspaceUUID string) bool
+
 	// rerunState tracks per-processor run state for rerun logic.
 	// Keyed by processor name. Only populated for processors with rerun config.
 	// In-memory only — not persisted across restarts (isFirstPrompt=true on resume
@@ -527,6 +540,16 @@ func (m *Manager) SetNotifyFunc(fn NotifyFunc) {
 	m.notifyFunc = fn
 }
 
+// SetShouldDeferDispatchFunc sets the predicate consulted by dispatchWithRetry
+// for deferrableWhenBusy dispatches (mitto-z4w). fn receives the workspace UUID
+// and should report true when a proactive-bail auxiliary session create would
+// currently be shed for that workspace — typically wired to
+// ACPProcessManager.WouldShedProactiveAux by the web layer. nil (the default)
+// disables deferral entirely, matching pre-fix behavior.
+func (m *Manager) SetShouldDeferDispatchFunc(fn func(workspaceUUID string) bool) {
+	m.shouldDeferDispatchFunc = fn
+}
+
 // SetStats seeds the activation counters from persisted values.
 // This is used when resuming a session to restore the cumulative count.
 func (m *Manager) SetStats(activations int, lastAt time.Time) {
@@ -546,19 +569,20 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 	m.statsMu.Unlock()
 
 	clone := &Manager{
-		processorsDir:        m.processorsDir,
-		logger:               m.logger,
-		processors:           make([]*Processor, len(m.processors)),
-		rerunState:           make(map[string]*processorRunState),
-		promptFunc:           m.promptFunc,
-		promptCompletionFunc: m.promptCompletionFunc,
-		notifyFunc:           m.notifyFunc,
-		totalActivations:     activations,
-		lastActivationAt:     lastAt,
-		stateStore:           m.stateStore,
-		pendingDispatchStore: m.pendingDispatchStore,
-		clock:                m.clock,
-		runRecorder:          m.runRecorder,
+		processorsDir:           m.processorsDir,
+		logger:                  m.logger,
+		processors:              make([]*Processor, len(m.processors)),
+		rerunState:              make(map[string]*processorRunState),
+		promptFunc:              m.promptFunc,
+		promptCompletionFunc:    m.promptCompletionFunc,
+		notifyFunc:              m.notifyFunc,
+		shouldDeferDispatchFunc: m.shouldDeferDispatchFunc,
+		totalActivations:        activations,
+		lastActivationAt:        lastAt,
+		stateStore:              m.stateStore,
+		pendingDispatchStore:    m.pendingDispatchStore,
+		clock:                   m.clock,
+		runRecorder:             m.runRecorder,
 	}
 	copy(clone.processors, m.processors)
 	clone.AddTextProcessors(procs, priority)
@@ -583,20 +607,21 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 	m.statsMu.Unlock()
 
 	clone := &Manager{
-		processorsDir:        m.processorsDir,
-		logger:               logger,
-		processors:           make([]*Processor, len(m.processors)),
-		rerunState:           make(map[string]*processorRunState),
-		promptFunc:           m.promptFunc,
-		promptCompletionFunc: m.promptCompletionFunc,
-		notifyFunc:           m.notifyFunc,
-		totalActivations:     activations,
-		lastActivationAt:     lastAt,
-		stateStore:           m.stateStore,
-		pendingDispatchStore: m.pendingDispatchStore,
-		clock:                m.clock,
-		runRecorder:          m.runRecorder,
-		loadErrors:           append([]ProcessorLoadError(nil), m.loadErrors...),
+		processorsDir:           m.processorsDir,
+		logger:                  logger,
+		processors:              make([]*Processor, len(m.processors)),
+		rerunState:              make(map[string]*processorRunState),
+		promptFunc:              m.promptFunc,
+		promptCompletionFunc:    m.promptCompletionFunc,
+		notifyFunc:              m.notifyFunc,
+		shouldDeferDispatchFunc: m.shouldDeferDispatchFunc,
+		totalActivations:        activations,
+		lastActivationAt:        lastAt,
+		stateStore:              m.stateStore,
+		pendingDispatchStore:    m.pendingDispatchStore,
+		clock:                   m.clock,
+		runRecorder:             m.runRecorder,
+		loadErrors:              append([]ProcessorLoadError(nil), m.loadErrors...),
 	}
 	copy(clone.processors, m.processors)
 
@@ -684,20 +709,21 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 	m.statsMu.Unlock()
 
 	clone := &Manager{
-		processorsDir:        m.processorsDir,
-		logger:               m.logger,
-		processors:           make([]*Processor, len(m.processors)),
-		rerunState:           make(map[string]*processorRunState),
-		promptFunc:           m.promptFunc,
-		promptCompletionFunc: m.promptCompletionFunc,
-		notifyFunc:           m.notifyFunc,
-		totalActivations:     activations,
-		lastActivationAt:     lastAt,
-		stateStore:           m.stateStore,
-		pendingDispatchStore: m.pendingDispatchStore,
-		clock:                m.clock,
-		runRecorder:          m.runRecorder,
-		loadErrors:           m.loadErrors, // read-only; safe to share
+		processorsDir:           m.processorsDir,
+		logger:                  m.logger,
+		processors:              make([]*Processor, len(m.processors)),
+		rerunState:              make(map[string]*processorRunState),
+		promptFunc:              m.promptFunc,
+		promptCompletionFunc:    m.promptCompletionFunc,
+		notifyFunc:              m.notifyFunc,
+		shouldDeferDispatchFunc: m.shouldDeferDispatchFunc,
+		totalActivations:        activations,
+		lastActivationAt:        lastAt,
+		stateStore:              m.stateStore,
+		pendingDispatchStore:    m.pendingDispatchStore,
+		clock:                   m.clock,
+		runRecorder:             m.runRecorder,
+		loadErrors:              m.loadErrors, // read-only; safe to share
 	}
 
 	// Deep-copy processor pointers so we can modify Enabled without affecting the original.
@@ -1068,7 +1094,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 
 	// Dispatch collected prompt-mode processors.
 	if len(pendingPrompts) > 0 {
-		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts, false)
 	}
 
 	// Increment message counters for all rerun-tracked processors that didn't fire
@@ -1508,7 +1534,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 
 	// Dispatch collected prompt-mode processors (fire-and-forget).
 	if len(pendingPrompts) > 0 {
-		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts, false)
 	}
 
 	// --- Update and save persisted state ---
@@ -1689,7 +1715,11 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 	}
 
 	if len(pendingPrompts) > 0 {
-		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
+		// deferrableWhenBusy=true (mitto-z4w): close-phase batches are the
+		// only latency-tolerant, spool-backed dispatches — skip straight to
+		// the durable spool when the shared process would shed a proactive
+		// aux session instead of riding out a doomed retry loop.
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts, true)
 	}
 
 	m.logger.Info("close-phase processor pipeline complete",
@@ -2048,7 +2078,7 @@ func clearSustainedBusy(workspaceUUID string) {
 // silently logged and the work was lost with no retry and no UI signal
 // (mitto-exr). failLog lets single vs batched dispatch keep their distinct
 // terminal wording.
-func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string) {
+func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string, deferrableWhenBusy bool) {
 	entry := PendingDispatchEntry{
 		ID:             newPendingDispatchID(),
 		WorkspaceUUID:  workspaceUUID,
@@ -2078,6 +2108,60 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		entry = appendResult.Entry
 		trackedPersisted = true
 		m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
+	}
+
+	// Proactive spool-first deferral (mitto-z4w), checked BEFORE the admission
+	// gate and RPC loop below. Close-phase batches fire right after a turn
+	// ends, when the shared process is almost always still busy serving that
+	// turn's RPCs — so the very next attempt below would be shed immediately
+	// (ErrProcessBusy/ErrProcessSaturated/etc.), then dispatchWithRetry rides
+	// out the busy window for up to dispatchBusyMaxAttempts before spooling
+	// anyway. deferrableWhenBusy (set only by the ApplyOnClose call site) plus
+	// shouldDeferDispatchFunc reporting the process would shed lets us skip
+	// straight to the same durable spool the give-up path below uses — same
+	// no-loss recovery guarantees (live-session flush + periodic sweep), zero
+	// doomed RPC attempts. This is an expected, planned deferral: logged at
+	// INFO (not the ERROR reserved for genuine retry exhaustion below) and
+	// notifyFunc is deliberately NOT invoked.
+	if deferrableWhenBusy && m.shouldDeferDispatchFunc != nil && m.shouldDeferDispatchFunc(workspaceUUID) {
+		deferred := false
+		if trackedPersisted {
+			dropped, saveErr := m.pendingDispatchStore.Requeue(workspaceUUID, []PendingDispatchEntry{entry})
+			if saveErr != nil {
+				if m.logger != nil {
+					m.logger.Error(failLog+"; failed to release durable claim for planned deferral",
+						"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name, "persist_error", saveErr)
+				}
+			} else {
+				deferred = true
+				m.logPendingDispatchDrops(workspaceUUID, dropped)
+			}
+		} else if m.pendingDispatchStore != nil && workspaceUUID != "" {
+			appendResult, saveErr := m.pendingDispatchStore.Append(entry)
+			if saveErr != nil {
+				if m.logger != nil {
+					m.logger.Error(failLog+"; failed to persist deferred batch, work is lost",
+						"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name, "persist_error", saveErr)
+				}
+			} else {
+				deferred = true
+				entry = appendResult.Entry
+				m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
+			}
+		}
+		if deferred {
+			if m.logger != nil {
+				m.logger.Info(skipLog+"; deferred to spool: shared process would shed a proactive auxiliary session, dispatching straight to durable spool",
+					"dispatch_id", entry.ID,
+					"workspace_uuid", workspaceUUID,
+					"name", name,
+				)
+			}
+			return
+		}
+		// Could not actually persist the deferral (no pendingDispatchStore
+		// configured, or workspaceUUID empty) — fall through to the normal
+		// dispatch path below rather than silently dropping the work.
 	}
 
 	// Admission control (mitto-hjx): serialize the actual RPC-issuing retry
@@ -2675,7 +2759,11 @@ flushEntries:
 // If there is a single processor, it dispatches directly with the processor name.
 // If there are multiple processors, it combines their prompts into a single
 // request and dispatches to a shared "batch" auxiliary session.
-func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPromptDispatch) {
+// deferrableWhenBusy is forwarded to dispatchWithRetry (mitto-z4w): only the
+// ApplyOnClose call site passes true, since only close-phase batches are
+// latency-tolerant enough to skip straight to the durable spool instead of
+// attempting delivery.
+func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPromptDispatch, deferrableWhenBusy bool) {
 	if len(prompts) == 0 {
 		return
 	}
@@ -2686,6 +2774,7 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 		go m.dispatchWithRetry(workspaceUUID, p.name, p.prompt, p.timeout,
 			"prompt-mode processor dispatch skipped: shared ACP process not available",
 			"prompt-mode processor dispatch failed",
+			deferrableWhenBusy,
 		)
 		m.logger.Info("prompt-mode processor dispatched (single)",
 			"name", prompts[0].name,
@@ -2715,6 +2804,7 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 	go m.dispatchWithRetry(workspaceUUID, combinedName, combinedPrompt, maxTimeout,
 		"batched prompt-mode processor dispatch skipped: shared ACP process not available",
 		"batched prompt-mode processor dispatch failed",
+		deferrableWhenBusy,
 	)
 
 	m.logger.Info("prompt-mode processors dispatched (batched)",

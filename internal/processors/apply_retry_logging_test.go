@@ -51,7 +51,7 @@ func TestDispatchWithRetry_OrdinaryExhaustionPreservesTerminalErrorContext(t *te
 	m.SetPromptFunc(func(context.Context, string, string, string) error {
 		return fmt.Errorf("persistent transient backpressure")
 	})
-	m.dispatchWithRetry("", "proc", "prompt", time.Second, "skip", "give up")
+	m.dispatchWithRetry("", "proc", "prompt", time.Second, "skip", "give up", false)
 
 	var terminal []capturedLogRecord
 	for _, rec := range handler.snapshot() {

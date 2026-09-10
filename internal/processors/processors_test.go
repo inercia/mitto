@@ -6394,7 +6394,7 @@ func TestDispatchWithRetry_GiveUp_LogsWaitedDuration(t *testing.T) {
 
 	// No pendingDispatchStore/workspaceUUID wired, so this exercises the
 	// "batch not persisted, work is lost" terminal ERROR branch.
-	m.dispatchWithRetry("", "proc", "prompt", time.Second, "skip", "give up")
+	m.dispatchWithRetry("", "proc", "prompt", time.Second, "skip", "give up", false)
 
 	var errRecs []capturedLogRecord
 	for _, rec := range handler.snapshot() {
