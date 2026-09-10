@@ -733,6 +733,113 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_LegacyBackgroundColorKeyMigrated pins mitto-p58: the
+// mitto_prompt_update MCP tool's JSON param names use snake_case
+// (background_color), but the on-disk schema and PromptFile/PromptTarget
+// struct tags bind camelCase (backgroundColor). A prompt file saved with the
+// snake_case key must still bind its value (mirroring the target.reuse*
+// migration in TestParsePromptFile_LegacyReuseKeysMigrated above) and must
+// NOT trip the "unrecognised key" WARN — unless an explicit camelCase value
+// is already present, in which case the snake_case key must not clobber it
+// and is left as a genuinely unrecognised (warned) leftover key.
+func TestParsePromptFile_LegacyBackgroundColorKeyMigrated(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want func(*testing.T, *PromptFile)
+	}{
+		{
+			name: "top-level snake_case binds and is not flagged unknown",
+			body: `name: "x"
+background_color: '#E1BEE7'
+prompt: hi
+`,
+			want: func(t *testing.T, p *PromptFile) {
+				if p.BackgroundColor != "#E1BEE7" {
+					t.Errorf("BackgroundColor = %q, want #E1BEE7", p.BackgroundColor)
+				}
+				for _, w := range p.Warnings {
+					if strings.Contains(w, "background_color") {
+						t.Errorf("Warnings = %v, want no mention of background_color (should be silently migrated in memory)", p.Warnings)
+					}
+				}
+			},
+		},
+		{
+			name: "target.background_color binds and is not flagged unknown",
+			body: `name: "x"
+target:
+  background_color: '#E1BEE7'
+prompt: hi
+`,
+			want: func(t *testing.T, p *PromptFile) {
+				if p.Target == nil || p.Target.BackgroundColor != "#E1BEE7" {
+					t.Errorf("Target.BackgroundColor = %+v, want #E1BEE7", p.Target)
+				}
+				for _, w := range p.Warnings {
+					if strings.Contains(w, "background_color") {
+						t.Errorf("Warnings = %v, want no mention of background_color (should be silently migrated in memory)", p.Warnings)
+					}
+				}
+			},
+		},
+		{
+			name: "explicit top-level camelCase wins and is not clobbered by snake_case",
+			body: `name: "x"
+background_color: '#111111'
+backgroundColor: '#222222'
+prompt: hi
+`,
+			want: func(t *testing.T, p *PromptFile) {
+				if p.BackgroundColor != "#222222" {
+					t.Errorf("BackgroundColor = %q, want #222222 (explicit camelCase must win; snake_case must not clobber it)", p.BackgroundColor)
+				}
+				found := false
+				for _, w := range p.Warnings {
+					if strings.Contains(w, "background_color") {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("Warnings = %v, want a mention of the leftover unrecognised background_color key (not renamed since backgroundColor already present)", p.Warnings)
+				}
+			},
+		},
+		{
+			name: "explicit target camelCase wins and is not clobbered by snake_case",
+			body: `name: "x"
+target:
+  backgroundColor: '#222222'
+  background_color: '#111111'
+prompt: hi
+`,
+			want: func(t *testing.T, p *PromptFile) {
+				if p.Target == nil || p.Target.BackgroundColor != "#222222" {
+					t.Errorf("Target.BackgroundColor = %+v, want #222222 (explicit camelCase must win; snake_case must not clobber it)", p.Target)
+				}
+				found := false
+				for _, w := range p.Warnings {
+					if strings.Contains(w, "target.background_color") {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("Warnings = %v, want a mention of the leftover unrecognised target.background_color key (not renamed since target.backgroundColor already present)", p.Warnings)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, err := ParsePromptFile("legacy-bg.prompt.yaml", []byte(tc.body), time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile: err = %v, want a successful migrate+bind", err)
+			}
+			tc.want(t, prompt)
+		})
+	}
+}
+
 // TestParsePromptFile_LegacyReuseMentionInBodyIsIgnored pins mitto-6b3: the
 // legacy-key rejection walks the document root's target: mapping only, so a
 // prompt body (or any other scalar) that happens to mention the string
