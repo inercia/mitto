@@ -390,3 +390,28 @@ describe("useConversationMenu — Change color submenu (mitto-eazf)", () => {
     }
   });
 });
+
+describe("useConversationMenu — Auto-rename entry (mitto-yv2)", () => {
+  test("no onAutoRename → no 'Auto-rename' entry", () => {
+    const { contextMenuItems } = useConversationMenu({ session: SESSION });
+    expect(findItem(contextMenuItems, "Auto-rename")).toBeUndefined();
+  });
+
+  test("onAutoRename present → 'Auto-rename' entry appears", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      onAutoRename: () => {},
+    });
+    expect(findItem(contextMenuItems, "Auto-rename")).toBeDefined();
+  });
+
+  test("'Auto-rename' onClick invokes onAutoRename with the session", () => {
+    const calls = [];
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      onAutoRename: (s) => calls.push(s),
+    });
+    findItem(contextMenuItems, "Auto-rename").onClick();
+    expect(calls).toEqual([SESSION]);
+  });
+});

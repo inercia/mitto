@@ -123,6 +123,99 @@ func TestWorkspaceAuxiliaryManager_GenerateTitle(t *testing.T) {
 	}
 }
 
+// TestWorkspaceAuxiliaryManager_GenerateTitleFromContext mirrors
+// TestWorkspaceAuxiliaryManager_GenerateTitle but exercises the dedicated
+// from-context template used by the "Auto-rename" forced-regenerate path
+// (mitto-yv2): it must use the generate_title_from_context.txt wording
+// ("excerpt from a conversation"), not the initial-message template.
+func TestWorkspaceAuxiliaryManager_GenerateTitleFromContext(t *testing.T) {
+	tests := []struct {
+		name           string
+		contextText    string
+		mockResponse   string
+		mockError      error
+		wantContains   string
+		wantErr        bool
+		checkPurpose   string
+		checkWorkspace string
+	}{
+		{
+			name:           "successful title from context",
+			contextText:    "User: fix the login bug\nAssistant: use OAuth2",
+			mockResponse:   `"Login Bug Fix"`,
+			wantContains:   "Login Bug Fix",
+			checkPurpose:   PurposeTitleGen,
+			checkWorkspace: "test-workspace",
+		},
+		{
+			name:         "title with quotes removed",
+			contextText:  "User: test\nAssistant: reply",
+			mockResponse: `'Test Title'`,
+			wantContains: "Test Title",
+		},
+		{
+			name:         "title truncated if too long",
+			contextText:  "User: test\nAssistant: reply",
+			mockResponse: `"This is a very long title that exceeds the maximum length allowed for titles"`,
+			wantContains: "...",
+		},
+		{
+			name:        "error from provider",
+			contextText: "User: test\nAssistant: reply",
+			mockError:   errors.New("provider error"),
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedWorkspace, capturedPurpose, capturedPrompt string
+
+			mock := &mockProcessProvider{
+				promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+					capturedWorkspace = workspaceUUID
+					capturedPurpose = purpose
+					capturedPrompt = message
+					if tt.mockError != nil {
+						return "", tt.mockError
+					}
+					return tt.mockResponse, nil
+				},
+			}
+
+			mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+			got, err := mgr.GenerateTitleFromContext(context.Background(), "test-workspace", tt.contextText)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GenerateTitleFromContext() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr {
+				if !strings.Contains(got, tt.wantContains) {
+					t.Errorf("GenerateTitleFromContext() = %q, want to contain %q", got, tt.wantContains)
+				}
+
+				if tt.checkPurpose != "" && capturedPurpose != tt.checkPurpose {
+					t.Errorf("Purpose = %q, want %q", capturedPurpose, tt.checkPurpose)
+				}
+
+				if tt.checkWorkspace != "" && capturedWorkspace != tt.checkWorkspace {
+					t.Errorf("Workspace = %q, want %q", capturedWorkspace, tt.checkWorkspace)
+				}
+
+				if !strings.Contains(capturedPrompt, "excerpt from a conversation") {
+					t.Errorf("prompt should use the dedicated from-context template, got: %q", capturedPrompt)
+				}
+				if strings.Contains(capturedPrompt, "initial message") {
+					t.Errorf("prompt should NOT use the initial-message template, got: %q", capturedPrompt)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkspaceAuxiliaryManager_ImprovePrompt(t *testing.T) {
 	mock := &mockProcessProvider{
 		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
