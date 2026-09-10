@@ -82,6 +82,25 @@ func (c *showInternalErrorClient) Show(_ context.Context, _, _ string) ([]byte, 
 	return nil, &beads.CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: "database is locked"}
 }
 
+// showCanceledClient is a beads.Client whose Show fails with a wrapped
+// context.Canceled, mimicking bd's subprocess exiting cleanly (exit_code=0,
+// empty stderr) once the request's context is canceled by the client closing
+// the beads issue panel or navigating away mid-fetch (mitto-rwj). This is the
+// exact evidenced endpoint from the bug report: GET /mitto/api/issues/{id}.
+//
+// List is overridden to report the id as present so the fast-negative
+// membership pre-check in HandleBeadsShow does not short-circuit to 404
+// before Show is reached.
+type showCanceledClient struct{ stubBeadsClient }
+
+func (c *showCanceledClient) List(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[{"id":"mitto-cam"}]`), nil
+}
+
+func (c *showCanceledClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return nil, fmt.Errorf("bd command failed: %w", context.Canceled)
+}
+
 // schemaSkewClient is a beads.Client whose List mimics bd's refusal to
 // auto-migrate a remote-backed database that is behind the binary's schema.
 // Used to verify that a schema-version skew maps to an actionable HTTP 409
@@ -1018,6 +1037,48 @@ func TestHandleBeadsShow_InternalError(t *testing.T) {
 	}
 	if resp.Error.Code != "server_error" {
 		t.Errorf("error.code = %q, want %q", resp.Error.Code, "server_error")
+	}
+}
+
+// TestHandleBeadsShow_ClientCanceled_DoesNotLogError is the mitto-rwj
+// acceptance-criteria regression test for the exact endpoint evidenced in
+// the bug report (GET /mitto/api/issues/{id}): a beads Show whose context was
+// canceled by the client (panel closed / navigated away mid-fetch) must NOT
+// be logged at ERROR nor reported as a server failure, unlike a genuine bd
+// failure (contrast with TestHandleBeadsShow_InternalError above, which
+// stays green as the regression guard for real failures).
+func TestHandleBeadsShow_ClientCanceled_DoesNotLogError(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	sm := newBeadsTestSM()
+	s := New(Deps{SessionManager: sm, BeadsClient: &showCanceledClient{}, Logger: logger})
+
+	req := localhostRequest("/api/issues/mitto-cam?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-cam")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+
+	if w.Code != statusClientClosedRequest {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, statusClientClosedRequest, w.Body.String())
+	}
+	logged := logBuf.String()
+	if strings.Contains(logged, "level=ERROR") {
+		t.Errorf("log output = %q, want no ERROR-level line for a client-canceled request", logged)
+	}
+	if !strings.Contains(logged, "level=DEBUG") || !strings.Contains(logged, "beads command canceled by client") {
+		t.Errorf("log output = %q, want a DEBUG line noting the client cancellation", logged)
+	}
+
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "client_canceled" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "client_canceled")
 	}
 }
 
