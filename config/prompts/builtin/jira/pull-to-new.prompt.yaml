@@ -1,0 +1,156 @@
+icon: tag
+name: 'JIRA: pull to new'
+menus: prompts, !promptsLoop
+description: Create a new local beads issue from an existing JIRA ticket — mirror the description and comments, link the bead, and leave it ready for a later JIRA sync/push
+backgroundColor: '#D1C4E9'
+group: JIRA
+tags:
+- jira
+parameters:
+  - name: Key
+    type: text
+    required: false
+    description: 'The JIRA ticket to pull into a new bead. Accepts a raw JIRA key (e.g. `ABC-123`) or a browse URL (`.../browse/ABC-123`). If empty, you are asked for it in interactive mode; in silent (loop) mode the run stops.'
+enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads")'
+preferredModels:
+  - modelTag: Coding
+target:
+  title: 'JIRA: sync tasks'
+  reuse:
+    title: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # JIRA: Pull a ticket into a new bead
+
+  Create a **new** local beads issue that mirrors an existing JIRA ticket — compose its body from the JIRA description, mirror the ticket's comments, and link the bead so the rest of the JIRA suite (`JIRA: pull issue`, `JIRA: push issue`, `JIRA: sync tasks`) can keep it in sync afterwards. This is the single-ticket counterpart of `JIRA: sync tasks`' create path, and the inverse of `JIRA: push to new`. It only ever **creates the local bead**; it never edits or deletes anything in JIRA.
+
+  {{ template "_shared/interaction-mode" . }}
+
+  ## Access Method
+
+  {{ template "jira/shared/access-method" (dict "Note" "the get-issue tool in Step 3") }}
+
+  ## Step 1 — Determine the JIRA key
+  {{- if .Args.Key }}
+
+  A JIRA ticket was supplied for this run:
+
+  > `{{ .Args.Key }}`
+
+  Resolve it to a bare JIRA key (uppercase `PROJECT-NUMBER`):
+
+  - **Raw key** — the value does **not** start with `http://` or `https://`. Trim it, uppercase it, and use it verbatim (e.g. `abc-123` → `ABC-123`).
+  - **Browse URL** — starts with `http://` or `https://`. Take the last path segment after `/browse/` (e.g. `https://jira.example.com/browse/ABC-123` → `ABC-123`); ignore any query string or fragment. If the URL is not a `/browse/<KEY>` link, treat it as unresolvable and fall back to the "no key" handling below.
+
+  If the value cannot be resolved to a single key, fall back to the "no key" handling below.
+  {{- else }}
+
+  No JIRA ticket was supplied.
+
+  - **Silent mode** (scheduled loop run): a ticket cannot be requested unattended. Send one `mitto_ui_notify` explaining that a JIRA ticket key is required, then **stop**.
+  - **Interactive mode**: ask for it with `mitto_ui_form(self_id: "{{ .Session.ID }}")` — a single text field for the JIRA key or browse URL. Resolve the submitted value to a bare key using the same raw-key / browse-URL rules above. If the user cancels or submits nothing, **stop**.
+  {{- end }}
+
+  Below, `<KEY>` is the resolved uppercase key and `<key-lower>` its lowercase form (e.g. `ABC-123` → `abc-123`).
+
+  ## Step 2 — Skip if a bead already exists for this ticket
+
+  A bead is already linked to `<KEY>` when it carries `external_ref = "jira-<key-lower>"` — the lowercase key prefixed with `jira-`, exactly what the create path writes. Look for it:
+
+  ```bash
+  bd list --all --label jira-sync --json
+  ```
+
+  Search the results for a bead whose `external_ref` equals `jira-<key-lower>`. If none match, scan more broadly in case a bead carries the ref without the `jira-sync` label:
+
+  ```bash
+  bd list --all --json
+  ```
+
+  If a matching bead **exists** (either query), this ticket has already been pulled — do **not** create a duplicate. Report the existing bead id; in interactive mode note that `JIRA: pull issue` refreshes it, in silent mode send one `mitto_ui_notify`. Then **stop**.
+
+  Only continue to Step 3 when **no** matching bead exists.
+
+  ## Step 3 — Fetch the JIRA ticket
+  {{- if Cond "Tools.Names.exists(n, n.matches('(?i)jira'))" }}
+
+  Call **`jira_get_issue_jira`** for `<KEY>` with `fields="*all"` and `expand="renderedFields"`.
+
+  **Do not** substitute a batch search tool (`jira_search_jira` / `search_jira_issues` / any `*search*` name) for this call, even as a fallback when `jira_get_issue_jira` errors. On JIRA Server / Data Center the batch search response **omits the `comment` field** by default, so a search-based fallback silently drops comments — exactly the failure mode this step exists to prevent. If the per-issue tool errors, try a dedicated per-issue comments tool (any `mcp__*__jira_get_comments` / `get_jira_comments` / `jira_get_issue_comments` name that is exposed) for the `comment` array, then retry `jira_get_issue_jira` for the rest. If none of the per-issue tools work, fall through to the CLI branch below — never to a batch search.
+
+  **Verify the response contains a `comment` field** (an array, possibly empty) before continuing. If the field is **absent** — not just empty — you fetched from an endpoint that elides comments; retry with a per-issue tool. An absent `comment` field is never evidence of "0 comments."
+  {{- else }}
+
+  Run:
+
+  ```bash
+  jira issue list -q "key = <KEY>" --raw
+  PAGER=cat jira issue view <KEY> --comments 200
+  ```
+
+  Comment bodies **are** omitted from list `--raw` on JIRA Server / Data Center — treat that response as authoritative for the ticket fields (summary, status, priority, `updated`, etc.) only, never as evidence about comments. The `jira issue view <KEY> --comments 200` output is the authoritative source for comment bodies.
+  {{- end }}
+
+  Capture: key, summary, status name, priority, issue type, labels, assignee, the `updated` timestamp, and every comment (id, author, created, body) from the per-issue endpoint. For the **description** and each **comment body**, capture the **raw** field value — on JIRA Server / Data Center this is JIRA wiki markup, which Step 4 converts to Markdown. Keep the `renderedFields` HTML only as a fallback for content the converter does not handle.
+
+  ## Step 4 — JIRA wiki markup → Markdown helper
+
+  {{ template "jira/shared/jira2md" . }}
+
+  ## Step 5 — Compose the body and create the bead
+
+  {{ template "jira/shared/managed-body" . }}
+
+  Because Step 2 confirmed **no** bead exists for this ticket, there are no local edits to preserve — the freshly composed managed block is the entire body. Write it to `/tmp/jira-<key>.md`, then create the bead:
+
+  ```bash
+  bd create "[<KEY>] <summary>" \
+    --type <mapped-type> --priority <mapped-priority> \
+    --labels "jira-sync" --external-ref "jira-<key-lower>" \
+    --body-file /tmp/jira-<key>.md
+  ```
+
+  {{ template "jira/shared/link-bead" (dict "Phase" "create" "Target" "<id>") }} Capture the new bead ID as `<id>`.
+
+  Do **not** auto-close the new bead even if the JIRA ticket is already in a terminal status — that reflection is `JIRA: pull issue`'s job on the next run (this create path mirrors `JIRA: sync tasks` Step 5A, which never closes on create). The current JIRA status is already visible inside the managed block of the body.
+
+  ## Step 6 — Mirror the JIRA comments
+
+  {{ template "jira/shared/mirror-comments-in" . }}
+
+  In this prompt, `<bead-id>` is `<id>` (the bead created in Step 5).
+
+  ## Step 7 — High-water mark: commit `jira_updated` last
+
+  {{ template "jira/shared/link-bead" (dict "Phase" "commit" "Target" "<id>") }}
+
+  ## Step 8 — Summary
+
+  Render a **markdown summary table**:
+
+  ```
+  | JIRA ticket | Beads ticket | Change / notes |
+  |---|---|---|
+  | <KEY> | <id> | <short human sentence, actions joined with `; `> |
+  ```
+
+  Column rules:
+
+  - **JIRA ticket** — the JIRA key (e.g. `ABC-123`) or `—` if the fetch failed.
+  - **Beads ticket** — the new beads id, or `—` if creation was skipped/failed.
+  - **Change / notes** — a short human sentence (bead created, N JIRA comments mirrored, skipped because a bead already exists, fetch/create failure). Combine multiple actions with `; `. Prefix with `⚠️` on any error or skip.
+
+  **Interactive mode** — always render the table, even for a skip or no-op row.
+
+  **Silent mode** (scheduled loop) — send a single `mitto_ui_notify` whose `message` contains the markdown table verbatim only when the table has a non-trivial row (a bead was created, or an error/skip occurred). Stay silent otherwise.
+
+  ## Guidelines
+
+  - **Create-only**: this prompt only creates a new **local bead** mirroring an existing JIRA ticket. It never writes to JIRA, never closes the new bead, and never touches other beads. Use `JIRA: pull issue` to refresh the bead later, `JIRA: push issue` to push local changes back, or `JIRA: sync tasks` for a full batch sync.
+  - **Idempotent guard**: Step 2's already-linked check (by `external_ref = "jira-<key-lower>"`) prevents this prompt from ever double-creating a bead for the same ticket. Running it twice for the same key is a no-op after the first run.
+  - **`jira_updated` is a high-water mark**: it is written only after the body is composed **and** every eligible comment has been mirrored (Step 7) — never earlier. Bumping it early poisons the idempotency guard so a missed comment becomes permanently unreachable until some other JIRA event ticks `updated` again. Comments must also be sourced from the per-issue endpoint (Step 3) — the batch search payload cannot be trusted for comment content on JIRA Server / Data Center.
+  - **Ready for sync/push**: the new bead is created with the `jira-sync` label and `external_ref = "jira-<key-lower>"`, which is exactly what `JIRA: pull issue` / `JIRA: push issue` / `JIRA: sync tasks` parse back out to find the ticket — so it participates in every later sync without further setup.
+  - **Good-enough conversion**: JIRA wiki markup is converted to Markdown on a best-effort basis (Step 4) — headers and code blocks are the priority; perfect fidelity is not a goal.
+  - Always `--body-file` for the description and `--file`/inline text for comments to avoid shell-quoting issues.

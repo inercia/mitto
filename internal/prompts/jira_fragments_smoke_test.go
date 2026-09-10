@@ -10,10 +10,10 @@ import (
 // TestJiraFragmentsRenderCorrectly is a smoke test for the mitto-g61 jira
 // fragment extraction (extended by mitto-w8jp.2 for access-method,
 // resolve-query, and link-bead, and by mitto-w8jp.3 for push-new/md2jira):
-// it loads the builtin fragment registry, renders each of the five jira
+// it loads the builtin fragment registry, renders each of the six jira
 // prompts that reference `jira/shared/*` fragments (new-ticket, pull-issue,
-// push-issue, push-new, sync-tasks), and asserts the rendered output
-// contains hallmarks of every extracted fragment (proving the
+// pull-to-new, push-issue, push-new, sync-tasks), and asserts the rendered
+// output contains hallmarks of every extracted fragment (proving the
 // {{ template "jira/shared/..." . }} calls actually resolved and inlined
 // their bodies).
 func TestJiraFragmentsRenderCorrectly(t *testing.T) {
@@ -63,6 +63,15 @@ func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 			"Deployed to Stage",                             // from jira/shared/terminal-status
 			"High-water mark — commit `jira_updated` last.", // from jira/shared/link-bead (commit)
 		},
+		"JIRA: pull to new": {
+			"Prefer MCP tools whenever they are available", // from jira/shared/access-method
+			"jira2md.py",                                    // from jira/shared/jira2md
+			"<!-- jira-sync:begin",                          // from jira/shared/managed-body
+			"bd comment <bead-id>",                          // from jira/shared/mirror-comments-in
+			"Preserve local comments/notes",                 // from jira/shared/mirror-comments-in
+			"Link the new bead to its JIRA ticket",          // from jira/shared/link-bead (create)
+			"High-water mark — commit `jira_updated` last.", // from jira/shared/link-bead (commit)
+		},
 		"JIRA: push issue": {
 			"Prefer MCP tools whenever they are available", // from jira/shared/access-method
 			"`Won't Do` / `Won't Fix`",                     // from jira/shared/terminal-status (via push-transition)
@@ -109,6 +118,7 @@ func TestJiraFragmentsRenderCorrectly(t *testing.T) {
 	// hallmark sentence must appear exactly once in the rendered output.
 	wantExactlyOnce := map[string]string{
 		"JIRA: pull issue":  "High-water mark — commit `jira_updated` last.",
+		"JIRA: pull to new": "High-water mark — commit `jira_updated` last.",
 		"JIRA: sync tasks":  "High-water mark — commit `jira_updated` last.",
 		"JIRA: push to new": "High-water mark — commit `jira_updated` last.",
 	}
