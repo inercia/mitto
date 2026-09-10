@@ -784,6 +784,8 @@ function sessionChangeText(m) {
         : `⚡ Running this prompt on ${value}`;
     case "mode":
       return `Mode changed to ${value}`;
+    case "model_unavailable":
+      return `⚠️ Model "${value}" is no longer available — switched to an available model`;
     case "prompt_arguments":
       return `Prompt arguments: ${items.join(", ")}`;
     case "context_cleared":
@@ -857,6 +859,14 @@ describe("sessionChangeText", () => {
   test("context_cleared without value falls back to the generic 'Context cleared' pill (mitto-so19)", () => {
     expect(sessionChangeText({ kind: "context_cleared" })).toBe(
       "🧹 Context cleared",
+    );
+  });
+
+  test("model_unavailable renders the fallback-notice pill (mitto-qst)", () => {
+    expect(
+      sessionChangeText({ kind: "model_unavailable", value: "claude-x" }),
+    ).toBe(
+      '⚠️ Model "claude-x" is no longer available — switched to an available model',
     );
   });
 });

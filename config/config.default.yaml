@@ -70,6 +70,14 @@ models:
       matchMode: contains
       pattern: Sonnet 4
     tags: [Smart, Coding]
+  # Family-level fallback: catches any Sonnet variant (e.g. a future Sonnet 6, or a
+  # renamed/retired Sonnet 5/4) so capability tags keep resolving across version rolls.
+  # Placed AFTER the version-specific Sonnet profiles so those win first for equal tags.
+  - name: Sonnet
+    criteria:
+      matchMode: contains
+      pattern: Sonnet
+    tags: [Smart, Coding]
   - name: Claude Haiku
     criteria:
       matchMode: contains

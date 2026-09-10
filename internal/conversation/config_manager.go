@@ -477,6 +477,16 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 		}
 		err = apply()
 	}
+	if category == ConfigOptionCategoryModel && err != nil && isModelPermanentlyUnavailableError(err) {
+		if ferr := c.fallbackToAvailableModel(d, ctx, opt, constraint); ferr == nil {
+			return nil
+		} else if l := d.cmLogger(); l != nil {
+			l.Warn("Best-effort model fallback failed; leaving pinned-model recovery to terminal handler",
+				"session_id", d.cmSessionID(), "error", ferr)
+		}
+		// On fallback failure, fall through and return the original permanent err
+		// so the recovery goroutine's existing terminal OnError branch still fires.
+	}
 	if err != nil {
 		if l := d.cmLogger(); l != nil {
 			l.Warn("ACP server constraint: failed to auto-select option; queued prompts remain pending",
@@ -484,6 +494,88 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 		}
 		return err
 	}
+	return nil
+}
+
+// fallbackToAvailableModel performs best-effort recovery when the conversation's
+// pinned baseline model has dropped out of the live ACP catalog (model-catalog
+// drift, mitto-qst). Rather than stranding the conversation/loop with an
+// unready startup constraint (which produces the "model is still initializing" /
+// "Failed to deliver loop prompt" storm), it picks the best available fallback
+// model, switches to it, self-heals the persisted baseline so later resumes do
+// not re-trigger this path, and records two persistent session_change timeline
+// events: a "model_unavailable" notice (explaining the drift) and a standard
+// "model" change (which drives the "Model changed to X" pill AND keeps stats
+// token-attribution retagging correct — the aggregator keys retag on
+// SessionChangeData.Kind == "model"). Returns nil on success (caller returns nil
+// so queued prompts release); returns a non-nil error only when no usable
+// fallback model exists (opt.Options is guaranteed non-empty by the caller, so
+// this is effectively unreachable in normal operation and left as a safety net).
+//
+// Fallback selection order (best-effort):
+//  1. ACP-server model constraint pattern match (respects configured policy).
+//  2. The agent's current/default model (cmGetCurrentModelID) when advertised
+//     and present in opt.Options — "leave the default model".
+//  3. The first available option.
+func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Context, opt SessionConfigOption, constraint *config.ACPServerConstraint) error {
+	unavailable := d.cmGetBaselineModel()
+
+	optionExists := func(value string) bool {
+		for _, o := range opt.Options {
+			if o.Value == value {
+				return true
+			}
+		}
+		return false
+	}
+
+	var target string
+	if constraint != nil && constraint.Pattern != "" {
+		if m := MatchConstraintOption(constraint, opt.Options); m != "" {
+			target = m
+		}
+	}
+	if target == "" {
+		if cur := d.cmGetCurrentModelID(); cur != "" && optionExists(cur) {
+			target = cur
+		}
+	}
+	if target == "" && len(opt.Options) > 0 {
+		target = opt.Options[0].Value
+	}
+	if target == "" || target == unavailable {
+		return errModelPermanentlyUnavailable
+	}
+
+	// Apply the fallback to the agent only when it differs from the currently
+	// active model. When we are simply adopting the agent's own default
+	// (target == current) no RPC is needed, but the UI config-option value and
+	// baseline must still be updated below.
+	if d.cmGetCurrentModelID() != target {
+		if err := c.setActiveModelOnly(d, ctx, target); err != nil {
+			return err
+		}
+	} else {
+		d.cmUpdateConfigOptionValue(ConfigOptionCategoryModel, target)
+		d.cmNotifyConfigChanged(ConfigOptionCategoryModel, target)
+	}
+
+	// Self-heal the persisted baseline so subsequent resumes do not re-enter
+	// this fallback path.
+	d.cmSetBaselineAndClearOverride(target)
+	c.persistBaselineModel(d, target)
+
+	if l := d.cmLogger(); l != nil {
+		l.Warn("Pinned model unavailable on resume; fell back to an available model",
+			"session_id", d.cmSessionID(), "unavailable_model", unavailable, "fallback_model", target)
+	}
+
+	// Persistent, reload-safe in-conversation messages. Record the explanatory
+	// notice first, then the standard model change (order = timeline order).
+	if unavailable != "" {
+		_ = d.cmRecordSessionChange("model_unavailable", unavailable, "")
+	}
+	_ = d.cmRecordSessionChange(ConfigOptionCategoryModel, target, unavailable)
 	return nil
 }
 

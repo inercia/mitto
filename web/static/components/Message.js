@@ -44,6 +44,8 @@ function sessionChangeText(m) {
         : `⚡ Running this prompt on ${value}`;
     case "mode":
       return `Mode changed to ${value}`;
+    case "model_unavailable":
+      return `⚠️ Model "${value}" is no longer available — switched to an available model`;
     case "prompt_arguments":
       return `Prompt arguments: ${items.join(", ")}`;
     case "context_cleared":

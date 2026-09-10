@@ -19,33 +19,31 @@ type lifecycleModelProcess struct {
 	calls   [][2]string
 }
 
-func TestModelLifecycle_StartupFailureRetainsConversationChoice(t *testing.T) {
-	for _, tc := range []struct {
-		name, baseline string
-		rpcErr         error
-		wantRPC        bool
-	}{
-		{name: "unavailable persisted model", baseline: "removed-model"},
-		{name: "agent rejects switch", baseline: "m-2", rpcErr: errors.New("agent refused model"), wantRPC: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := newFakeConfigDeps()
-			d.baselineModel = tc.baseline
-			d.currentModelID = "m-1"
-			d.setModelErr = tc.rpcErr
-			d.constraint = map[string]*config.ACPServerConstraint{
-				ConfigOptionCategoryModel: {Pattern: "Model 1", MatchMode: "exact"},
-			}
-			if err := (configManager{}).applyConfigConstraints(d, ConfigOptionCategoryModel); err == nil {
-				t.Fatal("failed restore must keep startup gated, not silently use the default")
-			}
-			if d.baselineModel != tc.baseline || d.currentModelID != "m-1" || len(d.persistedBaseline) != 0 {
-				t.Fatalf("failure changed model state: baseline=%q active=%q persisted=%v", d.baselineModel, d.currentModelID, d.persistedBaseline)
-			}
-			if (len(d.modelRPCCalls) > 0) != tc.wantRPC {
-				t.Fatalf("unexpected model RPCs: %v", d.modelRPCCalls)
-			}
-		})
+// TestModelLifecycle_TransientFailureRetainsConversationChoice verifies that a
+// TRANSIENT restore failure (agent rejects the switch RPC for a model that is
+// still present in the catalog) keeps startup gated instead of silently
+// falling back — unlike the PERMANENT case (pinned baseline model dropped
+// from the catalog entirely), which mitto-qst now recovers from via
+// best-effort fallback (see TestConfigManager_FallbackToAvailableModel_* and
+// TestConfigManager_ApplyConfigConstraints_FallsBackOnPermanentlyGoneBaseline
+// in config_manager_test.go, and TestStartupConstraint_FallsBackWhenPinnedModelPermanentlyGone
+// in background_session_test.go).
+func TestModelLifecycle_TransientFailureRetainsConversationChoice(t *testing.T) {
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-2" // present in the catalog: RPC failure is transient, not permanent
+	d.currentModelID = "m-1"
+	d.setModelErr = errors.New("agent refused model")
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 1", MatchMode: "exact"},
+	}
+	if err := (configManager{}).applyConfigConstraints(d, ConfigOptionCategoryModel); err == nil {
+		t.Fatal("failed restore must keep startup gated, not silently use the default")
+	}
+	if d.baselineModel != "m-2" || d.currentModelID != "m-1" || len(d.persistedBaseline) != 0 {
+		t.Fatalf("failure changed model state: baseline=%q active=%q persisted=%v", d.baselineModel, d.currentModelID, d.persistedBaseline)
+	}
+	if len(d.modelRPCCalls) == 0 {
+		t.Fatalf("expected the restore RPC to be attempted, got %v", d.modelRPCCalls)
 	}
 }
 

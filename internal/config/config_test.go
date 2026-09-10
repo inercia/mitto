@@ -2921,6 +2921,7 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 		"Claude Opus":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
 		"Claude Sonnet 5": {"Smart", "Coding"},
 		"Claude Sonnet 4": {"Smart", "Coding"},
+		"Sonnet":          {"Smart", "Coding"},
 		"Claude Haiku":    {"Fast", "Cheap"},
 		"GPT-5":           {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
 		"GPT-4":           {"Smart", "Coding"},

@@ -1118,36 +1118,18 @@ func TestStartupConstraintRecovery_RetriesTransientRebindFailure(t *testing.T) {
 	t.Fatal("recovery goroutine gave up after one failed rebind attempt instead of retrying")
 }
 
-// TestStartupConstraintRecovery_NeverGivesUpOnPermanentlyGoneModel reproduces
-// mitto-uex: a loop conversation pinned (via baselineModel) to an ACP model
-// that has dropped out of the live catalog (model-catalog drift, e.g. the
-// running Auggie build no longer advertises "claude-opus-4-8") hits a
-// PERMANENT "conversation model %q is no longer available" error from
-// applyConfigConstraints' apply() closure (config_manager.go), because the
-// target can never be found in opt.Options again.
-//
-// recoverStartupConstraintAfterRestart (bgsession_callbacks.go) does not
-// distinguish this PERMANENT condition from the TRANSIENT ones it was built
-// for (mitto-qy0j process replacement, mitto-3ml live-but-saturated retry):
-// its retryTimer branch just re-calls applyConfigConstraints every
-// startupConstraintLiveRetryInterval forever, with no bounded attempt count
-// and no terminal state (no fallback to an available model, no loop
-// auto-pause, no single operator notification). Since the pinned model can
-// never reappear in the catalog, this retry can never succeed — yet nothing
-// ever makes the recovery goroutine stop, producing the reported unbounded
-// WARN ("failed to auto-select option") / ERROR ("Failed to deliver loop
-// prompt") storm.
-//
-// This test gives the recovery goroutine a generous bounded window (hundreds
-// of retry intervals) to reach a terminal state and give up
-// (startupConstraintRecovery == false) despite the shared process never being
-// replaced and the session never being closed. It currently FAILS: recovery
-// keeps retrying indefinitely and never gives up.
-func TestStartupConstraintRecovery_NeverGivesUpOnPermanentlyGoneModel(t *testing.T) {
-	origLiveRetry := startupConstraintLiveRetryInterval
-	startupConstraintLiveRetryInterval = time.Millisecond
-	defer func() { startupConstraintLiveRetryInterval = origLiveRetry }()
-
+// TestStartupConstraint_FallsBackWhenPinnedModelPermanentlyGone verifies the
+// mitto-qst best-effort recovery: a loop conversation pinned (via
+// baselineModel) to an ACP model that has dropped out of the live catalog
+// (model-catalog drift, e.g. the running Auggie build no longer advertises
+// "claude-opus-4-8") no longer strands the conversation. Instead,
+// applyConfigConstraints' fallbackToAvailableModel helper (config_manager.go)
+// picks an available model (here: the agent's own current/default model,
+// "m-1", since no ACP-server constraint governs selection), switches to it,
+// self-heals the persisted baseline, and lets startupConfigConstraintsReady
+// become true — so the recovery goroutine (mitto-uex's terminal safety net)
+// is never even needed.
+func TestStartupConstraint_FallsBackWhenPinnedModelPermanentlyGone(t *testing.T) {
 	shared := newFakeSharedProcess() // ProcessDone() never closes: process stays alive
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1173,33 +1155,19 @@ func TestStartupConstraintRecovery_NeverGivesUpOnPermanentlyGoneModel(t *testing
 
 	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
 	bs.waitForStartupConfigConstraints()
-	if bs.startupConfigConstraintsReady() {
-		t.Fatal("expected the permanently-gone baseline model to fail the startup constraint")
-	}
 
-	// Give the recovery goroutine a generous bounded window (hundreds of
-	// startupConstraintLiveRetryInterval ticks) to notice the failure can
-	// never be transient — the pinned model is structurally absent from
-	// opt.Options/AvailableModels and cannot ever "come back" — and give up.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if !bs.startupConstraintRecovery.Load() {
-			// Recovery gave up. It must not have falsely marked the
-			// constraint ready for a model that never became available.
-			if bs.startupConfigConstraintsReady() {
-				t.Fatal("recovery must not mark the constraint ready for a permanently unavailable model")
-			}
-			return
-		}
-		time.Sleep(time.Millisecond)
+	if !bs.startupConfigConstraintsReady() {
+		t.Fatal("expected best-effort fallback to make the startup constraint ready instead of stranding the conversation")
 	}
-
-	t.Fatal("mitto-uex: recoverStartupConstraintAfterRestart never gives up retrying a " +
-		"PERMANENTLY unavailable pinned baseline model (dropped from the ACP catalog) — it " +
-		"keeps retrying forever on startupConstraintLiveRetryInterval with no terminal state " +
-		"(fallback to an available model, loop auto-pause, or a single operator notification), " +
-		"unlike the transient saturation/process-replacement cases (mitto-qy0j/mitto-3ml) this " +
-		"recovery path was designed for")
+	if got := bs.cmGetCurrentModelID(); got != "m-1" {
+		t.Fatalf("expected the agent's available default model 'm-1' to be selected, got %q", got)
+	}
+	if got := bs.cmGetBaselineModel(); got != "m-1" {
+		t.Fatalf("expected the persisted baseline to be self-healed to 'm-1', got %q", got)
+	}
+	if bs.startupConstraintRecovery.Load() {
+		t.Fatal("recovery goroutine should never have been needed once fallback succeeded")
+	}
 }
 
 // TestBackgroundSession_SelfDestruct verifies that RequestSelfDestruct sets the

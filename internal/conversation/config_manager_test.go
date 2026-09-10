@@ -806,3 +806,100 @@ func TestConfigManager_ApplyConfigConstraints_DoesNotRecordTimeline(t *testing.T
 		t.Fatalf("expected no session change recorded for constraint switch, got %v", d.sessionChanges)
 	}
 }
+
+// --- mitto-qst: fallbackToAvailableModel best-effort recovery ---
+
+// TestConfigManager_FallbackToAvailableModel_ConstraintTakesPrecedence verifies
+// selection order step 1: an ACP-server constraint match wins over the agent's
+// current model when the pinned baseline model is permanently unavailable.
+func TestConfigManager_FallbackToAvailableModel_ConstraintTakesPrecedence(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "claude-opus-4-8" // pinned model, absent from opt.Options
+	d.currentModelID = "m-1"
+	constraint := &config.ACPServerConstraint{Pattern: "Model 2", MatchMode: "exact"}
+	opt, _ := d.cmFindByCategory(ConfigOptionCategoryModel)
+
+	if err := c.fallbackToAvailableModel(d, context.Background(), opt, constraint); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
+		t.Fatalf("expected RPC switch to constraint match 'm-2', got %v", d.modelRPCCalls)
+	}
+	if len(d.baselineUpdates) != 1 || d.baselineUpdates[0] != "m-2" {
+		t.Fatalf("expected baseline self-heal to 'm-2', got %v", d.baselineUpdates)
+	}
+	if len(d.persistedBaseline) != 1 || d.persistedBaseline[0] != "m-2" {
+		t.Fatalf("expected persisted baseline 'm-2', got %v", d.persistedBaseline)
+	}
+	if len(d.sessionChanges) != 2 {
+		t.Fatalf("expected 2 session changes recorded, got %v", d.sessionChanges)
+	}
+	if got := d.sessionChanges[0]; got[0] != "model_unavailable" || got[1] != "claude-opus-4-8" || got[2] != "" {
+		t.Fatalf("expected model_unavailable notice first, got %v", got)
+	}
+	if got := d.sessionChanges[1]; got[0] != ConfigOptionCategoryModel || got[1] != "m-2" || got[2] != "claude-opus-4-8" {
+		t.Fatalf("expected model change pill second, got %v", got)
+	}
+}
+
+// TestConfigManager_FallbackToAvailableModel_FallsBackToCurrentModel verifies
+// selection order step 2: with no constraint, the agent's current/default
+// model wins (no RPC needed since it is already active).
+func TestConfigManager_FallbackToAvailableModel_FallsBackToCurrentModel(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "claude-opus-4-8"
+	d.currentModelID = "m-2" // agent's own current model, present in opt.Options
+	opt, _ := d.cmFindByCategory(ConfigOptionCategoryModel)
+
+	if err := c.fallbackToAvailableModel(d, context.Background(), opt, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("expected no RPC when target already matches current model, got %v", d.modelRPCCalls)
+	}
+	if len(d.baselineUpdates) != 1 || d.baselineUpdates[0] != "m-2" {
+		t.Fatalf("expected baseline self-heal to 'm-2', got %v", d.baselineUpdates)
+	}
+	if len(d.sessionChanges) != 2 || d.sessionChanges[1][1] != "m-2" {
+		t.Fatalf("expected model change pill to 'm-2', got %v", d.sessionChanges)
+	}
+}
+
+// TestConfigManager_FallbackToAvailableModel_FallsBackToFirstOption verifies
+// selection order step 3: when neither a constraint nor the agent's current
+// model resolves to a usable option, the first available option is chosen.
+func TestConfigManager_FallbackToAvailableModel_FallsBackToFirstOption(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "claude-opus-4-8"
+	d.currentModelID = "unknown-agent-default" // not present in opt.Options
+	opt, _ := d.cmFindByCategory(ConfigOptionCategoryModel)
+
+	if err := c.fallbackToAvailableModel(d, context.Background(), opt, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-1" {
+		t.Fatalf("expected RPC switch to first option 'm-1', got %v", d.modelRPCCalls)
+	}
+}
+
+// TestConfigManager_ApplyConfigConstraints_FallsBackOnPermanentlyGoneBaseline
+// is the integration-level check that applyConfigConstraints wires the
+// permanent-unavailable error from apply() into fallbackToAvailableModel and
+// swallows it (returns nil) so queued prompts are released instead of the
+// conversation being stranded (mitto-qst).
+func TestConfigManager_ApplyConfigConstraints_FallsBackOnPermanentlyGoneBaseline(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "claude-opus-4-8" // permanently gone from opt.Options
+	d.currentModelID = "m-1"
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("expected fallback to swallow the permanent error, got %v", err)
+	}
+	if d.baselineModel != "m-1" {
+		t.Fatalf("expected baseline self-healed to 'm-1', got %q", d.baselineModel)
+	}
+}

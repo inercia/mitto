@@ -83,6 +83,8 @@ func DefaultModelProfiles() []ModelProfile {
 		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}},
 		{Name: "Claude Sonnet 5", Criteria: contains("Sonnet 5"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Sonnet 4", Criteria: contains("Sonnet 4"), Tags: []string{"Smart", "Coding"}},
+		// Family-level Sonnet fallback (placed after the version-specific ones).
+		{Name: "Sonnet", Criteria: contains("Sonnet"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Haiku", Criteria: contains("Haiku"), Tags: []string{"Fast", "Cheap"}},
 		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Thinking", "Deep", "Coding"}},
 		{Name: "GPT-4", Criteria: contains("GPT-4"), Tags: []string{"Smart", "Coding"}},
