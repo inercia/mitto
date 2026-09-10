@@ -1048,6 +1048,10 @@ func TestHandleBeadsShow_InternalError(t *testing.T) {
 // failure (contrast with TestHandleBeadsShow_InternalError above, which
 // stays green as the regression guard for real failures).
 func TestHandleBeadsShow_ClientCanceled_DoesNotLogError(t *testing.T) {
+	old := beadsReadRetries
+	beadsReadRetries = 0 // fail immediately, no retries needed for this test
+	defer func() { beadsReadRetries = old }()
+
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	sm := newBeadsTestSM()
