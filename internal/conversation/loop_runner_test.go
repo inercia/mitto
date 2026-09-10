@@ -5098,7 +5098,7 @@ func TestLoopRunner_TriggerTasksFireWithRetry_TransientFailure_RetriesWithBackof
 	})
 
 	delta := &config.TasksDelta{Added: []map[string]any{{"id": "mitto-1"}}}
-	_, exhausted := runner.triggerTasksFireWithRetry(sessionID, delta)
+	_, exhausted := runner.triggerTasksFireWithRetry(sessionID, delta, nil)
 
 	if got := atomic.LoadInt32(&resolverCalls); got != 2 {
 		t.Errorf("promptResolver call count = %d, want 2 (1 transient failure + 1 retry that clears the resolve step)", got)

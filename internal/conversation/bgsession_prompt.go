@@ -156,13 +156,17 @@ const (
 
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
-	SenderID     string          // Unique identifier of the sending client (for broadcast deduplication)
-	PromptID     string          // Client-generated prompt ID (for delivery confirmation)
-	PromptName   string          // Name of workspace prompt (resolved to full text before ACP; empty for ad-hoc prompts)
-	ImageIDs     []string        // IDs of images attached to the prompt
-	FileIDs      []string        // IDs of files attached to the prompt
-	OnComplete   func(err error) // Called when the async prompt goroutine finishes (nil = success)
-	IsLoopForced bool            // True when this loop prompt was triggered manually via "run now"
+	SenderID   string          // Unique identifier of the sending client (for broadcast deduplication)
+	PromptID   string          // Client-generated prompt ID (for delivery confirmation)
+	PromptName string          // Name of workspace prompt (resolved to full text before ACP; empty for ad-hoc prompts)
+	ImageIDs   []string        // IDs of images attached to the prompt
+	FileIDs    []string        // IDs of files attached to the prompt
+	OnComplete func(err error) // Called when the async prompt goroutine finishes (nil = success)
+	// OnDispatchAccepted is called exactly once after asynchronous preparation
+	// succeeds and immediately before the first ACP Prompt RPC. LoopRunner uses
+	// this boundary to commit trigger state that must survive only real dispatches.
+	OnDispatchAccepted func()
+	IsLoopForced       bool // True when this loop prompt was triggered manually via "run now"
 	// IsLoopRunOnStart is true when this loop prompt was fired by the boot-pulse
 	// (mitto-ystk). Mirrors ProcessorInput.IsLoopRunOnStart, the CEL
 	// Session.IsLoopRunOnStart variable, and the @mitto:loop_run_on_start
@@ -824,19 +828,10 @@ retryAfterRestart:
 		bs.onPlanStateChanged(bs.persistedID, nil)
 	}
 
-	// FreshContext seq reservation (mitto-c36): when the loop turn will flush the
-	// context (either via in-place flush command or a new ACP session), reserve the
-	// "context_cleared" pill seq BEFORE the user-prompt seq so the persisted transcript
-	// orders as pill(N) → user_prompt(N+1) → agent_stream(N+2..). The reserved seq is
-	// consumed inside createFreshContextSession on the async goroutine below. If the
-	// flush/new-session ultimately does not fire (e.g. flush RPC error), the seq
-	// becomes a persistence-tolerated gap.
-	var freshContextPillSeq int64
-	if meta.FreshContext && bs.recorder != nil {
-		freshContextPillSeq = bs.getNextSeq()
-	}
-
-	// Persist user prompt with image/file references and prompt ID.
+	// Prepare the user-prompt commit, but do not persist or broadcast it yet.
+	// FreshContext and deferred-handshake work runs asynchronously below and can
+	// still fail before an ACP Prompt RPC is attempted. Committing here used to
+	// leave a phantom prompt in the transcript on those failures (mitto-46k).
 	// Seq is pre-assigned from the shared getNextSeq() counter so that the user-prompt
 	// event is ordered atomically with respect to any concurrent streaming events.
 	// This avoids the duplicate/out-of-order seq bug caused by AppendEvent assigning
@@ -852,50 +847,39 @@ retryAfterRestart:
 	// value. Nil for ordinary human-typed/ad-hoc prompts.
 	provenance := deriveUserPromptProvenance(meta)
 
-	var userPromptSeq int64
-	if bs.recorder != nil {
-		userPromptSeq = bs.getNextSeq()
-		var recordOpts []session.RecordOption
-		if len(meta.Meta) > 0 {
-			recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
-		}
-		data := session.UserPromptData{
-			Message:       message,
-			Images:        imageRefs,
-			Files:         fileRefs,
-			PromptID:      meta.PromptID,
-			PromptName:    meta.PromptName,
-			ArgumentCount: argCount,
-			Arguments:     persistArgs,
-			Provenance:    provenance,
-		}
-		if err := bs.recorder.RecordUserPromptDataWithSeq(userPromptSeq, data, recordOpts...); err != nil && bs.logger != nil {
-			bs.logger.Error("Failed to persist user prompt", "error", err)
-		}
-	}
-
-	// Notify all observers about the user prompt (for multi-client sync)
-	// This includes the message text so other connected clients can display it
 	fileIDStrings := make([]string, len(fileRefs))
 	for i, f := range fileRefs {
 		fileIDStrings[i] = f.ID
 	}
-
-	// Propagate generic event metadata to observers that implement EventMetaObserver.
-	// This must happen BEFORE OnUserPrompt so observers can store the meta keyed by seq
-	// and attach it to the outgoing payload inside OnUserPrompt.
-	if userPromptSeq > 0 && len(meta.Meta) > 0 {
-		eventMeta := meta.Meta
-		bs.notifyObservers(func(o SessionObserver) {
-			if m, ok := o.(EventMetaObserver); ok {
-				m.OnEventMeta(userPromptSeq, eventMeta)
+	commitUserPrompt := func() {
+		var userPromptSeq int64
+		if bs.recorder != nil {
+			userPromptSeq = bs.getNextSeq()
+			var recordOpts []session.RecordOption
+			if len(meta.Meta) > 0 {
+				recordOpts = append(recordOpts, session.WithMetaMap(meta.Meta))
 			}
+			data := session.UserPromptData{
+				Message: message, Images: imageRefs, Files: fileRefs, PromptID: meta.PromptID,
+				PromptName: meta.PromptName, ArgumentCount: argCount,
+				Arguments: persistArgs, Provenance: provenance,
+			}
+			if err := bs.recorder.RecordUserPromptDataWithSeq(userPromptSeq, data, recordOpts...); err != nil && bs.logger != nil {
+				bs.logger.Error("Failed to persist user prompt", "error", err)
+			}
+		}
+		if userPromptSeq > 0 && len(meta.Meta) > 0 {
+			eventMeta := meta.Meta
+			bs.notifyObservers(func(o SessionObserver) {
+				if m, ok := o.(EventMetaObserver); ok {
+					m.OnEventMeta(userPromptSeq, eventMeta)
+				}
+			})
+		}
+		bs.notifyObservers(func(o SessionObserver) {
+			o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount, persistArgs, provenance)
 		})
 	}
-
-	bs.notifyObservers(func(o SessionObserver) {
-		o.OnUserPrompt(userPromptSeq, meta.SenderID, meta.PromptID, message, imageIDs, fileIDStrings, meta.PromptName, argCount, persistArgs, provenance)
-	})
 
 	// Build processor input and assemble final content blocks.
 	// See promptDispatcher.buildProcessorInput + applyProcessorsAndBuildBlocks.
@@ -931,6 +915,18 @@ retryAfterRestart:
 		// retryPrompt; if the retry also crashes we fall through to the normal
 		// "please resend" message instead of looping forever.
 		autoRetried := false
+		var dispatchAcceptedOnce sync.Once
+		recordPreparationFailure := func(err error) {
+			completionErr = err
+			if d.pdHasRecorder() {
+				seq := d.pdGetNextSeq()
+				if recErr := d.pdRecordErrorEvent(seq, err.Error()); recErr != nil && bs.logger != nil {
+					bs.logger.Error("Failed to persist prompt preparation error", "error", recErr)
+				}
+				d.pdRefreshNextSeq()
+			}
+			bs.notifyObservers(func(o SessionObserver) { o.OnError(err.Error()) })
+		}
 
 		// Complete the deferred handshake, create a fresh-context session if requested,
 		// and apply any per-prompt model preference.
@@ -939,14 +935,14 @@ retryAfterRestart:
 			return
 		}
 		if err := d.waitForStartupModel(); err != nil {
-			completionErr = err
-			bs.notifyObservers(func(o SessionObserver) { o.OnError(err.Error()) })
+			recordPreparationFailure(err)
 			return
 		}
-		_, freshErr := bs.promptDisp.createFreshContextSession(d, meta, freshContextPillSeq)
+		// A successful context clear records its pill now, before the user prompt.
+		// Passing zero avoids reserving any seq until preparation actually succeeds.
+		_, freshErr := bs.promptDisp.createFreshContextSession(d, meta, 0)
 		if freshErr != nil {
-			completionErr = freshErr
-			bs.notifyObservers(func(o SessionObserver) { o.OnError(freshErr.Error()) })
+			recordPreparationFailure(freshErr)
 			return
 		}
 		// Rendering already applied non-FreshContext model preferences. Fresh
@@ -954,7 +950,16 @@ retryAfterRestart:
 		if !meta.modelPreferenceResolved {
 			bs.promptDisp.applyModelPreference(d, meta)
 		}
+		if err := turn.ctx.Err(); err != nil {
+			completionErr = err
+			return
+		}
 		turn.finishPreparation()
+		// Preparation has succeeded, so the prompt is now truthful transcript
+		// state even if the user cancels before the transport call begins. Keep
+		// observer callbacks outside cleanupMu and after preparationDone closes so
+		// an observer-triggered cancellation cannot deadlock waiting on this turn.
+		commitUserPrompt()
 		if err := turn.ctx.Err(); err != nil {
 			completionErr = err
 			return
@@ -1048,6 +1053,14 @@ retryAfterRestart:
 
 		promptStartedAt = time.Now() // captured for after-phase processors
 		turn.cleanupMu.Unlock()
+		// This is the dispatch-accepted boundary (mitto-46k). Commit trigger state
+		// exactly once after releasing the lifecycle lock and immediately before the
+		// first ACP Prompt call. Automatic retries reuse the original acceptance.
+		dispatchAcceptedOnce.Do(func() {
+			if meta.OnDispatchAccepted != nil {
+				meta.OnDispatchAccepted()
+			}
+		})
 		// A concurrent Cancel now cancels promptCtx; captured transport/ID keep
 		// this attempt from reading state adopted by a newer turn.
 		if sharedProcess != nil {

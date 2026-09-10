@@ -3768,24 +3768,16 @@ func TestSeqUniqueness_ConcurrentStreamingAndUserPrompt(t *testing.T) {
 	}
 }
 
-// TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq verifies the mitto-c36
-// invariant end-to-end via events.jsonl: when PromptWithMeta reserves a pill seq
-// BEFORE the user-prompt seq (as it does when meta.FreshContext=true), and the
-// downstream createFreshContextSession records the "context_cleared" pill with
-// that reserved seq, the persisted transcript orders as
+// TestFreshContextPillOrdering_ExplicitPillSeqBeforeUserPromptSeq verifies the
+// mitto-c36 seq-aware helper invariant via events.jsonl. The current production
+// PromptWithMeta path allocates the pill only after a successful clear (mitto-46k),
+// while this test retains coverage for callers that supply an explicit pill seq:
 //
 //	session_change(context_cleared, flush).seq < user_prompt.seq < agent_message.seq
 //
-// This matches the acceptance test in the bead's Test hooks section and pins the
-// fix so it survives future refactors of PromptWithMeta and createFreshContextSession.
-//
-// The test replays the exact seq allocation + persistence sequence used inside
-// PromptWithMeta (reserve pillSeq → reserve userPromptSeq → record via the same
-// helpers the production code goes through: cmRecordSessionChangeWithSeq +
-// RecordUserPromptCompleteWithSeq + RecordEventWithSeq) so it exercises the real
-// BackgroundSession seq counter, the real recorder, and the real events.jsonl
-// serialization — without needing an ACP mock or a full loop-runner harness.
-func TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq(t *testing.T) {
+// It exercises the real BackgroundSession seq counter, recorder, and events.jsonl
+// serialization without claiming to reproduce PromptWithMeta's current allocation.
+func TestFreshContextPillOrdering_ExplicitPillSeqBeforeUserPromptSeq(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -3808,9 +3800,7 @@ func TestFreshContextPillOrdering_PillSeqBeforeUserPromptSeq(t *testing.T) {
 		persistedID: sessionID,
 	}
 
-	// Mirror PromptWithMeta's FreshContext branch: reserve pillSeq FIRST, then
-	// userPromptSeq. This is the sole ordering invariant the mitto-c36 fix must
-	// preserve.
+	// Exercise the explicit-reservation helper path: pill first, then user prompt.
 	pillSeq := bs.getNextSeq()
 	userPromptSeq := bs.getNextSeq()
 
@@ -3956,14 +3946,10 @@ func TestFreshContextPillOrdering_NewSessionKind(t *testing.T) {
 	}
 }
 
-// TestFreshContextPillOrdering_FlushFailureLeavesSeqGap pins the mitto-c36
-// caveat decision (option (a) — "live with the gap"): when the reserved pill
-// seq is never consumed (e.g. the in-place flush RPC failed and
-// createFreshContextSession did NOT call pdRecordSessionChangeWithSeq), the
-// resulting events.jsonl simply has a seq gap — no placeholder event, and the
-// user prompt is still ordered strictly after where the pill would have been.
-// Persistence tolerates gaps, so ReadEvents must not fail.
-func TestFreshContextPillOrdering_FlushFailureLeavesSeqGap(t *testing.T) {
+// TestEventPersistence_ToleratesExplicitSeqGap verifies the recorder's generic
+// gap tolerance. PromptWithMeta no longer reserves a context-pill seq before a
+// clear, so preparation failures do not create this gap (mitto-46k).
+func TestEventPersistence_ToleratesExplicitSeqGap(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -3983,7 +3969,7 @@ func TestFreshContextPillOrdering_FlushFailureLeavesSeqGap(t *testing.T) {
 		persistedID: sessionID,
 	}
 
-	// Reserve the pill seq but never consume it (simulates flush RPC failure).
+	// Reserve a seq but intentionally never consume it.
 	pillSeq := bs.getNextSeq()
 	userPromptSeq := bs.getNextSeq()
 

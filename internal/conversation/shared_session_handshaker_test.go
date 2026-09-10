@@ -53,6 +53,8 @@ type fakeSharedProcess struct {
 	// handed to the transport). Used by mitto-ip1 to pin the exact payload
 	// BackgroundSession.FlushContext sends to the agent.
 	promptCalls []fakeSharedProcessPromptCall
+	promptErr   error
+	promptHook  func()
 	generation  int
 	setModelErr []error
 
@@ -119,11 +121,15 @@ func (f *fakeSharedProcess) Prompt(_ context.Context, sessionID acp.SessionId, b
 	f.mu.Lock()
 	f.promptCalls = append(f.promptCalls, fakeSharedProcessPromptCall{sessionID: sessionID, blocks: blocks})
 	block := f.promptBlock
+	hook := f.promptHook
 	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if block != nil {
 		<-block
 	}
-	return acp.PromptResponse{}, nil
+	return acp.PromptResponse{}, f.promptErr
 }
 func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _ string) error {
 	return nil

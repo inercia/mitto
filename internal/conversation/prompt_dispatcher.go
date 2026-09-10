@@ -1076,11 +1076,10 @@ func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
 // (direct-conn only, gated by pdHasACPConn). Returns the new session ID on success,
 // or an error on failure; returns "", nil when FreshContext is not requested.
 //
-// pillSeq (mitto-c36) is a seq reserved upstream in PromptWithMeta BEFORE the
-// user-prompt seq is allocated. When > 0, the "context_cleared" pill is recorded
-// with this reserved seq so it orders before the user prompt in the persisted
-// transcript. When 0 (never in the production path, only in tests that don't care),
-// falls back to the plain pdRecordSessionChange which allocates its own seq.
+// pillSeq (mitto-c36) optionally supplies a seq reserved upstream before the
+// user-prompt seq. When zero, the production PromptWithMeta path allocates the
+// pill seq here after the clear succeeds, then commits the user prompt, preserving
+// transcript order without leaving a gap when preparation fails (mitto-46k).
 func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta, pillSeq int64) (string, error) {
 	if !meta.FreshContext {
 		return "", nil
@@ -1088,9 +1087,8 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 
 	// mitto-s9g2: skip the clear entirely when the current ACP session is
 	// provably empty (created fresh in this process, no turns dispatched since).
-	// No pill, no flush RPC, no session/new — the reserved pillSeq becomes a
-	// tolerated seq gap, same as the existing flush-error path. Resumed/loaded
-	// sessions report pdContextIsEmpty()==false (fail safe) and keep flushing.
+	// No pill, no flush RPC, no session/new. Resumed/loaded sessions report
+	// pdContextIsEmpty()==false (fail safe) and keep flushing.
 	if d.pdContextIsEmpty() {
 		if l := d.pdLogger(); l != nil {
 			l.Debug("Skipping FreshContext clear: ACP session has no turns yet",

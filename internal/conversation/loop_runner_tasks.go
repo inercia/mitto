@@ -435,7 +435,8 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 		// call sites pass nil via the public TriggerNow shim. mitto-rrq work
 		// item 2: bounded retry absorbs a transient template-compile-race
 		// instead of dropping the fire on the first hit.
-		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta); err != nil {
+		onAccepted := r.tasksBaselineAcceptedCallback(sessionID, decision.baseline, raw, "fire")
+		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta, onAccepted); err != nil {
 			// Route ErrPromptResolveFailed through the shared 3-strike auto-pause
 			// logic so onTasks loops behave the same as the scheduled path when a
 			// loop_prompt_name no longer resolves (mitto-uhnc); without this
@@ -473,15 +474,6 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 			}
 			return
 		}
-		r.clearTasksRefireDeliveryFailures(sessionID)
-		// Persist the new baseline now that the run has been kicked off. Any
-		// beads edits the run itself (or a delegated child) makes while busy
-		// are caught by Layer 1 and absorbed later by the idle+quiescence
-		// rebase (Layer 2).
-		if err := decision.baseline.Set(raw); err != nil && r.logger != nil {
-			r.logger.Warn("onTasks: failed to persist baseline after fire",
-				"session_id", sessionID, "error", err)
-		}
 
 	case tasksActionSkip:
 		// Nothing to do.
@@ -506,12 +498,12 @@ func tasksDeltaIsMaterial(delta *config.TasksDelta) bool {
 // retried, exactly mirroring queueDispatcher.send's classification. Returns
 // the final error (nil on success) and whether every attempt was exhausted on
 // a transient error, for the retries_exhausted log marker.
-func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.TasksDelta) (err error, exhausted bool) {
+func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.TasksDelta, onAccepted func()) (err error, exhausted bool) {
 	maxAttempts := 1 + len(tasksTransientRetryDelays)
 	var lastAttempt int
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		lastAttempt = attempt
-		err = r.triggerNowWithTasksDelta(sessionID, true, delta)
+		err = r.triggerNowWithTasksDeltaAccepted(sessionID, true, delta, onAccepted)
 		if err == nil || errors.Is(err, ErrSessionBusy) || !isTransientPromptCompileRace(err) {
 			return err, false
 		}
@@ -530,6 +522,40 @@ func (r *LoopRunner) triggerTasksFireWithRetry(sessionID string, delta *config.T
 	}
 	exhausted = isTransientPromptCompileRace(err) && lastAttempt >= maxAttempts
 	return err, exhausted
+}
+
+func (r *LoopRunner) tasksBaselineAcceptedCallback(sessionID string, baseline *TasksBaselineStore, raw []byte, source string) func() {
+	snapshot := append([]byte(nil), raw...)
+	return func() {
+		if err := baseline.Set(snapshot); err != nil && r.logger != nil {
+			r.logger.Warn("onTasks: failed to persist baseline after accepted dispatch",
+				"session_id", sessionID, "source", source, "error", err)
+		}
+		r.clearTasksRefireDeliveryFailures(sessionID)
+	}
+}
+
+// handleTasksPreDispatchFailure preserves and actively retries an onTasks delta
+// when asynchronous prompt preparation fails before any ACP prompt is sent.
+func (r *LoopRunner) handleTasksPreDispatchFailure(sessionID string, loopStore *session.LoopStore, err error) {
+	loop, getErr := loopStore.Get()
+	if getErr != nil || loop == nil || !loop.Enabled {
+		return
+	}
+	if r.bumpTasksRefireDeliveryFailure(sessionID) < maxTasksRefireDeliveryFailures {
+		r.markTasksRefirePending(sessionID)
+		r.armTasksRebase(sessionID, loopStore)
+		if r.logger != nil {
+			r.logger.Warn("onTasks: prompt preparation failed; preserving delta and re-arming",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+	if r.logger != nil {
+		r.logger.Error("onTasks: prompt preparation failed repeatedly; giving up self-heal without rebasing baseline",
+			"session_id", sessionID, "error", err, "max_attempts", maxTasksRefireDeliveryFailures)
+	}
+	r.clearTasksRefirePending(sessionID)
 }
 
 // eventCooldownActive returns true if firing should be skipped because the
@@ -749,7 +775,8 @@ func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopSt
 		r.clearTasksRefirePending(sessionID)
 		// mitto-rrq work item 2: bounded retry absorbs a transient
 		// template-compile-race instead of dropping the settled fire.
-		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta); err != nil {
+		onAccepted := r.tasksBaselineAcceptedCallback(sessionID, decision.baseline, raw, "settled_fire")
+		if err, exhausted := r.triggerTasksFireWithRetry(sessionID, decision.delta, onAccepted); err != nil {
 			if errors.Is(err, ErrPromptResolveFailed) {
 				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 			} else if errors.Is(err, ErrSessionBusy) {
@@ -781,11 +808,6 @@ func (r *LoopRunner) fireTasksSettle(sessionID string, loopStore *session.LoopSt
 				}
 			}
 			return
-		}
-		r.clearTasksRefireDeliveryFailures(sessionID)
-		if err := decision.baseline.Set(raw); err != nil && r.logger != nil {
-			r.logger.Warn("onTasks: failed to persist baseline after settled fire",
-				"session_id", sessionID, "error", err)
 		}
 
 	case tasksActionSkip:
@@ -1032,7 +1054,8 @@ func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, meta session.Me
 		return tasksRefireNotWarranted
 	}
 
-	err, exhausted := r.triggerTasksFireWithRetry(sessionID, delta)
+	onAccepted := r.tasksBaselineAcceptedCallback(sessionID, baselineStore, raw, "refire")
+	err, exhausted := r.triggerTasksFireWithRetry(sessionID, delta, onAccepted)
 	if err != nil {
 		if errors.Is(err, ErrPromptResolveFailed) {
 			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
@@ -1047,10 +1070,6 @@ func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, meta session.Me
 			}
 		}
 		return tasksRefireDeliveryFailed
-	}
-	if err := baselineStore.Set(raw); err != nil && r.logger != nil {
-		r.logger.Warn("onTasks: failed to persist baseline after re-fire",
-			"session_id", sessionID, "error", err)
 	}
 	if r.logger != nil {
 		r.logger.Debug("onTasks: re-fired after idle+quiescence with accumulated delta",

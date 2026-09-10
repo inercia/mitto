@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -891,6 +892,9 @@ func (r *LoopRunner) IsRunning() bool {
 type LoopDispatchOptions struct {
 	// TasksDelta carries the beads change delta for onTasks fires.
 	TasksDelta *config.TasksDelta
+	// OnDispatchAccepted commits source state only after prompt preparation has
+	// succeeded and the first ACP Prompt RPC is about to start.
+	OnDispatchAccepted func()
 	// SlackEvents is the already-bounded canonical batch for onSlack fires.
 	SlackEvents []PromptSlackEvent
 	// OnChild carries child-lifecycle detail for onChild fires.
@@ -1076,7 +1080,13 @@ func truncateUTF8Bytes(value string, maxBytes int) string {
 // onTasks fires; all other paths (manual "Run Now", onCompletion, delayed
 // retries) pass a nil delta via the public TriggerNow.
 func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta) error {
-	return r.triggerNowFull(sessionID, resetTimer, false, session.TriggerOnTasks, &LoopDispatchOptions{TasksDelta: tasksDelta})
+	return r.triggerNowWithTasksDeltaAccepted(sessionID, resetTimer, tasksDelta, nil)
+}
+
+func (r *LoopRunner) triggerNowWithTasksDeltaAccepted(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta, onAccepted func()) error {
+	return r.triggerNowFull(sessionID, resetTimer, false, session.TriggerOnTasks, &LoopDispatchOptions{
+		TasksDelta: tasksDelta, OnDispatchAccepted: onAccepted,
+	})
 }
 
 // triggerNowFull is the unified internal entry point behind TriggerNow and its
@@ -2976,6 +2986,7 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 	// onSlack batch, or an onChild fire (mitto-qvlh). All other paths pass all
 	// three as nil/empty.
 	triggerCtx := buildPromptTriggerContext(tasksDelta, slackEvents, onChildOpt)
+	var dispatchAccepted atomic.Bool
 
 	// Proactive fresh-context guard (mitto-5se, AC1). Loops that already opt
 	// into loop.FreshContext are unaffected (already bounded). For the rest,
@@ -3015,6 +3026,12 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 		FreshContext:     freshContext,
 		Trigger:          triggerCtx,
 		LoopTrigger:      firedBy,
+		OnDispatchAccepted: func() {
+			dispatchAccepted.Store(true)
+			if opts != nil && opts.OnDispatchAccepted != nil {
+				opts.OnDispatchAccepted()
+			}
+		},
 		OnComplete: func(err error) {
 			// Always release the workspace slot and the dispatch claim when the
 			// prompt terminates, regardless of success or failure (mitto-61z,
@@ -3025,6 +3042,9 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 					r.handleRunOnStartDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, dispatchContextTurns)
 				} else {
 					r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced, firedBy, dispatchContextTurns)
+				}
+				if firedBy == session.TriggerOnTasks && !dispatchAccepted.Load() {
+					r.handleTasksPreDispatchFailure(sessionID, loopStore, err)
 				}
 				return
 			}
