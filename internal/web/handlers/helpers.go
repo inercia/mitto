@@ -86,7 +86,19 @@ const (
 	// an epic that still has open child issues (mitto-phg). See
 	// writeBeadsError in internal/web/handlers/beads.go.
 	errCodeBeadsOpenChildren = "beads_open_children"
+
+	// errCodeClientCanceled identifies a beads command whose context was
+	// canceled by the client disconnecting or navigating away mid-fetch
+	// (mitto-rwj), distinct from a genuine bd/dolt failure. See
+	// writeBeadsError in internal/web/handlers/beads.go.
+	errCodeClientCanceled = "client_canceled"
 )
+
+// statusClientClosedRequest is the de-facto "client closed request" status
+// (nginx's 499; net/http has no named constant for it). Used when a beads
+// command's context was canceled by the client, so the response is moot but
+// must not be reported as a server error (mitto-rwj).
+const statusClientClosedRequest = 499
 
 // auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 60s
 // middleware cap (middleware.DefaultRequestTimeout) so they can write a
@@ -117,6 +129,8 @@ func defaultCodeForStatus(status int) string {
 		return errCodeRateLimited
 	case http.StatusServiceUnavailable:
 		return errCodeUnavailable
+	case statusClientClosedRequest:
+		return errCodeClientCanceled
 	default:
 		return errCodeServerError
 	}

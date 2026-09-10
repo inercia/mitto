@@ -84,6 +84,24 @@ func isValidBeadsIssueRef(s string) bool {
 // reason (mitto-phg), rather than a bare 500. Every other failure keeps the
 // existing HTTP 500 behavior.
 func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
+	// A client-cancelled request (the beads panel closed, or the user
+	// navigated away mid-fetch) is not a genuine bd/dolt failure: bd's
+	// subprocess exits cleanly (exit_code=0, empty stderr) once its context
+	// is cancelled, but that signature was being logged at ERROR alongside
+	// real command failures, polluting the ERROR channel that log-analysis
+	// triage keys on (mitto-rwj). Detect it before any other branch so
+	// genuine failures keep their existing ERROR + 500/409 treatment
+	// untouched. Read handlers already peel off context.DeadlineExceeded
+	// before reaching here, so a context.Canceled error at this point is a
+	// client-driven cancellation, not a server-side timeout.
+	if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Debug("beads command canceled by client", "path", r.URL.Path)
+		}
+		writeErrorJSON(w, statusClientClosedRequest, errCodeClientCanceled, "Request canceled by client")
+		return
+	}
+
 	if beads.IsSchemaSkew(err) {
 		info := beads.SchemaSkewInfo(err)
 		databaseAhead := info.DBVersion > 0 && info.BinaryVersion > 0 && info.DBVersion > info.BinaryVersion

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,18 @@ type listErrorClient struct{ stubBeadsClient }
 
 func (c *listErrorClient) List(_ context.Context, _ string) ([]byte, error) {
 	return nil, errors.New("bd: command failed: exit status 1")
+}
+
+// listCanceledClient is a beads.Client whose List fails with a wrapped
+// context.Canceled, mimicking bd's subprocess exiting cleanly (exit_code=0,
+// empty stderr) once the request's context is canceled by the client closing
+// the beads panel or navigating away mid-fetch (mitto-rwj). Used to verify
+// this benign case is reclassified out of the ERROR channel instead of being
+// treated like a genuine bd/dolt command failure.
+type listCanceledClient struct{ stubBeadsClient }
+
+func (c *listCanceledClient) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, fmt.Errorf("bd command failed: %w", context.Canceled)
 }
 
 // showNotFoundClient is a beads.Client whose Show mimics bd's "issue not found"
@@ -710,6 +723,51 @@ func TestHandleBeadsList_PersistentError_LogsError(t *testing.T) {
 	}
 	if !strings.Contains(logged, "bd: command failed: exit status 1") {
 		t.Errorf("log output = %q, want it to contain the underlying error", logged)
+	}
+}
+
+// TestHandleBeadsList_ClientCanceled_DoesNotLogError verifies mitto-rwj: a
+// beads command whose context was canceled by the client (panel closed /
+// navigated away mid-fetch) must NOT be logged at ERROR nor reported as a
+// server failure, unlike a genuine bd/dolt error (contrast with
+// TestHandleBeadsList_PersistentError_LogsError above, which stays green as
+// the regression guard for real failures).
+func TestHandleBeadsList_ClientCanceled_DoesNotLogError(t *testing.T) {
+	old := beadsReadRetries
+	beadsReadRetries = 0 // fail immediately, no retries needed for this test
+	defer func() { beadsReadRetries = old }()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	sm := newBeadsTestSM()
+	s := New(Deps{SessionManager: sm, BeadsClient: &listCanceledClient{}, Logger: logger})
+
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != statusClientClosedRequest {
+		t.Fatalf("status = %d, want %d", w.Code, statusClientClosedRequest)
+	}
+	logged := logBuf.String()
+	if strings.Contains(logged, "level=ERROR") {
+		t.Errorf("log output = %q, want no ERROR-level line for a client-canceled request", logged)
+	}
+	if !strings.Contains(logged, "level=DEBUG") || !strings.Contains(logged, "beads command canceled by client") {
+		t.Errorf("log output = %q, want a DEBUG line noting the client cancellation", logged)
+	}
+
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "client_canceled" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "client_canceled")
 	}
 }
 
