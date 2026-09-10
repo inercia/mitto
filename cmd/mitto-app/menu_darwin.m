@@ -776,16 +776,65 @@ void disableWindowFullscreen(void) {
     }
 }
 
+// gFrameAutosaveApplied tracks whether the main window's frame autosave name has
+// already been set. This guards the retry passes below against re-applying it
+// (AppKit requires a unique autosave name and restores the saved frame the first
+// time the name is set on a window).
+static BOOL gFrameAutosaveApplied = NO;
+
+// applyMainWindowFrameAutosave attempts to set the frame autosave name on the app's
+// primary window. Returns YES once it has been applied (or was already applied).
+// The candidate window is resolved via a fallback chain because -mainWindow can be
+// nil early in launch (before the app is active / a window has become main).
+static BOOL applyMainWindowFrameAutosave(void) {
+    if (gFrameAutosaveApplied) {
+        return YES;
+    }
+    NSApplication *app = [NSApplication sharedApplication];
+    NSWindow *window = [app mainWindow];
+    if (window == nil) {
+        window = [app keyWindow];
+    }
+    if (window == nil) {
+        window = [[app windows] firstObject];
+    }
+    if (window == nil) {
+        return NO;
+    }
+    [window setFrameAutosaveName:@"MittoMainWindow"];
+    gFrameAutosaveApplied = YES;
+    NSLog(@"[Mitto] Window frame autosave enabled");
+    return YES;
+}
+
 // setWindowFrameAutosaveName enables automatic saving/restoring of the main window's
 // frame (position and size) across app launches. Uses NSUserDefaults internally.
 // Must be called after the window is created (use w.Dispatch).
+//
+// -mainWindow can return nil at the moment this runs (the app is activated slightly
+// later in startup), which would silently make frame persistence a no-op. To keep
+// restore reliable, we retry on a few delayed passes, mirroring the pattern used by
+// disableWindowFullscreen(). Each pass is a no-op once the name has been applied.
 void setWindowFrameAutosaveName(void) {
     @autoreleasepool {
-        NSWindow *window = [[NSApplication sharedApplication] mainWindow];
-        if (window) {
-            [window setFrameAutosaveName:@"MittoMainWindow"];
-            NSLog(@"[Mitto] Window frame autosave enabled");
+        if (applyMainWindowFrameAutosave()) {
+            return;
         }
+
+        // Retry on delayed passes until a window becomes available.
+        void (^retry)(void) = ^{
+            applyMainWindowFrameAutosave();
+        };
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), retry);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), retry);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), retry);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), retry);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), retry);
     }
 }
 
