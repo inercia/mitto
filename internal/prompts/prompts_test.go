@@ -917,6 +917,27 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_PreferredModelsInvalidShapeStillErrors pins the
+// boundary of the mitto-ebh shorthand: only a bare scalar (for the whole
+// field or for individual list items) is tolerated. A shape the shorthand
+// does not recognise — e.g. a bare mapping instead of a list of entries —
+// must still surface the original yaml decode error rather than being
+// silently swallowed or mis-normalized.
+func TestParsePromptFile_PreferredModelsInvalidShapeStillErrors(t *testing.T) {
+	body := `name: "x"
+preferredModels:
+  modelTag: Reasoning
+prompt: hi
+`
+	_, err := ParsePromptFile("bad-preferred-models-shape.prompt.yaml", []byte(body), time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile: err = nil, want a parse error for a bare-mapping preferredModels (only scalar/list-of-scalars shorthand is tolerated)")
+	}
+	if !strings.Contains(err.Error(), "preferredModels") && !strings.Contains(err.Error(), "PromptPreferredModel") {
+		t.Errorf("error = %q, want it to reference the preferredModels field", err.Error())
+	}
+}
+
 // TestParsePromptFile_LegacyReuseMentionInBodyIsIgnored pins mitto-6b3: the
 // legacy-key rejection walks the document root's target: mapping only, so a
 // prompt body (or any other scalar) that happens to mention the string
