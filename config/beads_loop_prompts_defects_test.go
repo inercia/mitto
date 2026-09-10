@@ -495,3 +495,45 @@ func TestBeadsLoopPrompts_mitto4vr_BeadsStateWait(t *testing.T) {
 		})
 	}
 }
+
+// TestBeadsLoopPrompts_Defects_mittoD6h_NoIdlePollGuard is the regression
+// guard for mitto-d6h: "Task supervisor idle-polls deferred beads
+// indefinitely within one agent turn". Step 6's contract is that a pass with
+// nothing eligible (all three sets empty) must END THE TURN and stay armed
+// until the next `onTasks` re-fire — but historically nothing forbade an
+// agent from instead calling `mitto_conversation_wait` repeatedly within the
+// SAME turn to poll deferred/needs-human beads for eligibility. There is no
+// server-side per-turn call budget (internal/mcpserver/tools_wait.go
+// handleBeadsIssuesReachedState blocks each call to timeout/predicate with
+// no dedup across calls), so a deviating agent can spin hundreds of wait
+// calls in a single turn, burning tokens/CPU while looking "active". This
+// test pins the explicit anti-idle-poll guard Step 6 must carry so the
+// no-sanctioned-wait contract is unambiguous.
+func TestBeadsLoopPrompts_Defects_mittoD6h_NoIdlePollGuard(t *testing.T) {
+	const mergedOrch = "beads-issues/loop-processing.prompt.yaml"
+
+	b, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+mergedOrch)
+	if err != nil {
+		t.Fatalf("read embedded prompt %s: %v", mergedOrch, err)
+	}
+	body := string(b)
+
+	start := strings.Index(body, "## Step 6 — End-of-pass notification and yield")
+	if start < 0 {
+		t.Fatalf("%s: Step 6 heading not found — test needs updating", mergedOrch)
+	}
+	end := strings.Index(body[start:], "## Step 7")
+	if end < 0 {
+		t.Fatalf("%s: Step 7 heading not found after Step 6 — test needs updating", mergedOrch)
+	}
+	step6 := body[start : start+end]
+
+	for _, want := range []string{
+		"do NOT call `mitto_conversation_wait` to poll for eligibility",
+		"there is no sanctioned wait for a bead to become eligible",
+	} {
+		if !strings.Contains(step6, want) {
+			t.Errorf("[mitto-d6h idle-poll guard] %s Step 6 missing anti-idle-poll guard text %q — a pass with nothing eligible must end the turn; it must never call mitto_conversation_wait to poll for eligibility (no per-turn call budget exists server-side)", mergedOrch, want)
+		}
+	}
+}

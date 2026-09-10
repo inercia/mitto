@@ -1456,6 +1456,8 @@ prompt: |
   `mitto_conversation_update(loop_enabled: false)` just because sets were empty;
   the loop stays armed and idle until the next real change.
 
+  Likewise, an empty pass must never poll: do NOT call `mitto_conversation_wait` to poll for eligibility, and do NOT re-run Step 2's enumeration within this same turn, merely because sets are empty — there is no sanctioned wait for a bead to become eligible. The bead-state waits in §B/§C only block on a bead THIS pass already dispatched; they are never a mechanism for discovering new work. Ending the turn is the entire mechanism: the next `onTasks` re-fire is what produces a fresh view of eligibility (mitto-d6h).
+
   ## Step 7 — Blocked → Defer + Handoff (canonical deferral template)
 
   Use whenever the orchestrator hits a wall on a specific target — spawn
