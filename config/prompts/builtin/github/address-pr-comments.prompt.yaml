@@ -28,9 +28,9 @@ prompt: |
 
   **Scheduled mode** — a loop run; the user is not watching.
   {{ template "_shared/silent-notify-only" . }}
-  - Act **autonomously** on comments that are objectively valid and low-risk (see
-    "Autonomy criteria" below). For anything subjective, ambiguous, or risky,
-    reply requesting clarification and notify — do not guess or act unilaterally.
+  - Apply the author-aware policy and "Autonomy criteria" below. Follow clear,
+    safe author requests without demanding objective agreement. For genuinely
+    blocked items, clarify once and notify — do not guess or repeat objections.
   - If no PR matches the current branch (or the match is ambiguous), end the run
     quietly with a single notification — do not block waiting for input.
   {{- else }}
@@ -38,22 +38,23 @@ prompt: |
   **Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
   - You may freely use `mitto_ui_options`, `mitto_ui_form`, and other interactive
     tools in addition to `mitto_ui_notify`.
-  - Confirm analysis and ask before pushing, as described in the steps below.
+  - Clarify blocking analysis choices and ask before pushing, as described below.
   {{- end }}
 
   ### Autonomy criteria (scheduled mode)
 
-  When running unattended, **only implement** a comment when it is:
-  - **Objectively valid** — a real typo, lint/format issue, obvious bug, dead code,
-    or a small change explicitly requested and aligned with project conventions.
-  - **Low-risk** — localized, well-understood, covered by (or easy to add) tests.
-
-  **Do NOT act autonomously** on comments that are subjective, design/architecture
-  decisions, scope changes, anything you'd "disagree" with, or that need product
-  context. For those: reply on the thread requesting clarification (or explaining
-  your reasoning), leave the thread unresolved, skip the change, and include the
-  item in the final notification so a human can follow up. Never resolve a thread
-  you did not author.
+  - **Other reviewers/bots:** implement objectively supported, low-risk changes
+    after validation; do not autonomously choose subjective product/architecture
+    direction on their behalf.
+  - **Verified user-author:** Clear author requests may be subjective, including
+    style/design/scope preferences. That alone is not a reason to defer them.
+    Implement when intent is clear, the work is understood and safe, and it can
+    be tested. Ordinary trade-offs do not require reconfirmation.
+  - **For everyone:** pause only the affected item when intent is materially
+    ambiguous, a specific material concern needs an answer, or an existing
+    safety/permission gate blocks it. Reply/notify once, leave it pending, and
+    continue independent safe work. Never resolve a thread you did not author
+    unless the user explicitly authorizes it.
 
   ### 1. Identify the PR/MR
 
@@ -63,27 +64,35 @@ prompt: |
 
   {{ template "github/shared/pr-fetch-comments" . }}
 
+  {{ template "github/shared/pr-feedback-policy" . }}
+
+  {{ template "github/shared/pr-feedback-checkpoint" . }}
+
   ### 3. Analyze Each Comment
 
-  For each, evaluate:
+  For each pending item (with its full discussion context), evaluate:
 
+  - **Speaker/intent**: Other human, bot, or verified user-author? A request,
+    question, endorsement, or status reply? Apply the shared policy first.
   - **Concern**: What issue is raised? Correctness, style, performance, security?
   - **Validity**: Is it technically valid? Aligned with project conventions? Missing context?
   - **Priority**: Blocking (must fix) / Important (should fix) / Optional (nice-to-have) / Discussion (needs clarification)
 
   ### 4. Formulate Responses
 
-  - **Agree**: Acknowledge, implement fix, reply with "✅ Fixed in [hash]"
+  - **Agree**: Implement and validate the fix; reply with "✅ Fixed in [hash]"
+    only after successful push and remote-head verification
   - **Need clarification**: Ask specific questions, provide context
   - **Disagree**: Acknowledge perspective, explain reasoning with evidence, offer alternatives
   - **Already addressed**: Point to relevant code/commit
 
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-  In scheduled mode: apply the **Autonomy criteria** above. Implement only
-  objectively-valid, low-risk comments; for the rest, reply requesting
-  clarification and collect them for the final notification.
+  In scheduled mode: apply the **Autonomy criteria** above. Do not defer a
+  clear author preference solely for being subjective. Raise a necessary
+  clarification once and collect blocked items for the final notification.
   {{- else }}
-  Ask me for confirmation if any question arises.
+  Ask a focused question only when the answer is necessary to proceed;
+  ordinary author-requested trade-offs do not need another confirmation.
   {{- end }}
 
   ### 5. Group and Prioritize
@@ -94,16 +103,17 @@ prompt: |
 
 
 
-  | Comment | Type | Validity | Priority | Action |
-  |---------|------|----------|----------|--------|
-  | ...     | ...  | ...      | ...      | ...    |
+  | Comment | Speaker | Intent | Validity / material concern | Priority | Action |
+  |---------|---------|--------|-----------------------------|----------|--------|
+  | ...     | ...     | ...    | ...                         | ...      | ...    |
 
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: skip confirmation — proceed with the autonomy-approved
   subset and defer the rest (no blocking UI).
   {{- else }}
-  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Does this analysis look correct?"
-  **Without**: Ask in conversation for confirmation.
+  Confirm unresolved analysis choices via `mitto_ui_options` when necessary.
+  Do not ask the user to reconfirm a clear request already made in the PR.
+  The separate pre-push confirmation below remains required.
   {{- end }}
 
   ### 6. Implement Changes
@@ -112,7 +122,7 @@ prompt: |
   1. Make the change
   2. Run relevant tests
   3. Commit: `fix: address review feedback on [topic]`
-  4. Reply to the comment
+  4. Record pending-push; defer fix-completion replies/resolution until Step 11
 
   #### Delegating Significant Fixes to Child Conversations
 
@@ -141,7 +151,11 @@ prompt: |
      initial_prompt: |
        Addressing a PR review comment.
        **Repo/Branch/PR**: <context>
-       **Review comment**: <full comment>
+       **Review feedback**: <pending items with full discussion, IDs/URLs, author types and timestamps>
+       **Identity**: <PR_AUTHOR_LOGIN and verified user-owned accounts/evidence>
+       **Policy**: <copy the full Author-aware feedback policy above>
+       **Progress**: <copy the Feedback progress and deduplication rules and latest checkpoint>
+       **Interaction mode**: <inherit this run's scheduled/interactive mode; a scheduled parent means no blocking UI>
        **What to do**: <detailed fix description>
        **Constraints**: Only modify related files, run tests, follow project style.
 
@@ -156,13 +170,19 @@ prompt: |
 
   **Without Mitto tools**: implement all fixes directly.
 
-  ### 7. Respond to All Comments
+  ### 7. Account for All Requests Before Pushing
 
   Before pushing:
 
-  - Every comment has a response
-  - Mark resolved conversations as appropriate
-  - Leave unresolved any needing discussion
+  - Every actionable request has a planned outcome or a pending clarification; do not
+    repeat prior replies or respond to status-only acknowledgments
+  - Reply on the original review thread, or link the source in a PR comment
+    for general comments/review summaries (they have no resolvable thread ID)
+  - Post necessary clarification/disagreement replies, but do not post
+    fix-completion replies or resolve fixed threads before publication
+  - Leave unresolved any needing discussion; update the PR feedback checkpoint
+    with IDs, versions, outcomes and replies. Record local fixes as pending-push;
+    add pushed commits and mark handled only after verifying the remote PR head
 
   ### 8. Identify Push Remote
 
@@ -183,8 +203,9 @@ prompt: |
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: push the autonomy-approved fixes and request re-review
   automatically (no confirmation), then `mitto_ui_notify` the result. If there
-  are **no** autonomy-approved changes, do not push — just notify which items
-  need a human.
+  are **no** autonomy-approved changes AND no pending-push fixes from previous
+  runs, do not push — just notify which items need a human. Pending-push fixes
+  remain work even with no new comments: validate and retry their push.
   {{- else }}
   **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Ready to push and request re-review?"
   **Without**: Ask in conversation.
@@ -195,6 +216,11 @@ prompt: |
   gh pr ready && gh pr comment --body "Ready for re-review"   # GitHub
   glab mr update --ready                                       # GitLab
   ```
+
+  After successful push and remote-head verification, post fix-completion
+  replies referencing the published commits and only then resolve fixed threads
+  under the existing authorship/permission rule. If a gate stops the push, it is
+  declined, or it fails, leave those threads unresolved and fixes pending-push.
 
   ### 12. Summary Report
 
@@ -216,7 +242,7 @@ prompt: |
   ## Guidelines
 
   - Consider all feedback carefully — reviewers may have context you're missing
-  - Respond to every comment
+  - Account for every actionable request; avoid duplicate/status-only replies
   - Provide evidence when disagreeing (code, docs, benchmarks)
   - Ask for clarification rather than guessing intent
   - Group related changes in single commits
@@ -228,11 +254,11 @@ prompt: |
   - In fork workflows, push to `origin`, not `upstream`
   - **Interaction mode** (see "Interaction Mode" section above):
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
-    - **Scheduled loop**: use only `mitto_ui_notify`; act on objectively-valid,
-      low-risk comments per the Autonomy criteria; reply-and-defer the rest; never
-      resolve threads you didn't author; spawned children must never be loops.
+    - **Scheduled loop**: use only `mitto_ui_notify`; apply the author-aware
+      Autonomy criteria; clarify genuinely blocked items once; never resolve
+      threads you didn't author unless explicitly authorized; children are one-off.
   {{- else }}
     - **Force-triggered or non-loop**: you may use `mitto_ui_options`,
-      `mitto_ui_form`, and other interactive tools; confirm analysis and ask
-      before pushing.
+      `mitto_ui_form`, and other interactive tools; clarify blocking choices
+      without re-confirming clear author requests, and ask before pushing.
   {{- end }}

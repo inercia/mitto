@@ -133,33 +133,31 @@ prompt: |
 
   {{ template "github/shared/pr-fix-ci" . }}
 
-  ### 3c. Ready-to-merge check
-
-  {{ template "github/shared/pr-ready-to-merge" . }}
-
-  This prompt targets `{{ if .Args.Repository }}{{ .Args.Repository }}{{ else }}the current folder's repo{{ end }}`,
-  so the `--repo` scope for `gh pr merge` is `{{ $repoFlag }}`.
-
-  ### 3d. Unresolved review comments
+  ### 3c. PR feedback, including the author's requests
 
   {{ template "github/shared/pr-fetch-review-threads" . }}
 
-  If the unresolved count is 0, this substep is done — skip to 3e.
+  {{ template "github/shared/pr-feedback-policy" . }}
 
-  **If there are unresolved threads:**
+  {{ template "github/shared/pr-feedback-checkpoint" . }}
+
+  If no items need work or new assessment, skip to 3d without re-notifying
+  unchanged awaiting-author items. Never let a zero unresolved-thread count
+  hide an author's general PR comment.
+
+  **If there are pending items to process:**
 
   ```
   mitto_ui_notify(self_id: "{{ .Session.ID }}",
-    title: "💬 PR #<number> has unresolved comments",
-    message: "<title> — <count> unresolved review threads need attention",
+    title: "💬 PR #<number> has pending feedback",
+    message: "<title> — <count> feedback items need attention",
     style: "warning")
   ```
 
-  **Dedup guard**: check the Existing children list at the top of this prompt.
-  If a child titled `Address review comments on PR #<number>` (or containing
-  that exact substring) already exists **and is still running or was updated
-  after the newest thread's `createdAt`**, skip spawning — the previous run
-  already handled it. Otherwise proceed to spawn (or in interactive mode, ask).
+  **Dedup guard**: apply the checkpoint rules above. If a matching child is
+  running, wait for a later run; if idle, re-prompt it with new pending items
+  and the same policy/context below. Only create a child when none exists.
+  A child's mere existence does not prove a later author reply was handled.
 
   Reuse the working-copy decision (`WORKING_MODE`/`WORKING_PATH`) computed in
   3b — it applies to review-comment children just as it does to CI-fix
@@ -170,21 +168,34 @@ prompt: |
   **In interactive mode**, ask whether to spawn a conversation to address the feedback:
   ```
   mitto_ui_options(self_id: "{{ .Session.ID }}",
-    question: "PR #<number> (<title>) has <count> unresolved review threads. Spawn a conversation to address them?",
+    question: "PR #<number> (<title>) has <count> pending feedback items. Start or reuse a conversation to address them?",
     options: [
       { label: "Yes, address review comments" },
       { label: "No, just notify" }
     ])
   ```
 
-  **In scheduled mode**, spawn automatically. Pass the full `THREADS_JSON`
-  payload plus the working-copy decision so the child can address each comment
-  individually (either fix + reply, or reply-explaining-why-not — but **never**
-  silently ignore):
+  **In scheduled mode**, start/reuse the child automatically. Pass the full
+  `PENDING_FEEDBACK_JSON` discussions, verified identity evidence, prior
+  decisions and working-copy decision so the child follows the author-aware
+  policy rather than treating every suggestion identically:
 
   ```
   {{ template "github/shared/pr-comments" . }}
   ```
+
+  If spawning is unavailable, notify the pending work without marking it handled.
+
+  ### 3d. Ready-to-merge check
+
+  Do not offer/perform a merge while feedback collection is incomplete,
+  a feedback worker is active, or actionable requests/material concerns remain
+  pending. Re-check feedback and PR head before using the existing merge gate.
+
+  {{ template "github/shared/pr-ready-to-merge" . }}
+
+  This prompt targets `{{ if .Args.Repository }}{{ .Args.Repository }}{{ else }}the current folder's repo{{ end }}`,
+  so the `--repo` scope for `gh pr merge` is `{{ $repoFlag }}`.
 
   ### 3e. Stale PR detection
 
@@ -249,13 +260,11 @@ prompt: |
     above — rebases are destructive and rebasing the user's live checkout is
     never safe.
   - Use `--force-with-lease` when force-pushing (never `--force`).
-  - **Review comments must be addressed, never ignored** (Step 3d):
-    every unresolved review thread either gets a code fix + reply referencing
-    the fix commit, OR a substantive reply explaining why it will not be
-    fixed (out of scope, disagree with reviewer, already addressed elsewhere,
-    etc.). Silently skipping a thread is not an option. The spawned
-    `Address review comments on PR #<n>` child must report a per-thread
-    outcome (fixed vs replied-only) back to this parent.
+  - **PR feedback must be accounted for** (Step 3c): apply the shared
+    author-aware policy to review threads, general comments and review summaries.
+    Each actionable request gets a verified published fix, a substantive reply,
+    or a pending clarification; do not repeat earlier replies. The child reports
+    per-item outcomes and the updated checkpoint back to this parent.
   - **CI failures must be fixed, not ignored** (Step 3b): failing lint or
     tests are surfaced with a fix child. If a failure is not caused by this
     PR (also fails on the base branch's latest commit), the child must file
@@ -275,7 +284,8 @@ prompt: |
   {{- end }}
   - **Spawn deduplication** (see "Spawn Deduplication" section above):
     Check `{{ .Children.MCPText }}` for existing child conversations before spawning.
-    Skip if a child for the same PR already exists. Max 3 spawns per run.
+    Do not race running workers; reuse idle children for new/edited feedback.
+    Skip duplicate creation, not new author instructions. Max 3 spawns per run.
   - **Spawned conversations must never be loops.** They are one-off tasks that
     should complete and stop. Do not call `mitto_conversation_set_loop` on them.
   - Only spawn conversations when `mitto_conversation_new` is available. If Mitto

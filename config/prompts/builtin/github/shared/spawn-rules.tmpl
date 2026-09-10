@@ -39,6 +39,10 @@ still running, or was updated after the failing CI run that would trigger a
 new spawn). The previous run already created it and it may still be
 working.
 
+For feedback tasks, this means **skip creating a duplicate**, not skip new
+instructions: recover the PR feedback checkpoint, do not race running children,
+and re-prompt an idle matching child for unprocessed new/edited comments.
+
 **Spawn cap:** spawn at most **3 conversations per run**. Spawned
 conversations are one-off and **must never be loops** — do not call
 `mitto_conversation_set_loop` on them and never pass `loop_prompt` /

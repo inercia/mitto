@@ -178,7 +178,7 @@ prompt: |
 
   ```bash
   gh pr view <number> --repo <owner>/<repo> \
-    --json number,title,state,headRefName,baseRefName,statusCheckRollup,mergeable,mergeStateStatus,updatedAt,createdAt,isDraft,reviewDecision,author,reviewThreads,headRefOid
+    --json number,title,state,headRefName,baseRefName,statusCheckRollup,mergeable,mergeStateStatus,updatedAt,createdAt,isDraft,reviewDecision,author,headRefOid
   ```
 
   Then decide:
@@ -213,24 +213,34 @@ prompt: |
 
   {{ template "github/shared/pr-fix-ci" . }}
 
-  ### 3c. Address unresolved review comments
+  ### 3c. Address PR feedback, including the author's requests
 
   {{ template "github/shared/pr-fetch-review-threads" . }}
 
-  If the unresolved count is 0, this step is **not actionable** — skip to 3d.
+  {{ template "github/shared/pr-feedback-policy" . }}
 
-  Otherwise this PR is **actionable**. Notify (`warning`) with the count.
+  {{ template "github/shared/pr-feedback-checkpoint" . }}
 
-  Dedup guard: skip spawning if an existing child titled `Address review
-  comments on PR #<number>` is still running or was updated after the newest
-  thread's `createdAt`. Otherwise, reuse the working-copy decision computed
-  in 3b and spawn (interactive: ask first; silent: automatic):
+  If no items need work or new assessment, skip to 3d without re-notifying
+  unchanged awaiting-author items. Otherwise this PR is **actionable**;
+  notify (`warning`) with the pending item count, not just unresolved threads.
+  Never let a zero unresolved-thread count hide an author's general PR comment.
+
+  Reuse the working-copy decision from 3b. Apply the checkpoint dedup guard:
+  if the matching child is running, wait for a later run; if idle, re-prompt it
+  with new pending items and the same policy/context below. Only create a child
+  when none exists (interactive: ask first; silent: automatic). Pass verified
+  identity evidence and prior decisions, not just the original review comment:
 
   ```
   {{ template "github/shared/pr-comments" . }}
   ```
 
   ### 3d. Merge when ready
+
+  Do not offer/perform a merge while feedback collection is incomplete,
+  a feedback worker is active, or actionable requests/material concerns remain
+  pending. Re-check feedback and PR head before using the existing merge gate.
 
   {{ template "github/shared/pr-ready-to-merge" . }}
 
@@ -249,7 +259,7 @@ prompt: |
   - **Silent mode**: stay quiet unless something actionable happened this run.
 
   The PR is **done** when it is merged or closed. The PR is **steady** when
-  it is fully up to date, has no failing CI, no unresolved threads, and is
+  it is fully up to date, has no failing CI, no actionable pending feedback, and is
   only waiting on a human to review/merge — nothing **this loop** can
   advance right now.
 
@@ -315,8 +325,8 @@ prompt: |
     `mitto_ui_options`/`mitto_ui_form` and offer to merge with
     confirmation.
   {{- end }}
-  - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning and
-    skip if a child already exists for the same PR + task; cap at **3
+  - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning;
+    do not race running children, and reuse idle ones for new feedback; cap at **3
     spawns per run**, prioritizing rebase conflicts > CI failures >
     unresolved comments. Spawned conversations are one-off and **must
     never be loops**.

@@ -74,10 +74,10 @@ func TestGitHubPRFragmentsRenderCorrectly(t *testing.T) {
 	// paraphrase locally, so their presence in the rendered output means the
 	// fragment inlined (rather than the caller having its own copy).
 	const (
-		hallmarkWorkingCopy    = `WORKING_MODE="local"`          // from github/shared/pr-working-copy-decision
-		hallmarkFetchThreads   = "reviewThreads(first:100)"      // from github/shared/pr-fetch-review-threads
-		hallmarkRebaseIfBehind = `git worktree add "$TMPDIR"`    // from github/shared/pr-rebase-if-behind
-		hallmarkFixCI          = "Failing checks: <check names>" // from github/shared/pr-fix-ci
+		hallmarkWorkingCopy    = `WORKING_MODE="local"`                       // from github/shared/pr-working-copy-decision
+		hallmarkFetchThreads   = "reviewThreads(first:100, after:$endCursor)" // from github/shared/pr-fetch-review-threads
+		hallmarkRebaseIfBehind = `git worktree add "$TMPDIR"`                 // from github/shared/pr-rebase-if-behind
+		hallmarkFixCI          = "Failing checks: <check names>"              // from github/shared/pr-fix-ci
 	)
 
 	ctx := &cel.PromptEnabledContext{
@@ -168,9 +168,9 @@ func TestPRFetchCommentsFragmentInlines(t *testing.T) {
 	// Hallmarks unique to the fragment body (short phrases callers don't
 	// paraphrase locally).
 	const (
-		hallmarkReviewsComments = "gh pr view <number> --json reviews,comments"
-		hallmarkGraphQL         = "gh api graphql -f query="
-		hallmarkReviewThreads   = "reviewThreads(first:100)"
+		hallmarkReviewsComments = "reviews(first:100, after:$endCursor)"
+		hallmarkGraphQL         = "gh api graphql --paginate --slurp -f query="
+		hallmarkReviewThreads   = "reviewThreads(first:100, after:$endCursor)"
 		hallmarkGlab            = "glab mr view <number> --comments"
 		hallmarkCategorize      = "Categorize the merged set"
 	)

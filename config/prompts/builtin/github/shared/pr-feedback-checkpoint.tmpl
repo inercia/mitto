@@ -1,0 +1,37 @@
+{{- /* Shared processing/dedup contract; also copied into delegated child payloads. */ -}}
+### Feedback progress and deduplication
+
+Recover the latest **PR feedback checkpoint** for this repository + PR from
+this conversation's history and child reports. Record per comment ID + updatedAt
+(or a body fingerprint if the API has no edit timestamp), source kind, thread
+ID if any, decision, reply ID/URL, applied commit, and any pending question.
+Use IDs and versions actually assessed, not a child conversation's updatedAt
+or the original thread creation time. Retain earlier objections and author
+reaffirmations so a fresh child does not restart an already-settled debate.
+Never put secrets or full sensitive comment bodies in the checkpoint.
+
+Build PENDING_FEEDBACK_JSON from FEEDBACK_JSON: new/edited items needing
+assessment and unfinished actionable requests, each with its full discussion
+context. Include general PR comments and review summaries even when there are
+zero unresolved threads. Revisit unchanged items only for relevant new
+evidence, a changed head affecting the finding, or a newly satisfied blocker.
+Already-published, superseded, or substantively declined items are not fresh
+work. A local fix is **pending-push**, not completed: retry its validation/push
+even if no new comments arrived. Mark code-change requests handled only after
+verifying the fix on the remote PR head (including equivalent rebased commits).
+Awaiting-author items stay pending but do not cause repeated replies,
+notifications, or spawns while the question and evidence remain unchanged.
+Do not discard a thread solely because isOutdated is true; assess whether the
+request still applies. Skip satisfied/resolved discussions, but inspect any
+new author request added after prior handling, even in a resolved thread.
+
+Triage or delegation alone does not mark a request completed. Record queued
+work as queued and mark it handled only after an actual outcome/report.
+Before a new spawn, look for the same PR/task child: never race a running
+worker; on a later run, give new/edited feedback to the existing idle child.
+Spawn only if none exists. Carry the checkpoint and policy into every handoff.
+After work, persist an updated compact checkpoint in this conversation's
+report (and return it to the parent when delegated), without posting bookkeeping
+noise to GitHub. Emit checkpoint updates only when decisions change; on no-op
+scheduled runs rely on the existing history/report and remain quiet. Pending
+material concerns remain visible as merge blockers.

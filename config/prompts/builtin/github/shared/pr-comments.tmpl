@@ -3,13 +3,13 @@
   review threads to a child conversation. Consumed by babysit-my-prs and
   babysit-this-pr. Extracted per mitto-g61.8; pre-conditions the caller sets:
     - <number>, <title>, <owner/repo>, <count>, <headRefName>, <baseRefName>,
-      <PR_HEAD>, <WORKING_MODE>, <WORKING_PATH>, <THREADS_JSON> populated by
+      <PR_HEAD>, <WORKING_MODE>, <WORKING_PATH>, <PENDING_FEEDBACK_JSON> populated by
       the surrounding fetch + working-copy-decision blocks.
     - {{ .Session.ID }} required — self_id: is emitted directly.
 */ -}}
 mitto_conversation_new(self_id: "{{ .Session.ID }}",
   title: "Address review comments on PR #<number>: <title>",
-  initial_prompt: "PR #<number> (<title>) in <owner/repo> has <count> unresolved review threads.
+  initial_prompt: "PR #<number> (<title>) in <owner/repo> has <count> pending feedback items.
 
     Working-copy mode: <WORKING_MODE>  ('local' = reuse repo path as-is;
                                           'worktree' = create a fresh worktree, do NOT touch the main checkout)
@@ -17,18 +17,43 @@ mitto_conversation_new(self_id: "{{ .Session.ID }}",
     PR branch:         <headRefName>   (head commit <PR_HEAD>)
     Base branch:       <baseRefName>
 
-    Unresolved threads (JSON, one object per thread — id / path / line / author / body):
-    <THREADS_JSON>
+    PR author: <PR_AUTHOR_LOGIN>
+    Verified user-owned accounts and identity evidence: <VERIFIED_USER_IDENTITY>
+    Pending items with full discussions, author types, IDs/URLs and timestamps:
+    <PENDING_FEEDBACK_JSON>
+    Prior decisions, objections, reaffirmations, and agent-posted reply IDs:
+    <FEEDBACK_CHECKPOINT>
+    Collection procedure:
+    <copy the full shared collection procedure above, including queries and pagination checks>
 
-    For EACH thread you MUST do exactly one of:
+    {{ template "github/shared/pr-feedback-policy" . }}
+
+    {{ template "github/shared/pr-feedback-checkpoint" . }}
+
+    Before acting, refresh all feedback sources for this same PR (full thread
+    discussions, general comments, review summaries, with pagination) using the
+    shared collection procedure. Reconcile newer author direction, including a
+    general comment superseding a supplied thread request. Retain the delegated
+    work scope; report unrelated new requests to the parent for its next run.
+    Do not expand to other PRs or implement a superseded request.
+    Inherit the parent's interaction mode, not the child's one-off status:
+    {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+    unattended — only mitto_ui_notify, never interactive UI; defer blocked items.
+    {{- else }}
+    interactive — use Mitto UI if a blocking clarification is needed.
+    {{- end }}
+
+    For EACH actionable request you MUST do exactly one of:
       (a) Apply a code fix that addresses the comment, then reply to the
-          thread on the PR referencing the commit that fixed it.
+          discussion on the PR referencing the pushed commit that fixed it.
       (b) Reply to the thread with a concrete reason it will not be fixed
           (e.g., 'out of scope for this PR — filed as beads mitto-XXX',
           'disagree with reviewer because <reason>', 'already addressed in
           commit abc123', etc.).
-    Never silently skip a thread. Never mark a thread resolved without either
-    a code fix or a substantive reply.
+    A material objection to an author request awaits clarification, not automatic
+    rejection. Do not repeat a substantive reply already recorded for this item.
+    Never silently skip a request. Acknowledgments/status-only comments need no
+    reply. Never mark a thread resolved without a verified fix.
 
     Working-copy rules:
       - If 'local': operate directly in the given repo path. Never leave
@@ -43,12 +68,15 @@ mitto_conversation_new(self_id: "{{ .Session.ID }}",
     To post a reply on a review thread, use the GraphQL addPullRequestReviewThreadReply mutation
     (or 'gh api /repos/{owner}/{repo}/pulls/{number}/comments' with in_reply_to=<thread's first comment id>).
     To mark it resolved, use the resolveReviewThread mutation with the thread id from the JSON.
+    General comments and review summaries have no resolvable thread: reply with
+    a PR comment linking the source URL, never invent a review-thread ID.
 
     Local gate before pushing: run the project's format → lint → unit → integration
     steps (whatever the repo's Makefile or docs specify) and only push once
     they all pass. Force-push with --force-with-lease.
 
-    When done, either mark all threads resolved (if fixed) or leave them
-    unresolved with your reply comment (if pushed back). Report back with a
-    per-thread summary: which threads got fixed vs replied-only.",
+    When done, resolve only fixed review threads; leave blocked/disputed ones
+    unresolved. Report back per item: published, pending-push, replied-only, awaiting-author, or
+    superseded, plus the updated PR feedback checkpoint. The parent must recover
+    this report before deciding that these comment versions have been handled.",
   acp_server: <prefer "coding" or "fast" tagged server>)

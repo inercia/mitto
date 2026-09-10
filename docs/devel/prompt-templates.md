@@ -683,6 +683,35 @@ recipes, spawn-dedup rules) were similarly rejected during `mitto-g61.9` after
 byte-level inspection — see that bead's `Implementation:` comment for the
 per-candidate rationale.
 
+### GitHub feedback policy and collection
+
+The two own-PR babysitters (`babysit-this-pr`, `babysit-my-prs`) and the
+standalone `check-pr-comments` / `address-pr-comments` prompts share:
+
+- `github/shared/pr-feedback-policy`: evidence-based evaluation for other
+  humans and bots; default compliance with clear requests from the verified
+  human user-author. Material objections are raised once, not on every loop
+  iteration. Author reaffirmation settles ordinary trade-offs, not safety gates.
+- `github/shared/pr-feedback-checkpoint`: per-comment ID/version outcomes,
+  pending questions, reply IDs and commits recovered from conversation history
+  and child reports. A child timestamp or triage verdict is not proof of work.
+- `github/shared/pr-fetch-review-threads`: despite its historical name, now
+  collects full discussions, general PR comments and review summaries. Every
+  GraphQL connection is independently paginated, including nested replies.
+  `pr-fetch-comments` wraps this collector and retains the GitLab alternative.
+
+The babysitters' `pr-comments` child payload includes the policy, checkpoint,
+verified identity evidence, full discussion context and parent interaction
+mode. New author replies must reach an idle existing child rather than being
+suppressed by the old thread-creation-time dedup rule. Feedback is assessed
+before the merge gate, including when no unresolved review threads exist.
+
+`Check PR Comments` remains triage-only; `Address PR Comments` preserves its
+push-confirmation and thread-resolution permissions. `babysit-contributions`
+does not consume this policy: it monitors others' PRs, not the user's feedback.
+Render-contract tests live in `internal/prompts/github_feedback_policy_test.go`.
+They validate prompt instructions and wiring, not probabilistic agent behavior.
+
 ### Runtime bootstrap requirement (adding a new fragment safely)
 
 `PrecompileTemplateConds` and `RenderPromptTemplate` both attach the process-wide

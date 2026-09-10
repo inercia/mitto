@@ -80,6 +80,19 @@ func TestBabysitPRs_ReviewThreadsQuery_mittoEMCC(t *testing.T) {
 					t.Fatalf("read embedded fragment %s: %v", c.fragment, err)
 				}
 				combined = src + "\n" + string(fragBody)
+				// The standalone PR/MR wrapper now delegates GitHub collection
+				// to the same paginated collector as the babysitters. Follow the
+				// reference, rather than requiring a duplicate inline query.
+				if c.fragment == "github/shared/pr-fetch-comments.tmpl" {
+					if !strings.Contains(string(fragBody), `template "github/shared/pr-fetch-review-threads"`) {
+						t.Fatal("PR/MR wrapper must reference the shared GraphQL collector")
+					}
+					collector, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/github/shared/pr-fetch-review-threads.tmpl")
+					if err != nil {
+						t.Fatalf("read embedded GraphQL collector: %v", err)
+					}
+					combined += "\n" + string(collector)
+				}
 			}
 
 			// Prompt must actually consume the fragment (or inline the GraphQL query

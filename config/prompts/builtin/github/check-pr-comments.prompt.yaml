@@ -49,31 +49,41 @@ prompt: |
 
   {{ template "github/shared/pr-fetch-comments" . }}
 
+  {{ template "github/shared/pr-feedback-policy" . }}
+
+  {{ template "github/shared/pr-feedback-checkpoint" . }}
+
   ### 3. Triage Each Comment
 
-  For each unresolved comment, evaluate:
+  For each pending item, read its full discussion and evaluate:
 
+  - **Speaker/intent** — Other human, bot, or verified user-author? A change
+    request, endorsement, question, or status reply? Apply the shared policy.
   - **Relevance** — Does it apply to the current state of the code, or was it
     already addressed / made moot by later commits?
   - **Validity** — Is it technically correct? Aligned with project conventions?
   - **Importance** — Blocking (must fix) / Important (should fix) /
     Optional (nice-to-have) / Noise (can be ignored: bikeshedding, out-of-scope,
-    superseded, or purely subjective preference).
+    superseded, or unsolicited subjective preference). A clear user-author
+    request is not Noise merely because it is subjective, small, or changes scope.
   - **Effort** — Trivial / Small / Medium / Large.
 
   Produce a compact table:
 
-  | Comment | Relevance | Importance | Effort | Verdict |
-  |---------|-----------|------------|--------|---------|
-  | ...     | ...       | ...        | ...    | address / defer / ignore |
+  | Comment | Speaker / intent | Relevance | Importance | Effort | Verdict |
+  |---------|------------------|-----------|------------|--------|---------|
+  | ...     | ...              | ...       | ...        | ...    | address / defer / ignore |
 
   ### 4. Decide
 
-  - **Address now** — at least one comment is Blocking, or one or more are
-    Important with reasonable effort.
-  - **Defer** — only Optional / low-effort polish; safe to postpone.
-  - **Ignore** — no unresolved comments, or all remaining ones are Noise /
-    superseded / out-of-scope.
+  - **Address now** — a clear verified user-author change request with no
+    concrete blocker, even if it is optional polish; otherwise at least one
+    Blocking comment or Important comments with reasonable effort.
+  - **Defer** — genuine blockers needing clarification, or only unsolicited
+    Optional polish. Do not silently downgrade an explicit author request.
+  - **Ignore** — no pending actionable feedback across threads, general comments,
+    and review summaries, or all remaining items are legitimately Noise /
+    superseded. Never infer this from unresolved-thread count alone.
 
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: apply the decision autonomously — do not ask.
@@ -104,6 +114,11 @@ prompt: |
   triage turn ends. Then notify the user with `mitto_ui_notify` that the address
   run is queued, including a one-line summary of what needs fixing.
 
+  Record queued item IDs/versions and prior decisions in the PR feedback
+  checkpoint for that next turn; do not mark them handled yet. If the same
+  address work is already queued/running, do not enqueue it again. The Address
+  prompt re-fetches feedback and recovers the checkpoint before acting.
+
   ### 6. Summary Notification
 
   In all cases, end with a `mitto_ui_notify` summary:
@@ -121,7 +136,10 @@ prompt: |
 
   - This prompt is **triage only** — never edit files, commit, push, or reply on
     threads. That is the job of **Address PR Comments**.
-  - Treat already-resolved threads and self-authored comments as out of scope.
+  - Skip satisfied discussions and agent-generated status replies, not genuine
+    user-author requests or new instructions in an older thread.
+  - Triage only: the shared policy does not authorize you to post clarification
+    replies or implement changes; report blockers for the Address prompt/user.
   - When in doubt about importance, err on the side of "address now" so a human
     (or the Address prompt) can make the final call.
   - **One conversation per PR**: hand off by queueing "Address PR Comments" on
