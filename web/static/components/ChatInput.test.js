@@ -832,7 +832,7 @@ function createDebouncedCollapseModel({ collapseDelayMs = 250 } = {}) {
 // Duplicated from ChatInput.js:2527-2533: the compact class applied to the
 // (always-mounted) .chat-input-container wrapper (the textarea box).
 function computeChatInputContainerClass(isScrollCompact) {
-  return `max-w-4xl mx-auto chat-input-container ${
+  return `max-w-[60rem] mx-auto chat-input-container ${
     isScrollCompact ? "chat-input-container--compact" : ""
   }`;
 }
@@ -844,7 +844,7 @@ function computeChatInputContainerClass(isScrollCompact) {
 // pair driven by the SAME isScrollCompact signal — no separate scroll
 // listener or derived state.
 function computeActionButtonsClass(isScrollCompact) {
-  return `max-w-4xl mx-auto mb-3 chat-input-actionbuttons ${
+  return `max-w-[60rem] mx-auto mb-3 chat-input-actionbuttons ${
     isScrollCompact ? "chat-input-actionbuttons--compact" : ""
   }`;
 }
@@ -1045,13 +1045,13 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
   describe("compact class + mount-preservation invariant", () => {
     test("compact adds the modifier class alongside the base classes (element stays the same node)", () => {
       expect(computeChatInputContainerClass(true)).toBe(
-        "max-w-4xl mx-auto chat-input-container chat-input-container--compact",
+        "max-w-[60rem] mx-auto chat-input-container chat-input-container--compact",
       );
     });
 
     test("non-compact renders the base classes only", () => {
       expect(computeChatInputContainerClass(false)).toBe(
-        "max-w-4xl mx-auto chat-input-container ",
+        "max-w-[60rem] mx-auto chat-input-container ",
       );
     });
 
@@ -1107,13 +1107,13 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
   describe("full-area collapse: action buttons + restore affordance", () => {
     test("action buttons wrapper gets the compact modifier when scroll-compact", () => {
       expect(computeActionButtonsClass(true)).toBe(
-        "max-w-4xl mx-auto mb-3 chat-input-actionbuttons chat-input-actionbuttons--compact",
+        "max-w-[60rem] mx-auto mb-3 chat-input-actionbuttons chat-input-actionbuttons--compact",
       );
     });
 
     test("action buttons wrapper renders base classes only when not compact", () => {
       expect(computeActionButtonsClass(false)).toBe(
-        "max-w-4xl mx-auto mb-3 chat-input-actionbuttons ",
+        "max-w-[60rem] mx-auto mb-3 chat-input-actionbuttons ",
       );
     });
 

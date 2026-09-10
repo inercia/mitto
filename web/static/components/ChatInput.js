@@ -1902,7 +1902,7 @@ export function ChatInput({
       <!-- UI Prompt from MCP tool (unified menu or permission) -->
       ${hasActiveUIPrompt &&
       html`
-        <div class="max-w-4xl mx-auto mb-3">
+        <div class="max-w-[60rem] mx-auto mb-3">
           ${
             /* Permission prompts keep original button-based rendering */
             activeUIPrompt.promptType === "permission"
@@ -2299,7 +2299,7 @@ ${activeUIPrompt.text || ""}</textarea
       `}
 
       <!-- Compact loop controls. Full settings live in SessionPanel's Loop tab. -->
-      <div class="max-w-4xl mx-auto">
+      <div class="max-w-[60rem] mx-auto">
         <${LoopControlBar}
           isOpen=${loopConfigured && !hasActiveUIPrompt}
           sessionId=${sessionId}
@@ -2323,7 +2323,7 @@ ${activeUIPrompt.text || ""}</textarea
            which always stays mounted so draft/attachments are preserved. -->
       ${isScrollCompact &&
       html`
-        <div class="max-w-4xl mx-auto">
+        <div class="max-w-[60rem] mx-auto">
           <button
             type="button"
             onClick=${() => {
@@ -2358,7 +2358,7 @@ ${activeUIPrompt.text || ""}</textarea
       !isResuming &&
       html`
         <div
-          class="max-w-4xl mx-auto mb-3 chat-input-actionbuttons ${isScrollCompact
+          class="max-w-[60rem] mx-auto mb-3 chat-input-actionbuttons ${isScrollCompact
             ? "chat-input-actionbuttons--compact"
             : ""}"
         >
@@ -2394,7 +2394,7 @@ ${activeUIPrompt.text || ""}</textarea
       `}
       ${uploadError &&
       html`
-        <div class="max-w-4xl mx-auto mb-2">
+        <div class="max-w-[60rem] mx-auto mb-2">
           <div
             class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
@@ -2436,7 +2436,7 @@ ${activeUIPrompt.text || ""}</textarea
       `}
       ${improveError &&
       html`
-        <div class="max-w-4xl mx-auto mb-2">
+        <div class="max-w-[60rem] mx-auto mb-2">
           <div
             class="bg-red-900/50 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
           >
@@ -2478,7 +2478,7 @@ ${activeUIPrompt.text || ""}</textarea
       `}
       ${sendError &&
       html`
-        <div class="max-w-4xl mx-auto mb-2">
+        <div class="max-w-[60rem] mx-auto mb-2">
           <div class="alert alert-warning text-sm">
             <svg
               class="w-4 h-4 shrink-0"
@@ -2523,7 +2523,7 @@ ${activeUIPrompt.text || ""}</textarea
       !(isPromptCollapsed && loopConfigured) &&
       html`
         <div
-          class="max-w-4xl mx-auto chat-input-container ${isScrollCompact
+          class="max-w-[60rem] mx-auto chat-input-container ${isScrollCompact
             ? "chat-input-container--compact"
             : ""}"
           onClick=${isScrollCompact
@@ -3020,7 +3020,7 @@ ${activeUIPrompt.text || ""}</textarea
                     ${showDropup &&
                     html`
                       <div
-                        class="absolute bottom-full right-0 mb-2 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
+                        class="chat-input-prompts-dropup absolute bottom-full right-0 mb-2 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
                         style="width: 20rem; min-width: 20rem; max-width: 20rem; max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
                         <${PromptsMenu}

@@ -238,7 +238,7 @@ export function MessageList({
         }
         <div
           key=${activeSessionId}
-          class="max-w-2xl mx-auto flex flex-col-reverse ${
+          class="max-w-[60rem] mx-auto flex flex-col-reverse ${
             swipeDirection ? `swipe-slide-${swipeDirection}` : ""
           }"
         >

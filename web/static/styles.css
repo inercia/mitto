@@ -2043,6 +2043,18 @@ mitto-action {
     margin-bottom: 0 !important;
     pointer-events: none;
   }
+
+  /* The upward-opening menus (prompts dropup, model/mode selector) live inside
+     .chat-input-container, whose overflow:hidden above (needed only for the
+     scroll-compact max-height animation) would otherwise clip them at the
+     container's top edge — making them appear submerged behind the message
+     list. Lift the clip while such a menu is open so it paints above the
+     composer. These menus only open while the composer is expanded (never in
+     the compact resting state), so the collapse animation is unaffected. */
+  .chat-input-container:has(.chat-input-prompts-dropup),
+  .chat-input-container:has(.chat-input-config-dropdown[open]) {
+    overflow: visible;
+  }
 }
 
 /* Restore affordance shown only while the composition area is scroll-
