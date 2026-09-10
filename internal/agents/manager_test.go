@@ -583,6 +583,71 @@ func TestGitHubCopilot_StatusDetection(t *testing.T) {
 	}
 }
 
+// TestGitHubCopilot_MCPInstall_UsesCorrectConfigPath verifies that the real
+// config/agents/builtin/github-copilot/cmds/mcp-install.sh script writes a
+// user-scope server to ~/.copilot/mcp-config.json — the exact file
+// mcp-list.sh and status.sh already read — instead of the legacy
+// ~/.github-copilot/settings.json path that nothing else in the pipeline
+// consults. Regression coverage for mitto-o8k: mitto-8ux fixed status.sh and
+// mcp-list.sh to use ~/.copilot/mcp-config.json but left mcp-install.sh (and
+// mcp-remove.sh) pointing at the old path, so "Add MCP server" through
+// Mitto's UI silently reports success while the server never appears in the
+// list and Copilot never loads it.
+func TestGitHubCopilot_MCPInstall_UsesCorrectConfigPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+
+	// Point the manager at the REAL builtin agents dir so we exercise the
+	// production script, not a fixture.
+	builtinDir := builtinAgentsDirForTest(t)
+	agentsDir := filepath.Dir(builtinDir)
+	scriptPath := filepath.Join(builtinDir, "github-copilot", "cmds", "mcp-install.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real github-copilot mcp-install.sh not found: %v", err)
+	}
+
+	// Isolate HOME so we can assert exactly which file the script wrote.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	m := NewManager(agentsDir, nil)
+	out, err := m.InstallMCPServer(context.Background(), "github-copilot", &MCPInstallInput{
+		Name:    "my-server",
+		Command: "/usr/bin/my-server",
+		Scope:   "user",
+	})
+	if err != nil {
+		t.Fatalf("InstallMCPServer failed: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("expected success=true, got: %+v", out)
+	}
+
+	// mitto-o8k: mcp-install.sh must write to ~/.copilot/mcp-config.json —
+	// the same path mcp-list.sh and status.sh already read.
+	correctPath := filepath.Join(home, ".copilot", "mcp-config.json")
+	data, err := os.ReadFile(correctPath)
+	if err != nil {
+		t.Fatalf("mitto-o8k: expected mcp-install.sh to write %s (the path read by mcp-list.sh/status.sh), but it was not created: %v", correctPath, err)
+	}
+	var cfg struct {
+		MCPServers map[string]interface{} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("failed to parse %s: %v", correctPath, err)
+	}
+	if _, ok := cfg.MCPServers["my-server"]; !ok {
+		t.Errorf("mitto-o8k: %s does not contain server 'my-server': %s", correctPath, data)
+	}
+
+	// The legacy path must NOT be written by the fixed script.
+	wrongPath := filepath.Join(home, ".github-copilot", "settings.json")
+	if _, err := os.Stat(wrongPath); err == nil {
+		t.Errorf("mitto-o8k: mcp-install.sh wrote to the wrong legacy path %s (should only write %s)", wrongPath, correctPath)
+	}
+}
+
 // TestAgentMetadataDefaults_Parse verifies that a metadata.yaml with a `defaults` block
 // is parsed correctly into AgentMetadata.Defaults.
 func TestAgentMetadataDefaults_Parse(t *testing.T) {

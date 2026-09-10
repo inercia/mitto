@@ -15,17 +15,19 @@ fi
 SCOPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
 WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
 
-# Determine config file based on scope
+# Determine config file based on scope. Must match mcp-install.sh /
+# mcp-list.sh / status.sh (mitto-o8k): ~/.copilot/mcp-config.json for user
+# scope, .mcp.json (workspace root) for project scope.
 case "$SCOPE" in
     project)
         if [ -z "$WORKSPACE_PATH" ]; then
             echo "{\"success\": false, \"message\": \"path is required for project scope\", \"name\": \"$NAME\"}"
             exit 1
         fi
-        CONFIG_FILE="${WORKSPACE_PATH}/.github-copilot/settings.json"
+        CONFIG_FILE="${WORKSPACE_PATH}/.mcp.json"
         ;;
     *)
-        CONFIG_FILE="${HOME}/.github-copilot/settings.json"
+        CONFIG_FILE="${HOME}/.copilot/mcp-config.json"
         ;;
 esac
 

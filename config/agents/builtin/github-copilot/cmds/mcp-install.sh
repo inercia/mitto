@@ -23,19 +23,23 @@ fi
 SCOPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
 WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
 
-# Determine config file based on scope
+# Determine config file based on scope. GitHub Copilot CLI reads
+# ~/.copilot/mcp-config.json for user scope and .mcp.json (workspace root)
+# for project scope — the legacy ~/.github-copilot/settings.json path is
+# never read by anything (mitto-o8k; matches mcp-list.sh/status.sh, which
+# already read ~/.copilot/mcp-config.json per mitto-8ux).
 case "$SCOPE" in
     project)
         if [ -z "$WORKSPACE_PATH" ]; then
             echo "{\"success\": false, \"message\": \"path is required for project scope\", \"name\": \"$NAME\"}"
             exit 1
         fi
-        CONFIG_DIR="${WORKSPACE_PATH}/.github-copilot"
-        CONFIG_FILE="${WORKSPACE_PATH}/.github-copilot/settings.json"
+        CONFIG_DIR="${WORKSPACE_PATH}"
+        CONFIG_FILE="${WORKSPACE_PATH}/.mcp.json"
         ;;
     *)
-        CONFIG_DIR="${HOME}/.github-copilot"
-        CONFIG_FILE="${HOME}/.github-copilot/settings.json"
+        CONFIG_DIR="${HOME}/.copilot"
+        CONFIG_FILE="${HOME}/.copilot/mcp-config.json"
         ;;
 esac
 
@@ -59,14 +63,17 @@ with open('$CONFIG_FILE') as f:
 
 config.setdefault('mcpServers', {})
 if url:
-    entry = {'url': url}
+    # GitHub Copilot CLI's schema requires a 'type' discriminator
+    # ('http' for URL-based servers, 'local' for stdio commands below) —
+    # see docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers.
+    entry = {'type': 'http', 'url': url}
     if headers:
         entry['headers'] = headers
     if env:
         entry['env'] = env
     config['mcpServers'][name] = entry
 elif command:
-    entry = {'command': command}
+    entry = {'type': 'local', 'command': command}
     if args:
         entry['args'] = args
     if env:
