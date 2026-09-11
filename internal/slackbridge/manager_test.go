@@ -26,6 +26,31 @@ func (c managerCatalog) GetInstallation(id string) (slackcatalog.InstallationVie
 	return installation, nil
 }
 
+// ListApps reports no configured apps by default so keepalive stays empty and
+// the base fixtures keep their subscription-driven worker lifecycle. Keepalive
+// behavior is exercised via keepAliveCatalog.
+func (c managerCatalog) ListApps() ([]slackcatalog.AppView, error) { return nil, nil }
+
+// keepAliveCatalog augments managerCatalog with a mutable set of configured
+// apps so tests can drive the keepalive set (apps with a configured app token).
+type keepAliveCatalog struct {
+	managerCatalog
+	mu   sync.Mutex
+	apps []slackcatalog.AppView
+}
+
+func (c *keepAliveCatalog) ListApps() ([]slackcatalog.AppView, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]slackcatalog.AppView(nil), c.apps...), nil
+}
+
+func (c *keepAliveCatalog) setApps(apps ...slackcatalog.AppView) {
+	c.mu.Lock()
+	c.apps = apps
+	c.mu.Unlock()
+}
+
 type managerCredentials struct {
 	mu    sync.Mutex
 	token string
@@ -803,4 +828,211 @@ func TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump(t *testing.T) {
 	if !strings.Contains(out, "level=INFO") {
 		t.Errorf("expected level=INFO for a real state transition; got:\n%s", out)
 	}
+}
+
+// TestManagerKeepAliveConnectsConfiguredAppWithoutSubscriptions proves the
+// keepalive contract (mitto-al8): a Slack app configured in the catalog stays
+// connected even when no loop subscribes to it, and its worker only stops once
+// the app is removed from the catalog.
+func TestManagerKeepAliveConnectsConfiguredAppWithoutSubscriptions(t *testing.T) {
+	store := newManagerStore(t)
+	catalog := &keepAliveCatalog{}
+	catalog.setApps(slackcatalog.AppView{AppProfile: slackcatalog.AppProfile{ID: "app-keep"}, TokenConfigured: true})
+	sources := &sourceHarness{}
+	manager := NewManager(store, catalog, &managerCredentials{token: "app-token"}, &managerRunner{}, nil)
+	manager.factory = sources.factory
+	manager.grace = 10 * time.Millisecond
+	t.Cleanup(manager.Close)
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The worker starts with zero loop subscriptions purely because the app is
+	// configured in the catalog (keepalive).
+	waitForManager(t, "keepalive worker started", func() bool {
+		created, active, _, _, _ := sources.snapshot()
+		return created == 1 && active == 1
+	})
+
+	// A keepalive app is never scheduled for stop, so the worker must remain
+	// active well past the unused grace.
+	time.Sleep(20 * manager.grace)
+	if _, active, _, _, _ := sources.snapshot(); active != 1 {
+		t.Fatalf("keepalive worker stopped despite configured app: active=%d", active)
+	}
+	manager.mu.Lock()
+	kept := manager.keepAlive["app-keep"]
+	subs := manager.appReferencesLocked("app-keep")
+	manager.mu.Unlock()
+	if !kept || subs != 0 {
+		t.Fatalf("keepAlive[app-keep]=%v subscriptions=%d, want true/0", kept, subs)
+	}
+
+	// Removing the app from the catalog drops it from keepalive; with no loop
+	// subscriptions the worker is now unused and stops after the grace.
+	catalog.setApps()
+	manager.RefreshKeepAlive()
+	waitForManager(t, "keepalive worker stopped after app removal", func() bool {
+		_, active, _, _, _ := sources.snapshot()
+		return active == 0
+	})
+}
+
+// TestManagerConfigScopedKeepaliveSurvivesLoopPause covers mitto-al8.1's core
+// claim: a shared Socket Mode worker stays connected while a loop's
+// PERSISTED subscription config references its app, independent of
+// loop.Enabled -- and a paused (disarmed) loop receives zero dispatched
+// events despite the worker staying up, because routeEvent gates strictly on
+// m.sessions (armed subscriptions only).
+func TestManagerConfigScopedKeepaliveSurvivesLoopPause(t *testing.T) {
+	store := newManagerStore(t)
+	const sessionID = "paused-loop"
+	sub := session.SlackSubscription{InstallationID: "install-1", ChannelID: "channel-1"}
+	addSlackLoop(t, store, sessionID, false, false, sub)
+	runner, sources := &managerRunner{}, &sourceHarness{}
+	manager := NewManager(store, testInstallations(), &managerCredentials{token: "token"}, runner, nil)
+	manager.factory, manager.grace = sources.factory, 30*time.Millisecond
+	t.Cleanup(manager.Close)
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The loop is created Enabled=false (paused/disarmed) yet its persisted
+	// subscription still keeps the app-1 worker connected.
+	waitForManager(t, "config-referenced worker started while paused", func() bool {
+		created, active, _, _, _ := sources.snapshot()
+		return created == 1 && active == 1
+	})
+	manager.mu.Lock()
+	referenced := manager.configReferencedLocked("app-1")
+	dispatchRefs := manager.appReferencesLocked("app-1")
+	manager.mu.Unlock()
+	if !referenced || dispatchRefs != 0 {
+		t.Fatalf("configReferencedLocked=%v appReferencesLocked=%d, want true/0", referenced, dispatchRefs)
+	}
+
+	// An event reaching the worker while paused is received (the source's
+	// legacy Run transitions connecting -> connected on first emit) but NOT
+	// dispatched: routeEvent (via m.sessions) has nothing for this session
+	// because dispatch resolution still requires loop.Enabled.
+	_, _, _, _, activeSources := sources.snapshot()
+	activeSources[0].events <- Event{EventID: "while-paused", TeamID: "team-1", ChannelID: "channel-1", AuthorID: "human", Kind: "message"}
+	waitForManager(t, "worker transitions to connected on first event", func() bool {
+		status := manager.Status()
+		return len(status) == 1 && status[0].State == "connected"
+	})
+	status := manager.Status()
+	if len(status) != 1 || status[0].SubscriptionCount != 0 {
+		t.Fatalf("status while paused = %#v, want SubscriptionCount 0", status)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if calls := runner.snapshot(); len(calls) != 0 {
+		t.Fatalf("paused loop dispatched events: %#v", calls)
+	}
+
+	// Re-enabling arms dispatch on the SAME worker/source -- no reconnect.
+	enabled := true
+	if err := store.Loop(sessionID).Update(session.LoopUpdate{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileSession(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	activeSources[0].events <- Event{EventID: "after-enable", TeamID: "team-1", ChannelID: "channel-1", AuthorID: "human", Kind: "message"}
+	waitForManager(t, "dispatch resumes after re-enable", func() bool { return len(runner.snapshot()) == 1 })
+	if created, _, _, _, _ := sources.snapshot(); created != 1 {
+		t.Fatalf("re-enabling reconnected the worker: created=%d, want 1 (no reconnect)", created)
+	}
+
+	// Pausing again keeps the worker alive past the grace window purely on
+	// the persisted config reference.
+	disabled := false
+	if err := store.Loop(sessionID).Update(session.LoopUpdate{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileSession(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * manager.grace)
+	for time.Now().Before(deadline) {
+		if _, active, _, _, _ := sources.snapshot(); active != 1 {
+			t.Fatalf("worker stopped despite config reference while re-paused")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestManagerConfigReferenceReleasesOnClearAndArchive covers mitto-al8.1's
+// release criteria: clearing a loop's persisted subscriptions, or archiving
+// its session, drops the config reference and lets the shared worker stop
+// after the unused grace once no other reference remains.
+func TestManagerConfigReferenceReleasesOnClearAndArchive(t *testing.T) {
+	store := newManagerStore(t)
+	const sessionID = "release-config"
+	sub := session.SlackSubscription{InstallationID: "install-1", ChannelID: "channel-1"}
+	addSlackLoop(t, store, sessionID, false, false, sub)
+	sources := &sourceHarness{}
+	manager := NewManager(store, testInstallations(), &managerCredentials{token: "token"}, &managerRunner{}, nil)
+	manager.factory, manager.grace = sources.factory, 20*time.Millisecond
+	t.Cleanup(manager.Close)
+	if err := manager.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForManager(t, "config-referenced worker started", func() bool {
+		created, active, _, _, _ := sources.snapshot()
+		return created == 1 && active == 1
+	})
+
+	// Clearing the persisted subscriptions drops the config reference; with
+	// no other reference the worker stops after the grace window.
+	emptySubs := []session.SlackSubscription{}
+	if err := store.Loop(sessionID).Update(session.LoopUpdate{SlackSubscriptions: &emptySubs}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileSession(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	referenced := manager.configReferencedLocked("app-1")
+	manager.mu.Unlock()
+	if referenced {
+		t.Fatal("configReferencedLocked still true after clearing subscriptions")
+	}
+	waitForManager(t, "worker stopped after subscriptions cleared", func() bool {
+		_, active, _, _, _ := sources.snapshot()
+		return active == 0
+	})
+
+	// Restoring the subscription restarts the worker on the config
+	// reference alone (loop.Enabled is still false).
+	restored := []session.SlackSubscription{sub}
+	if err := store.Loop(sessionID).Update(session.LoopUpdate{SlackSubscriptions: &restored}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileSession(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	waitForManager(t, "worker restarted from config reference", func() bool {
+		created, active, _, _, _ := sources.snapshot()
+		return created == 2 && active == 1
+	})
+
+	// Archiving the session drops the config reference even though the
+	// subscription is still present on disk.
+	if err := store.UpdateMetadata(sessionID, func(meta *session.Metadata) { meta.Archived = true }); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileSession(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	referenced = manager.configReferencedLocked("app-1")
+	manager.mu.Unlock()
+	if referenced {
+		t.Fatal("configReferencedLocked still true after archiving session")
+	}
+	waitForManager(t, "worker stopped after archive", func() bool {
+		_, active, _, _, _ := sources.snapshot()
+		return active == 0
+	})
 }
