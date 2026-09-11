@@ -31,6 +31,10 @@ type ManagedLoopTriggerer interface {
 // Catalog is the credential-free catalog view needed to resolve subscriptions.
 type Catalog interface {
 	GetInstallation(string) (slackcatalog.InstallationView, error)
+	// ListApps enumerates every configured Slack app profile. It backs the
+	// keepalive set (apps with a configured app token stay connected even with
+	// zero loop subscriptions).
+	ListApps() ([]slackcatalog.AppView, error)
 }
 
 // CredentialResolver resolves app credentials only when a worker starts.
@@ -114,7 +118,23 @@ type Manager struct {
 	// mitto-lue). Without this, such a session stays silently deaf forever:
 	// nothing re-reconciles it once the credential becomes available. Entries
 	// are retried (re-resolved) the next time an event is routed.
-	unresolved   map[string]bool
+	unresolved map[string]bool
+	// keepAlive is the set of Slack app IDs that must stay connected regardless
+	// of loop subscriptions -- every app in the integration catalog with a
+	// configured app token. It decouples the Socket Mode connection lifetime
+	// from individual onSlack watcher lifecycles so a watcher auto-stopping does
+	// not tear down the shared connection (mitto-al8). Recomputed by
+	// RefreshKeepAlive from the catalog and read under m.mu.
+	keepAlive map[string]bool
+	// configApps tracks, per session, the set of Slack app IDs referenced by
+	// that session's PERSISTED loop.SlackSubscriptions, independent of
+	// loop.Enabled. It keeps a shared Socket Mode worker alive as long as
+	// subscription config exists on disk for a non-archived onSlack loop, so
+	// pausing the loop (Enabled=false) does not tear down and reconnect the
+	// worker (mitto-al8.1); dispatch itself still requires loop.Enabled via
+	// m.sessions (see routeEvent). Released when the last referencing
+	// session's config is cleared, or the session is archived/removed.
+	configApps   map[string]map[string]bool
 	workers      map[string]*appWorker
 	statuses     map[string]ConnectionStatus
 	onStatus     func(ConnectionStatus)
@@ -146,8 +166,8 @@ func NewManager(store *session.Store, catalog Catalog, credentials CredentialRes
 	}
 	m := &Manager{store: store, catalog: catalog, credentials: credentials, runner: runner, logger: logger,
 		grace: defaultUnusedGrace, ctx: ctx, cancel: cancel, sessions: make(map[string][]resolvedSubscription),
-		unresolved: make(map[string]bool),
-		workers:    make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{}),
+		unresolved: make(map[string]bool), keepAlive: make(map[string]bool), configApps: make(map[string]map[string]bool),
+		workers: make(map[string]*appWorker), statuses: make(map[string]ConnectionStatus), statusDone: make(chan struct{}),
 		journal: NewFileJournal(journalDir), drainTimers: make(map[string]*time.Timer), journalTemp: journalTemp}
 	m.statusCond = sync.NewCond(&m.mu)
 	m.factory = func(_ string, token string) (Source, error) {
@@ -201,6 +221,11 @@ func (m *Manager) Start() error {
 	if err := m.ReconcileAll(); err != nil {
 		return err
 	}
+	// Connect every configured Slack app up front so the Socket Mode connection
+	// is up at boot regardless of whether any onSlack loop currently references
+	// it (mitto-al8). Runs after ReconcileAll so the keepalive union sees the
+	// already-resolved loop subscriptions.
+	m.RefreshKeepAlive()
 	for _, appID := range profiles {
 		m.scheduleDrain(appID, 0)
 	}
@@ -231,6 +256,11 @@ func (m *Manager) ReconcileAll() error {
 			delete(m.unresolved, id)
 		}
 	}
+	for id := range m.configApps {
+		if !seen[id] {
+			delete(m.configApps, id)
+		}
+	}
 	m.reconcileWorkersLocked()
 	m.mu.Unlock()
 	return nil
@@ -244,10 +274,17 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 		return err
 	}
 	var resolved []resolvedSubscription
-	armed := false
+	configuredApps := make(map[string]bool)
 	loop, loopErr := m.store.Loop(sessionID).Get()
-	if loopErr == nil && !meta.Archived && loop.Enabled && loop.IsOnSlack() {
-		armed = true
+	// configEligible mirrors the dispatch-eligibility check below MINUS
+	// loop.Enabled: a shared worker stays referenced by this session's
+	// persisted subscription config as long as the loop is non-archived and
+	// configured for onSlack, independent of whether the loop is momentarily
+	// paused (mitto-al8.1). Dispatch resolution (armed/resolved below) still
+	// requires loop.Enabled, unchanged from before.
+	configEligible := loopErr == nil && !meta.Archived && loop.IsOnSlack()
+	armed := configEligible && loop.Enabled
+	if configEligible {
 		for _, sub := range loop.SlackSubscriptions {
 			installation, err := m.catalog.GetInstallation(sub.InstallationID)
 			if err != nil {
@@ -262,6 +299,14 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 					m.logger.Debug("slackbridge: skipped subscription", "session_id", sessionID,
 						"installation_id", installation.ID, "reason", "token_not_configured")
 				}
+				continue
+			}
+			// A subscription with a resolvable, token-configured installation
+			// keeps this app's shared worker alive regardless of loop.Enabled
+			// (mitto-al8.1) -- worker lifetime is scoped to persisted
+			// subscription config, not to the loop's momentary pause state.
+			configuredApps[installation.AppID] = true
+			if !armed {
 				continue
 			}
 			authorizedUser := installation.BotUserID
@@ -294,6 +339,11 @@ func (m *Manager) ReconcileSession(sessionID string) error {
 		m.sessions[sessionID] = resolved
 		delete(m.unresolved, sessionID)
 	}
+	if len(configuredApps) == 0 {
+		delete(m.configApps, sessionID)
+	} else {
+		m.configApps[sessionID] = configuredApps
+	}
 	m.reconcileWorkersLocked()
 	m.mu.Unlock()
 	return nil
@@ -304,6 +354,7 @@ func (m *Manager) RemoveSession(sessionID string) {
 	m.mu.Lock()
 	delete(m.sessions, sessionID)
 	delete(m.unresolved, sessionID)
+	delete(m.configApps, sessionID)
 	m.reconcileWorkersLocked()
 	m.mu.Unlock()
 }
@@ -411,7 +462,7 @@ func (m *Manager) RestartApp(appID string) {
 	m.mu.Lock()
 	worker := m.workers[appID]
 	if worker == nil {
-		if m.appReferencesLocked(appID) > 0 {
+		if m.appReferencesLocked(appID) > 0 || m.keepAlive[appID] || m.configReferencedLocked(appID) {
 			m.startWorkerLocked(appID)
 		}
 		m.mu.Unlock()
@@ -429,9 +480,41 @@ func (m *Manager) RestartApp(appID string) {
 	if m.workers[appID] == worker {
 		delete(m.workers, appID)
 	}
-	if m.workers[appID] == nil && m.appReferencesLocked(appID) > 0 {
+	if m.workers[appID] == nil && (m.appReferencesLocked(appID) > 0 || m.keepAlive[appID] || m.configReferencedLocked(appID)) {
 		m.startWorkerLocked(appID)
 	}
+	m.mu.Unlock()
+}
+
+// RefreshKeepAlive recomputes the keepalive set -- every Slack app in the
+// integration catalog with a configured app token -- and reconciles workers so
+// those apps stay connected even with zero loop subscriptions (mitto-al8).
+//
+// The catalog is read WITHOUT holding m.mu: the catalog invokes this manager's
+// reference checker (FindSlackReferences) under its own lock, establishing a
+// catalog-s.mu -> manager-m.mu order. Reading the catalog while holding m.mu
+// would invert that and risk deadlock, so the app set is resolved first and the
+// lock is only taken to swap it in and reconcile.
+func (m *Manager) RefreshKeepAlive() {
+	if m == nil || m.catalog == nil {
+		return
+	}
+	apps, err := m.catalog.ListApps()
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("slackbridge: failed to list configured Slack apps for keepalive", "error_class", "catalog")
+		}
+		return
+	}
+	keep := make(map[string]bool, len(apps))
+	for _, app := range apps {
+		if app.TokenConfigured {
+			keep[app.ID] = true
+		}
+	}
+	m.mu.Lock()
+	m.keepAlive = keep
+	m.reconcileWorkersLocked()
 	m.mu.Unlock()
 }
 
@@ -447,11 +530,38 @@ func (m *Manager) appReferencesLocked(appID string) int {
 	return n
 }
 
+// configReferencedLocked reports whether any non-archived onSlack loop's
+// persisted subscription configuration references appID, independent of
+// loop.Enabled (mitto-al8.1). Must be called with m.mu held.
+func (m *Manager) configReferencedLocked(appID string) bool {
+	for _, apps := range m.configApps {
+		if apps[appID] {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) reconcileWorkersLocked() {
 	referenced := make(map[string]bool)
 	for _, subs := range m.sessions {
 		for _, sub := range subs {
 			referenced[sub.appID] = true
+		}
+	}
+	// Apps configured in the integration catalog stay connected even with zero
+	// loop subscriptions (keepalive), so the shared Socket Mode connection
+	// outlives any individual onSlack watcher's lifecycle.
+	for appID := range m.keepAlive {
+		referenced[appID] = true
+	}
+	// Apps referenced by a non-archived onSlack loop's PERSISTED subscription
+	// config also stay connected, independent of loop.Enabled, so a momentary
+	// loop pause does not tear down and reconnect the shared worker
+	// (mitto-al8.1). Released once the last such config is cleared/archived.
+	for _, apps := range m.configApps {
+		for appID := range apps {
+			referenced[appID] = true
 		}
 	}
 	for appID := range referenced {
@@ -486,7 +596,7 @@ func (m *Manager) reconcileWorkersLocked() {
 func (m *Manager) stopUnused(appID string) {
 	m.mu.Lock()
 	worker := m.workers[appID]
-	if worker == nil || m.appReferencesLocked(appID) > 0 {
+	if worker == nil || m.appReferencesLocked(appID) > 0 || m.keepAlive[appID] || m.configReferencedLocked(appID) {
 		m.mu.Unlock()
 		return
 	}
@@ -505,7 +615,7 @@ func (m *Manager) finishStoppedWorker(appID string, worker *appWorker) {
 		return
 	}
 	delete(m.workers, appID)
-	if m.appReferencesLocked(appID) > 0 {
+	if m.appReferencesLocked(appID) > 0 || m.keepAlive[appID] || m.configReferencedLocked(appID) {
 		m.startWorkerLocked(appID)
 	}
 }
