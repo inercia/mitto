@@ -1211,6 +1211,26 @@ func (ps *LoopStore) ResetCounters() error {
 // on-disk write still happens (existing behavior preserved) so a caller that
 // ignores the error observes no regression.
 func (ps *LoopStore) RecordSent() error {
+	return ps.recordSent(true)
+}
+
+// RecordSentWithoutIterationCount is identical to RecordSent except it does NOT
+// increment IterationCount (mitto-36s). It is used for fires whose trigger must
+// never count toward max_iterations — currently onSlack: an onSlack watcher is
+// conceptually long-lived (bounded by its Socket Mode subscription, not by a
+// message count), so treating every inbound Slack message as a loop iteration
+// silently kills the watcher (and, once it was the last subscription holder,
+// the whole Socket Mode connection) after MaxIterations messages. LastSentAt,
+// FirstRunAt, and NextScheduledAt still advance normally so schedule/UI state
+// stays accurate; only the max-iterations accounting is skipped. Callers must
+// gate on the firing trigger (firedBy), not on the loop's configured trigger
+// set, so a mixed loop (e.g. [onSlack, schedule]) still counts its
+// schedule/onCompletion legs correctly.
+func (ps *LoopStore) RecordSentWithoutIterationCount() error {
+	return ps.recordSent(false)
+}
+
+func (ps *LoopStore) recordSent(countIteration bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -1231,7 +1251,9 @@ func (ps *LoopStore) RecordSent() error {
 	if existing.FirstRunAt == nil {
 		existing.FirstRunAt = &now
 	}
-	existing.IterationCount++
+	if countIteration {
+		existing.IterationCount++
+	}
 	existing.LastSentAt = &now
 	existing.UpdatedAt = now
 	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)

@@ -1712,6 +1712,71 @@ func TestLoopRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_TriggerNowWithSlackEvents_MaxDurationAutoStops reproduces
+// mitto-6zl: a pure onSlack loop (triggers=[onSlack], no schedule/onCompletion
+// leg) never has MaxDurationSeconds enforced. Unlike the schedule path
+// (checkSession, guarded on IsSchedule()+NextScheduledAt) and the onCompletion
+// path (fireOnCompletion/recoverStalledOnCompletion, guarded on
+// IsOnCompletion()), the onSlack dispatch (TriggerNowWithSlackEvents ->
+// triggerNowFull) never calls autoStopIfMaxDurationReached at all — so it
+// keeps delivering (and incrementing IterationCount) forever, even long past
+// the configured wall-clock cap. This test currently FAILS: the loop stays
+// Enabled after the cap is exceeded, demonstrating the dead-config bug.
+func TestLoopRunner_TriggerNowWithSlackEvents_MaxDurationAutoStops(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "onslack-1"
+	if err := store.Create(session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+
+	// Pure onSlack loop: no schedule/onCompletion leg. Anchored 2h ago with a
+	// 60s cap, so the wall-clock cap is already exceeded.
+	past := time.Now().Add(-2 * time.Hour)
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:             "respond to slack",
+		Enabled:            true,
+		Triggers:           []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "install-1", ChannelID: "channel-1"}},
+		MaxDurationSeconds: 60,
+		FirstRunAt:         &past,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// Idle session (no real ACP connection) so triggerNowFull's IsPrompting()
+	// guard passes and, if the bug is present, delivery is attempted.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting(sessionID, false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	var autoStopCalled bool
+	runner.SetOnLoopAutoStopped(func(id string, p *session.LoopPrompt) { autoStopCalled = true })
+
+	_ = runner.TriggerNowWithSlackEvents(sessionID, true, "", []PromptSlackEvent{
+		{EventID: "Ev1", ChannelID: "C1", AuthorID: "U1", Text: "hi from slack"},
+	})
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("mitto-6zl: onSlack loop still Enabled after exceeding MaxDurationSeconds, want auto-stopped")
+	}
+	if final.StoppedReason != session.StoppedReasonMaxDuration {
+		t.Errorf("mitto-6zl: StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+	if !autoStopCalled {
+		t.Error("mitto-6zl: onLoopAutoStopped callback not invoked for onSlack max-duration auto-stop")
+	}
+}
+
 // =============================================================================
 // BootstrapOnCompletion Tests
 // =============================================================================
@@ -4008,6 +4073,131 @@ func TestTriggerNowFull_IsManualClassification(t *testing.T) {
 			// flight when the poll above observed the updated state.
 			time.Sleep(20 * time.Millisecond)
 		})
+	}
+}
+
+// TestLoopRunner_OnSlackFiresDoNotCountTowardMaxIterations_mitto36s is the
+// reproduction test for mitto-36s ("onSlack watcher loops silently kill
+// their Slack Socket Mode connection via max_iterations — every message =
+// one iteration").
+//
+// Root cause: TriggerNowWithSlackEvents always passes resetTimer=true
+// (internal/slackbridge/manager.go:743), so deliverPrompt's OnComplete
+// (internal/conversation/loop_runner.go ~3093-3107) unconditionally calls
+// loopStore.RecordSent() on every successful onSlack dispatch, which
+// increments IterationCount (internal/session/loop.go RecordSent) exactly
+// like a scheduled/onCompletion run. Once IterationCount reaches the
+// effective cap, OnComplete auto-stops the loop with
+// StoppedReasonMaxIterations. Because the Slack Socket Mode worker only
+// stays up while at least one enabled loop retains a subscription
+// (internal/slackbridge/manager.go stopUnused), an onSlack watcher's
+// auto-stop can silently drop the whole Socket Mode connection.
+//
+// This test drives TriggerNowWithSlackEvents through the real production
+// path (deliverPrompt -> OnComplete -> RecordSent -> auto-stop check) for
+// one more onSlack fire than MaxIterations, and asserts the desired (fixed)
+// behavior: an onSlack-triggered fire must never count toward the
+// max-iterations cap, so the loop must still be enabled afterward. It
+// currently FAILS — the loop auto-stops with StoppedReasonMaxIterations
+// after exactly MaxIterations onSlack fires.
+func TestLoopRunner_OnSlackFiresDoNotCountTowardMaxIterations_mitto36s(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	recorder := session.NewRecorder(store)
+	if err := recorder.Start("test", "/tmp", ""); err != nil {
+		t.Fatalf("recorder.Start() error = %v", err)
+	}
+	sessionID := recorder.SessionID()
+
+	const maxIterations = 2
+	loopPrompt := &session.LoopPrompt{
+		Prompt:             "watch",
+		Enabled:            true,
+		Triggers:           []session.LoopTrigger{session.TriggerOnSlack},
+		MaxIterations:      maxIterations,
+		SlackSubscriptions: []session.SlackSubscription{{InstallationID: "I1", ChannelID: "C1"}},
+	}
+	if err := store.Loop(sessionID).Set(loopPrompt); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		observers:     make(map[SessionObserver]struct{}),
+		recorder:      recorder,
+		store:         store,
+		persistedID:   sessionID,
+		workingDir:    "/tmp",
+		sharedProcess: newFakeSharedProcess(),
+		acpID:         "acp-sess-1",
+		pendingConfig: make(map[string]string),
+		nextSeq:       2, // seq 1 already consumed by session_start
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(bs)
+
+	runner := NewLoopRunner(store, sm, nil)
+
+	// Fire one more onSlack event than MaxIterations. Each fire is allowed to
+	// fully settle (OnComplete's RecordSent + auto-stop check) before the
+	// next is dispatched, mirroring how the slackbridge journal claims and
+	// dispatches one batch at a time. Under the bug the loop can auto-stop
+	// after exactly MaxIterations onSlack fires, which then makes
+	// TriggerNowWithSlackEvents itself reject the next dispatch outright
+	// (the watcher has stopped accepting further Slack events) — record
+	// that as evidence rather than failing the test on an "unexpected"
+	// error, so the assertions below can describe the final state precisely.
+	var lastDispatchErr error
+	for i := 0; i < maxIterations+1; i++ {
+		if err := runner.TriggerNowWithSlackEvents(sessionID, true, session.TriggerOnSlack,
+			[]PromptSlackEvent{{InstallationID: "I1", ChannelID: "C1"}}); err != nil {
+			lastDispatchErr = err
+			break
+		}
+
+		waitDeadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(waitDeadline) {
+			if bs.IsPrompting() {
+				time.Sleep(5 * time.Millisecond)
+				continue
+			}
+			if updated, gErr := store.Loop(sessionID).Get(); gErr == nil && updated.IterationCount > i {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		// Small settle buffer for any trailing atomic-rename write still in
+		// flight when the poll above observed the updated state.
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	updated, err := store.Loop(sessionID).Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+
+	// Desired (post-fix) behavior: onSlack fires never count toward the
+	// max-iterations cap, so the loop must still be enabled — and still
+	// accepting further onSlack dispatches — after firing more onSlack
+	// events than MaxIterations.
+	if !updated.Enabled {
+		t.Errorf("mitto-36s: loop auto-stopped after only %d onSlack fires (MaxIterations=%d, StoppedReason=%q); onSlack fires must not count toward max_iterations",
+			updated.IterationCount, maxIterations, updated.StoppedReason)
+	}
+	if updated.StoppedReason == session.StoppedReasonMaxIterations {
+		t.Errorf("mitto-36s: StoppedReason = %q, want empty (onSlack fires must not trigger a max-iterations auto-stop)", updated.StoppedReason)
+	}
+	if lastDispatchErr != nil {
+		t.Errorf("mitto-36s: a later onSlack dispatch was rejected because the loop had already auto-stopped (Socket Mode connection would drop): %v", lastDispatchErr)
 	}
 }
 

@@ -3104,7 +3104,18 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			// ErrRecordSentOnStoppedLoop (mitto-uun) is a soft sentinel: the write
 			// still succeeded, we just want a WARN emitted, so classify it and
 			// fall through to the post-success schedule/cap logic.
-			recordErr := loopStore.RecordSent()
+			//
+			// onSlack fires must never count toward max_iterations (mitto-36s):
+			// an onSlack watcher is conceptually long-lived, bounded by its Slack
+			// subscription rather than a message count, so gate on the FIRING
+			// trigger (not the loop's configured trigger set) to keep mixed
+			// loops' schedule/onCompletion legs counting normally.
+			var recordErr error
+			if firedBy == session.TriggerOnSlack {
+				recordErr = loopStore.RecordSentWithoutIterationCount()
+			} else {
+				recordErr = loopStore.RecordSent()
+			}
 			if recordErr != nil && !errors.Is(recordErr, session.ErrRecordSentOnStoppedLoop) {
 				logLoopRecordSentFailure(r.logger, sessionID, recordErr)
 			} else {
