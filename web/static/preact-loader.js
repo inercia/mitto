@@ -11,6 +11,7 @@
 // diagram rendering) is fetched from the CDN via a classic <script> tag.
 
 import { CDN_URLS } from "./vendor/config.js";
+import { normalizeMarkedMermaidBlocks } from "./utils/mermaidNormalize.js";
 
 // Local URLs with paths relative to this loader (in web/static/)
 // Note: vendor/config.js paths are relative to vendor/, so we define our own here
@@ -257,6 +258,13 @@ async function loadMermaid() {
  */
 async function renderMermaidInContainer(container) {
   if (!container) return;
+
+  // Rewrite marked.js's <pre><code class="language-mermaid"> shape (used by
+  // beads descriptions/comments/notes) into the <pre class="mermaid"> shape
+  // below, produced natively by the backend's goldmark+mermaid extension for
+  // agent chat messages. Reusing this one renderer for both shapes keeps the
+  // SVG cache, theme handling and error handling identical for all callers.
+  normalizeMarkedMermaidBlocks(container);
 
   // Find all unprocessed mermaid blocks
   const mermaidBlocks = container.querySelectorAll(

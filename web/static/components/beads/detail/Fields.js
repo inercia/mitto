@@ -28,6 +28,7 @@ import {
 } from "../../Icons.js";
 import { CodeEditorField } from "../../CodeEditorField.js";
 import { commentBody, handleBeadsContentClick } from "../CommentBody.js";
+import { useRenderMermaid } from "../../../hooks/useRenderMermaid.js";
 import {
   ISSUE_TYPES,
   PRIORITY_LABELS,
@@ -278,6 +279,17 @@ export function NotesField({
   startEditNotes,
   workingDir,
 }) {
+  // Re-render mermaid diagrams whenever the notes' rendered markdown changes
+  // or the field returns to view mode. Called unconditionally (no early
+  // return above it) since hooks can't follow the mode/depsLoading branches
+  // below; the effect itself is a no-op when notesViewRef isn't mounted.
+  // viewDraft/editingNotes are undefined in "create" mode, so optional-chain.
+  useRenderMermaid(
+    notesViewRef,
+    [viewDraft?.notes, editingNotes],
+    !editingNotes,
+  );
+
   if (mode === "create") {
     return html` <textarea
       id="new-issue-notes"
@@ -346,6 +358,12 @@ export function DescriptionField({
   improvingDesc,
   improveDescriptionText,
 }) {
+  // Re-render mermaid diagrams whenever the description's rendered markdown
+  // changes or the field returns to view mode. Called unconditionally (no
+  // early return above it) since hooks can't follow the mode/create branches
+  // below; the effect itself is a no-op when descViewRef isn't mounted.
+  useRenderMermaid(descViewRef, [md, editingDesc], !editingDesc);
+
   const renderToolbar = ({ text, setText, disabled, editorApiRef }) => html`
     <div class="flex flex-wrap items-center gap-1 mb-1">
       <button

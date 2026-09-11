@@ -4,11 +4,12 @@
 // section container stays consistent with the other panel fieldsets and the
 // "Comments (N)" legend count travels with the block.
 
-const { html, Fragment } = window.preact;
+const { html, Fragment, useRef } = window.preact;
 
 import { commentBody } from "../CommentBody.js";
 import { PlusIcon } from "../../Icons.js";
 import { textareaClass } from "./Fields.js";
+import { useRenderMermaid } from "../../../hooks/useRenderMermaid.js";
 
 export function CommentsSection({
   comments,
@@ -22,6 +23,12 @@ export function CommentsSection({
   startAddComment,
   workingDir,
 }) {
+  // Re-render mermaid diagrams across the comments list whenever it changes.
+  // No-op via useRenderMermaid's own guard when the list is empty (the <ul>
+  // below isn't rendered, so commentsListRef.current stays null).
+  const commentsListRef = useRef(null);
+  useRenderMermaid(commentsListRef, [comments], comments.length > 0);
+
   return html`<fieldset class="fieldset min-w-0">
     <legend class="fieldset-legend">
       Comments${comments.length ? ` (${comments.length})` : ""}
@@ -45,7 +52,7 @@ export function CommentsSection({
               No comments.
             </div>`
           : html`
-              <ul class="space-y-2">
+              <ul ref=${commentsListRef} class="space-y-2">
                 ${[...comments]
                   .sort(
                     (a, b) =>
