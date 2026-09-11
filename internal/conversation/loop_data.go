@@ -114,10 +114,23 @@ func BuildLoopAutoPauseNotification(sessionName string, loop *session.LoopPrompt
 			name, loop.PromptName,
 		)
 	case session.StoppedReasonDeliveryFailures:
-		message = fmt.Sprintf(
-			"%q was auto-paused: its scheduled prompt %q failed to deliver repeatedly (e.g. an unresponsive agent) and needs manual attention.",
-			name, loop.PromptName,
-		)
+		if loop.IsOnSlack() {
+			// mitto-al8: an onSlack watcher's Slack Socket Mode subscriptions are
+			// dropped the instant this stop lands (the owning loop's Enabled flag
+			// gates internal/slackbridge/manager.go's subscription sync), so make
+			// that concrete for the operator and set the expectation that
+			// auto-recovery will retry with backoff rather than needing a manual
+			// re-enable immediately.
+			message = fmt.Sprintf(
+				"%q was auto-paused: its scheduled prompt %q failed to deliver repeatedly (e.g. an unresponsive agent), and its Slack Socket Mode subscriptions have been dropped. Mitto will automatically retry re-enabling it with backoff; you'll be notified if recovery gives up.",
+				name, loop.PromptName,
+			)
+		} else {
+			message = fmt.Sprintf(
+				"%q was auto-paused: its scheduled prompt %q failed to deliver repeatedly (e.g. an unresponsive agent) and needs manual attention.",
+				name, loop.PromptName,
+			)
+		}
 	default:
 		return UINotifyRequest{}, false
 	}
@@ -128,4 +141,56 @@ func BuildLoopAutoPauseNotification(sessionName string, loop *session.LoopPrompt
 		Style:   "warning",
 		Native:  true,
 	}, true
+}
+
+// BuildLoopSlackAutoRecoveredNotification builds an informational toast for
+// an onSlack watcher loop that was just automatically re-enabled after being
+// auto-stopped for a transient/transport reason (mitto-al8, AC3). attempt is
+// the 1-indexed recovery cycle that just succeeded; maxAttempts is the
+// configured ceiling.
+func BuildLoopSlackAutoRecoveredNotification(sessionName string, loop *session.LoopPrompt, attempt, maxAttempts int) UINotifyRequest {
+	name := sessionName
+	if name == "" {
+		name = "(unnamed conversation)"
+	}
+
+	promptName := ""
+	if loop != nil {
+		promptName = loop.PromptName
+	}
+
+	return UINotifyRequest{
+		Title: "Loop conversation auto-recovered",
+		Message: fmt.Sprintf(
+			"%q was automatically re-enabled and its Slack Socket Mode subscriptions restored (recovery attempt %d/%d for prompt %q).",
+			name, attempt, maxAttempts, promptName,
+		),
+		Style:  "info",
+		Native: true,
+	}
+}
+
+// BuildLoopSlackAutoRecoveryExhaustedNotification builds a warning toast when
+// an onSlack watcher loop's auto-recovery attempts are exhausted — the loop
+// is left stopped and needs manual attention (mitto-al8, AC2/AC3).
+func BuildLoopSlackAutoRecoveryExhaustedNotification(sessionName string, loop *session.LoopPrompt, maxAttempts int) UINotifyRequest {
+	name := sessionName
+	if name == "" {
+		name = "(unnamed conversation)"
+	}
+
+	promptName := ""
+	if loop != nil {
+		promptName = loop.PromptName
+	}
+
+	return UINotifyRequest{
+		Title: "Loop auto-recovery exhausted",
+		Message: fmt.Sprintf(
+			"%q could not be auto-recovered after %d attempt(s): its scheduled prompt %q keeps failing to deliver. Its Slack Socket Mode subscriptions remain dropped until you manually re-enable it.",
+			name, maxAttempts, promptName,
+		),
+		Style:  "warning",
+		Native: true,
+	}
 }

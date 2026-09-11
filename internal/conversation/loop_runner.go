@@ -112,6 +112,21 @@ const (
 	// between auto-unarchive attempts, preventing a retry storm when many
 	// sessions become due at once.
 	DefaultAutoUnarchiveStaggerInterval = 10 * time.Minute
+
+	// DefaultSlackAutoRecoveryBaseBackoff is the default initial delay before
+	// the first automatic re-enable attempt of an onSlack watcher loop that was
+	// auto-stopped for a transient/transport reason (mitto-al8). Doubles on
+	// each subsequent recovery cycle, capped at DefaultSlackAutoRecoveryMaxBackoff.
+	DefaultSlackAutoRecoveryBaseBackoff = 1 * time.Minute
+
+	// DefaultSlackAutoRecoveryMaxBackoff caps the exponential backoff applied
+	// between consecutive onSlack auto-recovery attempts.
+	DefaultSlackAutoRecoveryMaxBackoff = 15 * time.Minute
+
+	// DefaultSlackAutoRecoveryMaxAttempts bounds how many consecutive
+	// auto-recovery cycles an onSlack watcher loop gets before it is left
+	// stopped and a one-shot exhaustion warning is surfaced (mitto-al8, AC2/AC3).
+	DefaultSlackAutoRecoveryMaxAttempts = 6
 )
 
 // loopScheduleBackoff returns the delay to defer the next scheduled run after
@@ -278,6 +293,17 @@ type AutoUnarchiveFunc func(sessionID string) error
 // It should broadcast the updated loop state to all WebSocket clients.
 type LoopAutoStoppedCallback func(sessionID string, loop *session.LoopPrompt)
 
+// LoopSlackAutoRecoveredCallback is called when an onSlack watcher loop is
+// automatically re-enabled after being auto-stopped for a transient/transport
+// reason (mitto-al8). attempt is the 1-indexed recovery cycle that just
+// succeeded; maxAttempts is the configured ceiling.
+type LoopSlackAutoRecoveredCallback func(sessionID string, loop *session.LoopPrompt, attempt, maxAttempts int)
+
+// LoopSlackAutoRecoveryExhaustedCallback is called, at most once per outage
+// episode, when an onSlack watcher loop's auto-recovery attempts are
+// exhausted and it will be left stopped until a human intervenes (mitto-al8).
+type LoopSlackAutoRecoveryExhaustedCallback func(sessionID string, loop *session.LoopPrompt, maxAttempts int)
+
 // LoopUpdatedCallback is called when a loop conversation's schedule advances after a delivery.
 // It should broadcast the updated loop state (including the new next_scheduled_at) to all
 // WebSocket clients so the countdown resets.
@@ -332,6 +358,40 @@ type LoopRunner struct {
 	autoUnarchiveRetryInterval time.Duration
 	autoUnarchiveStagger       time.Duration
 	lastAutoUnarchiveAttempt   time.Time
+
+	// slackRecoveryEnabled, slackRecoveryBaseBackoff, slackRecoveryMaxBackoff
+	// and slackRecoveryMaxAttempts configure the onSlack watcher-loop
+	// auto-recovery scheduler (mitto-al8). Guarded by mu.
+	slackRecoveryEnabled     bool
+	slackRecoveryBaseBackoff time.Duration
+	slackRecoveryMaxBackoff  time.Duration
+	slackRecoveryMaxAttempts int
+
+	// onSlackAutoRecovered is called when an onSlack watcher loop is
+	// automatically re-enabled after a transient auto-stop.
+	onSlackAutoRecovered LoopSlackAutoRecoveredCallback
+
+	// onSlackAutoRecoveryExhausted is called, once per outage episode, when an
+	// onSlack watcher loop's auto-recovery attempts are exhausted.
+	onSlackAutoRecoveryExhausted LoopSlackAutoRecoveryExhaustedCallback
+
+	// slackRecoveryAttempts tracks, per session, how many consecutive
+	// auto-recovery cycles have been attempted for the current outage episode.
+	// In-memory only (mirrors deliveryFailures): reset to zero on the next
+	// successful delivery (a restart simply restarts the backoff from the
+	// base interval — safe, since MaxLoopDeliveryFailures must be re-hit
+	// before another stop can occur). Guarded by slackRecoveryMu.
+	slackRecoveryAttempts map[string]int
+
+	// slackRecoveryExhaustedNotified tracks, per session, whether the
+	// exhaustion notification has already fired for the current outage
+	// episode, so it is emitted at most once. Cleared alongside
+	// slackRecoveryAttempts on the next successful delivery. Guarded by
+	// slackRecoveryMu.
+	slackRecoveryExhaustedNotified map[string]bool
+
+	// slackRecoveryMu guards slackRecoveryAttempts and slackRecoveryExhaustedNotified.
+	slackRecoveryMu sync.Mutex
 
 	// archiveRetentionPeriod, when non-empty, causes archived sessions older than this
 	// to be permanently deleted during each poll cycle (not just at startup).
@@ -536,34 +596,40 @@ func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger
 		}
 	}
 	return &LoopRunner{
-		store:                        store,
-		sessionManager:               sm,
-		logger:                       logger,
-		pollInterval:                 DefaultPollInterval,
-		maxLoopIterations:            config.DefaultMaxLoopIterations,
-		minCompletionDelaySeconds:    config.DefaultMinLoopCompletionDelaySeconds,
-		consecutiveFailures:          make(map[string]int),
-		promptResolveFailures:        make(map[string]int),
-		transientCompileRaceFailures: make(map[string]*transientRaceState),
-		scheduleBackoffFailures:      make(map[string]int),
-		deliveryFailures:             make(map[string]int),
-		contextWindowFailures:        make(map[string]int),
-		completionTimers:             make(map[string]*time.Timer),
-		tasksEvaluator:               evaluator,
-		minTasksCooldownSeconds:      DefaultMinLoopTasksCooldownSeconds,
-		tasksQuiescenceWindow:        tasksDefaultQuiescenceWindow,
-		tasksRebaseTimers:            make(map[string]*time.Timer),
-		tasksRefirePending:           make(map[string]bool),
-		tasksRefireDeliveryFailures:  make(map[string]int),
-		tasksSettleTimers:            make(map[string]*time.Timer),
-		autoUnarchiveEnabled:         true,
-		autoUnarchiveRetryInterval:   DefaultAutoUnarchiveRetryInterval,
-		autoUnarchiveStagger:         DefaultAutoUnarchiveStaggerInterval,
-		loopWorkspaceConcurrency:     config.DefaultLoopWorkspaceConcurrency,
-		workspaceInFlight:            make(map[string]int),
-		dispatchInFlight:             make(map[string]session.LoopTrigger),
-		runOnStartAntiFlapSeconds:    config.DefaultRunOnStartAntiFlapSeconds,
-		runOnStartFired:              make(map[string]bool),
+		store:                          store,
+		sessionManager:                 sm,
+		logger:                         logger,
+		pollInterval:                   DefaultPollInterval,
+		maxLoopIterations:              config.DefaultMaxLoopIterations,
+		minCompletionDelaySeconds:      config.DefaultMinLoopCompletionDelaySeconds,
+		consecutiveFailures:            make(map[string]int),
+		promptResolveFailures:          make(map[string]int),
+		transientCompileRaceFailures:   make(map[string]*transientRaceState),
+		scheduleBackoffFailures:        make(map[string]int),
+		deliveryFailures:               make(map[string]int),
+		contextWindowFailures:          make(map[string]int),
+		completionTimers:               make(map[string]*time.Timer),
+		tasksEvaluator:                 evaluator,
+		minTasksCooldownSeconds:        DefaultMinLoopTasksCooldownSeconds,
+		tasksQuiescenceWindow:          tasksDefaultQuiescenceWindow,
+		tasksRebaseTimers:              make(map[string]*time.Timer),
+		tasksRefirePending:             make(map[string]bool),
+		tasksRefireDeliveryFailures:    make(map[string]int),
+		tasksSettleTimers:              make(map[string]*time.Timer),
+		autoUnarchiveEnabled:           true,
+		autoUnarchiveRetryInterval:     DefaultAutoUnarchiveRetryInterval,
+		autoUnarchiveStagger:           DefaultAutoUnarchiveStaggerInterval,
+		slackRecoveryEnabled:           true,
+		slackRecoveryBaseBackoff:       DefaultSlackAutoRecoveryBaseBackoff,
+		slackRecoveryMaxBackoff:        DefaultSlackAutoRecoveryMaxBackoff,
+		slackRecoveryMaxAttempts:       DefaultSlackAutoRecoveryMaxAttempts,
+		slackRecoveryAttempts:          make(map[string]int),
+		slackRecoveryExhaustedNotified: make(map[string]bool),
+		loopWorkspaceConcurrency:       config.DefaultLoopWorkspaceConcurrency,
+		workspaceInFlight:              make(map[string]int),
+		dispatchInFlight:               make(map[string]session.LoopTrigger),
+		runOnStartAntiFlapSeconds:      config.DefaultRunOnStartAntiFlapSeconds,
+		runOnStartFired:                make(map[string]bool),
 	}
 }
 
@@ -628,6 +694,37 @@ func (r *LoopRunner) SetAutoUnarchiveRecovery(enabled bool, retryInterval, stagg
 // SetOnLoopAutoStopped sets the callback for when a loop conversation is auto-stopped after reaching max iterations.
 func (r *LoopRunner) SetOnLoopAutoStopped(callback LoopAutoStoppedCallback) {
 	r.onLoopAutoStopped = callback
+}
+
+// SetSlackAutoRecovery configures the onSlack watcher-loop auto-recovery
+// scheduler (mitto-al8). If baseBackoff, maxBackoff or maxAttempts is <= 0,
+// the current (or default) value is kept, allowing tests to override only
+// what they need.
+func (r *LoopRunner) SetSlackAutoRecovery(enabled bool, baseBackoff, maxBackoff time.Duration, maxAttempts int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.slackRecoveryEnabled = enabled
+	if baseBackoff > 0 {
+		r.slackRecoveryBaseBackoff = baseBackoff
+	}
+	if maxBackoff > 0 {
+		r.slackRecoveryMaxBackoff = maxBackoff
+	}
+	if maxAttempts > 0 {
+		r.slackRecoveryMaxAttempts = maxAttempts
+	}
+}
+
+// SetOnSlackAutoRecovered sets the callback for when an onSlack watcher loop
+// is automatically re-enabled after a transient auto-stop.
+func (r *LoopRunner) SetOnSlackAutoRecovered(callback LoopSlackAutoRecoveredCallback) {
+	r.onSlackAutoRecovered = callback
+}
+
+// SetOnSlackAutoRecoveryExhausted sets the callback for when an onSlack
+// watcher loop's auto-recovery attempts are exhausted.
+func (r *LoopRunner) SetOnSlackAutoRecoveryExhausted(callback LoopSlackAutoRecoveryExhaustedCallback) {
+	r.onSlackAutoRecoveryExhausted = callback
 }
 
 // SetOnLoopUpdated sets the callback for when a loop conversation's schedule advances after a delivery.
@@ -1896,6 +1993,10 @@ func (r *LoopRunner) RunOnce() (delivered, skipped, errored int) {
 	// Retry auto-unarchiving loop conversations archived due to broken ACP
 	r.checkAutoUnarchiveRecovery(sessions, now)
 
+	// Retry re-enabling onSlack watcher loops auto-stopped for a transient
+	// reason, on a bounded exponential backoff (mitto-al8).
+	r.checkSlackAutoRecovery(sessions, now)
+
 	// Clean up archived sessions past retention
 	r.checkArchiveCleanup()
 
@@ -3108,6 +3209,15 @@ func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Me
 			delete(r.contextWindowFailures, sessionID)
 			r.contextWindowFailuresMu.Unlock()
 
+			// Also clear the Slack auto-recovery attempt counter and exhaustion
+			// flag on any successful delivery, regardless of trigger — a stable
+			// delivery is the natural recovery boundary for a new outage episode
+			// (mitto-al8).
+			r.slackRecoveryMu.Lock()
+			delete(r.slackRecoveryAttempts, sessionID)
+			delete(r.slackRecoveryExhaustedNotified, sessionID)
+			r.slackRecoveryMu.Unlock()
+
 			if !resetTimer {
 				// Manual run with "keep schedule" — leave NextScheduledAt unchanged.
 				if r.logger != nil {
@@ -3471,6 +3581,146 @@ func (r *LoopRunner) attemptAutoUnarchive(meta session.Metadata, now time.Time) 
 
 	if r.logger != nil {
 		r.logger.Info("Auto-unarchived loop conversation successfully", "session_id", sessionID)
+	}
+}
+
+// checkSlackAutoRecovery scans for onSlack watcher loops that were
+// auto-stopped for a transient/transport reason (session.IsTransientAutoStopReason)
+// and, once the exponential backoff window has elapsed since the stop,
+// automatically re-enables them so the Slack manager re-subscribes
+// (mitto-al8, AC1). Terminal/benign stop reasons are never recovered here
+// (AC2, e.g. contextWindowExceeded/maxIterations/pausedByUser).
+//
+// Eligibility — and the backoff anchor — is computed from the PERSISTED
+// loop.StoppedAt, not from in-memory state, so recovery survives a process
+// restart (mirrors checkAutoUnarchiveRecovery/attemptAutoUnarchive above).
+// The in-memory attempts counter only bounds the retry count and grows the
+// backoff; it is reset on the next successful delivery (see the
+// deliveryFailures success-reset in deliverPrompt's OnComplete) — a natural
+// recovery boundary. A restart simply restarts the backoff from the base
+// interval, which is safe: MaxLoopDeliveryFailures consecutive failures must
+// be re-hit before another stop can occur, so this cannot hot-loop.
+//
+// Once slackRecoveryMaxAttempts consecutive cycles have been attempted for
+// the current outage episode without a successful delivery in between, the
+// loop is left stopped and a one-shot exhaustion notification fires (AC3).
+func (r *LoopRunner) checkSlackAutoRecovery(sessions []session.Metadata, now time.Time) {
+	r.mu.Lock()
+	enabled := r.slackRecoveryEnabled
+	baseBackoff := r.slackRecoveryBaseBackoff
+	maxBackoff := r.slackRecoveryMaxBackoff
+	maxAttempts := r.slackRecoveryMaxAttempts
+	r.mu.Unlock()
+
+	if !enabled {
+		return
+	}
+
+	for i := range sessions {
+		meta := sessions[i]
+		if meta.Archived {
+			continue
+		}
+
+		loopStore := r.store.Loop(meta.SessionID)
+		loop, err := loopStore.Get()
+		if err != nil || loop == nil {
+			continue
+		}
+		if loop.Enabled || !loop.IsOnSlack() || !session.IsTransientAutoStopReason(loop.StoppedReason) {
+			continue
+		}
+		if loop.StoppedAt == nil {
+			continue
+		}
+
+		r.slackRecoveryMu.Lock()
+		attempts := r.slackRecoveryAttempts[meta.SessionID]
+		r.slackRecoveryMu.Unlock()
+
+		if attempts >= maxAttempts {
+			r.notifySlackRecoveryExhaustedOnce(meta.SessionID, meta.Name, loop, maxAttempts)
+			continue
+		}
+
+		if now.Sub(*loop.StoppedAt) < slackRecoveryBackoff(baseBackoff, maxBackoff, attempts) {
+			continue
+		}
+
+		r.slackRecoveryMu.Lock()
+		r.slackRecoveryAttempts[meta.SessionID] = attempts + 1
+		delete(r.slackRecoveryExhaustedNotified, meta.SessionID)
+		r.slackRecoveryMu.Unlock()
+
+		r.recoverSlackLoop(meta.SessionID, meta.Name, loopStore, attempts+1, maxAttempts)
+	}
+}
+
+// slackRecoveryBackoff computes the exponential backoff before the
+// (0-indexed) attempt'th auto-recovery cycle, capped at maxBackoff.
+func slackRecoveryBackoff(base, maxBackoff time.Duration, attempt int) time.Duration {
+	backoff := base
+	for i := 0; i < attempt; i++ {
+		backoff *= 2
+		if backoff >= maxBackoff {
+			return maxBackoff
+		}
+	}
+	return backoff
+}
+
+// recoverSlackLoop re-enables loopStore's config (clearing StoppedReason/
+// StoppedAt via the existing Update(Enabled:true) semantics) and fires
+// onLoopUpdated (so the Slack manager re-subscribes, mitto-al8 AC1) and
+// onSlackAutoRecovered (operator notification).
+func (r *LoopRunner) recoverSlackLoop(sessionID, sessionName string, loopStore *session.LoopStore, attempt, maxAttempts int) {
+	enabled := true
+	if err := loopStore.Update(session.LoopUpdate{Enabled: &enabled}); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to auto-recover onSlack loop after transient auto-stop",
+				"session_id", sessionID, "session_name", sessionName,
+				"attempt", attempt, "max_attempts", maxAttempts, "error", err)
+		}
+		return
+	}
+
+	updated, err := loopStore.Get()
+	if err != nil || updated == nil {
+		return
+	}
+
+	if r.logger != nil {
+		r.logger.Info("Auto-recovered onSlack loop conversation after transient auto-stop",
+			"session_id", sessionID, "session_name", sessionName,
+			"attempt", attempt, "max_attempts", maxAttempts)
+	}
+
+	if r.onLoopUpdated != nil {
+		r.onLoopUpdated(sessionID, updated)
+	}
+	if r.onSlackAutoRecovered != nil {
+		r.onSlackAutoRecovered(sessionID, updated, attempt, maxAttempts)
+	}
+}
+
+// notifySlackRecoveryExhaustedOnce fires onSlackAutoRecoveryExhausted at most
+// once per outage episode (tracked via slackRecoveryExhaustedNotified,
+// cleared alongside slackRecoveryAttempts on the next successful delivery).
+func (r *LoopRunner) notifySlackRecoveryExhaustedOnce(sessionID, sessionName string, loop *session.LoopPrompt, maxAttempts int) {
+	r.slackRecoveryMu.Lock()
+	if r.slackRecoveryExhaustedNotified[sessionID] {
+		r.slackRecoveryMu.Unlock()
+		return
+	}
+	r.slackRecoveryExhaustedNotified[sessionID] = true
+	r.slackRecoveryMu.Unlock()
+
+	if r.logger != nil {
+		r.logger.Warn("onSlack loop auto-recovery attempts exhausted; leaving loop stopped",
+			"session_id", sessionID, "session_name", sessionName, "max_attempts", maxAttempts)
+	}
+	if r.onSlackAutoRecoveryExhausted != nil {
+		r.onSlackAutoRecoveryExhausted(sessionID, loop, maxAttempts)
 	}
 }
 

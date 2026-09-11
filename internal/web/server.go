@@ -1458,6 +1458,8 @@ func NewServer(config Config) (*Server, error) {
 	})
 	s.loopRunner.SetOnLoopAutoStopped(s.handleLoopAutoStopped)
 	s.loopRunner.SetOnLoopUpdated(s.BroadcastLoopUpdated)
+	s.loopRunner.SetOnSlackAutoRecovered(s.handleSlackAutoRecovered)
+	s.loopRunner.SetOnSlackAutoRecoveryExhausted(s.handleSlackAutoRecoveryExhausted)
 
 	// Configure the global loop-iteration safeguard (user default, bounded by backstop).
 	maxLoopIter := configPkg.DefaultMaxLoopIterations
@@ -1536,6 +1538,10 @@ func NewServer(config Config) (*Server, error) {
 			}
 			if change.Credential {
 				s.slackManager.RestartApp(change.AppID)
+				// An app-token (re)configuration can flip an app into the
+				// keepalive set; refresh so it stays connected without a loop
+				// subscription (mitto-al8).
+				s.slackManager.RefreshKeepAlive()
 			}
 		})
 		s.slackManager.SetStatusCallback(func(status slackbridge.ConnectionStatus) {
@@ -1776,6 +1782,13 @@ func NewServer(config Config) (*Server, error) {
 		return resumeErr
 	})
 	s.loopRunner.SetAutoUnarchiveRecovery(true, conversation.DefaultAutoUnarchiveRetryInterval, conversation.DefaultAutoUnarchiveStaggerInterval)
+
+	// onSlack watcher auto-recovery: retry re-enabling loops auto-stopped for a
+	// transient/transport reason, on a bounded exponential backoff (mitto-al8).
+	s.loopRunner.SetSlackAutoRecovery(true,
+		conversation.DefaultSlackAutoRecoveryBaseBackoff,
+		conversation.DefaultSlackAutoRecoveryMaxBackoff,
+		conversation.DefaultSlackAutoRecoveryMaxAttempts)
 
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
@@ -2550,6 +2563,51 @@ func (s *Server) handleLoopAutoStopped(sessionID string, loop *session.LoopPromp
 		return
 	}
 
+	s.broadcastLoopNotification(meta, req)
+}
+
+// handleSlackAutoRecovered is the LoopRunner.SetOnSlackAutoRecovered
+// callback (mitto-al8). The sidebar/Slack-resubscribe side effect is already
+// handled by the runner's own onLoopUpdated call before this fires (see
+// recoverSlackLoop), so this only surfaces the operator-facing toast.
+func (s *Server) handleSlackAutoRecovered(sessionID string, loop *session.LoopPrompt, attempt, maxAttempts int) {
+	meta, err := s.store.GetMetadata(sessionID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("handleSlackAutoRecovered: failed to load session metadata",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	req := conversation.BuildLoopSlackAutoRecoveredNotification(meta.Name, loop, attempt, maxAttempts)
+	s.broadcastLoopNotification(meta, req)
+}
+
+// handleSlackAutoRecoveryExhausted is the LoopRunner.SetOnSlackAutoRecoveryExhausted
+// callback (mitto-al8). The loop's stopped state was already broadcast by the
+// original auto-stop, so this only surfaces the exhaustion warning toast.
+func (s *Server) handleSlackAutoRecoveryExhausted(sessionID string, loop *session.LoopPrompt, maxAttempts int) {
+	meta, err := s.store.GetMetadata(sessionID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("handleSlackAutoRecoveryExhausted: failed to load session metadata",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	req := conversation.BuildLoopSlackAutoRecoveryExhaustedNotification(meta.Name, loop, maxAttempts)
+	s.broadcastLoopNotification(meta, req)
+}
+
+// broadcastLoopNotification resolves meta's workspace and beads issue, then
+// broadcasts req as a workspace-scoped UI notification. Shared by
+// handleLoopAutoStopped, handleSlackAutoRecovered, and
+// handleSlackAutoRecoveryExhausted so the workspace-resolution logic
+// (mitto-e4m) is not duplicated across auto-stop/auto-recovery notification
+// paths (mitto-al8).
+func (s *Server) broadcastLoopNotification(meta session.Metadata, req conversation.UINotifyRequest) {
 	ws := s.sessionManager.GetWorkspaceByDirAndACP(meta.WorkingDir, meta.ACPServer)
 	if ws == nil {
 		ws = s.sessionManager.GetWorkspace(meta.WorkingDir)

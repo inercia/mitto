@@ -91,6 +91,25 @@ func isBenignStopReason(reason StoppedReason) bool {
 	}
 }
 
+// IsTransientAutoStopReason reports whether reason represents a transient/
+// transport-class auto-stop that automated recovery may safely retry (mitto-al8).
+// This is a NEW axis distinct from isBenignStopReason above: a benign reason
+// (user pause, agent self-disable, archive) is an intentional stop that must
+// never be silently reversed by a background scheduler, while a terminal
+// reason (contextWindowExceeded, promptUnresolved, maxIterations, maxDuration,
+// iterationSafeguard, resumeFailures) reflects either a durable/unresumable
+// condition or one this increment deliberately does not attempt to recover.
+//
+// Currently only StoppedReasonDeliveryFailures is considered recoverable —
+// the primary target of mitto-al8's onSlack watcher auto-recovery. Every
+// other reason (including the benign ones and StoppedReasonResumeFailures,
+// left out of the recoverable set for this first increment per the plan)
+// returns false, so a caller retrying only transient reasons never hot-loops
+// a genuinely terminal or intentional stop.
+func IsTransientAutoStopReason(reason StoppedReason) bool {
+	return reason == StoppedReasonDeliveryFailures
+}
+
 var (
 	// ErrLoopNotFound is returned when no loop prompt is configured.
 	ErrLoopNotFound = errors.New("loop prompt not found")
