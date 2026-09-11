@@ -1132,6 +1132,24 @@ func (r *LoopRunner) triggerNowFull(sessionID string, resetTimer bool, isRunOnSt
 		return ErrLoopNotEnabled
 	}
 
+	// Auto-stop if the wall-clock maxDuration cap is reached before delivering
+	// an onSlack fire, mirroring the schedule/onCompletion/onTasks enforcement
+	// sites above (checkSession, fireOnCompletion, recoverStalledOnCompletion,
+	// decideTasksFire). Historically the onSlack path went straight to
+	// deliverPrompt with no wall-clock cap check at all, leaving
+	// MaxDurationSeconds dead config for a pure onSlack loop (mitto-6zl).
+	// Scoped to firedBy == TriggerOnSlack (checked before firedBy is defaulted
+	// to the loop's EffectiveTrigger below) so a genuine manual "Run Now"
+	// (firedBy == "") is never silently blocked by an onSlack loop's expired
+	// cap. Checked before the session auto-resume below so an already-expired
+	// cap does not needlessly resume a stopped session just to then discard
+	// the delivery.
+	if firedBy == session.TriggerOnSlack {
+		if r.autoStopIfMaxDurationReached(sessionID, loop, loopStore, time.Now()) {
+			return ErrLoopNotEnabled
+		}
+	}
+
 	// Check if session manager is available
 	if r.sessionManager == nil {
 		return ErrSessionManagerNotAvailable
