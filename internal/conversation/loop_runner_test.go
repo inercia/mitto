@@ -6032,6 +6032,395 @@ func TestLoopRunner_AutoUnarchive_RestartDurability(t *testing.T) {
 	}
 }
 
+// newSlackStoppedLoopSession creates a session with a disabled onSlack loop
+// that was auto-stopped for the given reason at stoppedAt, for mitto-al8
+// auto-recovery tests.
+func newSlackStoppedLoopSession(t *testing.T, store *session.Store, sessionID string, stoppedAt time.Time, reason session.StoppedReason) {
+	t.Helper()
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	stoppedAtCopy := stoppedAt
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   false,
+		Triggers:  []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{
+			{InstallationID: "inst-1", ChannelID: "chan-1"},
+		},
+		StoppedReason: reason,
+		StoppedAt:     &stoppedAtCopy,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_EligibleAndDue_Recovers is the mitto-al8
+// AC1 happy path: an onSlack loop auto-stopped for the transient
+// deliveryFailures reason, once the base backoff has elapsed since
+// StoppedAt, is re-enabled (StoppedReason/StoppedAt cleared), onLoopUpdated
+// fires (so the Slack manager re-subscribes), and onSlackAutoRecovered fires
+// with attempt=1.
+func TestLoopRunner_SlackAutoRecovery_EligibleAndDue_Recovers(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	stoppedAt := time.Now().Add(-2 * time.Minute)
+	newSlackStoppedLoopSession(t, store, "sess-1", stoppedAt, session.StoppedReasonDeliveryFailures)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 6)
+
+	var updatedCalls []string
+	runner.SetOnLoopUpdated(func(sessionID string, _ *session.LoopPrompt) {
+		updatedCalls = append(updatedCalls, sessionID)
+	})
+	var recoveredAttempt, recoveredMax int
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, attempt, maxAttempts int) {
+		recoveredAttempt, recoveredMax = attempt, maxAttempts
+	})
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	final, err := store.Loop("sess-1").Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !final.Enabled {
+		t.Error("loop.Enabled = false, want true after auto-recovery")
+	}
+	if final.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty after auto-recovery", final.StoppedReason)
+	}
+	if final.StoppedAt != nil {
+		t.Errorf("StoppedAt = %v, want nil after auto-recovery", final.StoppedAt)
+	}
+	if len(updatedCalls) != 1 || updatedCalls[0] != "sess-1" {
+		t.Errorf("onLoopUpdated calls = %v, want exactly one call for sess-1", updatedCalls)
+	}
+	if recoveredAttempt != 1 || recoveredMax != 6 {
+		t.Errorf("onSlackAutoRecovered(attempt=%d, max=%d), want (1, 6)", recoveredAttempt, recoveredMax)
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_NotYetDue_Skips verifies the backoff gate:
+// an eligible onSlack loop is left untouched until the base backoff interval
+// has elapsed since StoppedAt.
+func TestLoopRunner_SlackAutoRecovery_NotYetDue_Skips(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	stoppedAt := time.Now().Add(-10 * time.Second)
+	newSlackStoppedLoopSession(t, store, "sess-1", stoppedAt, session.StoppedReasonDeliveryFailures)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 6)
+
+	var recovered bool
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recovered = true })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if recovered {
+		t.Error("onSlackAutoRecovered fired before the backoff interval elapsed")
+	}
+	final, err := store.Loop("sess-1").Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("loop.Enabled = true, want still false before backoff elapses")
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_TerminalReason_NeverRecovered is the
+// mitto-al8 AC2 regression guard: a terminal auto-stop reason
+// (contextWindowExceeded) on an onSlack loop must never be auto-recovered,
+// even once its StoppedAt is far in the past.
+func TestLoopRunner_SlackAutoRecovery_TerminalReason_NeverRecovered(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	stoppedAt := time.Now().Add(-24 * time.Hour)
+	newSlackStoppedLoopSession(t, store, "sess-1", stoppedAt, session.StoppedReasonContextWindowExceeded)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 6)
+
+	var recovered bool
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recovered = true })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if recovered {
+		t.Error("onSlackAutoRecovered fired for a terminal auto-stop reason (contextWindowExceeded)")
+	}
+	final, err := store.Loop("sess-1").Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("loop.Enabled = true, want still false for a terminal stop reason")
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_NonSlackLoop_NotRecovered verifies the
+// scheduler only ever touches onSlack loops: a schedule-triggered loop
+// auto-stopped for the same transient deliveryFailures reason must be left
+// for manual attention, not silently auto-recovered.
+func TestLoopRunner_SlackAutoRecovery_NonSlackLoop_NotRecovered(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{SessionID: "sess-1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	stoppedAt := time.Now().Add(-24 * time.Hour)
+	if err := store.Loop("sess-1").Set(&session.LoopPrompt{
+		Prompt:        "Test prompt",
+		Frequency:     session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:       false,
+		StoppedReason: session.StoppedReasonDeliveryFailures,
+		StoppedAt:     &stoppedAt,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 6)
+
+	var recovered bool
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recovered = true })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if recovered {
+		t.Error("onSlackAutoRecovered fired for a non-onSlack loop")
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_AlreadyEnabled_Skipped verifies an already
+// re-enabled (or never-stopped) onSlack loop is left alone.
+func TestLoopRunner_SlackAutoRecovery_AlreadyEnabled_Skipped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{SessionID: "sess-1", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Loop("sess-1").Set(&session.LoopPrompt{
+		Prompt:    "Test prompt",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyMinutes},
+		Enabled:   true,
+		Triggers:  []session.LoopTrigger{session.TriggerOnSlack},
+		SlackSubscriptions: []session.SlackSubscription{
+			{InstallationID: "inst-1", ChannelID: "chan-1"},
+		},
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 6)
+
+	var recovered bool
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recovered = true })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if recovered {
+		t.Error("onSlackAutoRecovered fired for an already-enabled loop")
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_Disabled_NoOp verifies SetSlackAutoRecovery(false, ...)
+// fully disables the scheduler, even for an otherwise-eligible-and-due loop.
+func TestLoopRunner_SlackAutoRecovery_Disabled_NoOp(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	stoppedAt := time.Now().Add(-24 * time.Hour)
+	newSlackStoppedLoopSession(t, store, "sess-1", stoppedAt, session.StoppedReasonDeliveryFailures)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(false, time.Minute, 15*time.Minute, 6)
+
+	var recovered bool
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recovered = true })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if recovered {
+		t.Error("onSlackAutoRecovered fired while the scheduler is disabled")
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_RestartDurability mirrors
+// TestLoopRunner_AutoUnarchive_RestartDurability: a fresh LoopRunner (as
+// after a process restart, in-memory attempts counter reset to zero) must
+// anchor eligibility on the PERSISTED loop.StoppedAt, not on any in-memory
+// state — so a loop stopped long ago is immediately due for its first
+// (0-indexed) recovery attempt.
+func TestLoopRunner_SlackAutoRecovery_RestartDurability(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	stoppedAt := time.Now().Add(-24 * time.Hour)
+	newSlackStoppedLoopSession(t, store, "sess-1", stoppedAt, session.StoppedReasonDeliveryFailures)
+
+	// Fresh LoopRunner instance, as after a process restart.
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 6)
+
+	var recovered bool
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recovered = true })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if !recovered {
+		t.Error("a loop stopped 24h ago should be immediately due on a fresh LoopRunner instance")
+	}
+}
+
+// TestLoopRunner_SlackAutoRecovery_ExhaustionNotifiesOnce is the mitto-al8
+// AC2/AC3 exhaustion path: once slackRecoveryAttempts reaches maxAttempts for
+// a session, the loop is left stopped and onSlackAutoRecoveryExhausted fires
+// exactly once even across repeated polls (no repeat spam).
+func TestLoopRunner_SlackAutoRecovery_ExhaustionNotifiesOnce(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	stoppedAt := time.Now().Add(-24 * time.Hour)
+	newSlackStoppedLoopSession(t, store, "sess-1", stoppedAt, session.StoppedReasonDeliveryFailures)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetSlackAutoRecovery(true, time.Minute, 15*time.Minute, 2)
+
+	var recoveredCalls, exhaustedCalls int
+	runner.SetOnSlackAutoRecovered(func(_ string, _ *session.LoopPrompt, _, _ int) { recoveredCalls++ })
+	runner.SetOnSlackAutoRecoveryExhausted(func(_ string, _ *session.LoopPrompt, maxAttempts int) {
+		exhaustedCalls++
+		if maxAttempts != 2 {
+			t.Errorf("exhausted callback maxAttempts = %d, want 2", maxAttempts)
+		}
+	})
+
+	// Directly saturate the in-memory attempts counter to maxAttempts, as if
+	// this many recovery cycles had already run without a successful
+	// delivery resetting it in between.
+	runner.slackRecoveryMu.Lock()
+	runner.slackRecoveryAttempts["sess-1"] = 2
+	runner.slackRecoveryMu.Unlock()
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+
+	// Poll twice — exhaustion must fire exactly once, not once per poll.
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+	runner.checkSlackAutoRecovery(sessions, time.Now())
+
+	if recoveredCalls != 0 {
+		t.Errorf("onSlackAutoRecovered fired %d times, want 0 once attempts are exhausted", recoveredCalls)
+	}
+	if exhaustedCalls != 1 {
+		t.Errorf("onSlackAutoRecoveryExhausted fired %d times, want exactly 1", exhaustedCalls)
+	}
+
+	final, err := store.Loop("sess-1").Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("loop.Enabled = true, want still false once auto-recovery is exhausted")
+	}
+}
+
+// TestSlackRecoveryBackoff verifies the exponential-backoff helper: attempt=0
+// (the first, 0-indexed cycle) uses the base interval unchanged, each
+// subsequent attempt doubles it, and it never exceeds maxBackoff.
+func TestSlackRecoveryBackoff(t *testing.T) {
+	base := time.Minute
+	maxBackoff := 15 * time.Minute
+
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, time.Minute},
+		{1, 2 * time.Minute},
+		{2, 4 * time.Minute},
+		{3, 8 * time.Minute},
+		{4, maxBackoff}, // 16m would exceed the 15m cap
+		{10, maxBackoff},
+	}
+
+	for _, tt := range tests {
+		if got := slackRecoveryBackoff(base, maxBackoff, tt.attempt); got != tt.want {
+			t.Errorf("slackRecoveryBackoff(attempt=%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
 func TestTasksBaselineStore_GetSetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	bs := NewTasksBaselineStore(dir)

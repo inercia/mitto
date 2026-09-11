@@ -275,6 +275,19 @@ func TestBuildLoopAutoPauseNotification(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			// mitto-al8: an onSlack watcher's deliveryFailures auto-pause also
+			// drops its Slack Socket Mode subscriptions — the message must
+			// name that concretely and set the auto-recovery expectation.
+			name:        "deliveryFailures reason on an onSlack loop mentions Socket Mode (mitto-al8)",
+			sessionName: "Slack Watcher",
+			loop: &session.LoopPrompt{
+				PromptName:    "slack-watcher",
+				StoppedReason: session.StoppedReasonDeliveryFailures,
+				Triggers:      []session.LoopTrigger{session.TriggerOnSlack},
+			},
+			wantOK: true,
+		},
+		{
 			name:        "empty StoppedReason (e.g. onLoopUpdated fired outside auto-stop) stays silent",
 			sessionName: "My Loop",
 			loop:        &session.LoopPrompt{},
@@ -310,6 +323,107 @@ func TestBuildLoopAutoPauseNotification(t *testing.T) {
 				t.Errorf("Message %q does not mention prompt name %q", req.Message, tt.loop.PromptName)
 			}
 		})
+	}
+}
+
+// TestBuildLoopAutoPauseNotification_DeliveryFailures_SlackVsNonSlackWording
+// pins the mitto-al8 message-tailoring branch in BuildLoopAutoPauseNotification:
+// an onSlack loop's deliveryFailures message must call out the dropped Slack
+// Socket Mode subscriptions and the auto-recovery expectation, while a
+// non-onSlack loop's message must keep the original "needs manual attention"
+// wording and must NOT mention Slack/Socket Mode at all.
+func TestBuildLoopAutoPauseNotification_DeliveryFailures_SlackVsNonSlackWording(t *testing.T) {
+	onSlack := &session.LoopPrompt{
+		PromptName:    "slack-watcher",
+		StoppedReason: session.StoppedReasonDeliveryFailures,
+		Triggers:      []session.LoopTrigger{session.TriggerOnSlack},
+	}
+	req, ok := BuildLoopAutoPauseNotification("Slack Watcher", onSlack)
+	if !ok {
+		t.Fatal("ok = false, want true for onSlack deliveryFailures")
+	}
+	if !strings.Contains(req.Message, "Socket Mode") {
+		t.Errorf("onSlack message %q does not mention Socket Mode", req.Message)
+	}
+	if !strings.Contains(req.Message, "automatically retry") {
+		t.Errorf("onSlack message %q does not set the auto-recovery expectation", req.Message)
+	}
+
+	nonSlack := &session.LoopPrompt{
+		PromptName:    "generic-loop",
+		StoppedReason: session.StoppedReasonDeliveryFailures,
+	}
+	req2, ok := BuildLoopAutoPauseNotification("Generic Loop", nonSlack)
+	if !ok {
+		t.Fatal("ok = false, want true for non-onSlack deliveryFailures")
+	}
+	if strings.Contains(req2.Message, "Socket Mode") || strings.Contains(req2.Message, "Slack") {
+		t.Errorf("non-onSlack message %q unexpectedly mentions Slack/Socket Mode", req2.Message)
+	}
+	if !strings.Contains(req2.Message, "needs manual attention") {
+		t.Errorf("non-onSlack message %q lost the original wording", req2.Message)
+	}
+}
+
+// TestBuildLoopSlackAutoRecoveredNotification verifies the mitto-al8 AC3
+// operator-facing toast for a successful onSlack auto-recovery: info style,
+// native, and mentions the conversation name, prompt name, and attempt count.
+func TestBuildLoopSlackAutoRecoveredNotification(t *testing.T) {
+	loop := &session.LoopPrompt{PromptName: "slack-watcher"}
+	req := BuildLoopSlackAutoRecoveredNotification("Slack Watcher", loop, 2, 6)
+
+	if req.Style != "info" {
+		t.Errorf("Style = %q, want %q", req.Style, "info")
+	}
+	if !req.Native {
+		t.Error("Native = false, want true")
+	}
+	if !strings.Contains(req.Message, "Slack Watcher") {
+		t.Errorf("Message %q does not mention session name", req.Message)
+	}
+	if !strings.Contains(req.Message, "slack-watcher") {
+		t.Errorf("Message %q does not mention prompt name", req.Message)
+	}
+	if !strings.Contains(req.Message, "2/6") {
+		t.Errorf("Message %q does not mention the attempt count", req.Message)
+	}
+}
+
+// TestBuildLoopSlackAutoRecoveredNotification_NilLoop verifies the builder
+// tolerates a nil loop (defensive; the runner always passes a non-nil loop,
+// but the builder must not panic) by falling back to an empty prompt name.
+func TestBuildLoopSlackAutoRecoveredNotification_NilLoop(t *testing.T) {
+	req := BuildLoopSlackAutoRecoveredNotification("", nil, 1, 6)
+	if !strings.Contains(req.Message, "(unnamed conversation)") {
+		t.Errorf("Message %q does not use the fallback placeholder", req.Message)
+	}
+}
+
+// TestBuildLoopSlackAutoRecoveryExhaustedNotification verifies the mitto-al8
+// AC2/AC3 warning toast fired once auto-recovery attempts are exhausted:
+// warning style, native, and mentions the conversation name, prompt name,
+// and the max-attempts ceiling.
+func TestBuildLoopSlackAutoRecoveryExhaustedNotification(t *testing.T) {
+	loop := &session.LoopPrompt{PromptName: "slack-watcher"}
+	req := BuildLoopSlackAutoRecoveryExhaustedNotification("Slack Watcher", loop, 6)
+
+	if req.Style != "warning" {
+		t.Errorf("Style = %q, want %q", req.Style, "warning")
+	}
+	if !req.Native {
+		t.Error("Native = false, want true")
+	}
+	if !strings.Contains(req.Message, "Slack Watcher") {
+		t.Errorf("Message %q does not mention session name", req.Message)
+	}
+	if !strings.Contains(req.Message, "slack-watcher") {
+		t.Errorf("Message %q does not mention prompt name", req.Message)
+	}
+	if !strings.Contains(req.Message, "6 attempt") {
+		t.Errorf("Message %q does not mention the max-attempts ceiling", req.Message)
+	}
+	if !strings.Contains(req.Message, "manually re-enable") {
+		t.Errorf("Message %q does not tell the operator recovery gave up", req.Message)
 	}
 }
 

@@ -1890,6 +1890,44 @@ func TestLoopStore_MarkStopped_NoObserverRegistered_NoOp(t *testing.T) {
 
 // --- AcknowledgeStoppedReason tests ---
 
+// TestIsTransientAutoStopReason verifies the mitto-al8 AC2 classifier: ONLY
+// StoppedReasonDeliveryFailures is recoverable. Every terminal reason
+// (contextWindowExceeded, promptUnresolved, maxIterations, maxDuration,
+// iterationSafeguard, resumeFailures), every benign reason (pausedByUser,
+// disabledByAgent, archived), the empty/never-stopped reason, and an unknown
+// reason value must all return false so a caller retrying only transient
+// reasons never hot-loops a genuinely terminal or intentional stop.
+func TestIsTransientAutoStopReason(t *testing.T) {
+	tests := []struct {
+		reason StoppedReason
+		want   bool
+	}{
+		{StoppedReasonDeliveryFailures, true},
+
+		{StoppedReasonContextWindowExceeded, false},
+		{StoppedReasonPromptUnresolved, false},
+		{StoppedReasonMaxIterations, false},
+		{StoppedReasonMaxDuration, false},
+		{StoppedReasonIterationSafeguard, false},
+		{StoppedReasonResumeFailures, false},
+
+		{StoppedReasonPausedByUser, false},
+		{StoppedReasonDisabledByAgent, false},
+		{StoppedReasonArchived, false},
+
+		{"", false},
+		{StoppedReason("someUnknownReason"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.reason), func(t *testing.T) {
+			if got := IsTransientAutoStopReason(tt.reason); got != tt.want {
+				t.Errorf("IsTransientAutoStopReason(%q) = %v, want %v", tt.reason, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoopStore_AcknowledgeStoppedReason_SetsAndPersists(t *testing.T) {
 	dir := t.TempDir()
 	ps := NewLoopStore(dir)
