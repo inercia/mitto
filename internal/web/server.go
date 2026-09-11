@@ -1538,10 +1538,6 @@ func NewServer(config Config) (*Server, error) {
 			}
 			if change.Credential {
 				s.slackManager.RestartApp(change.AppID)
-				// An app-token (re)configuration can flip an app into the
-				// keepalive set; refresh so it stays connected without a loop
-				// subscription (mitto-al8).
-				s.slackManager.RefreshKeepAlive()
 			}
 		})
 		s.slackManager.SetStatusCallback(func(status slackbridge.ConnectionStatus) {
