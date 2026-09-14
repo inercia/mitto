@@ -82,8 +82,6 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 			Source              config.ConfigItemSource                `json:"source,omitempty"`
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
-			ModelProfile        string                                 `json:"model_profile,omitempty"`
-			ModelTag            string                                 `json:"model_tag,omitempty"`
 			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
@@ -115,8 +113,6 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 			Source              config.ConfigItemSource                `json:"source,omitempty"`
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
-			ModelProfile        string                                 `json:"model_profile,omitempty"`
-			ModelTag            string                                 `json:"model_tag,omitempty"`
 			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
@@ -144,8 +140,6 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 			Source              config.ConfigItemSource                `json:"source,omitempty"`
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
-			ModelProfile        string                                 `json:"model_profile,omitempty"`
-			ModelTag            string                                 `json:"model_tag,omitempty"`
 			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
@@ -173,8 +167,6 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 			Source              config.ConfigItemSource                `json:"source,omitempty"`
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
-			ModelProfile        string                                 `json:"model_profile,omitempty"`
-			ModelTag            string                                 `json:"model_tag,omitempty"`
 			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
@@ -202,8 +194,6 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 			Source              config.ConfigItemSource                `json:"source,omitempty"`
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
-			ModelProfile        string                                 `json:"model_profile,omitempty"`
-			ModelTag            string                                 `json:"model_tag,omitempty"`
 			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
@@ -234,8 +224,6 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 			Source              config.ConfigItemSource                `json:"source,omitempty"`
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
-			ModelProfile        string                                 `json:"model_profile,omitempty"`
-			ModelTag            string                                 `json:"model_tag,omitempty"`
 			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`

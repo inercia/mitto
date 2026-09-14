@@ -750,15 +750,6 @@ function ServerEditForm({
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
-  // Model profile state — persists as the named profile (model_profile).
-  const [modelProfile, setModelProfile] = useState(server.model_profile || "");
-  // Model tag state — persists as the capability tag (model_tag). Mutually
-  // exclusive with modelProfile in the UI, matching the workspace pattern.
-  const [modelTag, setModelTag] = useState(server.model_tag || "");
-  // Whether the user has explicitly cleared a legacy raw constraint by
-  // picking "-- None --" (as opposed to never having touched the control).
-  const [modelConstraintCleared, setModelConstraintCleared] = useState(false);
-
   // Initial-model preference (ACP-server tier). Applied as the baseline model
   // of every new conversation started with this server unless the workspace
   // overrides it. Mutually exclusive: profile wins server-side when both set.
@@ -768,21 +759,6 @@ function ServerEditForm({
   const [initialModelTag, setInitialModelTag] = useState(
     server.initial_model_tag || "",
   );
-
-  // Legacy raw matchMode/pattern constraint (pre-profile config), if any.
-  const rawModelConstraint = server.constraints?.model || null;
-  const matchesExistingProfile = rawModelConstraint
-    ? modelProfiles.some(
-        (p) =>
-          p.criteria &&
-          p.criteria.matchMode === rawModelConstraint.matchMode &&
-          p.criteria.pattern === rawModelConstraint.pattern,
-      )
-    : false;
-  const legacyModelLabel =
-    !modelProfile && rawModelConstraint && !matchesExistingProfile
-      ? `Custom (legacy): ${rawModelConstraint.matchMode} ${rawModelConstraint.pattern}`
-      : null;
 
   // Build the current server state and notify the parent
   const emitChange = (overrides = {}) => {
@@ -796,16 +772,6 @@ function ServerEditForm({
           : autoApprove,
       tags: overrides.tags !== undefined ? overrides.tags : tags,
       envVars: overrides.envVars !== undefined ? overrides.envVars : envVars,
-      modelProfile:
-        overrides.modelProfile !== undefined
-          ? overrides.modelProfile
-          : modelProfile,
-      modelTag:
-        overrides.modelTag !== undefined ? overrides.modelTag : modelTag,
-      modelConstraintCleared:
-        overrides.modelConstraintCleared !== undefined
-          ? overrides.modelConstraintCleared
-          : modelConstraintCleared,
       initialModelProfile:
         overrides.initialModelProfile !== undefined
           ? overrides.initialModelProfile
@@ -834,18 +800,10 @@ function ServerEditForm({
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
 
-    // Build constraints. A selected profile or tag always wins over any legacy
-    // raw constraint; an explicit "-- None --" clears it too. Otherwise, an
-    // untouched legacy raw constraint is preserved as-is.
-    const constraints = {};
-    if (
-      !currentState.modelProfile &&
-      !currentState.modelTag &&
-      rawModelConstraint &&
-      !currentState.modelConstraintCleared
-    ) {
-      constraints.model = rawModelConstraint;
-    }
+    // Preserve any existing raw config-option constraints (e.g. legacy
+    // matchMode/pattern rules under constraints.model) unchanged — there is no
+    // longer a UI to edit them, so pass them through as-is on save.
+    const constraints = server.constraints || {};
 
     onChange(
       currentState.name,
@@ -856,8 +814,6 @@ function ServerEditForm({
       parsedTags,
       Object.keys(constraints).length > 0 ? constraints : undefined,
       currentState.contextFlushCommand,
-      currentState.modelProfile,
-      currentState.modelTag,
       currentState.initialModelProfile,
       currentState.initialModelTag,
     );
@@ -907,60 +863,6 @@ function ServerEditForm({
           }}
           class="input input-sm w-full"
         />
-      </div>
-      <!-- Model Selection -->
-      <div>
-        <label class="label">Model Selection</label>
-        <p class="text-xs text-mitto-text-muted mb-2">
-          Auto-select a model for new sessions started with this server, by
-          named Model profile or by capability tag
-        </p>
-        <div class="flex items-center gap-2">
-          <div class="flex-1 min-w-0">
-            <${ModelProfileSelect}
-              value=${modelProfile}
-              profiles=${modelProfiles}
-              legacyLabel=${legacyModelLabel}
-              className="w-full"
-              onChange=${(name) => {
-                setModelProfile(name);
-                const cleared = !name && !modelTag && !!rawModelConstraint;
-                if (cleared) setModelConstraintCleared(true);
-                const overrides = {
-                  modelProfile: name,
-                  modelConstraintCleared: cleared || modelConstraintCleared,
-                };
-                if (name) {
-                  setModelTag("");
-                  overrides.modelTag = "";
-                }
-                emitChange(overrides);
-              }}
-            />
-          </div>
-          <span class="text-xs text-mitto-text-muted shrink-0">or by tag</span>
-          <div class="flex-1 min-w-0">
-            <${ModelTagSelect}
-              value=${modelTag}
-              profiles=${modelProfiles}
-              className="w-full"
-              onChange=${(tag) => {
-                setModelTag(tag);
-                const cleared = !tag && !modelProfile && !!rawModelConstraint;
-                if (cleared) setModelConstraintCleared(true);
-                const overrides = {
-                  modelTag: tag,
-                  modelConstraintCleared: cleared || modelConstraintCleared,
-                };
-                if (tag) {
-                  setModelProfile("");
-                  overrides.modelProfile = "";
-                }
-                emitChange(overrides);
-              }}
-            />
-          </div>
-        </div>
       </div>
       <!-- Initial Model (optional) — ACP-server-tier baseline for new
            conversations. Overridden by any workspace-tier value. -->
@@ -3028,8 +2930,6 @@ export function SettingsDialog({
           env: srv.env || undefined, // Include env vars if present
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
           constraints: srv.constraints || undefined, // Include constraints if present
-          model_profile: srv.model_profile || undefined, // Include model profile if present
-          model_tag: srv.model_tag || undefined, // Include model tag if present
           initial_model_profile: srv.initial_model_profile || undefined, // ACP-tier initial-model preference
           initial_model_tag: srv.initial_model_tag || undefined, // ACP-tier initial-model preference
           context_flush_command: srv.context_flush_command || undefined,
@@ -3278,8 +3178,6 @@ export function SettingsDialog({
     tags,
     constraints,
     contextFlushCommand,
-    modelProfile,
-    modelTag,
     initialModelProfile,
     initialModelTag,
   ) => {
@@ -3297,8 +3195,6 @@ export function SettingsDialog({
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
           constraints: constraints || undefined, // undefined to omit if empty
-          model_profile: modelProfile || undefined, // undefined to omit if none
-          model_tag: modelTag || undefined, // undefined to omit if none
           initial_model_profile: initialModelProfile || undefined, // undefined to omit if none
           initial_model_tag: initialModelTag || undefined, // undefined to omit if none
           context_flush_command:
@@ -4009,8 +3905,6 @@ export function SettingsDialog({
                                               tags,
                                               constraints,
                                               contextFlushCommand,
-                                              modelProfile,
-                                              modelTag,
                                               initialModelProfile,
                                               initialModelTag,
                                             ) =>
@@ -4024,8 +3918,6 @@ export function SettingsDialog({
                                                 tags,
                                                 constraints,
                                                 contextFlushCommand,
-                                                modelProfile,
-                                                modelTag,
                                                 initialModelProfile,
                                                 initialModelTag,
                                               )}

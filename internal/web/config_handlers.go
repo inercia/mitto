@@ -122,8 +122,6 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			Source:              configPkg.SourceSettings, // Mark as settings-sourced
 			AutoApprove:         srv.AutoApprove,          // Auto-approve permission requests
 			Tags:                srv.Tags,                 // Categorization tags
-			ModelProfile:        srv.ModelProfile,         // Model profile name (mitto-hke)
-			ModelTag:            srv.ModelTag,             // Capability tag for profile resolution
 			InitialModelProfile: srv.InitialModelProfile,  // Initial baseline model profile (mitto-fqj)
 			InitialModelTag:     srv.InitialModelTag,      // Initial baseline model capability tag
 			Constraints:         srv.Constraints,          // Config option auto-selection rules

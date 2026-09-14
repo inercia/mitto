@@ -778,20 +778,13 @@ type ACPServerSettings struct {
 	AutoApprove bool `json:"auto_approve,omitempty"`
 	// Tags is an optional list of categorization tags for this ACP server.
 	Tags []string `json:"tags,omitempty"`
-	// ModelProfile is the name of a Model profile (Config.Models) used for
-	// session-start model auto-selection; empty falls back to legacy Constraints.
-	ModelProfile string `json:"model_profile,omitempty"`
-	// ModelTag is a capability tag used to resolve a Model profile at session
-	// start when ModelProfile is empty. Mirrors WorkspaceSettings.InitialModelTag.
-	ModelTag string `json:"model_tag,omitempty"`
 	// InitialModelProfile is the name of a Model profile (Config.Models) applied
 	// as the baseline model of every new conversation created against this ACP
 	// server, right after the agent reports its available models. Empty means
 	// keep the agent's default model. Mutually exclusive with InitialModelTag
 	// in the UI; when both are set, InitialModelProfile wins. Serves as a
 	// fallback when the workspace has no InitialModelProfile/InitialModelTag
-	// set. Distinct from ModelProfile above, which drives the legacy per-resume
-	// Constraints["model"] auto-selection behavior.
+	// set.
 	InitialModelProfile string `json:"initial_model_profile,omitempty"`
 	// InitialModelTag selects the initial baseline model by capability tag
 	// (e.g. "Coding"). Empty means keep the agent's default model.

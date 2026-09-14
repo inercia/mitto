@@ -249,43 +249,6 @@ func TestLookupACPServerConstraints(t *testing.T) {
 	})
 }
 
-// TestLookupACPServerConstraints_ReturnsRawConstraints verifies that
-// lookupACPServerConstraints returns the named server's raw Constraints map
-// unchanged (pointer equality) and nil for an unknown server. The legacy
-// profile/tag-based "model" Criteria resolution was removed, so this helper is
-// now a plain per-server Constraints lookup feeding applyConfigConstraints.
-func TestLookupACPServerConstraints_ReturnsRawConstraints(t *testing.T) {
-	legacyModel := &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}
-	cfg := &config.Config{
-		ACPServers: []config.ACPServer{{
-			Name: "claude-code",
-			Constraints: map[string]*config.ACPServerConstraint{
-				"model": legacyModel,
-			},
-		}},
-	}
-
-	t.Run("returns raw Constraints for matching server", func(t *testing.T) {
-		got := lookupACPServerConstraints(cfg, "claude-code")
-		if got == nil {
-			t.Fatal("expected non-nil constraints map")
-		}
-		c, ok := got["model"]
-		if !ok {
-			t.Fatalf("expected 'model' constraint, got keys: %v", got)
-		}
-		if c != legacyModel {
-			t.Errorf("expected 'model' to be the input constraint pointer, got different pointer (%+v)", c)
-		}
-	})
-
-	t.Run("nil for unknown server", func(t *testing.T) {
-		if got := lookupACPServerConstraints(cfg, "no-such-server"); got != nil {
-			t.Errorf("expected nil for unknown server, got %v", got)
-		}
-	})
-}
-
 // TestLookupContextFlushCommand pins down the per-ACP-server resolution of the
 // agent-native context-flush command used by BackgroundSession.FlushContext and
 // the /flush API/UI gating.

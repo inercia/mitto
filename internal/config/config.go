@@ -175,27 +175,13 @@ type ACPServer struct {
 	// Tags is an optional list of categorization tags for this ACP server.
 	// Tags are single words or hyphenated-words (e.g., "coding", "fast-model").
 	Tags []string
-	// ModelProfile is the name of a Model profile (Config.Models) whose Criteria
-	// should be used for session-start model auto-selection, replacing the
-	// legacy free-text matchMode/pattern constraint under Constraints["model"].
-	// Empty means no profile is selected; legacy Constraints["model"] (if any)
-	// is used as a fallback. See FindModelProfile.
-	ModelProfile string
-	// ModelTag is a capability tag (e.g. "Smart", "Fast") used to resolve a
-	// Model profile at session start when ModelProfile is empty. The first
-	// profile in EffectiveModelProfiles carrying this tag supplies the model
-	// Criteria. Mutually exclusive with ModelProfile in the UI, but if both are
-	// set ModelProfile wins. Mirrors WorkspaceSettings.InitialModelTag.
-	ModelTag string
 	// InitialModelProfile is the name of a Model profile (Config.Models) applied
 	// as the baseline model of every new conversation created against this ACP
 	// server, right after the agent reports its available models. Empty means
 	// keep the agent's default model. Mutually exclusive with InitialModelTag
 	// in the UI; when both are set, InitialModelProfile wins. Serves as a
 	// fallback when the workspace has no InitialModelProfile/InitialModelTag
-	// set (see WorkspaceSettings.InitialModelProfile). Distinct from
-	// ModelProfile above, which drives the legacy per-resume Constraints["model"]
-	// auto-selection behavior.
+	// set (see WorkspaceSettings.InitialModelProfile).
 	InitialModelProfile string
 	// InitialModelTag selects the initial baseline model by capability tag
 	// (e.g. "Coding"). Resolved to the first Model profile (Config.Models, in

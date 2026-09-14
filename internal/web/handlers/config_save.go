@@ -28,8 +28,6 @@ type ConfigSaveRequest struct {
 		Source              configPkg.ConfigItemSource                `json:"source,omitempty"`                // Source of the server (rcfile, settings)
 		AutoApprove         bool                                      `json:"auto_approve,omitempty"`          // Auto-approve permission requests
 		Tags                []string                                  `json:"tags,omitempty"`                  // Optional categorization tags
-		ModelProfile        string                                    `json:"model_profile,omitempty"`         // Model profile name (mitto-hke)
-		ModelTag            string                                    `json:"model_tag,omitempty"`             // Capability tag for profile resolution
 		InitialModelProfile string                                    `json:"initial_model_profile,omitempty"` // Initial baseline model profile (mitto-fqj)
 		InitialModelTag     string                                    `json:"initial_model_tag,omitempty"`     // Initial baseline model capability tag
 		Constraints         map[string]*configPkg.ACPServerConstraint `json:"constraints,omitempty"`           // Config option auto-selection rules
