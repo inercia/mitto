@@ -208,6 +208,12 @@ func (h *Handlers) HandleSlackAppCreate(w http.ResponseWriter, r *http.Request) 
 		writeSlackError(w, err)
 		return
 	}
+	// CreateApp does not emit a catalog change notification, so refresh the
+	// keepalive set directly: a newly configured app should connect immediately
+	// even before any onSlack loop references it (mitto-al8).
+	if h.deps.SlackManager != nil {
+		h.deps.SlackManager.RefreshKeepAlive()
+	}
 	writeJSONCreated(w, app)
 }
 
@@ -249,6 +255,11 @@ func (h *Handlers) HandleSlackAppDelete(w http.ResponseWriter, r *http.Request) 
 	if err := service.DeleteApp(r.Context(), r.PathValue("appId")); err != nil {
 		writeSlackError(w, err)
 		return
+	}
+	// DeleteApp does not emit a catalog change notification, so refresh the
+	// keepalive set directly to stop the now-removed app's worker (mitto-al8).
+	if h.deps.SlackManager != nil {
+		h.deps.SlackManager.RefreshKeepAlive()
 	}
 	writeNoContent(w)
 }

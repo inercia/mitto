@@ -451,6 +451,10 @@ func (c connectionsTestCatalog) GetInstallation(id string) (slackcatalog.Install
 	return installation, nil
 }
 
+// ListApps reports no configured apps: this test drives subscription-based
+// routing, not the keepalive set.
+func (c connectionsTestCatalog) ListApps() ([]slackcatalog.AppView, error) { return nil, nil }
+
 // connectionsTestRunner is a no-op slackbridge.ManagedLoopTriggerer: this test
 // only exercises the connection-status snapshot, not event dispatch.
 type connectionsTestRunner struct{}
