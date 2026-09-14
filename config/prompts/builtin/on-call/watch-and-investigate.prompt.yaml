@@ -64,9 +64,9 @@ prompt: |-
   credible customer-impacting problem. Ignore banter, questions without impact,
   and routine chatter.
 
-  - If this is **not** an incident, do nothing further: `mitto_ui_notify(self_id:
-    "{{ .Session.ID }}", title: "No incident", message: "Watched channel activity
-    was not incident-related — no epic created.", style: "info")` and stop.
+  - If this is **not** an incident, do nothing further — stop silently. Do **not**
+    emit a toast for non-incident chatter: this loop fires on every human message,
+    so a per-message notification would be pure noise. Just end the run.
   - If it **is** an incident, continue.
 
   ## Step 2 — Create the tracking epic in beads
@@ -89,7 +89,7 @@ prompt: |-
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<EPIC_ID>")
   ```
 
-  Surface progress: `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Incident epic created", message: "<EPIC_ID> — ingesting context…", style: "info", beads_issue: "<EPIC_ID>")`.
+  Surface progress (best-effort): `mitto_workspace_ui_notify(self_id: "{{ .Session.ID }}", workspace_uuid: "{{ .Workspace.UUID }}", title: "Incident epic created", message: "<EPIC_ID> — ingesting context…", style: "info", beads_issue: "<EPIC_ID>")`. This is a headless Slack-triggered loop with no live UI, so use the workspace-scoped notify (not `mitto_ui_notify`); if it errors, skip it and continue — never abort on a notification failure.
 
   ## Step 3 — Ingest and consolidate context (in this conversation)
 

@@ -202,7 +202,11 @@ prompt: |-
   kept. Set `RetentionDays` to automatically delete reports older than N days.
   {{ end }}
   In a silent scheduled run, keep the inline output concise (summary + file path)
-  and send a `mitto_ui_notify` summarizing status; if there are active 🔴
-  incidents, send an additional `style: "warning"`, `sound: true` notification.
+  and send a best-effort `mitto_workspace_ui_notify(self_id: "{{ .Session.ID }}",
+  workspace_uuid: "{{ .Workspace.UUID }}", ...)` summarizing status — this runs
+  headless with no live UI, so the workspace-scoped notify is required (not
+  `mitto_ui_notify`); if there are active 🔴 incidents, send an additional
+  `style: "warning"`, `sound: true` notification. If a notification errors, skip
+  it and continue — never abort on a notification failure.
 
   {{ template "on-call/shared/guardrails" . }}

@@ -111,8 +111,8 @@ Then:
    the surviving hypotheses.
 3. Append a **"Round-1 synthesis"** comment to `<EPIC_ID>` with the ranked
    hypotheses, the strongest supporting evidence, and the next investigation moves.
-4. Notify the operator:
-   `mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Round-1 triage complete", message: "<EPIC_ID>: <N> sub-tasks investigated — see the epic for the synthesis.", style: "success", beads_issue: "<EPIC_ID>")`.
+4. Notify the operator (best-effort — skip on error, never abort):
+   `mitto_workspace_ui_notify(self_id: "{{ .Session.ID }}", workspace_uuid: "{{ .Workspace.UUID }}", title: "Round-1 triage complete", message: "<EPIC_ID>: <N> sub-tasks investigated — see the epic for the synthesis.", style: "success", beads_issue: "<EPIC_ID>")`. The workspace-scoped notify works whether or not a live UI is attached (this fragment runs in both Slack-triggered loops and interactive runs).
 5. Ask via `mitto_ui_options` whether to (a) dispatch a follow-up round based on
    the surviving hypotheses, (b) hand back to the operator, or (c) stop.
 

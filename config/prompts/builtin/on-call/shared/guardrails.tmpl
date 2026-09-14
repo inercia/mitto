@@ -28,3 +28,11 @@
 - If any `mitto_ui_*` dialog times out and the operator is clearly away, hold the
   current draft/state silently and continue background ingestion; do NOT re-open
   blocking dialogs on a timer.
+- **Notifications are best-effort and must never block the run.** Status toasts
+  (`mitto_workspace_ui_notify`, `mitto_ui_notify`) are fire-and-forget. If a
+  notify tool returns an error (e.g. `session not found`, `no UI connected`), do
+  NOT retry it more than once and NEVER let it pause, abort, or otherwise change
+  the investigation — drop the toast and keep going. In loop / Slack-triggered /
+  scheduled (headless) runs there is no live UI session, so use the
+  workspace-scoped `mitto_workspace_ui_notify` (with
+  `workspace_uuid: "{{ .Workspace.UUID }}"`) instead of `mitto_ui_notify`.
