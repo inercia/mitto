@@ -174,6 +174,7 @@ export function LoopSettingsTab({
   minDelaySeconds = 5,
   onOpenPromptParamDialog,
   onConfigChange,
+  onDirtyChange,
   showToast,
   children,
 }) {
@@ -404,6 +405,36 @@ export function LoopSettingsTab({
     !!draft && !!serverDraft && !serverDraft.enabled && draft.enabled;
   const limitStopped =
     restoring && CAP_STOP_REASONS.has(serverDraft.stoppedReason);
+
+  // True when the staged draft differs from the last server-authoritative
+  // config in any editable field. Comparing the built PATCH payloads (rather
+  // than the raw drafts) restricts the diff to fields the user can actually
+  // change — read-only metadata (iteration_count, stopped_reason, timestamps)
+  // is excluded — and only compares trigger-specific fields for armed
+  // triggers. Because buildLoopPatch includes `arguments`, deeper changes made
+  // in the prompt-parameter dialog are captured here too. Fail-open to dirty on
+  // any comparison error so the user is never locked out of saving.
+  const dirty = useMemo(() => {
+    if (!draft || !serverDraft) return false;
+    try {
+      return (
+        JSON.stringify(buildLoopPatch(draft, { minDelaySeconds })) !==
+        JSON.stringify(buildLoopPatch(serverDraft, { minDelaySeconds }))
+      );
+    } catch (_error) {
+      return true;
+    }
+  }, [draft, serverDraft, minDelaySeconds]);
+
+  // Surface the dirty state to the parent panel so it can guard the panel's
+  // close affordances (X / Escape / outside-click) against silently discarding
+  // unsaved edits.
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  // Clear the parent's dirty flag when this editor unmounts (tab switch or
+  // panel close) so a stale "true" never blocks a later close.
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const performSave = useCallback(
     async (payload, restore = null) => {
@@ -1076,7 +1107,7 @@ export function LoopSettingsTab({
             type="button"
             class="btn btn-primary btn-sm"
             data-testid="loop-save-button"
-            disabled=${saving}
+            disabled=${saving || !dirty}
             onClick=${requestSave}
           >
             ${saving && html`<span class="loading loading-spinner loading-xs"></span>`}

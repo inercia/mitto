@@ -1460,7 +1460,16 @@ a.mailto-link:hover {
 }
 
 .properties-panel {
-  animation: propertiesPanelSlideIn 0.2s ease-out forwards;
+  /* No `forwards`: the slide-in ends at translateX(0)/opacity:1, which is
+     visually identical to the resting underlying values (opacity:1 below,
+     transform:none by default), so the panel settles without retaining a
+     transform. This matters because a retained non-none transform on the
+     panel would establish a containing block for `position: fixed`
+     descendants — trapping any daisyUI `.modal` opened from inside the panel
+     (e.g. the loop settings "Restore loop schedule" dialog) within the panel's
+     box instead of centering it against the viewport like every other dialog. */
+  opacity: 1;
+  animation: propertiesPanelSlideIn 0.2s ease-out;
 }
 
 .properties-panel.closing {

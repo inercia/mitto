@@ -14,12 +14,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import {
-  describe,
-  test,
-  expect,
-  jest,
-} from "../utils/testing/testGlobals.js";
+import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const tabJs = readFileSync(resolve(__dirname, "LoopSettingsTab.js"), "utf8");
@@ -50,7 +45,9 @@ describe("LoopSettingsTab.js: imports and dependencies", () => {
     // when unmetRequiredParams was added (loop Enabled-toggle gating). Assert
     // both names are imported from the same module rather than pinning the
     // exact single-line shape.
-    expect(tabJs).toMatch(/import \{[\s\S]*?\} from "\.\.\/utils\/prompts\.js";/);
+    expect(tabJs).toMatch(
+      /import \{[\s\S]*?\} from "\.\.\/utils\/prompts\.js";/,
+    );
     expect(tabJs).toMatch(/promptDialogParameters/);
     expect(tabJs).toMatch(/unmetRequiredParams/);
   });
@@ -168,9 +165,7 @@ describe("LoopSettingsTab.js: On Slack card header action (mitto-xh79)", () => {
 
   test("imports SettingsIcon, Tooltip, and openSettingsTab for the gear button", () => {
     expect(tabJs).toMatch(/SettingsIcon/);
-    expect(tabJs).toMatch(
-      /import \{ Tooltip \} from "\.\/Tooltip\.js";/,
-    );
+    expect(tabJs).toMatch(/import \{ Tooltip \} from "\.\/Tooltip\.js";/);
     expect(tabJs).toMatch(
       /import \{ openSettingsTab \} from "\.\.\/utils\/slackEvents\.js";/,
     );
@@ -181,16 +176,10 @@ describe("LoopSettingsTab.js: On Slack card header action (mitto-xh79)", () => {
     expect(onSlackIdx).toBeGreaterThan(-1);
     const snippet = tabJs.slice(onSlackIdx, onSlackIdx + 900);
     expect(snippet).toMatch(/headerAction=\$\{html`<\$\{Tooltip\}/);
-    expect(snippet).toMatch(
-      /tip="Manage Slack integrations"/,
-    );
+    expect(snippet).toMatch(/tip="Manage Slack integrations"/);
     expect(snippet).toMatch(/class="btn btn-ghost btn-square btn-sm"/);
-    expect(snippet).toMatch(
-      /data-testid="slack-manage-integrations"/,
-    );
-    expect(snippet).toMatch(
-      /aria-label="Manage Slack integrations"/,
-    );
+    expect(snippet).toMatch(/data-testid="slack-manage-integrations"/);
+    expect(snippet).toMatch(/aria-label="Manage Slack integrations"/);
     expect(snippet).toMatch(/title="Manage Slack integrations"/);
     expect(snippet).toMatch(/onClick=\$\{\(\) => openSettingsTab\("slack"\)\}/);
     expect(snippet).toMatch(/<\$\{SettingsIcon\}/);
@@ -242,6 +231,48 @@ describe("LoopSettingsTab.js: validation and patch building", () => {
     expect(requestSaveIdx).toBeGreaterThan(-1);
     const snippet = tabJs.slice(requestSaveIdx, requestSaveIdx + 1200);
     expect(snippet).toMatch(/isDangerousUnboundedLoop\(draft\)/);
+  });
+});
+
+// =============================================================================
+// Dirty tracking / Save-disabled tests
+// =============================================================================
+
+describe("LoopSettingsTab.js: dirty tracking", () => {
+  test("accepts an onDirtyChange prop", () => {
+    expect(tabJs).toMatch(/onDirtyChange,/);
+  });
+
+  test("computes dirty by comparing the built PATCH of draft vs serverDraft", () => {
+    const idx = tabJs.indexOf("const dirty = useMemo(");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 500);
+    expect(snippet).toMatch(
+      /JSON\.stringify\(buildLoopPatch\(draft, \{ minDelaySeconds \}\)\) !==/,
+    );
+    expect(snippet).toMatch(
+      /JSON\.stringify\(buildLoopPatch\(serverDraft, \{ minDelaySeconds \}\)\)/,
+    );
+  });
+
+  test("fails open to dirty on any comparison error (never locks out saving)", () => {
+    const idx = tabJs.indexOf("const dirty = useMemo(");
+    const snippet = tabJs.slice(idx, idx + 500);
+    expect(snippet).toMatch(/catch \(_error\) \{\s*return true;/);
+  });
+
+  test("notifies the parent of dirty changes and clears it on unmount", () => {
+    expect(tabJs).toMatch(/onDirtyChange\?\.\(dirty\)/);
+    expect(tabJs).toMatch(
+      /useEffect\(\(\) => \(\) => onDirtyChange\?\.\(false\)/,
+    );
+  });
+
+  test("Save button is disabled while saving or when not dirty", () => {
+    const idx = tabJs.indexOf('data-testid="loop-save-button"');
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = tabJs.slice(idx, idx + 200);
+    expect(snippet).toMatch(/disabled=\$\{saving \|\| !dirty\}/);
   });
 });
 
@@ -486,9 +517,8 @@ if (isMountedChildRun) {
   const htm = (await import("../vendor/htm.js")).default;
   const previousPreact = window.preact;
   window.preact = { ...preact, ...hooks, html: htm.bind(preact.h) };
-  const { LoopSettingsTab } = await import(
-    "./LoopSettingsTab.js?mitto-xh79-mounted-tests"
-  );
+  const { LoopSettingsTab } =
+    await import("./LoopSettingsTab.js?mitto-xh79-mounted-tests");
   const { _resetSdkClientForTests } = await import("../utils/sdkClient.js");
   window.preact = previousPreact;
 
@@ -566,7 +596,12 @@ if (isMountedChildRun) {
         ).toBeNull();
 
         // Other trigger cards never get a header action area.
-        for (const trigger of ["schedule", "onCompletion", "onTasks", "onChild"]) {
+        for (const trigger of [
+          "schedule",
+          "onCompletion",
+          "onTasks",
+          "onChild",
+        ]) {
           expect(
             container.querySelector(
               `[data-testid="loop-settings-trigger-header-action-${trigger}"]`,

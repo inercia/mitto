@@ -140,16 +140,22 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
       const idx = panelJs.indexOf("const lastLoopDeliveryMessage = useMemo(");
       expect(idx).toBeGreaterThan(-1);
       const snippet = panelJs.slice(idx, idx + 400);
-      expect(snippet).toMatch(/for \(let i = messages\.length - 1; i >= 0; i--\)/);
+      expect(snippet).toMatch(
+        /for \(let i = messages\.length - 1; i >= 0; i--\)/,
+      );
       expect(snippet).toMatch(/messages\[i\]\?\.provenance/);
     });
 
     test("renders a Last loop delivery block gated on provenance, separate from the Loop tab's configured triggers", () => {
-      const idx = panelJs.indexOf('data-testid="session-panel-last-loop-delivery"');
+      const idx = panelJs.indexOf(
+        'data-testid="session-panel-last-loop-delivery"',
+      );
       expect(idx).toBeGreaterThan(-1);
       const snippet = panelJs.slice(idx - 400, idx + 1600);
       expect(snippet).toMatch(/Last loop delivery/);
-      expect(snippet).toMatch(/formatTimeAgo\(\s*lastLoopDeliveryMessage\.timestamp,?\s*\)/);
+      expect(snippet).toMatch(
+        /formatTimeAgo\(\s*lastLoopDeliveryMessage\.timestamp,?\s*\)/,
+      );
       expect(snippet).toMatch(/slack\.channel_id/);
       expect(snippet).toMatch(/slack\.event_count/);
     });
@@ -161,6 +167,53 @@ describe("SessionPanel.js: SDK migration (mitto-7gta.17 slice S4)", () => {
       const workspaceIdx = panelJs.indexOf(">Workspace</label");
       expect(deliveryIdx).toBeGreaterThan(-1);
       expect(workspaceIdx).toBeGreaterThan(deliveryIdx);
+    });
+  });
+
+  describe("Discard-unsaved-loop-changes guard on close", () => {
+    test("imports ConfirmDialog and tracks loop dirty state via a ref", () => {
+      expect(panelJs).toMatch(
+        /import \{ ConfirmDialog \} from "\.\/ConfirmDialog\.js";/,
+      );
+      expect(panelJs).toMatch(/const loopDirtyRef = useRef\(false\);/);
+      expect(panelJs).toMatch(
+        /const handleLoopDirtyChange = useCallback\(\(dirty\) => \{\s*loopDirtyRef\.current = dirty;/,
+      );
+    });
+
+    test("passes onDirtyChange to the Loop settings tab", () => {
+      const idx = panelJs.indexOf("<${LoopSettingsTab}");
+      expect(idx).toBeGreaterThan(-1);
+      const snippet = panelJs.slice(idx, idx + 600);
+      expect(snippet).toMatch(/onDirtyChange=\$\{handleLoopDirtyChange\}/);
+    });
+
+    test("handleClose shows the discard confirmation when dirty, else closes", () => {
+      const idx = panelJs.indexOf("const handleClose = useCallback(() => {");
+      expect(idx).toBeGreaterThan(-1);
+      const snippet = panelJs.slice(idx, idx + 300);
+      expect(snippet).toMatch(/if \(loopDirtyRef\.current\) \{/);
+      expect(snippet).toMatch(/setDiscardConfirmOpen\(true\);/);
+      expect(snippet).toMatch(/performClose\(\);/);
+    });
+
+    test("confirming the discard clears dirty and performs the close", () => {
+      const idx = panelJs.indexOf("const handleDiscardConfirm = useCallback(");
+      expect(idx).toBeGreaterThan(-1);
+      const snippet = panelJs.slice(idx, idx + 250);
+      expect(snippet).toMatch(/loopDirtyRef\.current = false;/);
+      expect(snippet).toMatch(/setDiscardConfirmOpen\(false\);/);
+      expect(snippet).toMatch(/performClose\(\);/);
+    });
+
+    test("renders the ConfirmDialog wired to discard handlers", () => {
+      const idx = panelJs.indexOf("<${ConfirmDialog}");
+      expect(idx).toBeGreaterThan(-1);
+      const snippet = panelJs.slice(idx, idx + 500);
+      expect(snippet).toMatch(/isOpen=\$\{discardConfirmOpen\}/);
+      expect(snippet).toMatch(/confirmVariant="danger"/);
+      expect(snippet).toMatch(/onConfirm=\$\{handleDiscardConfirm\}/);
+      expect(snippet).toMatch(/onCancel=\$\{handleDiscardCancel\}/);
     });
   });
 });

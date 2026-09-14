@@ -26,6 +26,7 @@ import { isNativeApp } from "../utils/index.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { LoopSettingsTab } from "./LoopSettingsTab.js";
 import { CallbackTriggerSection } from "./CallbackTriggerSection.js";
+import { ConfirmDialog } from "./ConfirmDialog.js";
 import { getPromptIcon } from "./Icons.js";
 import { describeProvenance } from "../utils/promptProvenance.js";
 
@@ -179,10 +180,44 @@ export function SessionPanel({
     }
   }, [isOpen]);
 
-  const handleClose = useCallback(() => {
+  // Tracks whether the Loop editor currently has unsaved changes. A ref (not
+  // state) so the document mousedown listener and handleClose don't have to be
+  // rebuilt on every dirty toggle; LoopSettingsTab reports changes via its
+  // onDirtyChange prop.
+  const loopDirtyRef = useRef(false);
+  const handleLoopDirtyChange = useCallback((dirty) => {
+    loopDirtyRef.current = dirty;
+  }, []);
+
+  // When true, a "Discard unsaved changes?" confirmation is shown instead of
+  // closing the panel outright.
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+
+  const performClose = useCallback(() => {
     setIsClosing(true);
     setTimeout(() => onClose(), 150);
   }, [onClose]);
+
+  // Guarded close shared by the X button, Escape, and the outside-click
+  // listener: if the Loop editor has unsaved edits, ask before discarding them;
+  // otherwise close immediately.
+  const handleClose = useCallback(() => {
+    if (loopDirtyRef.current) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    performClose();
+  }, [performClose]);
+
+  const handleDiscardConfirm = useCallback(() => {
+    loopDirtyRef.current = false;
+    setDiscardConfirmOpen(false);
+    performClose();
+  }, [performClose]);
+
+  const handleDiscardCancel = useCallback(() => {
+    setDiscardConfirmOpen(false);
+  }, []);
 
   // Close the panel when the user clicks outside of it (e.g. on the conversation
   // to its left). Dock mode (mitto-cdf) deliberately has no dimming backdrop — a
@@ -747,6 +782,21 @@ export function SessionPanel({
           }
         </div>
       <//>
+
+      <!-- Guards the panel's close affordances (X / Escape / outside-click)
+           against silently discarding unsaved Loop-tab edits. Renders as a
+           viewport-covering .modal sibling, which the outside-click listener
+           above ignores. -->
+      <${ConfirmDialog}
+        isOpen=${discardConfirmOpen}
+        title="Discard changes?"
+        message="You have unsaved loop changes. Do you want to discard them?"
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        confirmVariant="danger"
+        onConfirm=${handleDiscardConfirm}
+        onCancel=${handleDiscardCancel}
+      />
     <//>
   `;
 
@@ -1533,6 +1583,7 @@ export function SessionPanel({
           isStreaming=${isStreaming}
           onOpenPromptParamDialog=${onOpenPromptParamDialog}
           onConfigChange=${setLoopConfig}
+          onDirtyChange=${handleLoopDirtyChange}
           showToast=${showToast}
         >
           <${CallbackTriggerSection}
