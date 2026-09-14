@@ -58,13 +58,18 @@ const (
 	// live session for it will ever fire the event-driven flush triggers
 	// again.
 	pendingDispatchSweepInterval = 30 * time.Minute
-
-	// pendingDispatchStartupSweepDelay is how long the one-shot startup
-	// pending-dispatch sweep (mitto-7ds) waits after NewServer before its
-	// first pass, giving the workspace registry and ACP process manager a
-	// moment to settle rather than racing the rest of server startup.
-	pendingDispatchStartupSweepDelay = 10 * time.Second
 )
+
+// pendingDispatchStartupSweepDelay is how long the one-shot startup
+// pending-dispatch sweep (mitto-7ds) waits after NewServer before its first
+// pass, giving the workspace registry and ACP process manager a moment to
+// settle rather than racing the rest of server startup.
+//
+// A var (not const), mirroring the injectable-clock precedent in
+// internal/processors (Manager.SetClock), so tests can shrink it and observe
+// the startup sweep firing deterministically instead of sleeping the full
+// 10s wall-clock delay. Production behavior is unchanged (default 10s).
+var pendingDispatchStartupSweepDelay = 10 * time.Second
 
 // Config holds the web server configuration.
 type Config struct {
