@@ -6,18 +6,39 @@ suite for their own blog should read Sections 3 and 4.
 
 ## Overview
 
-The blog suite is a **state machine over a beads issue's labels**. Each post
-is one bead; the labels `blog`, `draft`, `needs-*`, `ready`, and `published`
-encode which phase the post is in. Each prompt gates on the current labels
-via its `enabledWhen` expression, applies a small, well-defined transformation
-(create the file, review it, polish it, publish it, announce it), and updates
-labels to advance the state machine. The bead is the durable record; the
-Markdown file on disk is the artefact; the label set is the state.
+The blog suite is a **state machine over a beads issue's labels**, and the
+**post content lives in the bead itself**. Each post is one bead:
+
+- the bead **title** is the post title,
+- the bead **description** is the current post body (always the live state —
+  every edit rewrites the description),
+- the bead **comments** hold all agent-authored notes: ideation notes,
+  review findings, fact-check results, references audits, polish summaries, and
+  the publish record.
+
+The labels `blog`, `blog:idea`, `blog:draft`, `blog:needs-*`, `blog:ready`, and
+`blog:published` encode which phase the post is in. Blog state labels are
+namespaced with a `blog:` prefix so they never collide with generic project
+labels (a bare `draft`/`ready`/`idea` could mean something else in the same
+repo); the unprefixed `blog` label stays as the suite marker. Each prompt gates
+on the current labels via its
+`enabledWhen` expression, applies a small, well-defined transformation (capture
+the idea, create the post, review it, polish it, publish it, announce it), and
+updates labels to advance the state machine. There is **no draft file on disk**
+during the drafting phase; a published artefact is only created by
+`Blog: publish`, driven by the project's `.mitto/blog/publish.md` instructions.
+
+An **idea** bead is a lightweight future note: a `blog`/`blog:idea`-labelled
+bead whose **description is empty** and whose seed (the one-line idea) lives in
+the **first comment**. It carries no body yet, so the drafting-phase prompts
+(which gate on `blog:draft`) stay hidden until `Blog: ideation` promotes it into
+a draft.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idea
-    Idea --> Draft: Blog: ideation
+    [*] --> Idea: Blog: ideation (capture a quick idea)
+    [*] --> Draft: Blog: ideation (draft a full post now)
+    Idea --> Draft: Blog: ideation (promote)
     Draft --> Draft: Blog: content-review / fact-check / add-references / polish
     Draft --> Published: Blog: publish
     Published --> Announced: Blog: linkedin-post
@@ -32,82 +53,87 @@ Every claim in this table is derivable from grepping the prompt YAMLs for
 | Label | Set by | Cleared by | Semantics |
 |---|---|---|---|
 | `blog` | `ideation` (via `bd create -l blog,...`) | never | Marks the bead as belonging to the blog suite. Every blog prompt gates on `"blog" in Item.Labels`. |
-| `draft` | `ideation` (via `bd create`) | `publish` (`--remove-label draft`) | Post is still being written/reviewed. All drafting-phase prompts gate on `"draft" in Item.Labels`. |
-| `published` | `publish` (`--add-label published`) | never | Post has shipped. `linkedin-post` gates on `"published" in Item.Labels`; `publish` refuses to re-run via `!("published" in Item.Labels)`. |
-| `needs-fact-check` | `ideation` (seeded on create); `content-review` (when review flags claims) | `fact-check` (`--remove-label needs-fact-check`) | Draft has unverified factual claims; `fact-check` must run before `ready` is added. |
-| `needs-polish` | `ideation` (seeded on create); `content-review` (when review flags structural/voice issues); `polish` (re-added when polish pass discovers new issues) | `polish` (`--remove-label needs-polish`) | Draft has known structural or voice issues; `polish` must run before `ready` is added. |
-| `ready` | `fact-check` (added when no `needs-*` labels remain); `polish` (same condition) | `content-review`, `add-references`, `fact-check`, `polish`, `publish` (each removes `ready` whenever it dirties the draft) | Draft has passed all `needs-*` gates and is ready for `publish`. Set only when the last `needs-*` clears; removed by any prompt that re-dirties the post. |
+| `idea` (`blog:idea`) | `ideation` (capture: `bd create -l blog,blog:idea`) | `ideation` (promote: `--remove-label blog:idea`) | Post is a captured future idea with **no body yet** — the seed lives in the first comment, the description is empty. Only `ideation` (promotion mode) acts on `blog:idea` beads; the drafting-phase prompts stay hidden until it is promoted to `blog:draft`. |
+| `draft` (`blog:draft`) | `ideation` (draft-now: `bd create -l blog,blog:draft,...`; promote: `--add-label blog:draft`) | `publish` (`--remove-label blog:draft`) | Post is still being written/reviewed. All drafting-phase prompts gate on `"blog:draft" in Item.Labels`. |
+| `published` (`blog:published`) | `publish` (`--add-label blog:published`) | never | Post has shipped. `linkedin-post` gates on `"blog:published" in Item.Labels`; `publish` refuses to re-run via `!("blog:published" in Item.Labels)`. |
+| `needs-fact-check` (`blog:needs-fact-check`) | `ideation` (seeded when a draft is created or an idea is promoted); `content-review` (when review flags claims) | `fact-check` (`--remove-label blog:needs-fact-check`) | Draft has unverified factual claims; `fact-check` must run before `blog:ready` is added. |
+| `needs-polish` (`blog:needs-polish`) | `ideation` (seeded when a draft is created or an idea is promoted); `content-review` (when review flags structural/voice issues); `polish` (re-added when polish pass discovers new issues) | `polish` (`--remove-label blog:needs-polish`) | Draft has known structural or voice issues; `polish` must run before `blog:ready` is added. |
+| `ready` (`blog:ready`) | `fact-check` (added when no `blog:needs-*` labels remain); `polish` (same condition) | `content-review`, `add-references`, `fact-check`, `polish`, `publish` (each removes `blog:ready` whenever it dirties the draft) | Draft has passed all `blog:needs-*` gates and is ready for `publish`. Set only when the last `blog:needs-*` clears; removed by any prompt that re-dirties the post. |
 
-## The `Folder` parameter
+## No `Folder` parameter
 
-Every blog prompt takes a `Folder` parameter (type `text`, default
-`blog/posts`, `required: false`). This is the repo-relative directory where
-post files and workspace overrides live. Override it on invocation to point
-the suite at a different location (for example `content/posts` for a Hugo
-site or `_posts` for a Jekyll site). The value flows through into
-`blog-config-fragment`, which resolves each user-config file path as
-`{Folder}/.mitto/<name>.md` at render time via
-`{{ Arg "Folder" "blog/posts" }}`.
+The suite has **no `Folder` parameter**. The post content lives in the bead
+(title + description), not in a folder of draft files, so there is no
+repo-relative post directory to configure during drafting. Workspace overrides
+and instruction files live at a fixed location, `.mitto/blog/*.md` (see below).
+Where the *published* artefact ends up is decided by `.mitto/blog/publish.md`,
+not by a prompt parameter.
 
-## User config files (`.mitto/*.md` overrides)
+## User config files (`.mitto/blog/*.md`)
 
-Six optional Markdown files under `{Folder}/.mitto/` let the workspace
-override the default voice, structure, and process baked into the prompts.
-Each file is inlined verbatim into the rendered prompt via
-`blog/shared/blog-config-fragment` (the agent never reads the file at
-runtime -- the bytes are embedded at template-render time so event logs
-show exactly what the agent received).
+Optional Markdown files under `.mitto/blog/` let the workspace override the
+default voice and process baked into the prompts. Two loading patterns are
+used:
 
-All six files are **optional**. When absent, the calling prompt uses a
-hard-coded default embedded via a `DefaultText` value in the fragment call.
+- **Read-only embed** (`blog/shared/blog-config-fragment`): the file content is
+  inlined verbatim into the rendered prompt at template-render time (the agent
+  never reads the file at runtime, so event logs show exactly what it
+  received). When absent, a hard-coded `DefaultText` default is used. Used for
+  files that have a sensible built-in default.
+- **Read → ask → persist** (`blog/shared/read-or-ask-persist`): used for
+  `publish.md`, which has no sensible default because publishing is
+  project-specific. When the file is present it is embedded verbatim; when
+  absent the agent asks the author how to publish, follows the answer for the
+  current run, and offers to persist it to `.mitto/blog/publish.md`.
 
-| File | Consumed by | Overrides |
-|---|---|---|
-| `audience.md` | `content-review`, `fact-check`, `polish`, `publish`, `linkedin-post` (via `audience-and-tone`) | Who the post is written for. Default: "Expert practitioners: engineers, technical leads, and hands-on architects." |
-| `tone.md` | `polish`, `linkedin-post` (via `audience-and-tone`) | Voice/register of the writing. Default: "Slightly informal, direct, and confident." |
-| `topics.md` | `ideation` | The workspace's editorial focus areas that ideation should propose posts within. Default: a generic technical-blog list. |
-| `frontmatter.md` | `ideation`, `publish` | Project-specific YAML frontmatter policy (which keys to populate/preserve/strip). Default: sets `title`, `description`, `date`, `tags`; removes `publish: false`; preserves unrelated keys. |
-| `publish-checklist.md` | `publish` | The final-pass sanity checks the author walks through before shipping. Default: git-status clean, links resolve, no `TODO`/`FIXME`, every fence has a language tag. |
-| `linkedin-template.md` | `linkedin-post` | Project-specific LinkedIn post layout. Default: HOOK / BODY / CANONICAL URL / HASHTAGS in that order, under 1300 characters, 3-5 tags. |
+All files are **optional**.
 
-## Dual attachment mechanism
+| File | Loaded by | Consumed by | Overrides |
+|---|---|---|---|
+| `audience.md` | embed | `ideation`, `content-review`, `fact-check`, `polish`, `publish`, `linkedin-post` (some via `audience-and-style`) | Who the post is written for. Default: "Expert practitioners: engineers, technical leads, and hands-on architects." |
+| `style.md` | embed | `ideation`, `polish`, `publish`, `linkedin-post` (some via `audience-and-style`) | Voice/register/style of the writing. Default: "Slightly informal, direct, and confident." |
+| `topics.md` | embed | `ideation` | The workspace's editorial focus areas that ideation should propose posts within. Default: a generic technical-blog list. |
+| `review.md` | embed | `content-review` | Project-specific review criteria layered on top of the built-in adversarial axes. Default: none (nothing rendered when absent). |
+| `publish.md` | read → ask → persist | `publish` | How and where to publish: target repo/CMS, path convention, **destination format** (Markdown, MDX, HTML, reStructuredText, AsciiDoc, Confluence storage format, …), front-matter policy, deploy command. No default — asked and persisted when absent. |
+| `linkedin-template.md` | embed | `linkedin-post` | Project-specific LinkedIn post layout. Default: HOOK / BODY / CANONICAL URL / HASHTAGS in that order, under 1300 characters, 3-5 tags. |
 
-Every prompt after `ideation` needs to find the post file on disk. The suite
-records the association from bead to file in **two** places, refreshed
-together by `ideation` (on creation) and by `publish` (on the
-`draft-<slug>.md` -> `YYYY-MM-DD-<slug>.md` rename):
+## Where the post content lives
 
-1. **`File: [path](path)` line in the bead's description.** A single
-   Markdown link on its own line in the description body. Parsed by
-   `blog/shared/locate-post-file` at every prompt invocation (via
-   `bd show --json | jq -r .[0].description | grep -m1 ...`) to resolve
-   `$post_path` and `$post_abs`. Human-readable in the beads TUI; drives
-   the fragment logic.
-2. **`attachments` metadata via `scripts/bd-attach.sh add`.** A structured
-   JSON attachment record stored under the bead's `metadata.attachments`
-   list, wrapped by `blog/shared/attach-file-to-bead` with a raw
-   `bd update --metadata` fallback for environments where the helper is
-   absent. Travels with `bd dolt push`/`pull` and survives description
-   edits; tool-visible from other agents.
+There is no post file on disk during drafting. The bead **description** is the
+single source of truth for the post body, and the bead **title** is the post
+title. An `idea` bead is the one exception where the description is
+deliberately **empty** (no body yet) — its seed lives in the first comment
+until `ideation` promotes it and fills the description:
 
-Both records are refreshed atomically by whichever prompt renames or moves
-the file. See `.augment/rules/44-beads-attachments.md` for the underlying
-attachment convention.
+- `blog/shared/load-post-from-bead` loads the bead's title into `$post_title`
+  and writes its description to a temp file `$post_file`, which review/polish
+  prompts `cat`/`grep`.
+- `blog/shared/update-post-in-bead` writes a revised body back into the
+  description via `bd update --body-file`, diffing old vs new for an audit
+  trail (used by `polish`).
+
+Only `Blog: publish` materialises a file — the published artefact — at the
+location and in the format its `.mitto/blog/publish.md` instructions specify.
+Because the body is stored as **Markdown** but the destination may expect a
+different format (MDX, HTML, reStructuredText, AsciiDoc, Confluence storage
+format, …), `publish` does a **best-effort conversion** of the Markdown body to
+the destination format before writing — preferring a real converter (e.g.
+`pandoc`) when one is installed and falling back to a faithful manual conversion
+otherwise, recording any lossy notes in the publish comment.
 
 ## Prompt-by-prompt gate table
 
-Gates copied verbatim from each YAML's `enabledWhen:` line (`ideation` has
-no gate -- it is the entry point, always visible in the workspace menu).
+Gates copied verbatim from each YAML's `enabledWhen:` line.
 
 | Prompt | `enabledWhen` gate | Notes |
 |---|---|---|
-| `ideation` | *(none)* | Entry point. Creates the bead with `-l blog,draft,needs-fact-check,needs-polish`; menu: workspace, not per-bead. |
-| `content-review` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Adds `needs-polish` and/or `needs-fact-check` per findings; removes `ready`. |
-| `fact-check` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Removes `needs-fact-check`; adds `ready` iff no `needs-*` remain. |
-| `add-references` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Flags REQUIRED vs RECOMMENDED references; adds `needs-fact-check`; removes `ready`. |
-| `polish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels` | Six-mode dropdown (General, Concise, Expand, Technical, Sharpen opening, Fluent); removes `needs-polish`; adds `ready` iff no `needs-*` remain. |
-| `publish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "draft" in Item.Labels && !("published" in Item.Labels)` | Terminal label transition: rewrites frontmatter, `git mv draft-<slug>.md -> YYYY-MM-DD-<slug>.md`, refreshes attachment, adds `published`, removes `draft`+`ready`+every `needs-*`. **Does NOT close the bead** -- closure is a manual step for the author (see "No automatic closure" below). |
-| `linkedin-post` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "published" in Item.Labels` | Post-publication only. Downstream artefact -- does NOT modify the bead. |
+| `ideation` | `Item.Id == "" \|\| ("blog" in Item.Labels && "blog:idea" in Item.Labels)` | Dual-mode. `Item.Id == ""` keeps it **always visible** as the workspace entry point (prompts menu) even before `bd init` — its Step 0 bootstraps beads. The label clause makes it appear in the **beadsIssues** menu **only on `blog`/`blog:idea` beads** (promotion mode). Entry-point mode creates a `blog,blog:idea` bead (capture) or a `blog,blog:draft,blog:needs-fact-check,blog:needs-polish` bead (draft-now); promotion mode relabels `blog:idea`→`blog:draft` and seeds the `blog:needs-*` gates. |
+| `content-review` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "blog:draft" in Item.Labels` | Adds `blog:needs-polish` and/or `blog:needs-fact-check` per findings; removes `blog:ready`. |
+| `fact-check` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "blog:draft" in Item.Labels` | Removes `blog:needs-fact-check`; adds `blog:ready` iff no `blog:needs-*` remain. |
+| `add-references` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "blog:draft" in Item.Labels` | Flags REQUIRED vs RECOMMENDED references; adds `blog:needs-fact-check`; removes `blog:ready`. |
+| `polish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "blog:draft" in Item.Labels` | Six-mode dropdown (General, Concise, Expand, Technical, Sharpen opening, Fluent); removes `blog:needs-polish`; adds `blog:ready` iff no `blog:needs-*` remain. |
+| `publish` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "blog:draft" in Item.Labels && !("blog:published" in Item.Labels)` | Terminal label transition: reads (or asks + persists) `.mitto/blog/publish.md`, **best-effort converts the Markdown body to the destination format** (pandoc-preferred, manual fallback), materialises the published artefact per those instructions, records a publish comment (with the format + any lossy conversion notes), adds `blog:published`, removes `blog:draft`+`blog:ready`+every `blog:needs-*`. **Does NOT close the bead** -- closure is a manual step for the author (see "No automatic closure" below). |
+| `linkedin-post` | `CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && "blog:published" in Item.Labels` | Post-publication only. Downstream artefact -- does NOT modify the bead. |
 
 ## No automatic closure
 
@@ -132,13 +158,36 @@ Entries in `internal/prompts/prompts_test.go` (verify with
 
 | File | Bucket | Extra |
 |---|---|---|
-| `blog/ideation.prompt.yaml` | `workspaceTitle` | `wantTitle: "Blog: ideation"` (workspace-menu entry point). |
+| `blog/ideation.prompt.yaml` | `workspaceTitle` | `wantTitle: "Blog: ideation"`. Routes by title (workspace-menu entry point) even though it *also* appears in the `beadsIssues` menu for promotion — the bucket test checks target/reuse routing, not menus, so title-reuse is retained. |
 | `blog/content-review.prompt.yaml` | `perBeadWithCoalesce` | Per-bead action, coalesces queued invocations. |
 | `blog/fact-check.prompt.yaml` | `perBeadWithCoalesce` | " |
 | `blog/add-references.prompt.yaml` | `perBeadWithCoalesce` | " |
 | `blog/polish.prompt.yaml` | `perBeadWithCoalesce` | " |
 | `blog/publish.prompt.yaml` | `perBeadWithCoalesce` | " |
 | `blog/linkedin-post.prompt.yaml` | `perBeadWithCoalesce` | " |
+
+## Conversation reuse — how ideation feeds the per-bead prompts
+
+The six drafting-phase prompts route by **beads issue** (`target.reuse.issue`):
+a dispatch carrying a `beads_issue` funnels into the existing non-archived
+conversation **linked to that bead** in the same working dir. That reuse can
+only fire if some conversation is actually linked to the bead — so whenever
+`ideation` creates a **draft** (Step 5B, draft-now) or promotes an idea into a
+draft (Step P5→P6, promotion), it links itself to the new draft bead and
+renames the conversation to the post title:
+
+```
+mitto_conversation_update(self_id: "…", conversation_id: "self", beads_issue: "<draft-id>", name: "<post title>")
+```
+
+After that, running `content-review` / `fact-check` / `add-references` /
+`polish` / `publish` / `linkedin-post` on the draft funnels back into this one
+post-specific conversation instead of spawning a fresh one. Renaming away from
+`"Blog: ideation"` also means the next `ideation` run starts its **own** entry-
+point conversation (ideation routes by title), so each post gets a clean,
+self-contained thread. Quick-idea capture (Step 2A) deliberately does **not**
+link/rename — an idea bead gets no per-bead prompts, so the shared
+`Blog: ideation` thread stays reusable for jotting further ideas.
 
 ## Extending the suite
 
@@ -147,18 +196,19 @@ Recipe for adding a new prompt to the state machine (for example, a
 
 1. Pick a state transition. Decide which existing label(s) gate the prompt
    and which labels the prompt itself adds/removes. Gate on **both** menu
-   contexts: `"published" in Item.Labels` for the beads-list row menu, and
-   `Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "blog,published")`
+   contexts: `"blog:published" in Item.Labels` for the beads-list row menu, and
+   `Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "blog,blog:published")`
    for the conversation-level prompts menu.
 2. Add the prompt YAML under `config/prompts/builtin/blog/`, reusing shared
-   fragments (`locate-post-file`, `audience-and-tone`, `blog-config-fragment`,
-   `attach-file-to-bead`) wherever the same logic applies. Match the sibling
-   YAML shape: `menus: beadsIssues, prompts`, `parameters: [IssueID, Folder]`,
+   fragments (`load-post-from-bead`, `update-post-in-bead`,
+   `audience-and-style`, `blog-config-fragment`, `read-or-ask-persist`)
+   wherever the same logic applies. Match the sibling YAML shape:
+   `menus: beadsIssues, prompts`, `parameters: [IssueID]`,
    `target.reuse.{issue,coalesce}: true`, `preferredModels: [modelTag: Coding]`.
    Resolve the target bead at the top of the body
    (`{{ $target := "" }}{{ if .Session.BeadsIssue }}…{{ else if .Args.IssueID }}…{{ end }}`),
    emit the `beads-issues/shared/target-bead-header-strict` preamble, and pass
-   `$target` to `locate-post-file` via `(dict "Target" $target)`.
+   `$target` to `load-post-from-bead` via `(dict "Target" $target)`.
 3. Add the bucket entry to `internal/prompts/prompts_test.go` -- almost
    certainly `perBeadWithCoalesce` (only `ideation` is `workspaceTitle`).
 4. Add a `TestBlog<Name>PromptFragmentHallmarks` smoke test in

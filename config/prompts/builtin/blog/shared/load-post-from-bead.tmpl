@@ -1,0 +1,45 @@
+{{- /*
+  blog/load-post-from-bead — Step-1 boilerplate for blog prompts that operate
+  on the post whose content lives in a bead. The blog suite stores the post
+  BODY in the bead's description and the post TITLE in the bead's title; there
+  is no post file on disk during the drafting phase. This fragment loads both
+  into shell variables and writes the body to a temp file so downstream steps
+  can `cat`/`grep` it.
+
+  Callers resolve the target bead themselves (`.Session.BeadsIssue` when the
+  conversation is linked to a blog bead, else `.Args.IssueID` when launched
+  from the beads list) and pass it via a `dict`:
+
+      Target: the resolved bead ID. Required.
+
+  After this fragment runs, downstream steps can rely on:
+      $post_title  — the bead title (the blog post title)
+      $post_file   — path to a temp file holding the bead description (the
+                     current post body, verbatim)
+
+  Usage:
+
+      {{ template "blog/shared/load-post-from-bead" (dict "Target" $target) }}
+*/ -}}
+{{- $id := .Target -}}
+Load the post from the bead. The blog post body lives in the bead's
+**description** and the post title in the bead's **title** — there is no draft
+file on disk. Pull both, and write the body to a temp file so later steps can
+read it:
+
+```bash
+bd show {{ $id }} --json > /tmp/bead-{{ $id }}.json
+post_title=$(jq -r '.[0].title // ""' /tmp/bead-{{ $id }}.json)
+post_file=$(mktemp "/tmp/blog-{{ $id }}-XXXXXX.md")
+jq -r '.[0].description // ""' /tmp/bead-{{ $id }}.json > "$post_file"
+if [[ ! -s "$post_file" ]]; then
+  echo "ERROR: bead {{ $id }} has an empty description — no blog post body to work on." >&2
+  echo "Seed it with the ideation prompt (or add content) before running this stage." >&2
+  exit 1
+fi
+echo "post_title=$post_title"
+echo "post_file=$post_file"
+```
+
+Downstream steps in the caller can then read `"$post_file"` to load the current
+post body and use `$post_title` for the title.

@@ -6,15 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The bead whose published blog post should get a LinkedIn snippet
-  - name: Folder
-    type: text
-    default: blog/posts
-    required: false
-    description: Folder where blog post files live (repo-relative)
 description: 'Blog - draft a LinkedIn social snippet (hook + canonical URL + 3-5 hashtags) for a published blog post. Downstream artefact only; the bead is not modified.'
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "published" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "blog,published")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "blog:published" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "blog,blog:published")))'
 target:
   reuse:
     issue: true
@@ -43,30 +38,20 @@ prompt: |
   modified (no label changes, no `bd close`, no edits to the post file, no
   git operations).
 
-  ## Step 1 -- Locate the (now published) post file
+  ## Step 1 -- Load the (now published) post from the bead
 
-  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+  {{ template "blog/shared/load-post-from-bead" (dict "Target" $target) }}
 
-  After the fragment resolves `$post_abs`, the current basename SHOULD start
-  with a `YYYY-MM-DD-` date prefix (i.e. the post was already published via
-  the `Blog: publish` prompt). If it does not, print a warning and continue
-  -- the bead already carries the `published` label which is authoritative
-  for this prompt's gate:
+  The post title is `$post_title` and the post body is `$post_file`. The bead
+  carries the `blog:published` label (authoritative for this prompt's gate), so
+  the post has already been shipped by the `Blog: publish` prompt.
 
-  ```bash
-  base=$(basename "$post_abs")
-  if [[ ! "$base" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}- ]]; then
-    echo "WARNING: $post_abs is not named YYYY-MM-DD-<slug>.md; expected a published post." >&2
-    echo "Continuing anyway because the bead is labelled 'published'." >&2
-  fi
-  ```
-
-  ## Step 2 -- Load audience and tone
+  ## Step 2 -- Load audience and style
 
   Bring the drafting voice into context so the LinkedIn snippet matches the
-  blog's own audience and tone:
+  blog's own audience and style:
 
-  {{ template "blog/shared/audience-and-tone" . }}
+  {{ template "blog/shared/audience-and-style" . }}
 
   ## Step 3 -- Load optional LinkedIn template
 
@@ -77,25 +62,24 @@ prompt: |
        (dict "Name"        "linkedin-template"
              "DefaultText" "No linkedin-template.md file configured - use this default layout for the LinkedIn snippet:\n1. HOOK (1-2 sentences): a punchy opener that names the concrete problem or insight. Avoid generic \"Excited to share...\" openings.\n2. BODY (2-4 short paragraphs, one-sentence-per-line preferred): the core takeaway, one concrete example, and why the reader should care. Keep total length under 1300 characters (LinkedIn free-tier \"see more\" fold).\n3. CANONICAL URL: the full URL to the published post.\n4. HASHTAGS: 3-5 relevant tags, mixed reach (one broad like #Engineering, two narrow domain-specific)." ) }}
 
-  ## Step 4 -- Extract canonical URL and title from the post
+  ## Step 4 -- Determine canonical URL and title
 
-  Read the leading YAML frontmatter block of `$post_abs` and extract the
-  `title:` value plus (if present) a `canonical_url:` or `permalink:` value:
+  The title is already loaded as `$post_title` (from the bead). Find the
+  canonical URL: the `Blog: publish` prompt records a publish comment with a
+  `**URL:**` line, so scan the bead's comments for it first:
 
   ```bash
-  awk 'BEGIN{fm=0} /^---$/{fm++; if(fm==2){exit} next} fm==1{print}' "$post_abs" > /tmp/blog-fm.yaml
-  post_title=$(awk -F': *' '/^title:/{sub(/^title: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
-  post_url=$(awk -F': *' '/^canonical_url:/{sub(/^canonical_url: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
-  if [[ -z "$post_url" ]]; then
-    post_url=$(awk -F': *' '/^permalink:/{sub(/^permalink: *"?/,""); sub(/"? *$/,""); print; exit}' /tmp/blog-fm.yaml)
-  fi
+  post_url=$(bd show {{ $target }} --json \
+    | jq -r '.[0].comments[]?.text // empty' \
+    | grep -m1 -oE 'https?://[^ )]+' || true)
   echo "Post title: $post_title"
-  echo "Post URL:   ${post_url:-<none in frontmatter>}"
+  echo "Post URL:   ${post_url:-<none found in publish comments>}"
   ```
 
   If `$post_url` is empty, ask the author for the canonical URL via
-  `mitto_ui_form_mitto` (single field labelled `Canonical URL`, pre-filled
-  with `https://`). Print back the confirmed values before proceeding:
+  `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` (single field labelled
+  `Canonical URL`, pre-filled with `https://`). Print back the confirmed values
+  before proceeding:
 
   ```
   Confirmed title: <post_title>
@@ -157,4 +141,4 @@ prompt: |
   ```
 
   No trailing action items. This prompt does NOT call `bd update`, does NOT
-  call `bd close`, does NOT modify `$post_abs`, and does NOT touch git.
+  call `bd close`, does NOT modify the bead, and does NOT touch git.

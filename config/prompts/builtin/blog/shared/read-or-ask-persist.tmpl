@@ -1,0 +1,74 @@
+{{- /*
+  blog/read-or-ask-persist — the blog suite's "read instruction file → fall
+  back to asking the user → offer to persist the answer" pattern for a
+  project-local instruction file under `.mitto/blog/<Name>.md`.
+
+  Unlike blog-config-fragment (read-only, silent default on miss), this
+  fragment is for instruction files that have NO sensible built-in default
+  because they are inherently project-specific — most importantly
+  `publish.md` (target repo/CMS, path convention, front-matter, deploy
+  command). When the file is missing the agent must ASK the user, follow the
+  answer for the current run, and then OFFER to save it so future runs are
+  automated.
+
+  Behaviour:
+    - File present → embed its content verbatim (authoritative for this run).
+    - File absent  → emit runtime instructions to ask the user (via the
+      caller-supplied UI form fields), follow their answer this run, then
+      offer via `mitto_ui_options` to persist the answer to
+      `.mitto/blog/<Name>.md` (creating `.mitto/blog/` if needed).
+
+  Callers pass named fields via a `dict`:
+
+      Name:      short filename stem (no extension), e.g. "publish". Required.
+      SessionID: the session id for UI tool calls ({{ .Session.ID }}). Required.
+      Purpose:   short phrase describing what the instructions cover, spliced
+                 into the heading and the ask prompt, e.g.
+                 "how and where to publish this blog post". Required.
+      AskFields: Markdown describing the `mitto_ui_form` fields to collect
+                 when the file is missing. Required.
+
+  Usage:
+
+      {{ template "blog/shared/read-or-ask-persist"
+           (dict "Name"      "publish"
+                 "SessionID" .Session.ID
+                 "Purpose"   "how and where to publish this blog post"
+                 "AskFields" "- `target` (textarea) — ...") }}
+*/ -}}
+{{- $name := .Name -}}
+{{- $sid := .SessionID -}}
+{{- $purpose := .Purpose -}}
+{{- $ask := .AskFields -}}
+{{- $path := printf ".mitto/blog/%s.md" $name -}}
+{{- if FileExists $path -}}
+**Blog `{{ $name }}` (embedded from `{{ $path }}`)** — this is the authoritative
+guide for {{ $purpose }}. Follow it for this run. It **overrides** anything the
+prose below suggests.
+
+<!-- BEGIN {{ $path }} -->
+{{ ReadFile $path }}
+<!-- END {{ $path }} -->
+{{- else -}}
+**No `{{ $path }}` file configured.** There are no stored instructions for
+{{ $purpose }}, so ask the author now, follow their answer for this run, and
+then offer to persist it so future runs are automated.
+
+1. **Ask.** Open `mitto_ui_form_mitto(self_id: "{{ $sid }}")` titled
+   "Blog {{ $name }} — {{ $purpose }}" with these fields:
+
+{{ $ask }}
+
+2. **Follow.** Use the returned answers to complete this run.
+
+3. **Offer to persist.** Then use
+   `mitto_ui_options_mitto(self_id: "{{ $sid }}")` to ask:
+   "Save these instructions to `{{ $path }}` so future runs are automated?"
+   with options "Yes — save it" and "No — just this once".
+
+   - On **Yes**: create `.mitto/blog/` if it does not exist and write the
+     answers to `{{ $path }}` as a clear Markdown document (one `#` section
+     per field), then confirm via `mitto_ui_notify_mitto` (success).
+   - On **No**: continue without writing the file.
+{{- end -}}
+{{- /* no trailing newline */ -}}

@@ -6,11 +6,6 @@ parameters:
     type: beadsId
     required: false
     description: The bead whose blog draft to polish
-  - name: Folder
-    type: text
-    default: blog/posts
-    required: false
-    description: Folder where blog post files live (repo-relative)
   - name: Mode
     type: text
     default: General
@@ -23,10 +18,10 @@ parameters:
       - Technical
       - Sharpen opening
       - Fluent
-description: Blog -- polish a `blog`/`draft` post file with one of six focus modes (General, Concise, Expand, Technical, Sharpen opening, Fluent); rewrites the file in place and updates labels
+description: Blog -- polish a `blog`/`blog:draft` post with one of six focus modes (General, Concise, Expand, Technical, Sharpen opening, Fluent); rewrites the post body in the bead description and updates labels
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "blog:draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,blog:draft")))'
 target:
   reuse:
     issue: true
@@ -48,16 +43,17 @@ prompt: |
       "FailStop" "then stop without changing anything."
   ) }}
 
-  This prompt takes a `blog`/`draft`-labelled bead, loads the post file it
-  points at, and rewrites it **in place** with a single focused polish pass.
+  This prompt takes a `blog`/`blog:draft`-labelled bead whose **description
+  holds the post body**, loads it, and rewrites it with a single focused polish
+  pass.
   Unlike `content-review` (diagnostic) or `fact-check` (verification), this
   prompt actually edits the draft. The kind of polish is controlled by the
   `Mode` parameter, so a caller can invoke this prompt multiple times with
   different modes and each run applies exactly one focused pass.
 
-  ## Step 1 -- Locate the post file
+  ## Step 1 -- Load the post from the bead
 
-  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+  {{ template "blog/shared/load-post-from-bead" (dict "Target" $target) }}
 
   ## Step 2 -- Load the drafting voice
 
@@ -70,7 +66,7 @@ prompt: |
              "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
 
   {{ template "blog/shared/blog-config-fragment"
-       (dict "Name"        "tone"
+       (dict "Name"        "style"
              "DefaultText" "Direct, slightly informal, opinionated where the argument warrants it. No marketing filler; no needless hedging.") }}
 
   ## Step 3 -- Acknowledge the requested mode
@@ -82,7 +78,7 @@ prompt: |
   ## Step 4 -- Read the draft
 
   ```bash
-  cat "$post_abs"
+  cat "$post_file"
   ```
 
   ## Step 5 -- Mode-specific focus
@@ -133,21 +129,30 @@ prompt: |
   correct the invocation.
   {{- end }}
 
-  ## Step 6 -- Rewrite the file in place
+  ## Step 6 -- Persist the polished post to the bead
 
-  Apply the polish pass by overwriting `$post_abs` with the polished version.
-  Do this **in place** -- no new file, no `.bak`, no scratch copy in `/tmp`.
-  The git working tree is the audit trail; leave a clean diff:
+  Apply the polish pass by rewriting the post body, then write it back into the
+  bead's description (the description IS the post — there is no file on disk):
+
+  {{ template "blog/shared/update-post-in-bead" (dict "Target" $target) }}
+
+  If the diff shown above is empty (the mode's target axis was already met),
+  that is a valid outcome -- record it in the finish comment rather than
+  inventing edits, and you may skip the `bd update` when nothing changed.
+
+  Then record a short summary of what this pass changed as a **comment** on the
+  bead (agent notes live in comments, never in the description):
 
   ```bash
-  # After writing the polished draft to $post_abs:
-  git diff --stat "$post_abs"
-  git diff "$post_abs" | head -200
-  ```
+  summary=$(mktemp)
+  cat > "$summary" <<'MITTO_SUMMARY'
+  ## Polish ({{ .Args.Mode }}) — $(date -u +%Y-%m-%dT%H:%MZ)
 
-  If the diff is empty (the mode's target axis was already met), that is a
-  valid outcome -- record it in the finish comment rather than inventing
-  edits.
+  <one-paragraph summary of what changed on this pass, or "no changes needed">
+  MITTO_SUMMARY
+  bd comment {{ $target }} --file "$summary"
+  rm -f "$summary"
+  ```
 
   ## Step 7 -- Update labels
 
@@ -156,18 +161,18 @@ prompt: |
   - **Confident finish** -- the target axis is genuinely met and no other
     issues surfaced during the pass:
     ```bash
-    bd update {{ $target }} --remove-label needs-polish
-    # Auto-graduate to ready when no other needs-* labels remain:
-    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' 2>/dev/null | grep -c '^needs-' || true)
+    bd update {{ $target }} --remove-label blog:needs-polish
+    # Auto-graduate to blog:ready when no other blog:needs-* labels remain:
+    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' 2>/dev/null | grep -c '^blog:needs-' || true)
     if [ "$remaining" = "0" ]; then
-      bd update {{ $target }} --add-label ready
+      bd update {{ $target }} --add-label blog:ready
     fi
     ```
   - **Unfinished** -- more work of this kind (or a different mode) is
     needed:
     ```bash
-    bd update {{ $target }} --add-label needs-polish
-    bd update {{ $target }} --remove-label ready
+    bd update {{ $target }} --add-label blog:needs-polish
+    bd update {{ $target }} --remove-label blog:ready
     ```
     Comment on the bead explaining what remains and, if useful, which
     `Mode` a follow-up run should use.

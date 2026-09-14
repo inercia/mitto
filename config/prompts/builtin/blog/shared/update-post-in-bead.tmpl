@@ -1,0 +1,36 @@
+{{- /*
+  blog/update-post-in-bead — write a revised post body back into the bead's
+  description. The blog suite treats the bead description as the single source
+  of truth for the current post body, so any prompt that rewrites the post
+  (e.g. polish) persists the new body here via `bd update --body-file`.
+
+  Assumes the caller already ran blog/shared/load-post-from-bead, so
+  `$post_file` holds the PREVIOUS body (used to produce a diff for the audit
+  trail).
+
+  Callers pass named fields via a `dict`:
+
+      Target: the bead ID whose description to overwrite. Required.
+
+  Usage:
+
+      {{ template "blog/shared/update-post-in-bead" (dict "Target" $target) }}
+*/ -}}
+{{- $id := .Target -}}
+Persist the revised post body back into the bead's description. Write the new
+body to a temp file, show a diff against the previous body for the audit trail,
+then overwrite the description with `bd update --body-file` (do NOT paste large
+bodies inline — shell quoting on multi-line Markdown is fragile):
+
+```bash
+new_file=$(mktemp "/tmp/blog-{{ $id }}-new-XXXXXX.md")
+cat > "$new_file" <<'MITTO_POST'
+<the full revised post body>
+MITTO_POST
+# Audit trail: the description IS the post, so diff old vs new here (there is
+# no git working tree for the body during the drafting phase).
+diff -u "$post_file" "$new_file" || true
+bd update {{ $id }} --body-file "$new_file"
+rm -f "$new_file"
+echo "updated description of {{ $id }}"
+```

@@ -6,15 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The bead whose blog draft to review
-  - name: Folder
-    type: text
-    default: blog/posts
-    required: false
-    description: Folder where blog post files live (repo-relative)
-description: Blog — adversarial content review of a `blog`/`draft` post; flags weak claims, structural issues, and voice drift, and marks the bead for downstream review passes when problems are found
+description: Blog — adversarial content review of a `blog`/`blog:draft` post; flags weak claims, structural issues, and voice drift, and marks the bead for downstream review passes when problems are found
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "blog:draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,blog:draft")))'
 target:
   reuse:
     issue: true
@@ -36,18 +31,18 @@ prompt: |
       "FailStop" "then stop without changing anything."
   ) }}
 
-  This prompt takes a `blog`/`draft`-labelled bead, loads the post file it
-  points at, and reviews the draft **adversarially**: as a skeptical peer
-  reader who challenges weak claims, missing context, structural issues, and
-  drifts from the blog's voice/audience. It does **not** rewrite the post —
-  it produces a findings comment on the bead and adjusts labels so the
-  downstream specialised prompts (fact-check, polish) pick it up.
+  This prompt takes a `blog`/`blog:draft`-labelled bead whose **description
+  holds the post body**, loads it, and reviews the draft **adversarially**: as a
+  skeptical peer reader who challenges weak claims, missing context, structural
+  issues, and drifts from the blog's voice/audience. It does **not** rewrite
+  the post — it produces a findings comment on the bead and adjusts labels so
+  the downstream specialised prompts (fact-check, polish) pick it up.
 
-  ## Step 1 — Locate the post file
+  ## Step 1 — Load the post from the bead
 
-  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+  {{ template "blog/shared/load-post-from-bead" (dict "Target" $target) }}
 
-  ## Step 2 — Load the drafting voice
+  ## Step 2 — Load the drafting voice and review criteria
 
   Bring the standard drafting voice into the working context so the review
   measures the draft against the same yardstick the ideation prompt used:
@@ -56,10 +51,17 @@ prompt: |
        (dict "Name"        "audience"
              "DefaultText" "Expert practitioners: engineers, technical leads, and hands-on architects. Assume familiarity with the domain; do not hand-hold on basics.") }}
 
+  Bring any project-specific review criteria into context if the workspace has
+  configured them (nothing renders when the file is absent):
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "review"
+             "DefaultText" "") }}
+
   ## Step 3 — Read the draft
 
   ```bash
-  cat "$post_abs"
+  cat "$post_file"
   ```
 
   ## Step 4 — Adversarial review
@@ -75,7 +77,7 @@ prompt: |
     posts, RFCs, code) but do not link to it — flag for `add-references`.
   - **Structural issues.** Buried lede, missing TL;DR, out-of-order sections,
     imbalance (one section carries the whole argument, others are stubs).
-  - **Voice drift.** Passages that break with the audience/tone loaded in
+  - **Voice drift.** Passages that break with the audience/style loaded in
     Step 2 — marketing filler, hand-holding on basics, needless qualifiers,
     or shifts to a different register mid-post.
   - **Weak or clichéd openings/endings.** Introductions that don't earn the
@@ -124,14 +126,14 @@ prompt: |
     # Route to specialised passes. Include needs-polish when structural / voice
     # issues appeared; include needs-fact-check when claim / reference issues
     # appeared. Add whichever apply — you may add both.
-    bd update {{ $target }} --add-label needs-polish        # if structural / voice / other
-    bd update {{ $target }} --add-label needs-fact-check    # if claims / missing references
-    bd update {{ $target }} --remove-label ready
+    bd update {{ $target }} --add-label blog:needs-polish        # if structural / voice / other
+    bd update {{ $target }} --add-label blog:needs-fact-check    # if claims / missing references
+    bd update {{ $target }} --remove-label blog:ready
     ```
   - **Clean pass** (nothing to flag): **do not touch labels.** The specialised
     downstream prompts (fact-check, add-references) own their own
-    `needs-*`-removal logic; a clean content review is not authorised to add
-    `ready` on its own.
+    `blog:needs-*`-removal logic; a clean content review is not authorised to add
+    `blog:ready` on its own.
 
   ## Step 6 — Notify
 

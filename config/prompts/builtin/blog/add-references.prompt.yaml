@@ -6,15 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The bead whose blog draft to audit for missing references
-  - name: Folder
-    type: text
-    default: blog/posts
-    required: false
-    description: Folder where blog post files live (repo-relative)
-description: Blog — audit a `blog`/`draft` post for missing citations; classifies each as REQUIRED (direct claim) or RECOMMENDED (further reading), and flags the bead for fact-check when any REQUIRED link is absent
+description: Blog — audit a `blog`/`blog:draft` post for missing citations; classifies each as REQUIRED (direct claim) or RECOMMENDED (further reading), and flags the bead for fact-check when any REQUIRED link is absent
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "blog:draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,blog:draft")))'
 target:
   reuse:
     issue: true
@@ -36,21 +31,22 @@ prompt: |
       "FailStop" "then stop without changing anything."
   ) }}
 
-  This prompt reads a `blog`/`draft`-labelled post and audits it for **missing
-  references**. Unlike `fact-check`, this pass does **not** verify existing
-  URLs; it enumerates ideas/claims that would benefit from a citation and
-  classifies each as **REQUIRED** (an unsupported direct claim that must be
-  backed) or **RECOMMENDED** (further-reading pointers that would enrich the
-  post but are not load-bearing).
+  This prompt reads a `blog`/`blog:draft`-labelled post (whose **description
+  holds the post body**) and audits it for **missing references**. Unlike
+  `fact-check`, this pass does **not** verify existing URLs; it enumerates
+  ideas/claims that would benefit from a citation and classifies each as
+  **REQUIRED** (an unsupported direct claim that must be backed) or
+  **RECOMMENDED** (further-reading pointers that would enrich the post but are
+  not load-bearing).
 
-  ## Step 1 — Locate the post file
+  ## Step 1 — Load the post from the bead
 
-  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+  {{ template "blog/shared/load-post-from-bead" (dict "Target" $target) }}
 
   ## Step 2 — Read the draft
 
   ```bash
-  cat "$post_abs"
+  cat "$post_file"
   ```
 
   ## Step 3 — Enumerate missing references
@@ -80,7 +76,7 @@ prompt: |
     make the post more useful. Missing it is a nice-to-have.
 
   When in doubt, err on the side of **RECOMMENDED**; overshooting into
-  REQUIRED will spuriously flip the bead back into `needs-fact-check`.
+  REQUIRED will spuriously flip the bead back into `blog:needs-fact-check`.
 
   ## Step 4 — Record the audit and adjust labels
 
@@ -117,8 +113,8 @@ prompt: |
 
   - **Any REQUIRED item** → route back to fact-check:
     ```bash
-    bd update {{ $target }} --add-label needs-fact-check
-    bd update {{ $target }} --remove-label ready
+    bd update {{ $target }} --add-label blog:needs-fact-check
+    bd update {{ $target }} --remove-label blog:ready
     ```
   - **Clean pass** (no REQUIRED items) or **RECOMMENDED-only findings**:
     **do not touch labels.** RECOMMENDED items are informational; the polish

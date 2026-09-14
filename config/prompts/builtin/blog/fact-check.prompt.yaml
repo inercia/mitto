@@ -6,15 +6,10 @@ parameters:
     type: beadsId
     required: false
     description: The bead whose blog draft to fact-check
-  - name: Folder
-    type: text
-    default: blog/posts
-    required: false
-    description: Folder where blog post files live (repo-relative)
-description: Blog — verify facts, working links, versions, and dates in a `blog`/`draft` post; clears `needs-fact-check` on a clean pass and promotes to `ready` if no other `needs-*` label remains
+description: Blog — verify facts, working links, versions, and dates in a `blog`/`blog:draft` post; clears `blog:needs-fact-check` on a clean pass and promotes to `blog:ready` if no other `blog:needs-*` label remains
 backgroundColor: '#C8E6C9'
 group: Blog
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,draft")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && (("blog" in Item.Labels && "blog:draft" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "blog,blog:draft")))'
 target:
   reuse:
     issue: true
@@ -36,14 +31,14 @@ prompt: |
       "FailStop" "then stop without changing anything."
   ) }}
 
-  This prompt takes a `blog`/`draft`-labelled bead, loads the post it points
-  at, and verifies **every checkable claim** in it: quoted numbers, product
-  versions, feature availability, dates, direct-quote wording, and — crucially
-  — that every external URL resolves.
+  This prompt takes a `blog`/`blog:draft`-labelled bead whose **description
+  holds the post body**, loads it, and verifies **every checkable claim** in it:
+  quoted numbers, product versions, feature availability, dates, direct-quote
+  wording, and — crucially — that every external URL resolves.
 
-  ## Step 1 — Locate the post file
+  ## Step 1 — Load the post from the bead
 
-  {{ template "blog/shared/locate-post-file" (dict "Target" $target) }}
+  {{ template "blog/shared/load-post-from-bead" (dict "Target" $target) }}
 
   ## Step 2 — Load the audience yardstick
 
@@ -57,7 +52,7 @@ prompt: |
   ## Step 3 — Read the draft
 
   ```bash
-  cat "$post_abs"
+  cat "$post_file"
   ```
 
   ## Step 4 — Extract and verify
@@ -80,7 +75,7 @@ prompt: |
 
   ```bash
   # Extract URLs from the draft; check each with a HEAD (fall back to GET).
-  grep -oE 'https?://[^ )\]]+' "$post_abs" | sort -u > /tmp/{{ $target }}-urls.txt
+  grep -oE 'https?://[^ )\]]+' "$post_file" | sort -u > /tmp/{{ $target }}-urls.txt
   while IFS= read -r url; do
     status=$(curl -sI -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null \
              || curl -s -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null \
@@ -132,18 +127,18 @@ prompt: |
 
   - **Clean pass** — no corrections needed, no broken URLs, nothing unverified:
     ```bash
-    bd update {{ $target }} --remove-label needs-fact-check
-    # Promote to ready ONLY if no other needs-* label remains.
-    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' | grep -c '^needs-' || true)
+    bd update {{ $target }} --remove-label blog:needs-fact-check
+    # Promote to blog:ready ONLY if no other blog:needs-* label remains.
+    remaining=$(bd show {{ $target }} --json | jq -r '.[0].labels[]' | grep -c '^blog:needs-' || true)
     if [[ "$remaining" -eq 0 ]]; then
-      bd update {{ $target }} --add-label ready
+      bd update {{ $target }} --add-label blog:ready
     fi
     ```
   - **Findings present**:
     ```bash
-    # Keep needs-fact-check; ensure ready is off so the post isn't picked
-    # up as publishable.
-    bd update {{ $target }} --remove-label ready
+    # Keep blog:needs-fact-check; ensure blog:ready is off so the post isn't
+    # picked up as publishable.
+    bd update {{ $target }} --remove-label blog:ready
     ```
 
   ## Step 6 — Notify

@@ -152,6 +152,32 @@ task_label_colors:
     color: "#ef4444"
   - label: blocked
     color: "#f59e0b"
+  # Blog lifecycle (built-in "Blog:" prompts). State labels are namespaced with
+  # a "blog:" prefix so they never collide with generic project labels. A smooth
+  # pastel gradient that lets blog beads be scanned at a glance in the Tasks
+  # list: the review band (blog:needs-*) is warm rose->orange->yellow, the "done"
+  # band (blog:ready/blog:published) is cool teal->green, and blog:idea/blog are
+  # soft violets. Ordered so the current actionable state wins first-match:
+  # blog:published > blog:ready > any blog:needs-* review state > blog:draft >
+  # blog:idea > the "blog" catch-all (any blog bead not matched above). These are
+  # lighter (300-level) than the saturated cross-cutting states above, so urgent
+  # labels still stand out over blog lifecycle tints.
+  - label: blog:published
+    color: "#86efac"
+  - label: blog:ready
+    color: "#5eead4"
+  - label: blog:needs-fact-check
+    color: "#fda4af"
+  - label: blog:needs-references
+    color: "#fdba74"
+  - label: blog:needs-polish
+    color: "#fde047"
+  - label: blog:draft
+    color: "#93c5fd"
+  - label: blog:idea
+    color: "#c4b5fd"
+  - label: blog
+    color: "#ddd6fe"
 
 # Web server configuration
 web:

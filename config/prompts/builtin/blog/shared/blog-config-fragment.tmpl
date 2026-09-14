@@ -2,9 +2,8 @@
   blog/blog-config-fragment — inline ONE user-config fragment of the blog
   suite AT RENDER TIME.
 
-  Config files live under `{{ Arg "Folder" "blog/posts" }}/.mitto/<Name>.md`,
-  one topic per file. Standard fragments: audience, tone, topics, frontmatter,
-  publish-checklist, linkedin-template.
+  Config files live under `.mitto/blog/<Name>.md`, one topic per file.
+  Standard fragments: audience, style, topics, review, linkedin-template.
 
   Architectural intent (mitto-98l.1): the fragment CONTENT is embedded verbatim
   into the rendered prompt via Go text/template — the agent never reads the
@@ -20,8 +19,8 @@
   Callers pass named fields via a `dict`:
 
       Name:        short filename stem (no extension). One of:
-                   "audience" | "tone" | "topics" | "frontmatter"
-                   | "publish-checklist" | "linkedin-template".
+                   "audience" | "style" | "topics" | "review"
+                   | "linkedin-template".
                    Required.
       DefaultText: fallback body to emit verbatim when the file is missing.
                    May be empty (the fragment then emits nothing on miss).
@@ -35,8 +34,7 @@
 */ -}}
 {{- $name := .Name -}}
 {{- $default := .DefaultText -}}
-{{- $folder := Arg "Folder" "blog/posts" -}}
-{{- $path := printf "%s/.mitto/%s.md" $folder $name -}}
+{{- $path := printf ".mitto/blog/%s.md" $name -}}
 {{- if FileExists $path -}}
 **Blog `{{ $name }}` (embedded from `{{ $path }}`)** — this is the authoritative
 `{{ $name }}` guide for this blog. It **overrides** the generic default below.

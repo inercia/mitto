@@ -1,15 +1,15 @@
 icon: plus
 name: 'Blog: ideation'
-menus: prompts, !promptsLoop
+menus: prompts, beadsIssues, !promptsLoop
 parameters:
-  - name: Folder
-    type: text
-    default: blog/posts
+  - name: IssueID
+    type: beadsId
     required: false
-    description: Folder where blog post drafts live (repo-relative)
-description: Blog — brainstorm and flesh out a new post idea, then create a blog/draft-labelled bead pointing at the seeded draft file
+    description: A blog/blog:idea-labelled bead to promote into a full draft (auto-filled from the beads list)
+description: Blog — capture a quick post idea, draft a full post from scratch, or promote a blog/blog:idea bead into a blog/blog:draft post
 backgroundColor: '#C8E6C9'
 group: Blog
+enabledWhen: 'Item.Id == "" || ("blog" in Item.Labels && "blog:idea" in Item.Labels)'
 target:
   title: 'Blog: ideation'
   reuse:
@@ -18,26 +18,70 @@ target:
 preferredModels:
   - modelTag: Coding
 prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "_shared/session-context" . }}
 
-  # Blog: Ideation — seed a new post
+  # Blog: Ideation — capture an idea, draft a post, or promote an idea
 
-  This is the entry point to the blog prompt suite. It takes a rough idea from
-  the author, refines it into an outline, seeds a draft markdown file under
-  `{{ Arg "Folder" "blog/posts" }}/`, and creates a `blog`/`draft`-labelled
-  bead pointing at the file so downstream prompts (content-review, fact-check,
-  add-references, polish, publish, linkedin-post) can pick it up.
+  This is the entry point to the blog prompt suite. Each blog post is a single
+  bead: the **title** is the post title, the **description** is the current post
+  body, and agent notes go into **comments**. There is no draft file on disk.
 
-  ## Step 0 — Bootstrap beads if needed
+  This prompt has two modes, selected automatically by how it was launched:
 
-  {{ template "beads-issues/shared/bootstrap" . }}
+  - **Promotion mode** — launched on an existing `blog`/`blog:idea` bead (from
+    the beads list, or in a conversation linked to one). It reads the captured
+    idea from the bead's first comment and develops it into a full draft, moving
+    the bead from `blog:idea` to `blog:draft`.
+  - **Entry-point mode** — launched from the workspace prompt menu with no bead
+    context. It lets you either **capture a quick idea** for later (a
+    `blog`/`blog:idea` bead with an empty body and the idea in the first comment)
+    or **draft a full post now** (a `blog`/`blog:draft` bead seeded with a real
+    body).
 
-  ## Step 1 — Load blog voice and topics
+  {{ if $target -}}
+  ## Promotion mode — develop an idea bead into a full draft
+
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"   $target
+      "Noun"     "target idea bead"
+      "Scope"    "to promote"
+      "FromLink" (ne .Session.BeadsIssue "")
+      "FailStop" "then stop without changing anything."
+  ) }}
+
+  ### Step P1 — Load the idea and confirm it is promotable
+
+  Read the bead's title, description, labels, and comments (the idea seed lives
+  in the **first comment**; an idea bead has an empty description):
+
+  ```bash
+  bd show {{ $target }} --json --include-comments > "/tmp/idea-{{ $target }}.json"
+  labels=$(jq -r '(.[0].labels // []) | join(",")' "/tmp/idea-{{ $target }}.json")
+  post_title=$(jq -r '.[0].title // ""' "/tmp/idea-{{ $target }}.json")
+  idea_seed=$(jq -r '.[0].comments[0].text // ""' "/tmp/idea-{{ $target }}.json")
+  echo "labels=$labels"
+  echo "post_title=$post_title"
+  echo "idea_seed=$idea_seed"
+  ```
+
+  Guard before changing anything:
+
+  - If `labels` does **not** contain both `blog` and `blog:idea`, this is not a
+    blog idea bead — do **not** modify it. Report via `mitto_ui_notify_mitto`
+    (warning) that `{{ $target }}` is not a `blog`/`blog:idea` bead and stop.
+  - If `labels` already contains `blog:draft`, the bead is already a draft.
+    Report via `mitto_ui_notify_mitto` that it is already drafted (suggest
+    running `Blog: content-review` on it) and stop.
+  - If `idea_seed` is empty, fall back to the bead **title** as the seed.
+
+  ### Step P2 — Load blog voice and topics
 
   Bring the standard drafting voice into the working context so the outline
-  matches this blog's audience and tone:
+  matches this blog's audience and style:
 
-  {{ template "blog/shared/audience-and-tone" . }}
+  {{ template "blog/shared/audience-and-style" . }}
 
   Load the in-scope themes for this blog:
 
@@ -45,7 +89,158 @@ prompt: |
        (dict "Name"        "topics"
              "DefaultText" "No topics.md file configured; ask the user what themes are in-scope for this blog.") }}
 
-  ## Step 2 — Collect the rough idea
+  ### Step P3 — Develop the idea into an outline
+
+  Treat `$idea_seed` (and the bead title) as the rough seed. Expand it into an
+  outline — headings plus 2–3 bullets under each — respecting the audience,
+  style, and topics above. Then use
+  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask:
+
+  > "Ready to create the draft, or refine the outline more?"
+
+  Options:
+
+  - `"Create draft now"` — proceed to Step P4.
+  - `"Refine outline further"` — expand or tighten the outline, then loop back
+    to this same question.
+  - `"Change angle"` — re-develop the outline from a different take on the same
+    idea, then loop back.
+
+  Cap this refinement loop at **5 rounds**; on the 5th round proceed to Step P4
+  regardless of the author's choice.
+
+  ### Step P4 — Compose the post body and persist it to the bead
+
+  Turn the outline from Step P3 into the **initial post body** — the headings
+  plus their bullets as a real Markdown starting point, not an empty file. Do
+  **not** add YAML frontmatter, a slug, a date, or tags here — those are
+  publishing concerns handled by the `Blog: publish` prompt.
+
+  Write the composed body into the bead's description (the description IS the
+  post body). The description is currently empty (an idea bead has no body yet),
+  so just set it — no diff needed:
+
+  ```bash
+  body=$(mktemp)
+  cat > "$body" <<'MITTO_POST'
+  <initial post body from this step — headings + bullets>
+  MITTO_POST
+  bd update {{ $target }} --body-file "$body"
+  rm -f "$body"
+  echo "seeded description of {{ $target }}"
+  ```
+
+  ### Step P5 — Advance labels and record a promotion note
+
+  Move the bead from `blog:idea` to `blog:draft` and seed the downstream review
+  gates so the specialised prompts (content-review, fact-check, add-references,
+  polish, publish) pick it up:
+
+  ```bash
+  bd update {{ $target }} --remove-label blog:idea \
+    --add-label blog:draft --add-label blog:needs-fact-check --add-label blog:needs-polish
+  ```
+
+  Then record a promotion note as a **comment** on the bead (agent notes never
+  go in the description — the description is only ever the post body):
+
+  ```bash
+  note=$(mktemp)
+  cat > "$note" <<'MITTO_NOTE'
+  ## Promoted to draft — $(date -u +%Y-%m-%dT%H:%MZ)
+
+  **Seed:** <the idea seed this draft was developed from>
+
+  **Angle:** <the angle / intended argument>
+  MITTO_NOTE
+  bd comment {{ $target }} --file "$note"
+  rm -f "$note"
+  ```
+
+  ### Step P6 — Link this conversation to the draft bead
+
+  Bind this conversation to the promoted draft so the specialised per-bead
+  prompts (content-review, fact-check, add-references, polish, publish,
+  linkedin-post) funnel back into it — they route by beads issue
+  (`reuse.issue`), so they can only find this conversation if it is linked to
+  the bead. Also rename the conversation to the post title so it reads clearly
+  in the sidebar:
+
+      mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "{{ $target }}", name: "<post_title from Step P1>")
+
+  A fresh `Blog: ideation` run afterwards will start its own conversation
+  instead of reattaching here — this one now belongs to the post.
+
+  Finally, report via `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}")`
+  (informative, non-blocking) — title `"Blog idea promoted to draft"`, message
+  `"{{ $target }} · <post_title>"`.
+  {{- else -}}
+  ## Entry-point mode — capture an idea or draft a full post
+
+  ### Step 0 — Bootstrap beads if needed
+
+  {{ template "beads-issues/shared/bootstrap" . }}
+
+  ### Step 1 — Choose: capture a quick idea, or draft now
+
+  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask:
+
+  > "Capture a quick idea for later, or draft a full post now?"
+
+  Options:
+
+  - `"Capture a quick idea"` — jot a one-liner for the future; creates a
+    `blog`/`blog:idea` bead with an empty body and the idea in the first comment.
+    Follow **Step 2A**, then stop.
+  - `"Draft a full post now"` — brainstorm and seed a full `blog`/`blog:draft`
+    post. Follow **Step 2B** onward.
+
+  ### Step 2A — Capture a quick idea
+
+  Use `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` to collect the idea:
+
+  ```html
+  <label>Idea (one or two sentences)</label>
+  <textarea name="idea" rows="4" placeholder="e.g. We could talk about the security of current VM technologies for containing agents"></textarea>
+
+  <label>Short title (optional)</label>
+  <input type="text" name="title" placeholder="Leave blank to derive one from the idea" />
+  ```
+
+  Derive a short title from `title` (or, when blank, condense the `idea` into a
+  concise post-title-style phrase). Create the idea bead with an **empty body**
+  — the idea itself goes into the first comment, not the description:
+
+  ```bash
+  new_id=$(bd create -l blog,blog:idea -t task -p 3 --title "<short title>" --json | jq -r '.id')
+  echo "created $new_id"
+  note=$(mktemp)
+  cat > "$note" <<'MITTO_NOTE'
+  ## Idea — $(date -u +%Y-%m-%dT%H:%MZ)
+
+  <the idea text from the form>
+  MITTO_NOTE
+  bd comment "$new_id" --file "$note"
+  rm -f "$note"
+  ```
+
+  Report via `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}")` — title
+  `"Blog idea captured"`, message `"$new_id · <short title>"`. Then **stop** —
+  do not draft further. The idea can be developed later by running this prompt
+  again on the bead (promotion mode).
+
+  ### Step 2B — Load blog voice, topics, and collect the rough idea
+
+  Bring the standard drafting voice into the working context so the outline
+  matches this blog's audience and style:
+
+  {{ template "blog/shared/audience-and-style" . }}
+
+  Load the in-scope themes for this blog:
+
+  {{ template "blog/shared/blog-config-fragment"
+       (dict "Name"        "topics"
+             "DefaultText" "No topics.md file configured; ask the user what themes are in-scope for this blog.") }}
 
   Use `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` to collect the seed
   fields in a single form call:
@@ -63,103 +258,89 @@ prompt: |
 
   Read `topic`, `angle`, and `notes` from the returned form payload.
 
-  ## Step 3 — Iterative refinement rounds
+  ### Step 3B — Iterative refinement rounds
 
   Expand the seed into a rough outline — headings plus 2–3 bullets under each —
-  respecting the audience, tone, and topics loaded in Step 1. Then use
+  respecting the audience, style, and topics loaded in Step 2B. Then use
   `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask:
 
-  > "Ready to seed the draft file, or refine more?"
+  > "Ready to create the post, or refine more?"
 
   Options:
 
-  - `"Seed draft now"` — proceed to Step 4.
+  - `"Create post now"` — proceed to Step 4B.
   - `"Refine outline further"` — expand or tighten the outline, then loop back
     to this same question.
-  - `"Change angle"` — return to Step 2 to collect a new angle/topic, then
+  - `"Change angle"` — return to Step 2B to collect a new angle/topic, then
     redo the outline.
 
   Cap this refinement loop at **5 rounds** to avoid runaway; on the 5th round
-  proceed to Step 4 regardless of the author's choice.
+  proceed to Step 4B regardless of the author's choice.
 
-  ## Step 4 — Seed the draft file
+  ### Step 4B — Compose the initial post body
 
-  Derive a `<slug>` from the topic: kebab-case, ASCII-only, `≤ 60 chars` (drop
-  punctuation, replace spaces with `-`, collapse consecutive dashes). Confirm
-  the slug with the author via
-  `mitto_ui_textbox_mitto(self_id: "{{ .Session.ID }}")` before writing:
+  Turn the outline from Step 3B into the **initial post body** — the headings
+  plus their bullets as a real Markdown starting point, not an empty file. This
+  body becomes the bead's description in Step 5B; it is the live post content
+  that downstream prompts will read and rewrite.
 
-  - `title`: `"Draft slug — review & edit"`
-  - `text`: the generated slug
-  - `result`: `"full"`
+  Do **not** add YAML frontmatter, a slug, a date, or tags here — those are
+  publishing concerns handled by the `Blog: publish` prompt (driven by
+  `.mitto/blog/publish.md`). Keep the body as plain Markdown prose/outline.
 
-  The full draft path is `{{ Arg "Folder" "blog/posts" }}/draft-<slug>.md`.
+  ### Step 5B — Create the draft bead
 
-  Load any project-specific frontmatter conventions so the seeded file matches
-  the local house style when present, or fall through to the standard
-  frontmatter set otherwise:
-
-  {{ template "blog/shared/blog-config-fragment"
-       (dict "Name"        "frontmatter"
-             "DefaultText" "") }}
-
-  Write the draft file — YAML frontmatter header followed by the outline from
-  Step 3 as the body (headings + bullets, a real starting point, not an empty
-  file). When the frontmatter fragment above rendered project-specific
-  conventions, merge those fields into the YAML block below (overriding the
-  standard defaults) before writing.
+  Create a `blog`/`blog:draft`-labelled bead whose **title** is the post title
+  (from the `topic`) and whose **description** is the post body composed in
+  Step 4B. Write the body to a temp file and create the bead, capturing the new
+  ID into `$new_id` (do NOT paste the body inline — shell quoting on multi-line
+  Markdown is fragile):
 
   ```bash
-  folder="{{ Arg "Folder" "blog/posts" }}"
-  slug="<confirmed-slug>"
-  post_path="$folder/draft-$slug.md"
-  mkdir -p "$folder"
-  cat > "$post_path" <<'MITTO_DRAFT'
-  ---
-  title: "<topic>"
-  description: "<one-line description derived from angle>"
-  date: 0000-00-00
-  tags: []
-  publish: false
-  ---
-
-  <outline body from Step 3 — headings + bullets>
-  MITTO_DRAFT
-  echo "seeded $post_path"
-  ```
-
-  ## Step 5 — Create the bead and attach the file
-
-  Compose the bead description in Markdown. It **must** include, on its own
-  line, the marker the downstream `blog/shared/locate-post-file` fragment
-  greps for:
-
-      File: [<Folder>/draft-<slug>.md](<Folder>/draft-<slug>.md)
-
-  Also include: the angle, a short summary derived from the Step-3 outline,
-  and any related-bead links the author mentioned during Steps 2–3.
-
-  Write the description to a temp file and create the bead, capturing the new
-  ID into `$new_id`:
-
-  ```bash
-  desc=$(mktemp)
-  cat > "$desc" <<'MITTO_DESC'
-  <composed markdown description including the File: line>
-  MITTO_DESC
-  new_id=$(bd create -l blog,draft,needs-fact-check,needs-polish -t task -p 3 \
-    --title "<topic>" --body-file "$desc" --json | jq -r '.id')
-  rm -f "$desc"
+  body=$(mktemp)
+  cat > "$body" <<'MITTO_POST'
+  <initial post body from Step 4B — headings + bullets>
+  MITTO_POST
+  new_id=$(bd create -l blog,blog:draft,blog:needs-fact-check,blog:needs-polish -t task -p 3 \
+    --title "<topic>" --body-file "$body" --json | jq -r '.id')
+  rm -f "$body"
   echo "created $new_id"
   ```
 
-  Attach the draft file to the new bead. It replicates in shared Beads database
-  mode and stays local in local-only mode (see .augment/rules/44-beads-attachments.md):
+  Then record the ideation notes as a **comment** on the new bead (agent notes
+  never go in the description — the description is only ever the post body).
+  Include: the angle, a short summary of the intended argument, and any
+  related-bead links the author mentioned during Steps 2B–3B:
 
-  {{ template "blog/shared/attach-file-to-bead"
-       (dict "IssueID" "$new_id"
-             "Path"    "$post_path") }}
+  ```bash
+  note=$(mktemp)
+  cat > "$note" <<'MITTO_NOTE'
+  ## Ideation notes — $(date -u +%Y-%m-%dT%H:%MZ)
+
+  **Angle:** <angle from Step 2B>
+
+  **Summary:** <short summary of the intended argument>
+
+  **Related:** <related-bead links, or "none">
+  MITTO_NOTE
+  bd comment "$new_id" --file "$note"
+  rm -f "$note"
+  ```
+
+  ### Step 6B — Link this conversation to the draft bead
+
+  Bind this conversation to the new draft so the specialised per-bead prompts
+  (content-review, fact-check, add-references, polish, publish, linkedin-post)
+  funnel back into it — they route by beads issue (`reuse.issue`), so they can
+  only find this conversation if it is linked to the bead. Also rename the
+  conversation to the post title so it reads clearly in the sidebar:
+
+      mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<the $new_id from Step 5B>", name: "<topic>")
+
+  A fresh `Blog: ideation` run afterwards will start its own conversation
+  instead of reattaching here — this one now belongs to the post.
 
   Finally, report the new bead via
   `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}")` (informative,
-  non-blocking) — title `"Blog draft seeded"`, message `"$new_id · $post_path"`.
+  non-blocking) — title `"Blog draft seeded"`, message `"$new_id · <topic>"`.
+  {{- end -}}

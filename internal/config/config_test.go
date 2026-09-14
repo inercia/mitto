@@ -3015,7 +3015,8 @@ func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
 // task-title colors seeded into new installs via the embedded
 // config/config.default.yaml. It guards against the shipped default drifting
 // (bad YAML, renamed label, or changed color) so first-time users always get
-// the sane "needs-human" → red and "blocked" → amber mappings, in order.
+// the sane "needs-human" → red and "blocked" → amber mappings, followed by
+// the smooth blog-lifecycle palette, in order.
 func TestParse_EmbeddedDefaultTaskLabelColors(t *testing.T) {
 	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
 	if err != nil {
@@ -3025,6 +3026,14 @@ func TestParse_EmbeddedDefaultTaskLabelColors(t *testing.T) {
 	want := []TaskLabelColor{
 		{Label: "needs-human", Color: "#ef4444"},
 		{Label: "blocked", Color: "#f59e0b"},
+		{Label: "blog:published", Color: "#86efac"},
+		{Label: "blog:ready", Color: "#5eead4"},
+		{Label: "blog:needs-fact-check", Color: "#fda4af"},
+		{Label: "blog:needs-references", Color: "#fdba74"},
+		{Label: "blog:needs-polish", Color: "#fde047"},
+		{Label: "blog:draft", Color: "#93c5fd"},
+		{Label: "blog:idea", Color: "#c4b5fd"},
+		{Label: "blog", Color: "#ddd6fe"},
 	}
 	if len(cfg.TaskLabelColors) != len(want) {
 		t.Fatalf("embedded default TaskLabelColors = %+v, want %+v", cfg.TaskLabelColors, want)
