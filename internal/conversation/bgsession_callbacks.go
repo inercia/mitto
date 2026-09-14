@@ -476,13 +476,35 @@ func (bs *BackgroundSession) beginStartupConstraintRecovery(category string, gen
 // process is recycled by GC Tier 5/6 (acp_process_gc.go): those tiers call
 // sessionClose (BackgroundSession.Close, which cancels bs.ctx) for every
 // session sharing the degraded process BEFORE stopping the process itself, so
-// this goroutine observes bs.ctx.Done() and returns before ever seeing
-// failedProcessDone fire. That GC-close case is instead handled durably at
+// this goroutine observes bs.ctx.Done() before ever seeing failedProcessDone
+// fire. For a CHILD conversation, that GC-close case is handled durably at
 // the mitto_children_tasks_wait layer (internal/mcpserver/tools_children.go,
 // classifyStoppedChild + the post-resume retry in the poll loop), which
 // re-resumes the child via the SessionManager — a fresh BackgroundSession
 // re-applies startup constraints from scratch against the replacement
 // process — rather than depending on this disposable goroutine surviving.
+//
+// Last-chance direct retry on ctx.Done() (mitto-c6j.1): a regular
+// (non-child, non-loop) session has no equivalent poller to re-resume it —
+// WS auto-resume deliberately skips GC-suspended sessions to avoid
+// suspend/resume thrash, and it is neither archived (LoopRunner
+// auto-unarchive) nor a loop, so nothing re-drives it until a human manually
+// re-focuses the conversation. Before this goroutine gives up on
+// bs.ctx.Done(), it now makes exactly one more attempt at the constraint
+// using an independent (non-bs.ctx-derived) budget, since bs.ctx is already
+// canceled and would otherwise make the attempt fail before ever reaching
+// the wire. This closes the race where the GC recycle's close beats the
+// live-retry timer above by a hair. It does NOT fully replace resuming a
+// regular session that is genuinely torn down by the time this fires — by
+// the time any goroutine observes bs.ctx.Done(), bs.Close() has already set
+// bs.closed=1 (happens-before program order: CompareAndSwap runs before
+// cancel()), so this session's OWN queue dispatch stays gated by
+// queueIsClosed() regardless of whether the last-chance RPC itself
+// succeeds. Proactively re-resuming a GC-suspended regular session with a
+// still-pending queue from an EXTERNAL trigger (mirroring the child-polling
+// fallback above) remains open follow-on scope, tracked separately so a
+// fix here does not have to also solve GC-suspend thrash avoidance for ALL
+// session kinds in one pass.
 //
 // Rebind-failure retry (mitto-qy0j, deployed-runtime recurrence 2026-08-24):
 // a single failed restartACPProcessFromGeneration attempt used to abandon
@@ -603,6 +625,35 @@ func (bs *BackgroundSession) recoverStartupConstraintAfterRestart(failedGenerati
 
 		case <-bs.ctx.Done():
 			retryTimer.Stop()
+			// mitto-c6j.1: bs.ctx can be canceled by a racing session close
+			// (e.g. a confirmed-degraded GC recycle — acp_process_gc.go's
+			// Tier 6 calls SessionManager.CloseIdleSession ->
+			// bs.Close("gc_suspended") for every session on the recycled
+			// process BEFORE the replacement process comes up) well inside
+			// this loop's own retryInterval window, so the mitto-3ml
+			// live-retry branch above never gets a chance to fire even
+			// though the saturation that originally failed set_model may
+			// have already cleared by now. Give the constraint exactly one
+			// more attempt — using an independent, non-bs.ctx-derived
+			// budget, since bs.ctx is already dead and would make any
+			// attempt fail before ever reaching the wire — before
+			// conceding, mirroring the retryTimer branch's own direct-retry
+			// logic so a session whose recovery lost this race is not left
+			// permanently worse off than one whose retryTimer happened to
+			// fire microseconds earlier.
+			lastChanceCtx, lastChanceCancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
+			err := bs.applyConfigConstraintsWithParentCtx(ConfigOptionCategoryModel, lastChanceCtx)
+			lastChanceCancel()
+			if err == nil {
+				bs.startupConstraintMu.Lock()
+				if failedGeneration == bs.startupConstraintGen {
+					bs.startupConstraintFailed.Store(false)
+				}
+				bs.startupConstraintMu.Unlock()
+				if bs.startupConfigConstraintsReady() {
+					bs.TryProcessQueuedMessage()
+				}
+			}
 			return
 		}
 	}

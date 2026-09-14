@@ -249,128 +249,39 @@ func TestLookupACPServerConstraints(t *testing.T) {
 	})
 }
 
-// TestLookupACPServerConstraints_ModelTag_HonoursProfileOrder pins down the
-// "list order = priority" contract at the ACPServerSettings.ModelTag consumer
-// site (mitto-ex7.4 §2 test 3): when an ACPServer has ModelTag set (and no
-// ModelProfile), lookupACPServerConstraints resolves the "model" Criteria via
-// cfg.ModelProfilesByTag (which wraps the shared config.ProfilesByTag core) and
-// picks matches[0]. Because ProfilesByTag walks EffectiveModelProfiles in
-// Config.Models order, reordering the two same-tag profiles flips which
-// profile's Criteria replaces the "model" entry of the returned constraints
-// map. Mirrors the sibling regressions
-// TestInitialModelPreference_HonoursProfileOrder (constraints_test.go) and
-// TestAuxiliaryModelTag_HonoursProfileOrder (acpproc_process_manager_test.go).
-//
-// This consumer runs at config time — no SessionModelState / AvailableModels
-// exist yet — so the assertion is on the returned Criteria's Pattern, not on
-// per-model resolvability (that happens later via applyConfigConstraints).
-func TestLookupACPServerConstraints_ModelTag_HonoursProfileOrder(t *testing.T) {
-	// Canonical default names so EffectiveModelProfiles shadows the
-	// same-named DefaultModelProfiles entries cleanly (user profiles first,
-	// defaults appended only when unshadowed).
-	sonnet5 := config.ModelProfile{
-		Name:     "Claude Sonnet 5",
-		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
-		Tags:     []string{"Smart", "Coding"},
-	}
-	sonnet4 := config.ModelProfile{
-		Name:     "Claude Sonnet 4",
-		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
-		Tags:     []string{"Smart", "Coding"},
-	}
-
-	newCfg := func(models []config.ModelProfile, srv config.ACPServer) *config.Config {
-		return &config.Config{
-			Models:     models,
-			ACPServers: []config.ACPServer{srv},
-		}
-	}
-
-	t.Run("Sonnet 5 first → tag Smart resolves to Sonnet 5", func(t *testing.T) {
-		cfg := newCfg(
-			[]config.ModelProfile{sonnet5, sonnet4},
-			config.ACPServer{Name: "claude-code", ModelTag: "Smart"},
-		)
-		got := lookupACPServerConstraints(cfg, "claude-code")
-		if got == nil {
-			t.Fatal("expected non-nil constraints map")
-		}
-		c, ok := got["model"]
-		if !ok || c == nil {
-			t.Fatalf("expected 'model' constraint, got keys: %v", got)
-		}
-		if c.Pattern != "Sonnet 5" {
-			t.Errorf("with [Sonnet5, Sonnet4] Models order, resolved model.Pattern = %q, want %q", c.Pattern, "Sonnet 5")
-		}
-	})
-
-	t.Run("reverse order → tag Smart flips to Sonnet 4", func(t *testing.T) {
-		cfg := newCfg(
-			[]config.ModelProfile{sonnet4, sonnet5},
-			config.ACPServer{Name: "claude-code", ModelTag: "Smart"},
-		)
-		got := lookupACPServerConstraints(cfg, "claude-code")
-		if got == nil {
-			t.Fatal("expected non-nil constraints map")
-		}
-		c, ok := got["model"]
-		if !ok || c == nil {
-			t.Fatalf("expected 'model' constraint, got keys: %v", got)
-		}
-		if c.Pattern != "Sonnet 4" {
-			t.Errorf("with [Sonnet4, Sonnet5] Models order, resolved model.Pattern = %q, want %q", c.Pattern, "Sonnet 4")
-		}
-	})
-
-	t.Run("ModelProfile takes precedence over ModelTag regardless of Models order", func(t *testing.T) {
-		// Sonnet 5 first in Models — a bare ModelTag=Smart lookup would pick Sonnet 5,
-		// but ModelProfile="Claude Sonnet 4" must win and pin Sonnet 4.
-		cfg := newCfg(
-			[]config.ModelProfile{sonnet5, sonnet4},
-			config.ACPServer{
-				Name:         "claude-code",
-				ModelProfile: "Claude Sonnet 4",
-				ModelTag:     "Smart",
+// TestLookupACPServerConstraints_ReturnsRawConstraints verifies that
+// lookupACPServerConstraints returns the named server's raw Constraints map
+// unchanged (pointer equality) and nil for an unknown server. The legacy
+// profile/tag-based "model" Criteria resolution was removed, so this helper is
+// now a plain per-server Constraints lookup feeding applyConfigConstraints.
+func TestLookupACPServerConstraints_ReturnsRawConstraints(t *testing.T) {
+	legacyModel := &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}
+	cfg := &config.Config{
+		ACPServers: []config.ACPServer{{
+			Name: "claude-code",
+			Constraints: map[string]*config.ACPServerConstraint{
+				"model": legacyModel,
 			},
-		)
+		}},
+	}
+
+	t.Run("returns raw Constraints for matching server", func(t *testing.T) {
 		got := lookupACPServerConstraints(cfg, "claude-code")
 		if got == nil {
 			t.Fatal("expected non-nil constraints map")
-		}
-		c, ok := got["model"]
-		if !ok || c == nil {
-			t.Fatalf("expected 'model' constraint, got keys: %v", got)
-		}
-		if c.Pattern != "Sonnet 4" {
-			t.Errorf("ModelProfile=Claude Sonnet 4 alongside ModelTag=Smart (Sonnet5-first Models) resolved model.Pattern = %q, want %q", c.Pattern, "Sonnet 4")
-		}
-	})
-
-	t.Run("tag no-match falls back to raw Constraints", func(t *testing.T) {
-		// No profile carries "NoSuchTag" (defaults don't either), so the lookup
-		// must fall through to srv.Constraints — pointer equality confirms the
-		// legacy constraint is passed through untouched (no merge/copy).
-		legacyModel := &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}
-		cfg := newCfg(
-			[]config.ModelProfile{sonnet5, sonnet4},
-			config.ACPServer{
-				Name:     "claude-code",
-				ModelTag: "NoSuchTag",
-				Constraints: map[string]*config.ACPServerConstraint{
-					"model": legacyModel,
-				},
-			},
-		)
-		got := lookupACPServerConstraints(cfg, "claude-code")
-		if got == nil {
-			t.Fatal("expected non-nil constraints (legacy fallback)")
 		}
 		c, ok := got["model"]
 		if !ok {
-			t.Fatalf("expected 'model' constraint in fallback map, got keys: %v", got)
+			t.Fatalf("expected 'model' constraint, got keys: %v", got)
 		}
 		if c != legacyModel {
-			t.Errorf("expected fallback 'model' to be the input legacy constraint pointer, got different pointer (%+v)", c)
+			t.Errorf("expected 'model' to be the input constraint pointer, got different pointer (%+v)", c)
+		}
+	})
+
+	t.Run("nil for unknown server", func(t *testing.T) {
+		if got := lookupACPServerConstraints(cfg, "no-such-server"); got != nil {
+			t.Errorf("expected nil for unknown server, got %v", got)
 		}
 	})
 }
@@ -1001,6 +912,117 @@ func TestStartupConstraintRecovery_StuckWhenProcessStaysAliveButSaturated(t *tes
 		"recoverStartupConstraintAfterRestart only retries after ProcessDone() fires (process replacement), " +
 		"so a herd loser whose process merely recovered from saturation (without being restarted) never gets " +
 		"its queued turn released")
+}
+
+// TestStartupConstraintRecovery_GCRecycleContextCancelStrandsQueuedPrompt is
+// the mitto-c6j.1 reproduction: recoverStartupConstraintAfterRestart's own
+// doc comment (bgsession_callbacks.go) states the GC-recycle case is "handled
+// durably at the mitto_children_tasks_wait layer" — but that layer only
+// re-resumes CHILD conversations actively being waited on by a parent. A
+// regular (non-child, non-loop) session has no such fallback.
+//
+// In production (acp_process_gc.go's confirmed-degraded Tier 6 path),
+// SessionManager.CloseIdleSession → bs.Close("gc_suspended") cancels bs.ctx
+// for every session on the recycled process BEFORE the replacement process
+// comes up — and it does this well inside the mitto-3ml live-retry window
+// (observed ~25s into a 30s window). The recovery goroutine's select
+// therefore takes the <-bs.ctx.Done() branch and returns immediately,
+// without ever attempting the direct (no-restart) retry that the mitto-3ml
+// live-retry branch exists to perform — even though that retry would now
+// succeed, since the saturation that originally failed set_model has
+// cleared.
+//
+// Because TryProcessQueuedMessage/processNextQueuedMessage hard-gate on
+// startupConfigConstraintsReady() (bgsession_queue.go), the sticky
+// startupConstraintFailed flag this leaves behind means the session's queued
+// prompt(s) remain pending forever — exactly the bug's title and Impact —
+// since nothing else ever re-drives the constraint for a plain top-level
+// session (WS auto-resume explicitly skips GC-suspended sessions to avoid
+// thrash; it is not archived so LoopRunner auto-unarchive does not apply;
+// and it is not a loop so no loop-driven resume fires either).
+func TestStartupConstraintRecovery_GCRecycleContextCancelStrandsQueuedPrompt(t *testing.T) {
+	origDelay := modelSwitchWarmRetryDelay
+	modelSwitchWarmRetryDelay = 0
+	defer func() { modelSwitchWarmRetryDelay = origDelay }()
+	origLiveRetry := startupConstraintLiveRetryInterval
+	// Large enough that the live-retry timer branch is never ready during
+	// this test's bounded window — only bs.ctx.Done() becomes ready in the
+	// recovery goroutine's select (failedProcessDone is also never closed,
+	// modeling the process staying busy right up to the GC recycle), so the
+	// goroutine deterministically takes the same branch it takes in
+	// production, regardless of exact scheduling.
+	startupConstraintLiveRetryInterval = 10 * time.Second
+	defer func() { startupConstraintLiveRetryInterval = origLiveRetry }()
+
+	shared := newFakeSharedProcess()
+	// Exhaust applyConfigConstraints' own single warm retry with two
+	// retryable failures; any SUBSEQUENT SetSessionModel call would succeed
+	// (fakeSharedProcess returns nil once setModelErr is drained) — modeling
+	// a saturation window that WOULD clear, if only something retried after
+	// the GC recycle.
+	shared.setModelErr = []error{context.DeadlineExceeded, context.DeadlineExceeded}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bs := &BackgroundSession{
+		ctx:           ctx,
+		cancel:        cancel,
+		acpID:         "acp-session-gc-recycled",
+		sharedProcess: shared,
+		workingDir:    "/tmp/test",
+		agentModels: &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}, {ModelId: "m-2", Name: "Model 2"}},
+		},
+		configOptions: []SessionConfigOption{{
+			ID: ConfigOptionCategoryModel, Category: ConfigOptionCategoryModel, CurrentValue: "m-1",
+			Options: []SessionConfigOptionValue{{Value: "m-1", Name: "Model 1"}, {Value: "m-2", Name: "Model 2"}},
+		}},
+		acpServerConstraints: map[string]*config.ACPServerConstraint{
+			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+		},
+		observers: make(map[SessionObserver]struct{}),
+	}
+	bs.promptCond = sync.NewCond(&bs.promptMu)
+
+	bs.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+	bs.waitForStartupConfigConstraints()
+	if bs.startupConfigConstraintsReady() {
+		t.Fatal("failed startup constraint must keep the queue gated")
+	}
+	if bs.TryProcessQueuedMessage() {
+		t.Fatal("queued message must not dispatch while the startup constraint is failed")
+	}
+
+	// Simulate the confirmed-degraded GC recycle: SessionManager.CloseIdleSession
+	// (internal/conversation/session_manager.go) calls bs.Close("gc_suspended"),
+	// which cancels bs.ctx for every session on the degraded process BEFORE the
+	// replacement process comes up (acp_process_gc.go's confirmed-degraded path
+	// calls sessionClose, THEN StopProcess). Cancel here mirrors that ordering,
+	// well before the 10s live-retry timer above would ever fire.
+	cancel()
+
+	// Give the recovery goroutine a generous bounded window to notice the
+	// process is healthy again (setModelErr is already drained, so any
+	// further SetSessionModel call would now succeed) and release the queue
+	// gate — this is the expected/fixed behavior per the bug's acceptance
+	// criteria ("no open-ended stall, no manual intervention").
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if bs.startupConfigConstraintsReady() {
+			for bs.startupConstraintRecovery.Load() {
+				time.Sleep(time.Millisecond)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("mitto-c6j.1: startup model constraint stayed stuck forever after the GC-recycle context " +
+		"cancellation raced ahead of recovery — recoverStartupConstraintAfterRestart exits via " +
+		"<-bs.ctx.Done() without retrying, and no other mechanism re-drives the pending constraint for a " +
+		"regular (non-child, non-loop) session, so TryProcessQueuedMessage/processNextQueuedMessage stay " +
+		"gated on startupConfigConstraintsReady() forever and queued prompts remain pending")
 }
 
 // TestStartupConstraintRecovery_RetriesTransientRebindFailure reproduces the

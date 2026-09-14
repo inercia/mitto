@@ -23,6 +23,14 @@ func (bs *BackgroundSession) applyConfigConstraints(category string) error {
 	return bs.configMgr.applyConfigConstraints(bs, category)
 }
 
+// applyConfigConstraintsWithParentCtx is applyConfigConstraints with an
+// override for the RPC budget's parent context — see
+// configManager.applyConfigConstraintsWithParentCtx for why a caller would
+// need this instead of the ordinary bs.ctx-derived budget.
+func (bs *BackgroundSession) applyConfigConstraintsWithParentCtx(category string, parentCtx context.Context) error {
+	return bs.configMgr.applyConfigConstraintsWithParentCtx(bs, category, parentCtx)
+}
+
 // waitForStartupConfigConstraints blocks until the constraint work launched by
 // the synchronous ACP handshake callback has completed. Later model callbacks
 // are not part of the resume-time queue barrier.

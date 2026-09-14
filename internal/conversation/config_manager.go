@@ -45,52 +45,18 @@ func childStartupJitter(max time.Duration) time.Duration {
 	return time.Duration(rand.Int63n(int64(max)))
 }
 
-// lookupACPServerConstraints returns the auto-selection constraints for the named ACP server.
-//
-// When the server has a ModelProfile set (mitto-hke), the profile's Criteria replaces
-// the "model" entry of the constraints map (a copy — srv.Constraints is never mutated),
-// so downstream applyConfigConstraints resolves the model the same way it always has.
-// When ModelProfile is empty but ModelTag is set, the first profile in
-// EffectiveModelProfiles carrying that tag (case-insensitive) supplies the Criteria.
-// If neither resolves to a usable profile Criteria, this falls back to the server's
-// raw Constraints (legacy matchMode/pattern behaviour).
-//
-// Priority axis for the ModelTag path is profile-list order: cfg.ModelProfilesByTag
-// (which wraps the shared config.ProfilesByTag core) walks EffectiveModelProfiles in
-// Config.Models order — user profiles first in user-supplied order, then any unshadowed
-// canonical defaults — and this helper picks matches[0]. Reordering profiles in
-// Config.Models flips which profile wins for the same tag at the ACPServerSettings.ModelTag
-// consumer site (mitto-ex7 "list order = priority" contract), mirroring the
-// InitialModelPreference and AuxiliaryModelTag consumer sites.
-//
-// Note: matches[0] is picked unconditionally here — there is no session yet at config
-// time, so per-model resolvability against agent-available models is deferred to
-// applyConfigConstraints downstream.
+// lookupACPServerConstraints returns the raw auto-selection constraints for the
+// named ACP server (the server's Constraints map, e.g. matchMode/pattern rules
+// under Constraints["model"]), or nil when the server is not found. These feed
+// downstream applyConfigConstraints for session-start config-option selection.
 func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
 	if cfg == nil {
 		return nil
 	}
 	for _, srv := range cfg.ACPServers {
-		if srv.Name != serverName {
-			continue
-		}
-		var profile *config.ModelProfile
-		if srv.ModelProfile != "" {
-			profile = cfg.FindModelProfile(srv.ModelProfile)
-		} else if srv.ModelTag != "" {
-			if matches := cfg.ModelProfilesByTag(srv.ModelTag); len(matches) > 0 {
-				profile = &matches[0]
-			}
-		}
-		if profile == nil || profile.Criteria == nil {
+		if srv.Name == serverName {
 			return srv.Constraints
 		}
-		merged := make(map[string]*config.ACPServerConstraint, len(srv.Constraints)+1)
-		for k, v := range srv.Constraints {
-			merged[k] = v
-		}
-		merged["model"] = profile.Criteria
-		return merged
 	}
 	return nil
 }
@@ -375,6 +341,23 @@ func (c configManager) applyConfigOptionWithBaseline(d configDeps, ctx context.C
 }
 
 func (c configManager) applyConfigConstraints(d configDeps, category string) error {
+	return c.applyConfigConstraintsWithParentCtx(d, category, nil)
+}
+
+// applyConfigConstraintsWithParentCtx is applyConfigConstraints with an
+// optional override for the parent context used to bound the RPC's timeout.
+// When parentCtxOverride is nil, d.cmSessionCtx() is used exactly as before.
+//
+// A non-nil override exists for mitto-c6j.1's last-chance retry in
+// recoverStartupConstraintAfterRestart's ctx.Done() branch: that branch fires
+// precisely because d.cmSessionCtx() (bs.ctx) has already been canceled — by
+// a racing GC-recycle close (SessionManager.CloseIdleSession ->
+// bs.Close("gc_suspended")) that beat the mitto-3ml live-retry timer — so
+// deriving the RPC budget from it there would produce an already-Done
+// context and the attempt would fail before ever reaching the wire,
+// regardless of whether the (possibly still-alive, about-to-be-replaced)
+// shared process would otherwise have accepted the call.
+func (c configManager) applyConfigConstraintsWithParentCtx(d configDeps, category string, parentCtxOverride context.Context) error {
 	constraint := d.cmGetACPServerConstraint(category)
 
 	opt, ok := d.cmFindByCategory(category)
@@ -424,6 +407,14 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 		}
 	}
 
+	parentCtx := parentCtxOverride
+	if parentCtx == nil {
+		parentCtx = d.cmSessionCtx()
+	}
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
 	if d.cmHasParent() {
 		if jitter := childStartupJitter(constraintModelSwitchChildStartupJitter); jitter > 0 {
 			if l := d.cmLogger(); l != nil {
@@ -432,16 +423,12 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) err
 			}
 			select {
 			case <-time.After(jitter):
-			case <-d.cmSessionCtx().Done():
-				return d.cmSessionCtx().Err()
+			case <-parentCtx.Done():
+				return parentCtx.Err()
 			}
 		}
 	}
 
-	parentCtx := d.cmSessionCtx()
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
 	ctx, cancel := context.WithTimeout(parentCtx, constraintModelSwitchCallerBudget)
 	defer cancel()
 
