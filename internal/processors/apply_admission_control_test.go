@@ -24,16 +24,21 @@ import (
 // deliberately excluded from isSaturationDispatchErr (apply.go:1827) and so
 // only gets the short ordinary retry budget (dispatchPromptMaxRetries=2,
 // exponential backoff from dispatchPromptRetryBaseDelay) — every loser
-// exhausts its retries and is persisted-for-retry at ERROR before the winner
-// even finishes its RPC. In production this produced 18 "batch persisted for
-// later retry" ERRORs / 35 WARNs across repeated bursts (see bead evidence).
+// exhausts its retries and is persisted-for-retry before the winner even
+// finishes its RPC. In production this produced 18 "batch persisted for
+// later retry" log lines / 35 WARNs across repeated bursts (see bead
+// evidence); at the time that persisted-for-retry line still logged at
+// ERROR — mitto-c6j.2 downgraded it to WARN (a successfully-spooled,
+// reliably-redelivered batch is self-healing, not a genuine failure), so
+// this test now counts WARNs instead.
 //
 // Acceptance criteria (mitto-hjx) requires a post-turn cluster to no longer
-// produce a sustained load-shedding storm: ERRORs should be "isolated events,
-// not 18+ per window" — i.e. at most one shed per cluster, not clusterSize-1.
-// This test fails today because there is no admission control: it asserts at
-// most 1 entry lands in the persisted-dispatch spool after one cluster of 4
-// concurrent processors, but the current stampede persists clusterSize-1 (3).
+// produce a sustained load-shedding storm: shed events should be "isolated
+// events, not 18+ per window" — i.e. at most one shed per cluster, not
+// clusterSize-1. This test fails today because there is no admission
+// control: it asserts at most 1 entry lands in the persisted-dispatch spool
+// after one cluster of 4 concurrent processors, but the current stampede
+// persists clusterSize-1 (3).
 func TestDispatchPromptBatch_PostTurnCluster_NoAdmissionControl_StampedesSharedProcess(t *testing.T) {
 	origDelay := dispatchPromptRetryBaseDelay
 	dispatchPromptRetryBaseDelay = 2 * time.Millisecond
@@ -98,15 +103,17 @@ func TestDispatchPromptBatch_PostTurnCluster_NoAdmissionControl_StampedesSharedP
 			clusterSize, len(entries), pendingDispatchNames(entries), clusterSize-1)
 	}
 
-	var shedErrors int
+	var shedWarnings int
 	for _, rec := range handler.snapshot() {
-		if rec.Level == slog.LevelError &&
+		// mitto-c6j.2: successfully-spooled-for-retry now logs at WARN, not
+		// ERROR (it is a self-healing outcome, not a genuine failure).
+		if rec.Level == slog.LevelWarn &&
 			rec.Message == "prompt-mode processor dispatch failed; batch persisted for later retry" {
-			shedErrors++
+			shedWarnings++
 		}
 	}
-	if shedErrors > 1 {
-		t.Fatalf("persisted-for-retry ERROR log lines = %d, want at most 1 isolated shed per post-turn "+
-			"cluster (acceptance criteria: not a sustained storm)", shedErrors)
+	if shedWarnings > 1 {
+		t.Fatalf("persisted-for-retry WARN log lines = %d, want at most 1 isolated shed per post-turn "+
+			"cluster (acceptance criteria: not a sustained storm)", shedWarnings)
 	}
 }
