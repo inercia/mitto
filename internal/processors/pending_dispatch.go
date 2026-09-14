@@ -55,6 +55,16 @@ const pendingDispatchMaxAgeTransient = 7 * 24 * time.Hour
 // the cap is exceeded, bounding spool growth independent of the age cap.
 const pendingDispatchMaxEntries = 32
 
+// pendingDispatchWarmPerSweep bounds how many present-but-idle workspaces a
+// single SweepPendingDispatchDir pass will attempt to warm via
+// ensureDispatchable (mitto-7ds). Without this cap, a sweep tick that finds
+// many stranded present-but-idle spools at once could fire that many
+// on-demand process cold-starts in one pass, reintroducing the
+// process-churn/saturation pressure mitto-pic/mitto-hjx/mitto-cgc
+// specifically bounded elsewhere. Workspaces beyond the cap are simply
+// retried on a later tick — no aggressive retry within a single pass.
+const pendingDispatchWarmPerSweep = 2
+
 // PendingDispatchEntry captures one undelivered prompt-mode processor batch
 // that could not be dispatched within dispatchWithRetry's retry budget.
 // Persisted so the work is retried later instead of permanently lost
@@ -601,7 +611,24 @@ func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDis
 // and forwarded into the age-cap budget decision (mitto-0ql). A nil predicate
 // means "treat every non-dispatchable workspace as orphaned" — the
 // pre-mitto-0ql behavior (ordinary 24h cap, mitto-f81 drop+audit).
-func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool, workspaceExists func(workspaceUUID string) bool) (int, error) {
+//
+// ensureDispatchable is called, at most pendingDispatchWarmPerSweep times per
+// sweep pass, ONLY for a workspace that is registered (workspaceExists true)
+// but not currently dispatchable and still has fresh (non-expired) spool
+// entries — i.e. present-but-idle, not orphaned and not empty (mitto-7ds).
+// Before mitto-7ds, such a workspace's batch was neither drained (nothing
+// starts its process on demand) nor aged out (its "no shared process" error
+// earns the extended transient budget via workspaceExists/mitto-0ql), so it
+// sat stranded until the transient budget eventually expired — silent loss.
+// ensureDispatchable should attempt to make the workspace dispatchable (e.g.
+// cold-start its shared ACP process) and report whether it succeeded; on
+// success the sweep flushes the workspace via the same path as an
+// already-dispatchable one. A false result (saturated, misconfigured, or nil
+// callback) simply defers to a later sweep tick — this function never
+// retries aggressively within one pass, and orphaned-workspace behavior is
+// unchanged (ensureDispatchable is never invoked when workspaceExists is nil
+// or reports false).
+func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool, workspaceExists func(workspaceUUID string) bool, ensureDispatchable func(workspaceUUID string) bool) (int, error) {
 	dirEntries, err := os.ReadDir(spoolDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -612,6 +639,7 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 
 	ageStore := &FilePendingDispatchStore{BaseDir: spoolDir}
 	swept := 0
+	warmed := 0
 	for _, dirEntry := range dirEntries {
 		if dirEntry.IsDir() {
 			continue
@@ -650,7 +678,7 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 		// and survives until reopen; an orphaned (unregistered) workspace is
 		// not, so its batch still drops+audits at the ordinary 24h cap.
 		recoverable := workspaceExists != nil && workspaceExists(workspaceUUID)
-		_, expired, loadErr := ageStore.LoadWithExpired(workspaceUUID, recoverable)
+		fresh, expired, loadErr := ageStore.LoadWithExpired(workspaceUUID, recoverable)
 		if loadErr != nil {
 			return swept, fmt.Errorf("failed to age-prune pending dispatch spool for workspace %s: %w", workspaceUUID, loadErr)
 		}
@@ -665,6 +693,24 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 					"max_age", pendingDispatchMaxAge,
 				)
 			}
+		}
+
+		// mitto-7ds: present-but-idle workspace (registered, no live process)
+		// with fresh entries still waiting to be delivered. Attempt a
+		// bounded on-demand warm-up instead of leaving the batch to only
+		// ever be retained under the extended transient budget until it
+		// eventually ages out unread. Never attempted for an orphaned
+		// workspace (recoverable false) or an empty/all-expired spool.
+		if recoverable && len(fresh) > 0 && ensureDispatchable != nil && warmed < pendingDispatchWarmPerSweep {
+			warmed++
+			if ensureDispatchable(workspaceUUID) {
+				if m != nil {
+					m.FlushPendingDispatches(context.Background(), workspaceUUID)
+				}
+			}
+			// A false result defers to a later sweep tick — no retry within
+			// this pass; the entries remain on disk exactly as LoadWithExpired
+			// just persisted them (fresh set, expired set already pruned).
 		}
 	}
 

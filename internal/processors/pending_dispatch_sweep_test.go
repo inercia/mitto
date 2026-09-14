@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func TestSweepPendingDispatchDir_DrainsOrphanedWorkspaceSpool(t *testing.T) {
 	// nil workspaceExists => treat every non-dispatchable workspace as orphaned
 	// (mitto-0ql back-compat default): the ordinary age cap prunes it.
 
-	swept, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, nil)
+	swept, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, nil, nil)
 	if err != nil {
 		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
 	}
@@ -131,7 +132,7 @@ func TestSweepPendingDispatchDir_OrphanedWorkspaceDropIsAudited(t *testing.T) {
 	// the ordinary cap and is audited (mitto-0ql keeps mitto-f81 intact).
 	workspaceExists := func(workspaceUUID string) bool { return false }
 
-	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists); err != nil {
+	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists, nil); err != nil {
 		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
 	}
 
@@ -213,7 +214,7 @@ func TestSweepPendingDispatchDir_SuspendedWorkspaceRetainsNoSharedProcessBatch(t
 	isDispatchable := func(workspaceUUID string) bool { return false }
 	workspaceExists := func(workspaceUUID string) bool { return workspaceUUID == suspendedUUID }
 
-	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists); err != nil {
+	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists, nil); err != nil {
 		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
 	}
 
@@ -227,5 +228,172 @@ func TestSweepPendingDispatchDir_SuspendedWorkspaceRetainsNoSharedProcessBatch(t
 			"being retained within the extended transient budget (%s) until the workspace is reopened; "+
 			"remaining entries = %d, want 1",
 			auxUnavailableErr, time.Hour, pendingDispatchMaxAge, pendingDispatchMaxAgeTransient, len(remaining))
+	}
+}
+
+// TestSweepPendingDispatchDir_PresentIdleWorkspace_WarmSucceeds_Delivers pins
+// mitto-7ds: a workspace that is registered (workspaceExists true) but has no
+// live shared ACP process right now (isDispatchable false) and still has
+// FRESH (non-expired) spool entries must be offered a bounded on-demand
+// warm-up via ensureDispatchable. When ensureDispatchable succeeds, the sweep
+// must actually deliver the batch (via the same FlushPendingDispatches path
+// used for an already-dispatchable workspace) instead of only ever retaining
+// it under the transient budget until it eventually ages out unread — the
+// exact stranding bug reported in mitto-7ds.
+func TestSweepPendingDispatchDir_PresentIdleWorkspace_WarmSucceeds_Delivers(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-present-idle-warm-ok"
+
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	fresh := PendingDispatchEntry{
+		WorkspaceUUID: wsUUID,
+		Name:          "extract-memories-on-close",
+		Prompt:        "persist memories",
+		SavedAt:       time.Now(),
+		Attempts:      1,
+	}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{fresh}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	promptCalls := 0
+	m.SetPromptFunc(func(context.Context, string, string, string) error {
+		promptCalls++
+		return nil
+	})
+
+	isDispatchable := func(string) bool { return false }
+	workspaceExists := func(string) bool { return true }
+	ensureCalls := 0
+	ensureDispatchable := func(workspaceUUID string) bool {
+		ensureCalls++
+		if workspaceUUID != wsUUID {
+			t.Fatalf("ensureDispatchable called with unexpected workspace %q", workspaceUUID)
+		}
+		return true
+	}
+
+	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists, ensureDispatchable); err != nil {
+		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
+	}
+
+	if ensureCalls != 1 {
+		t.Fatalf("ensureDispatchable calls = %d, want 1 (present-but-idle workspace with fresh entries should be offered a warm-up)", ensureCalls)
+	}
+	if promptCalls != 1 {
+		t.Fatalf("promptFunc calls = %d, want 1 (a successful warm-up should have delivered the fresh entry via FlushPendingDispatches)", promptCalls)
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining entries = %d, want 0 (the delivered batch should have been acknowledged and removed)", len(remaining))
+	}
+}
+
+// TestSweepPendingDispatchDir_PresentIdleWorkspace_WarmFails_Retains pins the
+// complementary mitto-7ds guarantee: when ensureDispatchable cannot make the
+// present-but-idle workspace dispatchable (e.g. saturated, ACP misconfigured),
+// the sweep must NOT attempt delivery and must NOT drop the fresh entry —
+// it simply defers to a later sweep tick, exactly as if no ensureDispatchable
+// callback had been supplied at all.
+func TestSweepPendingDispatchDir_PresentIdleWorkspace_WarmFails_Retains(t *testing.T) {
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-present-idle-warm-fails"
+
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	fresh := PendingDispatchEntry{
+		WorkspaceUUID: wsUUID,
+		Name:          "extract-memories-on-close",
+		Prompt:        "persist memories",
+		SavedAt:       time.Now(),
+		Attempts:      1,
+	}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{fresh}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(context.Context, string, string, string) error {
+		t.Fatal("a failed warm-up must not attempt delivery via promptFunc")
+		return nil
+	})
+
+	isDispatchable := func(string) bool { return false }
+	workspaceExists := func(string) bool { return true }
+	ensureCalls := 0
+	ensureDispatchable := func(string) bool {
+		ensureCalls++
+		return false
+	}
+
+	if _, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists, ensureDispatchable); err != nil {
+		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
+	}
+
+	if ensureCalls != 1 {
+		t.Fatalf("ensureDispatchable calls = %d, want 1", ensureCalls)
+	}
+
+	remaining, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("remaining entries = %d, want 1 (a failed warm-up must retain the fresh entry, not drop it)", len(remaining))
+	}
+}
+
+// TestSweepPendingDispatchDir_WarmBudgetCapsPerSweep pins the
+// pendingDispatchWarmPerSweep bound (mitto-7ds): a single sweep pass must not
+// attempt an on-demand warm-up for every present-but-idle workspace it
+// discovers at once — that would risk a thundering herd of concurrent-ish
+// process cold-starts. Only pendingDispatchWarmPerSweep of them are offered a
+// warm-up per pass; the rest are left for a later tick.
+func TestSweepPendingDispatchDir_WarmBudgetCapsPerSweep(t *testing.T) {
+	spoolDir := t.TempDir()
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+
+	const numWorkspaces = pendingDispatchWarmPerSweep + 2
+	for i := 0; i < numWorkspaces; i++ {
+		wsUUID := fmt.Sprintf("ws-present-idle-budget-%d", i)
+		fresh := PendingDispatchEntry{
+			WorkspaceUUID: wsUUID,
+			Name:          "extract-memories-on-close",
+			Prompt:        "persist memories",
+			SavedAt:       time.Now(),
+			Attempts:      1,
+		}
+		if err := store.Replace(wsUUID, []PendingDispatchEntry{fresh}); err != nil {
+			t.Fatalf("Replace() error = %v", err)
+		}
+	}
+
+	m := NewManager("", nil)
+	m.SetPendingDispatchStore(store)
+	m.SetPromptFunc(func(context.Context, string, string, string) error { return nil })
+
+	isDispatchable := func(string) bool { return false }
+	workspaceExists := func(string) bool { return true }
+	ensureCalls := 0
+	ensureDispatchable := func(string) bool {
+		ensureCalls++
+		return true
+	}
+
+	swept, err := SweepPendingDispatchDir(m, spoolDir, isDispatchable, workspaceExists, ensureDispatchable)
+	if err != nil {
+		t.Fatalf("SweepPendingDispatchDir() error = %v", err)
+	}
+	if swept != numWorkspaces {
+		t.Fatalf("swept = %d, want %d (every spool file should still be discovered)", swept, numWorkspaces)
+	}
+	if ensureCalls != pendingDispatchWarmPerSweep {
+		t.Fatalf("ensureDispatchable calls = %d, want %d (pendingDispatchWarmPerSweep bound)", ensureCalls, pendingDispatchWarmPerSweep)
 	}
 }

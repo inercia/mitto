@@ -58,6 +58,12 @@ const (
 	// live session for it will ever fire the event-driven flush triggers
 	// again.
 	pendingDispatchSweepInterval = 30 * time.Minute
+
+	// pendingDispatchStartupSweepDelay is how long the one-shot startup
+	// pending-dispatch sweep (mitto-7ds) waits after NewServer before its
+	// first pass, giving the workspace registry and ACP process manager a
+	// moment to settle rather than racing the rest of server startup.
+	pendingDispatchStartupSweepDelay = 10 * time.Second
 )
 
 // Config holds the web server configuration.
@@ -401,6 +407,13 @@ func (s *Server) APIPrefix() string {
 // only a PendingDispatchStore + prompt executor — no loaded processor
 // definitions — and building a minimal manager avoids racing the global
 // manager's workspace-scoped clones.
+//
+// ensureWorkspaceProcess, when non-nil, lets the sweep cold-start a
+// present-but-idle workspace's shared ACP process on demand (bounded,
+// mitto-7ds) so its spool can actually be delivered instead of only ever
+// being retained under the extended transient budget (mitto-0ql) until it
+// eventually ages out unread. A nil value preserves the pre-mitto-7ds
+// behavior (present-but-idle workspaces are only age-pruned, never warmed).
 func startPendingDispatchSweep(
 	ctx context.Context,
 	acpProcessMgr *acpproc.ACPProcessManager,
@@ -408,6 +421,7 @@ func startPendingDispatchSweep(
 	spoolDir string,
 	logger *slog.Logger,
 	workspaceExists func(workspaceUUID string) bool,
+	ensureWorkspaceProcess func(workspaceUUID string) error,
 ) (stop func()) {
 	procMgr := processors.NewManager("", logger)
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{BaseDir: spoolDir})
@@ -425,11 +439,52 @@ func startPendingDispatchSweep(
 		return acpProcessMgr.HasLiveProcess(workspaceUUID)
 	}
 
+	// ensureDispatchable attempts to make a present-but-idle workspace
+	// dispatchable on demand (mitto-7ds) by cold-starting its shared ACP
+	// process. Any error (saturation, missing workspace, ACP startup
+	// failure) simply defers delivery to a later sweep tick; the bound on
+	// how many of these are attempted per pass lives in
+	// processors.SweepPendingDispatchDir (pendingDispatchWarmPerSweep).
+	var ensureDispatchable func(workspaceUUID string) bool
+	if ensureWorkspaceProcess != nil {
+		ensureDispatchable = func(workspaceUUID string) bool {
+			return ensureWorkspaceProcess(workspaceUUID) == nil
+		}
+	}
+
+	runSweep := func() {
+		swept, err := processors.SweepPendingDispatchDir(procMgr, spoolDir, isDispatchable, workspaceExists, ensureDispatchable)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("pending-dispatch sweep failed", "error", err)
+			}
+			return
+		}
+		if swept > 0 && logger != nil {
+			logger.Debug("pending-dispatch sweep completed", "workspaces_discovered", swept)
+		}
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
+
+		// One-shot startup sweep (mitto-7ds): drain spools stranded across a
+		// restart promptly instead of waiting up to
+		// pendingDispatchSweepInterval (30m) for the first periodic tick. A
+		// short delay lets the rest of server startup (workspace registry,
+		// ACP process manager) settle first.
+		startupTimer := time.NewTimer(pendingDispatchStartupSweepDelay)
+		defer startupTimer.Stop()
+		select {
+		case <-runCtx.Done():
+			return
+		case <-startupTimer.C:
+			runSweep()
+		}
+
 		ticker := time.NewTicker(pendingDispatchSweepInterval)
 		defer ticker.Stop()
 		for {
@@ -437,16 +492,7 @@ func startPendingDispatchSweep(
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				swept, err := processors.SweepPendingDispatchDir(procMgr, spoolDir, isDispatchable, workspaceExists)
-				if err != nil {
-					if logger != nil {
-						logger.Warn("pending-dispatch sweep failed", "error", err)
-					}
-					continue
-				}
-				if swept > 0 && logger != nil {
-					logger.Debug("pending-dispatch sweep completed", "workspaces_discovered", swept)
-				}
+				runSweep()
 			}
 		}
 	}()
@@ -837,8 +883,18 @@ func NewServer(config Config) (*Server, error) {
 			workspaceExists := func(workspaceUUID string) bool {
 				return sessionMgr != nil && sessionMgr.GetWorkspaceByUUID(workspaceUUID) != nil
 			}
+			// ensureWorkspaceProcess lets the sweep cold-start a
+			// present-but-idle workspace's shared ACP process on demand
+			// (mitto-7ds) via the same on-demand-start path used elsewhere
+			// (e.g. "improve prompt") — see SessionManager.EnsureWorkspaceProcess.
+			ensureWorkspaceProcess := func(workspaceUUID string) error {
+				if sessionMgr == nil {
+					return fmt.Errorf("session manager unavailable")
+				}
+				return sessionMgr.EnsureWorkspaceProcess(workspaceUUID)
+			}
 			pendingDispatchSweepStop = startPendingDispatchSweep(
-				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger, workspaceExists,
+				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger, workspaceExists, ensureWorkspaceProcess,
 			)
 		} else {
 			logger.Warn("pending-dispatch sweep disabled: cannot resolve spool dir", "error", direrr)
