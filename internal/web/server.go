@@ -1011,6 +1011,48 @@ func NewServer(config Config) (*Server, error) {
 		acpProcessMgr.AgentDefaultEnvResolver = resolveAgentDefaultEnv
 		sessionMgr.SetAgentDefaultEnvResolver(resolveAgentDefaultEnv)
 
+		// Wire per-agent Initialize-timeout resolver (mitto-sbj). Given an ACP
+		// server name it resolves the ACP server → agent metadata →
+		// Defaults.InitializeTimeout, mirroring resolveAgentDefaultEnv above.
+		// Some agents (e.g. github-copilot's `copilot --acp`) connect all MCP
+		// servers before answering the ACP `initialize` RPC, so a cold MCP
+		// connect can legitimately exceed the default per-attempt Initialize
+		// deadline and needs a longer per-agent override. Results are cached
+		// per ACP server name so GetOrCreateProcess does not re-parse
+		// metadata.yaml or re-run time.ParseDuration on every call.
+		agentInitializeTimeoutCache := newAgentInitializeTimeoutCache()
+		resolveAgentInitializeTimeout := func(acpServer string) time.Duration {
+			if acpServer == "" {
+				return 0
+			}
+			if cached, ok := agentInitializeTimeoutCache.get(acpServer); ok {
+				return cached
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(acpServer)
+			}
+			if acpType == "" {
+				acpType = acpServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil || agent.Metadata.Defaults == nil || agent.Metadata.Defaults.InitializeTimeout == "" {
+				agentInitializeTimeoutCache.put(acpServer, 0)
+				return 0
+			}
+			d, perr := time.ParseDuration(agent.Metadata.Defaults.InitializeTimeout)
+			if perr != nil {
+				logger.Warn("invalid defaults.initializeTimeout in agent metadata.yaml; ignoring",
+					"acp_server", acpServer, "value", agent.Metadata.Defaults.InitializeTimeout, "error", perr)
+				agentInitializeTimeoutCache.put(acpServer, 0)
+				return 0
+			}
+			agentInitializeTimeoutCache.put(acpServer, d)
+			return d
+		}
+		acpProcessMgr.AgentInitializeTimeoutResolver = resolveAgentInitializeTimeout
+		sessionMgr.SetAgentInitializeTimeoutResolver(resolveAgentInitializeTimeout)
+
 		// Wire per-agent fork-cost signal (mitto-7yj). Resolves a workspace to
 		// its ACP agent metadata and reports whether that agent forks a fresh
 		// OS process per ACP session (Claude Code) vs multiplexing (auggie).

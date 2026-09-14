@@ -251,13 +251,14 @@ type BackgroundSession struct {
 	// When the ACP process dies unexpectedly, we attempt to restart it automatically.
 	// To prevent infinite restart loops, we limit restarts to MaxACPRestarts within
 	// ACPRestartWindow. The acpCommand and acpCwd are stored so we can restart the process.
-	acpCommand           string                                 // Command used to start ACP process (for restart)
-	acpCwd               string                                 // Working directory for ACP process (for restart)
-	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
-	stderrPatterns       *procstart.CompiledStderrPatterns      // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
-	agentDefaultEnv      map[string]string                      // Per-agent default env vars from metadata.yaml defaults.env (mitto-6dur); nil = none
-	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
-	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
+	acpCommand             string                                 // Command used to start ACP process (for restart)
+	acpCwd                 string                                 // Working directory for ACP process (for restart)
+	serverEnv              map[string]string                      // Server-specific env vars from settings.json (for restart)
+	stderrPatterns         *procstart.CompiledStderrPatterns      // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
+	agentDefaultEnv        map[string]string                      // Per-agent default env vars from metadata.yaml defaults.env (mitto-6dur); nil = none
+	agentInitializeTimeout time.Duration                          // Per-agent Initialize-timeout override from metadata.yaml defaults.initializeTimeout (mitto-sbj); 0 = default
+	acpServerConstraints   map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
+	mittoConfig            *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	// initialModelPreference is the per-workspace initial-model preference
 	// used to seed fresh top-level sessions by cbInitBaselineModelIfEmpty.
 	// Nil for resumed sessions, auto-children, and workspaces without a
@@ -578,6 +579,15 @@ type BackgroundSessionConfig struct {
 	// still overrides it (see procstart.BuildACPProcessEnv layering).
 	AgentDefaultEnv map[string]string
 
+	// AgentInitializeTimeout is an optional per-agent override for the
+	// per-attempt ACP Initialize handshake deadline (metadata.yaml
+	// defaults.initializeTimeout; mitto-sbj), resolved once by the web layer
+	// mirroring AgentDefaultEnv above. Zero means use the default
+	// acpInitializeAttemptTimeout. Some agents (e.g. github-copilot) connect
+	// all MCP servers before answering the ACP `initialize` RPC, so they may
+	// need a longer per-attempt deadline than the default.
+	AgentInitializeTimeout time.Duration
+
 	// PruneConfig is the pruning configuration for the session recorder.
 	// When set, the recorder automatically prunes old events after each recording
 	// to keep the session within the configured limits (max messages, max size).
@@ -773,6 +783,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		serverEnv:                      cfg.Env,                     // Store for restart
 		stderrPatterns:                 cfg.StderrPatterns,          // Per-agent stderr regex patterns (mitto-k6h)
 		agentDefaultEnv:                cfg.AgentDefaultEnv,         // Per-agent default env vars (mitto-6dur)
+		agentInitializeTimeout:         cfg.AgentInitializeTimeout,  // Per-agent Initialize-timeout override (mitto-sbj)
 		globalMcpServer:                cfg.GlobalMCPServer,         // Global MCP server for session registration
 		auxiliaryManager:               cfg.AuxiliaryManager,        // Workspace-scoped auxiliary manager
 		availableACPServers:            cfg.AvailableACPServers,     // Pre-computed workspace server list
@@ -1038,6 +1049,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		serverEnv:                      config.Env,                     // Store for restart
 		stderrPatterns:                 config.StderrPatterns,          // Per-agent stderr regex patterns (mitto-k6h)
 		agentDefaultEnv:                config.AgentDefaultEnv,         // Per-agent default env vars (mitto-6dur)
+		agentInitializeTimeout:         config.AgentInitializeTimeout,  // Per-agent Initialize-timeout override (mitto-sbj)
 		globalMcpServer:                config.GlobalMCPServer,         // Global MCP server for session registration
 		auxiliaryManager:               config.AuxiliaryManager,        // Workspace-scoped auxiliary manager
 		availableACPServers:            config.AvailableACPServers,     // Pre-computed workspace server list

@@ -247,6 +247,16 @@ type SessionManager struct {
 	// processes. Nil means no agent-authored defaults apply.
 	agentDefaultEnvResolver func(acpServer string) map[string]string
 
+	// agentInitializeTimeoutResolver returns the per-agent override for the
+	// per-attempt ACP Initialize handshake deadline (metadata.yaml
+	// defaults.initializeTimeout; mitto-sbj) for a given ACP server name.
+	// Passed to BackgroundSession via BackgroundSessionConfig on
+	// creation/resume, mirroring agentDefaultEnvResolver above, so legacy
+	// per-session ACP processes honor the same per-agent override as shared
+	// processes. Nil or a zero result means the default
+	// acpInitializeAttemptTimeout applies.
+	agentInitializeTimeoutResolver func(acpServer string) time.Duration
+
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the loop runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
@@ -1245,6 +1255,31 @@ func (sm *SessionManager) resolveAgentDefaultEnv(acpServer string) map[string]st
 	sm.mu.RUnlock()
 	if r == nil {
 		return nil
+	}
+	return r(acpServer)
+}
+
+// SetAgentInitializeTimeoutResolver sets the function used to resolve the
+// per-agent override for the per-attempt ACP Initialize handshake deadline
+// (metadata.yaml defaults.initializeTimeout; mitto-sbj) for a given ACP
+// server name. The resolver is passed to every new and resumed
+// BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetAgentInitializeTimeoutResolver(resolver func(acpServer string) time.Duration) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.agentInitializeTimeoutResolver = resolver
+}
+
+// resolveAgentInitializeTimeout looks up the per-agent Initialize-timeout
+// override for the given ACP server name (mitto-sbj). Returns 0 if no
+// resolver is set or the resolver returned 0 (no override; the default
+// acpInitializeAttemptTimeout applies).
+func (sm *SessionManager) resolveAgentInitializeTimeout(acpServer string) time.Duration {
+	sm.mu.RLock()
+	r := sm.agentInitializeTimeoutResolver
+	sm.mu.RUnlock()
+	if r == nil {
+		return 0
 	}
 	return r(acpServer)
 }
@@ -2940,6 +2975,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		PromptsCache:                   sm.promptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		AgentDefaultEnv:                sm.resolveAgentDefaultEnv(acpServer),
+		AgentInitializeTimeout:         sm.resolveAgentInitializeTimeout(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle

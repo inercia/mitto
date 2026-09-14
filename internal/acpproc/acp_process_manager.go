@@ -80,6 +80,15 @@ type ACPProcessManager struct {
 	// process-reuse comparison.
 	AgentDefaultEnvResolver func(acpServer string) map[string]string
 
+	// AgentInitializeTimeoutResolver returns the per-agent override for the
+	// per-attempt ACP Initialize handshake deadline (metadata.yaml
+	// defaults.initializeTimeout, mitto-sbj) for a given ACP server name. The
+	// web layer wires this to resolve the ACP server → agent metadata →
+	// Defaults.InitializeTimeout, mirroring AgentDefaultEnvResolver above. May
+	// be nil or return 0 (processes then use the default
+	// processInitializeAttemptTimeout).
+	AgentInitializeTimeoutResolver func(acpServer string) time.Duration
+
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -752,6 +761,14 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		agentDefaultEnv = m.AgentDefaultEnvResolver(workspace.ACPServer)
 	}
 
+	// Resolve per-agent Initialize-timeout override for this ACP server
+	// (mitto-sbj). Zero is a safe no-op — the process falls back to
+	// processInitializeAttemptTimeout.
+	var agentInitializeTimeout time.Duration
+	if m.AgentInitializeTimeoutResolver != nil {
+		agentInitializeTimeout = m.AgentInitializeTimeoutResolver(workspace.ACPServer)
+	}
+
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
 		WorkspaceUUID:     workspace.UUID,
@@ -769,6 +786,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		OnMCPInitTimeout:  onMCPInitTimeout,
 		StderrPatterns:    stderrPatterns,
 		AgentDefaultEnv:   agentDefaultEnv,
+		InitializeTimeout: agentInitializeTimeout,
 	})
 	createDuration := time.Since(createStart)
 

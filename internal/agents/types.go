@@ -96,6 +96,15 @@ type AgentDefaults struct {
 	// ContextFlushCommand is the default agent-native context-flush slash command
 	// (e.g. "/clear") seeded into ACPServer.ContextFlushCommand at discovery.
 	ContextFlushCommand string `yaml:"contextFlushCommand,omitempty" json:"contextFlushCommand,omitempty"`
+	// InitializeTimeout is an optional per-agent override for the per-attempt
+	// ACP Initialize handshake deadline (mitto-sbj), expressed as a Go
+	// duration string (e.g. "90s"). Agents that front-load MCP-server
+	// connections BEFORE answering the ACP `initialize` RPC (e.g.
+	// github-copilot's `copilot --acp`) can legitimately need longer than
+	// Mitto's default per-attempt deadline. Empty means use the default.
+	// Resolved and threaded to SharedACPProcessConfig.InitializeTimeout
+	// exactly like Env above (mirrors AgentDefaultEnv, mitto-6dur).
+	InitializeTimeout string `yaml:"initializeTimeout,omitempty" json:"initializeTimeout,omitempty"`
 }
 
 // StderrPatterns holds per-agent regex patterns applied by the stderr monitor.

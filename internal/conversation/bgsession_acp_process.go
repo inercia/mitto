@@ -980,7 +980,15 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	// detected crashes; the timeout is the backstop for cases where neither signal
 	// arrives (live-but-hung process with open pipes). 25 s is generous for healthy
 	// cold starts.
-	initCtx, initCancel := context.WithTimeout(bs.ctx, acpInitializeAttemptTimeout)
+	//
+	// Some agents front-load MCP-server connections before answering
+	// `initialize` (e.g. github-copilot); those declare a longer per-agent
+	// override via bs.agentInitializeTimeout (mitto-sbj).
+	initAttemptTimeout := acpInitializeAttemptTimeout
+	if bs.agentInitializeTimeout > 0 {
+		initAttemptTimeout = bs.agentInitializeTimeout
+	}
+	initCtx, initCancel := context.WithTimeout(bs.ctx, initAttemptTimeout)
 	defer initCancel()
 
 	// Monitor ACP process health: if the connection's Done() channel closes

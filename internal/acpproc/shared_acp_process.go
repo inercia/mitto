@@ -333,6 +333,17 @@ type SharedACPProcessConfig struct {
 	// look "changed" on the first post-upgrade resolve and force a spurious
 	// mass-restart.
 	AgentDefaultEnv map[string]string
+
+	// InitializeTimeout is an optional per-agent override for the per-attempt
+	// ACP Initialize handshake deadline (mitto-sbj). Some agents (e.g.
+	// github-copilot's `copilot --acp`) front-load MCP-server connections
+	// BEFORE answering the ACP `initialize` RPC, so a cold MCP connect can
+	// legitimately exceed the default processInitializeAttemptTimeout (25s)
+	// and cause a spurious failed_to_start. When > 0, doStartProcess uses
+	// this value instead of processInitializeAttemptTimeout. Resolved once by
+	// the caller from the agent's metadata.yaml (defaults.initializeTimeout),
+	// mirroring AgentDefaultEnv above (mitto-6dur).
+	InitializeTimeout time.Duration
 }
 
 type processTerminationIntent struct {
@@ -1010,7 +1021,15 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	// The conn.Done()/processDone watcher below cancels initCtx immediately on detected
 	// crashes; the timeout is the backstop when neither signal arrives (live-but-hung
 	// process with open pipes). 25 s is generous for healthy cold starts.
-	initCtx, initCancel := context.WithTimeout(p.ctx, processInitializeAttemptTimeout)
+	//
+	// Some agents front-load MCP-server connections before answering
+	// `initialize` (e.g. github-copilot); those declare a longer
+	// per-agent override via p.config.InitializeTimeout (mitto-sbj).
+	initAttemptTimeout := processInitializeAttemptTimeout
+	if p.config.InitializeTimeout > 0 {
+		initAttemptTimeout = p.config.InitializeTimeout
+	}
+	initCtx, initCancel := context.WithTimeout(p.ctx, initAttemptTimeout)
 	defer initCancel()
 
 	// Monitor ACP process health: if the connection's Done() channel closes

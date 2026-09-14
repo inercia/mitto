@@ -17,3 +17,8 @@ defaults:
   # See augment/metadata.yaml for rationale.
   env:
     NODE_OPTIONS: "--max-old-space-size=12288"
+  # copilot --acp connects ALL configured MCP servers BEFORE it answers the
+  # ACP `initialize` RPC. A cold MCP connect can exceed Mitto's default
+  # per-attempt Initialize deadline (25s), causing a spurious failed_to_start
+  # (mitto-sbj). 90s gives that pre-handshake phase enough room.
+  initializeTimeout: "90s"

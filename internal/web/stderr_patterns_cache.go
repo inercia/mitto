@@ -2,6 +2,7 @@ package web
 
 import (
 	"sync"
+	"time"
 
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 )
@@ -77,6 +78,43 @@ func (c *agentDefaultEnvCache) get(key string) (map[string]string, bool) {
 }
 
 func (c *agentDefaultEnvCache) put(key string, val map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = val
+	c.present[key] = true
+}
+
+// agentInitializeTimeoutCache is a simple concurrent cache keyed by ACP
+// server name that memoizes the per-agent Initialize-timeout override
+// (metadata.yaml defaults.initializeTimeout; mitto-sbj) for that server.
+// Mirrors agentDefaultEnvCache above: negative lookups (no override, or an
+// unparseable duration) are cached explicitly as 0 so GetOrCreateProcess does
+// not re-parse metadata.yaml or re-run time.ParseDuration on every call.
+// Invalidation is intentionally NOT provided, matching the existing
+// discovery-time lifecycle for AgentDefaults.
+type agentInitializeTimeoutCache struct {
+	mu      sync.RWMutex
+	entries map[string]time.Duration
+	present map[string]bool
+}
+
+func newAgentInitializeTimeoutCache() *agentInitializeTimeoutCache {
+	return &agentInitializeTimeoutCache{
+		entries: make(map[string]time.Duration),
+		present: make(map[string]bool),
+	}
+}
+
+func (c *agentInitializeTimeoutCache) get(key string) (time.Duration, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.present[key] {
+		return 0, false
+	}
+	return c.entries[key], true
+}
+
+func (c *agentInitializeTimeoutCache) put(key string, val time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = val
