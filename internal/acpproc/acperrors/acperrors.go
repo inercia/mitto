@@ -11,6 +11,7 @@
 package acperrors
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -127,4 +128,52 @@ func IsAgentQueryClosedErr(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "query closed before response received")
+}
+
+// silentStartupHangHint is the actionable diagnostic returned by
+// ClassifySilentStartupHang when the pre-handshake silent-hang signature
+// matches. See ClassifySilentStartupHang's doc comment for the signature.
+const silentStartupHangHint = "agent appears stuck in its own startup before the ACP handshake " +
+	"(no output, no handshake observed in the startup window) — it may be blocked on a " +
+	"self-update or a slow/hung dependency; try running the agent CLI directly (e.g. " +
+	"`<agent> --version`) and complete any pending update"
+
+// ClassifySilentStartupHang detects the pre-handshake silent-hang signature
+// (mitto-3a4): an ACP agent (e.g. github-copilot) that hangs in its OWN
+// startup — before the ACP server is even listening — so Mitto's Initialize
+// RPC times out on a live-but-unresponsive process with no stderr output at
+// all. This is distinct from a crash (conn.Done()/processDone would have
+// cancelled the init context with context.Canceled, not a deadline) and from
+// a normal failure that produces stderr diagnostics.
+//
+// Given the Initialize-attempt error, the captured stderr output, and whether
+// the OS process has already exited, it returns a non-empty actionable hint
+// and matched=true only when ALL three signature conditions hold:
+//  1. err indicates the per-attempt deadline fired (context.DeadlineExceeded,
+//     matched either via errors.Is for a properly wrapped error, or via a
+//     case-insensitive substring match on the error text for callers that
+//     format the error as a plain string instead of wrapping it).
+//  2. stderrOutput is empty once whitespace-trimmed (the agent's own startup
+//     preamble went to its own log files, not the pipe Mitto captures).
+//  3. processExited is false (the process is still alive; a crash is a
+//     different failure mode).
+//
+// Fails open: any other input shape (nil error, non-deadline error, non-empty
+// stderr, or an already-exited process) returns ("", false) so the existing
+// opaque error message is unchanged for every other failure class.
+func ClassifySilentStartupHang(err error, stderrOutput string, processExited bool) (string, bool) {
+	if err == nil || processExited {
+		return "", false
+	}
+	if strings.TrimSpace(stderrOutput) != "" {
+		return "", false
+	}
+	msg := strings.ToLower(err.Error())
+	isDeadline := errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context deadline")
+	if !isDeadline {
+		return "", false
+	}
+	return silentStartupHangHint, true
 }

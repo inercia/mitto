@@ -1074,6 +1074,20 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		time.Sleep(100 * time.Millisecond)
 
 		stderrOutput := strings.TrimSpace(stderrCollector.GetOutput())
+
+		// Detect the pre-handshake silent-hang signature (mitto-3a4): an agent
+		// (e.g. github-copilot) hung in its OWN startup before the ACP server
+		// ever started answering, so Initialize timed out on a live-but-silent
+		// process with no stderr at all. Fails open — every other failure
+		// shape (crash, non-empty stderr, non-deadline error) is unaffected.
+		processExited := false
+		select {
+		case <-p.processDone:
+			processExited = true
+		default:
+		}
+		hint, hasHint := acperrors.ClassifySilentStartupHang(err, stderrOutput, processExited)
+
 		if p.logger != nil {
 			logAttrs := []any{
 				"command", acpCommand,
@@ -1084,10 +1098,16 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 			if stderrOutput != "" {
 				logAttrs = append(logAttrs, "stderr", stderrOutput)
 			}
+			if hasHint {
+				logAttrs = append(logAttrs, "hint", hint)
+			}
 			p.logger.Warn("ACP process initialization failed", logAttrs...)
 		}
 
 		p.killProcess("")
+		if hasHint {
+			return stderrOutput, fmt.Errorf("failed to initialize: %w (%s)", err, hint)
+		}
 		return stderrOutput, fmt.Errorf("failed to initialize: %w", err)
 	}
 

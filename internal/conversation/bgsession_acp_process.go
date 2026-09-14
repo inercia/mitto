@@ -15,6 +15,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/logging"
@@ -1028,6 +1029,20 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 		// Log the failure with command and stderr output
 		stderrOutput := strings.TrimSpace(stderrCollector.GetOutput())
+
+		// Detect the pre-handshake silent-hang signature (mitto-3a4): an agent
+		// (e.g. github-copilot) hung in its OWN startup before the ACP server
+		// ever started answering, so Initialize timed out on a live-but-silent
+		// process with no stderr at all. Fails open — every other failure
+		// shape (crash, non-empty stderr, non-deadline error) is unaffected.
+		processExited := false
+		select {
+		case <-bs.acpProcessDone:
+			processExited = true
+		default:
+		}
+		hint, hasHint := acperrors.ClassifySilentStartupHang(err, stderrOutput, processExited)
+
 		if bs.logger != nil {
 			logAttrs := []any{
 				"command", acpCommand,
@@ -1038,11 +1053,18 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			if stderrOutput != "" {
 				logAttrs = append(logAttrs, "stderr", stderrOutput)
 			}
+			if hasHint {
+				logAttrs = append(logAttrs, "hint", hint)
+			}
 			bs.logger.Warn("ACP process initialization failed", logAttrs...)
 		}
 
 		bs.killACPProcess()
-		return stderrOutput, &sessionError{"failed to initialize: " + err.Error()}
+		errMsg := "failed to initialize: " + err.Error()
+		if hasHint {
+			errMsg += " (" + hint + ")"
+		}
+		return stderrOutput, &sessionError{errMsg}
 	}
 
 	// Log agent information at DEBUG level
