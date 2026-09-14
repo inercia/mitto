@@ -418,7 +418,7 @@ export function WorkspaceEditor({
                   </div>`
                 : html`
                     <div
-                      class="overflow-x-auto border border-mitto-border rounded-md"
+                      class="overflow-hidden border border-mitto-border rounded-md"
                     >
                       <table
                         class="table table-sm"
@@ -457,48 +457,50 @@ export function WorkspaceEditor({
                                 </td>
                                 ${mcpTools?.has_mcp_remove &&
                                 html`
-                                  <td
-                                    class="flex items-center justify-center gap-1"
-                                  >
-                                    <button
-                                      onClick=${async () => {
-                                        const ok = await copyToClipboard(
-                                          buildMcpServerJson(srv),
-                                        );
-                                        showToast?.({
-                                          style: ok ? "success" : "error",
-                                          title: ok
-                                            ? `Copied ${srv.name}`
-                                            : "Copy failed",
-                                          duration: 2000,
-                                        });
-                                      }}
-                                      class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
-                                      data-tip="Copy server config as JSON"
-                                      aria-label="Copy MCP server config"
+                                  <td class="text-center">
+                                    <div
+                                      class="flex items-center justify-center gap-1"
                                     >
-                                      <${CopyIcon}
-                                        className="w-4 h-4 text-mitto-text-muted"
-                                      />
-                                    </button>
-                                    <button
-                                      onClick=${() => {
-                                        if (mcpRemoveLoading) return;
-                                        handleMcpRemoveConfirm(srv.name);
-                                      }}
-                                      aria-disabled=${mcpRemoveLoading
-                                        ? "true"
-                                        : "false"}
-                                      class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom ${mcpRemoveLoading
-                                        ? "opacity-40 pointer-events-none"
-                                        : ""}"
-                                      data-tip="Remove MCP server"
-                                      aria-label="Remove MCP server"
-                                    >
-                                      <${TrashIcon}
-                                        className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger"
-                                      />
-                                    </button>
+                                      <button
+                                        onClick=${async () => {
+                                          const ok = await copyToClipboard(
+                                            buildMcpServerJson(srv),
+                                          );
+                                          showToast?.({
+                                            style: ok ? "success" : "error",
+                                            title: ok
+                                              ? `Copied ${srv.name}`
+                                              : "Copy failed",
+                                            duration: 2000,
+                                          });
+                                        }}
+                                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
+                                        data-tip="Copy server config as JSON"
+                                        aria-label="Copy MCP server config"
+                                      >
+                                        <${CopyIcon}
+                                          className="w-4 h-4 text-mitto-text-muted"
+                                        />
+                                      </button>
+                                      <button
+                                        onClick=${() => {
+                                          if (mcpRemoveLoading) return;
+                                          handleMcpRemoveConfirm(srv.name);
+                                        }}
+                                        aria-disabled=${mcpRemoveLoading
+                                          ? "true"
+                                          : "false"}
+                                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom ${mcpRemoveLoading
+                                          ? "opacity-40 pointer-events-none"
+                                          : ""}"
+                                        data-tip="Remove MCP server"
+                                        aria-label="Remove MCP server"
+                                      >
+                                        <${TrashIcon}
+                                          className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger"
+                                        />
+                                      </button>
+                                    </div>
                                   </td>
                                 `}
                               </tr>
