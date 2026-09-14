@@ -1432,6 +1432,22 @@ func (s *Server) SetBeadsWatcher(w *beadswatcher.BeadsWatcher) {
 // registration is updated in place (e.g., with a new UIPrompter after an ACP
 // process restart). This prevents "session already registered" errors during
 // automatic restarts where the old registration may not have been cleaned up.
+//
+// mitto-8r1: every (re-)registration also eagerly seeds a pending-request
+// correlation entry (requestID == sessionID) via RegisterPendingRequest. A
+// legacy (non-HTTP-MCP) agent's self_id resolution depends entirely on the
+// ACP layer OBSERVING the agent's first mitto_* tool call and registering
+// this same mapping in real time (onMittoToolCall); for a just-started or
+// just-resumed session — e.g. a run_on_start boot pulse firing immediately
+// after Mitto restarts — that first tool call race can lose to
+// pendingRequestTimeout under cold-start load, surfacing as "session not
+// found: the self_id could not be resolved" even though the session is
+// genuinely registered. Seeding the mapping here, at registration time
+// (before any prompt has been dispatched and before any tool call can
+// happen), closes that race: resolveSelfIDWithMCP's WaitForPendingRequest
+// finds the entry already queued instead of waiting on it to arrive.
+// Harmless if never consumed — unconsumed entries expire after
+// pendingRequestExpiry (30s) via the existing cleanup path.
 func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger *slog.Logger) error {
 	s.sessionsMu.Lock()
 	defer s.sessionsMu.Unlock()
@@ -1441,6 +1457,7 @@ func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger
 		existing.uiPrompter = uiPrompter
 		existing.logger = logger
 		s.logger.Info("Session re-registered with MCP server (restart)", "session_id", sessionID)
+		s.RegisterPendingRequest(sessionID, sessionID)
 		return nil
 	}
 	tokenBytes := make([]byte, 32)
@@ -1458,6 +1475,7 @@ func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger
 	s.sessionBindings[bindingToken] = sessionID
 
 	s.logger.Info("Session registered with MCP server", "session_id", sessionID)
+	s.RegisterPendingRequest(sessionID, sessionID)
 	return nil
 }
 
