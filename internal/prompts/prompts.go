@@ -31,6 +31,27 @@ import (
 // reload; only the log emission is bounded (mitto-e8r).
 var loadWarnSeen sync.Map
 
+// migrationWarnSeen dedupes the legacy-key in-memory migration WARNs
+// (migrateLegacyTargetReuseKeys, renameAliasKeysInMapping) across reloads: the
+// migration itself is in-memory only (the file on disk is never rewritten),
+// so an unchanged file re-parsed by a fs-watcher/cold-cache/ForceReload cycle
+// would otherwise WARN on every single load — 137x/window observed for one
+// file (mitto-vp1, alert-fatigue regression from mitto-p58). Mirrors the
+// loadWarnSeen precedent immediately above (mitto-e8r): each WARN fires only
+// once per process lifetime for a given key, via warnMigrationOnce.
+var migrationWarnSeen sync.Map
+
+// warnMigrationOnce logs msg/args at WARN the first time key is seen in this
+// process and is a no-op on every subsequent call with the same key. Callers
+// build key from a site discriminator plus the file path plus the migrated
+// key name so a genuinely new (site, file, key) triple still logs once.
+func warnMigrationOnce(key, msg string, args ...any) {
+	if _, loaded := migrationWarnSeen.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	slog.Warn(msg, args...)
+}
+
 // PromptLoop declares that selecting this prompt should start a loop
 // (recurring) conversation instead of a one-time one. A prompt falls into one
 // of three categories:
@@ -984,7 +1005,8 @@ func migrateLegacyTargetReuseKeys(path string, doc *yaml.Node) bool {
 			if k.Value == m.old {
 				newKey := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: m.short}
 				reuseVal.Content = append(reuseVal.Content, newKey, v)
-				slog.Warn("prompt file uses a legacy target.reuse key and was migrated in memory",
+				warnMigrationOnce("target.reuse\x00"+path+"\x00"+m.old,
+					"prompt file uses a legacy target.reuse key and was migrated in memory",
 					"path", path, "old_key", "target."+m.old, "new_key", m.new)
 				migrated = true
 				break
@@ -1083,7 +1105,8 @@ func renameAliasKeysInMapping(path, pathPrefix string, mapping *yaml.Node, level
 			continue // no legacy key present, or canonical key already present (never clobber)
 		}
 		mapping.Content[oldIdx].Value = alias.new
-		slog.Warn("prompt file uses a legacy key alias and was migrated in memory",
+		warnMigrationOnce("alias\x00"+path+"\x00"+pathPrefix+alias.old,
+			"prompt file uses a legacy key alias and was migrated in memory",
 			"path", path, "old_key", pathPrefix+alias.old, "new_key", pathPrefix+alias.new)
 		changed = true
 	}
