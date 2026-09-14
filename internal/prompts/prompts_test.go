@@ -841,6 +841,97 @@ prompt: hi
 	}
 }
 
+// TestParsePromptFile_LegacyMigrationWarnDedupedOncePerProcess pins mitto-vp1:
+// migrateLegacyTargetReuseKeys and renameAliasKeysInMapping rewrite legacy
+// keys in memory only — the file on disk is never rewritten by
+// ParsePromptFile — so a fs-watcher/cold-cache/ForceReload cycle that
+// re-parses the SAME unchanged file repeatedly used to slog.Warn on every
+// single reload (137x in one log window for one file in the field). Mirrors
+// the loadWarnSeen precedent pinned by
+// TestLoadPromptsFromDirWithErrors_LogsFailedFileOncePerReload above: each
+// migration WARN must fire at most once per (site, path, key) per process
+// lifetime via warnMigrationOnce/migrationWarnSeen, while the migration
+// itself (and the resulting field binding) must keep succeeding on every
+// call — the structured behavior is unaffected, only the log cadence is
+// bounded. Also asserts the dedup key is scoped by path: a legacy key at a
+// DIFFERENT path must still WARN once for itself, proving two files aren't
+// accidentally collapsed onto the same key.
+func TestParsePromptFile_LegacyMigrationWarnDedupedOncePerProcess(t *testing.T) {
+	t.Run("target.reuse legacy key", func(t *testing.T) {
+		cap := &warnCountHandler{target: "prompt file uses a legacy target.reuse key and was migrated in memory"}
+		oldDefault := slog.Default()
+		slog.SetDefault(slog.New(cap))
+		t.Cleanup(func() { slog.SetDefault(oldDefault) })
+
+		body := []byte(`name: "x"
+target:
+  reuseIssue: true
+prompt: hi
+`)
+		const path = "legacy-dedup-reuse.prompt.yaml"
+
+		for i := 0; i < 3; i++ {
+			prompt, err := ParsePromptFile(path, body, time.Now())
+			if err != nil {
+				t.Fatalf("call %d: ParsePromptFile: err = %v, want a successful migrate+WARN load", i, err)
+			}
+			if prompt.Target == nil || prompt.Target.Reuse == nil || !prompt.Target.Reuse.Issue {
+				t.Fatalf("call %d: Target.Reuse.Issue not migrated: %+v", i, prompt.Target)
+			}
+		}
+
+		cap.mu.Lock()
+		got := cap.count
+		cap.mu.Unlock()
+		if got != 1 {
+			t.Fatalf("WARN fired %d times across 3 reloads of the same path, want 1 (mitto-vp1: dedupe per (site,path,key) per process lifetime)", got)
+		}
+
+		// A second, DIFFERENT path with the same legacy key must still WARN
+		// once for itself — the dedup key must be scoped by path.
+		otherPath := "legacy-dedup-reuse-other.prompt.yaml"
+		if _, err := ParsePromptFile(otherPath, body, time.Now()); err != nil {
+			t.Fatalf("ParsePromptFile(otherPath): err = %v", err)
+		}
+		cap.mu.Lock()
+		got = cap.count
+		cap.mu.Unlock()
+		if got != 2 {
+			t.Fatalf("WARN count after a different path = %d, want 2 (a new path must still WARN once for itself)", got)
+		}
+	})
+
+	t.Run("background_color key alias", func(t *testing.T) {
+		cap := &warnCountHandler{target: "prompt file uses a legacy key alias and was migrated in memory"}
+		oldDefault := slog.Default()
+		slog.SetDefault(slog.New(cap))
+		t.Cleanup(func() { slog.SetDefault(oldDefault) })
+
+		body := []byte(`name: "x"
+background_color: '#E1BEE7'
+prompt: hi
+`)
+		const path = "legacy-dedup-bg.prompt.yaml"
+
+		for i := 0; i < 3; i++ {
+			prompt, err := ParsePromptFile(path, body, time.Now())
+			if err != nil {
+				t.Fatalf("call %d: ParsePromptFile: err = %v, want a successful migrate+WARN load", i, err)
+			}
+			if prompt.BackgroundColor != "#E1BEE7" {
+				t.Fatalf("call %d: BackgroundColor = %q, want #E1BEE7", i, prompt.BackgroundColor)
+			}
+		}
+
+		cap.mu.Lock()
+		got := cap.count
+		cap.mu.Unlock()
+		if got != 1 {
+			t.Fatalf("WARN fired %d times across 3 reloads of the same path, want 1 (mitto-vp1: dedupe per (site,path,key) per process lifetime)", got)
+		}
+	})
+}
+
 // TestParsePromptFile_PreferredModelsBareStringShorthand pins mitto-ebh: a
 // bare-string preferredModels value (either the whole field, or individual
 // list items) used to make the whole prompt file fail to parse with "cannot
