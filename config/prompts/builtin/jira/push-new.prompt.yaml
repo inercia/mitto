@@ -16,7 +16,7 @@ parameters:
     required: false
     multiLine: true
     description: 'Optional per-run override for the JQL query used to infer ticket defaults. Accepts either a raw JQL string (e.g. `project = ABC AND statusCategory != Done`) or a JIRA URL that identifies a set of tickets — a saved-filter link (`.../issues/?filter=12345`), a RapidBoard link (`.../secure/RapidBoard.jspa?rapidView=32735&quickFilter=220833`), or a browse link (`.../browse/ABC-123`). If empty, the saved "Jira Tasks" user data is used. This value is used for this run only and does not overwrite the saved query.'
-enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && !("jira-sync" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync"))'
+enabledWhen: 'Workspace.TasksUpstream == "prompts" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads") && !("jira-sync" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "jira-sync"))'
 preferredModels:
   - modelTag: Coding
 target:

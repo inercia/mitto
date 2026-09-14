@@ -44,17 +44,17 @@ func TestBeadsModeAndTaskUpstreamPromptMatrix(t *testing.T) {
 		labels       []string
 		wantUpstream string
 	}{
-		{name: "JIRA: sync tasks", wantUpstream: "jira"},
-		{name: "JIRA: pull issue", labels: []string{"jira-sync"}, wantUpstream: "jira"},
-		{name: "JIRA: push issue", labels: []string{"jira-sync"}, wantUpstream: "jira"},
-		{name: "JIRA: push to new", labels: []string{"support-question"}, wantUpstream: "jira"},
+		{name: "JIRA: sync tasks", wantUpstream: "prompts"},
+		{name: "JIRA: pull issue", labels: []string{"jira-sync"}, wantUpstream: "prompts"},
+		{name: "JIRA: push issue", labels: []string{"jira-sync"}, wantUpstream: "prompts"},
+		{name: "JIRA: push to new", labels: []string{"support-question"}, wantUpstream: "prompts"},
 		{name: "GitHub: sync tasks", wantUpstream: "github"},
 		{name: "Show status"},
 		{name: "GitHub: review a Pull Request"},
 	}
 
 	for _, mode := range []string{"local", "shared"} {
-		for _, upstream := range []string{"", "jira", "github"} {
+		for _, upstream := range []string{"", "jira", "github", "prompts"} {
 			for _, spec := range specs {
 				t.Run(mode+"/"+upstream+"/"+spec.name, func(t *testing.T) {
 					expr, ok := expressions[spec.name]

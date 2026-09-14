@@ -9,9 +9,9 @@ tags:
 parameters:
   - name: Key
     type: text
-    required: false
+    required: true
     description: 'The JIRA ticket to pull into a new bead. Accepts a raw JIRA key (e.g. `ABC-123`) or a browse URL (`.../browse/ABC-123`). If empty, you are asked for it in interactive mode; in silent (loop) mode the run stops.'
-enabledWhen: 'Workspace.TasksUpstream == "jira" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads")'
+enabledWhen: 'Workspace.TasksUpstream == "prompts" && (Tools.Names.exists(n, n.matches("(?i)jira")) || CommandExists("jira")) && CommandExists("bd") && DirExists(".beads")'
 preferredModels:
   - modelTag: Coding
 target:
