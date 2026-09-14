@@ -133,9 +133,11 @@ type ConversationDetails struct {
 	LastSeq        int64  `json:"last_seq,omitempty"` // Last sequence number assigned
 
 	// Parent/child relationship
-	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
-	ChildOrigin     string `json:"child_origin,omitempty"`      // How this child was created: "auto", "mcp", or "human" (empty for top-level)
-	IsLoop          bool   `json:"is_loop"`                     // Whether the conversation has an active loop prompt
+	ParentSessionID string   `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
+	ChildOrigin     string   `json:"child_origin,omitempty"`      // How this child was created: "auto", "mcp", or "human" (empty for top-level)
+	IsLoop          bool     `json:"is_loop"`                     // Whether the conversation has an active loop prompt
+	Children        []string `json:"children,omitempty"`          // Direct child session IDs (mitto-azt), empty/omitted when none
+	ChildrenCount   int      `json:"children_count,omitempty"`    // Convenience count of direct children (mitto-azt)
 
 	// Available ACP servers that can be used when creating new conversations from this session
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`

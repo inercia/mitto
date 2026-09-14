@@ -2008,6 +2008,16 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 				details.QueuedPrompts = append(details.QueuedPrompts, qp)
 			}
 		}
+
+		// Load direct child conversation IDs + count (mitto-azt). Direct children
+		// only (no recursion) — cheapest correct answer per the bead's plan.
+		if children, err := store.ListChildSessions(meta.SessionID); err == nil && len(children) > 0 {
+			details.Children = make([]string, 0, len(children))
+			for _, child := range children {
+				details.Children = append(details.Children, child.SessionID)
+			}
+			details.ChildrenCount = len(details.Children)
+		}
 	}
 
 	// Get running session info if available (overrides lock-based IsPrompting)

@@ -248,7 +248,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Description: "Get detailed properties of a specific conversation by conversation_id. " +
 			"Returns metadata, status, runtime info including whether the agent is currently replying, " +
 			"and the list of queued prompts (with scheduled delivery times, if any). " +
-			"Also returns parent-child relationship info (parent_session_id, child_origin). " +
+			"Also returns parent-child relationship info (parent_session_id, child_origin) and this conversation's own " +
+			"direct children as 'children' (a list of child session IDs) plus 'children_count' (omitted/empty when there are none). " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			"Optionally specify a 'workspace' UUID to access a conversation in a different workspace (requires user confirmation). " +
 			selfIDNote,
