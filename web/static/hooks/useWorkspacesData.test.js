@@ -148,3 +148,85 @@ describe("useWorkspacesData — loadData supported-runners", () => {
     expect(setters[IDX.setWorkspaces]).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// initialWorkingDir defers the initial selection to the
+// auto-select-initial-folder effect in WorkspacesDialog (bug: "Configure
+// Workspace" opened the dialog but did not focus the target workspace).
+//
+// loadData used to unconditionally pick a default selection (firstByName),
+// clobbering the folder the auto-select effect had chosen for
+// initialWorkingDir. When initialWorkingDir matches a valid workspace,
+// loadData must now leave selectedFolder/selectedWorkspaceKey untouched.
+// ---------------------------------------------------------------------------
+describe("useWorkspacesData — loadData initial selection", () => {
+  test("initialWorkingDir matching a workspace: defers selection (no clobber)", async () => {
+    global.fetch = jest.fn((url) => {
+      if (String(url).includes("/api/supported-runners")) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      return Promise.resolve(jsonResponse(CONFIG_BODY));
+    });
+    const setSelectedWorkspaceKey = jest.fn();
+    const setSelectedFolder = jest.fn();
+    const { useWorkspacesData } = await loadHook();
+    const { loadData } = useWorkspacesData({
+      prevSelectedWorkspaceKeyRef: { current: null },
+      selectedWorkspaceKey: null,
+      setSelectedWorkspaceKey,
+      setSelectedFolder,
+      getWorkspaceKey: (ws) => ws.working_dir,
+      initialWorkingDir: "/tmp/ws1",
+    });
+    await loadData();
+    // The folder target is present, so the loader must NOT choose a default
+    // selection — the auto-select effect owns folder/workspace selection.
+    expect(setSelectedWorkspaceKey).not.toHaveBeenCalled();
+    expect(setSelectedFolder).not.toHaveBeenCalled();
+  });
+
+  test("no initialWorkingDir: picks the deterministic default selection", async () => {
+    global.fetch = jest.fn((url) => {
+      if (String(url).includes("/api/supported-runners")) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      return Promise.resolve(jsonResponse(CONFIG_BODY));
+    });
+    const setSelectedWorkspaceKey = jest.fn();
+    const setSelectedFolder = jest.fn();
+    const { useWorkspacesData } = await loadHook();
+    const { loadData } = useWorkspacesData({
+      prevSelectedWorkspaceKeyRef: { current: null },
+      selectedWorkspaceKey: null,
+      setSelectedWorkspaceKey,
+      setSelectedFolder,
+      getWorkspaceKey: (ws) => ws.working_dir,
+    });
+    await loadData();
+    expect(setSelectedFolder).toHaveBeenCalledWith(null);
+    expect(setSelectedWorkspaceKey).toHaveBeenCalledWith("/tmp/ws1");
+  });
+
+  test("initialWorkingDir not matching any workspace: falls back to default", async () => {
+    global.fetch = jest.fn((url) => {
+      if (String(url).includes("/api/supported-runners")) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      return Promise.resolve(jsonResponse(CONFIG_BODY));
+    });
+    const setSelectedWorkspaceKey = jest.fn();
+    const setSelectedFolder = jest.fn();
+    const { useWorkspacesData } = await loadHook();
+    const { loadData } = useWorkspacesData({
+      prevSelectedWorkspaceKeyRef: { current: null },
+      selectedWorkspaceKey: null,
+      setSelectedWorkspaceKey,
+      setSelectedFolder,
+      getWorkspaceKey: (ws) => ws.working_dir,
+      initialWorkingDir: "/tmp/does-not-exist",
+    });
+    await loadData();
+    expect(setSelectedFolder).toHaveBeenCalledWith(null);
+    expect(setSelectedWorkspaceKey).toHaveBeenCalledWith("/tmp/ws1");
+  });
+});

@@ -219,6 +219,7 @@ export function WorkspacesDialog({
     setSelectedWorkspaceKey,
     setSelectedFolder,
     getWorkspaceKey,
+    initialWorkingDir,
   });
 
   const sortedAcpServers = useMemo(

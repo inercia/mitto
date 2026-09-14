@@ -19,6 +19,7 @@ export function useWorkspacesData({
   setSelectedWorkspaceKey,
   setSelectedFolder,
   getWorkspaceKey,
+  initialWorkingDir,
 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -68,8 +69,24 @@ export function useWorkspacesData({
       });
       setWorkspaces(valid);
       setOrphanedWorkspaces(orphaned);
-      setSelectedFolder(null);
-      if (valid.length > 0) {
+      // When the dialog was opened for a specific folder (initialWorkingDir,
+      // e.g. via "Configure Workspace" on a sidebar folder), defer the initial
+      // selection to the auto-select-initial-folder effect in WorkspacesDialog,
+      // which selects that folder, expands it, scrolls it into view, and applies
+      // the initial tab. Choosing a default selection here would clobber that
+      // folder selection due to the async ordering between this loader and that
+      // effect: on a re-open with cached workspaces the effect runs first
+      // (selecting the folder), then this loader's async completion would
+      // overwrite it with the first workspace, and the effect's once-per-open
+      // guard prevents it from recovering.
+      const hasFolderTarget =
+        !!initialWorkingDir &&
+        valid.some((ws) => ws.working_dir === initialWorkingDir);
+      if (hasFolderTarget) {
+        // Leave selectedFolder/selectedWorkspaceKey untouched so a folder the
+        // auto-select effect may have already chosen (re-open path) survives.
+      } else if (valid.length > 0) {
+        setSelectedFolder(null);
         // Preserve the previously-selected workspace across a reload/reopen when it
         // still exists. Otherwise the selection resets to valid[0], whose order is
         // not stable (it reflects the backend's map-iteration order, not the sorted
@@ -94,6 +111,7 @@ export function useWorkspacesData({
           setSelectedWorkspaceKey(getWorkspaceKey(firstByName));
         }
       } else {
+        setSelectedFolder(null);
         setSelectedWorkspaceKey(null);
       }
       if (runnersResult.ok) {
@@ -121,6 +139,7 @@ export function useWorkspacesData({
     setSelectedWorkspaceKey,
     setSelectedFolder,
     getWorkspaceKey,
+    initialWorkingDir,
   ]);
 
   return {
