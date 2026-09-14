@@ -10950,6 +10950,61 @@ func TestHandleRunLoopNow_MissingConversationID(t *testing.T) {
 // GetConversation Queue Tests
 // =============================================================================
 
+// TestGetConversation_Children_Present verifies that mitto_conversation_get
+// (via buildConversationDetails) surfaces the direct child session IDs and
+// count for a conversation that has children (mitto-azt).
+func TestGetConversation_Children_Present(t *testing.T) {
+	srv, _, parentID, childIDs := setupParentChildSessions(t, 2)
+	ctx := context.Background()
+
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+
+	if output.ChildrenCount != len(childIDs) {
+		t.Fatalf("Expected ChildrenCount=%d, got %d", len(childIDs), output.ChildrenCount)
+	}
+	if len(output.Children) != len(childIDs) {
+		t.Fatalf("Expected %d Children, got %d: %+v", len(childIDs), len(output.Children), output.Children)
+	}
+	got := make(map[string]bool, len(output.Children))
+	for _, id := range output.Children {
+		got[id] = true
+	}
+	for _, id := range childIDs {
+		if !got[id] {
+			t.Errorf("Expected child %s to be present in output.Children=%v", id, output.Children)
+		}
+	}
+}
+
+// TestGetConversation_Children_Empty verifies that a conversation with no
+// children reports an empty/omitted Children list and a zero ChildrenCount
+// (mitto-azt).
+func TestGetConversation_Children_Empty(t *testing.T) {
+	srv, _, parentID, _ := setupParentChildSessions(t, 0)
+	ctx := context.Background()
+
+	_, output, err := srv.handleGetConversation(ctx, nil, GetConversationInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+	})
+	if err != nil {
+		t.Fatalf("handleGetConversation failed: %v", err)
+	}
+
+	if output.ChildrenCount != 0 {
+		t.Errorf("Expected ChildrenCount=0, got %d", output.ChildrenCount)
+	}
+	if len(output.Children) != 0 {
+		t.Errorf("Expected 0 Children, got %d: %+v", len(output.Children), output.Children)
+	}
+}
+
 func TestGetConversation_QueuedPrompts_Empty(t *testing.T) {
 	store, srv, parentID := setupConversationStartServer(t)
 
