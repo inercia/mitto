@@ -2307,7 +2307,13 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 
 	if m.logger != nil {
 		if persisted {
-			m.logger.Error(failLog+"; batch persisted for later retry",
+			// mitto-c6j.2: this is the self-healing spool/retry path — the
+			// batch is durably persisted and reliably re-delivered by
+			// FlushPendingDispatches, so it is not a genuine failure. Log at
+			// WARN, not ERROR, to avoid alert-fatigue for an expected,
+			// recovered condition. Reserve ERROR for cases below where
+			// spooling itself fails or work is genuinely lost.
+			m.logger.Warn(failLog+"; batch persisted for later retry",
 				"dispatch_id", entry.ID,
 				"workspace_uuid", workspaceUUID,
 				"name", name,
