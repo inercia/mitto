@@ -192,7 +192,10 @@ prompt: |
 
   - **Cap: {{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} per workspace** total across §B + §C{{ if .Args.PostIterationPrompt }} + the Step 5H
     post-task hook{{ end }} (non-archived conversations whose title starts with `Fix ` /
-    `Implement `{{ if .Args.PostIterationPrompt }} / `Post-task: `{{ end }}). The
+    `Implement `{{ if .Args.PostIterationPrompt }} / `Post-task: `{{ end }} AND which
+    also carries a `{<bd-id>}` beads_issue suffix in the rendered `Workspace peers:`
+    block — a bare title-prefix match on an idle human/non-child conversation does
+    NOT count, mitto-e1x). The
     cap is workspace-scoped (enumerated via `.Workspace.Peers.All` — non-archived
     sibling conversations sharing this session's `(WorkingDir, ACPServer)`,
     populated at template-dispatch time), not per-orchestrator — parallel
@@ -1124,8 +1127,13 @@ prompt: |
   ## §B — Fix ONE bug
 
   Take the first entry from 2B as **`<id>`**. **Concurrency gate (workspace-scoped):**
-  read the pre-rendered `Workspace peers:` block at the top and count peers whose
-  `(name)` starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: `{{ else }} or `Implement `{{ end }}.
+  read the pre-rendered `Workspace peers:` block at the top and count a peer ONLY
+  when its `(name)` starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: `{{ else }} or `Implement `{{ end }}
+  **AND** it also carries a `{<bd-id>}` beads_issue suffix in that same rendered
+  line (genuine §B/§C{{ if .Args.PostIterationPrompt }}/Step 5H hook{{ end }} workers are always spawned with `beads_issue` set, so
+  they render with the suffix; an idle human/non-child conversation that merely
+  shares the title prefix has no `beads_issue` and renders with no suffix — do
+  not count it, mitto-e1x).
   `.Workspace.Peers.All` is already
   scoped to non-archived sibling conversations sharing this session's
   `(WorkingDir, ACPServer)` — i.e. the workspace boundary — and is populated at
@@ -1238,10 +1246,14 @@ prompt: |
   Take the first entry from 2C as **`<id>`**. **Concurrency gate (workspace-scoped):**
   same rule as §B — read the pre-rendered `Workspace peers:` block at the top
   (backed by `.Workspace.Peers.All`, scoped to non-archived siblings sharing
-  this session's `(WorkingDir, ACPServer)`) and count peers whose `(name)`
-  starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: ` (§B, §C and the Step 5H hook share
-  the {{ $maxWorkers }}-worker budget{{ else }} or `Implement ` (§B and §C share the {{ $maxWorkers }}-driver budget{{ end }}
-  workspace-wide, not per-orchestrator; mitto-9mk).
+  this session's `(WorkingDir, ACPServer)`) and count a peer ONLY when its `(name)`
+  starts with `Fix `{{ if .Args.PostIterationPrompt }}, `Implement ` or `Post-task: `{{ else }} or `Implement `{{ end }}
+  **AND** it also carries a `{<bd-id>}` beads_issue suffix in that same rendered
+  line (genuine workers are always spawned with `beads_issue` set; an idle
+  human/non-child conversation sharing the title prefix has no `beads_issue`
+  and must not be counted, mitto-e1x). {{ if .Args.PostIterationPrompt }}§B, §C and the Step 5H hook share
+  the {{ $maxWorkers }}-worker budget{{ else }}§B and §C share the {{ $maxWorkers }}-driver budget{{ end }}
+  workspace-wide, not per-orchestrator; mitto-9mk.
   At cap → `bd comment <id> "Orchestrator: concurrency cap ({{ $maxWorkers }} active worker{{ if ne $maxWorkers "1" }}s{{ end }} in workspace) reached; feature queued for a later pass."`
   and jump to Step 6. Otherwise spawn ONE child (seed AND `onCompletion` re-fire both the
   named per-feature driver):
@@ -1365,10 +1377,12 @@ prompt: |
   )
   ```
 
-  Count entries whose `title` starts with `Fix `, `Implement ` or `Post-task: `,
-  excluding this session itself and the just-finished child you archived in
-  §A/§B/§C above (it may still appear if the archive has not settled — match it
-  by `conversation_id`).
+  Count entries whose `title` starts with `Fix `, `Implement ` or `Post-task: `
+  AND which also have a non-empty `beads_issue` field (`ConversationInfo.BeadsIssue`
+  from this live list) — a bare title-prefix match on a conversation with no
+  linked bead does NOT count (mitto-e1x). Exclude this session itself and the
+  just-finished child you archived in §A/§B/§C above (it may still appear if the
+  archive has not settled — match it by `conversation_id`).
 
   - Count ≥ 1 → **do not spawn**. Write
     `bd comment <id> "Orchestrator: post-task hook ({{ .Args.PostIterationPrompt }}) skipped — another worker is active in the workspace; will run after a later task completes."`
