@@ -151,13 +151,13 @@ if agent.HasCommand(agents.CommandMCPList) {
 
 API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`).
 
-**`mcp-list.sh` audit (mitto-sys.11)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty. Verify against actual docs/source when adding or fixing one:
+**`cmds/*.sh` audit (mitto-sys.11, generalized by mitto-o8k)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty. Audit the FULL script set per agent (`status.sh`, `install.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`) — a fix that only touches `mcp-list.sh` leaves `mcp-install/remove.sh` silently writing to a path nothing reads (mitto-o8k anti-pattern). MCP-writing scripts must also include any mandatory schema discriminator (e.g. Copilot's `"type": "local"|"http"`), else the CLI's validator silently ignores the entry. Verify against actual docs/source when adding or fixing one:
 
 | Agent | Status | Notes |
 |---|---|---|
 | cursor, goose | OK | `~/.cursor/mcp.json`/`mcpServers`; `~/.config/goose/config.yaml`/`extensions` |
 | opencode | BROKEN (mitto-sys.13) | wrong path/key (`mcp` not `mcpServers`), command-as-array, `environment` not `env` |
-| github-copilot | BROKEN (mitto-sys.14) | wrong path: real is `~/.copilot/mcp-config.json` |
+| github-copilot | OK (mitto-8ux + mitto-o8k) | `~/.copilot/mcp-config.json`; install/remove scripts also fixed; `type` discriminator required |
 | qwen-code | BROKEN (mitto-sys.15) | wrong path: real is `~/.qwen` |
 | junie | stub (mitto-sys.10) | always returns `{"servers": []}` |
 
