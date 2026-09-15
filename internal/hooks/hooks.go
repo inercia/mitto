@@ -410,41 +410,54 @@ func RunDownWithOptions(hook config.WebHook, port int, onFailure func(HookFailur
 		}
 
 		transient, reason := ClassifyHookOutput(output)
+		benign, benignReason := ClassifyBenignExit(command, exitCode, output)
 
-		// Genuine non-zero exit: log as error (or warn if transient) for diagnosis.
-		// The resolved command is always included so operators can see what
-		// `sh -c` was actually asked to run (AC#3 fix, mitto-y6i).
-		fmt.Printf("⚠️  Down hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
-		if output != "" {
-			fmt.Printf("   Output: %s\n", output)
-		}
-		if transient {
-			logger.Warn("Down hook failed with transient error",
+		if benign {
+			// Known no-op failure shape (e.g. `pkill` matching no processes) —
+			// log quietly at INFO instead of ERROR; no failure notification.
+			fmt.Printf("🔗 Down hook '%s' exited with code %d (%s)\n", hookName, exitCode, benignReason)
+			logger.Info("Down hook exited with benign no-op",
 				"name", hookName,
 				"exit_code", exitCode,
 				"command", command,
-				"error", err,
-				"output", output,
-				"transient_reason", reason,
-			)
-		} else if output == "" {
-			// No output captured — flag explicitly so log analysis can distinguish
-			// "command produced nothing" from "output was not collected".
-			logger.Error("Down hook failed",
-				"name", hookName,
-				"exit_code", exitCode,
-				"command", command,
-				"error", err,
-				"output_empty", true,
+				"benign_reason", benignReason,
 			)
 		} else {
-			logger.Error("Down hook failed",
-				"name", hookName,
-				"exit_code", exitCode,
-				"command", command,
-				"error", err,
-				"output", output,
-			)
+			// Genuine non-zero exit: log as error (or warn if transient) for diagnosis.
+			// The resolved command is always included so operators can see what
+			// `sh -c` was actually asked to run (AC#3 fix, mitto-y6i).
+			fmt.Printf("⚠️  Down hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
+			if output != "" {
+				fmt.Printf("   Output: %s\n", output)
+			}
+			if transient {
+				logger.Warn("Down hook failed with transient error",
+					"name", hookName,
+					"exit_code", exitCode,
+					"command", command,
+					"error", err,
+					"output", output,
+					"transient_reason", reason,
+				)
+			} else if output == "" {
+				// No output captured — flag explicitly so log analysis can distinguish
+				// "command produced nothing" from "output was not collected".
+				logger.Error("Down hook failed",
+					"name", hookName,
+					"exit_code", exitCode,
+					"command", command,
+					"error", err,
+					"output_empty", true,
+				)
+			} else {
+				logger.Error("Down hook failed",
+					"name", hookName,
+					"exit_code", exitCode,
+					"command", command,
+					"error", err,
+					"output", output,
+				)
+			}
 		}
 
 		// Rate-limit transient failures — real errors always broadcast.
@@ -461,7 +474,7 @@ func RunDownWithOptions(hook config.WebHook, port int, onFailure func(HookFailur
 				)
 			}
 		}
-		if onFailure != nil && !suppress {
+		if onFailure != nil && !suppress && !benign {
 			onFailure(HookFailure{
 				Name:      hookName,
 				ExitCode:  exitCode,
