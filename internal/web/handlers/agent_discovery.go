@@ -53,6 +53,31 @@ type AgentConfirmEntry struct {
 	DirName string `json:"dir_name,omitempty"`
 }
 
+// appendInstallArgs appends an agent's metadata.yaml install.args (e.g. the
+// mandatory "--acp" flag) onto a discovered runtime command, skipping any
+// arg the command already contains. status.sh always emits the agent's bare
+// binary name (e.g. "copilot") and AgentDiscoveryDialog.js's handleConfirm
+// sends that verbatim as AgentConfirmEntry.Command — without this, the
+// persisted ACPServerSettings.Command never runs the agent in ACP mode, so
+// it launches its interactive TUI instead, never answers ACP `initialize`,
+// and Mitto's startup watchdog SIGKILLs it (mitto-hc4). install may be nil.
+func appendInstallArgs(command string, install *agents.InstallMethod) string {
+	if install == nil || len(install.Args) == 0 {
+		return command
+	}
+	missing := make([]string, 0, len(install.Args))
+	for _, arg := range install.Args {
+		if arg == "" || strings.Contains(command, arg) {
+			continue
+		}
+		missing = append(missing, arg)
+	}
+	if len(missing) == 0 {
+		return command
+	}
+	return strings.Join(append([]string{command}, missing...), " ")
+}
+
 // seedACPServerDefaults applies agent metadata defaults onto a newly created
 // ACP server settings entry. Only fields that are currently empty/unset on the
 // settings are populated, so any user-provided values win.
@@ -247,8 +272,11 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 			Source:  configPkg.SourceSettings,
 		}
 		if mgr != nil && entry.DirName != "" {
-			if agent, err := mgr.GetAgent(entry.DirName); err == nil && agent != nil && agent.Metadata.Defaults != nil {
-				seedACPServerDefaults(&srv, agent.Metadata.Defaults)
+			if agent, err := mgr.GetAgent(entry.DirName); err == nil && agent != nil {
+				srv.Command = appendInstallArgs(srv.Command, agent.Metadata.Install)
+				if agent.Metadata.Defaults != nil {
+					seedACPServerDefaults(&srv, agent.Metadata.Defaults)
+				}
 			}
 		}
 		settings.ACPServers = append(settings.ACPServers, srv)

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -133,5 +134,123 @@ defaults:
 			"(got Env=%v) — the agent's V8 heap-cap default never reaches the subprocess, "+
 			"so it falls back to V8's own ~6 GiB default and can abort with SIGABRT under memory pressure",
 			"Auggie (Opus)", "--max-old-space-size=12288", found.Env)
+	}
+}
+
+// TestHandleConfirmAgents_NewGithubCopilotAgent_MissingACPFlag reproduces
+// mitto-hc4: confirming a brand-new "GitHub Copilot" agent from the
+// Discover-Agents dialog persists the BARE binary name ("copilot") as the
+// runtime ACPServerSettings.Command, silently dropping the agent's
+// metadata.yaml install.args ("--acp").
+//
+// Root cause (see the Investigation comment on mitto-hc4): status.sh emits
+// the bare binary as status.command, AgentDiscoveryDialog.js's handleConfirm
+// sends that verbatim as AgentConfirmEntry.Command, and HandleConfirmAgents
+// (agent_discovery.go) persists entry.Command unchanged — seedACPServerDefaults
+// only seeds Env/Tags/Constraints/AutoApprove/ContextFlushCommand, never
+// Command. metadata.yaml's install.args is consumed ONLY by the npx install
+// flow, never appended to the discovered runtime command.
+//
+// Without --acp, `copilot` launches its interactive TUI instead of its ACP
+// stdio server, never answers ACP `initialize`, and Mitto's startup watchdog
+// SIGKILLs it (failed_to_start / -32603).
+//
+// This test confirms the currently-missing behavior: confirming a new
+// "GitHub Copilot" agent whose metadata declares install.args=["--acp"] should
+// produce a persisted Command that includes "--acp" (mirroring the real
+// config/agents/builtin/github-copilot/metadata.yaml). Today it does not —
+// the persisted Command is the bare "copilot", exactly like status.sh emits.
+func TestHandleConfirmAgents_NewGithubCopilotAgent_MissingACPFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	// No pre-existing settings.json: this is a brand-new agent being added via
+	// Discover Agents, the exact path mitto-hc4 was filed against.
+	if err := config.SaveSettings(&config.Settings{}); err != nil {
+		t.Fatalf("SaveSettings (seed): %v", err)
+	}
+
+	// Deploy a minimal agent definition under MITTO_DIR/agents/builtin/github-copilot
+	// whose metadata.yaml declares install.args=["--acp"], mirroring
+	// config/agents/builtin/github-copilot/metadata.yaml in the real tree.
+	agentsDir, err := appdir.AgentsDir()
+	if err != nil {
+		t.Fatalf("AgentsDir: %v", err)
+	}
+	copilotDir := filepath.Join(agentsDir, "builtin", "github-copilot")
+	if err := os.MkdirAll(copilotDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	metaYAML := []byte(`name: "GitHub Copilot"
+displayName: "GitHub Copilot"
+acpId: "github-copilot"
+description: test
+install:
+  method: "npx"
+  package: "@github/copilot"
+  args: ["--acp"]
+`)
+	if err := os.WriteFile(filepath.Join(copilotDir, "metadata.yaml"), metaYAML, 0644); err != nil {
+		t.Fatalf("WriteFile metadata.yaml: %v", err)
+	}
+
+	h := New(Deps{})
+
+	// Confirm the agent exactly as AgentDiscoveryDialog.js's handleConfirm
+	// would: command is the BARE binary from status.sh's status.command,
+	// with no --acp appended.
+	reqBody, err := json.Marshal(AgentConfirmRequest{
+		Agents: []AgentConfirmEntry{
+			{Name: "GitHub Copilot", Command: "copilot", DirName: "github-copilot"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/confirm", bytes.NewReader(reqBody))
+	w := httptest.NewRecorder()
+	h.HandleConfirmAgents(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	// Read back settings.json and inspect the persisted "GitHub Copilot" entry's Command.
+	var reloaded config.Settings
+	settingsPath, err := appdir.SettingsPath()
+	if err != nil {
+		t.Fatalf("SettingsPath: %v", err)
+	}
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile settings.json: %v", err)
+	}
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatalf("Unmarshal settings.json: %v", err)
+	}
+
+	var found *config.ACPServerSettings
+	for i := range reloaded.ACPServers {
+		if reloaded.ACPServers[i].Name == "GitHub Copilot" {
+			found = &reloaded.ACPServers[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("GitHub Copilot server entry not found in settings.json after confirm; got %+v", reloaded.ACPServers)
+	}
+
+	// This is the bug: the persisted Command is the bare "copilot", missing
+	// the mandatory --acp flag declared in the agent's metadata install.args,
+	// so a new GitHub Copilot ACP session will never start (mitto-hc4).
+	if !strings.Contains(found.Command, "--acp") {
+		t.Fatalf("mitto-hc4 reproduced: persisted ACP server entry %q has Command=%q, missing "+
+			"the mandatory --acp flag declared in the agent's metadata.yaml install.args=[\"--acp\"] "+
+			"— copilot will launch its interactive TUI instead of its ACP stdio server, never answer "+
+			"initialize, and Mitto's startup watchdog will SIGKILL it (failed_to_start / -32603)",
+			"GitHub Copilot", found.Command)
 	}
 }
