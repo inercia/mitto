@@ -7339,9 +7339,16 @@ func TestApplyWithRerun_RunRecorder(t *testing.T) {
 	}
 	if run := rec.byName("prompt-dispatched"); run == nil || run.Outcome != "ok" {
 		t.Errorf("prompt-dispatched: got %+v, want Outcome=ok", run)
+	} else if run.Mode != RunModePrompt || run.Target != RunTargetAuxiliary || run.RenderedBytes == 0 {
+		// mitto-08q.2 acceptance criteria: primary-context injection and
+		// auxiliary processor execution must be distinguishable.
+		t.Errorf("prompt-dispatched: Mode/Target/RenderedBytes = %q/%q/%d, want %q/%q/>0",
+			run.Mode, run.Target, run.RenderedBytes, RunModePrompt, RunTargetAuxiliary)
 	}
 	if run := rec.byName("cmd"); run == nil || run.Outcome != "ok" || run.Duration <= 0 {
 		t.Errorf("cmd: got %+v, want Outcome=ok with Duration > 0", run)
+	} else if run.Mode != RunModeReplace || run.Target != RunTargetPrimary {
+		t.Errorf("cmd: Mode/Target = %q/%q, want %q/%q", run.Mode, run.Target, RunModeReplace, RunTargetPrimary)
 	}
 	for _, run := range rec.snapshot() {
 		if run.Phase != "before" {
@@ -7612,6 +7619,39 @@ func TestApplyOnClose_RunRecorder_PromptModeDispatched(t *testing.T) {
 	run := rec.byName("close-prompt")
 	if run == nil || run.Outcome != "ok" || run.Phase != "close" {
 		t.Errorf("close-prompt: got %+v, want Phase=close Outcome=ok", run)
+	} else if run.Mode != RunModePrompt || run.Target != RunTargetAuxiliary || run.RenderedBytes == 0 {
+		t.Errorf("close-prompt: Mode/Target/RenderedBytes = %q/%q/%d, want %q/%q/>0",
+			run.Mode, run.Target, run.RenderedBytes, RunModePrompt, RunTargetAuxiliary)
+	}
+}
+
+// TestApplyAfter_RunRecorder_PromptModeDispatched verifies a dispatched
+// after-phase prompt-mode processor is recorded with Mode="prompt",
+// Target="auxiliary", and a positive RenderedBytes/EstimatedTokens
+// (mitto-08q.2 acceptance criteria: auxiliary prompt-mode execution must be
+// covered and distinguishable from primary-context injection).
+func TestApplyAfter_RunRecorder_PromptModeDispatched(t *testing.T) {
+	proc := &Processor{
+		Name:   "after-prompt",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: "summarize the turn",
+	}
+	m := makeAfterManager([]*Processor{proc})
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	run := rec.byName("after-prompt")
+	if run == nil || run.Outcome != "ok" || run.Phase != "after" {
+		t.Fatalf("after-prompt: got %+v, want Phase=after Outcome=ok", run)
+	}
+	if run.Mode != RunModePrompt || run.Target != RunTargetAuxiliary {
+		t.Errorf("after-prompt: Mode/Target = %q/%q, want %q/%q", run.Mode, run.Target, RunModePrompt, RunTargetAuxiliary)
+	}
+	if run.RenderedBytes == 0 || run.EstimatedTokens == 0 {
+		t.Errorf("after-prompt: RenderedBytes/EstimatedTokens = %d/%d, want > 0", run.RenderedBytes, run.EstimatedTokens)
 	}
 }
 
