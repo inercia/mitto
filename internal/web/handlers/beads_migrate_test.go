@@ -17,16 +17,27 @@ import (
 
 // migrateStubClient records which of MigrateRemote / Bootstrap was called and
 // with which working dir, so the handler tests can assert routing by mode.
+// It also tracks ReconcileDatabaseMode ordering (mitto-aap): the pre-migration
+// reconcile invoked bd (bd dolt remote list / bd config set) which deadlocked
+// on a schema-skewed DB, so the fix moved reconcile AFTER the migration.
 type migrateStubClient struct {
 	stubBeadsClient
 	migrateCalls  atomic.Int32
 	localCalls    atomic.Int32
 	bootstrapCall atomic.Int32
-	lastDir       atomic.Value // string
-	migrateErr    error
-	bootstrapErr  error
-	migrateOut    []byte
-	bootstrapOut  []byte
+	reconcileCall atomic.Int32
+	// Snapshots of migrate/local/bootstrap call counts at the moment
+	// ReconcileDatabaseMode was first invoked, so tests can assert that
+	// reconcile happens AFTER the migration completes.
+	reconcileMigrateSnapshot   atomic.Int32
+	reconcileLocalSnapshot     atomic.Int32
+	reconcileBootstrapSnapshot atomic.Int32
+	lastDir                    atomic.Value // string
+	migrateErr                 error
+	bootstrapErr               error
+	reconcileErr               error
+	migrateOut                 []byte
+	bootstrapOut               []byte
 }
 
 func (c *migrateStubClient) MigrateRemote(_ context.Context, dir string) ([]byte, error) {
@@ -66,6 +77,15 @@ func (c *migrateStubClient) Bootstrap(_ context.Context, dir string) ([]byte, er
 		out = []byte(`{"bootstrapped":true}`)
 	}
 	return out, nil
+}
+
+func (c *migrateStubClient) ReconcileDatabaseMode(_ context.Context, _ string, _ config.BeadsDatabaseMode) error {
+	if c.reconcileCall.Add(1) == 1 {
+		c.reconcileMigrateSnapshot.Store(c.migrateCalls.Load())
+		c.reconcileLocalSnapshot.Store(c.localCalls.Load())
+		c.reconcileBootstrapSnapshot.Store(c.bootstrapCall.Load())
+	}
+	return c.reconcileErr
 }
 
 // newBeadsMigrateHandlers wires a Handlers with a tri-state MittoConfig
@@ -509,5 +529,108 @@ func TestHandleBeadsMigrate_PublishFailure_AdoptModeNeverClassified(t *testing.T
 	}
 	if _, ok := env.Error.Details["stage"]; ok {
 		t.Errorf("details.stage = %v, want absent for mode=adopt", env.Error.Details["stage"])
+	}
+}
+
+// TestHandleBeadsMigrate_ReconcileRunsAfterMigrate_mittoAap pins the mitto-aap
+// fix: ReconcileDatabaseMode must be invoked AFTER the schema migration, not
+// before. The pre-migration ordering deadlocked on a schema-skewed DB because
+// reconcile invokes bd (bd dolt remote list / bd config set) which itself
+// refuses on a skewed schema — so the migration endpoint used to return HTTP
+// 409 beads_schema_skew for the very condition it was meant to fix.
+func TestHandleBeadsMigrate_ReconcileRunsAfterMigrate_mittoAap(t *testing.T) {
+	tests := []struct {
+		name          string
+		mode          string
+		databaseMode  config.BeadsDatabaseMode
+		wantMigrate   int32
+		wantLocal     int32
+		wantBootstrap int32
+	}{
+		{name: "shared_migrate", mode: "migrate", databaseMode: config.BeadsDatabaseModeShared, wantMigrate: 1},
+		{name: "shared_adopt", mode: "adopt", databaseMode: config.BeadsDatabaseModeShared, wantBootstrap: 1},
+		{name: "local_migrate", mode: "migrate", databaseMode: config.BeadsDatabaseModeLocal, wantLocal: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setupMittoDir(t)
+			if err := config.SetFolderBeadsDatabaseMode("/test/workspace", tc.databaseMode); err != nil {
+				t.Fatalf("SetFolderBeadsDatabaseMode() error = %v", err)
+			}
+			stub := &migrateStubClient{}
+			h := New(Deps{SessionManager: newBeadsTestSM(), BeadsClient: stub, MittoConfig: &config.Config{}})
+			w := httptest.NewRecorder()
+			h.HandleBeadsMigrate(w, postJSON(t, "/api/beads/migrate", map[string]string{
+				"working_dir": "/test/workspace",
+				"mode":        tc.mode,
+			}))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			if stub.reconcileCall.Load() != 1 {
+				t.Fatalf("ReconcileDatabaseMode calls = %d, want 1", stub.reconcileCall.Load())
+			}
+			if got := stub.reconcileMigrateSnapshot.Load(); got != tc.wantMigrate {
+				t.Errorf("MigrateRemote calls at reconcile time = %d, want %d (reconcile must run AFTER migrate)", got, tc.wantMigrate)
+			}
+			if got := stub.reconcileLocalSnapshot.Load(); got != tc.wantLocal {
+				t.Errorf("MigrateLocal calls at reconcile time = %d, want %d (reconcile must run AFTER migrate)", got, tc.wantLocal)
+			}
+			if got := stub.reconcileBootstrapSnapshot.Load(); got != tc.wantBootstrap {
+				t.Errorf("Bootstrap calls at reconcile time = %d, want %d (reconcile must run AFTER migrate)", got, tc.wantBootstrap)
+			}
+		})
+	}
+}
+
+// TestHandleBeadsMigrate_ReconcileFailureDoesNotFailRequest_mittoAap pins the
+// mitto-aap fix: a post-migration ReconcileDatabaseMode failure is best-effort
+// and MUST NOT fail the request — the migration itself already succeeded,
+// which is what the user asked for. Guards can also be re-reconciled via the
+// folder-config UI (HandleBeadsDatabaseMode) if needed.
+func TestHandleBeadsMigrate_ReconcileFailureDoesNotFailRequest_mittoAap(t *testing.T) {
+	stub := &migrateStubClient{reconcileErr: errors.New("bd config set failed (simulated)")}
+	h := newBeadsMigrateHandlers(t, stub, true)
+	req := postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "migrate",
+	})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (reconcile failure must be best-effort); body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if stub.migrateCalls.Load() != 1 {
+		t.Errorf("MigrateRemote calls = %d, want 1", stub.migrateCalls.Load())
+	}
+	if stub.reconcileCall.Load() != 1 {
+		t.Errorf("ReconcileDatabaseMode calls = %d, want 1 (best-effort still attempted)", stub.reconcileCall.Load())
+	}
+}
+
+// TestHandleBeadsMigrate_ReconcileNotCalledOnMigrateFailure_mittoAap pins that
+// a failed migration short-circuits before reconcile is attempted: reconcile
+// on a still-skewed DB would only pile on a spurious warning. The
+// migration-failure error envelope is the sole response.
+func TestHandleBeadsMigrate_ReconcileNotCalledOnMigrateFailure_mittoAap(t *testing.T) {
+	stub := &migrateStubClient{migrateErr: &beads.CmdError{
+		Err:      errors.New("bd exited with non-zero status"),
+		Stderr:   "Error: migration failed (simulated)",
+		ExitCode: 1,
+	}}
+	h := newBeadsMigrateHandlers(t, stub, true)
+	req := postJSON(t, "/api/beads/migrate", map[string]string{
+		"working_dir": "/test/workspace",
+		"mode":        "migrate",
+	})
+	w := httptest.NewRecorder()
+	h.HandleBeadsMigrate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	if stub.reconcileCall.Load() != 0 {
+		t.Errorf("ReconcileDatabaseMode calls = %d, want 0 (must not run after a failed migration)", stub.reconcileCall.Load())
 	}
 }

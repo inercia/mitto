@@ -101,14 +101,16 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 		h.writeBeadsError(w, r, fmt.Errorf("resolve beads database mode before migration: %w", err))
 		return
 	}
-	if err := beads.ReconcileDatabaseMode(ctx, client, req.WorkingDir, databaseMode); err != nil {
-		h.writeBeadsDatabaseModeError(w, r, err)
-		return
-	}
 	if databaseMode == workspaces.BeadsDatabaseModeLocal && mode == "adopt" {
 		writeErrorJSON(w, http.StatusBadRequest, "", "adopt is unavailable for a local-only Beads database; run a local migration instead")
 		return
 	}
+	// mitto-aap: perform the migration BEFORE reconciling database-mode
+	// guards. Reconcile invokes bd for shared mode (bd dolt remote list) and
+	// bd config set for local mode; both fail with schema_skew on a skewed DB
+	// — the exact condition this endpoint is meant to fix. Running the
+	// migration first (which uses BD_ALLOW_REMOTE_MIGRATE=1 to bypass bd's
+	// schema-skew gate) unblocks bd so the subsequent reconcile can succeed.
 	switch {
 	case databaseMode == workspaces.BeadsDatabaseModeLocal:
 		out, err = beads.MigrateLocal(ctx, client, req.WorkingDir)
@@ -171,6 +173,19 @@ func (h *Handlers) HandleBeadsMigrate(w http.ResponseWriter, r *http.Request) {
 
 	if h.deps.Logger != nil {
 		h.deps.Logger.Info("beads migration succeeded", "mode", mode, "database_mode", databaseMode, "working_dir", req.WorkingDir)
+	}
+
+	// mitto-aap: reconcile Mitto's native database-mode guards now that the
+	// migration has unblocked bd. Best-effort: a failure here does NOT fail
+	// the request — the migration itself succeeded, which is what the user
+	// asked for. Guards can also be re-reconciled via the folder-config UI
+	// (HandleBeadsDatabaseMode) if needed.
+	if reconcileErr := beads.ReconcileDatabaseMode(ctx, client, req.WorkingDir, databaseMode); reconcileErr != nil {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("post-migration beads database-mode reconcile failed",
+				"mode", mode, "database_mode", databaseMode, "working_dir", req.WorkingDir,
+				"error", reconcileErr, "stderr", beads.StderrOf(reconcileErr))
+		}
 	}
 
 	resp := migrateResponse{Ok: true, Mode: mode}
