@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -1854,12 +1855,123 @@ func TestComputeEventStats(t *testing.T) {
 			},
 			want: eventStats{permissionsAllowed: 2, permissionsDenied: 2},
 		},
+		// --- Processor overhead attribution (mitto-08q.3) ---
+		{
+			// Before-phase processor runs are persisted BEFORE their own
+			// triggering user_prompt event's seq is committed (see
+			// computeEventStats), so the runs come first in seq order.
+			name: "processor overhead: primary injected tokens summed cumulative and per-processor",
+			events: []session.Event{
+				{Type: session.EventTypeProcessorRun, Seq: 1, Data: session.ProcessorRunData{
+					Name: "A", Phase: "before", Outcome: "ok", Mode: "prepend", Target: "primary", EstTokens: 10,
+				}},
+				{Type: session.EventTypeProcessorRun, Seq: 2, Data: session.ProcessorRunData{
+					Name: "B", Phase: "before", Outcome: "ok", Mode: "append", Target: "primary", EstTokens: 5,
+				}},
+				{Type: session.EventTypeUserPrompt, Seq: 3, Data: session.UserPromptData{Message: "hi"}},
+			},
+			want: eventStats{
+				turns:                             1,
+				processorLastPromptInjectedTokens: 15,
+				processorCumulativeInjectedTokens: 15,
+				processorTopByTokens: []processorTally{
+					{Name: "A", Tokens: 10, Runs: 1},
+					{Name: "B", Tokens: 5, Runs: 1},
+				},
+			},
+		},
+		{
+			name: "processor overhead: last-prompt boundary only counts most recent prompt",
+			events: []session.Event{
+				{Type: session.EventTypeProcessorRun, Seq: 1, Data: session.ProcessorRunData{
+					Name: "A", Phase: "before", Outcome: "ok", Mode: "prepend", Target: "primary", EstTokens: 10,
+				}},
+				{Type: session.EventTypeUserPrompt, Seq: 2, Data: session.UserPromptData{Message: "first"}},
+				{Type: session.EventTypeProcessorRun, Seq: 3, Data: session.ProcessorRunData{
+					Name: "A", Phase: "before", Outcome: "ok", Mode: "replace", Target: "primary", EstTokens: 20,
+					RunKind: "rerun", RerunReason: "token_count",
+				}},
+				{Type: session.EventTypeUserPrompt, Seq: 4, Data: session.UserPromptData{Message: "second"}},
+			},
+			want: eventStats{
+				turns:                             2,
+				processorLastPromptInjectedTokens: 20, // only the seq=3 run (between prompts at seq 2 and 4) counts
+				processorCumulativeInjectedTokens: 30, // 10 + 20 across the whole session
+				processorRerunsTotal:              1,
+				processorRerunsByReason:           map[string]int{"token_count": 1},
+				processorTopByTokens: []processorTally{
+					{Name: "A", Tokens: 30, Runs: 2},
+				},
+			},
+		},
+		{
+			name: "processor overhead: auxiliary target tracked separately from primary",
+			events: []session.Event{
+				{Type: session.EventTypeProcessorRun, Data: session.ProcessorRunData{
+					Name: "aux-proc", Phase: "after", Outcome: "ok", Target: "auxiliary", EstTokens: 7,
+				}},
+			},
+			want: eventStats{processorCumulativeAuxTokens: 7},
+		},
+		{
+			name: "processor overhead: skipped and error runs contribute no attribution",
+			events: []session.Event{
+				// Defense-in-depth: even if a skipped/error row carries stale
+				// Mode/Target/EstTokens, the aggregator must not trust it —
+				// outcome gates every token-bearing branch.
+				{Type: session.EventTypeProcessorRun, Data: session.ProcessorRunData{
+					Name: "skipped-proc", Phase: "before", Outcome: "skipped", SkipReason: "disabled",
+					Mode: "prepend", Target: "primary", EstTokens: 999,
+				}},
+				{Type: session.EventTypeProcessorRun, Data: session.ProcessorRunData{
+					Name: "failed-proc", Phase: "before", Outcome: "error", Error: "boom",
+					Mode: "prepend", Target: "primary", EstTokens: 999,
+				}},
+			},
+			want: eventStats{processorSkippedTotal: 1},
+		},
+		{
+			name: "processor overhead: legacy pre-mitto-08q.2 events yield zero for new fields",
+			events: []session.Event{
+				// Only the original five fields present — Mode/Target/EstTokens/
+				// PromptSeq/RunKind are absent (zero values), as decoded from
+				// events recorded before mitto-08q.2.
+				{Type: session.EventTypeProcessorRun, Data: session.ProcessorRunData{
+					Name: "legacy-proc", Phase: "before", Outcome: "ok", DurationMs: 42,
+				}},
+			},
+			want: eventStats{},
+		},
+		{
+			// ProcessorRunData.PromptSeq is always 0 in real telemetry today
+			// (threading it into the before-phase pipeline is deferred future
+			// work — docs/devel/processors.md). This pins that
+			// computeEventStats attributes the "last prompt" bucket purely by
+			// seq ordering and ignores PromptSeq entirely, so a stale or
+			// mismatched PromptSeq value can never suppress or corrupt it.
+			name: "processor overhead: PromptSeq value is ignored — seq ordering is authoritative",
+			events: []session.Event{
+				{Type: session.EventTypeProcessorRun, Seq: 1, Data: session.ProcessorRunData{
+					Name: "A", Phase: "before", Outcome: "ok", Mode: "prepend", Target: "primary",
+					EstTokens: 10, PromptSeq: 999, // bogus, does not match any real seq
+				}},
+				{Type: session.EventTypeUserPrompt, Seq: 2, Data: session.UserPromptData{Message: "hi"}},
+			},
+			want: eventStats{
+				turns:                             1,
+				processorLastPromptInjectedTokens: 10,
+				processorCumulativeInjectedTokens: 10,
+				processorTopByTokens: []processorTally{
+					{Name: "A", Tokens: 10, Runs: 1},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := computeEventStats(tt.events)
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("computeEventStats() = %+v, want %+v", got, tt.want)
 			}
 		})

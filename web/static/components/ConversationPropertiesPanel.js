@@ -866,6 +866,113 @@ export function ConversationPropertiesPanel({
               `
             }
             ${
+              (sessionInfo?.processor_cumulative_injected_tokens > 0 ||
+                sessionInfo?.processor_reruns_total > 0 ||
+                sessionInfo?.processor_skipped_total > 0 ||
+                sessionInfo?.processor_cumulative_aux_tokens > 0) &&
+              html`
+                <${Fragment}>
+                  ${
+                    sessionInfo?.processor_last_prompt_injected_tokens > 0 &&
+                    html`
+                      <div class="flex justify-between">
+                        <span
+                          title="Estimated tokens injected into your prompt by processors on the most recent turn. Length-based estimate, not a provider count."
+                          >Injected (last)</span
+                        >
+                        <span class="text-mitto-text-300"
+                          >~${sessionInfo.processor_last_prompt_injected_tokens}
+                          tok</span
+                        >
+                      </div>
+                    `
+                  }
+                  ${
+                    sessionInfo?.processor_cumulative_injected_tokens > 0 &&
+                    html`
+                      <div class="flex justify-between">
+                        <span
+                          title="Cumulative estimated tokens processors have injected into your prompts. Separate from provider-retained context."
+                          >Injected (cumulative)</span
+                        >
+                        <span class="text-mitto-text-300"
+                          >~${sessionInfo.processor_cumulative_injected_tokens}
+                          tok</span
+                        >
+                      </div>
+                    `
+                  }
+                  ${
+                    sessionInfo?.processor_cumulative_aux_tokens > 0 &&
+                    html`
+                      <div class="flex justify-between">
+                        <span
+                          title="Estimated tokens sent to auxiliary sessions (background/utility work). Does not enter your primary context."
+                          >Auxiliary</span
+                        >
+                        <span class="text-mitto-text-300"
+                          >~${sessionInfo.processor_cumulative_aux_tokens}
+                          tok</span
+                        >
+                      </div>
+                    `
+                  }
+                  ${
+                    sessionInfo?.processor_reruns_total > 0 &&
+                    html`
+                      <div
+                        class="flex justify-between"
+                        title=${sessionInfo?.processor_reruns_by_reason
+                          ? Object.entries(
+                              sessionInfo.processor_reruns_by_reason,
+                            )
+                              .map(([reason, count]) => `${reason}: ${count}`)
+                              .join(", ")
+                          : ""}
+                      >
+                        <span>Reruns</span>
+                        <span class="text-mitto-text-300"
+                          >${sessionInfo.processor_reruns_total}</span
+                        >
+                      </div>
+                    `
+                  }
+                  ${
+                    sessionInfo?.processor_skipped_total > 0 &&
+                    html`
+                      <div class="flex justify-between">
+                        <span>Skipped</span>
+                        <span class="text-mitto-text-300"
+                          >${sessionInfo.processor_skipped_total}</span
+                        >
+                      </div>
+                    `
+                  }
+                  ${
+                    sessionInfo?.processor_top_by_tokens?.length > 0 &&
+                    html`
+                      <div class="mt-1 text-mitto-text-secondary">
+                        Top processors by injected tokens
+                      </div>
+                      ${sessionInfo.processor_top_by_tokens.map(
+                        (p) => html`
+                          <div
+                            class="flex justify-between pl-2"
+                            key=${p.name}
+                          >
+                            <span>${p.name}</span>
+                            <span class="text-mitto-text-300"
+                              >~${p.tokens} tok (${p.runs} runs)</span
+                            >
+                          </div>
+                        `,
+                      )}
+                    `
+                  }
+                <//>
+              `
+            }
+            ${
               sessionInfo?.mcp_calls_total > 0 &&
               html`
                 <div class="flex justify-between">
@@ -986,8 +1093,23 @@ export function ConversationPropertiesPanel({
               <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
                 <!-- Context usage bar -->
                 ${(() => {
-                  const contextTokens = sessionInfo.usage.input_tokens;
-                  const contextWindow = getContextWindowSize(currentModelId);
+                  // Prefer ACP's UsageUpdate (context_usage.{size,used}), which
+                  // reports CURRENT context window state. Fall back to the
+                  // cumulative-session input_tokens divided by a static model
+                  // window only when the agent doesn't emit UsageUpdate — that
+                  // fallback is approximate because Usage.InputTokens is
+                  // "total input tokens across all turns" per the ACP spec.
+                  const ctxUsage = sessionInfo.context_usage;
+                  const hasAccurate =
+                    ctxUsage &&
+                    ctxUsage.size > 0 &&
+                    ctxUsage.used != null;
+                  const contextTokens = hasAccurate
+                    ? ctxUsage.used
+                    : sessionInfo.usage.input_tokens;
+                  const contextWindow = hasAccurate
+                    ? ctxUsage.size
+                    : getContextWindowSize(currentModelId);
                   const pct = contextWindow
                     ? Math.min((contextTokens / contextWindow) * 100, 100)
                     : null;

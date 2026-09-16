@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +64,55 @@ type eventStats struct {
 	permissionsDenied    int
 	errors               int
 	imagesUploaded       int
+
+	// Processor overhead attribution (mitto-08q.3), derived from
+	// session.EventTypeProcessorRun events recorded by mitto-08q.2. All fields
+	// stay zero for sessions with no processor telemetry (empty state) and for
+	// events recorded before mitto-08q.2 (legacy state, since Mode/Target/
+	// EstTokens/PromptSeq are absent on those rows) — see computeEventStats.
+	//
+	// processorLastPromptInjectedTokens sums EstTokens for "before"-phase
+	// "primary"-target prepend/append/replace runs recorded in the seq gap
+	// immediately preceding the most recent user_prompt event (see
+	// computeEventStats for why this uses seq ordering rather than
+	// ProcessorRunData.PromptSeq, which is not yet populated).
+	processorLastPromptInjectedTokens int
+	// processorCumulativeInjectedTokens is the same filter, summed across the
+	// whole session (not just the last prompt).
+	processorCumulativeInjectedTokens int
+	// processorCumulativeAuxTokens sums EstTokens for outcome=="ok" runs with
+	// Target=="auxiliary" (any phase) — background/utility work that never
+	// enters the primary context, tracked separately so it cannot inflate the
+	// injected totals above.
+	processorCumulativeAuxTokens int
+	// processorRerunsTotal counts outcome=="ok" runs with RunKind=="rerun".
+	processorRerunsTotal int
+	// processorRerunsByReason breaks processorRerunsTotal down by RerunReason
+	// ("time_elapsed", "message_count", "token_count"). Nil when zero reruns.
+	processorRerunsByReason map[string]int
+	// processorSkippedTotal counts runs with Outcome=="skipped".
+	processorSkippedTotal int
+	// processorTopByTokens ranks processors by cumulative injected tokens
+	// (same filter as processorCumulativeInjectedTokens), descending, capped
+	// at 3 entries. Nil when there is no injected-token attribution at all.
+	processorTopByTokens []processorTally
+}
+
+// processorTally is one entry in eventStats.processorTopByTokens: a single
+// processor's cumulative injected-token contribution and run count.
+type processorTally struct {
+	Name   string `json:"name"`
+	Tokens int    `json:"tokens"`
+	Runs   int    `json:"runs"`
+}
+
+// seqProcessorRun pairs a decoded ProcessorRunData with its own event's seq,
+// used by computeEventStats to bucket before-phase primary-injected runs
+// into the "most recent prompt" range after the scan completes (see the
+// ordering rationale on eventStats.processorLastPromptInjectedTokens).
+type seqProcessorRun struct {
+	seq  int64
+	data session.ProcessorRunData
 }
 
 // computeEventStats performs a single pass over a session's events, deriving
@@ -72,6 +122,26 @@ type eventStats struct {
 func computeEventStats(events []session.Event) eventStats {
 	var stats eventStats
 	seenToolCalls := make(map[string]struct{})
+
+	// Processor overhead intermediate state (mitto-08q.3).
+	//
+	// "Last prompt" boundary does NOT use ProcessorRunData.PromptSeq: that
+	// field is currently always 0 (threading it into the before-phase
+	// pipeline is documented as deferred future work — see
+	// docs/devel/processors.md "Attribution aggregation rule"), so an
+	// equality filter on it would never match and this feature would render
+	// permanently empty. Instead this uses event ordering: before-phase
+	// processors run and are persisted BEFORE their own triggering
+	// user_prompt event's seq is committed (applyProcessorsAndBuildBlocks
+	// runs, then commitUserPrompt reserves the seq), so a given prompt's
+	// before-phase runs always land in the seq gap strictly between the
+	// PREVIOUS user_prompt's seq and THIS user_prompt's seq. Tracking the
+	// last two user_prompt seqs and bucketing cached runs into that
+	// half-open range after the scan reproduces "which runs belong to the
+	// most recent prompt" without relying on the unimplemented field.
+	var secondLastUserPromptSeq, lastUserPromptSeq int64
+	var processorTokensByName map[string]*processorTally
+	var primaryInjectedRuns []seqProcessorRun
 
 	for _, e := range events {
 		data, err := session.DecodeEventData(e)
@@ -104,6 +174,8 @@ func computeEventStats(events []session.Event) eventStats {
 
 		case session.EventTypeUserPrompt:
 			stats.turns++
+			secondLastUserPromptSeq = lastUserPromptSeq
+			lastUserPromptSeq = e.Seq
 			if d, ok := data.(session.UserPromptData); ok {
 				stats.imagesUploaded += len(d.Images)
 			}
@@ -132,7 +204,79 @@ func computeEventStats(events []session.Event) eventStats {
 
 		case session.EventTypeError:
 			stats.errors++
+
+		case session.EventTypeProcessorRun:
+			d, ok := data.(session.ProcessorRunData)
+			if !ok {
+				continue
+			}
+			// Zero-attribution invariant (mitto-08q.2): "skipped"/"error" runs
+			// always carry zero RenderedBytes/EstTokens and empty Mode/Target,
+			// but the aggregator does not trust that blindly — outcome gates
+			// every token-bearing branch below regardless of what the payload
+			// otherwise claims.
+			if d.Outcome == "skipped" {
+				stats.processorSkippedTotal++
+				continue
+			}
+			if d.Outcome != "ok" {
+				continue // "error" — no attribution, nothing else to tally.
+			}
+			if d.RunKind == "rerun" {
+				stats.processorRerunsTotal++
+				if d.RerunReason != "" {
+					if stats.processorRerunsByReason == nil {
+						stats.processorRerunsByReason = make(map[string]int)
+					}
+					stats.processorRerunsByReason[d.RerunReason]++
+				}
+			}
+			switch {
+			case d.Phase == "before" && d.Target == "primary" &&
+				(d.Mode == "prepend" || d.Mode == "append" || d.Mode == "replace"):
+				stats.processorCumulativeInjectedTokens += d.EstTokens
+				if processorTokensByName == nil {
+					processorTokensByName = make(map[string]*processorTally)
+				}
+				t, ok := processorTokensByName[d.Name]
+				if !ok {
+					t = &processorTally{Name: d.Name}
+					processorTokensByName[d.Name] = t
+				}
+				t.Tokens += d.EstTokens
+				t.Runs++
+				primaryInjectedRuns = append(primaryInjectedRuns, seqProcessorRun{seq: e.Seq, data: d})
+			case d.Target == "auxiliary":
+				stats.processorCumulativeAuxTokens += d.EstTokens
+			}
 		}
+	}
+
+	// Second pass: now that the last two user_prompt seqs are final, sum the
+	// cached before/primary/injected runs whose own seq falls strictly
+	// between them (see the ordering rationale above). Re-scans only the
+	// already-decoded, already-filtered subset, not the full event list.
+	for _, r := range primaryInjectedRuns {
+		if r.seq > secondLastUserPromptSeq && r.seq < lastUserPromptSeq {
+			stats.processorLastPromptInjectedTokens += r.data.EstTokens
+		}
+	}
+
+	if len(processorTokensByName) > 0 {
+		tallies := make([]processorTally, 0, len(processorTokensByName))
+		for _, t := range processorTokensByName {
+			tallies = append(tallies, *t)
+		}
+		sort.Slice(tallies, func(i, j int) bool {
+			if tallies[i].Tokens != tallies[j].Tokens {
+				return tallies[i].Tokens > tallies[j].Tokens
+			}
+			return tallies[i].Name < tallies[j].Name // deterministic tie-break
+		})
+		if len(tallies) > 3 {
+			tallies = tallies[:3]
+		}
+		stats.processorTopByTokens = tallies
 	}
 
 	return stats
@@ -711,6 +855,30 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 			}
 			if stats.imagesUploaded > 0 {
 				data["images_uploaded"] = stats.imagesUploaded
+			}
+			// Processor overhead attribution (mitto-08q.3) — omitted entirely
+			// when zero, so empty and legacy (pre-mitto-08q.2) sessions send
+			// nothing extra and the properties panel renders no new UI.
+			if stats.processorLastPromptInjectedTokens > 0 {
+				data["processor_last_prompt_injected_tokens"] = stats.processorLastPromptInjectedTokens
+			}
+			if stats.processorCumulativeInjectedTokens > 0 {
+				data["processor_cumulative_injected_tokens"] = stats.processorCumulativeInjectedTokens
+			}
+			if stats.processorCumulativeAuxTokens > 0 {
+				data["processor_cumulative_aux_tokens"] = stats.processorCumulativeAuxTokens
+			}
+			if stats.processorRerunsTotal > 0 {
+				data["processor_reruns_total"] = stats.processorRerunsTotal
+			}
+			if len(stats.processorRerunsByReason) > 0 {
+				data["processor_reruns_by_reason"] = stats.processorRerunsByReason
+			}
+			if stats.processorSkippedTotal > 0 {
+				data["processor_skipped_total"] = stats.processorSkippedTotal
+			}
+			if len(stats.processorTopByTokens) > 0 {
+				data["processor_top_by_tokens"] = stats.processorTopByTokens
 			}
 		}
 		if count, err := c.store.CountChildSessions(c.sessionID); err == nil && count > 0 {

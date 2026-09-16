@@ -646,6 +646,20 @@ are `omitempty` on `session.ProcessorRunData`, so `events.jsonl` rows recorded
 before mitto-08q.2 (only `name`/`phase`/`outcome`/`duration_ms`/`error`)
 continue to decode unchanged.
 
+**Properties-panel surface (mitto-08q.3):** `internal/web/session_ws.go`'s
+`computeEventStats` derives per-conversation processor-overhead statistics
+from these events at `connected` time — cumulative and last-prompt injected
+tokens (before-phase, `primary` target, `prepend`/`append`/`replace` mode),
+auxiliary-target tokens, rerun/skip counts, and a top-3 per-processor
+ranking — surfaced in `ConversationPropertiesPanel.js`'s Statistics section.
+Since `PromptSeq` is always `0` today (see above), "last prompt" is
+determined by seq ordering instead: before-phase runs are persisted *before*
+their own triggering `user_prompt` event's seq is committed, so a run
+belongs to the most recent prompt when its own seq falls strictly between
+the two most recent `user_prompt` seqs. All fields are omitted from the
+WebSocket payload when zero, so sessions with no processor telemetry
+(empty) or only pre-mitto-08q.2 events (legacy) render no new UI.
+
 ## Integration Points
 
 The unified pipeline integrates at a single point in `BackgroundSession.PromptWithMeta()`:
