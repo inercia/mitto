@@ -72,6 +72,8 @@ export function Modal({
   // Hooks must run unconditionally (Rules of Hooks); the open/close behaviour is
   // guarded inside the effect body and the early return happens after the hooks.
   const boxRef = useRef(null);
+  const bodyRef = useRef(null);
+  const footerRef = useRef(null);
   const prevFocusRef = useRef(null);
 
   // Keep the latest onClose without re-running the open/focus effect when the
@@ -111,9 +113,20 @@ export function Modal({
       document.body.style.overflow = "hidden";
     }
 
-    // Move initial focus into the modal (first focusable child, else the box).
-    const focusables = getFocusable(box);
-    (focusables[0] || box)?.focus();
+    // Move initial focus into the modal. Prefer focusables inside the body
+    // (where the user's task lives) over the header's ✕ Close button, which
+    // would otherwise always win as the first DOM-order focusable in the box
+    // and require the user to click into the first input manually (see
+    // Modal.test.js "initial focus prefers a body input over the header ✕"
+    // for the pinned assertion). Falls through to the footer (e.g.
+    // confirmation modals with no body inputs) and finally the box itself.
+    const bodyFocusables = getFocusable(bodyRef.current);
+    const footerFocusables = getFocusable(footerRef.current);
+    const allFocusables = getFocusable(box);
+    (bodyFocusables[0] ||
+      footerFocusables[0] ||
+      allFocusables[0] ||
+      box)?.focus();
 
     const handleKeyDown = (e) => {
       // Only the topmost modal reacts to keyboard events.
@@ -201,12 +214,13 @@ export function Modal({
           </div>
         `}
 
-        <div class=${bodyClass}>${children}</div>
+        <div class=${bodyClass} ref=${bodyRef}>${children}</div>
 
         ${footer &&
         html`
           <div
             class="flex justify-end gap-3 p-4 border-t border-mitto-border modal-action mt-0"
+            ref=${footerRef}
           >
             ${footer}
           </div>

@@ -78,6 +78,90 @@ if (childRun) {
       }
     });
   });
+
+  describe("Modal initial focus placement", () => {
+    // Regression pin: a titled Modal's initial focus must land inside the
+    // body (typically the first form field the user came to interact with)
+    // rather than on the header's ✕ Close button, which was previously
+    // winning as the first DOM-order focusable inside the modal-box and
+    // forced users to click into the field manually.
+    test("initial focus prefers a body input over the header ✕ close button", () => {
+      const onClose = jest.fn();
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      try {
+        preact.render(
+          html`<${Modal}
+            isOpen=${true}
+            onClose=${onClose}
+            title="Test modal"
+            closeTestid="modal-close"
+          >
+            <input data-testid="body-input" type="text" />
+          </${Modal}>`,
+          container,
+        );
+
+        // Both the ✕ button and the body input must exist so we know we
+        // are actually exercising the header-vs-body preference.
+        const closeBtn = container.querySelector(
+          '[data-testid="modal-close"]',
+        );
+        const bodyInput = container.querySelector(
+          '[data-testid="body-input"]',
+        );
+        expect(closeBtn).toBeTruthy();
+        expect(bodyInput).toBeTruthy();
+
+        // Focus placement happens inside useLayoutEffect, which fires
+        // synchronously with the initial render commit -- so activeElement
+        // is already correct without any waitFor().
+        expect(document.activeElement).toBe(bodyInput);
+        expect(document.activeElement).not.toBe(closeBtn);
+      } finally {
+        preact.render(null, container);
+        container.remove();
+      }
+    });
+
+    // Fallback branch: a titled Modal with NO body focusables (e.g. a
+    // confirmation dialog whose only interactive elements live in the
+    // footer) should focus a footer button rather than the header ✕.
+    test("initial focus falls through to the footer when the body has no focusables", () => {
+      const onClose = jest.fn();
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      try {
+        preact.render(
+          html`<${Modal}
+            isOpen=${true}
+            onClose=${onClose}
+            title="Confirm"
+            closeTestid="modal-close"
+            footer=${html`<button data-testid="footer-ok">OK</button>`}
+          >
+            <p>Are you sure?</p>
+          </${Modal}>`,
+          container,
+        );
+
+        const closeBtn = container.querySelector(
+          '[data-testid="modal-close"]',
+        );
+        const footerBtn = container.querySelector(
+          '[data-testid="footer-ok"]',
+        );
+        expect(closeBtn).toBeTruthy();
+        expect(footerBtn).toBeTruthy();
+
+        expect(document.activeElement).toBe(footerBtn);
+        expect(document.activeElement).not.toBe(closeBtn);
+      } finally {
+        preact.render(null, container);
+        container.remove();
+      }
+    });
+  });
 } else {
   describe("Modal", () => {
     test("passes mounted Escape-key tests in an isolated happy-dom process (mitto-d2h)", () => {
