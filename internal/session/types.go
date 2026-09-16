@@ -239,6 +239,16 @@ type ToolCallData struct {
 // exact run/error/skip counts and p50/p95 durations by scanning events.jsonl.
 // A summed stats-DB counter cannot represent a percentile, so this is
 // deliberately an event-log entry rather than an internal/stats metric.
+//
+// Privacy-safe attribution (mitto-08q.2): the fields below beyond the
+// original five are counts and machine-readable slugs only — no rendered
+// content, argument values, or command stdout/stderr is ever stored here
+// (same sensitivity policy as Event.Meta). Aggregation rule: Outcome ==
+// "skipped" or Outcome == "error" unconditionally forces RenderedBytes/
+// EstTokens to zero (Mode/Target stay empty) — failed/skipped content never
+// entered any context, so counting it would inflate injected-token totals.
+// All new fields are omitempty so events recorded before mitto-08q.2 (only
+// name/phase/outcome/duration_ms/error present) continue to decode unchanged.
 type ProcessorRunData struct {
 	// Name is the processor's Name field (internal/processors.Processor.Name).
 	Name string `json:"name"`
@@ -256,6 +266,32 @@ type ProcessorRunData struct {
 	// Outcome=="error". Never includes stdout/stderr or argument values —
 	// see the Meta sensitivity policy on Event.
 	Error string `json:"error,omitempty"`
+	// RenderedBytes is the UTF-8 byte length of the rendered/output content
+	// for an "ok" run. Always 0 for "skipped"/"error" outcomes.
+	RenderedBytes int `json:"rendered_bytes,omitempty"`
+	// EstTokens is a length-based token estimate (internal/processors.EstimateTokens)
+	// for an "ok" run's rendered content. Always 0 for "skipped"/"error".
+	EstTokens int `json:"est_tokens,omitempty"`
+	// Mode describes how the output was applied: "prepend", "append",
+	// "replace", "discard", or "prompt". Empty for "skipped"/"error".
+	Mode string `json:"mode,omitempty"`
+	// Target describes where the output went: "primary" (merged into the
+	// outgoing message), "auxiliary" (dispatched to an aux session), or "ui"
+	// (notify/actionButtons/userData — no context cost). Empty for
+	// "skipped"/"error" and for Mode=="discard".
+	Target string `json:"target,omitempty"`
+	// RunKind is "initial" or "rerun".
+	RunKind string `json:"run_kind,omitempty"`
+	// RerunReason is the machine-readable trigger ("time_elapsed",
+	// "message_count", "token_count") when RunKind=="rerun". Empty otherwise.
+	RerunReason string `json:"rerun_reason,omitempty"`
+	// SkipReason is a machine-readable skip slug when Outcome=="skipped"
+	// (e.g. "disabled", "empty_prompt", "cadence_not_met"). Empty otherwise.
+	SkipReason string `json:"skip_reason,omitempty"`
+	// PromptSeq is the sequence number of the correlated user_prompt event,
+	// best-effort. 0 when unknown (not yet threaded for before-phase; always
+	// 0 for after/close-phase, which have no single correlated prompt).
+	PromptSeq int64 `json:"prompt_seq,omitempty"`
 }
 
 // ToolCallUpdateData contains data for a tool call update event.

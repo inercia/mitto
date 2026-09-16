@@ -57,6 +57,60 @@ func TestDecodeEventData_ProcessorRun(t *testing.T) {
 	if data.Error != "boom" {
 		t.Errorf("Error = %q, want %q", data.Error, "boom")
 	}
+	// mitto-08q.2 backward compat: a legacy event (no attribution fields) must
+	// still decode cleanly, with every new field at its zero value.
+	if data.RenderedBytes != 0 || data.EstTokens != 0 || data.Mode != "" || data.Target != "" ||
+		data.RunKind != "" || data.RerunReason != "" || data.SkipReason != "" || data.PromptSeq != 0 {
+		t.Errorf("legacy event decoded with non-zero new fields: %+v", data)
+	}
+}
+
+// TestDecodeEventData_ProcessorRun_Attribution verifies a mitto-08q.2 event
+// carrying the full privacy-safe attribution payload decodes every new field
+// correctly.
+func TestDecodeEventData_ProcessorRun_Attribution(t *testing.T) {
+	event := Event{
+		Type:      EventTypeProcessorRun,
+		Timestamp: time.Now(),
+		Data: map[string]interface{}{
+			"name":           "my-processor",
+			"phase":          "before",
+			"outcome":        "ok",
+			"rendered_bytes": float64(128),
+			"est_tokens":     float64(32),
+			"mode":           "prepend",
+			"target":         "primary",
+			"run_kind":       "rerun",
+			"rerun_reason":   "token_count",
+			"skip_reason":    "",
+			"prompt_seq":     float64(7),
+		},
+	}
+
+	decoded, err := DecodeEventData(event)
+	if err != nil {
+		t.Fatalf("DecodeEventData failed: %v", err)
+	}
+
+	data, ok := decoded.(ProcessorRunData)
+	if !ok {
+		t.Fatalf("Expected ProcessorRunData, got %T", decoded)
+	}
+	if data.RenderedBytes != 128 {
+		t.Errorf("RenderedBytes = %d, want 128", data.RenderedBytes)
+	}
+	if data.EstTokens != 32 {
+		t.Errorf("EstTokens = %d, want 32", data.EstTokens)
+	}
+	if data.Mode != "prepend" || data.Target != "primary" {
+		t.Errorf("Mode/Target = %q/%q, want prepend/primary", data.Mode, data.Target)
+	}
+	if data.RunKind != "rerun" || data.RerunReason != "token_count" {
+		t.Errorf("RunKind/RerunReason = %q/%q, want rerun/token_count", data.RunKind, data.RerunReason)
+	}
+	if data.PromptSeq != 7 {
+		t.Errorf("PromptSeq = %d, want 7", data.PromptSeq)
+	}
 }
 
 func TestBuildConversationHistory(t *testing.T) {

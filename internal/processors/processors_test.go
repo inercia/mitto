@@ -6977,6 +6977,58 @@ func TestApplyProcessors_RunRecorder_CommandOk(t *testing.T) {
 	if run.Error != "" {
 		t.Errorf("Error = %q, want empty", run.Error)
 	}
+	// mitto-08q.2: OutputTransform on the before-phase path is a primary-context
+	// replace with a positive rendered byte/token count.
+	if run.Mode != RunModeReplace {
+		t.Errorf("Mode = %q, want %q", run.Mode, RunModeReplace)
+	}
+	if run.Target != RunTargetPrimary {
+		t.Errorf("Target = %q, want %q", run.Target, RunTargetPrimary)
+	}
+	if run.RenderedBytes == 0 || run.EstimatedTokens == 0 {
+		t.Errorf("RenderedBytes/EstimatedTokens = %d/%d, want > 0", run.RenderedBytes, run.EstimatedTokens)
+	}
+	if run.RunKind != RunKindInitial {
+		t.Errorf("RunKind = %q, want %q", run.RunKind, RunKindInitial)
+	}
+}
+
+// TestApplyProcessors_RunRecorder_CommandDiscard verifies OutputDiscard is
+// recorded with Mode="discard", an empty Target (no primary-context
+// destination), and zero RenderedBytes/EstimatedTokens (mitto-08q.2).
+func TestApplyProcessors_RunRecorder_CommandDiscard(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "discard.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho '{\"message\": \"ignored\"}'\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "cmd-discard",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Output:  OutputDiscard,
+		HookDir: tmpDir,
+	}}
+	input := &ProcessorInput{Message: "original", WorkingDir: tmpDir}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("cmd-discard")
+	if run == nil {
+		t.Fatal("expected a recorded run for cmd-discard")
+	}
+	if run.Mode != RunModeDiscard {
+		t.Errorf("Mode = %q, want %q", run.Mode, RunModeDiscard)
+	}
+	if run.Target != "" {
+		t.Errorf("Target = %q, want empty for discard", run.Target)
+	}
+	if run.RenderedBytes != 0 || run.EstimatedTokens != 0 {
+		t.Errorf("RenderedBytes/EstimatedTokens = %d/%d, want 0/0 for discard", run.RenderedBytes, run.EstimatedTokens)
+	}
 }
 
 // TestApplyProcessors_RunRecorder_Skipped verifies a non-applicable processor
@@ -7011,6 +7063,18 @@ func TestApplyProcessors_RunRecorder_Skipped(t *testing.T) {
 	}
 	if run.Duration != 0 {
 		t.Errorf("Duration = %v, want 0 for a skipped processor", run.Duration)
+	}
+	// mitto-08q.2: a skip must carry a machine-readable SkipReason and force
+	// zero RenderedBytes/EstimatedTokens/Mode/Target regardless of what the
+	// (never-executed) command would have produced.
+	if run.SkipReason == "" {
+		t.Error("SkipReason = \"\", want a non-empty machine-readable slug")
+	}
+	if run.RenderedBytes != 0 || run.EstimatedTokens != 0 {
+		t.Errorf("RenderedBytes/EstimatedTokens = %d/%d, want 0/0 for a skipped run", run.RenderedBytes, run.EstimatedTokens)
+	}
+	if run.Mode != "" || run.Target != "" {
+		t.Errorf("Mode/Target = %q/%q, want empty/empty for a skipped run", run.Mode, run.Target)
 	}
 }
 
@@ -7050,6 +7114,11 @@ func TestApplyProcessors_RunRecorder_ErrorSkip(t *testing.T) {
 	}
 	if run.Duration <= 0 {
 		t.Errorf("Duration = %v, want > 0 for an executed (failing) command", run.Duration)
+	}
+	// mitto-08q.2: an error outcome forces zero RenderedBytes/EstimatedTokens
+	// unconditionally, matching the skipped-run aggregation rule.
+	if run.RenderedBytes != 0 || run.EstimatedTokens != 0 {
+		t.Errorf("RenderedBytes/EstimatedTokens = %d/%d, want 0/0 for an error run", run.RenderedBytes, run.EstimatedTokens)
 	}
 }
 
@@ -7111,6 +7180,48 @@ func TestApplyProcessors_RunRecorder_TextMode(t *testing.T) {
 	}
 	if run.Duration != 0 {
 		t.Errorf("Duration = %v, want 0 for a text-mode processor", run.Duration)
+	}
+	// mitto-08q.2: a prepend text-mode processor merges into the primary
+	// context with a positive rendered byte/token count.
+	if run.Mode != RunModePrepend {
+		t.Errorf("Mode = %q, want %q", run.Mode, RunModePrepend)
+	}
+	if run.Target != RunTargetPrimary {
+		t.Errorf("Target = %q, want %q", run.Target, RunTargetPrimary)
+	}
+	if run.RenderedBytes != len("PREFIX: ") {
+		t.Errorf("RenderedBytes = %d, want %d", run.RenderedBytes, len("PREFIX: "))
+	}
+	if run.EstimatedTokens == 0 {
+		t.Error("EstimatedTokens = 0, want > 0 for non-empty rendered text")
+	}
+}
+
+// TestApplyProcessors_RunRecorder_TextMode_Append verifies an append
+// text-mode processor is recorded with Mode="append" (mitto-08q.2).
+func TestApplyProcessors_RunRecorder_TextMode_Append(t *testing.T) {
+	procs := []*Processor{{
+		Name:   "text-append",
+		Text:   "SUFFIX",
+		Mutate: config.ProcessorMutateAppend,
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+	}}
+	input := &ProcessorInput{Message: "original"}
+
+	rec := &recordingRecorder{}
+	if _, err := ApplyProcessors(context.Background(), procs, input, "", nil, rec.record); err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	run := rec.byName("text-append")
+	if run == nil {
+		t.Fatal("expected a recorded run for text-append")
+	}
+	if run.Mode != RunModeAppend {
+		t.Errorf("Mode = %q, want %q", run.Mode, RunModeAppend)
+	}
+	if run.Target != RunTargetPrimary {
+		t.Errorf("Target = %q, want %q", run.Target, RunTargetPrimary)
 	}
 }
 
@@ -7323,12 +7434,53 @@ func TestApplyAfter_RunRecorder(t *testing.T) {
 
 	if run := rec.byName("after-ok"); run == nil || run.Outcome != "ok" || run.Phase != "after" || run.Duration <= 0 {
 		t.Errorf("after-ok: got %+v, want Phase=after Outcome=ok Duration>0", run)
+	} else if run.Mode != RunModeDiscard || run.Target != "" {
+		// mitto-08q.2: output:discard after-phase runs carry no primary/UI destination.
+		t.Errorf("after-ok: Mode/Target = %q/%q, want %q/empty", run.Mode, run.Target, RunModeDiscard)
 	}
 	if run := rec.byName("after-skip"); run == nil || run.Outcome != "skipped" || run.Phase != "after" {
 		t.Errorf("after-skip: got %+v, want Phase=after Outcome=skipped", run)
+	} else if run.SkipReason == "" {
+		t.Error("after-skip: SkipReason = \"\", want a non-empty slug")
 	}
 	if run := rec.byName("after-fail"); run == nil || run.Outcome != "error" || run.Phase != "after" || run.Error == "" {
 		t.Errorf("after-fail: got %+v, want Phase=after Outcome=error with non-empty Error", run)
+	}
+}
+
+// TestApplyAfter_RunRecorder_NotifyTargetUI verifies an after-phase
+// output:notify processor is recorded with Target="ui" and zero
+// RenderedBytes/EstimatedTokens — UI-surfaced output never merges into any
+// primary/auxiliary context, so it carries no context-injection cost
+// (mitto-08q.2).
+func TestApplyAfter_RunRecorder_NotifyTargetUI(t *testing.T) {
+	dir := t.TempDir()
+	notifyScript := filepath.Join(dir, "notify.sh")
+	os.WriteFile(notifyScript, []byte(`#!/bin/sh
+echo '[{"title":"t","message":"m"}]'
+`), 0755)
+
+	proc := &Processor{
+		Name:    "after-notify",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Command: notifyScript,
+		Output:  OutputNotify,
+	}
+	m := makeAfterManager([]*Processor{proc})
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+
+	run := rec.byName("after-notify")
+	if run == nil || run.Outcome != "ok" {
+		t.Fatalf("after-notify: got %+v, want Outcome=ok", run)
+	}
+	if run.Target != RunTargetUI {
+		t.Errorf("Target = %q, want %q", run.Target, RunTargetUI)
+	}
+	if run.RenderedBytes != 0 || run.EstimatedTokens != 0 {
+		t.Errorf("RenderedBytes/EstimatedTokens = %d/%d, want 0/0 for a UI-target run", run.RenderedBytes, run.EstimatedTokens)
 	}
 }
 
@@ -7379,12 +7531,68 @@ func TestApplyOnClose_RunRecorder(t *testing.T) {
 
 	if run := rec.byName("close-ok"); run == nil || run.Outcome != "ok" || run.Phase != "close" || run.Duration <= 0 {
 		t.Errorf("close-ok: got %+v, want Phase=close Outcome=ok Duration>0", run)
+	} else if run.Mode != RunModeDiscard {
+		// mitto-08q.2: close-phase command processors are output:discard side effects.
+		t.Errorf("close-ok: Mode = %q, want %q", run.Mode, RunModeDiscard)
 	}
 	if run := rec.byName("close-disabled"); run == nil || run.Outcome != "skipped" || run.Phase != "close" {
 		t.Errorf("close-disabled: got %+v, want Phase=close Outcome=skipped", run)
+	} else if run.SkipReason == "" {
+		t.Error("close-disabled: SkipReason = \"\", want a non-empty slug")
 	}
 	if run := rec.byName("close-fail"); run == nil || run.Outcome != "error" || run.Phase != "close" || run.Error == "" {
 		t.Errorf("close-fail: got %+v, want Phase=close Outcome=error with non-empty Error", run)
+	}
+}
+
+// TestApplyWithRerun_RunRecorder_RerunClassification verifies a processor
+// re-triggered via when.rerun.afterTokens is recorded with RunKind="rerun"
+// and RerunReason="token_count" (mirrors RerunReasonTokens), while its
+// initial (first-message) fire is recorded as RunKind="initial" with an
+// empty RerunReason (mitto-08q.2).
+func TestApplyWithRerun_RunRecorder_RerunClassification(t *testing.T) {
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{
+			Name:   "rerun-tracked",
+			Text:   "reminder",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchFirst, Rerun: &RerunConfig{AfterTokens: 100}},
+		},
+	}
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	// Initial fire (first message).
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "x", IsFirstMessage: true}); err != nil {
+		t.Fatalf("Apply() (initial) error = %v", err)
+	}
+	initial := rec.byName("rerun-tracked")
+	if initial == nil || initial.RunKind != RunKindInitial || initial.RerunReason != "" {
+		t.Errorf("initial fire: got %+v, want RunKind=%q RerunReason=empty", initial, RunKindInitial)
+	}
+
+	// Cross the token threshold, then fire again on a non-first message.
+	m.AccumulateTokenUsage(150)
+	if _, err := m.Apply(context.Background(), &ProcessorInput{Message: "y", IsFirstMessage: false}); err != nil {
+		t.Fatalf("Apply() (rerun) error = %v", err)
+	}
+
+	var matches []ProcessorRun
+	for _, run := range rec.snapshot() {
+		if run.Name == "rerun-tracked" {
+			matches = append(matches, run)
+		}
+	}
+	if len(matches) < 2 {
+		t.Fatalf("expected 2 recorded runs for rerun-tracked (initial + rerun), got %d", len(matches))
+	}
+	rerun := &matches[1]
+	if rerun.RunKind != RunKindRerun {
+		t.Errorf("rerun fire: RunKind = %q, want %q", rerun.RunKind, RunKindRerun)
+	}
+	if rerun.RerunReason != string(RerunReasonTokens) {
+		t.Errorf("rerun fire: RerunReason = %q, want %q", rerun.RerunReason, string(RerunReasonTokens))
 	}
 }
 

@@ -596,6 +596,17 @@ type ProcessorRun struct {
     Outcome  string        // "ok" | "error" | "skipped"
     Duration time.Duration // zero for skipped / text-mode / prompt-mode runs
     Error    string        // short failure message when Outcome == "error"
+
+    // Privacy-safe attribution (mitto-08q.2) — counts and slugs only, never
+    // rendered content, argument values, or command stdout/stderr:
+    RenderedBytes   int    // UTF-8 byte length of the rendered/output content
+    EstimatedTokens int    // length-based estimate (EstimateTokens): max(1, (n+3)/4)
+    Mode            string // "prepend" | "append" | "replace" | "discard" | "prompt"
+    Target          string // "primary" | "auxiliary" | "ui"
+    RunKind         string // "initial" | "rerun"
+    RerunReason     string // "time_elapsed" | "message_count" | "token_count"
+    SkipReason      string // machine-readable slug, e.g. "disabled", "empty_prompt"
+    PromptSeq       int64  // correlated user_prompt event seq, best-effort (0 = unknown)
 }
 
 type RunRecorder func(ProcessorRun)
@@ -617,6 +628,23 @@ func (m *Manager) SetRunRecorder(fn RunRecorder) // nil disables recording
 The event-log route (rather than an `internal/stats` counter) is deliberate: a
 summed counter cannot represent a percentile, and per-run durations in
 `events.jsonl` allow exact p50/p95 to be computed for any time window.
+
+**Attribution aggregation rule (mitto-08q.2):** `Outcome == "skipped"` or
+`Outcome == "error"` unconditionally forces `RenderedBytes`/`EstimatedTokens`
+to zero and leaves `Mode`/`Target` empty — failed/skipped content never
+actually entered any context, so counting it would inflate injected-token
+totals. `Target == "ui"` (after-phase `notify`/`actionButtons`/`userData`)
+also carries zero bytes/tokens: those outputs surface in the UI and never
+merge into any primary or auxiliary context. `RunKind`/`RerunReason` only
+apply to the before-phase `when.rerun` cadence (`checkRerunEligibility`);
+after/close-phase repeat fires (driven by `when.cadence`) are always recorded
+as `RunKind: "initial"` since that pipeline has no rerun concept. `PromptSeq`
+is best-effort and currently always `0` — threading the correlated
+`user_prompt` event's sequence number into the before-phase pipeline (whose
+seq is assigned after processors run) is deferred future work. All new fields
+are `omitempty` on `session.ProcessorRunData`, so `events.jsonl` rows recorded
+before mitto-08q.2 (only `name`/`phase`/`outcome`/`duration_ms`/`error`)
+continue to decode unchanged.
 
 ## Integration Points
 
