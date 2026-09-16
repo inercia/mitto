@@ -80,3 +80,84 @@ the DNS query failed error=lookup c.d on 127.0.0.53:53: some other reason`
 		t.Error("expected non-empty reason")
 	}
 }
+
+// TestClassifyHookOutput_CorporateResolverIOTimeout verifies the mitto-07h fix:
+// DNS "i/o timeout" against a non-loopback (corporate) resolver is classified
+// transient, using the exact up-hook log line from the bead's evidence.
+func TestClassifyHookOutput_CorporateResolverIOTimeout(t *testing.T) {
+	output := `20:18:31 ERR Failed to fetch features, default to disable error="lookup cfd-features.argotunnel.com on 10.102.2.247:53: dial udp 10.102.2.247:53: i/o timeout"`
+	transient, reason := ClassifyHookOutput(output)
+	if !transient {
+		t.Fatalf("corporate-resolver i/o timeout should be classified transient, got transient=false")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for transient classification")
+	}
+}
+
+// TestClassifyHookOutput_EdgeDiscoveryIOTimeout verifies the second bead-evidence
+// pattern: the "edge discovery" DNS-query-failed wrapper around an i/o timeout.
+func TestClassifyHookOutput_EdgeDiscoveryIOTimeout(t *testing.T) {
+	output := `20:20:06 ERR edge discovery: error looking up Cloudflare edge IPs: the DNS query failed error="lookup _v2-origintunneld._tcp.argotunnel.com on 10.102.2.247:53: dial udp 10.102.2.247:53: i/o timeout"`
+	transient, reason := ClassifyHookOutput(output)
+	if !transient {
+		t.Fatalf("edge discovery i/o timeout should be classified transient, got transient=false")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for transient classification")
+	}
+}
+
+// TestClassifyHookOutput_LoopbackIOTimeout verifies the widened regex also
+// matches an i/o timeout against the loopback resolver (not just corporate
+// IPs), confirming the fix is resolver-agnostic rather than swapping one
+// hardcoded IP for another.
+func TestClassifyHookOutput_LoopbackIOTimeout(t *testing.T) {
+	output := `lookup foo.bar on 127.0.0.53:53: dial udp 127.0.0.53:53: i/o timeout`
+	transient, _ := ClassifyHookOutput(output)
+	if !transient {
+		t.Errorf("loopback i/o timeout variant should be classified transient")
+	}
+}
+
+func TestClassifyBenignExit_PkillNoMatch(t *testing.T) {
+	benign, reason := ClassifyBenignExit("pkill -f 'cloudflared tunnel --protocol http2 run mitto'", 1, "")
+	if !benign {
+		t.Fatalf("simple pkill exit 1 with empty output should be classified benign")
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason for benign classification")
+	}
+}
+
+func TestClassifyBenignExit_PkillNoArgs(t *testing.T) {
+	benign, _ := ClassifyBenignExit("pkill mitto-tunnel", 1, "")
+	if !benign {
+		t.Errorf("bare pkill <name> exit 1 empty output should be classified benign")
+	}
+}
+
+func TestClassifyBenignExit_FailClosed(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		exit    int
+		output  string
+	}{
+		{"compound with semicolon", "pkill -f foo; rm -rf /tmp/x", 1, ""},
+		{"compound with pipe", "pkill -f foo | tee /tmp/log", 1, ""},
+		{"compound with ampersand", "pkill -f foo && echo done", 1, ""},
+		{"command substitution", "pkill -f $(cat /tmp/pattern)", 1, ""},
+		{"non-empty output", "pkill -f foo", 1, "some output"},
+		{"exit code 2", "pkill -f foo", 2, ""},
+		{"exit code 0", "pkill -f foo", 0, ""},
+		{"unrelated command", "kill -9 1234", 1, ""},
+		{"empty command", "", 1, ""},
+	}
+	for _, c := range cases {
+		if benign, reason := ClassifyBenignExit(c.command, c.exit, c.output); benign {
+			t.Errorf("%s: command=%q exit=%d output=%q classified benign with reason %q (fail-closed violated)",
+				c.name, c.command, c.exit, c.output, reason)
+		}
+	}
+}

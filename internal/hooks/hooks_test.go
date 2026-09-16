@@ -462,3 +462,26 @@ func TestRunDownWithOptions_TimeoutNoCallback(t *testing.T) {
 		t.Error("onFailure invoked for timed-out down hook (should be silent on timeout)")
 	}
 }
+
+// TestRunDownWithOptions_BenignPkillNoCallback verifies the mitto-07h fix: a
+// down hook that is a simple `pkill` invocation exiting 1 with no output
+// (pkill's "no processes matched" outcome) is treated as benign — it must
+// NOT invoke the failure callback, even with throttling disabled so a
+// non-benign classification would otherwise definitely surface.
+func TestRunDownWithOptions_BenignPkillNoCallback(t *testing.T) {
+	resetPackageThrottle()
+	origT := hookFailureThreshold
+	hookFailureThreshold = 0
+	defer func() { hookFailureThreshold = origT }()
+
+	// Pattern is deliberately unique/nonsensical so it can never match a real
+	// running process on the test machine — guarantees pkill's "no processes
+	// matched" exit code 1, exercising the benign-classification path
+	// reliably rather than depending on process-table state.
+	hook := config.WebHook{Command: "pkill -f 'zzz-nonexistent-process-mitto-07h-test-marker-8f3c1a'", Name: "cf-tunnel-cleanup"}
+	called := false
+	RunDownWithOptions(hook, 8080, func(HookFailure) { called = true })
+	if called {
+		t.Error("onFailure invoked for benign pkill no-match exit (should be suppressed)")
+	}
+}
