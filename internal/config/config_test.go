@@ -2801,6 +2801,14 @@ func TestConstraintMatchesName(t *testing.T) {
 		{name: "lookAlike all words present", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, input: "opus-4.8", want: true},
 		{name: "lookAlike word missing", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "opus 5.0"}, input: "opus-4.8", want: false},
 		{name: "lookAlike empty pattern", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: ""}, input: "opus-4.8", want: false},
+		// mitto-bx4: numeric tokens must not match inside a larger alphanumeric run
+		// (e.g. the "5" in "Opus 5" must not match the "5" inside "500K").
+		{name: "lookAlike numeric token does not match inside larger suffix (500K, Opus 4.7)", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 5"}, input: "Opus 4.7 (500K)", want: false},
+		{name: "lookAlike numeric token does not match inside larger suffix (500K, Opus 4.6)", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 5"}, input: "Opus 4.6 (500K)", want: false},
+		{name: "lookAlike numeric token does not match inside larger suffix (Sonnet)", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Sonnet 5"}, input: "Claude Sonnet 4.6 (500K)", want: false},
+		{name: "lookAlike punctuation-separated token still matches (exact)", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, input: "Opus 4.8", want: true},
+		{name: "lookAlike punctuation-separated token still matches (with suffix)", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, input: "Claude Opus 4.8 (500K)", want: true},
+		{name: "lookAlike token bounded by hyphen still matches", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "GPT Sol"}, input: "GPT-5.6 Sol", want: true},
 		{name: "unknown mode", constraint: &ACPServerConstraint{MatchMode: "nope", Pattern: "opus"}, input: "opus-4.8", want: false},
 	}
 	for _, tt := range tests {

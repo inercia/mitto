@@ -42,11 +42,43 @@ func ConstraintMatchesName(c *ACPServerConstraint, name string) bool {
 			return false
 		}
 		for _, word := range words {
-			if !strings.Contains(nameLower, word) {
+			if !containsBoundedToken(nameLower, word) {
 				return false
 			}
 		}
 		return true
 	}
 	return false
+}
+
+// isASCIIAlnum reports whether b is an ASCII letter or digit.
+func isASCIIAlnum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// containsBoundedToken reports whether word occurs in name as a standalone
+// token: flanked on both sides by either a non-alphanumeric byte or the
+// start/end of the string. This prevents a short lookAlike pattern word such
+// as "5" from matching inside an unrelated larger run of digits/letters such
+// as "500k" (mitto-bx4), while still allowing tokens bounded by punctuation
+// (hyphens, parentheses, periods between words) or whitespace to match.
+func containsBoundedToken(name, word string) bool {
+	if word == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(name[start:], word)
+		if idx == -1 {
+			return false
+		}
+		idx += start
+		end := idx + len(word)
+		leftOK := idx == 0 || !isASCIIAlnum(name[idx-1])
+		rightOK := end == len(name) || !isASCIIAlnum(name[end])
+		if leftOK && rightOK {
+			return true
+		}
+		start = idx + 1
+	}
 }
