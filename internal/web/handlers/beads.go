@@ -110,7 +110,18 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 			if resolved, resolveErr := beads.ResolveDatabaseMode(r.Context(), h.beadsClient(), workingDir); resolveErr == nil {
 				databaseMode = resolved
 			} else if h.deps.Logger != nil {
-				h.deps.Logger.Warn("could not resolve beads database mode for schema-skew guidance", "working_dir", workingDir, "error", resolveErr)
+				// Deduped per DB path (distinct key from the outer
+				// schema-skew WARN below, so both can independently log
+				// once): this inner resolve failure is just as
+				// deterministic and sticky as the outer schema skew that
+				// gates this whole branch — a workspace whose Dolt-remote
+				// probe fails will fail it identically on every request —
+				// so leaving it unconditional reintroduces the same
+				// per-request WARN storm mitto-790 fixed for the outer
+				// message, just one call site over (mitto-5sv).
+				beads.WarnSchemaSkewOnce(h.deps.Logger, info.DBPath+":resolve", err,
+					"could not resolve beads database mode for schema-skew guidance",
+					"working_dir", workingDir, "error", resolveErr)
 			}
 		}
 		logMessage := "beads schema needs migration"

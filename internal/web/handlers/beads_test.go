@@ -663,6 +663,92 @@ func TestHandleBeadsList_SchemaSkew_NoRetry(t *testing.T) {
 	}
 }
 
+// schemaSkewResolveErrClient combines a schema-skew List failure with a
+// failing HasDoltRemote, so writeBeadsError's inner beads.ResolveDatabaseMode
+// call (used only to pick the schema-skew hint wording) itself fails on
+// every invocation. Used by TestHandleBeadsList_SchemaSkew_InnerResolveWarnNotDeduped
+// (mitto-5sv) to pin the secondary un-deduped WARN adjacent to the one
+// mitto-790's WarnSchemaSkewOnce already fixed.
+//
+// Uses its own DB path (distinct from the "/Users/test/.beads-planning"
+// shared by schemaSkewClient/schemaSkewCountingClient/the dashboard test's
+// fixture) because beads.WarnSchemaSkewOnce's dedup key is a process-lifetime
+// sync.Map with no per-test reset: this is the only schema-skew test in the
+// package that wires a real (non-nil) Logger, so reusing the shared path
+// would let its dedup consumption leak into TestDashboardCollect_SchemaSkewWorkspace_WarnStormNotDeduped
+// (also a real-Logger test) whenever it runs afterward in the same binary.
+type schemaSkewResolveErrClient struct {
+	stubBeadsClient
+	resolveErr error
+}
+
+func (c *schemaSkewResolveErrClient) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+			"Error: failed to open routed store at /Users/test/.beads-planning-5sv: schema version mismatch: database is at v49, binary expects v53 ...",
+	}
+}
+
+func (c *schemaSkewResolveErrClient) HasDoltRemote(context.Context, string) (bool, error) {
+	return false, c.resolveErr
+}
+
+// TestHandleBeadsList_SchemaSkew_InnerResolveWarnNotDeduped reproduces the
+// mitto-5sv secondary finding (see the "Investigation" comment on the bead):
+// mitto-790's WarnSchemaSkewOnce only dedupes the OUTER "beads schema needs
+// migration" WARN, keyed by DB path. The INNER
+// "could not resolve beads database mode for schema-skew guidance" WARN
+// (internal/web/handlers/beads.go:113), which fires whenever
+// beads.ResolveDatabaseMode itself fails while producing the 409 hint, is
+// NOT routed through the dedup gate and re-emits on every request against
+// the same skewed-and-unresolvable workspace — the exact storm pattern
+// mitto-790 fixed for the outer log line, just one call site over.
+func TestHandleBeadsList_SchemaSkew_InnerResolveWarnNotDeduped(t *testing.T) {
+	setupMittoDir(t)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	client := &schemaSkewResolveErrClient{resolveErr: errors.New("simulated dolt remote list failure")}
+	s := New(Deps{SessionManager: newBeadsTestSM(), BeadsClient: client, Logger: logger})
+
+	newReq := func() *http.Request { return localhostRequest("/api/issues?working_dir=/test/workspace") }
+
+	// First request against the skewed+unresolvable workspace.
+	w1 := httptest.NewRecorder()
+	s.handleBeadsList(w1, newReq())
+	if w1.Code != http.StatusConflict {
+		t.Fatalf("first request status = %d, want %d", w1.Code, http.StatusConflict)
+	}
+
+	// Second request against the SAME workspace/DB path: the outer WARN
+	// must stay deduped (mitto-790's fix, still working correctly), but the
+	// inner resolve-failure WARN re-fires today (the bug this test pins).
+	w2 := httptest.NewRecorder()
+	s.handleBeadsList(w2, newReq())
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("second request status = %d, want %d", w2.Code, http.StatusConflict)
+	}
+
+	logged := logBuf.String()
+	outerCount := strings.Count(logged, "beads schema needs migration")
+	innerCount := strings.Count(logged, "could not resolve beads database mode for schema-skew guidance")
+
+	if outerCount != 1 {
+		t.Errorf("outer schema-skew WARN count = %d, want 1 (mitto-790's WarnSchemaSkewOnce dedup)", outerCount)
+	}
+	// mitto-5sv: this is the failing assertion today. The inner
+	// resolve-failure WARN must be deduped the same way as the outer
+	// schema-skew WARN, since it originates from the same deterministic,
+	// sticky failure inside the same already-deduped branch. Today it is
+	// unconditional and fires on every request, so this wants 1 but
+	// observes 2 until the bug is fixed.
+	if innerCount != 1 {
+		t.Errorf("inner resolve-failure WARN count = %d, want 1 (mitto-5sv: must be deduped like the outer schema-skew WARN, not re-emitted on every request)", innerCount)
+	}
+}
+
 // listTimeoutClient is a beads.Client whose List blocks until ctx is done.
 type listTimeoutClient struct{ stubBeadsClient }
 
