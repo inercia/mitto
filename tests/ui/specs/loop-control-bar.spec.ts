@@ -75,22 +75,32 @@ test.describe("Loop control bar and settings tab", () => {
       callback.locator('[data-testid="callback-copy"]'),
     ).toBeVisible();
 
+    await panel.getByRole("button", { name: "Run now", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => runNowCalls).toBe(1);
+
     await panel.getByRole("button", { name: "Close" }).click();
     await expect(panel).toHaveCount(0);
 
-    await bar.locator('[data-testid="loop-pause-resume-button"]').click();
+    const playPause = bar.locator('[data-testid="loop-pause-resume-button"]');
+    await expect(
+      bar.locator('[data-testid="loop-run-now-button"]'),
+    ).toHaveCount(0);
+    await expect(playPause).toHaveAttribute("aria-label", "Pause loop runs");
+    await playPause.click();
     await expect(bar).toContainText("Paused", {
       timeout: timeouts.shortAction,
     });
+    await expect(playPause).toHaveAttribute(
+      "aria-label",
+      "Restore loop schedule",
+    );
 
-    await bar.locator('[data-testid="loop-pause-resume-button"]').click();
+    await playPause.click();
     await page.getByRole("button", { name: "Restore", exact: true }).click();
     await expect(bar).toContainText("Running", {
       timeout: timeouts.shortAction,
     });
-
-    await bar.locator('[data-testid="loop-run-now-button"]').click();
-    await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect.poll(() => runNowCalls).toBe(2);
   });
 

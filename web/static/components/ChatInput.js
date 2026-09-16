@@ -2304,7 +2304,6 @@ ${activeUIPrompt.text || ""}</textarea
           isOpen=${loopConfigured && !hasActiveUIPrompt}
           sessionId=${sessionId}
           enabled=${isLoopLocked}
-          isStreaming=${isStreaming}
           stoppedReason=${loopStoppedReason}
           maxDurationSeconds=${loopMaxDurationSeconds}
           maxIterations=${loopMaxIterations}

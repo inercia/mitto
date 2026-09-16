@@ -11,7 +11,6 @@ import {
 } from "./Icons.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { getSdkClient } from "../utils/sdkClient.js";
-import { errorStatus } from "../utils/sdkErrors.js";
 
 const CAP_STOP_REASONS = new Set([
   "maxDuration",
@@ -23,7 +22,6 @@ export function LoopControlBar({
   isOpen,
   sessionId,
   enabled = false,
-  isStreaming = false,
   stoppedReason = "",
   maxDurationSeconds = 0,
   maxIterations = 0,
@@ -34,27 +32,8 @@ export function LoopControlBar({
 }) {
   const [dialog, setDialog] = useState("");
   const [busy, setBusy] = useState("");
-  const [resetTimer, setResetTimer] = useState(true);
   const [resetCounters, setResetCounters] = useState(true);
   const [error, setError] = useState("");
-
-  const runNow = useCallback(async () => {
-    if (!sessionId || busy) return;
-    setBusy("run");
-    try {
-      await getSdkClient().sessions.loop.runNow(sessionId, resetTimer);
-      setDialog("");
-    } catch (err) {
-      setDialog("");
-      setError(
-        errorStatus(err) === 409
-          ? "Session is currently processing a prompt. Please wait and try again."
-          : "Failed to run the loop now. Please try again.",
-      );
-    } finally {
-      setBusy("");
-    }
-  }, [sessionId, busy, resetTimer]);
 
   const pause = useCallback(async () => {
     if (!sessionId || busy || !enabled) return;
@@ -121,24 +100,6 @@ export function LoopControlBar({
         <button
           type="button"
           class=${controlClass}
-          disabled=${busy !== "" || !enabled || isStreaming}
-          onClick=${() => {
-            setResetTimer(true);
-            setDialog("run");
-          }}
-          title="Run this loop prompt now"
-          aria-label="Run this loop prompt now"
-          data-testid="loop-run-now-button"
-        >
-          ${
-            busy === "run" || busy === "restore"
-              ? html`<span class="loading loading-spinner loading-xs"></span>`
-              : html`<${PlayFilledIcon} className="w-4 h-4" />`
-          }
-        </button>
-        <button
-          type="button"
-          class=${controlClass}
           disabled=${busy !== ""}
           onClick=${() => {
             if (enabled) {
@@ -153,7 +114,7 @@ export function LoopControlBar({
           data-testid="loop-pause-resume-button"
         >
           ${
-            busy === "pause"
+            busy === "pause" || busy === "restore"
               ? html`<span class="loading loading-spinner loading-xs"></span>`
               : enabled
                 ? html`<${PauseFilledIcon} className="w-4 h-4" />`
@@ -190,22 +151,6 @@ export function LoopControlBar({
           <${SettingsIcon} className="w-4 h-4" />
         </button>
       </div>
-
-      <${ConfirmDialog}
-        isOpen=${dialog === "run"}
-        title="Run now"
-        message="Do you want to send this loop prompt now?"
-        confirmLabel="Send"
-        isLoading=${busy === "run"}
-        onConfirm=${runNow}
-        onCancel=${() => !busy && setDialog("")}
-      >
-        <label class="label cursor-pointer justify-start gap-3">
-          <input type="checkbox" class="checkbox checkbox-sm" checked=${resetTimer}
-            onChange=${(event) => setResetTimer(event.target.checked)} />
-          Reset countdown for the next scheduled run
-        </label>
-      </${ConfirmDialog}>
 
       <${ConfirmDialog}
         isOpen=${dialog === "restore"}
