@@ -415,6 +415,42 @@ func TestHandleDashboard_LimitQuery(t *testing.T) {
 	}
 }
 
+// TestDashboardCollect_SchemaSkewWorkspace_WarnStormNotDeduped reproduces
+// mitto-790: a workspace whose beads DB is behind the bd binary's schema
+// fails every read with a deterministic, sticky schema-skew error (the
+// (working_dir, db_version, binary_version) tuple never changes until a
+// human migrates the DB or the bd binary version changes). dashboardCollect
+// currently classifies every fetch error identically and unconditionally
+// re-emits the "dashboard: bd query failed for workspace; skipping" WARN, so
+// simulating repeated watcher-triggered dashboard refresh cycles against the
+// same skewed workspace produces one WARN line per cycle instead of a single
+// deduped line. This locks in the eventual fix: the WARN must fire at most
+// once per (working_dir, db_version, binary_version) tuple, not once per
+// cycle.
+func TestDashboardCollect_SchemaSkewWorkspace_WarnStormNotDeduped(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	client := &schemaSkewClient{}
+	sm := conversation.NewSessionManager("", "", false, nil)
+	s := New(Deps{SessionManager: sm, BeadsClient: client, Logger: logger})
+
+	ctx := context.Background()
+	const cycles = 5
+	for i := 0; i < cycles; i++ {
+		s.dashboardCollect(ctx, []string{"/Users/test/.beads-planning"}, "in_progress",
+			func(ctx context.Context, dir string) ([]byte, error) {
+				return client.List(ctx, dir)
+			}, nil)
+	}
+
+	logged := logBuf.String()
+	count := strings.Count(logged, "dashboard: bd query failed for workspace; skipping")
+	if count != 1 {
+		t.Errorf("WARN emitted %d times across %d watcher-triggered cycles against the same skewed workspace, want 1 (deduped); mitto-790 storm reproduced; log=%s", count, cycles, logged)
+	}
+}
+
 // twoDigit returns a zero-padded two-digit decimal for small non-negative ints.
 func twoDigit(n int) string {
 	if n < 10 {

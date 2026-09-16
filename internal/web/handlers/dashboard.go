@@ -215,8 +215,20 @@ func (h *Handlers) dashboardCollect(
 			})
 			if err != nil {
 				if h.deps.Logger != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					h.deps.Logger.Warn("dashboard: bd query failed for workspace; skipping",
-						"list", listName, "working_dir", dir, "error", err, "stderr", beads.StderrOf(err))
+					// Schema skew is a deterministic, sticky condition (the
+					// same broken DB fails identically on every watcher
+					// cycle), so its WARN is deduped per working_dir to
+					// avoid a log storm (mitto-790). Every other failure
+					// kind keeps the unconditional per-cycle WARN, since it
+					// may be transient and each occurrence is diagnostically
+					// useful.
+					if beads.IsSchemaSkew(err) {
+						beads.WarnSchemaSkewOnce(h.deps.Logger, dir, err, "dashboard: bd query failed for workspace; skipping",
+							"list", listName, "working_dir", dir, "error", err, "stderr", beads.StderrOf(err))
+					} else {
+						h.deps.Logger.Warn("dashboard: bd query failed for workspace; skipping",
+							"list", listName, "working_dir", dir, "error", err, "stderr", beads.StderrOf(err))
+					}
 				}
 				return
 			}

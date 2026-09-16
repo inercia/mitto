@@ -3569,7 +3569,19 @@ func (b *statsBeadsSourceWatcherSubscriber) OnBeadsChanged(_ watcher.BeadsChange
 	}
 	go func() {
 		if err := b.source.Run(context.Background()); err != nil && b.logger != nil {
-			b.logger.Warn("stats: beads source watcher-triggered refresh failed", "error", err)
+			// Schema skew is deterministic and sticky: the same broken
+			// workspace fails identically on every watcher-triggered
+			// refresh, so its WARN is deduped (per the failure's own
+			// identity, since Run's all-or-nothing error does not carry a
+			// single clean working_dir) to avoid a log storm (mitto-790).
+			// Every other failure kind keeps the unconditional per-cycle
+			// WARN, since it may be transient and each occurrence is
+			// diagnostically useful.
+			if beads.IsSchemaSkew(err) {
+				beads.WarnSchemaSkewOnce(b.logger, "", err, "stats: beads source watcher-triggered refresh failed", "error", err)
+			} else {
+				b.logger.Warn("stats: beads source watcher-triggered refresh failed", "error", err)
+			}
 		}
 	}()
 }

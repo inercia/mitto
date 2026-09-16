@@ -117,9 +117,13 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 		if databaseAhead {
 			logMessage = "beads database newer than bd binary"
 		}
-		if h.deps.Logger != nil {
-			h.deps.Logger.Warn(logMessage, "db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
-		}
+		// Deduped per DB path: schema skew is deterministic and sticky, so
+		// repeated client polling of the same broken database (the UI
+		// retries a 409 response) would otherwise re-emit this WARN on
+		// every request (mitto-790). The 409 response itself is unaffected
+		// — only the accompanying log line is throttled.
+		beads.WarnSchemaSkewOnce(h.deps.Logger, info.DBPath, err, logMessage,
+			"db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
 		hint := "This beads database is behind the bd binary's schema and is remote-backed, so bd will not auto-migrate it. Reconcile it once (e.g. `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push` on the designated migrator clone, or `bd bootstrap` if another clone already migrated), then reload."
 		allowMigrate := h.beadsMigrationAllowed()
 		if databaseMode == workspaces.BeadsDatabaseModeLocal {
