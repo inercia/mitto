@@ -444,6 +444,32 @@ func TestIsSchemaSkew_JSONGate(t *testing.T) {
 	}
 }
 
+// TestIsSchemaSkew_AlreadyMigratedAdoptGate reproduces mitto-09j Bug 1: bd's
+// "already migrated, adopt instead" refusal is a genuine schema-skew failure
+// (the DB is behind the binary's schema on a remote-backed clone; bd is
+// steering the caller toward `bd bootstrap` instead of migrating in place)
+// but IsSchemaSkew's substring heuristics all miss it:
+//   - no "schema version mismatch" phrase
+//   - no "remote_migrate_gate" JSON blob
+//   - "remote-backed database" IS present, but the paired phrase is "migrate
+//     a remote-backed database", not "schema migration" — so the AND
+//     condition on the last branch fails too.
+//
+// Left unclassified, this stderr falls through to a bare 500 in
+// writeBeadsError instead of the actionable 409 beads_schema_skew envelope
+// (with an "adopt" remediation), and the reconcile-on-GET path (Bug 2) turns
+// every innocuous "open the Tasks tab" GET into this same unclassified 500.
+func TestIsSchemaSkew_AlreadyMigratedAdoptGate(t *testing.T) {
+	err := &CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: "refusing to migrate a remote-backed database (v53 -> v66): " +
+			"the remote is already migrated — adopt it instead of migrating here (#4259)",
+	}
+	if !IsSchemaSkew(err) {
+		t.Errorf("IsSchemaSkew(already-migrated adopt gate) = false, want true (mitto-09j)")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------

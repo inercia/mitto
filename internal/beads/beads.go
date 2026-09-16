@@ -146,7 +146,17 @@ func IsSchemaSkew(err error) bool {
 	if strings.Contains(stderr, "remote_migrate_gate") {
 		return true
 	}
-	return strings.Contains(stderr, "schema migration") && strings.Contains(stderr, "remote-backed database")
+	if strings.Contains(stderr, "schema migration") && strings.Contains(stderr, "remote-backed database") {
+		return true
+	}
+	// bd also refuses to migrate a remote-backed database that another clone
+	// already migrated, steering the caller toward "adopt" (bd bootstrap)
+	// instead of migrating in place: "refusing to migrate a remote-backed
+	// database (vN -> vM): the remote is already migrated — adopt it instead
+	// of migrating here (#4259)". This is still a genuine schema-skew
+	// failure (mitto-09j) even though it lacks the "schema migration" phrase
+	// matched above.
+	return strings.Contains(stderr, "remote-backed database") && strings.Contains(stderr, "already migrated")
 }
 
 // SchemaSkewOption is one remediation path advertised by bd's structured
