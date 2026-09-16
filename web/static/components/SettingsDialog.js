@@ -77,6 +77,11 @@ import {
   removeTaskLabelColor as deleteTaskLabelColor,
   updateTaskLabelColor as patchTaskLabelColor,
 } from "../utils/taskLabelColors.js";
+import {
+  AGENT_DELETE_UNSELECTED,
+  agentDeleteSelectValue,
+  hasAgentDeleteChoice,
+} from "../utils/agentDeleteChoice.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
 // by the folder-level editor and the render-time toolbars; each maps to the
@@ -1330,7 +1335,7 @@ function ACPServerDeleteWizard({
   const canAdvanceFolder = () => {
     if (currentCandidates.length > 0) {
       // A choice must be made: either a candidate name, or the explicit "" (delete).
-      return currentChoice.newServer !== null;
+      return hasAgentDeleteChoice(currentChoice);
     }
     // No candidates: user must acknowledge deletion.
     return !!currentChoice.acknowledged;
@@ -1576,13 +1581,10 @@ function ACPServerDeleteWizard({
                   </label>
                   <select
                     class="select select-bordered select-sm w-full"
-                    value=${currentChoice.newServer === null
-                      ? ""
-                      : currentChoice.newServer}
+                    value=${agentDeleteSelectValue(currentChoice)}
                     onChange=${(e) => {
                       const v = e.target.value;
-                      // "__none__" sentinel = unselected placeholder.
-                      if (v === "__none__") {
+                      if (v === AGENT_DELETE_UNSELECTED) {
                         setChoiceFor(folderIndex, { newServer: null });
                       } else {
                         setChoiceFor(folderIndex, { newServer: v });
@@ -1591,7 +1593,7 @@ function ACPServerDeleteWizard({
                   >
                     ${currentChoice.newServer === null &&
                     html`
-                      <option value="__none__" disabled=${true}>
+                      <option value=${AGENT_DELETE_UNSELECTED} disabled=${true}>
                         Select an option...
                       </option>
                     `}
