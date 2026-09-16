@@ -104,13 +104,58 @@ func TestTimeseries_BadBucket(t *testing.T) {
 	}
 }
 
-func TestTimeseries_BadMetric(t *testing.T) {
+// TestTimeseries_AllUnknownMetricsFallBackToDefaultSet used to assert a 400
+// when ?metrics= named only unknown metric names. mitto-6jy changed the
+// contract: unknown names are silently dropped rather than rejected, so a
+// list that is *entirely* unknown names filters down to empty and falls
+// back to the default metric set (still a 200), matching the "only 400 when
+// the filtered list is empty" behavior described in
+// TestTimeseries_UnknownMetricAlongsideValidOnesIsDroppedNot400.
+func TestTimeseries_AllUnknownMetricsFallBackToDefaultSet(t *testing.T) {
 	h, _ := newTimeseriesTestHandler(&fakeStatsStore{}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?metrics=bogus", nil)
 	w := httptest.NewRecorder()
 	h.HandleDashboardTimeseries(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	if _, ok := body.Series[stats.MetricPrompts]; !ok {
+		t.Errorf("expected fallback to default metric set to include %q; got keys=%v", stats.MetricPrompts, keys(body.Series))
+	}
+	if _, ok := body.Series["bogus"]; ok {
+		t.Errorf("unexpected series for unknown metric name; it must be silently dropped, not echoed back")
+	}
+}
+
+// TestTimeseries_UnknownMetricAlongsideValidOnesIsDroppedNot400 reproduces
+// mitto-6jy: a mobile Safari session with a stale cached JS bundle can send
+// a ?metrics= list mixing a metric name the *running* binary's v1MetricSet
+// no longer/not-yet recognizes (version skew across a server restart, since
+// frontend JS and this handler are embedded in the same binary but the
+// browser's HTTP cache survives restarts) alongside otherwise-valid metric
+// names. Today the handler hard-rejects the *whole* request with 400 the
+// moment it sees the first unrecognized name (parseTimeseriesQuery), even
+// though the rest of the list is perfectly valid — this is exactly the 400
+// captured in access.log for the reported mobile session. The desired
+// behavior (this bead's fix) is to silently drop unknown metric names and
+// serve the ones that ARE known, only 400ing when the filtered list is
+// empty. This test currently FAILS: it gets 400 instead of 200.
+func TestTimeseries_UnknownMetricAlongsideValidOnesIsDroppedNot400(t *testing.T) {
+	store := &fakeStatsStore{}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?metrics=prompts,some_future_or_removed_metric", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (unknown metric must be dropped, not reject the whole request); body=%s", w.Code, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	if _, ok := body.Series[stats.MetricPrompts]; !ok {
+		t.Errorf("missing series %q for the still-valid metric; got keys=%v", stats.MetricPrompts, keys(body.Series))
+	}
+	if _, ok := body.Series["some_future_or_removed_metric"]; ok {
+		t.Errorf("unexpected series for unknown metric name; it must be silently dropped, not echoed back")
 	}
 }
 

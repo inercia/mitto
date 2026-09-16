@@ -185,8 +185,13 @@ func parseTimeseriesQuery(w http.ResponseWriter, r *http.Request, backfill bool)
 				continue
 			}
 			if _, ok := allow[name]; !ok {
-				writeErrorJSON(w, http.StatusBadRequest, "", "invalid metric: "+name)
-				return nil
+				// Silently drop unknown/removed metric names instead of
+				// rejecting the whole request: a stale-cached frontend
+				// bundle (e.g. mobile Safari surviving a server restart to
+				// a binary with a different v1MetricSet) can request a
+				// metric name the running binary no longer/doesn't yet
+				// recognize alongside otherwise-valid ones (mitto-6jy).
+				continue
 			}
 			if _, dup := seen[name]; dup {
 				continue
