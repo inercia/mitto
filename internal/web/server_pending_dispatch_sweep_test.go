@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/processors"
 )
 
@@ -137,5 +138,70 @@ func TestStartPendingDispatchSweep_StopCancelsPromptly(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("stop() did not return within 2s; it should cancel immediately instead of waiting out pendingDispatchStartupSweepDelay")
+	}
+}
+
+type blockingSweepProvider struct {
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingSweepProvider) PromptAuxiliary(ctx context.Context, _, _, _ string) (string, error) {
+	p.once.Do(func() { close(p.entered) })
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func (*blockingSweepProvider) PromptAuxiliaryAsync(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*blockingSweepProvider) CloseWorkspaceAuxiliary(string) error { return nil }
+
+// TestStartPendingDispatchSweep_StopCancelsActiveFlush pins mitto-ctg: an
+// already-running startup sweep must receive shutdown cancellation through
+// FlushPendingDispatches and its active auxiliary prompt. Otherwise stop waits
+// for the processor's multi-minute timeout and Server.Shutdown never returns.
+func TestStartPendingDispatchSweep_StopCancelsActiveFlush(t *testing.T) {
+	orig := pendingDispatchStartupSweepDelay
+	pendingDispatchStartupSweepDelay = 20 * time.Millisecond
+	defer func() { pendingDispatchStartupSweepDelay = orig }()
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-server-active-flush"
+	seedFreshSpoolEntry(t, spoolDir, wsUUID)
+
+	provider := &blockingSweepProvider{entered: make(chan struct{})}
+	auxMgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
+	stop := startPendingDispatchSweep(
+		context.Background(), nil, auxMgr, spoolDir, nil,
+		func(workspaceUUID string) bool { return workspaceUUID == wsUUID },
+		func(string) error { return nil },
+	)
+
+	select {
+	case <-provider.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup sweep did not enter the blocking auxiliary prompt")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop() did not cancel the active pending-dispatch flush")
+	}
+
+	entries, err := (&processors.FilePendingDispatchStore{BaseDir: spoolDir}).Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(entries) != 1 || entries[0].Attempts != 1 || entries[0].LastError != "" {
+		t.Fatalf("entry after cancellation = %+v, want one unchanged entry", entries)
 	}
 }

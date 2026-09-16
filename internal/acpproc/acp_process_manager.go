@@ -101,8 +101,12 @@ type ACPProcessManager struct {
 	auxQuiescenceMu    sync.Mutex
 	auxQuiescenceWaits map[string]*processQuiescenceWait
 
-	// Global context for all managed processes.
-	ctx context.Context
+	// ctx owns manager background workers and process startup; processCtx owns
+	// established process lifetimes. cancel only stops the former so sessions
+	// can detach cleanly before Close terminates tracked processes.
+	ctx        context.Context
+	processCtx context.Context
+	cancel     context.CancelFunc
 
 	// DisableAuxiliary disables all auxiliary session features (pre-warming,
 	// MCP tools fetch, title generation, follow-up analysis).
@@ -353,13 +357,16 @@ func diffEnvKeys(a, b map[string]string) (added, removed, changed []string) {
 // It does NOT perform orphan cleanup — call CleanupOrphanedProcesses() explicitly
 // at server startup if orphan cleanup is desired.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
+	managerCtx, cancel := context.WithCancel(ctx)
 	m := &ACPProcessManager{
 		processes:          make(map[string]*SharedACPProcess),
 		auxSessions:        make(map[auxSessionKey]*auxiliarySessionState),
 		auxCreateMu:        make(map[auxSessionKey]*sync.Mutex),
 		auxQuiescenceWaits: make(map[string]*processQuiescenceWait),
 		pinState:           make(map[string]*pinInfo),
-		ctx:                ctx,
+		ctx:                managerCtx,
+		processCtx:         ctx,
+		cancel:             cancel,
 		logger:             logger,
 	}
 	// Diagnostic: expose the live shared-ACP-process count to the coldstart
@@ -770,7 +777,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 	}
 
 	createStart := time.Now()
-	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
+	p, err := NewSharedACPProcess(m.processCtx, SharedACPProcessConfig{
 		WorkspaceUUID:     workspace.UUID,
 		ACPCommand:        acpCommand,
 		ACPCwd:            acpCwd,
@@ -787,6 +794,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		StderrPatterns:    stderrPatterns,
 		AgentDefaultEnv:   agentDefaultEnv,
 		InitializeTimeout: agentInitializeTimeout,
+		StartupContext:    m.ctx,
 	})
 	createDuration := time.Since(createStart)
 
@@ -950,8 +958,21 @@ func (m *ACPProcessManager) RestartProcess(workspaceUUID string) error {
 	return p.Restart(conversation.RestartAnyGeneration)
 }
 
+// BeginShutdown cancels manager-owned process startup and auxiliary/prewarm
+// work without closing tracked processes. It is safe to call more than once.
+// Server shutdown uses this before joining workers that may currently be
+// blocked inside GetOrCreateProcess; Close performs the same step defensively.
+func (m *ACPProcessManager) BeginShutdown() {
+	m.cancel()
+}
+
 // Close stops all managed processes.
 func (m *ACPProcessManager) Close() {
+	// Cancel before taking m.mu. GetOrCreateProcess may be holding that lock
+	// while starting a process with m.ctx; cancellation lets it return instead
+	// of making shutdown wait for the full initialize/probe timeout.
+	m.BeginShutdown()
+
 	m.mu.Lock()
 	processes := make(map[string]*SharedACPProcess, len(m.processes))
 	for k, v := range m.processes {

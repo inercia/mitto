@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -428,6 +429,7 @@ func startPendingDispatchSweep(
 	workspaceExists func(workspaceUUID string) bool,
 	ensureWorkspaceProcess func(workspaceUUID string) error,
 ) (stop func()) {
+	runCtx, cancel := context.WithCancel(ctx)
 	procMgr := processors.NewManager("", logger)
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{BaseDir: spoolDir})
 	if auxMgr != nil {
@@ -458,8 +460,11 @@ func startPendingDispatchSweep(
 	}
 
 	runSweep := func() {
-		swept, err := processors.SweepPendingDispatchDir(procMgr, spoolDir, isDispatchable, workspaceExists, ensureDispatchable)
+		swept, err := processors.SweepPendingDispatchDirContext(runCtx, procMgr, spoolDir, isDispatchable, workspaceExists, ensureDispatchable)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
 			if logger != nil {
 				logger.Warn("pending-dispatch sweep failed", "error", err)
 			}
@@ -470,7 +475,6 @@ func startPendingDispatchSweep(
 		}
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 
 	go func() {
@@ -2203,6 +2207,20 @@ func (s *Server) Shutdown() error {
 		return nil
 	}
 
+	// Cancel ACP startup and manager-owned auxiliary/prewarm work before
+	// joining the spool sweep: that sweep may itself be blocked cold-starting a
+	// workspace process. Tracked processes remain open until CloseAll below.
+	if s.acpProcessManager != nil {
+		s.acpProcessManager.BeginShutdown()
+	}
+
+	// Stop work that can create ACP processes before tearing down the process
+	// manager, sessions, or store. Its cancellation propagates into an active
+	// processor prompt so shutdown cannot wait out a multi-minute dispatch.
+	if s.pendingDispatchSweepStop != nil {
+		s.pendingDispatchSweepStop()
+	}
+
 	// Stop external listener if running (uses its own externalMu internally)
 	s.StopExternalListener()
 
@@ -2316,11 +2334,6 @@ func (s *Server) Shutdown() error {
 	// Stop the periodic goroutine gauge (mitto-x3x)
 	if s.goroutineGaugeStop != nil {
 		s.goroutineGaugeStop()
-	}
-
-	// Stop the periodic pending-dispatch spool sweep (mitto-lak)
-	if s.pendingDispatchSweepStop != nil {
-		s.pendingDispatchSweepStop()
 	}
 
 	// Shut down the HTTP server with a timeout so we don't hang indefinitely.

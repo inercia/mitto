@@ -41,11 +41,55 @@ func TestACPProcessManager_GetOrCreateProcess_RequiresUUID(t *testing.T) {
 
 func TestACPProcessManager_Close_Empty(t *testing.T) {
 	m := NewACPProcessManager(context.Background(), nil)
-	// Should not panic
-	m.Close()
+
+	// Hold the manager lock to reproduce an in-flight GetOrCreateProcess. Close
+	// must cancel manager work before waiting to acquire this lock.
+	m.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		m.Close()
+		close(done)
+	}()
+	select {
+	case <-m.ctx.Done():
+	case <-time.After(time.Second):
+		m.mu.Unlock()
+		t.Fatal("Close() did not cancel manager-owned background work")
+	}
+	m.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return after the manager lock was released")
+	}
 
 	if m.ProcessCount() != 0 {
 		t.Errorf("expected 0 processes after close, got %d", m.ProcessCount())
+	}
+}
+
+func TestACPProcessManager_BeginShutdownLeavesTrackedProcessAlive(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	proc := newTestSharedProcess()
+	m.processes["ws-established"] = proc
+
+	m.BeginShutdown()
+
+	select {
+	case <-proc.ctx.Done():
+		t.Fatal("BeginShutdown() terminated an established shared process before session teardown")
+	default:
+	}
+	m.Close()
+}
+
+func TestNewSharedACPProcess_CancelledStartupContext(t *testing.T) {
+	startupCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := NewSharedACPProcess(context.Background(), SharedACPProcessConfig{StartupContext: startupCtx})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewSharedACPProcess() error = %v, want context.Canceled", err)
 	}
 }
 

@@ -78,6 +78,7 @@ type WorkspaceSaveFunc func(workspaces []config.WorkspaceSettings) error
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*BackgroundSession // keyed by persisted session ID
+	closing  bool                          // CloseAll has begun; no new resumes may register
 
 	// pendingResumes tracks in-progress session resume operations, keyed by session ID.
 	// This prevents the TOCTOU race where two goroutines both observe no running session
@@ -2672,6 +2673,10 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 
 	sm.mu.Lock()
+	if sm.closing {
+		sm.mu.Unlock()
+		return nil, context.Canceled
+	}
 
 	// Re-check under write lock: another goroutine may have registered this session
 	// between our read-locked GetSession check above and acquiring the write lock here.
@@ -3442,9 +3447,15 @@ func (sm *SessionManager) ListRunningSessions() []string {
 // CloseAll closes all running sessions.
 func (sm *SessionManager) CloseAll(reason string) {
 	sm.mu.Lock()
+	sm.closing = true
 	sessions := make([]*BackgroundSession, 0, len(sm.sessions))
 	for _, bs := range sm.sessions {
 		sessions = append(sessions, bs)
+	}
+	for _, pr := range sm.pendingResumes {
+		if pr != nil && pr.cancel != nil {
+			pr.cancel()
+		}
 	}
 	sm.sessions = make(map[string]*BackgroundSession)
 	pm := sm.acpProcessManager

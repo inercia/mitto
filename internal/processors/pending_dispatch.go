@@ -629,6 +629,13 @@ func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDis
 // unchanged (ensureDispatchable is never invoked when workspaceExists is nil
 // or reports false).
 func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool, workspaceExists func(workspaceUUID string) bool, ensureDispatchable func(workspaceUUID string) bool) (int, error) {
+	return SweepPendingDispatchDirContext(context.Background(), m, spoolDir, isDispatchable, workspaceExists, ensureDispatchable)
+}
+
+// SweepPendingDispatchDirContext is the cancellation-aware form used by
+// long-lived sweep workers. Cancellation stops before starting another
+// workspace and propagates into any active pending-dispatch flush.
+func SweepPendingDispatchDirContext(ctx context.Context, m *Manager, spoolDir string, isDispatchable func(workspaceUUID string) bool, workspaceExists func(workspaceUUID string) bool, ensureDispatchable func(workspaceUUID string) bool) (int, error) {
 	dirEntries, err := os.ReadDir(spoolDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -641,6 +648,9 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 	swept := 0
 	warmed := 0
 	for _, dirEntry := range dirEntries {
+		if err := ctx.Err(); err != nil {
+			return swept, err
+		}
 		if dirEntry.IsDir() {
 			continue
 		}
@@ -656,7 +666,7 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 
 		if isDispatchable != nil && isDispatchable(workspaceUUID) {
 			if m != nil {
-				m.FlushPendingDispatches(context.Background(), workspaceUUID)
+				m.FlushPendingDispatches(ctx, workspaceUUID)
 			}
 			continue
 		}
@@ -702,10 +712,13 @@ func SweepPendingDispatchDir(m *Manager, spoolDir string, isDispatchable func(wo
 		// eventually ages out unread. Never attempted for an orphaned
 		// workspace (recoverable false) or an empty/all-expired spool.
 		if recoverable && len(fresh) > 0 && ensureDispatchable != nil && warmed < pendingDispatchWarmPerSweep {
+			if err := ctx.Err(); err != nil {
+				return swept, err
+			}
 			warmed++
 			if ensureDispatchable(workspaceUUID) {
 				if m != nil {
-					m.FlushPendingDispatches(context.Background(), workspaceUUID)
+					m.FlushPendingDispatches(ctx, workspaceUUID)
 				}
 			}
 			// A false result defers to a later sweep tick — no retry within

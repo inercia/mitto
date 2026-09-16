@@ -344,6 +344,11 @@ type SharedACPProcessConfig struct {
 	// the caller from the agent's metadata.yaml (defaults.initializeTimeout),
 	// mirroring AgentDefaultEnv above (mitto-6dur).
 	InitializeTimeout time.Duration
+	// StartupContext optionally cancels only initial process construction. The
+	// process lifetime remains owned by the context passed to
+	// NewSharedACPProcess, allowing shutdown to abort a blocked initialize before
+	// session teardown without terminating already-established processes early.
+	StartupContext context.Context
 }
 
 type processTerminationIntent struct {
@@ -549,6 +554,27 @@ type SharedACPProcess struct {
 // The process is initialized (ACP handshake) but no sessions are created yet.
 func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*SharedACPProcess, error) {
 	processCtx, processCancel := context.WithCancel(ctx)
+	var startupMu sync.Mutex
+	startupComplete := false
+	var startupDone chan struct{}
+	if config.StartupContext != nil {
+		if err := config.StartupContext.Err(); err != nil {
+			processCancel()
+			return nil, fmt.Errorf("process startup cancelled: %w", err)
+		}
+		startupDone = make(chan struct{})
+		go func() {
+			select {
+			case <-config.StartupContext.Done():
+				startupMu.Lock()
+				if !startupComplete {
+					processCancel()
+				}
+				startupMu.Unlock()
+			case <-startupDone:
+			}
+		}()
+	}
 
 	p := &SharedACPProcess{
 		config:        config,
@@ -561,9 +587,22 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 		mcpInitDoneCh: make(chan struct{}),
 	}
 
-	if err := p.startProcess(); err != nil {
+	startErr := p.startProcess()
+	var startupCancelErr error
+	if startupDone != nil {
+		startupMu.Lock()
+		startupComplete = true
+		close(startupDone)
+		startupCancelErr = processCtx.Err()
+		startupMu.Unlock()
+	}
+	if startErr != nil {
 		processCancel()
-		return nil, err
+		return nil, startErr
+	}
+	if startupCancelErr != nil {
+		processCancel()
+		return nil, fmt.Errorf("process startup cancelled: %w", startupCancelErr)
 	}
 
 	return p, nil

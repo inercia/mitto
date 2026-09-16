@@ -106,6 +106,26 @@ func TestSessionManager_CloseAll_Empty(t *testing.T) {
 	}
 }
 
+func TestSessionManager_CloseAllCancelsAndRejectsResumes(t *testing.T) {
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	resumeCtx, cancelResume := context.WithCancel(context.Background())
+	sm.pendingResumes["in-flight"] = &pendingResumeResult{
+		done:   make(chan struct{}),
+		cancel: cancelResume,
+	}
+
+	sm.CloseAll("test")
+
+	select {
+	case <-resumeCtx.Done():
+	default:
+		t.Fatal("CloseAll() did not cancel an in-flight resume")
+	}
+	if _, err := sm.ResumeSession("new", "New", "/tmp"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResumeSession() after CloseAll error = %v, want context.Canceled", err)
+	}
+}
+
 func TestSessionManager_ResumeSession_NoStore(t *testing.T) {
 	sm := NewSessionManager("echo test", "test-server", true, nil)
 	// No store set
