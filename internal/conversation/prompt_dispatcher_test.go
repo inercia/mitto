@@ -117,6 +117,7 @@ type fakePromptDeps struct {
 	lastUsageSet               *acp.Usage
 	cumulativeUsageSet         []*acp.Usage
 	accumulatedTokens          []int
+	tokenUsageBaseline         int      // mitto-08q.1: mirrors BackgroundSession.tokenUsageDeltaBaseline
 	estimatedTokenCalls        []string // messages passed to pdEstimateTokensFromMessage
 	lastAgentMessage           string   // returned by pdReadLastAgentMessage / pdReadLastAgentMessageFromStore
 	markCompleteCount          int
@@ -472,6 +473,17 @@ func (f *fakePromptDeps) pdAccumulateCumulativeUsage(usage *acp.Usage) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cumulativeUsageSet = append(f.cumulativeUsageSet, usage)
+}
+func (f *fakePromptDeps) pdTokenUsageDelta(total int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prev := f.tokenUsageBaseline
+	f.tokenUsageBaseline = total
+	delta := total - prev
+	if delta < 0 {
+		return 0
+	}
+	return delta
 }
 func (f *fakePromptDeps) pdEstimateTokensFromMessage(msg string) int {
 	f.mu.Lock()
@@ -3098,6 +3110,47 @@ func TestPromptDispatcher_AccumulateTokenUsage_EstimatedIsZero_NoAccumulate(t *t
 
 	if len(d.accumulatedTokens) != 0 {
 		t.Fatalf("expected no accumulate when estimated==0, got %v", d.accumulatedTokens)
+	}
+}
+
+// TestPromptDispatcher_AccumulateTokenUsage_CumulativeSnapshots_Mitto08q1 reproduces
+// mitto-08q.1: ACP's Usage.TotalTokens is session-cumulative ("Sum of all token
+// types across session" per the acp-go-sdk field doc, not a per-turn delta), but
+// accumulateTokenUsage forwards it to the processor manager unmodified on every
+// call. Successive prompts on the same session report a monotonically growing
+// cumulative total, so each call should contribute only the *delta* since the
+// last snapshot (10000, 10000, 10000 below) — but today the raw cumulative
+// snapshot is passed straight through (10000, 20000, 30000), which is what lets
+// a match:first rerun processor's afterTokens threshold stay perpetually
+// exceeded and re-fire on every subsequent prompt instead of once per real
+// token increment.
+func TestPromptDispatcher_AccumulateTokenUsage_CumulativeSnapshots_Mitto08q1(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasProcessorMgr = true
+
+	// Three successive prompts on the same upstream ACP session, each
+	// reporting the session-cumulative total (matches real ACP behavior).
+	p.accumulateTokenUsage(d, acp.PromptResponse{Usage: &acp.Usage{TotalTokens: 10000}}, "msg1")
+	p.accumulateTokenUsage(d, acp.PromptResponse{Usage: &acp.Usage{TotalTokens: 20000}}, "msg2")
+	p.accumulateTokenUsage(d, acp.PromptResponse{Usage: &acp.Usage{TotalTokens: 30000}}, "msg3")
+
+	want := []int{10000, 10000, 10000} // expected post-fix: per-turn deltas
+	got := d.accumulatedTokens
+	deltaOK := len(got) == len(want)
+	if deltaOK {
+		for i := range want {
+			if got[i] != want[i] {
+				deltaOK = false
+				break
+			}
+		}
+	}
+	if !deltaOK {
+		t.Fatalf("mitto-08q.1: accumulateTokenUsage must normalize cumulative ACP "+
+			"Usage.TotalTokens snapshots into non-negative deltas before forwarding "+
+			"to the processor manager; want delta-normalized %v, got cumulative "+
+			"passthrough %v", want, got)
 	}
 }
 

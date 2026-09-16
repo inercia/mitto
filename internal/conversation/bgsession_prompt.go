@@ -1666,6 +1666,22 @@ func (bs *BackgroundSession) pdAccumulateCumulativeUsage(usage *acp.Usage) {
 	bs.cumTotalTokens.Add(int64(usage.TotalTokens))
 }
 
+// pdTokenUsageDelta (mitto-08q.1) normalizes a cumulative ACP Usage.TotalTokens
+// snapshot into a non-negative delta since the last observed snapshot. ACP
+// reports Usage.TotalTokens as a running total across the whole session, not a
+// per-turn increment, so passing it straight through causes rerun processors
+// to treat every subsequent prompt as re-crossing their afterTokens threshold.
+// A monotonic decrease (upstream session restart/rollover) clamps the delta to
+// 0 and re-baselines to the new (lower) value rather than underflowing.
+func (bs *BackgroundSession) pdTokenUsageDelta(total int) int {
+	prev := bs.tokenUsageDeltaBaseline.Swap(int64(total))
+	delta := int64(total) - prev
+	if delta < 0 {
+		return 0
+	}
+	return int(delta)
+}
+
 func (bs *BackgroundSession) pdEstimateTokensFromMessage(msg string) int {
 	return processors.EstimateTokens(msg)
 }

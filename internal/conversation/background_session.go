@@ -314,6 +314,14 @@ type BackgroundSession struct {
 	cumOutputTokens atomic.Int64
 	cumTotalTokens  atomic.Int64
 
+	// tokenUsageDeltaBaseline tracks the last cumulative ACP Usage.TotalTokens
+	// snapshot fed to pdTokenUsageDelta (mitto-08q.1). ACP reports
+	// Usage.TotalTokens as a running total across the whole session, not a
+	// per-turn increment; this baseline lets the rerun-accounting seam convert
+	// successive snapshots into non-negative per-turn deltas. In-memory only;
+	// resets on restart, which naturally treats the next snapshot as the first.
+	tokenUsageDeltaBaseline atomic.Int64
+
 	// Child-wait accumulation for blocking mitto_children_tasks_wait calls made
 	// FROM this session (i.e. this session acting as a parent). In-memory only;
 	// resets on restart.

@@ -175,8 +175,14 @@ type promptDeps interface {
 	pdSetLastUsage(usage *acp.Usage)              // lastUsageMu.Lock + lastUsage = usage + Unlock
 	pdAccumulateTokenUsage(tokens int)            // processorManager.AccumulateTokenUsage
 	pdAccumulateCumulativeUsage(usage *acp.Usage) // adds usage into cumulative in-memory counters
-	pdEstimateTokensFromMessage(msg string) int   // processors.EstimateTokens(msg)
-	pdReadLastAgentMessage() string               // ReadEvents + GetLastAgentMessage; returns "" on any error
+	// pdTokenUsageDelta (mitto-08q.1) normalizes a cumulative ACP Usage.TotalTokens
+	// snapshot into a non-negative per-turn delta before it reaches the rerun
+	// accounting sink. ACP reports Usage.TotalTokens as session-cumulative, not a
+	// per-turn increment, so passing it straight through makes match:first rerun
+	// processors re-cross their afterTokens threshold on every subsequent prompt.
+	pdTokenUsageDelta(total int) int
+	pdEstimateTokensFromMessage(msg string) int // processors.EstimateTokens(msg)
+	pdReadLastAgentMessage() string             // ReadEvents + GetLastAgentMessage; returns "" on any error
 
 	// Streaming state completion (promptMu critical section)
 	pdMarkPromptComplete() // promptMu: isPrompting=false, promptStartTime=time.Time{}, lastResponseComplete=time.Now(), Broadcast
@@ -1404,7 +1410,9 @@ func (p promptDispatcher) accumulateTokenUsage(d promptDeps, promptResp acp.Prom
 	}
 
 	if promptResp.Usage != nil {
-		d.pdAccumulateTokenUsage(promptResp.Usage.TotalTokens)
+		// mitto-08q.1: Usage.TotalTokens is session-cumulative, not a per-turn
+		// delta — normalize it before forwarding to the rerun accounting sink.
+		d.pdAccumulateTokenUsage(d.pdTokenUsageDelta(promptResp.Usage.TotalTokens))
 	} else {
 		// Fallback: estimate tokens from message text when ACP doesn't report usage.
 		estimated := d.pdEstimateTokensFromMessage(message)
