@@ -554,6 +554,16 @@ func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
 	bs.setStreamingSuppressed(true)
 	defer bs.setStreamingSuppressed(false)
 	if bs.sharedProcess != nil {
+		// Route through the neutral seam (mitto-mx9.1) when the lease is
+		// bound: this call discards the response body entirely (only err
+		// matters), so it is safe even though agentbackend.PromptOutcome
+		// doesn't carry ACP's per-turn Usage yet (see acpSessionPromptOps'
+		// doc for why the main prompt loop below still uses SharedProcess
+		// directly).
+		if ops, ref, ok := bs.leaseSessionOps(); ok {
+			_, err := ops.Prompt(ctx, ref, acpLeaseContentBlocksToNeutral(blocks))
+			return err
+		}
 		_, err := bs.sharedProcess.Prompt(ctx, acp.SessionId(bs.acpID), blocks)
 		return err
 	}
@@ -1165,7 +1175,12 @@ func (bs *BackgroundSession) finishCancelledPromptTurn(turn *promptTurn, sendCan
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if bs.sharedProcess != nil {
-			cancelErr = bs.sharedProcess.Cancel(ctx, acp.SessionId(bs.acpID))
+			// Route through the neutral seam (mitto-mx9.1) when the lease is bound.
+			if ops, ref, ok := bs.leaseSessionOps(); ok {
+				cancelErr = ops.Cancel(ctx, ref)
+			} else {
+				cancelErr = bs.sharedProcess.Cancel(ctx, acp.SessionId(bs.acpID))
+			}
 		} else if bs.acpConn != nil {
 			cancelErr = bs.acpConn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(bs.acpID)})
 		}

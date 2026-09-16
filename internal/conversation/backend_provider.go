@@ -78,6 +78,29 @@ type AcquireRequest struct {
 	DeferSession bool
 }
 
+// SessionPromptOps is the neutral hot-path operation set — Prompt, Cancel,
+// SetModel, SetMode — that a BackendLease exposes for its own
+// already-established session (mitto-mx9.1). It is deliberately narrower
+// than agentbackend.SessionOps, which also owns session CREATION
+// (NewSession/LoadSession/ResumeSession): that responsibility stays with
+// BackendProvider.AcquireSession/BackendLease.Bind, unchanged by this seam.
+// Every method signature here matches its agentbackend.SessionOps
+// counterpart exactly, so a value already typed as that wider interface
+// (e.g. the fake backend's in-memory host) satisfies this one with no
+// adapter needed — only the ACP lease needs a real translator, since ACP's
+// SharedProcess is not itself an agentbackend.SessionOps.
+type SessionPromptOps interface {
+	// Prompt sends prompt content to this lease's session and blocks until
+	// the turn completes, ctx is cancelled, or an error occurs.
+	Prompt(ctx context.Context, ref agentbackend.SessionRef, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error)
+	// Cancel requests cancellation of the in-flight prompt turn, if any.
+	Cancel(ctx context.Context, ref agentbackend.SessionRef) error
+	// SetModel switches the session's active model.
+	SetModel(ctx context.Context, ref agentbackend.SessionRef, modelID string) error
+	// SetMode switches the session's active mode.
+	SetMode(ctx context.Context, ref agentbackend.SessionRef, modeID string) error
+}
+
 // BackendLease models ownership of one acquired backend session.
 type BackendLease interface {
 	// Ref returns the neutral session identity for this lease.
@@ -122,6 +145,16 @@ type BackendLease interface {
 	// handle returned by NewSession/LoadSession/ResumeSession. Non-ACP
 	// leases return (nil, false).
 	SessionHandle() (*SessionHandle, bool)
+
+	// SessionOps returns the neutral hot-path operation set (SessionPromptOps)
+	// for this lease's session, once one has been established — immediately
+	// after a non-deferred AcquireSession, or after a later Bind for a
+	// DeferSession lease (see AcquireRequest.DeferSession doc). Returns
+	// (nil, agentbackend.SessionRef{}, false) before that point; callers
+	// MUST fall back to their pre-existing LocalProcess()-based path when ok
+	// is false (mitto-mx9.1 additive routing: this accessor supplements
+	// LocalProcess/SessionHandle rather than replacing them yet).
+	SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool)
 }
 
 // BackendProvider acquires a BackendLease for a conversation. It is the

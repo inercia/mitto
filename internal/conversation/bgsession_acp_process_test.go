@@ -31,6 +31,9 @@ func (l *spyBackendLease) Reconnect(context.Context) error         { return nil 
 func (l *spyBackendLease) Terminate(context.Context) error         { return nil }
 func (l *spyBackendLease) LocalProcess() (SharedProcess, bool)     { return nil, false }
 func (l *spyBackendLease) SessionHandle() (*SessionHandle, bool)   { return nil, false }
+func (l *spyBackendLease) SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool) {
+	return nil, agentbackend.SessionRef{}, false
+}
 
 var _ BackendLease = (*spyBackendLease)(nil)
 

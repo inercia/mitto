@@ -102,6 +102,20 @@ func (bs *BackgroundSession) resumeSharedACPSession(sharedProcess SharedProcess,
 	return bs.handshaker.resumeSharedACPSession(bs, sharedProcess, workingDir, acpSessionID)
 }
 
+// leaseSessionOps returns bs.lease's neutral hot-path operation set
+// (SessionPromptOps) when a BackendLease is present AND has an established
+// session, or (nil, agentbackend.SessionRef{}, false) otherwise — no lease
+// injected (legacy/no-provider path), or a DeferSession lease not yet Bind()-
+// ed. Hot-path callers (Prompt/Cancel/SetModel/SetMode in bgsession_prompt.go
+// and bgsession_config.go) MUST fall back to their pre-existing
+// SharedProcess-based call when ok is false (mitto-mx9.1 additive routing).
+func (bs *BackgroundSession) leaseSessionOps() (SessionPromptOps, agentbackend.SessionRef, bool) {
+	if bs.lease == nil {
+		return nil, agentbackend.SessionRef{}, false
+	}
+	return bs.lease.SessionOps()
+}
+
 // =============================================================================
 // handshakeDeps concrete implementation on *BackgroundSession
 // =============================================================================

@@ -146,6 +146,10 @@ func (bs *BackgroundSession) cmHasACPConn() bool {
 
 func (bs *BackgroundSession) cmSetSessionMode(ctx context.Context, value string) error {
 	if bs.sharedProcess != nil {
+		// Route through the neutral seam (mitto-mx9.1) when the lease is bound.
+		if ops, ref, ok := bs.leaseSessionOps(); ok {
+			return ops.SetMode(ctx, ref, value)
+		}
 		return bs.sharedProcess.SetSessionMode(ctx, acp.SessionId(bs.acpID), value)
 	}
 	if bs.acpConn != nil {
@@ -160,6 +164,10 @@ func (bs *BackgroundSession) cmSetSessionMode(ctx context.Context, value string)
 
 func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID string) error {
 	if bs.sharedProcess != nil {
+		// Route through the neutral seam (mitto-mx9.1) when the lease is bound.
+		if ops, ref, ok := bs.leaseSessionOps(); ok {
+			return ops.SetModel(ctx, ref, modelID)
+		}
 		return bs.sharedProcess.SetSessionModel(ctx, acp.SessionId(bs.acpID), modelID)
 	}
 	if bs.acpConn != nil {

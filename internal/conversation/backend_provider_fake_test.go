@@ -154,6 +154,19 @@ func (l *fakeRemoteLease) LocalProcess() (SharedProcess, bool) { return nil, fal
 // ACP session handle at all.
 func (l *fakeRemoteLease) SessionHandle() (*SessionHandle, bool) { return nil, false }
 
+// SessionOps returns the fake host itself: agentbackend.SessionOps's method
+// set is a superset of SessionPromptOps with identical signatures, so l.ops
+// (typed agentbackend.SessionOps) satisfies SessionPromptOps with no adapter
+// needed. Every fakeRemoteLease is bound to a concrete session identity by
+// AcquireSession itself (see Bind's doc), so ok is always true.
+func (l *fakeRemoteLease) SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool) {
+	l.mu.Lock()
+	ops := l.ops
+	ref := l.session.Ref()
+	l.mu.Unlock()
+	return ops, ref, true
+}
+
 var (
 	_ BackendProvider = (*fakeRemoteBackendProvider)(nil)
 	_ BackendLease    = (*fakeRemoteLease)(nil)
