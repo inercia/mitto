@@ -103,7 +103,7 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 	t.Cleanup(manager.Close)
 
 	close(gates[0])
-	waitSlackCounts(t, ts, map[string]int{a1: 1, a2: 1, b: 1, private: 1, paused: 0})
+	waitSlackPromptCounts(t, ts, map[string]int{a1: 1, a2: 1, b: 1, private: 1, paused: 0})
 	assertSlackPromptBounded(t, ts, a1, "event-a", "install-a", "channel-a", longText)
 	assertSlackPromptBounded(t, ts, private, "event-private", "install-a", "private-a", privateText)
 	waitLoopSessionIdle(t, ts, a1)
@@ -116,7 +116,7 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(gates[1])
-	waitSlackCounts(t, ts, map[string]int{a1: 2, a2: 1})
+	waitSlackPromptCounts(t, ts, map[string]int{a1: 2, a2: 1})
 	waitLoopSessionIdle(t, ts, a1)
 
 	setSlackLoopEnabled(t, ts, a2, true)
@@ -124,19 +124,19 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(gates[2])
-	waitSlackCounts(t, ts, map[string]int{a1: 3, a2: 2})
+	waitSlackPromptCounts(t, ts, map[string]int{a1: 3, a2: 2})
 	waitLoopSessionIdle(t, ts, a1)
 	waitLoopSessionIdle(t, ts, a2)
 
 	credentials.set("fake-token-v2")
 	manager.RestartApp("app-shared")
 	close(gates[3])
-	waitSlackCounts(t, ts, map[string]int{a1: 4, a2: 3})
+	waitSlackPromptCounts(t, ts, map[string]int{a1: 4, a2: 3})
 	waitLoopSessionIdle(t, ts, a1)
 	waitLoopSessionIdle(t, ts, a2)
 	// The next FakeRun is consumed by the manager's bounded reconnect loop.
 	close(gates[4])
-	waitSlackCounts(t, ts, map[string]int{a1: 5, a2: 4})
+	waitSlackPromptCounts(t, ts, map[string]int{a1: 5, a2: 4})
 	if got := sources.snapshotTokens(); len(got) < 5 || got[len(got)-1] != "fake-token-v2" {
 		t.Fatalf("credential restart/reconnect token history = %v", got)
 	}
@@ -185,7 +185,7 @@ func TestSlackLoopProductionPathE2E(t *testing.T) {
 	if err := recovered.Start(); err != nil {
 		t.Fatalf("restart Slack manager: %v", err)
 	}
-	waitSlackCounts(t, ts, map[string]int{b: 2})
+	waitSlackPromptCounts(t, ts, map[string]int{b: 2})
 }
 
 func TestSlackLoopDelegatedAuthorizationE2E(t *testing.T) {
@@ -236,7 +236,7 @@ func TestSlackLoopDelegatedAuthorizationE2E(t *testing.T) {
 	t.Cleanup(manager.Close)
 
 	close(emitBoth)
-	waitSlackCounts(t, ts, map[string]int{bot: 1, user: 1, dual: 1})
+	waitSlackPromptCounts(t, ts, map[string]int{bot: 1, user: 1, dual: 1})
 	for _, sessionID := range []string{bot, user, dual} {
 		waitLoopSessionIdle(t, ts, sessionID)
 	}
@@ -246,7 +246,7 @@ func TestSlackLoopDelegatedAuthorizationE2E(t *testing.T) {
 	// get a second, separate dispatch for event-user; bot's subscription is
 	// not authorized for event-user and stays at one dispatch.
 	close(emitRest)
-	waitSlackCounts(t, ts, map[string]int{bot: 1, user: 2, dual: 2})
+	waitSlackPromptCounts(t, ts, map[string]int{bot: 1, user: 2, dual: 2})
 	for _, sessionID := range []string{bot, user, dual} {
 		waitLoopSessionIdle(t, ts, sessionID)
 	}
@@ -306,17 +306,33 @@ func setSlackLoopEnabled(t *testing.T, ts *TestServer, sessionID string, enabled
 	}
 }
 
-func waitSlackCounts(t *testing.T, ts *TestServer, counts map[string]int) {
+func waitSlackPromptCounts(t *testing.T, ts *TestServer, counts map[string]int) {
 	t.Helper()
 	waitFor(t, 12*time.Second, func() bool {
 		for id, want := range counts {
-			loop, err := ts.Client.GetLoop(id)
-			if err != nil || loop.IterationCount != want {
+			events, err := ts.Store.ReadEvents(id)
+			if err != nil {
+				return false
+			}
+			got := 0
+			for _, event := range events {
+				if event.Type != session.EventTypeUserPrompt {
+					continue
+				}
+				decoded, err := session.DecodeEventData(event)
+				if err != nil {
+					return false
+				}
+				if data, ok := decoded.(session.UserPromptData); ok && data.Provenance != nil && data.Provenance.LoopTrigger == session.TriggerOnSlack {
+					got++
+				}
+			}
+			if got != want {
 				return false
 			}
 		}
 		return true
-	}, "Slack loop iteration counts")
+	}, "persisted Slack prompt counts")
 }
 
 func assertSlackPromptBounded(t *testing.T, ts *TestServer, sessionID, eventID, installationID, channelID, original string) {

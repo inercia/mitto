@@ -26,31 +26,6 @@ func (c managerCatalog) GetInstallation(id string) (slackcatalog.InstallationVie
 	return installation, nil
 }
 
-// ListApps reports no configured apps by default so keepalive stays empty and
-// the base fixtures keep their subscription-driven worker lifecycle. Keepalive
-// behavior is exercised via keepAliveCatalog.
-func (c managerCatalog) ListApps() ([]slackcatalog.AppView, error) { return nil, nil }
-
-// keepAliveCatalog augments managerCatalog with a mutable set of configured
-// apps so tests can drive the keepalive set (apps with a configured app token).
-type keepAliveCatalog struct {
-	managerCatalog
-	mu   sync.Mutex
-	apps []slackcatalog.AppView
-}
-
-func (c *keepAliveCatalog) ListApps() ([]slackcatalog.AppView, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]slackcatalog.AppView(nil), c.apps...), nil
-}
-
-func (c *keepAliveCatalog) setApps(apps ...slackcatalog.AppView) {
-	c.mu.Lock()
-	c.apps = apps
-	c.mu.Unlock()
-}
-
 type managerCredentials struct {
 	mu    sync.Mutex
 	token string
@@ -830,52 +805,23 @@ func TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump(t *testing.T) {
 	}
 }
 
-// TestManagerKeepAliveConnectsConfiguredAppWithoutSubscriptions proves the
-// keepalive contract (mitto-al8): a Slack app configured in the catalog stays
-// connected even when no loop subscribes to it, and its worker only stops once
-// the app is removed from the catalog.
-func TestManagerKeepAliveConnectsConfiguredAppWithoutSubscriptions(t *testing.T) {
+// TestManagerDoesNotConnectWithoutSubscriptionConfig pins the worker-lifetime
+// boundary: credentials alone do not connect an app. A worker requires either
+// an active dispatch subscription or persisted subscription configuration.
+func TestManagerDoesNotConnectWithoutSubscriptionConfig(t *testing.T) {
 	store := newManagerStore(t)
-	catalog := &keepAliveCatalog{}
-	catalog.setApps(slackcatalog.AppView{AppProfile: slackcatalog.AppProfile{ID: "app-keep"}, TokenConfigured: true})
 	sources := &sourceHarness{}
-	manager := NewManager(store, catalog, &managerCredentials{token: "app-token"}, &managerRunner{}, nil)
+	manager := NewManager(store, managerCatalog{}, &managerCredentials{token: "app-token"}, &managerRunner{}, nil)
 	manager.factory = sources.factory
 	manager.grace = 10 * time.Millisecond
 	t.Cleanup(manager.Close)
 	if err := manager.Start(); err != nil {
 		t.Fatal(err)
 	}
-
-	// The worker starts with zero loop subscriptions purely because the app is
-	// configured in the catalog (keepalive).
-	waitForManager(t, "keepalive worker started", func() bool {
-		created, active, _, _, _ := sources.snapshot()
-		return created == 1 && active == 1
-	})
-
-	// A keepalive app is never scheduled for stop, so the worker must remain
-	// active well past the unused grace.
-	time.Sleep(20 * manager.grace)
-	if _, active, _, _, _ := sources.snapshot(); active != 1 {
-		t.Fatalf("keepalive worker stopped despite configured app: active=%d", active)
+	time.Sleep(3 * manager.grace)
+	if created, active, _, _, _ := sources.snapshot(); created != 0 || active != 0 {
+		t.Fatalf("worker started without subscription config: created=%d active=%d, want 0/0", created, active)
 	}
-	manager.mu.Lock()
-	kept := manager.keepAlive["app-keep"]
-	subs := manager.appReferencesLocked("app-keep")
-	manager.mu.Unlock()
-	if !kept || subs != 0 {
-		t.Fatalf("keepAlive[app-keep]=%v subscriptions=%d, want true/0", kept, subs)
-	}
-
-	// Removing the app from the catalog drops it from keepalive; with no loop
-	// subscriptions the worker is now unused and stops after the grace.
-	catalog.setApps()
-	manager.RefreshKeepAlive()
-	waitForManager(t, "keepalive worker stopped after app removal", func() bool {
-		_, active, _, _, _ := sources.snapshot()
-		return active == 0
-	})
 }
 
 // TestManagerConfigScopedKeepaliveSurvivesLoopPause covers mitto-al8.1's core
