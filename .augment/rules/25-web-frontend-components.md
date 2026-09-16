@@ -59,7 +59,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 Single bordered container: textarea + bottom toolbar (left/center/right). **No external button column** — all actions in always-visible bottom bar.
 
 - **Center bar**: config selectors + context usage % (use `filter()` not `find()`)
-- **Context %**: Primary from ACP `context_usage`, fallback: `input_tokens ÷ getContextWindowSize()`
+- **Context %**: ACP `context_usage.{used,size}` only — the legacy `input_tokens ÷ getContextWindowSize()` fallback is misleading on cumulative-only agents (Copilot) because ACP `Usage` is session-cumulative, not per-turn (bead mitto-i91)
 - **Shortcuts**: `Enter`=send · `Shift+Enter`=newline · `Cmd/Ctrl+Enter`=queue
 
 ### Conversation Column Width (960px cap)

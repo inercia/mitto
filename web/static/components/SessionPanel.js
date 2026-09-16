@@ -1176,8 +1176,21 @@ export function SessionPanel({
           html`
             <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
               ${(() => {
-                const contextTokens = sessionInfo.usage.input_tokens;
-                const contextWindow = getContextWindowSize(currentModelId);
+                // Prefer ACP's UsageUpdate (context_usage.{size,used}), which
+                // reports CURRENT context window state. Fall back to the
+                // cumulative-session input_tokens divided by a static model
+                // window only when the agent doesn't emit UsageUpdate — that
+                // fallback is approximate because Usage.InputTokens is
+                // "total input tokens across all turns" per the ACP spec.
+                const ctxUsage = sessionInfo.context_usage;
+                const hasAccurate =
+                  ctxUsage && ctxUsage.size > 0 && ctxUsage.used != null;
+                const contextTokens = hasAccurate
+                  ? ctxUsage.used
+                  : sessionInfo.usage.input_tokens;
+                const contextWindow = hasAccurate
+                  ? ctxUsage.size
+                  : getContextWindowSize(currentModelId);
                 const pct = contextWindow
                   ? Math.min((contextTokens / contextWindow) * 100, 100)
                   : null;
