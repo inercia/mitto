@@ -38,6 +38,33 @@ type fakeBackendSharedProcess struct {
 	unregistered []acp.SessionId
 	generation   int
 	restarted    []int
+
+	// mitto-mx9.1: recorded/configurable Prompt/Cancel/SetSessionMode/
+	// SetSessionModel calls, used by the SessionPromptOps seam tests below to
+	// prove acpSessionPromptOps delegates to SharedProcess with the exact
+	// session ID/content/value it was given, and propagates responses/errors
+	// unchanged (modulo neutral translation).
+	promptCalls   []fakeBackendPromptCall
+	promptResp    acp.PromptResponse
+	promptErr     error
+	cancelCalls   []acp.SessionId
+	cancelErr     error
+	setModeCalls  []fakeBackendSetCall
+	setModeErr    error
+	setModelCalls []fakeBackendSetCall
+	setModelErr   error
+}
+
+// fakeBackendPromptCall records one Prompt() invocation.
+type fakeBackendPromptCall struct {
+	sessionID acp.SessionId
+	blocks    []acp.ContentBlock
+}
+
+// fakeBackendSetCall records one SetSessionMode/SetSessionModel invocation.
+type fakeBackendSetCall struct {
+	sessionID acp.SessionId
+	value     string
 }
 
 func newFakeBackendSharedProcess() *fakeBackendSharedProcess {
@@ -69,16 +96,30 @@ func (f *fakeBackendSharedProcess) UnregisterSession(id acp.SessionId) {
 	defer f.mu.Unlock()
 	f.unregistered = append(f.unregistered, id)
 }
-func (f *fakeBackendSharedProcess) Cancel(context.Context, acp.SessionId) error { return nil }
-func (f *fakeBackendSharedProcess) SetSessionMode(context.Context, acp.SessionId, string) error {
-	return nil
+func (f *fakeBackendSharedProcess) Cancel(_ context.Context, id acp.SessionId) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelCalls = append(f.cancelCalls, id)
+	return f.cancelErr
 }
-func (f *fakeBackendSharedProcess) SetSessionModel(context.Context, acp.SessionId, string) error {
-	return nil
+func (f *fakeBackendSharedProcess) SetSessionMode(_ context.Context, id acp.SessionId, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setModeCalls = append(f.setModeCalls, fakeBackendSetCall{sessionID: id, value: mode})
+	return f.setModeErr
+}
+func (f *fakeBackendSharedProcess) SetSessionModel(_ context.Context, id acp.SessionId, model string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setModelCalls = append(f.setModelCalls, fakeBackendSetCall{sessionID: id, value: model})
+	return f.setModelErr
 }
 func (f *fakeBackendSharedProcess) Done() <-chan struct{} { return f.processDone }
-func (f *fakeBackendSharedProcess) Prompt(context.Context, acp.SessionId, []acp.ContentBlock) (acp.PromptResponse, error) {
-	return acp.PromptResponse{}, nil
+func (f *fakeBackendSharedProcess) Prompt(_ context.Context, id acp.SessionId, blocks []acp.ContentBlock) (acp.PromptResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.promptCalls = append(f.promptCalls, fakeBackendPromptCall{sessionID: id, blocks: blocks})
+	return f.promptResp, f.promptErr
 }
 func (f *fakeBackendSharedProcess) Generation() int {
 	f.mu.Lock()
@@ -507,5 +548,297 @@ func TestACPLease_Reconnect_WaiterContextCancelled_DoesNotStartSecondAttempt(t *
 	}
 	if calls != 1 {
 		t.Fatalf("ResumeSession calls = %d, want exactly 1 (a timed-out waiter must not start a second attempt)", calls)
+	}
+}
+
+// TestACPLease_SessionOps_DeferSessionUnbound_ReturnsFalse proves the
+// mitto-mx9.1 contract: a DeferSession lease that has not yet been Bind()-ed
+// (sessionID still "") reports ok=false from SessionOps, so hot-path callers
+// keep using their pre-existing LocalProcess()-based path instead of calling
+// through a not-yet-established session.
+func TestACPLease_SessionOps_DeferSessionUnbound_ReturnsFalse(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+		Intent:       IntentNew,
+		DeferSession: true,
+	})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	ops, ref, ok := lease.SessionOps()
+	if ok || ops != nil || ref != (agentbackend.SessionRef{}) {
+		t.Fatalf("SessionOps() = (%v, %+v, %v), want (nil, {}, false) before Bind", ops, ref, ok)
+	}
+}
+
+// TestACPLease_SessionOps_BoundAfterDefer_ReturnsWorkingOps proves that once
+// a DeferSession lease is Bind()-ed to a real session identity, SessionOps
+// flips to ok=true and returns ops that route to the right session ID.
+func TestACPLease_SessionOps_BoundAfterDefer_ReturnsWorkingOps(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+		Intent:       IntentNew,
+		DeferSession: true,
+	})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+	if _, _, ok := lease.SessionOps(); ok {
+		t.Fatalf("SessionOps() ok = true before Bind, want false")
+	}
+
+	ref := agentbackend.SessionRef{ConversationID: "conv-1", ProviderSession: "bound-sess-1"}
+	lease.Bind(ref)
+
+	ops, gotRef, ok := lease.SessionOps()
+	if !ok || ops == nil {
+		t.Fatalf("SessionOps() after Bind = (%v, _, %v), want (non-nil, true)", ops, ok)
+	}
+	if gotRef != ref {
+		t.Errorf("SessionOps() ref = %+v, want %+v", gotRef, ref)
+	}
+	if err := ops.Cancel(context.Background(), gotRef); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(proc.cancelCalls) != 1 || proc.cancelCalls[0] != acp.SessionId("bound-sess-1") {
+		t.Fatalf("cancelCalls = %v, want exactly [bound-sess-1]", proc.cancelCalls)
+	}
+}
+
+// TestACPLease_SessionOps_NonDeferred_ImmediatelyBoundToHandleSessionID
+// proves a non-deferred lease (the common AcquireSession path) exposes
+// working SessionOps immediately, using the ACP session ID returned by
+// NewSession/LoadSession/ResumeSession.
+func TestACPLease_SessionOps_NonDeferred_ImmediatelyBoundToHandleSessionID(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	proc.newHandle = &SessionHandle{SessionID: "sess-new-1"}
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{Intent: IntentNew})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	ops, ref, ok := lease.SessionOps()
+	if !ok || ops == nil {
+		t.Fatalf("SessionOps() = (%v, _, %v), want (non-nil, true)", ops, ok)
+	}
+	if string(ref.ProviderSession) != "sess-new-1" {
+		t.Errorf("SessionOps() ref.ProviderSession = %q, want %q", ref.ProviderSession, "sess-new-1")
+	}
+}
+
+// TestAcpSessionPromptOps_Prompt_TranslatesContentSessionIDAndStopReason
+// proves Prompt: (a) translates the caller's neutral content blocks into ACP
+// blocks, (b) calls SharedProcess.Prompt with the SessionRef.ProviderSession
+// the caller passed in (not any lease-internal field), and (c) translates
+// the ACP StopReason back into its neutral counterpart.
+func TestAcpSessionPromptOps_Prompt_TranslatesContentSessionIDAndStopReason(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	proc.promptResp = acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	ops := &acpSessionPromptOps{process: proc}
+	ref := agentbackend.SessionRef{ProviderSession: "sess-xyz"}
+
+	outcome, err := ops.Prompt(context.Background(), ref, []agentbackend.ContentBlock{
+		{Text: &agentbackend.TextBlock{Text: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if outcome.StopReason != agentbackend.StopReasonEndTurn {
+		t.Errorf("StopReason = %v, want EndTurn", outcome.StopReason)
+	}
+	if len(proc.promptCalls) != 1 {
+		t.Fatalf("promptCalls = %d, want 1", len(proc.promptCalls))
+	}
+	call := proc.promptCalls[0]
+	if call.sessionID != acp.SessionId("sess-xyz") {
+		t.Errorf("Prompt sessionID = %q, want %q", call.sessionID, "sess-xyz")
+	}
+	if len(call.blocks) != 1 || call.blocks[0].Text == nil || call.blocks[0].Text.Text != "hello" {
+		t.Errorf("Prompt blocks = %+v, want one text block %q", call.blocks, "hello")
+	}
+}
+
+// TestAcpSessionPromptOps_Prompt_ErrorTranslation proves Prompt maps a
+// cancelled context and a JSON-RPC "method not found" error into the
+// agentbackend sentinels, and passes through any other error unchanged.
+func TestAcpSessionPromptOps_Prompt_ErrorTranslation(t *testing.T) {
+	ref := agentbackend.SessionRef{ProviderSession: "sess-1"}
+
+	t.Run("cancelled", func(t *testing.T) {
+		proc := newFakeBackendSharedProcess()
+		proc.promptErr = context.Canceled
+		ops := &acpSessionPromptOps{process: proc}
+		_, err := ops.Prompt(context.Background(), ref, nil)
+		if !errors.Is(err, agentbackend.ErrCancelled) {
+			t.Fatalf("Prompt error = %v, want ErrCancelled", err)
+		}
+	})
+
+	t.Run("method not found", func(t *testing.T) {
+		proc := newFakeBackendSharedProcess()
+		proc.promptErr = &acp.RequestError{Code: acpLeaseJSONRPCMethodNotFound}
+		ops := &acpSessionPromptOps{process: proc}
+		_, err := ops.Prompt(context.Background(), ref, nil)
+		var unsupported *agentbackend.UnsupportedError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("Prompt error = %v, want *agentbackend.UnsupportedError", err)
+		}
+	})
+
+	t.Run("other error passes through unchanged", func(t *testing.T) {
+		proc := newFakeBackendSharedProcess()
+		wantErr := fmt.Errorf("transport exploded")
+		proc.promptErr = wantErr
+		ops := &acpSessionPromptOps{process: proc}
+		_, err := ops.Prompt(context.Background(), ref, nil)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("Prompt error = %v, want to wrap %v unchanged", err, wantErr)
+		}
+	})
+}
+
+// TestAcpSessionPromptOps_Cancel_DelegatesWithSessionIDAndTranslatesError
+// proves Cancel forwards the caller-supplied session ID and translates
+// errors identically to Prompt.
+func TestAcpSessionPromptOps_Cancel_DelegatesWithSessionIDAndTranslatesError(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	ops := &acpSessionPromptOps{process: proc}
+	ref := agentbackend.SessionRef{ProviderSession: "sess-cancel-1"}
+
+	if err := ops.Cancel(context.Background(), ref); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(proc.cancelCalls) != 1 || proc.cancelCalls[0] != acp.SessionId("sess-cancel-1") {
+		t.Fatalf("cancelCalls = %v, want exactly [sess-cancel-1]", proc.cancelCalls)
+	}
+
+	proc.cancelErr = context.Canceled
+	if err := ops.Cancel(context.Background(), ref); !errors.Is(err, agentbackend.ErrCancelled) {
+		t.Fatalf("Cancel error = %v, want ErrCancelled", err)
+	}
+}
+
+// TestAcpSessionPromptOps_SetModel_DelegatesAndTagsUnsupportedWithFeature
+// proves SetModel forwards session ID + model ID unchanged, and a "method
+// not found" error is tagged with agentbackend.FeatureModelSelection so
+// callers can distinguish it from a mode-selection failure.
+func TestAcpSessionPromptOps_SetModel_DelegatesAndTagsUnsupportedWithFeature(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	ops := &acpSessionPromptOps{process: proc}
+	ref := agentbackend.SessionRef{ProviderSession: "sess-model-1"}
+
+	if err := ops.SetModel(context.Background(), ref, "gpt-5"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if len(proc.setModelCalls) != 1 || proc.setModelCalls[0] != (fakeBackendSetCall{sessionID: "sess-model-1", value: "gpt-5"}) {
+		t.Fatalf("setModelCalls = %+v, want exactly [{sess-model-1 gpt-5}]", proc.setModelCalls)
+	}
+
+	proc.setModelErr = &acp.RequestError{Code: acpLeaseJSONRPCMethodNotFound}
+	err := ops.SetModel(context.Background(), ref, "gpt-5")
+	var unsupported *agentbackend.UnsupportedError
+	if !errors.As(err, &unsupported) || unsupported.Feature != agentbackend.FeatureModelSelection {
+		t.Fatalf("SetModel error = %v, want *UnsupportedError{Feature: FeatureModelSelection}", err)
+	}
+}
+
+// TestAcpSessionPromptOps_SetMode_DelegatesAndTagsUnsupportedWithFeature
+// mirrors the SetModel test above for SetMode/FeatureModeSelection.
+func TestAcpSessionPromptOps_SetMode_DelegatesAndTagsUnsupportedWithFeature(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	ops := &acpSessionPromptOps{process: proc}
+	ref := agentbackend.SessionRef{ProviderSession: "sess-mode-1"}
+
+	if err := ops.SetMode(context.Background(), ref, "plan"); err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	if len(proc.setModeCalls) != 1 || proc.setModeCalls[0] != (fakeBackendSetCall{sessionID: "sess-mode-1", value: "plan"}) {
+		t.Fatalf("setModeCalls = %+v, want exactly [{sess-mode-1 plan}]", proc.setModeCalls)
+	}
+
+	proc.setModeErr = &acp.RequestError{Code: acpLeaseJSONRPCMethodNotFound}
+	err := ops.SetMode(context.Background(), ref, "plan")
+	var unsupported *agentbackend.UnsupportedError
+	if !errors.As(err, &unsupported) || unsupported.Feature != agentbackend.FeatureModeSelection {
+		t.Fatalf("SetMode error = %v, want *UnsupportedError{Feature: FeatureModeSelection}", err)
+	}
+}
+
+// TestAcpLeaseContentBlocksToACP_TranslatesEachKind proves the neutral->ACP
+// content translator used by the Prompt hot path handles every neutral
+// content kind SessionPromptOps.Prompt can receive.
+func TestAcpLeaseContentBlocksToACP_TranslatesEachKind(t *testing.T) {
+	blocks := acpLeaseContentBlocksToACP([]agentbackend.ContentBlock{
+		{Text: &agentbackend.TextBlock{Text: "hi"}},
+		{Image: &agentbackend.ImageBlock{Data: "b64", MimeType: "image/png"}},
+		{File: &agentbackend.FileBlock{Path: "/tmp/x.txt"}},
+	})
+	if len(blocks) != 3 {
+		t.Fatalf("len(blocks) = %d, want 3", len(blocks))
+	}
+	if blocks[0].Text == nil || blocks[0].Text.Text != "hi" {
+		t.Errorf("blocks[0] = %+v, want text block %q", blocks[0], "hi")
+	}
+	if blocks[1].Image == nil || blocks[1].Image.Data != "b64" || blocks[1].Image.MimeType != "image/png" {
+		t.Errorf("blocks[1] = %+v, want image block {b64, image/png}", blocks[1])
+	}
+	if blocks[2].ResourceLink == nil || blocks[2].ResourceLink.Uri != "file:///tmp/x.txt" {
+		t.Errorf("blocks[2] = %+v, want resource_link with file:// URI", blocks[2])
+	}
+}
+
+// TestAcpLeaseContentBlocksToNeutral_TranslatesEachKind_SkipsUnsupported
+// proves the ACP->neutral content translator used by flushContextInPlace
+// round-trips Text/Image/ResourceLink (with and without a MIME type) and
+// silently skips content kinds without a neutral analogue (e.g. Audio),
+// mirroring internal/acpbackend's ToNeutralContentBlocks.
+func TestAcpLeaseContentBlocksToNeutral_TranslatesEachKind_SkipsUnsupported(t *testing.T) {
+	mime := "text/plain"
+	blocks := acpLeaseContentBlocksToNeutral([]acp.ContentBlock{
+		acp.TextBlock("hi"),
+		acp.ImageBlock("b64", "image/png"),
+		{ResourceLink: &acp.ContentBlockResourceLink{Uri: "file:///tmp/x.txt", MimeType: &mime}},
+		{ResourceLink: &acp.ContentBlockResourceLink{Uri: "file:///tmp/y.txt"}}, // no MimeType
+		acp.AudioBlock("b64", "audio/mp3"),                                      // no neutral analogue: must be skipped
+	})
+	if len(blocks) != 4 {
+		t.Fatalf("len(blocks) = %d, want 4 (Audio has no neutral analogue and must be skipped)", len(blocks))
+	}
+	if blocks[0].Text == nil || blocks[0].Text.Text != "hi" {
+		t.Errorf("blocks[0] = %+v, want text block %q", blocks[0], "hi")
+	}
+	if blocks[1].Image == nil || blocks[1].Image.Data != "b64" || blocks[1].Image.MimeType != "image/png" {
+		t.Errorf("blocks[1] = %+v, want image block {b64, image/png}", blocks[1])
+	}
+	if blocks[2].File == nil || blocks[2].File.Path != "file:///tmp/x.txt" || blocks[2].File.MimeType != "text/plain" {
+		t.Errorf("blocks[2] = %+v, want file block {file:///tmp/x.txt, text/plain}", blocks[2])
+	}
+	if blocks[3].File == nil || blocks[3].File.Path != "file:///tmp/y.txt" || blocks[3].File.MimeType != "" {
+		t.Errorf("blocks[3] = %+v, want file block {file:///tmp/y.txt, \"\"} (missing MimeType -> empty string)", blocks[3])
+	}
+}
+
+// TestAcpLeaseStopReasonToNeutral_AllCases pins the full ACP->neutral stop
+// reason mapping, including the fallback for any unrecognized value.
+func TestAcpLeaseStopReasonToNeutral_AllCases(t *testing.T) {
+	tests := []struct {
+		in   acp.StopReason
+		want agentbackend.StopReason
+	}{
+		{acp.StopReasonEndTurn, agentbackend.StopReasonEndTurn},
+		{acp.StopReasonCancelled, agentbackend.StopReasonCancelled},
+		{acp.StopReasonMaxTokens, agentbackend.StopReasonMaxTokens},
+		{acp.StopReasonMaxTurnRequests, agentbackend.StopReasonMaxTokens},
+		{acp.StopReasonRefusal, agentbackend.StopReasonRefusal},
+		{acp.StopReason("something-unknown"), agentbackend.StopReasonError},
+	}
+	for _, tt := range tests {
+		if got := acpLeaseStopReasonToNeutral(tt.in); got != tt.want {
+			t.Errorf("acpLeaseStopReasonToNeutral(%q) = %v, want %v", tt.in, got, tt.want)
+		}
 	}
 }
