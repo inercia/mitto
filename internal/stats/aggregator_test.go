@@ -160,6 +160,124 @@ func TestAggregator_AgentMessageAndThought_OutputTokens(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------------
+// ProcessorRun → processor token estimates (mitto-08q.4)
+// -----------------------------------------------------------------------------
+
+// TestAggregator_ProcessorRun_PrimaryAndAuxiliaryAreSeparateMetrics verifies
+// the acceptance criterion that primary-context and auxiliary processor token
+// estimates are persisted as two distinct metrics, never silently combined.
+func TestAggregator_ProcessorRun_PrimaryAndAuxiliaryAreSeparateMetrics(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "ok", Target: "primary", EstTokens: 42,
+	}))
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "ok", Target: "auxiliary", EstTokens: 17,
+	}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricProcessorPrimaryTokensEst, "s1"); got != 42 {
+		t.Errorf("processor_primary_tokens_est = %d, want 42", got)
+	}
+	if got := fs.sumFor(t, MetricProcessorAuxiliaryTokensEst, "s1"); got != 17 {
+		t.Errorf("processor_auxiliary_tokens_est = %d, want 17", got)
+	}
+}
+
+// TestAggregator_ProcessorRun_SkippedAndErrorOutcomesUncounted verifies that
+// "skipped"/"error" runs never contribute to either processor metric, even if
+// EstTokens is non-zero (defense in depth — mitto-08q.2 already zeroes it).
+func TestAggregator_ProcessorRun_SkippedAndErrorOutcomesUncounted(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "skipped", Target: "primary", EstTokens: 99,
+	}))
+	a.Ingest(sc("s1", "w1"), evAt(2, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "error", Target: "primary", EstTokens: 99,
+	}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricProcessorPrimaryTokensEst, "s1"); got != 0 {
+		t.Errorf("processor_primary_tokens_est = %d, want 0 (skipped/error must not count)", got)
+	}
+	if got := fs.sumFor(t, MetricProcessorAuxiliaryTokensEst, "s1"); got != 0 {
+		t.Errorf("processor_auxiliary_tokens_est = %d, want 0 (skipped/error must not count)", got)
+	}
+}
+
+// TestAggregator_ProcessorRun_UITargetUncounted verifies that Target=="ui"
+// runs (notify/actionButtons/userData — no context cost) never contribute to
+// either processor metric.
+func TestAggregator_ProcessorRun_UITargetUncounted(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "ok", Target: "ui", EstTokens: 30,
+	}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricProcessorPrimaryTokensEst, "s1"); got != 0 {
+		t.Errorf("processor_primary_tokens_est = %d, want 0 (ui target has no context cost)", got)
+	}
+	if got := fs.sumFor(t, MetricProcessorAuxiliaryTokensEst, "s1"); got != 0 {
+		t.Errorf("processor_auxiliary_tokens_est = %d, want 0 (ui target has no context cost)", got)
+	}
+}
+
+// TestAggregator_ProcessorRun_ZeroEstTokensUncounted verifies that an "ok" run
+// with EstTokens==0 records nothing (guards the ">0" check, not just outcome).
+func TestAggregator_ProcessorRun_ZeroEstTokensUncounted(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	a.Ingest(sc("s1", "w1"), evAt(1, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "ok", Target: "primary", EstTokens: 0,
+	}))
+	mustFlush(t, a)
+
+	if got := fs.sumFor(t, MetricProcessorPrimaryTokensEst, "s1"); got != 0 {
+		t.Errorf("processor_primary_tokens_est = %d, want 0 (EstTokens==0 must not count)", got)
+	}
+}
+
+// TestAggregator_ProcessorRun_TagsWithCurrentModel verifies processor token
+// deltas are model-attributed like the other token metrics (mitto-1pv
+// convention extended to mitto-08q.4).
+func TestAggregator_ProcessorRun_TagsWithCurrentModel(t *testing.T) {
+	fs := &fakeStore{}
+	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})
+	defer a.Close()
+
+	ts := hour(t, "2026-01-01T00:00:00Z")
+	scA := scWithModel("s1", "w1", "modelA")
+	a.Ingest(scA, evAt(1, ts, session.EventTypeProcessorRun, session.ProcessorRunData{
+		Outcome: "ok", Target: "primary", EstTokens: 10,
+	}))
+	mustFlush(t, a)
+
+	rows := deltasBy(fs, MetricProcessorPrimaryTokensEst, "s1")
+	if len(rows) != 1 {
+		t.Fatalf("processor_primary_tokens_est rows = %d, want 1", len(rows))
+	}
+	if rows[0].Model != "modelA" {
+		t.Errorf("processor_primary_tokens_est.Model = %q, want %q", rows[0].Model, "modelA")
+	}
+}
+
 func TestAggregator_ToolCall_TotalAndMCP(t *testing.T) {
 	fs := &fakeStore{}
 	a := NewAggregator(fs, AggregatorOptions{FlushInterval: time.Hour, MaxBatch: 1_000_000})

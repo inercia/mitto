@@ -203,6 +203,82 @@ func TestTimeseries_DefaultMetricSetIncludesBeadsMetrics(t *testing.T) {
 	}
 }
 
+// TestTimeseries_DefaultMetricSetIncludesProcessorTokenMetrics asserts the two
+// processor token estimate metrics (mitto-08q.4) are part of v1MetricSet's
+// default (no ?metrics= param) response, so the processor_tokens dashboard
+// chart's ungrouped fetch (which requests no explicit ?metrics=) sees them.
+func TestTimeseries_DefaultMetricSetIncludesProcessorTokenMetrics(t *testing.T) {
+	h, _ := newTimeseriesTestHandler(&fakeStatsStore{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	for _, m := range []string{
+		stats.MetricProcessorPrimaryTokensEst,
+		stats.MetricProcessorAuxiliaryTokensEst,
+	} {
+		if _, ok := body.Series[m]; !ok {
+			t.Errorf("default response missing processor token metric %q; got keys=%v", m, keys(body.Series))
+		}
+	}
+}
+
+// TestTimeseries_ProcessorTokenMetricsFilterAndValues asserts the two
+// processor token metrics (mitto-08q.4) can be requested explicitly via
+// ?metrics= and round-trip store values unchanged, and — critically — that
+// primary and auxiliary remain two distinct series in the response (never
+// silently summed into one line), per the bead's acceptance criteria.
+func TestTimeseries_ProcessorTokenMetricsFilterAndValues(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Hour)
+	windowStart := now.Add(-24 * time.Hour)
+	ts := windowStart.Add(4 * time.Hour)
+	store := &fakeStatsStore{points: []stats.Point{
+		{TS: ts, Metric: stats.MetricProcessorPrimaryTokensEst, Value: 55},
+		{TS: ts, Metric: stats.MetricProcessorAuxiliaryTokensEst, Value: 13},
+	}}
+	h, _ := newTimeseriesTestHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/timeseries?metrics=processor_primary_tokens_est,processor_auxiliary_tokens_est", nil)
+	w := httptest.NewRecorder()
+	h.HandleDashboardTimeseries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	body := decodeTimeseriesBody(t, w)
+	if len(body.Series) != 2 {
+		t.Fatalf("series count = %d, want 2; got keys=%v", len(body.Series), keys(body.Series))
+	}
+	wantAt := map[string]int64{
+		stats.MetricProcessorPrimaryTokensEst:   55,
+		stats.MetricProcessorAuxiliaryTokensEst: 13,
+	}
+	for metric, want := range wantAt {
+		pts, ok := body.Series[metric]
+		if !ok {
+			t.Fatalf("missing series %q; got keys=%v", metric, keys(body.Series))
+		}
+		if len(pts) != 24 {
+			t.Fatalf("series[%s] length = %d, want 24 (dense zero-fill)", metric, len(pts))
+		}
+		found := false
+		for _, p := range pts {
+			if p.T == ts.Unix() {
+				found = true
+				if p.V != want {
+					t.Errorf("series[%s] at bucket = %d, want %d", metric, p.V, want)
+				}
+			} else if p.V != 0 {
+				t.Errorf("series[%s] at %d = %d, want 0 (zero-filled)", metric, p.T, p.V)
+			}
+		}
+		if !found {
+			t.Errorf("series[%s] never contained the seeded bucket %d", metric, ts.Unix())
+		}
+	}
+}
+
 // TestTimeseries_BeadsMetricsFilterAndValues asserts the four beads metrics
 // (mitto-5rm6) can be requested explicitly via ?metrics= and round-trip
 // store values unchanged. The handler must NOT pre-average

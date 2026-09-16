@@ -99,6 +99,7 @@ function chartSpecMetrics() {
     {
       id: "processor_tokens",
       title: "Tokens: conversation vs processor injection",
+      hint: "Estimated token flow into the model — not current retained context occupancy.",
       metrics: [
         "input_tokens_est",
         "output_tokens_est",
@@ -533,6 +534,27 @@ describe("chart specs vs requested metrics", () => {
     // canvas assertion) is caught in unit tests, not at first render.
     expect(Number.isInteger(CHART_HEIGHT)).toBe(true);
     expect(CHART_HEIGHT).toBeGreaterThan(0);
+  });
+
+  // mitto-08q.4 acceptance criteria: auxiliary processor consumption must be
+  // exposed as a separate metric and must NEVER be silently combined with the
+  // processor-injection line. Since REQUESTED_METRICS drives what the
+  // dashboard actually fetches/renders, keeping auxiliary out of it is the
+  // enforcement point — if a future change starts fetching it, this test
+  // forces an explicit decision about which chart (if any) plots it.
+  test("processor_auxiliary_tokens_est is never fetched (never silently combined with primary)", () => {
+    expect(REQUESTED_METRICS).not.toContain("processor_auxiliary_tokens_est");
+  });
+
+  // mitto-08q.4 acceptance criteria: chart labels and help text distinguish
+  // token flow from retained context. The processor_tokens card is the only
+  // one plotting token *flow* (vs. counts), so it must carry a non-empty hint.
+  test("processor_tokens spec carries a hint distinguishing token flow from retained context", () => {
+    const spec = chartSpecMetrics().find((s) => s.id === "processor_tokens");
+    expect(spec).toBeTruthy();
+    expect(typeof spec.hint).toBe("string");
+    expect(spec.hint.length).toBeGreaterThan(0);
+    expect(spec.hint.toLowerCase()).toContain("not current retained context");
   });
 });
 
