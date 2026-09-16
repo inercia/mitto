@@ -5,7 +5,7 @@ parameters:
   - name: IssueID
     type: beadsId
     description: The beads issue to explain
-description: Explain this bead in plain language — its purpose, deferred rationale, progress and evidence, and related tickets — read-only
+description: Explain this bead in plain language — including how to unblock it when blocked or deferred — read-only
 backgroundColor: '#B2EBF2'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads")
@@ -23,9 +23,10 @@ prompt: |
 
   {{ template "beads-issues/shared/load-context-min" .Args.IssueID }}
 
-  If `bd show` reports the bead as **deferred** (a `deferred` status, a future `defer_until` /
-  snooze timestamp, or a `needs-human` label), also load the discussion — the deferral reason is
-  recorded there, not in the bead body:
+  If `bd show` reports the bead as **blocked or deferred** (`blocked` / `deferred` status, an
+  unresolved blocking dependency, a future `defer_until` / snooze timestamp, or a `needs-human`
+  label), also load the discussion — the blocker or deferral reason may be recorded there rather
+  than in the bead body:
 
   ```bash
   bd comments {{ .Args.IssueID }}     # look for the newest [deferred: <ts>] marker
@@ -86,8 +87,21 @@ prompt: |
   `bd dep tree {{ .Args.IssueID }}`, `bd dep list {{ .Args.IssueID }}`, and `--children` for an
   epic, each as `<id> — <title> (<relationship>)`. If there are none, say so.
 
+  #### How to unblock
+
+  Include this as the **final explanation section only when the bead is blocked or deferred** —
+  for example, it has `blocked` / `deferred` status, an unresolved blocking dependency, a future
+  `defer_until`, or a `needs-human` label. Omit it entirely otherwise.
+
+  {{ template "beads-issues/shared/unblock-guidance" (dict
+      "SessionID" .Session.ID
+  ) }}
+
   > ⚠️ **This is a read-only explanation.** No code changes and no beads updates were performed.
 
   ## Final step — Offer to delete this conversation
+
+  If the explanation ended with a question or requires any user action to unblock the bead,
+  **do not offer to delete this conversation yet**. Stop and wait for the user's response. Otherwise:
 
   {{ template "_shared/offer-delete-conversation" . }}

@@ -70,10 +70,13 @@ prompt: |
 
   #### Overall Assessment
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   - **Completion estimate**: `<Not started / Early / Midway / Nearly done / Done>`
   - **What appears to be done**: bullet list
   - **What appears to be missing**: bullet list
-  - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`)
+  - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`).
+    If blocked, use the required goal + **but** + concrete prerequisites explanation above.
 
   ---
 
@@ -83,7 +86,7 @@ prompt: |
 
   | Bead | Title | Completion | Blockers? |
   |------|-------|------------|-----------|
-  | `bd-1` | `<title>` | Midway | Yes — `<short description>` |
+  | `bd-1` | `<title>` | Midway | Yes — trying to `<goal>`, but need `<prerequisite and reason>` |
   | `bd-2` | `<title>` | Nearly done | No |
 
   Then surface beads that may need attention:

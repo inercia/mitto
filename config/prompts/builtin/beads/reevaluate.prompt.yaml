@@ -1,7 +1,7 @@
 icon: refresh
 name: Reevaluate all issues
 menus: prompts, beadsList, !promptsLoop
-description: Reevaluate priority, dependencies, grouping and importance of all beads — close any already-completed ones, delegate deeper evaluation to child conversations when needed — then propose changes and surface what to do now
+description: Reevaluate priority, dependencies, grouping and importance of all beads — identify and resolve actionable blockers, close completed work, then propose what to change and do next
 backgroundColor: '#FFCC80'
 group: Tasks
 target:
@@ -42,6 +42,13 @@ prompt: |
 
   {{ template "beads-issues/shared/load-context-min" "<bead-id>" }}
 
+  For every blocked/deferred bead you analyze, also load its discussion so a recorded decision,
+  prior attempt, or human handoff is not mistaken for an unknown blocker:
+
+  ```bash
+  bd comments <bead-id>
+  ```
+
   Optionally cross-reference real implementation progress so importance reflects reality:
 
   ```bash
@@ -51,7 +58,7 @@ prompt: |
 
   ## Step 2 — Reevaluate every open bead
 
-  For each non-closed bead, reason carefully across five axes:
+  For each non-closed bead, reason carefully across six axes:
 
   - **Priority (P0–P4)**: Does the assigned priority still match the bead's real impact and
     urgency? Look for under-prioritised work (high user/blocking impact at low priority) and
@@ -59,6 +66,9 @@ prompt: |
   - **Dependencies**: Are the blocking relationships correct and complete? Look for
     **missing** dependencies (a bead that clearly cannot start before another), **stale**
     dependencies (blockers that are already closed/obsolete), and **cycles**.
+  - **Unblocking**: For every blocked/deferred bead, determine whether the blocker is still real,
+    whether a safe tracker correction would make it ready, and whether a concrete user decision,
+    missing acceptance criterion, permission, or external action could move it forward.
   - **Importance**: How much does this bead matter relative to the others *right now*?
     Consider user impact, how many other beads it unblocks, staleness, and whether it is a
     duplicate or no longer relevant.
@@ -150,6 +160,22 @@ prompt: |
   For a **New epic** row, also state the proposed epic name, a one-line description of the shared
   objective, and every member bead — the user is approving the epic's shape, not just its existence.
 
+  ### Unblocking opportunities
+
+  After the change table, cover every blocked/deferred bead for which you found a plausible path
+  forward. Keep non-actionable external blockers concise, but do not omit them merely because the
+  user cannot resolve them.
+
+  {{ template "beads-issues/shared/unblock-guidance" (dict
+      "SessionID" .Session.ID
+      "Batch"     true
+  ) }}
+
+  Fold any answers the user supplies into the proposal as explicit tracker changes (for example,
+  corrected acceptance criteria, a stale dependency removal, or clearing `needs-human` / deferral
+  after the missing decision is recorded). This prompt remains read-only until Step 6 confirms the
+  resulting proposal.
+
   If, after analysis, **no changes are warranted**, say so clearly and skip Steps 6–7 — but
   still produce the final summary in Step 8.
 
@@ -174,9 +200,21 @@ prompt: |
   bd update <bead-id> --priority <0-4>          # reprioritise
   bd dep add <blocked-id> <blocker-id>          # add a blocking dependency
   bd dep remove <blocked-id> <blocker-id>       # remove a stale dependency
+  bd update <bead-id> --acceptance "<full approved acceptance criteria>"   # record clarified criteria
+  bd update <bead-id> --remove-label needs-human --defer ''                # resume after intervention
   bd close <bead-id> --reason "<why, e.g. 'Already implemented in abc1234; acceptance criteria met'>"   # close an already-completed bead
   bd update <bead-id> --parent <epic-id>        # move a bead under an existing epic
   bd create "<epic name>" --type epic --body-file /tmp/epic-desc.md   # create a new epic, then --parent its members
+  ```
+
+  Record an approved human decision or external-action confirmation in a readable comment before
+  clearing its handoff state, then re-read live status and dependencies. Only report the bead as
+  unblocked when the actual tracker state confirms it:
+
+  ```bash
+  printf '%s' "$decision_note" | bd comment <bead-id> --stdin
+  bd show <bead-id> --json
+  bd dep tree <bead-id>
   ```
 
   When creating a new epic, write its description to a temporary file and pass it via `--body-file`

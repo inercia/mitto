@@ -1,0 +1,41 @@
+{{- /*
+  beads-issues/shared/comment-formatting — the standard "write the progress
+  bd comment as rich, human-readable Markdown" bullet used across the
+  beads-issues loop chain (phase-guidelines-footer, loop-driver-guidelines-common,
+  and the four mention-phase-* prompts). Progress comments are what a human
+  reads in the bead history, so they must be well-formatted GFM rather than a
+  flat one-liner.
+
+  Two hard rules it codifies:
+    (a) format the body as readable GitHub-flavored Markdown (bold / inline
+        code / fenced blocks / lists), while keeping any required tier tag
+        (e.g. `Fix [tier: Coding]:`) as the FIRST line — history detection and
+        the phase self-checks grep for that prefix;
+    (b) preserve real line breaks — pipe multi-line bodies via stdin
+        (`printf '%s' "$c" | bd comment <id> --stdin`) — never collapse a
+        multi-line comment into one flat line.
+
+  Whitespace contract identical to beads-issues/shared/markdown-convention:
+    - Fragment body is column-1 Markdown (NO leading indent) — it slots
+      directly into the caller's already-YAML-stripped body text, at the same
+      visible indent as the caller's surrounding bullets.
+    - Fragment emits NO leading and NO trailing newline. Callers use plain
+      `{{ template ... }}` (no trim markers) and rely on the surrounding YAML
+      newlines to space it correctly.
+
+  Uses no context fields, so it renders safely in every caller — including the
+  dict-parameter fragments (phase-guidelines-footer, loop-driver-guidelines-common)
+  whose `.` is a dict rather than the root PromptEnabledContext.
+
+  The stdin-piping example uses `"$c"` as a stand-in for whichever local shell
+  variable the caller uses to hold the comment body.
+*/ -}}
+- **Write the comment for a human, in rich Markdown.** Progress `bd comment`s must read as
+  well-formatted GitHub-flavored Markdown, not a flat one-liner: **bold** the key facts
+  (root cause, decision, outcome), wrap symbols / files / commands in `inline code`, use
+  fenced code blocks for diffs, commands and their output, and bullet or numbered lists for
+  steps. Keep any required tier tag (e.g. `Fix [tier: Coding]:`) as the **first line** —
+  history detection and the phase self-checks grep for that prefix — then put the formatted
+  body on the lines below. Preserve real line breaks: pipe a multi-line body through stdin
+  (`printf '%s' "$c" | bd comment <id> --stdin`) instead of collapsing it into one line.
+{{- /* no trailing newline */ -}}

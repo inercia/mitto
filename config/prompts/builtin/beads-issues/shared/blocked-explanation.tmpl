@@ -1,0 +1,20 @@
+{{- /*
+  beads-issues/shared/blocked-explanation — UI-neutral invariant for every
+  user-facing blocked/deferred explanation. Consumers decide whether to ask,
+  mutate, defer, notify, or stop; this fragment owns only causal clarity.
+*/ -}}
+**Required blocked explanation — make the cause understandable.** Whenever you report that a bead
+is blocked or deferred, lead with this plain-language contrast (adapt the wording, but preserve all
+of its information):
+
+> We are trying to **<goal or outcome>**, **but** cannot continue until:
+> - **A — <concrete prerequisite>**: <owner/current status/evidence, and why it prevents the next step>
+> - **B — <concrete prerequisite>**: <owner/current status/evidence, and why it prevents the next step>
+> - **C — <concrete prerequisite>**: <owner/current status/evidence, and why it prevents the next step>
+
+Use only as many prerequisites as actually exist. Then state what has already been tried and what
+becomes possible once they are satisfied. Never report only “blocked”, a status/label, or
+`blocked-by <id>`: translate every referenced bead, decision, permission, error, or external event
+into its title/meaning and causal relationship to the intended goal. If the cause is not known, say
+exactly which fact is unknown and what evidence is needed to determine it; do not invent a cause.
+{{- /* no trailing newline */ -}}

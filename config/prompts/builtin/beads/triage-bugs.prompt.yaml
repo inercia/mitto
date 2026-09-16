@@ -255,6 +255,8 @@ prompt: |
   real product / architecture / prioritisation call — do **not** force a triage on
   that bug. Instead, per the pattern in `docs/devel/prompt-templates.md` §13.7:
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   1. Defer and flag **that one bug** so it drops out of `bd ready`:
 
      ```bash
@@ -264,7 +266,8 @@ prompt: |
   2. Write a **structured handoff** comment on that bug:
 
      ```bash
-     bd comment <id> "Blocked at triage. What I tried: <summary>. What I need from you: <the ONE concrete question/decision>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     bd comment <id> "Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
+     Blocked at triage. What I tried: <summary>. What I need from you: <the ONE concrete question/decision>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
      ```
 
   3. **Do not** add the `triaged` label on this bug (it is genuinely un-triaged until

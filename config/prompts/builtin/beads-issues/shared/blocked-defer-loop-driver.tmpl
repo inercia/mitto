@@ -40,6 +40,8 @@ decision/info only the user can give), something can't be solved without help (a
 secret, an external action, a product decision{{ with .IntroExtra }}{{ . }}{{ end }}), or you are otherwise stuck. **Do not**
 advance the state label in this case. Instead:
 
+{{ template "beads-issues/shared/blocked-explanation" . }}
+
 1. Defer and flag the bead so it drops out of `bd ready`:
 
    ```bash
@@ -51,6 +53,7 @@ advance the state label in this case. Instead:
 
    ```bash
    bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
+   Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
    Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
    ```
 

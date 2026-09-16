@@ -836,12 +836,17 @@ func TestBlockedDeferHandoffFragmentRenders(t *testing.T) {
 		}
 		// Style-specific hallmarks.
 		if c.style == "short" {
-			want := "bd comment mitto-abc \"[deferred: <now-RFC3339>]\n   Blocked at " + c.blockedAt + "."
-			if !strings.Contains(out, want) {
-				t.Errorf("%q (short): missing short-form handoff %q", c.name, want)
+			for _, want := range []string{
+				"bd comment mitto-abc \"[deferred: <now-RFC3339>]",
+				"Blocked summary: We are trying to <goal>, but cannot continue until",
+				"Blocked at " + c.blockedAt + ".",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%q (short): missing short-form handoff %q", c.name, want)
+				}
 			}
 		} else {
-			want := "Why: Blocked at " + c.blockedAt + " — <root cause>."
+			want := "Why: Blocked at " + c.blockedAt + " — <root cause and evidence; include what was tried>."
 			if !strings.Contains(out, want) {
 				t.Errorf("%q (long): missing [deferred:] handoff line %q", c.name, want)
 			}
@@ -1046,6 +1051,7 @@ func TestLoopDriverGuidelinesFragmentsRender(t *testing.T) {
 		"**Decide autonomously; never guess.**",
 		"**Silent unless it matters.** On scheduled runs, `mitto_ui_notify`",
 		"**Always log to the tracker** with `bd comment`",
+		"**Write the comment for a human, in rich Markdown.**",
 	}
 
 	// (name, milestoneList, chain, labelList, splitAntipattern, wantsParallel)

@@ -133,6 +133,10 @@ prompt: |
   **ready** (unblocked) or still **blocked**, and by which beads. If it is now ready, suggest the
   **"Start work"** prompt.
 
+  If it remains blocked:
+
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   ## Final step — Offer to delete this conversation
 
   {{ template "_shared/offer-delete-conversation" . }}

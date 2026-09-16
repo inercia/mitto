@@ -333,6 +333,8 @@ prompt: |
   prompts handle their own in-phase blockers via their Step 4. **Do not** advance any
   state label. Instead:
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   1. Defer and flag the bead:
 
      ```bash
@@ -346,6 +348,7 @@ prompt: |
 
      ```bash
      bd comment {{ if $target }}{{ $target }}{{ else }}<target-bead>{{ end }} "[deferred: <now-RFC3339>]
+     Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
      Why: Blocked at mention-router — <root cause>.
      What human intervention is required: <the ONE concrete action>.
      How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."

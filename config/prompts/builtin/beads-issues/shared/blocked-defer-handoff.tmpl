@@ -82,6 +82,8 @@
 Use this whenever this phase cannot make progress autonomously{{ with .Intro }} {{ . }}{{ end }}.
 **Do not** advance the `{{ .Label }}` label. Instead:
 
+{{ template "beads-issues/shared/blocked-explanation" . }}
+
 1. Defer and flag the bead so it drops out of `bd ready`:
 
    ```bash
@@ -93,7 +95,8 @@ Use this whenever this phase cannot make progress autonomously{{ with .Intro }} 
 
    ```bash
    bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
-   Why: Blocked at {{ .BlockedAt }} — <root cause>.
+   Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
+   Why: Blocked at {{ .BlockedAt }} — <root cause and evidence; include what was tried>.
    What human intervention is required: <the ONE concrete question/decision/info/action>.
    How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."
    ```
@@ -108,6 +111,8 @@ Use this whenever this phase cannot make progress autonomously{{ with .Intro }} 
 Use this whenever this phase cannot make progress autonomously{{ with .Intro }} {{ . }}{{ end }}. **Do not** advance
 the `{{ .Label }}` label. Instead:
 
+{{ template "beads-issues/shared/blocked-explanation" . }}
+
 1. Defer and flag the bead so it drops out of `bd ready`:
 
    ```bash
@@ -119,6 +124,7 @@ the `{{ .Label }}` label. Instead:
 
    ```bash
    bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
+   Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
    Blocked at {{ .BlockedAt }}. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
    ```
 

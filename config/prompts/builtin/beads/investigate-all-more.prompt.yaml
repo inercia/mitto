@@ -135,8 +135,10 @@ prompt: |
   design that cannot be pinned down — do **not** guess and do **not** add the
   `implementation-refined` label. Record why and defer it:
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   ```bash
-  bd update <bead-id> --append-notes "Deferred during investigation on {{ .Session.ID }}: cannot produce an implementation-ready spec. Blockers/questions: <list the specific open questions or missing information a human must resolve>."
+  bd update <bead-id> --append-notes "Deferred during investigation on {{ .Session.ID }}. We are trying to produce <implementation-ready outcome>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>. What was tried: <summary>."
   bd defer <bead-id>
   ```
 
@@ -151,7 +153,8 @@ prompt: |
   For each bead you enriched: `bead-id` · title · one line on the plan you wrote.
 
   ### Deferred
-  For each bead you deferred: `bead-id` · title · the specific open question(s) that blocked it.
+  For each bead you deferred: `bead-id` · title · the goal, **but**-contrast, and specific
+  prerequisite(s) that blocked it — never only a status or blocker ID.
 
   {{- if or .Iteration.IsUninterrupted (and .Session.IsLoop (not .Session.IsLoopForced)) }}
   Deliver this summary via `mitto_ui_notify` (silent mode). Use `style: "warning"` if any bead was

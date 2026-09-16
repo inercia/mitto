@@ -74,9 +74,13 @@ prompt: |
 
   #### Overall Assessment
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   - **Completion estimate**: `<percentage or qualitative: Not started / Early / Midway / Nearly done / Done>`
   - **What appears to be done**: bullet list of concrete evidence of completed work
   - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
-  - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`, a failing test, an unanswered question in notes)
+  - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`,
+    a failing test, an unanswered question in notes). If blocked, use the required goal + **but** +
+    concrete prerequisites explanation above.
 
   > ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start working on ready" prompt to continue implementation.

@@ -215,7 +215,8 @@ prompt: |
     are preserved. Recovery never means completion; §B/§C still verify and close.
   - **Preflight:** requires **Can start conversation** and **Can Send Prompt** flags
     plus a non-child session. Any tool error from a disabled flag, or
-    `Session.IsChild` true → single `mitto_ui_notify` naming the blocker, then STOP
+    `Session.IsChild` true → single `mitto_ui_notify` stating the intended dispatch goal, **but**
+    naming the unavailable capability and why it prevents dispatch, then STOP
     (no `bd` writes, no spawns).
 
   ## Step 1 — Validate the nested driver prompts
@@ -854,7 +855,7 @@ prompt: |
   ) }}
 
   A bead dropped by criterion 1 is not discarded — it still appears in the Step 2T
-  table with the 🟡 `blocked` status and its `blocked-by <id>` reason.
+  table with the 🟡 `blocked` status and the blocker ID + title + causal reason required there.
 
   **How this pass consumes the ranking:** the ordering applies to the WHOLE set (2T
   lists every candidate in it), and the shortlist is just its top slice. §B always
@@ -923,7 +924,9 @@ prompt: |
     `label: in-flight (claimed by <claimer>)` — always include the claimer
     session ID from `metadata.claimed_by`,
     `already-landed fix (commit <hash>)`, `recently-closed parent <id>`,
-    `blocked-by <id>`, `scope disabled`, `concurrency cap`, `epic (container)`).
+    `blocked-by <id> (<title>): need <prerequisite> before <goal can continue>`, `scope disabled`,
+    `concurrency cap`, `epic (container)`). A blocked row must explain the causal relationship;
+    `blocked-by <id>` alone is forbidden.
 
   Format exactly:
 
@@ -934,7 +937,7 @@ prompt: |
   |-------|-------|--------|--------|
   | A | <id> [<ts>] | 🟢 spawnable | ready |
   | B | <id> | 🔴 excluded | beads_issue match: <session-id> |
-  | C | <id> | 🟡 blocked | blocked-by <id> |
+  | C | <id> | 🟡 blocked | blocked-by <id> (<title>): need <prerequisite> before <goal can continue> |
   | C | <id> | ⏸️ queued | concurrency cap |
   ```
 
@@ -1479,11 +1482,14 @@ prompt: |
   target is intrinsically un-actionable (credentials, ambiguity, decision,
   external access, manual verification). Never guess; never silently drop.
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   **§B / §C — canonical defer:**
 
   ```bash
   bd update <id> --add-label needs-human --defer +1d
   bd comment <id> "[deferred: <now-RFC3339>]
+  Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
   Why: <root cause — what was tried, what error/blocker, or which autonomy boundary>.
   What human intervention is required: <the ONE concrete action — e.g. 'enable Can start conversation flag', 'provide API key for X', 'decide between A and B'>.
   How to resume: reply to this bead; the orchestrator will detect it, clear \`needs-human\`, and re-queue."

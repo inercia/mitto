@@ -57,6 +57,10 @@ prompt: |
   - Unmet dependencies or prerequisites (from the dependency tree)
   - Ambiguity that would force an implementer to guess
 
+  If any blocker is present:
+
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   **If nothing stands out** — no pending decisions, blockers, or obvious gaps — ask the user what they
   want to refine or discuss, via `mitto_ui_options(self_id: "{{ .Session.ID }}",
   allow_free_text: true)`, offering focus areas such as *scope*, *approach / design*, *acceptance

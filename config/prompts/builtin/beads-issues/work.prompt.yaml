@@ -6,7 +6,7 @@ parameters:
     type: beadsId
     required: false
     description: The beads issue ID to act on
-description: Plan this bead and spawn parallel Mitto conversations to implement it
+description: Check whether this bead is actionable, resolve user-answerable blockers, then plan and dispatch implementation work
 backgroundColor: '#B2DFDB'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed"'
@@ -41,6 +41,7 @@ prompt: |
   bd show {{ $target }} --long --json        # full fields, metadata, design, acceptance
   bd dep tree {{ $target }}                   # dependency tree (blockers and what it blocks)
   bd show {{ $target }} --children --json     # any child beads
+  bd comments {{ $target }}                   # decisions, prior attempts, and blocker rationale
   ```
 
   Analyze all gathered context thoroughly: understand the problem statement, scope, constraints,
@@ -53,6 +54,23 @@ prompt: |
   {{- end }}
 
   {{ if $target -}}
+  ## Step 1a — Stop and explain if the work is blocked
+
+  Before linking, claiming, planning, or dispatching, determine from the **live** bead fields,
+  dependency tree, children, and comments whether the work can start now. Treat it as blocked when
+  the target has `blocked` / `deferred` status, a future `defer_until`, a `needs-human` label, an
+  unresolved blocking dependency, or — for an epic — Step 1b finds no workable child.
+
+  If it is blocked, **do not claim the bead and do not continue to Steps 2–5**. Instead:
+
+  {{ template "beads-issues/shared/unblock-guidance" (dict
+      "SessionID" .Session.ID
+  ) }}
+
+  Stop after this handoff and wait for the user when a response or action is required. Only resume
+  the claim-and-plan flow after the blocker has actually been resolved and live state confirms the
+  bead (or at least one selected child) is workable.
+
   ## Step 1b — If the bead is an epic, pick the first child to tackle
 
   Before planning, determine whether the target bead is an **epic** (or otherwise a parent with
@@ -73,7 +91,8 @@ prompt: |
        `closed`/`done` or `in_progress`.
     3. **Find the first workable child(ren)** — every child with **no unresolved blockers** that
        can be started right now. There may be **more than one** when several have no dependencies
-       between them; in that case they can all be tackled in parallel.
+       between them; in that case they can all be tackled in parallel. If there are **no workable
+       children**, follow Step 1a's blocked-work explanation and unblocking handoff, then stop.
     4. **Rank the workable children** using the canonical ordering below.
     5. **Propose to the user** which child(ren) to start with, using
        `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:

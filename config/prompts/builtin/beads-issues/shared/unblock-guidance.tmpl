@@ -1,0 +1,36 @@
+{{- /*
+  beads-issues/shared/unblock-guidance — canonical interactive guidance for
+  explaining and trying to resolve blocked/deferred beads. It deliberately
+  owns only the analysis + user-interaction invariant; callers retain their
+  own read-only, approval, mutation, stop, and resume policies.
+
+  Parameters:
+    SessionID — current Mitto session ID, used by interactive UI tools.
+    Batch     — true for a multi-bead pass; adds consolidated-form guidance.
+
+  Consumers: Explain, Start work, Show status, Reevaluate all issues.
+*/ -}}
+Apply this unblocking analysis to every blocked or deferred bead in scope:
+
+{{ template "beads-issues/shared/blocked-explanation" . }}
+
+1. **Verify before declaring it blocked.** Re-read live status, dependencies, relevant children,
+   and recent comments. Distinguish a real unresolved blocker from stale tracker state or an
+   already-satisfied dependency.
+2. **Propose the smallest concrete next step.** State who needs to do what, why it is needed, and
+   what work becomes possible afterward. If a safe tracker correction appears sufficient, propose
+   the exact correction; do not silently apply it unless the calling prompt explicitly authorizes
+   changes and its confirmation policy has been satisfied.
+3. **Make human-actionable blockers answerable.** When the user can unblock the work, end with
+   **one direct, specific question or action request** that supplies exactly the missing decision,
+   information, acceptance criterion, permission, or external action. Explain how the response
+   moves the bead forward; never merely say “a decision is needed” or “criteria are missing.”
+   Use `mitto_ui_options(self_id: "{{ .SessionID }}", allow_free_text: true)` for a finite decision
+   (recommended option first), or `mitto_ui_textbox(self_id: "{{ .SessionID }}")` for one free-form
+   answer such as an acceptance criterion.{{ if .Batch }} When several independent beads need
+   answers, consolidate them into one `mitto_ui_form(self_id: "{{ .SessionID }}")` with one clearly
+   labelled field per bead instead of opening a sequence of dialogs.{{ end }}
+4. **Be honest when the user cannot unblock it.** Name the external owner, dependency, event, or
+   missing evidence and state when to retry. Do not invent a path forward or imply that user action
+   can resolve a blocker outside the user's control.
+{{- /* no trailing newline */ -}}

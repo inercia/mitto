@@ -51,6 +51,8 @@ prompt: |
   For the notable blocked beads, identify **which bead is blocking** them. Flag any **cycle** as a
   problem that needs fixing (suggest the per-bead "Update dependencies" prompt to repair it).
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   ## Step 4 — In-progress health & stale work
 
   ```bash
@@ -77,8 +79,9 @@ prompt: |
 
   ### Blocked
 
-  - Beads that are blocked and the blocker for each. Note any chains where one bead is gating several
-    others.
+  - Beads that are blocked and the blocker for each. For every listed bead, state its intended goal,
+    the **but**-contrast, and the concrete prerequisite(s), not merely `blocked-by <id>`. Note any
+    chains where one bead is gating several others.
 
   ### In progress
 

@@ -217,8 +217,10 @@ prompt: |
 
   Use `mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "<bead-id>", timeout_seconds: 600)` to wait for the workers to report back. On timeout, retry the pending children with the **same `task_id`** (omit the prompt to avoid duplicates). Summarise the consolidated results to the user, and log a short progress comment for any notable milestone or blocker:
 
+  {{ template "beads-issues/shared/blocked-explanation" . }}
+
   ```bash
-  bd comment <bead-id> "Progress: <what completed / what remains / blockers>."
+  bd comment <bead-id> "Progress: <what completed / what remains>. If blocked: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>."
   ```
 
   ## Step 10 — Log completion and close out

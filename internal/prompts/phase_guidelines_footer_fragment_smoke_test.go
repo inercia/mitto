@@ -79,6 +79,11 @@ func TestPhaseGuidelinesFooterFragmentRenders(t *testing.T) {
 		if !strings.Contains(out, "- **Always log to the tracker** with `bd comment` so progress is auditable.") {
 			t.Errorf("%q: missing Always-log bullet", c.name)
 		}
+		// The shared comment-formatting bullet (rich human-readable Markdown for
+		// progress comments) must render right after the Always-log bullet.
+		if !strings.Contains(out, "- **Write the comment for a human, in rich Markdown.**") {
+			t.Errorf("%q: missing comment-formatting (rich Markdown) bullet", c.name)
+		}
 		wantTierTag := "- **Tier tag every comment.** Prefix the " + c.noun +
 			" with `" + c.prefix + " [tier: " + c.tier + "]:` so"
 		if !strings.Contains(out, wantTierTag) {
