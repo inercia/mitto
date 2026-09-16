@@ -36,7 +36,12 @@ import (
 // stats.5's backfiller to recompute historical rows so length-based token
 // counts stay consistent when the estimator changes (e.g. if ACP ever exposes
 // real usage counters and the estimator is retired).
-const EstimatorVersion = 1
+//
+// v2 (mitto-08q.4): added the processor_run fold branch that derives
+// MetricProcessorPrimaryTokensEst / MetricProcessorAuxiliaryTokensEst from
+// session.ProcessorRunData.EstTokens — existing buckets need a recompute to
+// backfill these two new series from historical processor_run events.
+const EstimatorVersion = 2
 
 // v1 metric names. These are stored as-is in the SQLite `metric` column and
 // echoed to the frontend in the API response, so any rename is a schema break.
@@ -58,6 +63,18 @@ const (
 	MetricPermissionsPrompted = "permissions_prompted"
 	// MetricErrors counts error events.
 	MetricErrors = "errors"
+	// MetricProcessorPrimaryTokensEst is a length-based estimate of processor
+	// output merged into the primary outgoing message (session.ProcessorRunData
+	// with Target=="primary", Outcome=="ok"), derived from mitto-08q.2's
+	// EstTokens attribution. This is a token-flow-into-the-model signal, not
+	// current retained context occupancy (mitto-08q.4).
+	MetricProcessorPrimaryTokensEst = "processor_primary_tokens_est"
+	// MetricProcessorAuxiliaryTokensEst mirrors
+	// MetricProcessorPrimaryTokensEst for processor output dispatched to an
+	// auxiliary session (Target=="auxiliary"). Deliberately a separate metric
+	// so auxiliary consumption is never silently combined with primary-context
+	// injection (mitto-08q.4 acceptance criteria).
+	MetricProcessorAuxiliaryTokensEst = "processor_auxiliary_tokens_est"
 	// MetricBeadsOpened counts beads (bd issues) opened (created) in the
 	// bucket, derived from a periodic `bd list` snapshot rather than an event
 	// stream (mitto-5rm6).

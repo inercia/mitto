@@ -27,6 +27,8 @@ var v1MetricSet = []string{
 	stats.MetricMCPCalls,
 	stats.MetricPermissionsPrompted,
 	stats.MetricErrors,
+	stats.MetricProcessorPrimaryTokensEst,
+	stats.MetricProcessorAuxiliaryTokensEst,
 	stats.MetricBeadsOpened,
 	stats.MetricBeadsClosed,
 	stats.MetricBeadsCycleSecondsSum,

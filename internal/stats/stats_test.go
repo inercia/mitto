@@ -142,8 +142,8 @@ func TestConstants(t *testing.T) {
 	if BucketDay != "day" {
 		t.Errorf("BucketDay = %q, want %q", BucketDay, "day")
 	}
-	if EstimatorVersion != 1 {
-		t.Errorf("EstimatorVersion = %d, want 1", EstimatorVersion)
+	if EstimatorVersion != 2 {
+		t.Errorf("EstimatorVersion = %d, want 2", EstimatorVersion)
 	}
 }
 

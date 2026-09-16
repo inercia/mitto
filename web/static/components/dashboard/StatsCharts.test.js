@@ -58,6 +58,7 @@ const REQUESTED_METRICS = [
   "agent_turns_completed",
   "tool_calls_total",
   "mcp_calls",
+  "processor_primary_tokens_est",
   "beads_opened",
   "beads_closed",
   "beads_cycle_seconds_sum",
@@ -96,6 +97,16 @@ function chartSpecMetrics() {
       metrics: ["prompts", "agent_turns_completed"],
     },
     {
+      id: "processor_tokens",
+      title: "Tokens: conversation vs processor injection",
+      metrics: [
+        "input_tokens_est",
+        "output_tokens_est",
+        "processor_primary_tokens_est",
+      ],
+      transform: processorTokensTransform,
+    },
+    {
       id: "beads_activity",
       title: "Beads opened vs closed",
       metrics: ["beads_opened", "beads_closed"],
@@ -132,6 +143,18 @@ function beadsCycleTimeTransform(rows) {
     return c > 0 ? s / c / 3600 : 0;
   });
   return [xs, avgHours, avgActiveHours, counts];
+}
+
+// Duplicated from the processor_tokens spec's `transform` in StatsCharts.js
+// (mitto-08q.4). Keep in sync. Sums input+output tokens into a single
+// "conversation" line per bucket; processor_primary_tokens_est passes through
+// unchanged. processor_auxiliary_tokens_est is intentionally never fetched by
+// this chart (see REQUESTED_METRICS comment) — auxiliary consumption must
+// never be silently combined with primary-context injection.
+function processorTokensTransform(rows) {
+  const [xs, inputs, outputs, processorPrimary] = rows;
+  const conversation = inputs.map((v, i) => (v || 0) + (outputs[i] || 0));
+  return [xs, conversation, processorPrimary];
 }
 
 // Duplicated visibility filter from StatsCharts.js (mitto-4t8). Keep in sync.
@@ -496,11 +519,11 @@ describe("chart specs vs requested metrics", () => {
     }
   });
 
-  test("five cards, each with a unique non-empty title", () => {
+  test("six cards, each with a unique non-empty title", () => {
     const specs = chartSpecMetrics();
-    expect(specs).toHaveLength(5);
+    expect(specs).toHaveLength(6);
     const titles = specs.map((s) => s.title);
-    expect(new Set(titles).size).toBe(5);
+    expect(new Set(titles).size).toBe(6);
     for (const t of titles)
       expect(typeof t === "string" && t.length > 0).toBe(true);
   });
@@ -850,6 +873,7 @@ const KNOWN_DASHBOARD_CHART_IDS = [
   "tool_calls",
   "prompts_vs_turns",
   "model_usage",
+  "processor_tokens",
   "beads_activity",
   "beads_cycle_time",
 ];
@@ -898,6 +922,7 @@ describe("visibleSpecs (carousel filter)", () => {
     const out = visibleSpecs(specs, [
       "tokens",
       "prompts_vs_turns",
+      "processor_tokens",
       "beads_activity",
       "beads_cycle_time",
     ]);

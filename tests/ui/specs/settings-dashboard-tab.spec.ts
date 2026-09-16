@@ -28,6 +28,7 @@ const CHART_IDS = [
   "tokens",
   "tool_calls",
   "prompts_vs_turns",
+  "processor_tokens",
   "beads_activity",
   "beads_cycle_time",
 ] as const;

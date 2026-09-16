@@ -17,8 +17,13 @@ const RANGE_VALUES = ["24h", "7d", "30d"];
 const DEFAULT_RANGE = "24h";
 
 // Metric list mirrors internal/web/handlers/dashboard_timeseries.go v1MetricSet
-// order. We only request the ten the UI actually uses so payloads are lean
-// (permissions_prompted and errors are omitted — no chart consumes them yet).
+// order. We only request the metrics the UI actually uses so payloads are
+// lean (permissions_prompted and errors are omitted — no chart consumes them
+// yet). processor_auxiliary_tokens_est is deliberately NOT requested here: it
+// is exposed by the API (v1MetricSet) for a future dedicated card, but no
+// chart in this pass plots it — per mitto-08q.4 acceptance criteria,
+// auxiliary processor consumption must never be silently combined with the
+// primary-context injection line, so it is not fetched just to sit unused.
 const REQUESTED_METRICS = [
   "input_tokens_est",
   "output_tokens_est",
@@ -26,6 +31,7 @@ const REQUESTED_METRICS = [
   "agent_turns_completed",
   "tool_calls_total",
   "mcp_calls",
+  "processor_primary_tokens_est",
   "beads_opened",
   "beads_closed",
   "beads_cycle_seconds_sum",
@@ -355,6 +361,49 @@ function buildChartSpecs(u) {
       }),
     },
     {
+      id: "processor_tokens",
+      title: "Tokens: conversation vs processor injection",
+      // Hover/tooltip text distinguishing this chart's token-flow-into-the-
+      // model signal from current retained context occupancy (mitto-08q.4
+      // acceptance criteria). Rendered via ChartCard's `hint` prop.
+      hint: "Estimated token flow into the model — not current retained context occupancy.",
+      // "conversation" = input_tokens_est + output_tokens_est, summed at
+      // render time by the transform below (no extra fetch: both are already
+      // part of REQUESTED_METRICS). "processor injection" is
+      // processor_primary_tokens_est directly — auxiliary processor
+      // consumption (processor_auxiliary_tokens_est) is deliberately NOT
+      // plotted here; it is a separate metric exposed via the API only, so it
+      // is never silently combined with primary-context injection.
+      metrics: [
+        "input_tokens_est",
+        "output_tokens_est",
+        "processor_primary_tokens_est",
+      ],
+      transform: (rows) => {
+        const [xs, inputs, outputs, processorPrimary] = rows;
+        const conversation = inputs.map((v, i) => (v || 0) + (outputs[i] || 0));
+        return [xs, conversation, processorPrimary];
+      },
+      opts: (w, h) => ({
+        ...commonOpts(w, h),
+        scales: { x: { time: true }, y: yScale },
+        axes: [xAxis, yAxis],
+        series: [
+          { label: "time" },
+          {
+            label: "conversation",
+            stroke: stroke("#38bdf8"),
+            fill: "rgba(56,189,248,0.15)",
+          },
+          {
+            label: "processor injection",
+            stroke: stroke("#f97316"),
+            fill: "rgba(249,115,22,0.15)",
+          },
+        ],
+      }),
+    },
+    {
       id: "beads_activity",
       title: "Beads opened vs closed",
       metrics: ["beads_opened", "beads_closed"],
@@ -458,7 +507,7 @@ function buildChartSpecs(u) {
 
 // --- Single-chart card component -------------------------------------------
 
-function ChartCard({ title, metrics, optsFor, data, uplot, empty, transform }) {
+function ChartCard({ title, metrics, optsFor, data, uplot, empty, transform, hint }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const roRef = useRef(null);
@@ -530,7 +579,9 @@ function ChartCard({ title, metrics, optsFor, data, uplot, empty, transform }) {
       class="rounded-lg shadow bg-mitto-surface-2 p-3 flex flex-col gap-2"
       style="width: min(360px, 100%); flex: 0 0 auto;"
     >
-      <div class="text-xs text-mitto-text-muted truncate">${title}</div>
+      <div class="text-xs text-mitto-text-muted truncate" title=${hint || title}>
+        ${title}
+      </div>
       <!-- shrink-0 + min-height belt-and-braces: the ChartCard is nested inside
            the dashboard's outer 'flex flex-col overflow-y-auto' container which
            default-shrinks its children (flex-shrink:1). Without this, the
@@ -922,6 +973,7 @@ export function StatsCharts({ showToast }) {
                   uplot=${uplot}
                   empty=${empty}
                   transform=${s.transform}
+                  hint=${s.hint}
                 />`,
             )}
         ${modelUsageVisible

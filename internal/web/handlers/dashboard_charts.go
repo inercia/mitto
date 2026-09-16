@@ -17,6 +17,7 @@ var KnownDashboardChartIDs = []string{
 	"tool_calls",
 	"prompts_vs_turns",
 	"model_usage",
+	"processor_tokens",
 	"beads_activity",
 	"beads_cycle_time",
 }

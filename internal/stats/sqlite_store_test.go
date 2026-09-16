@@ -107,8 +107,14 @@ func TestSQLiteStore_Migrations_SeedsMetaOnFirstOpen(t *testing.T) {
 	if got["schema_version"] != "2" {
 		t.Errorf("schema_version = %q, want %q", got["schema_version"], "2")
 	}
-	if got["estimator_version"] != strconv.Itoa(EstimatorVersion) {
-		t.Errorf("estimator_version = %q, want %q", got["estimator_version"], strconv.Itoa(EstimatorVersion))
+	// The v1 migration statement seeds this literal "1" permanently (past
+	// migrations are immutable); it is NOT re-derived from the current
+	// package-level EstimatorVersion constant. A fresh Open() alone never
+	// calls the backfiller's maybeBumpEstimator, so this row stays at the
+	// migration's baked-in seed until the backfiller's first Run() bumps it
+	// (see TestBackfiller_EstimatorVersionBump_ResetsAndRecomputes).
+	if got["estimator_version"] != "1" {
+		t.Errorf("estimator_version = %q, want %q", got["estimator_version"], "1")
 	}
 	if _, ok := got["last_full_backfill_at"]; !ok {
 		t.Errorf("last_full_backfill_at row missing")

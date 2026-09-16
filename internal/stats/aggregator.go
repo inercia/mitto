@@ -396,6 +396,20 @@ func (a *aggregator) foldOwned(it aggregatorItem) {
 		inc(MetricPermissionsPrompted, 1)
 	case session.EventTypeError:
 		inc(MetricErrors, 1)
+	case session.EventTypeProcessorRun:
+		// Only "ok" runs with a positive estimate ever entered a context;
+		// mitto-08q.2 already zeroes EstTokens for "skipped"/"error" outcomes,
+		// but the outcome check is kept explicit here as defense in depth.
+		// "ui" (and empty/unknown) targets are intentionally uncounted — they
+		// carry no context cost (mitto-08q.4).
+		if d, ok := it.ev.Data.(session.ProcessorRunData); ok && d.Outcome == "ok" && d.EstTokens > 0 {
+			switch d.Target {
+			case "primary":
+				incModel(MetricProcessorPrimaryTokensEst, int64(d.EstTokens))
+			case "auxiliary":
+				incModel(MetricProcessorAuxiliaryTokensEst, int64(d.EstTokens))
+			}
+		}
 	case session.EventTypeSessionChange:
 		// State-only: adjust currentModel so future token deltas land in the
 		// new model's bucket. No delta is emitted here — session_change is a
