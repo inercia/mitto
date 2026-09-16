@@ -2249,7 +2249,7 @@ ${activeUIPrompt.text || ""}</textarea
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
                                 "Type a custom response..."}
-                                class="flex-1 min-w-0 bg-transparent text-sm text-mitto-text-secondary outline-none"
+                                class="flex-1 min-w-0 bg-transparent text-sm text-mitto-text-strong placeholder:text-mitto-text-muted outline-none"
                               />
                               <button
                                 type="button"
