@@ -1056,6 +1056,26 @@ func (sm *SessionManager) GetUserDataSchema(workingDir string) *config.UserDataS
 	return sm.wsRegistry.GetUserDataSchema(workingDir)
 }
 
+// GetFileLinksConfig returns the effective file-links configuration for a
+// working directory: the workspace-local .mittorc override when set,
+// otherwise the global conversations config. Returns nil if neither is set
+// (callers should use the nil-safe IsEnabled/IsAllowOutsideWorkspace
+// accessors). Mirrors the same workspace-then-global fallback used when
+// constructing a session's FileLinkerConfig (see
+// CreateSessionWithWorkspaceAndOptions), so /api/files' own containment
+// checks can stay in sync with what the linker allowed (mitto-k0q).
+func (sm *SessionManager) GetFileLinksConfig(workingDir string) *config.FileLinksConfig {
+	if cfg := sm.wsRegistry.GetWorkspaceFileLinksConfig(workingDir); cfg != nil {
+		return cfg
+	}
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if sm.globalConversations != nil {
+		return sm.globalConversations.FileLinks
+	}
+	return nil
+}
+
 // AddWorkspace adds a new workspace to the manager.
 // If workspaces were not loaded from CLI flags and a save callback is set,
 // the workspaces will be persisted to disk.

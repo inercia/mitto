@@ -99,6 +99,16 @@ func (fs *FileServer) validateFilePath(w http.ResponseWriter, r *http.Request, w
 
 	// Security check 2: Clean and validate the relative path
 	cleanPath := filepath.Clean(relativePath)
+	// allowOutside is set when this absolute path doesn't belong to any known
+	// workspace, but the REQUESTING workspace's file-links config has opted
+	// into AllowOutsideWorkspace. This reconciles the file server's own
+	// containment check with the one FileLinker already applied when it
+	// linkified the path in the first place (mitto-k0q): if the linker
+	// considered the path safe to link under that setting, /api/files must
+	// honor the same allowance instead of unconditionally 403'ing it. All
+	// other containment/symlink/executable/sensitive checks below still
+	// apply unchanged — this only widens which root directory is acceptable.
+	allowOutside := false
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
 		// Before flagging as a security event, check whether an absolute
 		// path actually lives inside another workspace the user owns. If so,
@@ -116,16 +126,29 @@ func (fs *FileServer) validateFilePath(w http.ResponseWriter, r *http.Request, w
 				})
 				return "", nil, false
 			}
+			if fs.allowsOutsideWorkspace(workspace) {
+				allowOutside = true
+			}
 		}
-		fs.logSecurityEvent("path_traversal_attempt", workspace, relativePath, r)
-		http.Error(w, "Invalid path", http.StatusForbidden)
-		return "", nil, false
+		if !allowOutside {
+			fs.logSecurityEvent("path_traversal_attempt", workspace, relativePath, r)
+			http.Error(w, "Invalid path", http.StatusForbidden)
+			return "", nil, false
+		}
 	}
 
-	// Construct the full path
-	fullPath := filepath.Join(workspace, cleanPath)
+	// Construct the full path. An allowed outside-workspace path is already
+	// absolute and must NOT be joined under the workspace root.
+	var fullPath string
+	if allowOutside {
+		fullPath = cleanPath
+	} else {
+		fullPath = filepath.Join(workspace, cleanPath)
+	}
 
 	// Security check 3: Resolve symlinks and verify still within workspace
+	// (skipped for an allowed outside-workspace path, which is intentionally
+	// outside every workspace root).
 	realPath, err := filepath.EvalSymlinks(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -137,19 +160,23 @@ func (fs *FileServer) validateFilePath(w http.ResponseWriter, r *http.Request, w
 		return "", nil, false
 	}
 
-	// Resolve workspace symlinks too for consistent comparison
-	realWorkspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		fs.logSecurityEvent("workspace_resolution_failed", workspace, relativePath, r)
-		http.Error(w, "Invalid workspace", http.StatusForbidden)
-		return "", nil, false
-	}
+	if !allowOutside {
+		// Resolve workspace symlinks too for consistent comparison
+		realWorkspace, err := filepath.EvalSymlinks(workspace)
+		if err != nil {
+			fs.logSecurityEvent("workspace_resolution_failed", workspace, relativePath, r)
+			http.Error(w, "Invalid workspace", http.StatusForbidden)
+			return "", nil, false
+		}
 
-	// Verify the resolved path is within the resolved workspace
-	if !strings.HasPrefix(realPath, realWorkspace+string(filepath.Separator)) && realPath != realWorkspace {
-		fs.logSecurityEvent("symlink_escape_attempt", workspace, relativePath, r)
-		http.Error(w, "Access denied", http.StatusForbidden)
-		return "", nil, false
+		// Verify the resolved path is within the resolved workspace
+		if !strings.HasPrefix(realPath, realWorkspace+string(filepath.Separator)) && realPath != realWorkspace {
+			fs.logSecurityEvent("symlink_escape_attempt", workspace, relativePath, r)
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return "", nil, false
+		}
+	} else {
+		fs.logAllowedOutsideWorkspaceEvent(workspace, realPath, r)
 	}
 
 	// Security check 4: Get file info and validate
@@ -398,6 +425,35 @@ func (fs *FileServer) logCrossWorkspaceEvent(sourceWorkspace, targetUUID, target
 			"source_workspace", sourceWorkspace,
 			"target_workspace_uuid", targetUUID,
 			"target_workspace_name", targetName,
+			"path", path,
+			"client_ip", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+	}
+}
+
+// allowsOutsideWorkspace reports whether the given workspace's effective
+// file-links configuration (workspace .mittorc, falling back to global) has
+// AllowOutsideWorkspace enabled. Used to reconcile /api/files' containment
+// check with FileLinker's own AllowOutsideWorkspace allowance (mitto-k0q).
+func (fs *FileServer) allowsOutsideWorkspace(workspace string) bool {
+	if fs.sessionManager == nil {
+		return false
+	}
+	return fs.sessionManager.GetFileLinksConfig(workspace).IsAllowOutsideWorkspace()
+}
+
+// logAllowedOutsideWorkspaceEvent logs an INFO-level audit event when a
+// request is served for an absolute path outside every registered
+// workspace, allowed only because the requesting workspace's file-links
+// config opted into AllowOutsideWorkspace. Not a security violation (the
+// operator explicitly enabled this), but worth auditing distinctly from
+// ordinary in-workspace file serving.
+func (fs *FileServer) logAllowedOutsideWorkspaceEvent(workspace, path string, r *http.Request) {
+	if fs.logger != nil {
+		fs.logger.Info("File server serving path outside workspace (AllowOutsideWorkspace)",
+			"event", "outside_workspace_path_allowed",
+			"workspace", workspace,
 			"path", path,
 			"client_ip", r.RemoteAddr,
 			"user_agent", r.UserAgent(),

@@ -14,6 +14,7 @@ import (
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/conversion"
 )
 
 func TestFileServer_ServeFile(t *testing.T) {
@@ -1021,6 +1022,91 @@ func TestFileServer_CrossWorkspacePath(t *testing.T) {
 				t.Errorf("unexpected log event %q leaked into security stream. Log:\n%s", tt.bannedLog, logOut)
 			}
 		})
+	}
+}
+
+// TestFileServer_AllowOutsideWorkspaceContractMismatch_mittoK0q reproduces
+// mitto-k0q: when a workspace enables AllowOutsideWorkspace, the FileLinker
+// (internal/conversion) linkifies an absolute path that lives outside every
+// registered workspace, embedding it as the `path=` query parameter of a
+// /viewer.html URL pinned to the current workspace UUID. But /api/files' own
+// workspace-containment check (validateFilePath) has no matching allowance —
+// it rejects any absolute path that isn't inside a registered workspace with
+// 403 "Invalid path" (or 409 if it happens to belong to a DIFFERENT
+// registered workspace). The FileLinker promises a servable link that the
+// file server refuses to honor, producing an empty/broken viewer.
+//
+// EXPECTED (post-fix) behavior: whatever URL the FileLinker emits for an
+// AllowOutsideWorkspace-approved path must actually be servable by
+// /api/files. This test currently FAILS because the emitted link's path
+// segment returns 403 from the file server — the serving contract mismatch
+// described in the mitto-k0q investigation comment.
+func TestFileServer_AllowOutsideWorkspaceContractMismatch_mittoK0q(t *testing.T) {
+	// The registered workspace the conversation lives in.
+	wsDir := t.TempDir()
+	const wsUUID = "mitto-k0q-ws-uuid"
+
+	// A file OUTSIDE every registered workspace (simulates a /tmp/*.png
+	// temporary image an agent references in its output).
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "external.png")
+	if err := os.WriteFile(outsideFile, []byte("fake-png-bytes"), 0644); err != nil {
+		t.Fatalf("Failed to create outside file: %v", err)
+	}
+
+	linker := conversion.NewFileLinker(conversion.FileLinkerConfig{
+		WorkingDir:            wsDir,
+		WorkspaceUUID:         wsUUID,
+		Enabled:               true,
+		AllowOutsideWorkspace: true,
+	})
+
+	linked := linker.LinkFilePaths("See " + outsideFile)
+	if !strings.Contains(linked, "<a href=") {
+		t.Fatalf("FileLinker with AllowOutsideWorkspace should have linked the external file, got: %s", linked)
+	}
+
+	// Extract the `path=` query parameter the linker embedded in the viewer
+	// URL — that's exactly what the browser would send on to /api/files.
+	start := strings.Index(linked, "path=")
+	if start == -1 {
+		t.Fatalf("expected a path= query parameter in linked output: %s", linked)
+	}
+	rest := linked[start+len("path="):]
+	end := strings.IndexAny(rest, "\"&")
+	if end == -1 {
+		end = len(rest)
+	}
+	decodedPath, err := url.QueryUnescape(rest[:end])
+	if err != nil {
+		t.Fatalf("failed to decode path parameter %q: %v", rest[:end], err)
+	}
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: wsUUID, WorkingDir: wsDir, ACPServer: "test"},
+		},
+	})
+	// Mirror the real pipeline: AllowOutsideWorkspace is sourced from the same
+	// global conversations config that fed the FileLinker above (see
+	// bgsession_shared_session.go), so the file server's containment check
+	// consults the identical setting instead of a stricter/looser one.
+	allowOutside := true
+	sm.SetGlobalConversations(&config.ConversationsConfig{
+		FileLinks: &config.FileLinksConfig{AllowOutsideWorkspace: &allowOutside},
+	})
+	fs := NewFileServer(sm, nil)
+
+	req := httptest.NewRequest("GET", "/api/files?ws="+wsUUID+"&path="+url.QueryEscape(decodedPath), nil)
+	w := httptest.NewRecorder()
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("mitto-k0q: FileLinker linked %q as servable (AllowOutsideWorkspace=true), "+
+			"but /api/files refused to serve it: status=%d body=%s — the linkifier's "+
+			"AllowOutsideWorkspace contract and the file server's workspace-containment "+
+			"check disagree on whether this path is servable",
+			decodedPath, w.Code, w.Body.String())
 	}
 }
 

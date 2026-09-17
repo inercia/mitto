@@ -571,3 +571,28 @@ func (r *WorkspaceRegistry) GetUserDataSchema(workingDir string) *config.UserDat
 	}
 	return rc.Metadata.UserDataSchema
 }
+
+// GetWorkspaceFileLinksConfig returns the file-links configuration defined in
+// the workspace's .mittorc file (Conversations.FileLinks). Returns nil if no
+// .mittorc exists, or it has no conversations/file_links section — callers
+// should fall back to the global conversations config in that case.
+func (r *WorkspaceRegistry) GetWorkspaceFileLinksConfig(workingDir string) *config.FileLinksConfig {
+	if r.workspaceRCCache == nil || workingDir == "" {
+		return nil
+	}
+
+	rc, err := r.workspaceRCCache.Get(workingDir)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to load workspace .mittorc for file links config",
+				"working_dir", workingDir,
+				"error", err)
+		}
+		return nil
+	}
+
+	if rc == nil || rc.Conversations == nil {
+		return nil
+	}
+	return rc.Conversations.FileLinks
+}
