@@ -33,6 +33,15 @@
 #
 # Uses command-mode with outputFormat:raw so that the plain-text markdown output is
 # injected directly without a JSON wrapper.
+#
+# Cold-restart fallback (mitto-9zp): immediately after a server restart, `bd prime`
+# can transiently emit output with neither the counted "## Persistent Memories (N)"
+# heading nor the steady-state zero-shape markers (index not built yet for that
+# workspace). The awk parser treats that specific shape — zero `### key` lines and
+# no recognized heading — as "no memories yet" and succeeds with an empty index,
+# instead of exiting 65 with a `format/count mismatch`. A keys-without-count
+# response (keys parsed but no count heading) is still a genuine shape mismatch and
+# still fails, preserving the original validation for real corruption.
 ##########################################################################################
 name: beads-prime
 description: "Injects a compact beads memory index (keys only) plus bd memories/bd recall lookup instructions at the start of a conversation"
@@ -76,6 +85,16 @@ args:
         }
         END {
           if (expected < 0 && zero_heading && zero_marker) {
+            expected = 0
+          }
+          # mitto-9zp: at restart, `bd prime` can transiently emit output with
+          # neither the counted "## Persistent Memories (N)" heading nor the
+          # zero-shape markers above (index not built yet). Treat that as
+          # "no memories yet" and succeed with an empty index rather than
+          # exiting 65 — but only when zero `### key` lines were parsed; a
+          # keys-without-count response (n > 0) is still a genuine shape
+          # mismatch and must still fail below.
+          if (expected < 0 && n == 0) {
             expected = 0
           }
           if (expected < 0 || n != expected) {
