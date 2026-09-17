@@ -8379,6 +8379,38 @@ func TestBeadsPrimeProcessor_ShellScriptAcceptsZeroMemories(t *testing.T) {
 	}
 }
 
+// TestBeadsPrimeProcessor_ShellScriptAcceptsColdEmptyOutput reproduces
+// mitto-9zp: immediately after a server restart, `bd prime` can transiently
+// emit output with neither the counted "## Persistent Memories (N)" heading
+// nor the steady-state zero-shape markers ("# Beads Persistent Memories" +
+// "No memories stored.") because the memory index has not been built yet for
+// that workspace. That shape (expected=-1, zero `### key` lines) must be
+// treated as an empty index and succeed, not exit 65.
+func TestBeadsPrimeProcessor_ShellScriptAcceptsColdEmptyOutput(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"cat <<'EOF'\n" +
+		"[bd prime] memory index not yet built for this workspace; skipping.\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() rejected cold-restart empty output: %v", err)
+	}
+	if !strings.Contains(output.Text, "## Beads Memory Index") ||
+		!strings.Contains(output.Text, "No persistent memories recorded yet.") {
+		t.Errorf("unexpected cold-empty index:\n%s", output.Text)
+	}
+}
+
 // TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch covers the
 // mitto-e3ut.2 retry path: a concurrent memory update can make one snapshot
 // inconsistent, while an immediate fresh read is valid.
@@ -8432,6 +8464,10 @@ func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
 	}{
 		{name: "bd failure", script: "exit 7\n"},
 		{name: "heading count mismatch", script: "printf '## Persistent Memories (2)\\n\\n### only-one-key\\nbody\\n'\n"},
+		// mitto-9zp: keys parsed but no count heading (n>0, expected=-1) must
+		// still fail as a genuine shape mismatch — the cold-restart guard only
+		// applies when zero `### key` lines were parsed.
+		{name: "keys without count heading", script: "printf '### stray-key\\nbody\\n'\n"},
 	}
 
 	for _, tt := range tests {
@@ -8452,8 +8488,15 @@ func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
 			if err == nil {
 				t.Fatal("Execute() error = nil, want source validation error")
 			}
-			if tt.name == "heading count mismatch" {
+			switch tt.name {
+			case "heading count mismatch":
 				for _, want := range []string{"workspace=" + physicalDir, "expected=2", "actual=1"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("Execute() error = %q, want sanitized diagnostic %q", err, want)
+					}
+				}
+			case "keys without count heading":
+				for _, want := range []string{"workspace=" + physicalDir, "expected=-1", "actual=1"} {
 					if !strings.Contains(err.Error(), want) {
 						t.Errorf("Execute() error = %q, want sanitized diagnostic %q", err, want)
 					}
