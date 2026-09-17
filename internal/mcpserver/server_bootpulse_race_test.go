@@ -225,3 +225,100 @@ func TestRegisterSession_StickyCorrelationSurvivesExpiry_mittoBux(t *testing.T) 
 		t.Errorf("mitto-bux: sticky pending-request entry for %q survived UnregisterSession", targetID)
 	}
 }
+
+// TestResolveSelfIDWithMCP_StickyFallbackAfterExpiry_mittoBux is the
+// end-to-end companion to TestRegisterSession_StickyCorrelationSurvivesExpiry_mittoBux.
+// That test exercises WaitForPendingRequest directly; this one drives the
+// mitto-bux acceptance criteria's actual entry point — resolveSelfIDWithMCP
+// against a REAL *mcp.ServerSession from a genuine Streamable HTTP round-trip
+// (the same pattern TestResolveSelfIDWithMCP_BootPulseRace_mitto_8r1 uses) —
+// so Phase 1 (lookupMCPSession, cold on a session's first call) is exercised
+// too, not just Phase 2's WaitForPendingRequest.
+//
+// It reproduces the exact "quiet spawn-only loop" scenario from the mitto-bux
+// description: a legacy (non-HTTP-MCP) agent whose first mitto_* tool call
+// arrives AFTER the mitto-8r1 transient entry's pendingRequestExpiry window
+// has elapsed (simulated by deleting the transient entry post-registration,
+// as above — no real 30s sleep). Pre-fix (sticky map absent or not
+// consulted), this reproduces "session not found: the self_id could not be
+// resolved" despite the session being genuinely registered. Post-fix it
+// resolves near-instantly via the sticky mirror.
+func TestResolveSelfIDWithMCP_StickyFallbackAfterExpiry_mittoBux(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{SessionID: targetID, Name: "target", ACPServer: "test", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(targetID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+
+	// Simulate the mitto-8r1 transient entry's expiry (what
+	// cleanupExpiredPendingRequestsLocked would have done 30s later) BEFORE
+	// the session's first tool call is ever observed — modeling a quiet
+	// spawn-only loop pass that arrives late.
+	srv.pendingRequestsMu.Lock()
+	delete(srv.pendingRequests, targetID)
+	srv.pendingRequestsMu.Unlock()
+
+	// Probe tool: captures a real *mcp.CallToolRequest (and its req.Session)
+	// for a fresh MCP protocol session, exactly as in the mitto-8r1 test —
+	// this is the session's first-ever tool call, arriving after expiry.
+	var capturedReq *mcp.CallToolRequest
+	mcp.AddTool(srv.mcpServer, &mcp.Tool{Name: "test_capture_session_bux"},
+		func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, struct{}, error) {
+			capturedReq = req
+			return nil, struct{}{}, nil
+		})
+
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return srv.mcpServer
+	}, mcpStreamableHTTPOptions())
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "mitto-bux-repro-client", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:             ts.URL,
+		DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	defer clientSession.Close()
+
+	if _, err := clientSession.CallTool(context.Background(), &mcp.CallToolParams{Name: "test_capture_session_bux"}); err != nil {
+		t.Fatalf("capture probe call: %v", err)
+	}
+	if capturedReq == nil || capturedReq.Session == nil {
+		t.Fatal("failed to capture a real *mcp.CallToolRequest with a non-nil Session")
+	}
+
+	start := time.Now()
+	resolved := srv.resolveSelfIDWithMCP(targetID, capturedReq)
+	elapsed := time.Since(start)
+
+	if resolved != targetID {
+		t.Errorf("mitto-bux regression: resolveSelfIDWithMCP(%q) = %q after the mitto-8r1 transient entry "+
+			"expired; expected the sticky fallback seeded by RegisterSession to still resolve it on the "+
+			"session's first-ever tool call, reproducing the acceptance criteria: a self_id-correlated tool "+
+			"call succeeds on the first attempt even after a cold-start restart", targetID, resolved)
+	}
+	const maxAcceptableLatency = 1 * time.Second
+	if elapsed >= maxAcceptableLatency {
+		t.Errorf("mitto-bux regression: resolveSelfIDWithMCP(%q) took %v (>= %v) after expiry; expected "+
+			"near-instant resolution via the sticky fallback, not a slow Phase 2 poll to pendingRequestTimeout",
+			targetID, elapsed, maxAcceptableLatency)
+	}
+}
