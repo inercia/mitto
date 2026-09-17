@@ -1349,12 +1349,31 @@ func (p *SharedACPProcess) recordAgentInternalDeadline() {
 // just demonstrated it is wedged, even though the reactive IsSaturated() bail (which
 // needs 3 consecutive timeouts) has not yet armed.
 func (p *SharedACPProcess) RecentlyHitAgentInternalDeadline() bool {
+	return p.recentlyHitAgentInternalDeadlineWithin(auxAgentDeadlineShedCooldown)
+}
+
+// recentlyHitAgentInternalDeadlineWithin is the caller-windowed variant behind
+// RecentlyHitAgentInternalDeadline (mitto-a9m). coldMCPBudget uses a WIDER window
+// (p.config.MCPInitTimeout itself) than the 30s aux-shed cooldown: that cooldown
+// is tuned to bound blast radius across concurrently-queued non-essential aux
+// creates ("first victim pays, the rest shed briefly"), but a cold session/new
+// about to be granted ANOTHER independent extended budget needs a much longer
+// memory of "this process just proved it can't finish MCP-init inside its own
+// ~240s ceiling". Recurrence evidence (mitto-a9m, 2026-09-16 23:07:18→23:08:48):
+// a single agent-internal-deadline hit on an aux title-gen create had already
+// expired past the 30s aux window 90s later, so a fresh foreground session/new
+// was granted its own independent 240s extended budget and ALSO hit the same
+// wall, dead-waiting the full 240003ms. Using MCPInitTimeout as the window means
+// a process that demonstrates this failure fails fast on the bounded budget for
+// up to one more MCPInitTimeout period, then is naturally re-eligible for the
+// extended budget once that memory expires (self-healing, no permanent bail).
+func (p *SharedACPProcess) recentlyHitAgentInternalDeadlineWithin(window time.Duration) bool {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
 	if p.lastAgentInternalDeadlineAt.IsZero() {
 		return false
 	}
-	return time.Now().Before(p.lastAgentInternalDeadlineAt.Add(auxAgentDeadlineShedCooldown))
+	return time.Now().Before(p.lastAgentInternalDeadlineAt.Add(window))
 }
 
 // recordRPCFailureLocked is the shared escalation body for both full RPC
@@ -1514,6 +1533,19 @@ func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, 
 // probe mode on cooldown expiry) — a pure budget read must not perturb the
 // saturation state machine as a side effect.
 //
+// RECENT-AGENT-DEADLINE OVERRIDE (mitto-a9m, recurrence 2026-09-16): the
+// IsSaturated() check alone was insufficient — it requires 3 CONSECUTIVE full
+// RPC timeouts, but a single agent-internal-deadline hit (e.g. on an
+// unrelated aux create) never trips it. Evidence: an aux title-gen create
+// hit the agent's own internal MCP-init deadline at 23:07:18; 90s later, at
+// 23:08:48 (well past the 30s aux-shed cooldown), a foreground session/new
+// was STILL granted a fresh independent 240s extended budget purely because
+// IsSaturated() was false, and it ALSO hit the same wall, dead-waiting the
+// full 240003ms. recentlyHitAgentInternalDeadlineWithin(MCPInitTimeout) closes
+// this gap using the same underlying signal (lastAgentInternalDeadlineAt) but
+// a window sized to the agent's own cold-init ceiling rather than the much
+// shorter aux blast-radius cooldown.
+//
 // hasMCPServers is retained on the signature for observability / future gating.
 func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Duration, total time.Duration, extended bool) {
 	_ = hasMCPServers // reserved for future per-request gating
@@ -1524,6 +1556,9 @@ func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Du
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
 	if p.IsSaturated() {
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
+	if p.recentlyHitAgentInternalDeadlineWithin(p.config.MCPInitTimeout) {
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
 	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true

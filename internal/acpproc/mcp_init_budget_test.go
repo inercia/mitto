@@ -597,3 +597,69 @@ func TestColdMCPBudget_SaturatedProcessDoesNotGetExtendedBudget(t *testing.T) {
 		t.Errorf("total=%v, want normal bounded budget %v once saturated", total, sessionCreateTotalBudget)
 	}
 }
+
+// TestColdMCPBudget_RecentAgentInternalDeadlineDoesNotGetExtendedBudget is the
+// mitto-a9m RECURRENCE reproduction (2026-09-16 23:07:18→23:08:48).
+//
+// The prior fix (above test) withholds the extended budget once IsSaturated()
+// trips — but that requires 3 CONSECUTIVE full RPC timeouts. In the field, a
+// single agent-internal-deadline hit on an UNRELATED aux create (title-gen,
+// bound by its own 60s caller budget) is not enough to trip IsSaturated() at
+// all. 90 seconds later — well past the 30s auxAgentDeadlineShedCooldown used
+// by RecentlyHitAgentInternalDeadline() for aux-shed blast-radius bounding —
+// a foreground session/new for the SAME shared process was still granted its
+// own fresh, independent 240s extended budget (coldMCPBudget consulted
+// neither signal), and it ALSO hit the agent's internal MCP-init deadline,
+// dead-waiting the full 240003ms (log evidence: extended_mcp_budget=true,
+// agent_internal_deadline=true, rpc_ms=240000, workspace 4cd5944c).
+//
+// EXPECTED-AFTER-FIX: coldMCPBudget must withhold the extended budget while a
+// recent agent-internal-deadline hit is remembered for up to MCPInitTimeout
+// (not just the much shorter 30s aux cooldown), even when IsSaturated() is
+// false. Today (pre-fix) this test FAILS.
+func TestColdMCPBudget_RecentAgentInternalDeadlineDoesNotGetExtendedBudget(t *testing.T) {
+	p := &SharedACPProcess{}
+	p.config.MCPInitTimeout = 240 * time.Second
+	// Mirrors the field timeline exactly: a single agent-internal-deadline hit
+	// 90s ago — NOT the 3-consecutive-timeout saturation path.
+	p.lastAgentInternalDeadlineAt = time.Now().Add(-90 * time.Second)
+
+	if p.isSaturated() {
+		t.Fatalf("preconditions: expected isSaturated()=false (only a single non-consecutive agent-internal-deadline hit was recorded)")
+	}
+	if p.RecentlyHitAgentInternalDeadline() {
+		t.Fatalf("preconditions: expected the 30s aux-shed window to have already expired 90s after the hit")
+	}
+
+	perAttempt, total, extended := p.coldMCPBudget(true /*hasMCPServers*/)
+	if extended {
+		t.Errorf("coldMCPBudget granted the extended MCP-init budget (perAttempt=%v, total=%v) to a process "+
+			"that recorded an agent-internal-deadline hit 90s ago. This reproduces the mitto-a9m 2026-09-16 "+
+			"recurrence: a foreground session/new was granted its own independent 240s extended budget and "+
+			"ALSO hit the same agent-side wall, dead-waiting 240003ms. Want the normal bounded budget (%v/%v).",
+			perAttempt, total, sessionCreateAttemptTimeout, sessionCreateTotalBudget)
+	}
+	if perAttempt != sessionCreateAttemptTimeout {
+		t.Errorf("perAttempt=%v, want normal bounded budget %v after a recent agent-internal-deadline hit", perAttempt, sessionCreateAttemptTimeout)
+	}
+	if total != sessionCreateTotalBudget {
+		t.Errorf("total=%v, want normal bounded budget %v after a recent agent-internal-deadline hit", total, sessionCreateTotalBudget)
+	}
+}
+
+// TestColdMCPBudget_AgentInternalDeadlineMemoryExpiresAfterMCPInitTimeout
+// guards against the fix over-correcting into a permanent bail: once the
+// recentlyHitAgentInternalDeadlineWithin(MCPInitTimeout) window has fully
+// elapsed, a cold process must become re-eligible for the extended budget —
+// self-healing, mirroring the existing saturation cooldown behaviour.
+func TestColdMCPBudget_AgentInternalDeadlineMemoryExpiresAfterMCPInitTimeout(t *testing.T) {
+	p := &SharedACPProcess{}
+	p.config.MCPInitTimeout = 240 * time.Second
+	// The hit happened longer ago than MCPInitTimeout itself — memory expired.
+	p.lastAgentInternalDeadlineAt = time.Now().Add(-241 * time.Second)
+
+	_, _, extended := p.coldMCPBudget(true /*hasMCPServers*/)
+	if !extended {
+		t.Fatal("expected extended=true once the agent-internal-deadline memory window (MCPInitTimeout) has fully elapsed")
+	}
+}
