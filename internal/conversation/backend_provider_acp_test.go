@@ -74,8 +74,10 @@ func newFakeBackendSharedProcess() *fakeBackendSharedProcess {
 	}
 }
 
-func (f *fakeBackendSharedProcess) Capabilities() *acp.AgentCapabilities { return f.caps }
-func (f *fakeBackendSharedProcess) ProcessDone() <-chan struct{}         { return f.processDone }
+func (f *fakeBackendSharedProcess) Capabilities() agentbackend.Capabilities {
+	return NewProcessCapabilities(f.caps)
+}
+func (f *fakeBackendSharedProcess) ProcessDone() <-chan struct{} { return f.processDone }
 func (f *fakeBackendSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
 	f.mu.Lock()
 	f.newCalls++
@@ -336,8 +338,8 @@ func (g *gatingSharedProcess) ResumeSession(ctx context.Context, id, cwd string,
 // CapabilityUnknown rather than guessing otherwise.
 func TestACPCapabilities_Query(t *testing.T) {
 	caps := &acpCapabilities{
-		agentCaps: &acp.AgentCapabilities{PromptCapabilities: acp.PromptCapabilities{Image: true}},
-		handle:    &SessionHandle{Models: &SessionModelState{}},
+		processCaps: NewProcessCapabilities(&acp.AgentCapabilities{PromptCapabilities: acp.PromptCapabilities{Image: true}}),
+		handle:      &SessionHandle{Models: &SessionModelState{}},
 	}
 	if got := caps.Query(agentbackend.FeatureImages); got != agentbackend.CapabilitySupported {
 		t.Errorf("Query(FeatureImages) = %v, want Supported", got)

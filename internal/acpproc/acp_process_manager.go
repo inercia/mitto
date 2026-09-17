@@ -1424,7 +1424,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// of the intended stdio proxy. resolveMittoCLIBinary rewrites to the
 	// sibling `mitto` binary in that case.
 	mcpServers, transportChoice, chosenExe := buildAuxProcessorMCPServers(
-		purpose, m.MCPServerURL, process.Capabilities(), resolveMittoCLIBinary)
+		purpose, m.MCPServerURL, process.rawCapabilities(), resolveMittoCLIBinary)
 	if m.logger != nil {
 		switch transportChoice {
 		case auxMCPTransportHTTP:

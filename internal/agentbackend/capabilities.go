@@ -35,6 +35,19 @@ const (
 	FeaturePermissions    Feature = "permissions"
 	FeatureModelSelection Feature = "model_selection"
 	FeatureModeSelection  Feature = "mode_selection"
+	// FeatureMCPHttp reports whether the agent advertised support for the MCP
+	// HTTP transport (ACP's AgentCapabilities.McpCapabilities.Http), used to
+	// choose between a native HTTP MCP server entry and the stdio proxy
+	// fallback (mitto-mx9.1.3).
+	FeatureMCPHttp Feature = "mcp_http"
+	// FeatureSessionResume reports whether the agent advertised the UNSTABLE
+	// session/resume RPC (ACP's AgentCapabilities.SessionCapabilities.Resume),
+	// used by the shared-process resume handshake (mitto-mx9.1.3).
+	FeatureSessionResume Feature = "session_resume"
+	// FeatureSessionLoad reports whether the agent advertised session/load
+	// (ACP's AgentCapabilities.LoadSession), used by the shared-process resume
+	// handshake's fallback probe (mitto-mx9.1.3).
+	FeatureSessionLoad Feature = "session_load"
 )
 
 // Capabilities reports the current capability state for each known feature

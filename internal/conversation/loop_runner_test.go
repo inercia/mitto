@@ -20,6 +20,7 @@ import (
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
@@ -2771,8 +2772,8 @@ func (fakeSaturatedProcessManager) HasLiveProcess(string) bool { return true }
 // branch) recognize as transient.
 type fakeSaturatedSharedProcess struct{}
 
-func (fakeSaturatedSharedProcess) Capabilities() *acp.AgentCapabilities {
-	return &acp.AgentCapabilities{}
+func (fakeSaturatedSharedProcess) Capabilities() agentbackend.Capabilities {
+	return NewProcessCapabilities(&acp.AgentCapabilities{})
 }
 func (fakeSaturatedSharedProcess) ProcessDone() <-chan struct{} { return make(chan struct{}) }
 func (fakeSaturatedSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
@@ -2920,8 +2921,8 @@ type fakeClassifiedErrSharedProcess struct {
 	mkErr func() error
 }
 
-func (f *fakeClassifiedErrSharedProcess) Capabilities() *acp.AgentCapabilities {
-	return &acp.AgentCapabilities{}
+func (f *fakeClassifiedErrSharedProcess) Capabilities() agentbackend.Capabilities {
+	return NewProcessCapabilities(&acp.AgentCapabilities{})
 }
 func (f *fakeClassifiedErrSharedProcess) ProcessDone() <-chan struct{} { return make(chan struct{}) }
 func (f *fakeClassifiedErrSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {

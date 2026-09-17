@@ -20,6 +20,7 @@ import (
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
@@ -3024,8 +3025,17 @@ func (p *SharedACPProcess) Done() <-chan struct{} {
 	return conn.Done()
 }
 
-// Capabilities returns the agent's capabilities.
-func (p *SharedACPProcess) Capabilities() *acp.AgentCapabilities {
+// Capabilities returns the agent's capabilities as a protocol-neutral value
+// (mitto-mx9.1.3). This is the conversation.SharedProcess interface-facing
+// accessor; same-package callers that need the raw ACP struct (e.g. the
+// aux-processor MCP transport decision) use rawCapabilities instead.
+func (p *SharedACPProcess) Capabilities() agentbackend.Capabilities {
+	return conversation.NewProcessCapabilities(p.rawCapabilities())
+}
+
+// rawCapabilities returns the agent's raw ACP capabilities snapshot for
+// internal, same-package use only.
+func (p *SharedACPProcess) rawCapabilities() *acp.AgentCapabilities {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.capabilities

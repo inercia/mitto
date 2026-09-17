@@ -6,6 +6,7 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
 )
@@ -45,8 +46,11 @@ type SharedProcess interface {
 	SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error
 	// Done returns a channel closed when the process has fully shut down.
 	Done() <-chan struct{}
-	// Capabilities returns the agent's advertised capabilities.
-	Capabilities() *acp.AgentCapabilities
+	// Capabilities returns the agent's advertised capabilities as a
+	// protocol-neutral value (mitto-mx9.1.3). Process-level facts only
+	// (Images, MCP-HTTP transport support); session-specific facts (model/
+	// mode selection) are layered on by the caller from SessionHandle.
+	Capabilities() agentbackend.Capabilities
 	// Generation returns a counter bumped each time Restart() actually
 	// replaces the process. Callers that intend to call Restart() after
 	// detecting a process death should snapshot this value via Generation()

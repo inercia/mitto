@@ -13,6 +13,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
@@ -6493,9 +6494,11 @@ func (p *alwaysFailSharedProcess) SetSessionMode(_ context.Context, _ acp.Sessio
 func (p *alwaysFailSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, _ string) error {
 	return fmt.Errorf("alwaysFailSharedProcess: SetSessionModel not implemented")
 }
-func (p *alwaysFailSharedProcess) Done() <-chan struct{}                { return nil }
-func (p *alwaysFailSharedProcess) Capabilities() *acp.AgentCapabilities { return nil }
-func (p *alwaysFailSharedProcess) Generation() int                      { return 0 }
+func (p *alwaysFailSharedProcess) Done() <-chan struct{} { return nil }
+func (p *alwaysFailSharedProcess) Capabilities() agentbackend.Capabilities {
+	return NewProcessCapabilities(nil)
+}
+func (p *alwaysFailSharedProcess) Generation() int { return 0 }
 func (p *alwaysFailSharedProcess) Restart(_ int) error {
 	return fmt.Errorf("alwaysFailSharedProcess: cannot restart — no real process")
 }

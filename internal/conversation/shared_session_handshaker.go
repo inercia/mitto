@@ -10,7 +10,27 @@ import (
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/inercia/mitto/internal/agentbackend"
 )
+
+// mcpHttpCapsFromNeutral synthesizes a minimal acp.AgentCapabilities carrying
+// only the MCP-HTTP support flag, derived from the neutral
+// SharedProcess.Capabilities() query, so it can be handed to the still
+// ACP-typed hsStartMcpServer boundary (mitto-mx9.1.3: SharedProcess.
+// Capabilities() itself no longer exposes the raw ACP struct). caps may be
+// nil (e.g. a SharedProcess implementation with no advertised capabilities
+// yet), in which case MCP-HTTP is treated as unsupported.
+func mcpHttpCapsFromNeutral(caps agentbackend.Capabilities) acp.AgentCapabilities {
+	if caps == nil {
+		return acp.AgentCapabilities{}
+	}
+	return acp.AgentCapabilities{
+		McpCapabilities: acp.McpCapabilities{
+			Http: caps.Query(agentbackend.FeatureMCPHttp) == agentbackend.CapabilitySupported,
+		},
+	}
+}
 
 // staleLoadProbeTimeout caps the wall-clock time the resume path spends on a
 // single session/load probe before giving up and falling back to session/new
@@ -214,17 +234,15 @@ func (c sharedSessionHandshaker) buildWebClientConfig(d handshakeDeps) WebClient
 func (c sharedSessionHandshaker) prepareSharedACPSession(d handshakeDeps, sharedProcess SharedProcess, workingDir string) error {
 	d.hsSetSharedProcess(sharedProcess)
 
-	var caps acp.AgentCapabilities
-	if sharedCaps := sharedProcess.Capabilities(); sharedCaps != nil {
-		caps = *sharedCaps
-	}
-	mcpServers := d.hsStartMcpServer(caps)
+	neutralCaps := sharedProcess.Capabilities()
+	supportsImages := neutralCaps != nil && neutralCaps.Query(agentbackend.FeatureImages) == agentbackend.CapabilitySupported
+	mcpServers := d.hsStartMcpServer(mcpHttpCapsFromNeutral(neutralCaps))
 	if mcpServers == nil {
 		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
 	}
 
 	d.hsSetACPClient(NewWebClient(c.buildWebClientConfig(d)))
-	d.hsSetAgentSupportsImages(caps.PromptCapabilities.Image)
+	d.hsSetAgentSupportsImages(supportsImages)
 	d.hsSetPendingSharedWorkingDir(workingDir)
 	d.hsSetPendingSharedMcpServers(mcpServers)
 	d.hsSetPendingShared(true)
@@ -234,7 +252,7 @@ func (c sharedSessionHandshaker) prepareSharedACPSession(d handshakeDeps, shared
 	if l := d.hsLogger(); l != nil {
 		l.Info("Prepared shared ACP session (session/new deferred to first prompt)",
 			"session_id", d.hsSessionID(),
-			"supports_images", caps.PromptCapabilities.Image)
+			"supports_images", supportsImages)
 	}
 	return nil
 }
@@ -263,11 +281,7 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 	// (RegisterSession) is idempotent — re-registering an already-registered
 	// session updates it in place without rotating its binding token — so this
 	// is safe to call unconditionally on every deferred handshake.
-	var caps acp.AgentCapabilities
-	if sharedCaps := d.hsGetSharedProcess().Capabilities(); sharedCaps != nil {
-		caps = *sharedCaps
-	}
-	mcpServers := d.hsStartMcpServer(caps)
+	mcpServers := d.hsStartMcpServer(mcpHttpCapsFromNeutral(d.hsGetSharedProcess().Capabilities()))
 	if mcpServers == nil {
 		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
 	}
@@ -405,11 +419,9 @@ func (c sharedSessionHandshaker) prewarmACPSession(d handshakeDeps) {
 func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedProcess SharedProcess, workingDir, acpSessionID string) error {
 	d.hsSetSharedProcess(sharedProcess)
 
-	var caps acp.AgentCapabilities
-	if sharedCaps := sharedProcess.Capabilities(); sharedCaps != nil {
-		caps = *sharedCaps
-	}
-	mcpServers := d.hsStartMcpServer(caps)
+	neutralCaps := sharedProcess.Capabilities()
+	supportsImages := neutralCaps != nil && neutralCaps.Query(agentbackend.FeatureImages) == agentbackend.CapabilitySupported
+	mcpServers := d.hsStartMcpServer(mcpHttpCapsFromNeutral(neutralCaps))
 	d.hsSetACPClient(NewWebClient(c.buildWebClientConfig(d)))
 	handshakeCtx := d.hsCreationCtx()
 	if handshakeCtx == nil {
@@ -453,8 +465,8 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	var probeTimedOut bool
 
 	if acpSessionID != "" {
-		supportsResume := caps.SessionCapabilities.Resume != nil
-		supportsLoad := caps.LoadSession
+		supportsResume := neutralCaps != nil && neutralCaps.Query(agentbackend.FeatureSessionResume) == agentbackend.CapabilitySupported
+		supportsLoad := neutralCaps != nil && neutralCaps.Query(agentbackend.FeatureSessionLoad) == agentbackend.CapabilitySupported
 
 		if supportsResume {
 			resumeCtx, resumeCancel := context.WithTimeout(d.hsColdTraceCtx(handshakeCtx), 10*time.Second)
@@ -656,7 +668,7 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	})
 
 	d.hsSetACPID(handle.SessionID)
-	d.hsSetAgentSupportsImages(caps.PromptCapabilities.Image)
+	d.hsSetAgentSupportsImages(supportsImages)
 	d.hsApplySessionModes(handle.Modes)
 	d.hsApplyAgentModels(handle.Models)
 	// mitto-886: local-profile fallback for the resume path when the agent
@@ -673,7 +685,7 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			"acp_session_id", handle.SessionID,
 			"requested_acp_session_id", acpSessionID,
 			"resume_method", d.hsGetResumeMethod(),
-			"supports_images", caps.PromptCapabilities.Image)
+			"supports_images", supportsImages)
 		d.hsLogAgentModels(handle.Models)
 	}
 

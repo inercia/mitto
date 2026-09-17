@@ -134,7 +134,7 @@ func (l *acpLease) State() agentbackend.LifecycleState {
 func (l *acpLease) Capabilities() agentbackend.Capabilities {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return &acpCapabilities{handle: l.handle, agentCaps: l.process.Capabilities()}
+	return &acpCapabilities{handle: l.handle, processCaps: l.process.Capabilities()}
 }
 
 // Detach unregisters this session from the shared process's multiplex layer.
@@ -381,26 +381,18 @@ func (o *acpSessionPromptOps) SetMode(ctx context.Context, ref agentbackend.Sess
 	return translateACPLeaseError(err, agentbackend.FeatureModeSelection)
 }
 
-// acpCapabilities adapts *acp.AgentCapabilities + *SessionHandle to
-// agentbackend.Capabilities. Only features directly knowable from those two
-// sources are answered definitively; everything else reports
-// CapabilityUnknown rather than guessing (per agentbackend.Capabilities'
-// contract).
+// acpCapabilities adapts a process-level agentbackend.Capabilities (as
+// returned by SharedProcess.Capabilities()) + *SessionHandle to a full,
+// session-aware agentbackend.Capabilities. Model/mode selection is a
+// per-session fact only the handle knows about; everything else (Images,
+// MCP-HTTP, ...) is a process-level fact delegated to processCaps.
 type acpCapabilities struct {
-	handle    *SessionHandle
-	agentCaps *acp.AgentCapabilities
+	handle      *SessionHandle
+	processCaps agentbackend.Capabilities
 }
 
 func (c *acpCapabilities) Query(feature agentbackend.Feature) agentbackend.CapabilityState {
 	switch feature {
-	case agentbackend.FeatureImages:
-		if c.agentCaps == nil {
-			return agentbackend.CapabilityUnknown
-		}
-		if c.agentCaps.PromptCapabilities.Image {
-			return agentbackend.CapabilitySupported
-		}
-		return agentbackend.CapabilityUnsupported
 	case agentbackend.FeatureModelSelection:
 		if c.handle != nil && c.handle.Models != nil {
 			return agentbackend.CapabilitySupported
@@ -411,6 +403,58 @@ func (c *acpCapabilities) Query(feature agentbackend.Feature) agentbackend.Capab
 			return agentbackend.CapabilitySupported
 		}
 		return agentbackend.CapabilityUnknown
+	default:
+		if c.processCaps == nil {
+			return agentbackend.CapabilityUnknown
+		}
+		return c.processCaps.Query(feature)
+	}
+}
+
+// acpProcessCapabilities adapts a raw *acp.AgentCapabilities snapshot (as
+// held by a SharedProcess implementation — production: internal/acpproc;
+// tests: fakes across this package and internal/acpbackend) to
+// agentbackend.Capabilities. Only process-level facts directly knowable from
+// AgentCapabilities are answered definitively; everything else reports
+// CapabilityUnknown rather than guessing (per agentbackend.Capabilities'
+// contract).
+type acpProcessCapabilities struct {
+	caps *acp.AgentCapabilities
+}
+
+// NewProcessCapabilities wraps a raw ACP AgentCapabilities snapshot (possibly
+// nil, e.g. before Initialize completes) as a protocol-neutral
+// agentbackend.Capabilities value. Exported for SharedProcess implementations
+// outside this package (internal/acpproc) and their test doubles.
+func NewProcessCapabilities(caps *acp.AgentCapabilities) agentbackend.Capabilities {
+	return &acpProcessCapabilities{caps: caps}
+}
+
+func (c *acpProcessCapabilities) Query(feature agentbackend.Feature) agentbackend.CapabilityState {
+	if c.caps == nil {
+		return agentbackend.CapabilityUnknown
+	}
+	switch feature {
+	case agentbackend.FeatureImages:
+		if c.caps.PromptCapabilities.Image {
+			return agentbackend.CapabilitySupported
+		}
+		return agentbackend.CapabilityUnsupported
+	case agentbackend.FeatureMCPHttp:
+		if c.caps.McpCapabilities.Http {
+			return agentbackend.CapabilitySupported
+		}
+		return agentbackend.CapabilityUnsupported
+	case agentbackend.FeatureSessionResume:
+		if c.caps.SessionCapabilities.Resume != nil {
+			return agentbackend.CapabilitySupported
+		}
+		return agentbackend.CapabilityUnsupported
+	case agentbackend.FeatureSessionLoad:
+		if c.caps.LoadSession {
+			return agentbackend.CapabilitySupported
+		}
+		return agentbackend.CapabilityUnsupported
 	default:
 		return agentbackend.CapabilityUnknown
 	}
@@ -424,5 +468,6 @@ var (
 	_ BackendProvider           = (*acpBackendProvider)(nil)
 	_ BackendLease              = (*acpLease)(nil)
 	_ agentbackend.Capabilities = (*acpCapabilities)(nil)
+	_ agentbackend.Capabilities = (*acpProcessCapabilities)(nil)
 	_ SessionPromptOps          = (*acpSessionPromptOps)(nil)
 )

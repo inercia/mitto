@@ -11,6 +11,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -79,8 +80,10 @@ func newFakeSharedProcess() *fakeSharedProcess {
 	}
 }
 
-func (f *fakeSharedProcess) Capabilities() *acp.AgentCapabilities { return f.caps }
-func (f *fakeSharedProcess) ProcessDone() <-chan struct{}         { return f.processDone }
+func (f *fakeSharedProcess) Capabilities() agentbackend.Capabilities {
+	return NewProcessCapabilities(f.caps)
+}
+func (f *fakeSharedProcess) ProcessDone() <-chan struct{} { return f.processDone }
 func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
