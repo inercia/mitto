@@ -7220,6 +7220,90 @@ func TestLoopRunner_DeliveryFailure_AuthError_ClassifiedDistinctly(t *testing.T)
 	}
 }
 
+// TestLoopRunner_DeliveryFailure_FreshContextFlushDeadline_ShouldNotAutoPause
+// is the mitto-96a reproduction test: the FreshContext loop's in-place
+// context-flush RPC (createFreshContextSession, prompt_dispatcher.go) can
+// fail with the agent's OWN internal deadline wedge — a JSON-RPC -32603
+// "Internal error" whose data carries "context deadline exceeded" — wrapped
+// as `fmt.Errorf("failed to clear context: %w", flushErr)`. This is the exact
+// same acperrors.IsAgentInternalDeadlineErr shape that checkAndResume's
+// ResumeSession path (loop_runner.go ~line 2253) already treats as transient
+// shared-process saturation and excludes from its own failure counter — but
+// handleDeliveryFailure's classifier has NO such carve-out, so it falls to
+// failure_class="generic" and counts toward the trigger-agnostic
+// MaxLoopDeliveryFailures ceiling. Observed in production: 8 consecutive
+// transient flush timeouts during a saturation window auto-paused an
+// otherwise healthy loop (StoppedReasonDeliveryFailures) even though the
+// identical RPC succeeded 40 minutes later once the pressure cleared.
+//
+// EXPECTED (once mitto-96a is fixed): MaxLoopDeliveryFailures consecutive
+// wrapped-internal-deadline failures must NOT auto-pause the loop — mirroring
+// the ResumeSession carve-out — so this test currently FAILS against the
+// unfixed classifier (the loop ends up disabled).
+func TestLoopRunner_DeliveryFailure_FreshContextFlushDeadline_ShouldNotAutoPause(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "freshcontext-flush-deadline"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:       "iterate",
+		Frequency:    session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:      true,
+		FreshContext: true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	handler := &recordingSlogHandler{minLevel: slog.LevelDebug}
+	runner := NewLoopRunner(store, nil, slog.New(handler))
+
+	// Exact shape createFreshContextSession returns for a shared-process
+	// session (prompt_dispatcher.go:1146): the agent's internal deadline
+	// wedge wrapped by "failed to clear context: %w".
+	wedgeErr := &acp.RequestError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    map[string]string{"details": "context deadline exceeded"},
+	}
+	flushErr := fmt.Errorf("failed to clear context: %w", wedgeErr)
+
+	// Sanity: the classifier this fix must consult agrees this is the
+	// agent-internal-deadline wedge.
+	if !acperrors.IsAgentInternalDeadlineErr(flushErr) {
+		t.Fatalf("test precondition failed: IsAgentInternalDeadlineErr(flushErr) = false, want true")
+	}
+
+	// Drive MaxLoopDeliveryFailures consecutive transient flush failures —
+	// exactly the observed production sequence.
+	for i := 0; i < MaxLoopDeliveryFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-freshcontext", loop, loopStore, flushErr, true, false, session.TriggerSchedule, contextTurnsUnknown)
+	}
+
+	after, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !after.Enabled {
+		t.Fatalf("loop.Enabled = false after %d consecutive transient FreshContext flush-deadline failures; "+
+			"want true — a wrapped acperrors.IsAgentInternalDeadlineErr must be treated as transient "+
+			"shared-process saturation (mirroring the ResumeSession carve-out) and must NOT auto-pause "+
+			"the loop via StoppedReasonDeliveryFailures (mitto-96a)", MaxLoopDeliveryFailures)
+	}
+	if after.StoppedReason == session.StoppedReasonDeliveryFailures {
+		t.Errorf("loop.StoppedReason = %q, want it unset — a transient flush-deadline wedge must not "+
+			"be classified as a genuine delivery failure (mitto-96a)", after.StoppedReason)
+	}
+}
+
 // errBareInvalidArgument400 mirrors the bead's own log evidence: a bare
 // httpStatus:400/apiStatus:invalidArgument envelope with NO token/length
 // corroborating phrase — the exact shape IsContextTooLargeError declines to

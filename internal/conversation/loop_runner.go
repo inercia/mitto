@@ -2737,6 +2737,29 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 // unrelated, unchanged acp.IsContextTooLargeError: a small-context 400 (e.g. a
 // deferred model-switch race) still falls through to the generic classification.
 func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool, firedBy session.LoopTrigger, contextTurns int64) {
+	// mitto-96a: a FreshContext loop's in-place context-flush RPC
+	// (createFreshContextSession, prompt_dispatcher.go) surfaces the agent's
+	// OWN internal deadline/query-closed wedge (or a shared-process
+	// saturation sentinel) exactly like a ResumeSession failure does — the
+	// identical five-predicate family already carved out of the archive
+	// threshold in checkAndResume (~line 2253). That carve-out was missing
+	// here, so a saturation storm of this specific shape counted toward the
+	// trigger-agnostic MaxLoopDeliveryFailures ceiling and auto-paused an
+	// otherwise healthy loop (observed: 8 consecutive transient flush
+	// timeouts, followed by the identical RPC succeeding 40 minutes later
+	// once the pressure cleared). Treat it as transient here too: skip the
+	// failure counter entirely and let the loop's natural cadence retry.
+	if mittoAcp.IsMCPInitTimeout(err) || errors.Is(err, acperrors.ErrSharedProcessSaturated) || errors.Is(err, acperrors.ErrProcessClosedConcurrently) || acperrors.IsAgentInternalDeadlineErr(err) || acperrors.IsAgentQueryClosedErr(err) {
+		if r.logger != nil {
+			r.logger.Warn("Loop delivery hit transient shared-process saturation; not counting toward auto-pause (will retry on the loop's natural cadence)",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"failure_class", "transient_saturation",
+				"error", err)
+		}
+		return
+	}
+
 	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
 			if r.onLoopUpdated != nil {
