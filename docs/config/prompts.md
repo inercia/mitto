@@ -1985,6 +1985,7 @@ only runs in workspaces that actually have a beads database.
 | `BeadsCount`    | `BeadsCount "labels" "statuses"` | Number of beads matching the comma-separated label and status filters (either may be empty). |
 | `HasBeads`      | `HasBeads "labels" "statuses"`   | `true` when `BeadsCount` would be non-zero.                                                  |
 | `BeadHasLabels` | `BeadHasLabels "id" "labels"`    | `true` iff the single bead `id` carries **all** the comma-separated labels.                  |
+| `BeadHasStatus` | `BeadHasStatus "id" "deferred"` | `true` iff bead `id` has any requested comma-separated status.                               |
 | `BeadIsOpen`    | `BeadIsOpen "id"`                | `true` iff bead `id` is not closed.                                                          |
 | `BeadMetadata`  | `BeadMetadata "id" "key"`        | String value of bead `id`'s `metadata[key]`, or `""`.                                        |
 

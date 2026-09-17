@@ -36,8 +36,8 @@ const promptTextMaxDepth = 3
 // run before it is killed. Mirrors gitCmdTimeout for the git helpers.
 const bdCmdTimeout = 5 * time.Second
 
-// beadsCacheTTL bounds how long a BeadsCount/HasBeads/BeadHasLabels/BeadIsOpen
-// /BeadMetadata result is memoised, to avoid re-exec on rapid menu re-opens.
+// beadsCacheTTL bounds how long a BeadsCount/HasBeads/BeadHasLabels/BeadHasStatus
+// /BeadIsOpen/BeadMetadata result is memoised, to avoid re-exec on rapid menu re-opens.
 // Raised from the original 5s to 30s (mitto-z0t D4): safe because external
 // mutations invalidate the affected folder's entries immediately via the
 // .beads/ fsnotify watcher (see InvalidateBeadsCache, wired from
@@ -86,7 +86,7 @@ type beadsCacheEntry struct {
 // beadsShowCacheEntry is a single cached `bd show <id> --json` snapshot,
 // positive (ok=true) or negative (ok=false, on any error), keyed by
 // folder\x00id. Introduced by mitto-z0t D1 to replace the earlier scheme
-// where beadHasLabels/beadIsOpen/beadMetadata each cached only their own
+// where beadHasLabels/beadHasStatus/beadIsOpen/beadMetadata each cached only their own
 // DERIVED answer while sharing an uncached showBead — so evaluating all
 // three gates on the same bead forked `bd show` three times. Now all three
 // derive from this ONE shared snapshot per (folder, id).
@@ -969,6 +969,33 @@ func beadHasLabels(folder, id, labels string) bool {
 	return true
 }
 
+// beadHasStatus reports whether the single bead identified by id has ANY of the
+// comma-separated statuses, running `bd show <id> --json` in folder. It exists
+// primarily for linked-conversation prompt gates, where Item.Status is absent.
+// Matching is case-insensitive to tolerate status casing drift across bd versions.
+//
+// Fail-open: on an empty id/status list or any lookup error, returns true so a
+// transient bd failure never wrongly hides a prompt. Derives from the shared
+// showBead snapshot; see beadHasLabels for the shared-exec rationale.
+func beadHasStatus(folder, id, statuses string) bool {
+	id = strings.TrimSpace(id)
+	want := splitCSV(statuses)
+	if id == "" || len(want) == 0 {
+		return true
+	}
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return true
+	}
+	for _, status := range want {
+		if strings.EqualFold(bead.Status, status) {
+			return true
+		}
+	}
+	return false
+}
+
 // beadIsOpen reports whether the single bead identified by id is NOT closed
 // (status != "closed"), running `bd show <id> --json` in folder. Scopes to ONE
 // specific issue — used alongside beadHasLabels to gate prompts on the CURRENT
@@ -1266,6 +1293,8 @@ func FormatPeers(peers []PeerInfo) string {
 //   - BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL
 //     comma-separated labels (via `bd show <id> --json`). Fail-open on error.
 //     Scopes to one issue (unlike HasBeads, which aggregates across the workspace).
+//   - BeadHasStatus(id, statuses) — true iff the single bead <id> has ANY of the
+//     comma-separated statuses (via `bd show <id> --json`). Fail-open on error.
 //   - BeadIsOpen(id) — true iff the single bead <id> is not closed (via
 //     `bd show <id> --json`). Fail-open on error. Companion to BeadHasLabels.
 //   - BeadMetadata(id, key) — string value of the single bead <id>'s metadata[key]
@@ -1430,6 +1459,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// comma-separated labels (via `bd show <id> --json`). Fail-open. Scopes to
 		// one issue, unlike HasBeads which aggregates across the workspace.
 		"BeadHasLabels": func(id, labels string) bool { return beadHasLabels(folder, id, labels) },
+		// BeadHasStatus(id, statuses) — true iff the single bead <id> has ANY
+		// requested status. Fail-open. Used when Item.Status is unavailable.
+		"BeadHasStatus": func(id, statuses string) bool { return beadHasStatus(folder, id, statuses) },
 		// BeadIsOpen(id) — true iff the single bead <id> is not closed. Fail-open.
 		// Companion to BeadHasLabels for gating on the linked bead's status.
 		"BeadIsOpen": func(id string) bool { return beadIsOpen(folder, id) },

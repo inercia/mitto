@@ -287,6 +287,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.FunctionBinding(mittoBeadHasLabels),
 			),
 		),
+		cel.Function("__mitto_beadHasStatus",
+			cel.Overload("__mitto_beadHasStatus_string_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoBeadHasStatus),
+			),
+		),
 		cel.Function("__mitto_beadIsOpen",
 			cel.Overload("__mitto_beadIsOpen_string_string",
 				[]*cel.Type{cel.StringType, cel.StringType},
@@ -317,6 +324,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 			cel.GlobalMacro("BeadsCount", 2, beadsCountMacro),
 			cel.GlobalMacro("HasBeads", 2, hasBeadsMacro),
 			cel.GlobalMacro("BeadHasLabels", 2, beadHasLabelsMacro),
+			cel.GlobalMacro("BeadHasStatus", 2, beadHasStatusMacro),
 			cel.GlobalMacro("BeadIsOpen", 1, beadIsOpenMacro),
 		),
 	)
@@ -672,6 +680,12 @@ func beadHasLabelsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Ex
 	return eh.NewCall("__mitto_beadHasLabels", eh.NewIdent("Workspace.Folder"), args[0], args[1]), nil
 }
 
+// beadHasStatusMacro rewrites BeadHasStatus(id, statuses) ->
+// __mitto_beadHasStatus(Workspace.Folder, id, statuses).
+func beadHasStatusMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_beadHasStatus", eh.NewIdent("Workspace.Folder"), args[0], args[1]), nil
+}
+
 // beadIsOpenMacro rewrites BeadIsOpen(id) ->
 // __mitto_beadIsOpen(Workspace.Folder, id).
 func beadIsOpenMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
@@ -951,6 +965,19 @@ func mittoBeadHasLabels(args ...ref.Val) ref.Val {
 	id := valToString(args[1])
 	labels := valToString(args[2])
 	return types.Bool(beadHasLabels(folder, id, labels))
+}
+
+// mittoBeadHasStatus reports whether the single bead <id> (args[1]) in the
+// workspace folder (args[0]) has ANY comma-separated status (args[2]).
+// Fail-open on any error or arg-count mismatch; delegates to beadHasStatus.
+func mittoBeadHasStatus(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(true)
+	}
+	folder := valToString(args[0])
+	id := valToString(args[1])
+	statuses := valToString(args[2])
+	return types.Bool(beadHasStatus(folder, id, statuses))
 }
 
 // mittoBeadIsOpen reports whether the single bead <id> (rhs) in the workspace

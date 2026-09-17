@@ -1,0 +1,111 @@
+{{- /*
+  beads-issues/shared/state-diagnosis — shared body for the visible
+  "Why is deferred?" and "Why needs human?" prompts.
+
+  Parameters: Target, SessionID, State ("deferred" or "needs-human").
+*/ -}}
+{{- $target := .Target -}}
+{{- if not $target -}}
+{{- $target = "<bead-id-returned-by-user>" -}}
+No bead was linked or supplied. Before running any `bd` command, use
+`mitto_ui_form(self_id: "{{ .SessionID }}")` to request the exact bead ID, verify it with
+`bd show <bead-id> --json`, and substitute the verified ID for
+`<bead-id-returned-by-user>` throughout this workflow. If the user cancels, make no changes and stop.
+
+{{ end -}}
+# Beads: Why Is This Issue {{ if eq .State "deferred" }}Deferred{{ else }}Marked Needs Human{{ end }}?
+
+The target bead is `{{ $target }}`. Diagnose the state from evidence before changing anything.
+
+## Step 1 — Load the complete history
+
+{{ template "beads-issues/shared/load-context-min" $target }}
+
+```bash
+bd comments {{ $target }}
+bd dep list {{ $target }}
+bd show {{ $target }} --children --json
+```
+
+Read comments chronologically, including authors and timestamps. Look for the newest
+`[deferred: <ts>]` / `[undeferred: <ts>]` pair and structured lines such as `Why:`,
+`Blocked summary:`, `What human intervention is required:`, `What I need from you:`, and
+`How to resume:`. Also inspect later human comments and description edits that may already answer
+the request.
+
+{{ if eq .State "deferred" -}}
+Verify that the live status is still `deferred`. Capture `defer_until`, whether it is a timed snooze,
+and whether `needs-human` is also present. Distinguish waiting for time, another bead, an external
+event, and a human answer; “deferred” alone is not an explanation.
+{{- else -}}
+Verify that the live labels still include `needs-human`. Determine who added it, the exact requested
+decision/information/action, whether it was paired with a deferral, and whether newer evidence has
+already satisfied the request; the label alone is not an explanation.
+{{- end }}
+
+If the target no longer has the expected state, explain that the menu result was stale, report its
+current state, make no changes, and stop.
+
+## Step 2 — Explain why and identify the smallest unblocker
+
+{{ template "beads-issues/shared/unblock-guidance" (dict
+    "SessionID" .SessionID
+) }}
+
+Present a concise diagnosis containing:
+
+- **Recorded reason** — quote or faithfully summarize the relevant comment; if none exists, say so.
+- **Evidence** — timestamps, dependency IDs + titles, state fields, errors, and prior attempts.
+- **What is needed now** — the smallest remaining prerequisite, its owner, and what it unlocks.
+- **State quality** — `valid`, `possibly stale`, or `stale`, with the evidence for that conclusion.
+
+Never infer “needs human” merely from `deferred`, or “deferred” merely from `needs-human`; analyze
+the two states independently even when both are present.
+
+## Step 3 — Ask for the missing help
+
+If the user can supply the remaining prerequisite, use the UI tool prescribed above and ask exactly
+one concrete question or action request. Explain why that answer is needed and what will resume.
+Do not ask “How can I help?” or request information already present in the history.
+
+If the user cannot resolve it, do not open an empty dialog. Name the external owner/event and when
+to retry. If several prerequisites exist, ask first for the one that unlocks the next executable step.
+
+## Step 4 — Confirm and record a resolved handoff
+
+The diagnosis is read-only until the user answers and explicitly approves tracker changes. Treat an
+answer as information, not mutation approval. Show the proposed Markdown comment and exact state
+change via `mitto_ui_options(self_id: "{{ .SessionID }}", allow_free_text: true)` with the recommended
+option first: **Record the answer and resume**, **Record the answer but keep the state**, or
+**Do not change the bead**. Honour the choice.
+
+When approved, write a human-readable Markdown comment through stdin before clearing state:
+
+```bash
+printf '%s' "$resolution_comment" | bd comment {{ $target }} --stdin
+{{ if eq .State "deferred" -}}
+bd update {{ $target }} --defer ''
+# Remove needs-human too ONLY when it belongs to this same handoff and every requested prerequisite is satisfied:
+bd update {{ $target }} --remove-label needs-human
+{{- else -}}
+bd update {{ $target }} --remove-label needs-human
+# Clear deferral too ONLY when it belongs to this same handoff and its resume condition is satisfied:
+bd update {{ $target }} --defer ''
+{{- end }}
+```
+
+The comment must capture **the answer/action**, **who supplied or performed it**, **which blocker it
+resolves**, and **what can resume now**. Never clear an unrelated timed/external deferral or an
+unrelated `needs-human` request.
+
+## Step 5 — Verify live state
+
+```bash
+bd show {{ $target }} --long --json
+bd comments {{ $target }}
+```
+
+Report what changed and whether the bead is now actionable. If a command failed or another
+prerequisite remains, say so using the same goal + **but** + prerequisite format; never claim the
+bead is unblocked until live state confirms it.
+{{- /* no trailing newline */ -}}

@@ -935,7 +935,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "ReadFile", "ReadTemplate", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
-		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadIsOpen", "BeadMetadata",
+		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadHasStatus", "BeadIsOpen", "BeadMetadata",
 		"PromptText", "PromptTextWithArgs", "ArgsMap",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join", "Dir",
 	}
@@ -2139,6 +2139,61 @@ func TestBeadIsOpen_CELParity(t *testing.T) {
 	}
 }
 
+func TestBeadHasStatus_MatchesAnyRequestedStatus(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"deferred"}]`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasStatus(tmp, "mitto-1", "open,deferred") {
+		t.Error("beadHasStatus(open,deferred) = false for deferred bead, want true")
+	}
+	if beadHasStatus(tmp, "mitto-1", "open,in_progress") {
+		t.Error("beadHasStatus(open,in_progress) = true for deferred bead, want false")
+	}
+}
+
+func TestBeadHasStatus_FailOpen(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open"}]`, 0)
+	tmp := t.TempDir()
+	if !beadHasStatus(tmp, "", "deferred") {
+		t.Error("beadHasStatus empty id = false, want true (fail-open)")
+	}
+	if !beadHasStatus(tmp, "mitto-1", "") {
+		t.Error("beadHasStatus empty statuses = false, want true (fail-open)")
+	}
+
+	installFakeBd(t, "not json {{{", 0)
+	if !beadHasStatus(t.TempDir(), "mitto-1", "deferred") {
+		t.Error("beadHasStatus bad JSON = false, want true (fail-open)")
+	}
+}
+
+func TestBeadHasStatus_CELParity(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"deferred"}]`, 0)
+	tmp := t.TempDir()
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: tmp},
+		Session:   SessionContext{HasBeadsIssue: true, BeadsIssue: "mitto-1"},
+	}
+
+	got := evalCEL(t, newTestEvaluator(t), `BeadHasStatus(Session.BeadsIssue, "deferred")`, ctx)
+	if !got || got != beadHasStatus(tmp, "mitto-1", "deferred") {
+		t.Errorf("CEL BeadHasStatus = %v, want true and parity with Go helper", got)
+	}
+}
+
+func TestBeadHasStatus_TemplateFuncMap(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"deferred"}]`, 0)
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: t.TempDir()}}
+
+	got, err := RenderPromptTemplate("test", `{{ if BeadHasStatus "mitto-1" "deferred" }}yes{{ else }}no{{ end }}`, ctx, BuildTemplateFuncMap(ctx))
+	if err != nil {
+		t.Fatalf("render BeadHasStatus: %v", err)
+	}
+	if got != "yes" {
+		t.Errorf("BeadHasStatus render = %q, want yes", got)
+	}
+}
+
 // TestBeadMetadata_PresentArrayShape verifies happy-path retrieval from the
 // current `bd show --json` shape, a single-element ARRAY ([{...}]).
 func TestBeadMetadata_PresentArrayShape(t *testing.T) {
@@ -2310,7 +2365,7 @@ func TestBeadsCount_TemplateFuncRender(t *testing.T) {
 // =============================================================================
 
 // TestShowBead_SharedSnapshotCollapsesExecsAcrossGates verifies mitto-z0t D1:
-// evaluating BeadHasLabels, BeadIsOpen and BeadMetadata for the SAME (folder,
+// evaluating BeadHasLabels, BeadHasStatus, BeadIsOpen and BeadMetadata for the SAME (folder,
 // id) — as the conversation/prompts menu does for one linked bead — forks
 // `bd show` at most ONCE, because all three derive from the shared showBead
 // snapshot cache instead of each forking their own `bd show`.
@@ -2323,6 +2378,9 @@ func TestShowBead_SharedSnapshotCollapsesExecsAcrossGates(t *testing.T) {
 	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
 		t.Errorf("beadHasLabels = false, want true")
 	}
+	if !beadHasStatus(tmp, "mitto-1", "open") {
+		t.Errorf("beadHasStatus = false, want true")
+	}
 	if !beadIsOpen(tmp, "mitto-1") {
 		t.Errorf("beadIsOpen = false, want true")
 	}
@@ -2331,7 +2389,7 @@ func TestShowBead_SharedSnapshotCollapsesExecsAcrossGates(t *testing.T) {
 	}
 
 	if n := countBdCalls(t, counterFile); n != 1 {
-		t.Errorf("bd exec count = %d, want 1 (beadHasLabels+beadIsOpen+beadMetadata should share one showBead snapshot)", n)
+		t.Errorf("bd exec count = %d, want 1 (all single-bead helpers should share one showBead snapshot)", n)
 	}
 }
 
