@@ -31,6 +31,9 @@ type fakeSharedProcess struct {
 	loadSessionHandle    *SessionHandle
 	loadSessionErr       error
 	loadSessionCalls     []string // recorded acp_session_ids
+	resumeSessionHandle  *SessionHandle
+	resumeSessionErr     error
+	resumeSessionCalls   []string // recorded acp_session_ids
 	registeredSessions   []acp.SessionId
 
 	// mitto-1ut: budget observability. recommendedLoadTimeout is returned by
@@ -109,7 +112,13 @@ func (f *fakeSharedProcess) LoadSession(ctx context.Context, acpSessionID, _ str
 	}
 	return nil, errors.New("load not supported")
 }
-func (f *fakeSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) ResumeSession(_ context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeSessionCalls = append(f.resumeSessionCalls, acpSessionID)
+	if f.resumeSessionErr != nil || f.resumeSessionHandle != nil {
+		return f.resumeSessionHandle, f.resumeSessionErr
+	}
 	return nil, errors.New("resume not supported")
 }
 func (f *fakeSharedProcess) RegisterSession(id acp.SessionId, _ *SessionCallbacks) {
@@ -757,6 +766,84 @@ func TestHandshaker_ResumeSharedACPSession_RPCError_Cleans(t *testing.T) {
 	}
 	if d.stopMcpCalls != 1 {
 		t.Fatalf("expected stopMcpServer called on failure, got %d", d.stopMcpCalls)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_UsesResumeRPC_WhenCapabilityAdvertised
+// pins the mitto-mx9.1.3 neutralization: supportsResume is now derived via
+// sharedProcess.Capabilities().Query(agentbackend.FeatureSessionResume)
+// instead of a direct *acp.AgentCapabilities field read. When the agent
+// advertises SessionCapabilities.Resume, the handshake must call
+// ResumeSession (not LoadSession/NewSession) and record resumeMethod="resume"
+// on success.
+func TestHandshaker_ResumeSharedACPSession_UsesResumeRPC_WhenCapabilityAdvertised(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{
+		SessionCapabilities: acp.SessionCapabilities{Resume: &acp.SessionResumeCapabilities{}},
+	}
+	fp.resumeSessionHandle = &SessionHandle{SessionID: "acp-sess-resumed"}
+
+	err := c.resumeSharedACPSession(d, fp, "cwd", "persisted-acp-id")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fp.resumeSessionCalls) != 1 || fp.resumeSessionCalls[0] != "persisted-acp-id" {
+		t.Fatalf("expected exactly 1 ResumeSession call with the persisted id, got %v", fp.resumeSessionCalls)
+	}
+	if len(fp.loadSessionCalls) != 0 {
+		t.Fatalf("expected no LoadSession call when Resume succeeds, got %v", fp.loadSessionCalls)
+	}
+	if len(fp.newSessionCalls) != 0 {
+		t.Fatalf("expected no NewSession call when Resume succeeds, got %v", fp.newSessionCalls)
+	}
+	if d.resumeMethod != "resume" {
+		t.Fatalf("expected resumeMethod='resume', got %q", d.resumeMethod)
+	}
+	if d.acpID != "acp-sess-resumed" {
+		t.Fatalf("expected acpID from ResumeSession, got %q", d.acpID)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_ResumeUnsupported_SkipsResumeRPC
+// proves the inverse: when the agent does NOT advertise
+// SessionCapabilities.Resume, the handshake must never call ResumeSession
+// even when a persisted acp_session_id is present, falling through to
+// LoadSession/NewSession instead.
+func TestHandshaker_ResumeSharedACPSession_ResumeUnsupported_SkipsResumeRPC(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{} // no SessionCapabilities.Resume, no LoadSession
+
+	err := c.resumeSharedACPSession(d, fp, "cwd", "persisted-acp-id")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fp.resumeSessionCalls) != 0 {
+		t.Fatalf("expected no ResumeSession call when unsupported, got %v", fp.resumeSessionCalls)
+	}
+	if len(fp.newSessionCalls) != 1 {
+		t.Fatalf("expected fallback to NewSession, got %v", fp.newSessionCalls)
+	}
+}
+
+// TestMcpHttpCapsFromNeutral pins the mitto-mx9.1.3 bridge that synthesizes a
+// minimal acp.AgentCapabilities (carrying only the MCP-HTTP flag) from the
+// neutral SharedProcess.Capabilities() query, for the still ACP-typed
+// hsStartMcpServer boundary.
+func TestMcpHttpCapsFromNeutral(t *testing.T) {
+	if got := mcpHttpCapsFromNeutral(nil); got.McpCapabilities.Http {
+		t.Errorf("mcpHttpCapsFromNeutral(nil).McpCapabilities.Http = true, want false")
+	}
+	supported := NewProcessCapabilities(&acp.AgentCapabilities{McpCapabilities: acp.McpCapabilities{Http: true}})
+	if got := mcpHttpCapsFromNeutral(supported); !got.McpCapabilities.Http {
+		t.Errorf("mcpHttpCapsFromNeutral(supported).McpCapabilities.Http = false, want true")
+	}
+	unsupported := NewProcessCapabilities(&acp.AgentCapabilities{})
+	if got := mcpHttpCapsFromNeutral(unsupported); got.McpCapabilities.Http {
+		t.Errorf("mcpHttpCapsFromNeutral(unsupported).McpCapabilities.Http = true, want false")
 	}
 }
 

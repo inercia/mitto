@@ -355,6 +355,66 @@ func TestACPCapabilities_Query(t *testing.T) {
 	}
 }
 
+// TestACPProcessCapabilities_Query pins the ACP→neutral translation added by
+// mitto-mx9.1.3 for the process-level Feature constants (FeatureMCPHttp,
+// FeatureSessionResume, FeatureSessionLoad), plus the pre-existing
+// FeatureImages and the nil-caps / unknown-feature fallbacks. This is the
+// adapter SharedProcess.Capabilities() now returns instead of the raw
+// *acp.AgentCapabilities struct.
+func TestACPProcessCapabilities_Query(t *testing.T) {
+	t.Run("nil caps reports Unknown for every feature", func(t *testing.T) {
+		caps := NewProcessCapabilities(nil)
+		for _, f := range []agentbackend.Feature{
+			agentbackend.FeatureImages,
+			agentbackend.FeatureMCPHttp,
+			agentbackend.FeatureSessionResume,
+			agentbackend.FeatureSessionLoad,
+		} {
+			if got := caps.Query(f); got != agentbackend.CapabilityUnknown {
+				t.Errorf("Query(%v) with nil caps = %v, want Unknown", f, got)
+			}
+		}
+	})
+
+	t.Run("supported/unsupported per feature", func(t *testing.T) {
+		caps := NewProcessCapabilities(&acp.AgentCapabilities{
+			PromptCapabilities: acp.PromptCapabilities{Image: true},
+			McpCapabilities:    acp.McpCapabilities{Http: true},
+			SessionCapabilities: acp.SessionCapabilities{
+				Resume: &acp.SessionResumeCapabilities{},
+			},
+			LoadSession: true,
+		})
+		cases := []struct {
+			feature agentbackend.Feature
+			want    agentbackend.CapabilityState
+		}{
+			{agentbackend.FeatureImages, agentbackend.CapabilitySupported},
+			{agentbackend.FeatureMCPHttp, agentbackend.CapabilitySupported},
+			{agentbackend.FeatureSessionResume, agentbackend.CapabilitySupported},
+			{agentbackend.FeatureSessionLoad, agentbackend.CapabilitySupported},
+			{agentbackend.FeatureTerminals, agentbackend.CapabilityUnknown},
+		}
+		for _, tc := range cases {
+			if got := caps.Query(tc.feature); got != tc.want {
+				t.Errorf("Query(%v) = %v, want %v", tc.feature, got, tc.want)
+			}
+		}
+
+		unsupported := NewProcessCapabilities(&acp.AgentCapabilities{})
+		for _, f := range []agentbackend.Feature{
+			agentbackend.FeatureImages,
+			agentbackend.FeatureMCPHttp,
+			agentbackend.FeatureSessionResume,
+			agentbackend.FeatureSessionLoad,
+		} {
+			if got := unsupported.Query(f); got != agentbackend.CapabilityUnsupported {
+				t.Errorf("Query(%v) on zero-value caps = %v, want Unsupported", f, got)
+			}
+		}
+	})
+}
+
 // TestACPBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession
 // proves the mitto-lrt.7 acceptance criterion "missing-session ... cases
 // surface actionable states instead of duplicating work": when
