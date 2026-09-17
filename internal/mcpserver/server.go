@@ -134,6 +134,18 @@ type Server struct {
 	pendingRequestsMu sync.RWMutex
 	pendingRequests   map[string][]*pendingRequest
 
+	// stickyPendingRequests mirrors the requestID==sessionID entry
+	// RegisterSession seeds into pendingRequests (mitto-8r1), but never
+	// expires and is peeked rather than popped. It closes the mitto-bux gap:
+	// a legacy (non-HTTP-MCP) agent whose first mitto_* tool call arrives
+	// more than pendingRequestExpiry after RegisterSession (quiet supervisor
+	// loop, delayed cold-start boot pulse) would otherwise find the transient
+	// entry already swept by cleanupExpiredPendingRequestsLocked. Populated
+	// by RegisterSession, cleared by UnregisterSession — never swept by the
+	// transient-entry cleanup path. See WaitForPendingRequest.
+	stickyPendingRequestsMu sync.RWMutex
+	stickyPendingRequests   map[string]string
+
 	// MCP session ID -> Mitto session ID cache.
 	// Canonical nested lock order is sessionsMu -> reaperMu -> mcpSessionMapMu.
 	mcpSessionMapMu sync.RWMutex
@@ -482,6 +494,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		sessions:              make(map[string]*registeredSession),
 		sessionBindings:       make(map[string]string),
 		pendingRequests:       make(map[string][]*pendingRequest),
+		stickyPendingRequests: make(map[string]string),
 		mcpSessionMap:         make(map[string]string),
 		mcpSessionLeases:      make(map[string]*mcpSessionLease),
 		childReportCollectors: make(map[string]*childReportCollector),
@@ -1448,6 +1461,18 @@ func (s *Server) SetBeadsWatcher(w *beadswatcher.BeadsWatcher) {
 // finds the entry already queued instead of waiting on it to arrive.
 // Harmless if never consumed — unconsumed entries expire after
 // pendingRequestExpiry (30s) via the existing cleanup path.
+//
+// mitto-bux: that same 30s expiry left a gap for a legacy agent whose first
+// mitto_* tool call arrives *later* than pendingRequestExpiry after this
+// registration (a quiet supervisor loop; a run_on_start boot pulse delayed
+// under cold-start load) — the seeded transient entry is already swept by
+// cleanupExpiredPendingRequestsLocked by the time resolveSelfIDWithMCP's
+// WaitForPendingRequest looks for it, wedging with "session not found" even
+// though the session is genuinely registered. Every (re-)registration also
+// seeds a sticky, non-expiring mirror of the same requestID==sessionID
+// mapping into stickyPendingRequests; WaitForPendingRequest peeks it (never
+// pops — a session's own ID is stable for its whole lifetime) as a fallback
+// once the transient FIFO queue is empty. Cleared only by UnregisterSession.
 func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger *slog.Logger) error {
 	s.sessionsMu.Lock()
 	defer s.sessionsMu.Unlock()
@@ -1458,6 +1483,7 @@ func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger
 		existing.logger = logger
 		s.logger.Info("Session re-registered with MCP server (restart)", "session_id", sessionID)
 		s.RegisterPendingRequest(sessionID, sessionID)
+		s.registerStickyPendingRequest(sessionID)
 		return nil
 	}
 	tokenBytes := make([]byte, 32)
@@ -1476,7 +1502,20 @@ func (s *Server) RegisterSession(sessionID string, uiPrompter UIPrompter, logger
 
 	s.logger.Info("Session registered with MCP server", "session_id", sessionID)
 	s.RegisterPendingRequest(sessionID, sessionID)
+	s.registerStickyPendingRequest(sessionID)
 	return nil
+}
+
+// registerStickyPendingRequest seeds the non-expiring correlation mirror
+// described on RegisterSession (mitto-bux). Only the conversation's own
+// stable ID is ever stored as both key and value, mirroring
+// RegisterPendingRequest's ambiguous_self_id guard — this is a resolution
+// hint for a caller who already knows their own session ID, not a new
+// impersonation surface.
+func (s *Server) registerStickyPendingRequest(sessionID string) {
+	s.stickyPendingRequestsMu.Lock()
+	s.stickyPendingRequests[sessionID] = sessionID
+	s.stickyPendingRequestsMu.Unlock()
 }
 
 // UnregisterSession removes a session from the MCP server.
@@ -1527,6 +1566,13 @@ func (s *Server) UnregisterSession(sessionID string) {
 	s.childReportCollectorsMu.Lock()
 	delete(s.childReportCollectors, sessionID)
 	s.childReportCollectorsMu.Unlock()
+
+	// mitto-bux: clear the sticky correlation mirror seeded by RegisterSession
+	// so a genuinely-unregistered session can no longer be resolved via the
+	// non-expiring fallback in WaitForPendingRequest.
+	s.stickyPendingRequestsMu.Lock()
+	delete(s.stickyPendingRequests, sessionID)
+	s.stickyPendingRequestsMu.Unlock()
 
 	s.logger.Info("Session unregistered from MCP server", "session_id", sessionID)
 }
@@ -1830,6 +1876,21 @@ func (s *Server) WaitForPendingRequest(requestID string) string {
 				"session_id", req.sessionID,
 			)
 			return req.sessionID
+		}
+
+		// mitto-bux: the transient entry seeded by RegisterSession (mitto-8r1)
+		// expires after pendingRequestExpiry; fall back to the sticky mirror,
+		// which never expires and is peeked (not popped) since a session's
+		// own ID is stable for its whole lifetime.
+		s.stickyPendingRequestsMu.RLock()
+		stickySessionID, stickyExists := s.stickyPendingRequests[requestID]
+		s.stickyPendingRequestsMu.RUnlock()
+		if stickyExists {
+			s.logger.Debug("Pending request found via sticky fallback",
+				"request_id", requestID,
+				"session_id", stickySessionID,
+			)
+			return stickySessionID
 		}
 
 		time.Sleep(pendingRequestPollInterval)

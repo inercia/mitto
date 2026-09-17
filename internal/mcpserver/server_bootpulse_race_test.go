@@ -154,3 +154,74 @@ func TestResolveSelfIDWithMCP_BootPulseRace_mitto_8r1(t *testing.T) {
 			targetID, elapsed, maxAcceptableLatency)
 	}
 }
+
+// TestRegisterSession_StickyCorrelationSurvivesExpiry_mittoBux is the
+// reproduction/regression test for mitto-bux: the mitto-8r1 fix seeds a
+// transient pending-request correlation entry at RegisterSession time, but
+// that entry expires after pendingRequestExpiry (30s). A legacy
+// (non-HTTP-MCP) agent whose first mitto_* tool call arrives LATER than that
+// — a quiet supervisor loop, or a run_on_start boot pulse delayed under
+// cold-start load — found the seeded entry already swept by
+// cleanupExpiredPendingRequestsLocked, so resolution fell all the way back
+// to Phase 2's real-time ACP-observed registration, which could itself lose
+// the race under load (reproducing "session not found: the self_id could
+// not be resolved" even though the session is genuinely registered).
+//
+// This test does not sleep pendingRequestExpiry (30s) in real time; it
+// simulates the post-expiry state directly by deleting the transient entry
+// via the same unexported field cleanupExpiredPendingRequestsLocked would
+// have emptied, then asserts WaitForPendingRequest still resolves via the
+// sticky, non-expiring mirror RegisterSession also seeds (registerStickyPendingRequest).
+// Finally it asserts UnregisterSession clears the sticky entry too, so a
+// genuinely-unregistered session cannot be resolved via the fallback.
+func TestRegisterSession_StickyCorrelationSurvivesExpiry_mittoBux(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	targetID := session.GenerateSessionID()
+	if err := store.Create(session.Metadata{SessionID: targetID, Name: "target", ACPServer: "test", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(targetID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+
+	// Simulate the transient entry's expiry (what cleanupExpiredPendingRequestsLocked
+	// would have done 30s later) without a real 30s sleep.
+	srv.pendingRequestsMu.Lock()
+	delete(srv.pendingRequests, targetID)
+	srv.pendingRequestsMu.Unlock()
+
+	start := time.Now()
+	resolved := srv.WaitForPendingRequest(targetID)
+	elapsed := time.Since(start)
+
+	if resolved != targetID {
+		t.Errorf("mitto-bux regression: WaitForPendingRequest(%q) = %q after the transient entry expired; "+
+			"expected the sticky fallback seeded by RegisterSession to still resolve it", targetID, resolved)
+	}
+	const maxAcceptableLatency = 1 * time.Second
+	if elapsed >= maxAcceptableLatency {
+		t.Errorf("mitto-bux regression: WaitForPendingRequest(%q) took %v (>= %v) after expiry; expected "+
+			"near-instant resolution via the sticky fallback, not a slow poll to pendingRequestTimeout",
+			targetID, elapsed, maxAcceptableLatency)
+	}
+
+	// UnregisterSession must clear the sticky entry too.
+	srv.UnregisterSession(targetID)
+	srv.stickyPendingRequestsMu.RLock()
+	_, stillSticky := srv.stickyPendingRequests[targetID]
+	srv.stickyPendingRequestsMu.RUnlock()
+	if stillSticky {
+		t.Errorf("mitto-bux: sticky pending-request entry for %q survived UnregisterSession", targetID)
+	}
+}
