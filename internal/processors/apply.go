@@ -467,12 +467,24 @@ type Manager struct {
 	processors    []*Processor
 	logger        *slog.Logger
 
+	// promptMu guards promptFunc and promptCompletionFunc below. The two
+	// fields are mutually exclusive by design (SetPromptFunc/
+	// SetPromptCompletionFunc each clear the other), so every write clears
+	// one while setting the other under this lock, and every read goes
+	// through promptFuncSnapshot(). Without this, a setter call (e.g. a test
+	// or a web-layer re-wire) racing a fire-and-forget dispatchWithRetry
+	// goroutine's later field read trips the race detector (mitto-4m2) —
+	// there is no happens-before edge between the dispatch closure returning
+	// and the outer success/log block's read of these fields.
+	promptMu sync.RWMutex
 	// promptFunc is an optional callback for executing prompt-mode processors.
 	// Set by the web layer via SetPromptFunc to bridge to auxiliary ACP sessions.
+	// Always access via promptFuncSnapshot(), never directly (guarded by promptMu).
 	promptFunc PromptFunc
 	// promptCompletionFunc waits for a tracked auxiliary turn to finish and
 	// report its durable save count. Production uses this completion-aware seam;
 	// promptFunc remains for compatibility with fire-and-forget embedders/tests.
+	// Always access via promptFuncSnapshot(), never directly (guarded by promptMu).
 	promptCompletionFunc PromptCompletionFunc
 
 	// notifyFunc is an optional callback invoked when a prompt-mode dispatch
@@ -640,20 +652,39 @@ func (m *Manager) AddTextProcessors(procs []config.MessageProcessor, priority in
 // The callback is injected by the web layer to bridge processor execution to
 // workspace-scoped auxiliary ACP sessions (fire-and-forget).
 func (m *Manager) SetPromptFunc(fn PromptFunc) {
+	m.promptMu.Lock()
 	m.promptFunc = fn
 	m.promptCompletionFunc = nil
+	m.promptMu.Unlock()
 }
 
 // SetPromptCompletionFunc sets the completion-aware callback used by production
 // prompt-mode processors. The durable spool is acknowledged only after this
 // callback reports terminal success.
 func (m *Manager) SetPromptCompletionFunc(fn PromptCompletionFunc) {
+	m.promptMu.Lock()
 	m.promptCompletionFunc = fn
 	m.promptFunc = nil
+	m.promptMu.Unlock()
+}
+
+// promptFuncSnapshot returns a consistent snapshot of promptFunc and
+// promptCompletionFunc under a single read lock (mitto-4m2). Every reader of
+// these two fields — including CloneWith* constructors — must go through
+// this accessor instead of touching m.promptFunc/m.promptCompletionFunc
+// directly, since the setters above mutate both fields as a pair.
+func (m *Manager) promptFuncSnapshot() (PromptFunc, PromptCompletionFunc) {
+	m.promptMu.RLock()
+	defer m.promptMu.RUnlock()
+	return m.promptFunc, m.promptCompletionFunc
 }
 
 func (m *Manager) hasPromptExecutor() bool {
-	return m != nil && (m.promptCompletionFunc != nil || m.promptFunc != nil)
+	if m == nil {
+		return false
+	}
+	pf, pcf := m.promptFuncSnapshot()
+	return pcf != nil || pf != nil
 }
 
 // SetNotifyFunc sets the callback invoked when a prompt-mode dispatch
@@ -692,14 +723,15 @@ func (m *Manager) CloneWithTextProcessors(procs []config.MessageProcessor, prior
 	activations := m.totalActivations
 	lastAt := m.lastActivationAt
 	m.statsMu.Unlock()
+	promptFn, promptCompletionFn := m.promptFuncSnapshot()
 
 	clone := &Manager{
 		processorsDir:           m.processorsDir,
 		logger:                  m.logger,
 		processors:              make([]*Processor, len(m.processors)),
 		rerunState:              make(map[string]*processorRunState),
-		promptFunc:              m.promptFunc,
-		promptCompletionFunc:    m.promptCompletionFunc,
+		promptFunc:              promptFn,
+		promptCompletionFunc:    promptCompletionFn,
 		notifyFunc:              m.notifyFunc,
 		shouldDeferDispatchFunc: m.shouldDeferDispatchFunc,
 		totalActivations:        activations,
@@ -730,14 +762,15 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 	activations := m.totalActivations
 	lastAt := m.lastActivationAt
 	m.statsMu.Unlock()
+	promptFn, promptCompletionFn := m.promptFuncSnapshot()
 
 	clone := &Manager{
 		processorsDir:           m.processorsDir,
 		logger:                  logger,
 		processors:              make([]*Processor, len(m.processors)),
 		rerunState:              make(map[string]*processorRunState),
-		promptFunc:              m.promptFunc,
-		promptCompletionFunc:    m.promptCompletionFunc,
+		promptFunc:              promptFn,
+		promptCompletionFunc:    promptCompletionFn,
 		notifyFunc:              m.notifyFunc,
 		shouldDeferDispatchFunc: m.shouldDeferDispatchFunc,
 		totalActivations:        activations,
@@ -832,14 +865,15 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 	activations := m.totalActivations
 	lastAt := m.lastActivationAt
 	m.statsMu.Unlock()
+	promptFn, promptCompletionFn := m.promptFuncSnapshot()
 
 	clone := &Manager{
 		processorsDir:           m.processorsDir,
 		logger:                  m.logger,
 		processors:              make([]*Processor, len(m.processors)),
 		rerunState:              make(map[string]*processorRunState),
-		promptFunc:              m.promptFunc,
-		promptCompletionFunc:    m.promptCompletionFunc,
+		promptFunc:              promptFn,
+		promptCompletionFunc:    promptCompletionFn,
 		notifyFunc:              m.notifyFunc,
 		shouldDeferDispatchFunc: m.shouldDeferDispatchFunc,
 		totalActivations:        activations,
@@ -2241,8 +2275,9 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	// Completion-aware dispatches are durable before the first RPC. A crash at
 	// any point after this write leaves a claimed entry that a restarted process
 	// can recover; only terminal success removes it.
+	_, promptCompletionFn := m.promptFuncSnapshot()
 	trackedPersisted := false
-	if m.promptCompletionFunc != nil && m.pendingDispatchStore != nil && workspaceUUID != "" {
+	if promptCompletionFn != nil && m.pendingDispatchStore != nil && workspaceUUID != "" {
 		appendResult, saveErr := m.pendingDispatchStore.AppendClaimed(entry)
 		if saveErr != nil {
 			if m.logger != nil {
@@ -2394,7 +2429,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 				return
 			}
 		}
-		if m.logger != nil && m.promptCompletionFunc != nil {
+		if _, pcf := m.promptFuncSnapshot(); m.logger != nil && pcf != nil {
 			m.logger.Info("prompt-mode processor completed",
 				"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name,
 				"attempts", totalAttempts, "waited", waited,
@@ -2584,10 +2619,11 @@ func (m *Manager) runDispatchRetryLoopTracked(ctx context.Context, workspaceUUID
 		}
 
 		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-		if m.promptCompletionFunc != nil {
-			completion, lastErr = m.promptCompletionFunc(attemptCtx, workspaceUUID, name, dispatchID, prompt)
+		promptFn, promptCompletionFn := m.promptFuncSnapshot()
+		if promptCompletionFn != nil {
+			completion, lastErr = promptCompletionFn(attemptCtx, workspaceUUID, name, dispatchID, prompt)
 		} else {
-			lastErr = m.promptFunc(attemptCtx, workspaceUUID, name, prompt)
+			lastErr = promptFn(attemptCtx, workspaceUUID, name, prompt)
 		}
 		cancel()
 		totalAttempts++
