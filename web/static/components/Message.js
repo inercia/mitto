@@ -15,6 +15,7 @@ import {
   linkifyUrls,
   messageToMarkdown,
   copyToClipboard,
+  getMessageBlocks,
 } from "../lib.js";
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
@@ -239,6 +240,88 @@ function NamedPromptPill({ message }) {
       />
     <//>
   `;
+}
+
+/**
+ * AgentMessageBlock - renders one stable, keyed block of an agent message's
+ * HTML (mitto-sus.4).
+ *
+ * Each backend `seq` is a semantic-boundary-flushed HTML fragment; modeling
+ * each seq as its own keyed sub-node lets Preact skip re-parsing/re-diffing
+ * completed blocks entirely and only touch the currently-streaming tail
+ * block. Post-processing (table wrapping, mermaid rendering, beads
+ * linkification) is scoped to this block's own subtree instead of scanning
+ * the whole accumulated response on every chunk.
+ */
+function AgentMessageBlock({ htmlContent }) {
+  const blockRef = useRef(null);
+  useEffect(() => {
+    if (blockRef.current) {
+      // mitto-sus.1.1: per-message render post-processor cost seams,
+      // now attributed per-block rather than per-whole-bubble.
+      perfMark("render.postprocess.tables.start");
+      const tables = blockRef.current.querySelectorAll(
+        "table:not(.table-wrapper table)",
+      );
+      tables.forEach((table) => {
+        if (table.parentElement?.classList.contains("table-wrapper")) {
+          return;
+        }
+        const wrapper = document.createElement("div");
+        wrapper.className = "table-wrapper";
+        table.parentNode.insertBefore(wrapper, table);
+        wrapper.appendChild(table);
+      });
+      perfMark("render.postprocess.tables.end");
+      perfMeasure(
+        "render.postprocess.tables",
+        "render.postprocess.tables.start",
+        "render.postprocess.tables.end",
+      );
+
+      // Render mermaid diagrams
+      perfMark("render.postprocess.mermaid.start");
+      if (typeof window.renderMermaidDiagrams === "function") {
+        window.renderMermaidDiagrams(blockRef.current);
+      }
+      perfMark("render.postprocess.mermaid.end");
+      perfMeasure(
+        "render.postprocess.mermaid",
+        "render.postprocess.mermaid.start",
+        "render.postprocess.mermaid.end",
+      );
+
+      // Linkify beads IDs and warm the show:<id> cache slot for each new link.
+      perfMark("render.postprocess.beadsLinks.start");
+      const workingDir = window.mittoCurrentWorkspace || "";
+      const { ids, meta } = getBeadsKnownIds(workingDir);
+      const linkified = linkifyBeadsRefs(blockRef.current, ids, meta);
+      preloadBeadsIssues(linkified, workingDir);
+      perfMark("render.postprocess.beadsLinks.end");
+      perfMeasure(
+        "render.postprocess.beadsLinks",
+        "render.postprocess.beadsLinks.start",
+        "render.postprocess.beadsLinks.end",
+      );
+    }
+
+    const onBeadsUpdated = () => {
+      if (blockRef.current) {
+        const workingDir = window.mittoCurrentWorkspace || "";
+        const { ids, meta } = getBeadsKnownIds(workingDir);
+        const linkified = linkifyBeadsRefs(blockRef.current, ids, meta);
+        preloadBeadsIssues(linkified, workingDir);
+      }
+    };
+    window.addEventListener("beads-ids-updated", onBeadsUpdated);
+    return () =>
+      window.removeEventListener("beads-ids-updated", onBeadsUpdated);
+  }, [htmlContent]);
+
+  return html`<span
+    ref=${blockRef}
+    dangerouslySetInnerHTML=${{ __html: htmlContent || "" }}
+  />`;
 }
 
 /**
@@ -681,93 +764,14 @@ function MessageImpl({
   // Agent message (HTML content)
   if (isAgent) {
     const showCursor = isLast && isStreaming && !message.complete;
-    const agentMessageRef = useRef(null);
 
-    // Wrap tables in scrollable containers and trigger mermaid rendering
-    //
-    // We render on every HTML update (not just when complete) because:
-    // 1. The backend's MarkdownBuffer ensures mermaid blocks are only flushed
-    //    when complete (opening and closing fences detected)
-    // 2. The renderMermaidDiagrams function uses a content-based cache, so
-    //    previously rendered diagrams are instantly restored from cache
-    // 3. This provides better UX by showing diagrams as soon as they're ready
-    //
-    // The cache prevents re-rendering: when innerHTML is replaced during streaming,
-    // the same diagram content will hit the cache and reuse the existing SVG.
-    useEffect(() => {
-      if (agentMessageRef.current) {
-        // mitto-sus.1.1: per-message render post-processor cost seams.
-        // Wrapped individually (not one start/end for the whole effect) so
-        // the epic's suspected root cause of streaming frame drops can be
-        // attributed to a specific processor.
-
-        // Wrap tables in scrollable containers for horizontal scrolling on narrow screens
-        perfMark("render.postprocess.tables.start");
-        const tables = agentMessageRef.current.querySelectorAll(
-          "table:not(.table-wrapper table)",
-        );
-        tables.forEach((table) => {
-          if (table.parentElement?.classList.contains("table-wrapper")) {
-            return;
-          }
-          const wrapper = document.createElement("div");
-          wrapper.className = "table-wrapper";
-          table.parentNode.insertBefore(wrapper, table);
-          wrapper.appendChild(table);
-        });
-        perfMark("render.postprocess.tables.end");
-        perfMeasure(
-          "render.postprocess.tables",
-          "render.postprocess.tables.start",
-          "render.postprocess.tables.end",
-        );
-
-        // Render mermaid diagrams
-        perfMark("render.postprocess.mermaid.start");
-        if (typeof window.renderMermaidDiagrams === "function") {
-          window.renderMermaidDiagrams(agentMessageRef.current);
-        }
-        perfMark("render.postprocess.mermaid.end");
-        perfMeasure(
-          "render.postprocess.mermaid",
-          "render.postprocess.mermaid.start",
-          "render.postprocess.mermaid.end",
-        );
-
-        // Linkify beads IDs and warm the show:<id> cache slot for each new link.
-        perfMark("render.postprocess.beadsLinks.start");
-        const workingDir = window.mittoCurrentWorkspace || "";
-        const { ids, meta } = getBeadsKnownIds(workingDir);
-        const linkified = linkifyBeadsRefs(
-          agentMessageRef.current,
-          ids,
-          meta,
-        );
-        preloadBeadsIssues(linkified, workingDir);
-        perfMark("render.postprocess.beadsLinks.end");
-        perfMeasure(
-          "render.postprocess.beadsLinks",
-          "render.postprocess.beadsLinks.start",
-          "render.postprocess.beadsLinks.end",
-        );
-      }
-
-      const onBeadsUpdated = () => {
-        if (agentMessageRef.current) {
-          const workingDir = window.mittoCurrentWorkspace || "";
-          const { ids, meta } = getBeadsKnownIds(workingDir);
-          const linkified = linkifyBeadsRefs(
-            agentMessageRef.current,
-            ids,
-            meta,
-          );
-          preloadBeadsIssues(linkified, workingDir);
-        }
-      };
-      window.addEventListener("beads-ids-updated", onBeadsUpdated);
-      return () =>
-        window.removeEventListener("beads-ids-updated", onBeadsUpdated);
-    }, [message.html]);
+    // mitto-sus.4: render as a keyed list of stable blocks (one per backend
+    // seq) instead of assigning one growing HTML string via
+    // dangerouslySetInnerHTML. Preact's keyed diffing then leaves completed
+    // blocks untouched in the DOM; only the streaming tail block re-renders.
+    // getMessageBlocks synthesizes a single full-message block for any
+    // legacy shape without `.blocks` (bounded fallback to prior behavior).
+    const blocks = useMemo(() => getMessageBlocks(message), [message]);
 
     const [agentCopied, setAgentCopied] = useState(false);
     const handleAgentCopy = async () => {
@@ -792,12 +796,17 @@ function MessageImpl({
           class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
         >
           <div
-            ref=${agentMessageRef}
             class="markdown-content text-sm ${showCursor
               ? "streaming-cursor"
               : ""}"
-            dangerouslySetInnerHTML=${{ __html: message.html || "" }}
-          />
+          >
+            ${blocks.map((block, idx) =>
+              html`<${AgentMessageBlock}
+                key=${block.seq ?? `idx-${idx}`}
+                htmlContent=${block.html}
+              />`,
+            )}
+          </div>
           <div class="flex items-center gap-1 mt-1">
             <${Tooltip}
               tip=${agentCopied ? "Copied!" : "Copy as Markdown"}

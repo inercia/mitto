@@ -23,6 +23,8 @@ import {
   getMaxSeq,
   isStaleClientState,
   resolveHasMoreAfterEventsLoaded,
+  makeAgentBlock,
+  markTailBlockComplete,
 } from "../lib.js";
 
 import {
@@ -837,9 +839,22 @@ export function useWebSocket({
             }
 
             const newHtml = existingHtml + incomingHtml;
+            // mitto-sus.4: mutate only the tail block's html. Same-seq (or
+            // seq-less backward-compat) chunks continue the same committed
+            // block instead of forcing a full re-flatten/re-parse of the
+            // whole accumulated response on every chunk.
+            const blocks =
+              last.blocks && last.blocks.length > 0
+                ? [...last.blocks]
+                : [makeAgentBlock(last.seq, existingHtml, false)];
+            blocks[blocks.length - 1] = {
+              ...blocks[blocks.length - 1],
+              html: (blocks[blocks.length - 1].html || "") + incomingHtml,
+            };
             messages[messages.length - 1] = {
               ...last,
               html: newHtml,
+              blocks,
             };
           } else {
             // New message - mark seq as seen
@@ -847,6 +862,9 @@ export function useWebSocket({
             messages.push({
               role: ROLE_AGENT,
               html: msg.data.html,
+              // mitto-sus.4: seed the stable-block list for this new
+              // committed/streaming block, keyed by its backend seq.
+              blocks: [makeAgentBlock(msgSeq, msg.data.html, false)],
               complete: false,
               timestamp: Date.now(),
               seq: msgSeq,
@@ -1249,7 +1267,14 @@ export function useWebSocket({
           if (lastIdx >= 0) {
             const last = messages[lastIdx];
             if (last.role === ROLE_AGENT || last.role === ROLE_THOUGHT) {
-              messages[lastIdx] = { ...last, complete: true };
+              // mitto-sus.4: mirror completion onto the tail block so a
+              // finished message's last block stops re-rendering as "live".
+              const blocks = markTailBlockComplete(last);
+              messages[lastIdx] = {
+                ...last,
+                complete: true,
+                ...(blocks ? { blocks } : {}),
+              };
             }
           }
           return {
@@ -1935,7 +1960,14 @@ export function useWebSocket({
               !last.complete &&
               (last.role === ROLE_AGENT || last.role === ROLE_THOUGHT)
             ) {
-              messages[messages.length - 1] = { ...last, complete: true };
+              // mitto-sus.4: mirror completion onto the tail block (see
+              // same pattern above).
+              const blocks = markTailBlockComplete(last);
+              messages[messages.length - 1] = {
+                ...last,
+                complete: true,
+                ...(blocks ? { blocks } : {}),
+              };
             }
             // Add the user message from the other client
             const userMessage = {

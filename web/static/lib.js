@@ -755,15 +755,21 @@ export function convertEventsToMessages(events, options = {}) {
         messages.push(message);
         break;
       }
-      case "agent_message":
+      case "agent_message": {
+        const htmlText = event.data?.html || event.data?.text || "";
         messages.push({
           role: ROLE_AGENT,
-          html: event.data?.html || event.data?.text || "",
+          html: htmlText,
+          // mitto-sus.4: seed the stable-block model so replayed/loaded
+          // messages render through the same keyed per-block path as live
+          // streaming messages (see makeAgentBlock/getMessageBlocks below).
+          blocks: [makeAgentBlock(seq, htmlText, true)],
           complete: true,
           timestamp: new Date(event.timestamp).getTime(),
           seq,
         });
         break;
+      }
       case "agent_thought": {
         // Coalesce consecutive thought events into a single message.
         // ThoughtBuffer flushes produce separate events with different seqs,
@@ -847,6 +853,57 @@ function isHrOnlyMessage(html) {
 }
 
 /**
+ * Build one stable-block entry for an agent message (mitto-sus.4).
+ *
+ * Each backend `agent_message` seq is a semantic-boundary-flushed HTML
+ * fragment (see MarkdownBuffer.SafeFlush in internal/conversation/markdown.go).
+ * Modeling each seq as its own block lets the renderer key on `seq` and keep
+ * completed blocks immutable in the DOM, instead of re-parsing the whole
+ * accumulated response on every chunk.
+ *
+ * @param {number|null|undefined} seq - Backend sequence number for this block
+ * @param {string} htmlText - HTML content of this block
+ * @param {boolean} complete - Whether this block will receive no more chunks
+ * @returns {{seq: (number|null), html: string, complete: boolean}}
+ */
+export function makeAgentBlock(seq, htmlText, complete = false) {
+  return { seq: seq ?? null, html: htmlText || "", complete };
+}
+
+/**
+ * Return the stable-block list for an agent message, synthesizing a single
+ * block from `.html` when `.blocks` is absent (mitto-sus.4 bounded fallback:
+ * older/legacy message shapes render as one full-replacement block, exactly
+ * matching the pre-mitto-sus.4 behavior, instead of being reconciled unsafely).
+ *
+ * @param {Object} msg - An agent message (or a message being coalesced into one)
+ * @returns {Array<{seq: (number|null), html: string, complete: boolean}>}
+ */
+export function getMessageBlocks(msg) {
+  if (msg?.blocks && msg.blocks.length > 0) return msg.blocks;
+  return [makeAgentBlock(msg?.seq, msg?.html || "", msg?.complete ?? true)];
+}
+
+/**
+ * Mark the last (tail) block of an agent message as complete, mirroring the
+ * message-level `complete: true` transition (mitto-sus.4). Returns undefined
+ * when the message has no block list yet, so callers can fall back to
+ * leaving `blocks` untouched.
+ *
+ * @param {Object} message - An agent message
+ * @returns {Array|undefined} Updated blocks array, or undefined if none
+ */
+export function markTailBlockComplete(message) {
+  if (!message?.blocks || message.blocks.length === 0) return undefined;
+  const blocks = [...message.blocks];
+  blocks[blocks.length - 1] = {
+    ...blocks[blocks.length - 1],
+    complete: true,
+  };
+  return blocks;
+}
+
+/**
  * Coalesce consecutive agent messages into single messages for display.
  *
  * The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
@@ -911,6 +968,10 @@ export function coalesceAgentMessages(messages, options = {}) {
       currentCoalesced = {
         ...currentCoalesced,
         html: (currentCoalesced.html || "") + (msg.html || ""),
+        // mitto-sus.4: concatenate stable blocks alongside the legacy html
+        // string. Each raw message already contributes its own committed
+        // block(s), so this is a plain concat, not a re-flatten.
+        blocks: [...getMessageBlocks(currentCoalesced), ...getMessageBlocks(msg)],
         // Keep the latest timestamp and complete status
         timestamp: msg.timestamp,
         complete: msg.complete,
@@ -926,6 +987,7 @@ export function coalesceAgentMessages(messages, options = {}) {
       // Start a new coalesced message
       currentCoalesced = {
         ...msg,
+        blocks: getMessageBlocks(msg),
         coalescedSeqs: [msg.seq],
         maxSeq: msg.seq,
       };
