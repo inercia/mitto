@@ -1218,6 +1218,37 @@ func TestPromptDispatcher_BuildProcessorInput_BeadsDatabaseMode(t *testing.T) {
 	}
 }
 
+// TestPromptDispatcher_BuildProcessorInput_ContextRetainedSkip pins the
+// mitto-cq4 parameter threading: buildProcessorInput's contextRetainedSkip
+// argument must land unmodified on ProcessorInput.ContextRetainedSkip,
+// independent of the isFirst argument, since the two are deliberately
+// different signals (isFirst = should this dispatch's processors run as the
+// first message; contextRetainedSkip = was a "match: first" skip on this
+// prompt caused by deliberate context-retention avoidance rather than an
+// ordinary later-turn skip).
+func TestPromptDispatcher_BuildProcessorInput_ContextRetainedSkip(t *testing.T) {
+	p := promptDispatcher{}
+
+	t.Run("true is threaded through", func(t *testing.T) {
+		d := newFakePromptDeps()
+		input := p.buildProcessorInput(d, "hello", false, true, PromptMeta{})
+		if !input.ContextRetainedSkip {
+			t.Error("expected ContextRetainedSkip=true to be threaded through from the contextRetainedSkip argument")
+		}
+		if input.IsFirstMessage {
+			t.Error("expected IsFirstMessage to remain false, independent of ContextRetainedSkip")
+		}
+	})
+
+	t.Run("false is threaded through", func(t *testing.T) {
+		d := newFakePromptDeps()
+		input := p.buildProcessorInput(d, "hello", false, false, PromptMeta{})
+		if input.ContextRetainedSkip {
+			t.Error("expected ContextRetainedSkip=false to be threaded through from the contextRetainedSkip argument")
+		}
+	})
+}
+
 func TestPromptDispatcher_BuildProcessorInput_NoStore_MinimalInput(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()

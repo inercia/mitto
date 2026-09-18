@@ -6864,3 +6864,123 @@ func TestQueueRecordErrorEvent_BugRepro_LogsErrorOnErrorAfterClose(t *testing.T)
 			"when the session is already closed")
 	}
 }
+
+// --- mitto-cq4: upstreamContextRetained / clearFirstPromptIfContextRetained /
+// rearmFirstPromptOnContextLoss ---
+//
+// These pin the core resumeMethod -> isFirstPrompt decision described in the
+// recorded Plan: "resume"/"load" mean the upstream agent retained (or
+// replayed) this session's context, so a routine lifecycle resume (archive/
+// unarchive, GC suspend/resume) must NOT reinject "match: first" processors;
+// "new" (and any unrecognized/empty value) means true context loss and must
+// fail-safe to reinjection. rearmFirstPromptOnContextLoss additionally covers
+// the process-restart / upstream-session-replacement case: a re-handshake
+// (promptCount > 0) that lands on "new" must re-arm isFirstPrompt even though
+// it was already cleared by an earlier resume/load.
+
+// TestBackgroundSession_UpstreamContextRetained pins the resumeMethod ->
+// bool classification in isolation, including the fail-safe default for
+// unknown/empty values.
+func TestBackgroundSession_UpstreamContextRetained(t *testing.T) {
+	cases := []struct {
+		name         string
+		resumeMethod string
+		want         bool
+	}{
+		{"resume retains context", "resume", true},
+		{"load retains context (history replay)", "load", true},
+		{"new is true context loss", "new", false},
+		{"empty (handshake not yet run) fails safe to reinject", "", false},
+		{"unrecognized value fails safe to reinject", "bogus", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bs := &BackgroundSession{resumeMethod: tc.resumeMethod}
+			if got := bs.upstreamContextRetained(); got != tc.want {
+				t.Errorf("upstreamContextRetained() with resumeMethod=%q = %v, want %v", tc.resumeMethod, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBackgroundSession_ClearFirstPromptIfContextRetained covers the
+// archive/unarchive and GC suspend/resume lifecycle events: after a
+// successful session/resume or session/load, isFirstPrompt must flip to
+// false so the next dispatch does not redundantly reinject "match: first"
+// processors. A "new" handshake (true context loss, e.g. a fresh session or
+// a failed resume/load) must leave isFirstPrompt untouched.
+func TestBackgroundSession_ClearFirstPromptIfContextRetained(t *testing.T) {
+	t.Run("resume clears isFirstPrompt", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "resume", isFirstPrompt: true}
+		bs.clearFirstPromptIfContextRetained()
+		if bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt=false after a resume that retained context")
+		}
+	})
+
+	t.Run("load clears isFirstPrompt", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "load", isFirstPrompt: true}
+		bs.clearFirstPromptIfContextRetained()
+		if bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt=false after a load that replayed context")
+		}
+	})
+
+	t.Run("new does not clear isFirstPrompt", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "new", isFirstPrompt: true}
+		bs.clearFirstPromptIfContextRetained()
+		if !bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt to remain true after true context loss (\"new\")")
+		}
+	})
+
+	t.Run("empty resumeMethod does not clear isFirstPrompt", func(t *testing.T) {
+		bs := &BackgroundSession{isFirstPrompt: true}
+		bs.clearFirstPromptIfContextRetained()
+		if !bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt to remain true when resumeMethod is unset (fail-safe)")
+		}
+	})
+}
+
+// TestBackgroundSession_RearmFirstPromptOnContextLoss covers the process-
+// restart / upstream-session-replacement lifecycle events: a re-handshake
+// (this session has already dispatched at least one prompt, so
+// clearFirstPromptIfContextRetained may have previously cleared
+// isFirstPrompt) that lands on resumeMethod="new" proves true context loss
+// and must re-arm reinjection. A session's very first handshake
+// (promptCount==0) must never be touched here — it already starts with
+// isFirstPrompt=true from the constructor.
+func TestBackgroundSession_RearmFirstPromptOnContextLoss(t *testing.T) {
+	t.Run("re-handshake with true context loss re-arms isFirstPrompt", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "new", promptCount: 1, isFirstPrompt: false}
+		bs.rearmFirstPromptOnContextLoss()
+		if !bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt=true re-armed after a re-handshake proved context loss")
+		}
+	})
+
+	t.Run("session's first-ever handshake is left untouched", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "new", promptCount: 0, isFirstPrompt: true}
+		bs.rearmFirstPromptOnContextLoss()
+		if !bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt to remain true (unchanged) on a session's first handshake")
+		}
+	})
+
+	t.Run("resume re-handshake does not re-arm (context retained, not lost)", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "resume", promptCount: 1, isFirstPrompt: false}
+		bs.rearmFirstPromptOnContextLoss()
+		if bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt to remain false: a \"resume\" outcome must never re-arm reinjection")
+		}
+	})
+
+	t.Run("load re-handshake does not re-arm (context retained, not lost)", func(t *testing.T) {
+		bs := &BackgroundSession{resumeMethod: "load", promptCount: 1, isFirstPrompt: false}
+		bs.rearmFirstPromptOnContextLoss()
+		if bs.isFirstPrompt {
+			t.Error("expected isFirstPrompt to remain false: a \"load\" outcome must never re-arm reinjection")
+		}
+	})
+}

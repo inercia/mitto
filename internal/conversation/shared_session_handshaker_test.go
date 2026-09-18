@@ -764,6 +764,18 @@ func TestHandshaker_ResumeSharedACPSession_CreatesNew_WhenNoID(t *testing.T) {
 	if d.resumeMethod != "new" {
 		t.Fatalf("expected resumeMethod='new', got %q", d.resumeMethod)
 	}
+	// mitto-cq4: a brand-new session (no persisted acp_session_id at all) is
+	// true context loss from the handshake's perspective, so the "new" branch
+	// must invoke the re-arm hook (whether it actually flips isFirstPrompt is
+	// BackgroundSession's own promptCount-guarded decision, pinned separately
+	// in TestBackgroundSession_RearmFirstPromptOnContextLoss) and must never
+	// invoke the context-retained clear hook.
+	if d.firstPromptRearmed != 1 {
+		t.Fatalf("expected hsRearmFirstPromptOnContextLoss called once on the \"new\" branch, got %d calls", d.firstPromptRearmed)
+	}
+	if d.firstPromptCleared != 0 {
+		t.Fatalf("expected hsClearFirstPromptIfRetained NOT called on the \"new\" branch, got %d calls", d.firstPromptCleared)
+	}
 }
 
 func TestHandshaker_ResumeSharedACPSession_RPCError_Cleans(t *testing.T) {
@@ -821,6 +833,15 @@ func TestHandshaker_ResumeSharedACPSession_UsesResumeRPC_WhenCapabilityAdvertise
 	}
 	if d.acpID != "acp-sess-resumed" {
 		t.Fatalf("expected acpID from ResumeSession, got %q", d.acpID)
+	}
+	// mitto-cq4: a successful session/resume RPC is the archive/unarchive and
+	// GC suspend/resume lifecycle path — the upstream agent retained this
+	// session's context, so the handshake must clear (not re-arm) reinjection.
+	if d.firstPromptCleared != 1 {
+		t.Fatalf("expected hsClearFirstPromptIfRetained called once on a successful resume, got %d calls", d.firstPromptCleared)
+	}
+	if d.firstPromptRearmed != 0 {
+		t.Fatalf("expected hsRearmFirstPromptOnContextLoss NOT called on a successful resume, got %d calls", d.firstPromptRearmed)
 	}
 }
 
@@ -925,6 +946,53 @@ func TestHandshaker_ResumeSharedACPSession_LoadNotFound_FallsBackToNewSessionOnc
 	// next cold start does not re-probe a known-bad id (doomed session/load).
 	if d.clearedACPID != 1 {
 		t.Fatalf("expected 1 clear-persisted call on load failure, got %d", d.clearedACPID)
+	}
+	// mitto-cq4: this is the upstream-session-replacement scenario — the
+	// persisted acp_session_id no longer resolves on the agent side (process
+	// replaced/restarted), session/load fails, and the "new" fallback proves
+	// true context loss. Must re-arm, never clear.
+	if d.firstPromptRearmed != 1 {
+		t.Fatalf("expected hsRearmFirstPromptOnContextLoss called once on the load->new fallback, got %d calls", d.firstPromptRearmed)
+	}
+	if d.firstPromptCleared != 0 {
+		t.Fatalf("expected hsClearFirstPromptIfRetained NOT called on the load->new fallback, got %d calls", d.firstPromptCleared)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_LoadSucceeds_ClearsFirstPrompt covers
+// the mitto-cq4 "load" success path directly (as opposed to the load-failure
+// fallback covered by LoadNotFound_FallsBackToNewSessionOnce): when
+// session/load succeeds, the agent rebuilt its context by replaying our
+// stored history — which already contains prior processor injections — so
+// the handshake must clear reinjection, never re-arm it.
+func TestHandshaker_ResumeSharedACPSession_LoadSucceeds_ClearsFirstPrompt(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	fp.loadSessionHandle = &SessionHandle{SessionID: "acp-sess-loaded"}
+
+	err := c.resumeSharedACPSession(d, fp, "cwd", "persisted-acp-id")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fp.loadSessionCalls) != 1 || fp.loadSessionCalls[0] != "persisted-acp-id" {
+		t.Fatalf("expected exactly 1 LoadSession call with the persisted id, got %v", fp.loadSessionCalls)
+	}
+	if len(fp.newSessionCalls) != 0 {
+		t.Fatalf("expected no NewSession call when Load succeeds, got %v", fp.newSessionCalls)
+	}
+	if d.resumeMethod != "load" {
+		t.Fatalf("expected resumeMethod='load', got %q", d.resumeMethod)
+	}
+	if d.acpID != "acp-sess-loaded" {
+		t.Fatalf("expected acpID from LoadSession, got %q", d.acpID)
+	}
+	if d.firstPromptCleared != 1 {
+		t.Fatalf("expected hsClearFirstPromptIfRetained called once on a successful load, got %d calls", d.firstPromptCleared)
+	}
+	if d.firstPromptRearmed != 0 {
+		t.Fatalf("expected hsRearmFirstPromptOnContextLoss NOT called on a successful load, got %d calls", d.firstPromptRearmed)
 	}
 }
 

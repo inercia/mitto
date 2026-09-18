@@ -7078,6 +7078,83 @@ func TestApplyProcessors_RunRecorder_Skipped(t *testing.T) {
 	}
 }
 
+// TestApplyProcessors_RunRecorder_ContextRetainedSkip is the mitto-cq4
+// telemetry-attribution test: when a "match: first" processor is skipped on
+// the very first prompt of a resumed/loaded session (ProcessorInput.
+// ContextRetainedSkip = true, set only in that specific case — see
+// BackgroundSession.clearFirstPromptIfContextRetained and
+// bgsession_prompt.go), the recorded SkipReason must be reclassified from
+// the generic SkipReasonMatchFirst to SkipReasonContextRetained so the Stats
+// tab can attribute and quantify the deliberate reinjection-avoidance
+// reduction described in the bead's acceptance criteria, distinguishing it
+// from an ordinary later-turn "not first message" skip.
+func TestApplyProcessors_RunRecorder_ContextRetainedSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "never-run.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	procs := []*Processor{{
+		Name:    "session-context",
+		Command: scriptPath,
+		When:    WhenConfig{On: PhaseUserPrompt, Match: MatchFirst},
+		Output:  OutputDiscard,
+		HookDir: tmpDir,
+	}}
+
+	t.Run("context-retained skip reclassifies to context_retained", func(t *testing.T) {
+		input := &ProcessorInput{Message: "original", IsFirstMessage: false, ContextRetainedSkip: true, WorkingDir: tmpDir}
+		rec := &recordingRecorder{}
+		if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+			t.Fatalf("ApplyProcessors() error = %v", err)
+		}
+		run := rec.byName("session-context")
+		if run == nil {
+			t.Fatal("expected a recorded run for session-context")
+		}
+		if run.Outcome != "skipped" {
+			t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+		}
+		if run.SkipReason != string(SkipReasonContextRetained) {
+			t.Errorf("SkipReason = %q, want %q", run.SkipReason, SkipReasonContextRetained)
+		}
+	})
+
+	t.Run("ordinary later-turn skip keeps the generic match-first reason", func(t *testing.T) {
+		input := &ProcessorInput{Message: "original", IsFirstMessage: false, ContextRetainedSkip: false, WorkingDir: tmpDir}
+		rec := &recordingRecorder{}
+		if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+			t.Fatalf("ApplyProcessors() error = %v", err)
+		}
+		run := rec.byName("session-context")
+		if run == nil {
+			t.Fatal("expected a recorded run for session-context")
+		}
+		if run.SkipReason != string(SkipReasonMatchFirst) {
+			t.Errorf("SkipReason = %q, want unchanged %q when ContextRetainedSkip is false", run.SkipReason, SkipReasonMatchFirst)
+		}
+	})
+
+	t.Run("context-retained flag on the first message itself is inert (processor applies)", func(t *testing.T) {
+		// ContextRetainedSkip is a skip-reclassification signal only; it must
+		// never suppress or otherwise affect a processor that DOES apply
+		// (IsFirstMessage=true), guarding against the flag ever leaking into
+		// the apply-eligibility decision itself.
+		input := &ProcessorInput{Message: "original", IsFirstMessage: true, ContextRetainedSkip: true, WorkingDir: tmpDir}
+		rec := &recordingRecorder{}
+		if _, err := ApplyProcessors(context.Background(), procs, input, tmpDir, nil, rec.record); err != nil {
+			t.Fatalf("ApplyProcessors() error = %v", err)
+		}
+		run := rec.byName("session-context")
+		if run == nil {
+			t.Fatal("expected a recorded run for session-context")
+		}
+		if run.Outcome == "skipped" {
+			t.Errorf("expected the match:first processor to apply on the actual first message, got Outcome=%q SkipReason=%q", run.Outcome, run.SkipReason)
+		}
+	})
+}
+
 // TestApplyProcessors_RunRecorder_ErrorSkip verifies a failing command-mode
 // processor with onError:skip is recorded as an error (with a non-empty
 // Error message and positive Duration), and the pipeline continues.
@@ -7354,6 +7431,42 @@ func TestApplyWithRerun_RunRecorder(t *testing.T) {
 		if run.Phase != "before" {
 			t.Errorf("run %+v: Phase = %q, want %q", run, run.Phase, "before")
 		}
+	}
+}
+
+// TestApplyWithRerun_RunRecorder_ContextRetainedSkip mirrors
+// TestApplyProcessors_RunRecorder_ContextRetainedSkip for the applyWithRerun
+// pipeline (forced via the presence of a prompt-mode processor, per
+// hasPromptModeProcessors routing in Manager.Apply): the mitto-cq4
+// reclassification of a "match: first" skip into SkipReasonContextRetained
+// must apply identically on this second skip-recording site.
+func TestApplyWithRerun_RunRecorder_ContextRetainedSkip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	m := NewManager(tmpDir, nil)
+	m.processors = []*Processor{
+		{Name: "prompt-dispatched", Prompt: "hello", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}},
+		{Name: "session-context", Text: "ctx", Mutate: config.ProcessorMutatePrepend, When: WhenConfig{On: PhaseUserPrompt, Match: MatchFirst}},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error { return nil })
+	rec := &recordingRecorder{}
+	m.SetRunRecorder(rec.record)
+
+	if _, err := m.Apply(context.Background(), &ProcessorInput{
+		Message: "x", WorkingDir: tmpDir, IsFirstMessage: false, ContextRetainedSkip: true,
+	}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	run := rec.byName("session-context")
+	if run == nil {
+		t.Fatal("expected a recorded run for session-context")
+	}
+	if run.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want %q", run.Outcome, "skipped")
+	}
+	if run.SkipReason != string(SkipReasonContextRetained) {
+		t.Errorf("SkipReason = %q, want %q", run.SkipReason, SkipReasonContextRetained)
 	}
 }
 
