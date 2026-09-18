@@ -116,6 +116,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Tools.ServerStates", cel.MapType(cel.StringType, cel.StringType)),
 		cel.Variable("Tools.ServerNames", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
 
+		// Prompts variables. EnabledNames backs the Prompts.IsEnabled(name)
+		// receiver macro below (mitto-3od.1) — lets a processor's/prompt's
+		// enabledWhen gate on whether another prompt/processor is enabled in
+		// the effective merged workspace view (e.g. a legacy close-phase
+		// processor disabling itself once a consolidating one is enabled).
+		cel.Variable("Prompts.EnabledNames", cel.ListType(cel.StringType)),
+
 		// Permissions variables
 		cel.Variable("Permissions.CanDoIntrospection", cel.BoolType),
 		cel.Variable("Permissions.CanSendPrompt", cel.BoolType),
@@ -193,6 +200,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
 				cel.FunctionBinding(mittoHasModelTag),
+			),
+		),
+		cel.Function("__mitto_promptEnabled",
+			cel.Overload("__mitto_promptEnabled_list_string",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoPromptEnabled),
 			),
 		),
 		cel.Function("__mitto_matchesServerType",
@@ -309,6 +323,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Macros(
 			cel.ReceiverMacro("HasPattern", 1, toolsHasPatternMacro),
 			cel.ReceiverMacro("HasModelTag", 1, sessionHasModelTagMacro),
+			cel.ReceiverMacro("IsEnabled", 1, promptsIsEnabledMacro),
 			cel.ReceiverMacro("HasAllPatterns", 1, toolsHasAllPatternsMacro),
 			cel.ReceiverMacro("HasAnyPattern", 1, toolsHasAnyPatternMacro),
 			cel.ReceiverMacro("MatchesServerType", 1, acpMatchesServerTypeMacro),
@@ -515,6 +530,8 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Tools.ServerStates": toolServerStatesMap(ctx.Tools.Servers),
 		"Tools.ServerNames":  toolServerNamesMap(ctx.Tools.Servers),
 
+		"Prompts.EnabledNames": ctx.Prompts.EnabledNames,
+
 		"Permissions.CanDoIntrospection":         ctx.Permissions.CanDoIntrospection,
 		"Permissions.CanSendPrompt":              ctx.Permissions.CanSendPrompt,
 		"Permissions.CanPromptUser":              ctx.Permissions.CanPromptUser,
@@ -598,6 +615,15 @@ func sessionHasModelTagMacro(eh cel.MacroExprFactory, target celast.Expr, args [
 		return nil, nil
 	}
 	return eh.NewCall("__mitto_hasModelTag", eh.NewIdent("Session.ModelTags"), args[0]), nil
+}
+
+// promptsIsEnabledMacro rewrites Prompts.IsEnabled(name) ->
+// __mitto_promptEnabled(Prompts.EnabledNames, name) (mitto-3od.1).
+func promptsIsEnabledMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "Prompts") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_promptEnabled", eh.NewIdent("Prompts.EnabledNames"), args[0]), nil
 }
 
 // acpMatchesServerTypeMacro rewrites ACP.MatchesServerType(t) ->
@@ -822,6 +848,20 @@ func mittoHasModelTag(args ...ref.Val) ref.Val {
 	tags := extractStringArgs([]ref.Val{args[0]})
 	tag := valToString(args[1])
 	return types.Bool(hasModelTag(tags, tag))
+}
+
+// mittoPromptEnabled reports whether name (args[1]) is present in the
+// enabled-prompt-names list (args[0]), case-insensitively. Context-free so
+// the compiled program can be cached. Delegates to PromptsContext.Enabled
+// (context.go) — single source of truth shared with the .Prompts.Enabled
+// template predicate.
+func mittoPromptEnabled(args ...ref.Val) ref.Val {
+	if len(args) != 2 {
+		return types.Bool(false)
+	}
+	names := extractStringArgs([]ref.Val{args[0]})
+	name := valToString(args[1])
+	return types.Bool(PromptsContext{EnabledNames: names}.Enabled(name))
 }
 
 // mittoMatchesServerType reports whether the ACP server type matches any of the

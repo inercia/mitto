@@ -321,6 +321,49 @@ func TestCELConvenienceFunctions(t *testing.T) {
 	}
 }
 
+// TestCELPromptsIsEnabled validates the Prompts.IsEnabled(name) CEL receiver
+// macro (mitto-3od.1): returns true for a name present in EnabledNames, false
+// when the name is known-but-disabled (registered in the workspace view but
+// not in EnabledNames) or entirely unknown, case-insensitively, and fails
+// closed on the zero-value (unknown snapshot) context.
+func TestCELPromptsIsEnabled(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	populated := &PromptEnabledContext{
+		Prompts: PromptsContext{
+			Names:        []string{"memorize-preferences", "knowledge-router", "extract-memories-on-close"},
+			EnabledNames: []string{"memorize-preferences", "knowledge-router"},
+		},
+	}
+	unknown := &PromptEnabledContext{} // zero-value: snapshot unknown
+
+	tests := []struct {
+		name string
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		{"enabled prompt", `Prompts.IsEnabled("knowledge-router")`, populated, true},
+		{"case-insensitive match", `Prompts.IsEnabled("KNOWLEDGE-ROUTER")`, populated, true},
+		{"known but disabled prompt", `Prompts.IsEnabled("extract-memories-on-close")`, populated, false},
+		{"unknown prompt name", `Prompts.IsEnabled("does-not-exist")`, populated, false},
+		{"empty name", `Prompts.IsEnabled("")`, populated, false},
+		{"zero-value context fails closed", `Prompts.IsEnabled("knowledge-router")`, unknown, false},
+		{"negated gate for legacy-processor suppression", `!Prompts.IsEnabled("knowledge-router")`, populated, false},
+		{"negated gate when router disabled", `!Prompts.IsEnabled("knowledge-router")`, unknown, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			got := evaluate(t, e, ce, tt.ctx)
+			if got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestCELEvaluator_CommandExists validates the CommandExists() CEL function.
 func TestCELEvaluator_CommandExists(t *testing.T) {
 	e := newTestEvaluator(t)

@@ -71,7 +71,11 @@ type PromptEnabledContext struct {
 	// whether a peer prompt exists / is enabled without an MCP round-trip
 	// (see loop-processing.prompt.yaml Step 1). Zero-value context means
 	// "unknown" — Exists / Enabled return false (fail-closed), matching the
-	// mitto_prompt_get failure branch. Template-only; NOT exposed to CEL.
+	// mitto_prompt_get failure branch. The Exists/Enabled Go methods are
+	// template-only; EnabledNames is ALSO declared on the CEL env (mitto-3od.1)
+	// so enabledWhen expressions can gate via `Prompts.IsEnabled("name")` — the
+	// "does prompt X supersede prompt Y" pattern (e.g. legacy close-phase
+	// processors disabling themselves once a consolidating processor is on).
 	Prompts PromptsContext
 }
 
@@ -641,18 +645,21 @@ type ItemContext struct {
 }
 
 // PromptsContext exposes the workspace prompt registry to prompt templates
-// (Go-template only; NOT declared on the CEL env, mirroring the .Trigger and
-// PromptTextResolver posture). Backed by a snapshot of the same PromptsCache
-// view mitto_prompt_get / mitto_prompt_list read, so .Prompts.Exists /
-// .Prompts.Enabled return the same answer without the MCP round-trip.
+// and, for EnabledNames, to CEL enabledWhen expressions (mitto-3od.1).
+// Backed by a snapshot of the same PromptsCache view mitto_prompt_get /
+// mitto_prompt_list read, so .Prompts.Exists / .Prompts.Enabled (templates)
+// and Prompts.IsEnabled(name) (CEL, see evaluator.go) return the same
+// answer without an MCP round-trip.
 //
 // Name matching is case-insensitive (matches mitto_prompt_get resolution).
 // Names / EnabledNames preserve canonical case for display; membership is
 // checked via lowercased-key sets for O(1) lookup.
 //
 // A zero-value context (both name slices nil) means "the snapshot is unknown"
-// — Exists / Enabled fail-closed (return false), matching the pass-start
-// mitto_prompt_get failure branch that disables the class for the pass.
+// — Exists / Enabled / IsEnabled fail-closed (return false), matching the
+// pass-start mitto_prompt_get failure branch that disables the class for the
+// pass. Names itself is Go-template only (Exists); only EnabledNames is
+// declared on the CEL env, since IsEnabled is the only CEL-facing predicate.
 type PromptsContext struct {
 	// Names lists all registered prompt names in the current workspace view
 	// (enabled and disabled), in canonical case. Includes disabled entries so
