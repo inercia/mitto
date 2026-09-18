@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/session"
 )
 
 // InputType defines what data is sent to the processor's stdin.
@@ -126,11 +127,19 @@ const (
 // (fire-and-forget). Returns error only if the prompt couldn't be dispatched.
 type PromptFunc func(ctx context.Context, workspaceUUID, processorName, prompt string) error
 
-// PromptCompletion reports the content-free terminal outcome of a tracked
-// prompt-mode processor execution.
+// PromptCompletion reports the terminal outcome of a tracked prompt-mode
+// processor execution. SaveCount/SaveCountKnown are deliberately content-free
+// (see PromptProcessorTracked). FinalMessage is additive (mitto-3od.2): it
+// carries the auxiliary session's raw terminal response text (with the
+// save-count acknowledgement line stripped) ONLY for callers that opt into
+// output capture — currently the close-phase knowledge-router integration in
+// ApplyOnClose, which parses it as structured findings and never persists the
+// raw text itself. Ordinary consumers (memorize-preferences,
+// extract-memories-on-close) leave it unused; it defaults to "".
 type PromptCompletion struct {
 	SaveCount      int
 	SaveCountKnown bool
+	FinalMessage   string
 }
 
 // PromptCompletionFunc executes a prompt-mode processor through auxiliary
@@ -496,6 +505,13 @@ type CloseProcessorInput struct {
 	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
 	// Excluded from JSON — never sent to external command processors.
 	ProcessorArgOverrides map[string]map[string]string `json:"-"`
+	// SessionStore is the session store, used by the close-phase
+	// knowledge-router integration (mitto-3od.2) to read/write the
+	// per-session close-router.json completion sidecar around each router
+	// dispatch. nil is safe: session.ReadCloseRouterState/
+	// WriteCloseRouterState both no-op on a nil store. Excluded from JSON —
+	// never sent to external command processors.
+	SessionStore *session.Store `json:"-"`
 }
 
 // AfterToolCallSnapshot is a lightweight snapshot of one tool call from an agent turn.

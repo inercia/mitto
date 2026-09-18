@@ -434,8 +434,8 @@ func startPendingDispatchSweep(
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{BaseDir: spoolDir})
 	if auxMgr != nil {
 		procMgr.SetPromptCompletionFunc(func(promptCtx context.Context, wsUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
-			saveCount, err := auxMgr.PromptProcessorTracked(promptCtx, wsUUID, processorName, dispatchID, prompt)
-			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
+			saveCount, finalMessage, err := auxMgr.PromptProcessorTracked(promptCtx, wsUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil, FinalMessage: finalMessage}, err
 		})
 	}
 

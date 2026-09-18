@@ -849,8 +849,8 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	// acknowledged after the auxiliary turn reports its save count.
 	if auxMgr != nil {
 		procMgr.SetPromptCompletionFunc(func(ctx context.Context, wsUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
-			saveCount, err := auxMgr.PromptProcessorTracked(ctx, wsUUID, processorName, dispatchID, prompt)
-			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil}, err
+			saveCount, finalMessage, err := auxMgr.PromptProcessorTracked(ctx, wsUUID, processorName, dispatchID, prompt)
+			return processors.PromptCompletion{SaveCount: saveCount, SaveCountKnown: err == nil, FinalMessage: finalMessage}, err
 		})
 	}
 
@@ -967,6 +967,7 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		HistorySnapshot:       historySnapshot,
 		HistorySnapshotError:  historySnapshotError,
 		ProcessorArgOverrides: procArgOverrides,
+		SessionStore:          store,
 	}
 
 	// Pin the workspace so GC Tier 2/4/6 cannot tear down the shared ACP

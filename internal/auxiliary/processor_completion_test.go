@@ -21,21 +21,24 @@ func TestWorkspaceAuxiliaryManager_PromptProcessorTrackedRequiresMatchingAcknowl
 	}
 	m := NewWorkspaceAuxiliaryManager(provider, nil)
 
-	count, err := m.PromptProcessorTracked(context.Background(), "ws", "memory", dispatchID, "persist")
+	count, message, err := m.PromptProcessorTracked(context.Background(), "ws", "memory", dispatchID, "persist")
 	if err != nil {
 		t.Fatalf("PromptProcessorTracked() error = %v", err)
 	}
 	if count != 2 {
 		t.Fatalf("PromptProcessorTracked() save count = %d, want 2", count)
 	}
+	if message != "done" {
+		t.Fatalf("PromptProcessorTracked() message = %q, want %q", message, "done")
+	}
 
-	if _, err := parseProcessorCompletion(processorCompletionMarker+`{"dispatch_id":"other","save_count":1}`, dispatchID); err == nil {
+	if _, _, err := parseProcessorCompletion(processorCompletionMarker+`{"dispatch_id":"other","save_count":1}`, dispatchID); err == nil {
 		t.Fatal("parseProcessorCompletion() accepted mismatched dispatch ID")
 	}
-	if _, err := parseProcessorCompletion("silent response", dispatchID); err == nil {
+	if _, _, err := parseProcessorCompletion("silent response", dispatchID); err == nil {
 		t.Fatal("parseProcessorCompletion() accepted missing acknowledgement")
 	}
-	if _, err := parseProcessorCompletion(processorCompletionMarker+`{"dispatch_id":"dispatch-123"}`, dispatchID); err == nil {
+	if _, _, err := parseProcessorCompletion(processorCompletionMarker+`{"dispatch_id":"dispatch-123"}`, dispatchID); err == nil {
 		t.Fatal("parseProcessorCompletion() accepted missing save count")
 	}
 }
