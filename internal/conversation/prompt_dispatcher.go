@@ -459,7 +459,7 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 			p.applyModelPreference(d, meta)
 			meta.modelPreferenceResolved = true
 		}
-		input := p.buildProcessorInput(d, message, false, meta)
+		input := p.buildProcessorInput(d, message, false, false, meta)
 		tctx := processors.BuildCELContext(input)
 		// Wire the PromptText resolver (mitto-85y.3): resolves a workspace-prompt
 		// NAME to its full body text at render time. Uses the same PromptResolver
@@ -654,7 +654,11 @@ func (p promptDispatcher) buildAttachmentBlocks(d promptDeps, imageIDs, fileIDs 
 // parent-name resolution, child-session list, MCP tool names, user-data-schema /
 // .mittorc / user-data population, and final struct assembly.
 // All fetches are best-effort (errors are swallowed; missing fields become "").
-func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFirst bool, meta PromptMeta) *processors.ProcessorInput {
+// contextRetainedSkip (mitto-cq4) is true only when isFirst is false because
+// the caller deliberately cleared it on a resumed/loaded session's very first
+// prompt (see BackgroundSession.clearFirstPromptIfContextRetained); it
+// populates ProcessorInput.ContextRetainedSkip for skip-reason telemetry.
+func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFirst bool, contextRetainedSkip bool, meta PromptMeta) *processors.ProcessorInput {
 	var sessionName, acpServer, parentSessionID, parentSessionName, beadsIssue string
 	var childSessions []processors.ChildSession
 	var workspacePeers []processors.PeerSession
@@ -824,6 +828,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 	return &processors.ProcessorInput{
 		Message:                message,
 		IsFirstMessage:         isFirst,
+		ContextRetainedSkip:    contextRetainedSkip,
 		HasMessages:            hasMessages,
 		SessionID:              d.pdSessionID(),
 		WorkingDir:             workingDir,

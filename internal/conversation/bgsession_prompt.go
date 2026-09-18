@@ -810,6 +810,13 @@ retryAfterRestart:
 	if isFirst {
 		bs.isFirstPrompt = false
 	}
+	// mitto-cq4: this is the very first prompt of this session's lifetime
+	// (promptCount just became 1) but isFirst is already false because
+	// clearFirstPromptIfContextRetained cleared it during the ACP handshake —
+	// i.e. this specific "not first" skip is a deliberate reinjection
+	// avoidance, not an ordinary later-turn skip. Feeds
+	// ProcessorInput.ContextRetainedSkip for telemetry attribution.
+	contextRetainedSkip := bs.promptCount == 1 && !isFirst && bs.upstreamContextRetained()
 	bs.promptMu.Unlock()
 
 	// Point of no return: this dispatch is committed. Advance the loop continuation
@@ -891,7 +898,7 @@ retryAfterRestart:
 
 	// Build processor input and assemble final content blocks.
 	// See promptDispatcher.buildProcessorInput + applyProcessorsAndBuildBlocks.
-	processorInput := bs.promptDisp.buildProcessorInput(d, message, isFirst, meta)
+	processorInput := bs.promptDisp.buildProcessorInput(d, message, isFirst, contextRetainedSkip, meta)
 	finalBlocks := bs.promptDisp.applyProcessorsAndBuildBlocks(d, processorInput, message, contentBlocks, shouldInjectHistory)
 	if err := turn.ctx.Err(); err != nil {
 		return err

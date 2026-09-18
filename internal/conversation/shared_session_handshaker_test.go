@@ -179,22 +179,24 @@ type fakeHandshakeDeps struct {
 	mu sync.Mutex
 
 	// state knobs
-	sessionID         string
-	logger            *slog.Logger
-	sessionCtx        context.Context
-	creationCtx       context.Context
-	sharedProcess     SharedProcess
-	acpClient         *WebClient
-	agentImages       bool
-	acpID             string
-	pending           bool
-	pendingDir        string
-	pendingMcpSrv     []agentbackend.MCPServerDescriptor
-	pendingModes      *agentbackend.ModeState
-	pendingModels     *SessionModelState
-	pendingModelCfgId string
-	appliedModelCfgId string
-	resumeMethod      string
+	sessionID          string
+	logger             *slog.Logger
+	sessionCtx         context.Context
+	creationCtx        context.Context
+	sharedProcess      SharedProcess
+	acpClient          *WebClient
+	agentImages        bool
+	acpID              string
+	pending            bool
+	pendingDir         string
+	pendingMcpSrv      []agentbackend.MCPServerDescriptor
+	pendingModes       *agentbackend.ModeState
+	pendingModels      *SessionModelState
+	pendingModelCfgId  string
+	appliedModelCfgId  string
+	resumeMethod       string
+	firstPromptCleared int // mitto-cq4: hsClearFirstPromptIfRetained call count
+	firstPromptRearmed int // mitto-cq4: hsRearmFirstPromptOnContextLoss call count
 
 	// mutexes for pending/handshake
 	pendingMu   sync.Mutex
@@ -305,6 +307,17 @@ func (f *fakeHandshakeDeps) hsSetResumeMethod(method string) {
 	f.resumeMethod = method
 }
 func (f *fakeHandshakeDeps) hsGetResumeMethod() string { return f.resumeMethod }
+
+func (f *fakeHandshakeDeps) hsClearFirstPromptIfRetained() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.firstPromptCleared++
+}
+func (f *fakeHandshakeDeps) hsRearmFirstPromptOnContextLoss() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.firstPromptRearmed++
+}
 
 func (f *fakeHandshakeDeps) hsStartMcpServer(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor {
 	f.mu.Lock()

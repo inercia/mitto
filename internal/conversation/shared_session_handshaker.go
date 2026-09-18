@@ -148,6 +148,13 @@ type handshakeDeps interface {
 	hsSetResumeMethod(method string)
 	hsGetResumeMethod() string
 
+	// First-prompt/reinjection tracking (mitto-cq4). Call immediately after
+	// hsSetResumeMethod so isFirstPrompt reflects whether the just-completed
+	// handshake proved the upstream agent retained (or replayed) this
+	// session's context.
+	hsClearFirstPromptIfRetained()
+	hsRearmFirstPromptOnContextLoss()
+
 	// MCP server lifecycle
 	hsStartMcpServer(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor
 	hsStopMcpServer()
@@ -492,6 +499,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				// Resumed sessions may already hold agent-side history we cannot
 				// see from Go; virginity is not authoritative (mitto-s9g2).
 				d.hsMarkContextUnknown()
+				// Upstream agent retained this session's context; avoid redundant
+				// "match: first" processor reinjection (mitto-cq4).
+				d.hsClearFirstPromptIfRetained()
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully resumed session using UNSTABLE resume API",
 						"acp_session_id", acpSessionID, "resume_method", "resume")
@@ -572,6 +582,10 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				// Session/load replays history agent-side; virginity is not
 				// authoritative (mitto-s9g2).
 				d.hsMarkContextUnknown()
+				// Agent rebuilt context from our replayed history, which already
+				// contains prior processor injections; avoid duplicating them
+				// (mitto-cq4).
+				d.hsClearFirstPromptIfRetained()
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully loaded session (with history replay)",
 						"acp_session_id", acpSessionID, "resume_method", "load")
@@ -588,6 +602,12 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			return cancelErr
 		}
 		d.hsSetResumeMethod("new")
+		// True context loss: if this session had already dispatched a prompt
+		// (a re-handshake after e.g. SharedACPProcess.Restart()), re-arm
+		// reinjection of "match: first" processors (mitto-cq4). No-op on a
+		// session's very first handshake, which already starts with
+		// isFirstPrompt=true.
+		d.hsRearmFirstPromptOnContextLoss()
 		rpcCtx, rpcCancel := c.creationRPCCtx(d)
 		// Cap the session/new FALLBACK by the shared resume deadline (mitto-1ut) so
 		// the load probe + this fallback stay within ONE cold budget instead of

@@ -1209,7 +1209,7 @@ func TestPromptDispatcher_BuildProcessorInput_BeadsDatabaseMode(t *testing.T) {
 	d := newFakePromptDeps()
 	d.beadsDatabaseMode = config.BeadsDatabaseModeShared
 
-	input := p.buildProcessorInput(d, "hello", false, PromptMeta{})
+	input := p.buildProcessorInput(d, "hello", false, false, PromptMeta{})
 	if input.DatabaseMode != config.BeadsDatabaseModeShared {
 		t.Fatalf("DatabaseMode = %q, want shared", input.DatabaseMode)
 	}
@@ -1225,7 +1225,7 @@ func TestPromptDispatcher_BuildProcessorInput_NoStore_MinimalInput(t *testing.T)
 	d.sessionID = "sess-1"
 	d.workingDir = "" // no workingDir → no RC loading
 
-	input := p.buildProcessorInput(d, "hello", false, PromptMeta{SenderID: "user"})
+	input := p.buildProcessorInput(d, "hello", false, false, PromptMeta{SenderID: "user"})
 
 	if input.Message != "hello" {
 		t.Fatalf("expected message='hello', got %q", input.Message)
@@ -1262,7 +1262,7 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	d.childPrompting["child-1"] = true
 	d.mcpToolNames = []string{"tool_a", "tool_b"}
 
-	input := p.buildProcessorInput(d, "test", true, PromptMeta{SenderID: "loop-runner"})
+	input := p.buildProcessorInput(d, "test", true, false, PromptMeta{SenderID: "loop-runner"})
 
 	if input.SessionName != "My Session" {
 		t.Fatalf("expected SessionName='My Session', got %q", input.SessionName)
@@ -1305,7 +1305,7 @@ func TestPromptDispatcher_BuildProcessorInput_ChildQueuedCount(t *testing.T) {
 	d.childQueueLength["child-b"] = 0
 	// child-c: absent from map → default 0 (documents fail-open semantics)
 
-	input := p.buildProcessorInput(d, "test", false, PromptMeta{})
+	input := p.buildProcessorInput(d, "test", false, false, PromptMeta{})
 
 	if len(input.ChildSessions) != 3 {
 		t.Fatalf("expected 3 children, got %d", len(input.ChildSessions))
@@ -1356,7 +1356,7 @@ func TestPromptDispatcher_BuildProcessorInput_WorkspacePeers(t *testing.T) {
 	d.childPrompting["peer-1"] = true
 	d.childPrompting["peer-2"] = false
 
-	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
 
 	if len(input.WorkspacePeers) != 2 {
 		t.Fatalf("expected 2 workspace peers, got %d: %+v", len(input.WorkspacePeers), input.WorkspacePeers)
@@ -1393,7 +1393,7 @@ func TestPromptDispatcher_BuildProcessorInput_WorkspacePeersError(t *testing.T) 
 	d.sessionID = "self"
 	d.workspacePeersErr = errors.New("simulated store failure")
 
-	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
 	if len(input.WorkspacePeers) != 0 {
 		t.Fatalf("expected empty WorkspacePeers on error, got %+v", input.WorkspacePeers)
 	}
@@ -1408,7 +1408,7 @@ func TestPromptDispatcher_BuildProcessorInput_WorkspacePeersNoStore(t *testing.T
 	d.hasStore = false
 	d.workspacePeers = []session.Metadata{{SessionID: "peer-1", Name: "Peer A"}}
 
-	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
 	if len(input.WorkspacePeers) != 0 {
 		t.Fatalf("expected empty WorkspacePeers when no store, got %+v", input.WorkspacePeers)
 	}
@@ -1420,7 +1420,7 @@ func TestPromptDispatcher_BuildProcessorInput_IsLoopForced(t *testing.T) {
 	d.hasStore = false
 
 	meta := PromptMeta{IsLoopForced: true}
-	input := p.buildProcessorInput(d, "msg", false, meta)
+	input := p.buildProcessorInput(d, "msg", false, false, meta)
 	if !input.IsLoopForced {
 		t.Fatal("expected IsLoopForced=true")
 	}
@@ -1436,7 +1436,7 @@ func TestPromptDispatcher_BuildProcessorInput_IsLoopRunOnStart(t *testing.T) {
 	d.hasStore = false
 
 	meta := PromptMeta{IsLoopRunOnStart: true}
-	input := p.buildProcessorInput(d, "msg", false, meta)
+	input := p.buildProcessorInput(d, "msg", false, false, meta)
 	if !input.IsLoopRunOnStart {
 		t.Fatal("expected IsLoopRunOnStart=true")
 	}
@@ -1449,7 +1449,7 @@ func TestPromptDispatcher_BuildProcessorInput_Arguments(t *testing.T) {
 
 	args := map[string]string{"BRANCH": "main", "ISSUE": "mitto-1"}
 	meta := PromptMeta{Arguments: args}
-	input := p.buildProcessorInput(d, "msg", false, meta)
+	input := p.buildProcessorInput(d, "msg", false, false, meta)
 	if input.Arguments == nil {
 		t.Fatal("expected Arguments populated from meta.Arguments")
 	}
@@ -1468,7 +1468,7 @@ func TestPromptDispatcher_BuildProcessorInput_UserDataJSON(t *testing.T) {
 		},
 	}
 
-	input := p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
 	if input.UserDataJSON == "" {
 		t.Fatal("expected UserDataJSON populated from user data attributes")
 	}
@@ -1515,7 +1515,7 @@ func TestPromptDispatcher_BuildProcessorInput_ModelTagsUseIntendedModel(t *testi
 	// Explicit meta.PreferredModels → intended model wins over the active one.
 	d := newDeps()
 	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelTag: "Coding"}}}
-	input := p.buildProcessorInput(d, "msg", false, meta)
+	input := p.buildProcessorInput(d, "msg", false, false, meta)
 	if input.ModelName != "Claude Sonnet" {
 		t.Errorf("ModelName = %q, want %q", input.ModelName, "Claude Sonnet")
 	}
@@ -1526,21 +1526,21 @@ func TestPromptDispatcher_BuildProcessorInput_ModelTagsUseIntendedModel(t *testi
 	// Preference declared by the named prompt (resolved via pdResolvePreferredModels).
 	d = newDeps()
 	d.resolvedPreferred = []config.PromptPreferredModel{{ModelTag: "Coding"}}
-	input = p.buildProcessorInput(d, "msg", false, PromptMeta{PromptName: "Feature — test phase"})
+	input = p.buildProcessorInput(d, "msg", false, false, PromptMeta{PromptName: "Feature — test phase"})
 	if input.ModelName != "Claude Sonnet" {
 		t.Errorf("named-prompt ModelName = %q, want %q", input.ModelName, "Claude Sonnet")
 	}
 
 	// No preference → falls back to the active model.
 	d = newDeps()
-	input = p.buildProcessorInput(d, "msg", false, PromptMeta{})
+	input = p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
 	if input.ModelName != "Claude Opus" {
 		t.Errorf("no-preference ModelName = %q, want %q", input.ModelName, "Claude Opus")
 	}
 
 	// Preference that resolves to nothing → falls back to the active model.
 	d = newDeps()
-	input = p.buildProcessorInput(d, "msg", false, PromptMeta{
+	input = p.buildProcessorInput(d, "msg", false, false, PromptMeta{
 		PreferredModels: []config.PromptPreferredModel{{ModelTag: "Nonexistent"}},
 	})
 	if input.ModelName != "Claude Opus" {
@@ -1558,7 +1558,7 @@ func TestPromptDispatcher_BuildProcessorInput_TriggerOnTasksChanges(t *testing.T
 	// (1) meta.Trigger == nil → input.TriggerOnTasksChanges must be nil.
 	d1 := newFakePromptDeps()
 	d1.hasStore = false
-	input := p.buildProcessorInput(d1, "msg", false, PromptMeta{})
+	input := p.buildProcessorInput(d1, "msg", false, false, PromptMeta{})
 	if input.TriggerOnTasksChanges != nil {
 		t.Errorf("expected TriggerOnTasksChanges=nil when meta.Trigger is nil, got %#v", input.TriggerOnTasksChanges)
 	}
@@ -1566,7 +1566,7 @@ func TestPromptDispatcher_BuildProcessorInput_TriggerOnTasksChanges(t *testing.T
 	// (2) meta.Trigger set but OnTasks nil → still nil (defensive guard).
 	d2 := newFakePromptDeps()
 	d2.hasStore = false
-	input = p.buildProcessorInput(d2, "msg", false, PromptMeta{Trigger: &PromptTriggerContext{}})
+	input = p.buildProcessorInput(d2, "msg", false, false, PromptMeta{Trigger: &PromptTriggerContext{}})
 	if input.TriggerOnTasksChanges != nil {
 		t.Errorf("expected TriggerOnTasksChanges=nil when meta.Trigger.OnTasks is nil, got %#v", input.TriggerOnTasksChanges)
 	}
@@ -1586,7 +1586,7 @@ func TestPromptDispatcher_BuildProcessorInput_TriggerOnTasksChanges(t *testing.T
 			OnTasks: &PromptOnTasksContext{Changes: delta},
 		},
 	}
-	input = p.buildProcessorInput(d3, "msg", false, meta)
+	input = p.buildProcessorInput(d3, "msg", false, false, meta)
 	if input.TriggerOnTasksChanges == nil {
 		t.Fatal("expected TriggerOnTasksChanges non-nil when meta.Trigger.OnTasks.Changes is set")
 	}
@@ -1609,7 +1609,7 @@ func TestPromptDispatcher_BuildProcessorInput_TriggerSlackEvent(t *testing.T) {
 	// (1) meta.Trigger == nil → input.TriggerSlackEvent must be nil.
 	d1 := newFakePromptDeps()
 	d1.hasStore = false
-	input := p.buildProcessorInput(d1, "msg", false, PromptMeta{})
+	input := p.buildProcessorInput(d1, "msg", false, false, PromptMeta{})
 	if input.TriggerSlackEvent != nil {
 		t.Errorf("expected TriggerSlackEvent=nil when meta.Trigger is nil, got %#v", input.TriggerSlackEvent)
 	}
@@ -1617,7 +1617,7 @@ func TestPromptDispatcher_BuildProcessorInput_TriggerSlackEvent(t *testing.T) {
 	// (2) meta.Trigger set but Slack nil → still nil (defensive guard).
 	d2 := newFakePromptDeps()
 	d2.hasStore = false
-	input = p.buildProcessorInput(d2, "msg", false, PromptMeta{Trigger: &PromptTriggerContext{}})
+	input = p.buildProcessorInput(d2, "msg", false, false, PromptMeta{Trigger: &PromptTriggerContext{}})
 	if input.TriggerSlackEvent != nil {
 		t.Errorf("expected TriggerSlackEvent=nil when meta.Trigger.Slack is nil, got %#v", input.TriggerSlackEvent)
 	}
@@ -1638,7 +1638,7 @@ func TestPromptDispatcher_BuildProcessorInput_TriggerSlackEvent(t *testing.T) {
 		SenderID: "loop-runner",
 		Trigger:  &PromptTriggerContext{Slack: slackCtx},
 	}
-	input = p.buildProcessorInput(d3, "msg", false, meta)
+	input = p.buildProcessorInput(d3, "msg", false, false, meta)
 	if input.TriggerSlackEvent == nil {
 		t.Fatal("expected TriggerSlackEvent non-nil when meta.Trigger.Slack is set")
 	}

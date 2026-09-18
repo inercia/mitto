@@ -197,6 +197,9 @@ func (bs *BackgroundSession) hsInitACPProcessDone(sharedDone <-chan struct{}) {
 func (bs *BackgroundSession) hsSetResumeMethod(method string) { bs.resumeMethod = method }
 func (bs *BackgroundSession) hsGetResumeMethod() string       { return bs.resumeMethod }
 
+func (bs *BackgroundSession) hsClearFirstPromptIfRetained()    { bs.clearFirstPromptIfContextRetained() }
+func (bs *BackgroundSession) hsRearmFirstPromptOnContextLoss() { bs.rearmFirstPromptOnContextLoss() }
+
 func (bs *BackgroundSession) hsStartMcpServer(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor {
 	return MCPServersFromACP(bs.startSessionMcpServer(bs.store, caps))
 }

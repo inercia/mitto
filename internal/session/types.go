@@ -287,6 +287,11 @@ type ProcessorRunData struct {
 	RerunReason string `json:"rerun_reason,omitempty"`
 	// SkipReason is a machine-readable skip slug when Outcome=="skipped"
 	// (e.g. "disabled", "empty_prompt", "cadence_not_met"). Empty otherwise.
+	// "context_retained" (mitto-cq4) marks a "match: first" processor
+	// deliberately skipped on the very first prompt of a resumed/loaded
+	// session because the upstream agent already retained (or replayed) the
+	// session's context — distinct from the ordinary "not first message"
+	// skip on later turns.
 	SkipReason string `json:"skip_reason,omitempty"`
 	// PromptSeq is the sequence number of the correlated user_prompt event,
 	// best-effort. 0 when unknown (not yet threaded for before-phase; always

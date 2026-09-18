@@ -1036,7 +1036,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		processorManager:               config.ProcessorManager,
 		workspaceProcessorArgOverrides: config.WorkspaceProcessorArgOverrides,
 		workingDir:                     config.WorkingDir,
-		isFirstPrompt:                  true, // Treat first prompt after resume as "first" for processors (re-inject context)
+		isFirstPrompt:                  true, // Safe default until the handshake resolves; cleared by clearFirstPromptIfContextRetained on resume/load (mitto-cq4)
 		queueConfig:                    config.QueueConfig,
 		actionButtonsConfig:            config.ActionButtonsConfig,
 		fileLinksConfig:                config.FileLinksConfig,
@@ -1402,6 +1402,46 @@ func (bs *BackgroundSession) acpContextIsEmpty() bool { return bs.acpContextTurn
 // (mitto-2efc). Callers MUST treat a negative return as "cannot assert large"
 // (fail safe), not as zero.
 func (bs *BackgroundSession) acpContextTurnsSinceReset() int64 { return bs.acpContextTurns.Load() }
+
+// upstreamContextRetained returns true when the ACP handshake indicated the
+// agent-side context survived (session/resume succeeded) or was rebuilt from
+// our own history (session/load succeeded). Returns false for "new" and for
+// any unknown/empty value — fail-safe: reinject (mitto-cq4).
+func (bs *BackgroundSession) upstreamContextRetained() bool {
+	switch bs.resumeMethod {
+	case "resume", "load":
+		return true
+	default: // "new", "", anything else
+		return false
+	}
+}
+
+// clearFirstPromptIfContextRetained flips isFirstPrompt to false immediately
+// after a successful session/resume or session/load, so "match: first"
+// processors are not redundantly reinjected on routine Mitto lifecycle resumes
+// (archive/unarchive, GC suspend/resume, process restart) where the upstream
+// agent already holds — or has just replayed — this session's history
+// (mitto-cq4). No-op when resumeMethod is "new" or unset; existing
+// when.rerun cadence thresholds (checkRerunEligibility) still fire normally
+// on top of this, so long-running retained sessions still get re-anchored.
+func (bs *BackgroundSession) clearFirstPromptIfContextRetained() {
+	if bs.upstreamContextRetained() {
+		bs.isFirstPrompt = false
+	}
+}
+
+// rearmFirstPromptOnContextLoss re-arms isFirstPrompt when a re-handshake
+// (e.g. after SharedACPProcess.Restart(), mitto-x611) proves the upstream
+// context was truly lost (resumeMethod=="new") for a session that has already
+// dispatched at least one prompt. A session's very first handshake already
+// starts with isFirstPrompt=true (see NewBackgroundSession/
+// NewBackgroundSessionResumed) and must not be touched here — this only
+// re-arms after clearFirstPromptIfContextRetained previously cleared it.
+func (bs *BackgroundSession) rearmFirstPromptOnContextLoss() {
+	if bs.resumeMethod == "new" && bs.promptCount > 0 {
+		bs.isFirstPrompt = true
+	}
+}
 
 // StartedAt returns when this session was started or resumed.
 // Used by the GC to apply a grace period to freshly started sessions.

@@ -1099,6 +1099,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				// Resumed sessions may already hold agent-side history we cannot
 				// see from Go; virginity is not authoritative (mitto-s9g2).
 				bs.markACPContextUnknown()
+				// Upstream agent retained this session's context; avoid redundant
+				// "match: first" processor reinjection (mitto-cq4).
+				bs.clearFirstPromptIfContextRetained()
 				bs.setSessionModes(resumeResp.Modes)
 				models, cfgId, modelSource := DeriveAgentModels(
 					resumeResp.ConfigOptions,
@@ -1159,6 +1162,10 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				// Session/load replays history agent-side; virginity is not
 				// authoritative (mitto-s9g2).
 				bs.markACPContextUnknown()
+				// Agent rebuilt context from our replayed history, which already
+				// contains prior processor injections; avoid duplicating them
+				// (mitto-cq4).
+				bs.clearFirstPromptIfContextRetained()
 				// Store available modes from session load
 				bs.setSessionModes(loadResp.Modes)
 				models, cfgId, modelSource := DeriveAgentModels(
@@ -1201,6 +1208,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Create new session (final fallback)
 	bs.resumeMethod = "new"
+	// True context loss: if this session had already dispatched a prompt (a
+	// re-handshake after e.g. SharedACPProcess.Restart()), re-arm reinjection
+	// of "match: first" processors (mitto-cq4). No-op on a session's very
+	// first handshake, which already starts with isFirstPrompt=true.
+	bs.rearmFirstPromptOnContextLoss()
 
 	// Create new session
 	sessResp, err := bs.acpConn.NewSession(initCtx, acp.NewSessionRequest{

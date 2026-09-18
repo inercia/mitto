@@ -17,6 +17,15 @@ type ProcessorInput struct {
 	Message string `json:"message"`
 	// IsFirstMessage indicates if this is the first message in the conversation.
 	IsFirstMessage bool `json:"is_first_message"`
+	// ContextRetainedSkip is true only for the very first prompt dispatched on
+	// a resumed/loaded BackgroundSession where IsFirstMessage was deliberately
+	// set to false because the upstream agent already retained (session/resume)
+	// or replayed (session/load) this session's context (mitto-cq4). It lets
+	// the skip-recording sites below distinguish this intentional
+	// reinjection-avoidance from an ordinary later-turn "not first" skip for
+	// telemetry attribution (SkipReasonContextRetained). Excluded from JSON —
+	// it is a transient dispatch signal, not session metadata.
+	ContextRetainedSkip bool `json:"-"`
 	// HasMessages indicates whether the conversation has recorded at least one
 	// prior user prompt (derived from meta.LastUserMessageAt being non-zero).
 	// Populates Session.HasMessages in BuildCELContext for the

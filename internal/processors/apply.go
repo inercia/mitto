@@ -121,6 +121,14 @@ const (
 	SkipReasonNoPromptExecutor       SkipReason = "no_prompt_executor"
 	SkipReasonEmptyPrompt            SkipReason = "empty_prompt"
 	SkipReasonCascadedChildClose     SkipReason = "cascaded_child_close"
+	// SkipReasonContextRetained (mitto-cq4) replaces the generic
+	// SkipReasonMatchFirst on the very first prompt of a resumed/loaded
+	// session, where the skip is not an ordinary "not the first message" case
+	// but a deliberate reinjection avoidance because the upstream agent
+	// already retained (or replayed) this session's context. See
+	// ProcessorInput.ContextRetainedSkip and BackgroundSession.
+	// clearFirstPromptIfContextRetained.
+	SkipReasonContextRetained SkipReason = "context_retained"
 )
 
 // ProcessorRun captures a single processor invocation for the conversation
@@ -268,6 +276,13 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input)
 		if !shouldApply {
 			skipped++
+			// mitto-cq4: attribute the very first post-resume/load skip to
+			// deliberate context-retention avoidance rather than the generic
+			// "not first message" reason, so telemetry can quantify the
+			// reduction (see ProcessorInput.ContextRetainedSkip).
+			if skipReason == SkipReasonMatchFirst && input.ContextRetainedSkip {
+				skipReason = SkipReasonContextRetained
+			}
 			record(ProcessorRun{Name: proc.Name, Outcome: "skipped", SkipReason: string(skipReason)})
 			logger.Debug("processor skipped",
 				"name", proc.Name,
@@ -1026,6 +1041,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 		shouldApply, skipReason := proc.ShouldApply(effectiveIsFirst, input)
 		if !shouldApply {
 			skipped++
+			// mitto-cq4: see identical rationale in ApplyProcessors above.
+			if skipReason == SkipReasonMatchFirst && input.ContextRetainedSkip {
+				skipReason = SkipReasonContextRetained
+			}
 			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "skipped", SkipReason: string(skipReason)})
 			m.logger.Debug("processor skipped",
 				"name", proc.Name,
