@@ -9,8 +9,9 @@
 # would not necessarily be shared with other people working on the same project.
 #
 # The target file is auto-detected from the project's rules directory
-# (.augment/rules/, .cursor/rules/, or .codex/rules/) unless PreferencesFile is set;
-# if none is found, nothing is written.
+# (.augment/rules/, .cursor/rules/, .codex/rules/, or .claude/rules/) or, as a
+# final fallback, the workspace-root CLAUDE.md file, unless PreferencesFile is
+# set; if none is found, nothing is written.
 #
 # Fire-and-forget: the auxiliary agent works in the background after the main
 # conversation is already archived. Running at close time (rather than every few turns)
@@ -47,7 +48,7 @@
 #   conservatively — when in doubt, an entry is kept.
 ##########################################################################################
 name: memorize-preferences
-description: "Extracts personal, user-specific preferences (not project/code conventions) from an archived conversation and saves them to a target file (auto-detected from .augment/rules/, .cursor/rules/, or .codex/rules/ unless PreferencesFile is set)"
+description: "Extracts personal, user-specific preferences (not project/code conventions) from an archived conversation and saves them to a target file (auto-detected from .augment/rules/, .cursor/rules/, .codex/rules/, .claude/rules/, or CLAUDE.md unless PreferencesFile is set)"
 enabled: true
 when:
   on: conversationClosed
@@ -67,7 +68,7 @@ parameters:
   - name: PreferencesFile
     type: text
     required: false
-    description: "File where extracted user preferences are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, or .codex/rules/); if none is found, nothing is written."
+    description: "File where extracted user preferences are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, .codex/rules/, .claude/rules/, or CLAUDE.md); if none is found, nothing is written."
     default: ""
 
 prompt: |
@@ -76,6 +77,8 @@ prompt: |
   {{- if DirExists ".augment/rules" -}}{{- $file = ".augment/rules/90-local.md" -}}
   {{- else if DirExists ".cursor/rules" -}}{{- $file = ".cursor/rules/90-local.md" -}}
   {{- else if DirExists ".codex/rules" -}}{{- $file = ".codex/rules/90-local.md" -}}
+  {{- else if DirExists ".claude/rules" -}}{{- $file = ".claude/rules/90-local.md" -}}
+  {{- else if FileExists "CLAUDE.md" -}}{{- $file = "CLAUDE.md" -}}
   {{- end -}}
   {{- end -}}
   {{- if $file -}}

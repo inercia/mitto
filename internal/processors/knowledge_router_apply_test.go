@@ -147,16 +147,40 @@ func TestKnowledgeRouter_ScopedRule_AuggieLayout(t *testing.T) {
 	}
 }
 
-// TestKnowledgeRouter_ScopedRule_ClaudeCodeLayout documents the AC#4
-// cross-agent gap: config/processors/builtin/knowledge-router.yaml's
-// auto-detect block only checks .augment/rules, .cursor/rules, and
-// .codex/rules — it has no branch for Claude Code's .claude/rules or
-// CLAUDE.md layout, so an identical finding cannot yet be shown to route to
-// a different file depending on the ACP server. Tracked by mitto-3od.5
-// (filed alongside this test matrix); un-skip once that template gap is
-// closed.
+// TestKnowledgeRouter_ScopedRule_ClaudeCodeLayout exercises the real
+// template's auto-detect branch for a workspace laid out like a Claude Code
+// project (.claude/rules/ present): the dispatched prompt must resolve both
+// the preferences and rules destinations to that directory, and a mock
+// "rules" finding must be recorded verbatim in the sidecar. Mirrors
+// TestKnowledgeRouter_ScopedRule_AuggieLayout with .augment/rules ->
+// .claude/rules (mitto-3od.5).
 func TestKnowledgeRouter_ScopedRule_ClaudeCodeLayout(t *testing.T) {
-	t.Skip("blocked on mitto-3od.5: knowledge-router.yaml does not yet auto-detect the Claude Code .claude/rules or CLAUDE.md layout (only .augment, .cursor, .codex are detected today)")
+	const sessionID = "sess-ac4-claudecode"
+	store := newCloseRouterApplyTestStore(t, sessionID)
+
+	workingDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workingDir, ".claude", "rules"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	prompt := dispatchKnowledgeRouter(t, store, sessionID, workingDir, `{"events":[{"text":"naming convention X"}]}`, func(string) (PromptCompletion, error) {
+		return PromptCompletion{FinalMessage: `{"findings":[{"text":"project uses naming convention X","destination":"rules","written":true,"target_path":".claude/rules/40-naming.md"}]}`}, nil
+	})
+
+	if !strings.Contains(prompt, ".claude/rules") {
+		t.Errorf("dispatched prompt does not reference the auto-detected .claude/rules directory; prompt=%s", prompt)
+	}
+	if strings.Contains(prompt, ".augment/rules") || strings.Contains(prompt, ".cursor/rules") || strings.Contains(prompt, ".codex/rules") || strings.Contains(prompt, "CLAUDE.md") {
+		t.Errorf("dispatched prompt leaked a non-matching agent layout; prompt=%s", prompt)
+	}
+
+	state := waitForCloseRouterState(t, store, sessionID, func(s session.CloseRouterState) bool {
+		return len(s.Runs) == 1 && !s.Runs[0].CompletedAt.IsZero()
+	})
+	findings := state.Runs[0].Findings
+	if len(findings) != 1 || findings[0].Destination != "rules" || findings[0].TargetPath != ".claude/rules/40-naming.md" {
+		t.Fatalf("Findings = %+v, want one rules finding targeting .claude/rules/40-naming.md", findings)
+	}
 }
 
 // --- AC#5: beads-memory-only (prompt-contract lint) -----------------------------------

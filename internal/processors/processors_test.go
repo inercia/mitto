@@ -5510,6 +5510,17 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 		}
 	})
 
+	t.Run("auto-detect .claude/rules", func(t *testing.T) {
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, ".claude", "rules"), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		out := render(ws, nil)
+		if !strings.Contains(out, ".claude/rules/90-local.md") {
+			t.Errorf("expected auto-detected .claude/rules/90-local.md in output, got:\n%s", out)
+		}
+	})
+
 	t.Run("explicit PreferencesFile wins over auto-detect", func(t *testing.T) {
 		ws := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(ws, ".augment", "rules"), 0755); err != nil {

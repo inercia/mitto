@@ -37,12 +37,12 @@ parameters:
     type: text
     required: false
     default: ""
-    description: "File where personal-preference findings are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, or .codex/rules/)."
+    description: "File where personal-preference findings are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, .codex/rules/, .claude/rules/, or CLAUDE.md)."
   - name: RulesDir
     type: text
     required: false
     default: ""
-    description: "Directory where project-rule findings are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, or .codex/rules/)."
+    description: "Directory where project-rule findings are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, .codex/rules/, or .claude/rules/)."
 
 prompt: |
   {{- $prefsFile := Trim .Args.PreferencesFile -}}
@@ -50,6 +50,8 @@ prompt: |
   {{- if DirExists ".augment/rules" -}}{{- $prefsFile = ".augment/rules/90-local.md" -}}
   {{- else if DirExists ".cursor/rules" -}}{{- $prefsFile = ".cursor/rules/90-local.md" -}}
   {{- else if DirExists ".codex/rules" -}}{{- $prefsFile = ".codex/rules/90-local.md" -}}
+  {{- else if DirExists ".claude/rules" -}}{{- $prefsFile = ".claude/rules/90-local.md" -}}
+  {{- else if FileExists "CLAUDE.md" -}}{{- $prefsFile = "CLAUDE.md" -}}
   {{- end -}}
   {{- end -}}
   {{- $rulesDir := Trim .Args.RulesDir -}}
@@ -57,6 +59,7 @@ prompt: |
   {{- if DirExists ".augment/rules" -}}{{- $rulesDir = ".augment/rules" -}}
   {{- else if DirExists ".cursor/rules" -}}{{- $rulesDir = ".cursor/rules" -}}
   {{- else if DirExists ".codex/rules" -}}{{- $rulesDir = ".codex/rules" -}}
+  {{- else if DirExists ".claude/rules" -}}{{- $rulesDir = ".claude/rules" -}}
   {{- end -}}
   {{- end -}}
   You are the knowledge router for a Mitto conversation that has just been archived.
