@@ -172,6 +172,14 @@ type ProcessorInput struct {
 	// template access and CEL UserData["X"] expressions. Excluded from JSON (json:"-")
 	// so values are never sent to external command processors.
 	UserData map[string]string `json:"-"`
+	// MissingUserDataFields lists the workspace user data schema field names that
+	// have no non-empty value in UserData. Empty (nil) when the workspace has no
+	// schema or every field is already resolved. Feeds the
+	// Workspace.MissingUserDataFieldCount / Workspace.AllUserDataResolved CEL
+	// variables so schema-aware processors (e.g. identify-user-data) can gate on
+	// "is there still unresolved work" instead of re-running unconditionally.
+	// Excluded from JSON (json:"-") — never sent to external command processors.
+	MissingUserDataFields []string `json:"-"`
 	// ModelTags holds the capability tags resolved for the session's current model
 	// (from config models: profiles). Populates Session.ModelTags for the Model(tag)
 	// template func and Session.HasModelTag CEL macro. Excluded from JSON (json:"-").

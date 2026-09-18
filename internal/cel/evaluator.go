@@ -64,6 +64,8 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Workspace.HasMetadataDescription", cel.BoolType),
 		cel.Variable("Workspace.TasksUpstream", cel.StringType),
 		cel.Variable("Workspace.BeadsDatabaseMode", cel.StringType),
+		cel.Variable("Workspace.MissingUserDataFieldCount", cel.IntType),
+		cel.Variable("Workspace.AllUserDataResolved", cel.BoolType),
 
 		// Workspace.Peers variables (mitto-4d6): scalar aggregates of the
 		// non-archived sibling conversations in the same workspace (excluding
@@ -493,14 +495,16 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"ACP.Tags":        ctx.ACP.Tags,
 		"ACP.AutoApprove": ctx.ACP.AutoApprove,
 
-		"Workspace.UUID":                   ctx.Workspace.UUID,
-		"Workspace.Folder":                 ctx.Workspace.Folder,
-		"Workspace.Name":                   ctx.Workspace.Name,
-		"Workspace.HasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
-		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
-		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
-		"Workspace.TasksUpstream":          ctx.Workspace.TasksUpstream,
-		"Workspace.BeadsDatabaseMode":      ctx.Workspace.BeadsDatabaseMode,
+		"Workspace.UUID":                      ctx.Workspace.UUID,
+		"Workspace.Folder":                    ctx.Workspace.Folder,
+		"Workspace.Name":                      ctx.Workspace.Name,
+		"Workspace.HasUserDataSchema":         ctx.Workspace.HasUserDataSchema,
+		"Workspace.HasMittoRC":                ctx.Workspace.HasMittoRC,
+		"Workspace.HasMetadataDescription":    ctx.Workspace.HasMetadataDescription,
+		"Workspace.TasksUpstream":             ctx.Workspace.TasksUpstream,
+		"Workspace.BeadsDatabaseMode":         ctx.Workspace.BeadsDatabaseMode,
+		"Workspace.MissingUserDataFieldCount": int64(ctx.Workspace.MissingUserDataFieldCount),
+		"Workspace.AllUserDataResolved":       ctx.Workspace.AllUserDataResolved,
 
 		"Workspace.Peers.Count":          int64(ctx.Workspace.Peers.Count),
 		"Workspace.Peers.Exists":         ctx.Workspace.Peers.Exists,

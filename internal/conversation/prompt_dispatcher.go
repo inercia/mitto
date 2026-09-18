@@ -711,30 +711,6 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 
 	mcpToolNames := d.pdCachedMCPToolNames()
 
-	var hasUserDataSchema bool
-	var hasMittoRC bool
-	var hasMetadataDescription bool
-	var userDataSchemaJSON string
-	var tasksUpstream string
-	workingDir := d.pdWorkingDir()
-	if workingDir != "" {
-		rc, rcErr := config.LoadWorkspaceRC(workingDir)
-		if rcErr == nil && rc != nil &&
-			rc.Metadata != nil && rc.Metadata.UserDataSchema != nil && len(rc.Metadata.UserDataSchema.Fields) > 0 {
-			hasUserDataSchema = true
-			if schemaBytes, err := json.Marshal(rc.Metadata.UserDataSchema.Fields); err == nil {
-				userDataSchemaJSON = string(schemaBytes)
-			}
-		}
-		if rcPath, _, err := config.FindWorkspaceRCPath(workingDir); err == nil && rcPath != "" {
-			hasMittoRC = true
-		}
-		if rcErr == nil && rc != nil && rc.Metadata != nil && rc.Metadata.Description != "" {
-			hasMetadataDescription = true
-		}
-		tasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
-	}
-
 	var userDataJSON string
 	var userDataMap map[string]string
 	if d.pdHasStore() {
@@ -747,6 +723,41 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 				userDataMap[attr.Name] = attr.Value
 			}
 		}
+	}
+
+	var hasUserDataSchema bool
+	var hasMittoRC bool
+	var hasMetadataDescription bool
+	var userDataSchemaJSON string
+	var tasksUpstream string
+	// MissingUserDataFields: schema field names with no non-empty value yet in
+	// userDataMap. Only populated when a schema exists — schemaless workspaces
+	// have nothing to be "missing". Feeds Workspace.MissingUserDataFieldCount /
+	// Workspace.AllUserDataResolved so schema-aware processors (e.g.
+	// identify-user-data) can skip dispatch once nothing is left to identify.
+	var missingUserDataFields []string
+	workingDir := d.pdWorkingDir()
+	if workingDir != "" {
+		rc, rcErr := config.LoadWorkspaceRC(workingDir)
+		if rcErr == nil && rc != nil &&
+			rc.Metadata != nil && rc.Metadata.UserDataSchema != nil && len(rc.Metadata.UserDataSchema.Fields) > 0 {
+			hasUserDataSchema = true
+			if schemaBytes, err := json.Marshal(rc.Metadata.UserDataSchema.Fields); err == nil {
+				userDataSchemaJSON = string(schemaBytes)
+			}
+			for _, field := range rc.Metadata.UserDataSchema.Fields {
+				if strings.TrimSpace(userDataMap[field.Name]) == "" {
+					missingUserDataFields = append(missingUserDataFields, field.Name)
+				}
+			}
+		}
+		if rcPath, _, err := config.FindWorkspaceRCPath(workingDir); err == nil && rcPath != "" {
+			hasMittoRC = true
+		}
+		if rcErr == nil && rc != nil && rc.Metadata != nil && rc.Metadata.Description != "" {
+			hasMetadataDescription = true
+		}
+		tasksUpstream = config.NormalizeTasksUpstream(config.FolderBeadsUpstream(workingDir))
 	}
 
 	// Resolve the model's capability tags (config models: profiles) for the
@@ -863,6 +874,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
 		UserData:               userDataMap,
+		MissingUserDataFields:  missingUserDataFields,
 		ModelTags:              modelTags,
 		ModelName:              modelName,
 		ProcessorArgOverrides:  d.pdWorkspaceProcessorArgOverrides(),

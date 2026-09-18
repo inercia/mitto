@@ -267,6 +267,16 @@ type WorkspaceContext struct {
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema fields.
 	// Empty when no schema is defined. Used by the {{ .Workspace.UserDataSchemaJSON }} template accessor.
 	UserDataSchemaJSON string
+	// MissingUserDataFieldCount is the number of schema fields that have no
+	// non-empty value in the current session's user data. Zero when there is no
+	// schema or every field is already resolved. Feeds the
+	// Workspace.MissingUserDataFieldCount CEL variable.
+	MissingUserDataFieldCount int
+	// AllUserDataResolved is true only when the workspace has a user data schema
+	// AND every field in it already has a non-empty value (MissingUserDataFieldCount
+	// == 0). False (fail-closed) when there is no schema, so schemaless workspaces
+	// never look "resolved". Feeds the Workspace.AllUserDataResolved CEL variable.
+	AllUserDataResolved bool
 	// TasksUpstream is the folder's configured beads upstream task system (e.g.
 	// "jira", "github", "gitlab", "linear"), sourced from the folder-native
 	// `beads.upstream` setting in folders.json (see

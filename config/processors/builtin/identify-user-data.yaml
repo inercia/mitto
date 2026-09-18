@@ -26,8 +26,10 @@ priority: 190
 timeout: 120s
 onError: skip
 
-# Only activate when the workspace has a user data schema and this isn't a loop prompt
-enabledWhen: 'Workspace.HasUserDataSchema && !Session.IsLoop'
+# Only activate when the workspace has a user data schema, this isn't a loop prompt,
+# and at least one schema field is still unresolved (mitto-685). Skips dispatch
+# entirely once every field already has a value, avoiding a wasted auxiliary run.
+enabledWhen: 'Workspace.HasUserDataSchema && !Session.IsLoop && Workspace.MissingUserDataFieldCount > 0'
 
 prompt: |
   You are a metadata extractor. Your job is to analyze the conversation messages below

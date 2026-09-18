@@ -295,6 +295,8 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.TasksUpstream = input.TasksUpstream
 	ctx.Workspace.BeadsDatabaseMode = string(input.DatabaseMode)
 	ctx.Workspace.UserDataSchemaJSON = input.UserDataSchemaJSON
+	ctx.Workspace.MissingUserDataFieldCount = len(input.MissingUserDataFields)
+	ctx.Workspace.AllUserDataResolved = input.HasUserDataSchema && ctx.Workspace.MissingUserDataFieldCount == 0
 
 	// Parent context
 	if input.ParentSessionID != "" {
