@@ -882,7 +882,7 @@ func (m *ACPProcessManager) CreateSession(
 	acpEnv map[string]string,
 	r *runner.Runner,
 	cwd string,
-	mcpServers []acp.McpServer,
+	mcpServers []agentbackend.MCPServerDescriptor,
 ) (*conversation.SessionHandle, error) {
 	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
@@ -902,7 +902,7 @@ func (m *ACPProcessManager) LoadSession(
 	r *runner.Runner,
 	acpSessionID string,
 	cwd string,
-	mcpServers []acp.McpServer,
+	mcpServers []agentbackend.MCPServerDescriptor,
 ) (*conversation.SessionHandle, error) {
 	process, err := m.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {

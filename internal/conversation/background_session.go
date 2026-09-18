@@ -16,6 +16,7 @@ import (
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -352,12 +353,12 @@ type BackgroundSession struct {
 	// it is deferred to the first prompt to avoid blocking the create path
 	// when the shared agent process is busy.
 	pendingShared           bool
-	pendingSharedMu         sync.Mutex            // Guards the lazy handshake (idempotency)
-	pendingSharedWorkingDir string                // Stored for deferred session/new RPC
-	pendingSharedMcpServers []acp.McpServer       // Must be empty array, not nil — ACP validates this
-	pendingSharedModes      *acp.SessionModeState // Modes from NewSession, applied by applyPendingSharedModes
-	pendingSharedModels     *SessionModelState    // Models from NewSession, applied by applyPendingSharedModes
-	pendingSharedModelCfgId acp.SessionConfigId   // SessionConfigId for the model option, applied alongside models
+	pendingSharedMu         sync.Mutex                         // Guards the lazy handshake (idempotency)
+	pendingSharedWorkingDir string                             // Stored for deferred session/new RPC
+	pendingSharedMcpServers []agentbackend.MCPServerDescriptor // Must be empty slice, not nil — ACP validates this
+	pendingSharedModes      *agentbackend.ModeState            // Modes from NewSession, applied by applyPendingSharedModes
+	pendingSharedModels     *SessionModelState                 // Models from NewSession, applied by applyPendingSharedModes
+	pendingSharedModelCfgId string                             // Opaque wire id for the model option, applied alongside models
 
 	// handshakeMu serialises the full deferred-handshake completion (session/new
 	// RPC + store writes + mode/model application + acp_started notification) so the

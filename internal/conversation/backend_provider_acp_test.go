@@ -78,16 +78,16 @@ func (f *fakeBackendSharedProcess) Capabilities() agentbackend.Capabilities {
 	return NewProcessCapabilities(f.caps)
 }
 func (f *fakeBackendSharedProcess) ProcessDone() <-chan struct{} { return f.processDone }
-func (f *fakeBackendSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeBackendSharedProcess) NewSession(context.Context, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	f.mu.Lock()
 	f.newCalls++
 	f.mu.Unlock()
 	return f.newHandle, f.newErr
 }
-func (f *fakeBackendSharedProcess) LoadSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeBackendSharedProcess) LoadSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return f.loadHandle, f.loadErr
 }
-func (f *fakeBackendSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeBackendSharedProcess) ResumeSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.resumeHandle, f.resumeErr
@@ -325,7 +325,7 @@ type gatingSharedProcess struct {
 	handle *SessionHandle
 }
 
-func (g *gatingSharedProcess) ResumeSession(ctx context.Context, id, cwd string, servers []acp.McpServer) (*SessionHandle, error) {
+func (g *gatingSharedProcess) ResumeSession(ctx context.Context, id, cwd string, servers []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	g.mu.Lock()
 	*g.calls++
 	g.mu.Unlock()

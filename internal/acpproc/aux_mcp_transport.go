@@ -5,6 +5,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/auxiliary"
 )
 
@@ -50,21 +51,20 @@ func buildAuxProcessorMCPServers(
 	mcpServerURL string,
 	caps *acp.AgentCapabilities,
 	resolveCLI func() (string, error),
-) ([]acp.McpServer, auxMCPTransport, string) {
+) ([]agentbackend.MCPServerDescriptor, auxMCPTransport, string) {
 	// Non-nil empty slice is the ACP-safe default.
-	mcpServers := []acp.McpServer{}
+	mcpServers := []agentbackend.MCPServerDescriptor{}
 
 	if !strings.HasPrefix(purpose, auxiliary.PurposeProcessorPrefix) || mcpServerURL == "" {
 		return mcpServers, auxMCPTransportNone, ""
 	}
 
 	if caps != nil && caps.McpCapabilities.Http {
-		mcpServers = []acp.McpServer{{
-			Http: &acp.McpServerHttpInline{
-				Type:    "http",
+		mcpServers = []agentbackend.MCPServerDescriptor{{
+			HTTP: &agentbackend.MCPServerHTTP{
 				Name:    "mitto",
-				Url:     mcpServerURL,
-				Headers: []acp.HttpHeader{}, // Must be empty array, not nil — ACP validates this
+				URL:     mcpServerURL,
+				Headers: []agentbackend.HTTPHeader{}, // Must be empty slice, not nil — ACP validates this
 			},
 		}}
 		return mcpServers, auxMCPTransportHTTP, ""
@@ -77,12 +77,12 @@ func buildAuxProcessorMCPServers(
 	if err != nil {
 		return mcpServers, auxMCPTransportNone, ""
 	}
-	mcpServers = []acp.McpServer{{
-		Stdio: &acp.McpServerStdio{
+	mcpServers = []agentbackend.MCPServerDescriptor{{
+		Stdio: &agentbackend.MCPServerStdio{
 			Name:    "mitto",
 			Command: exe,
 			Args:    []string{"mcp", "--proxy-to", mcpServerURL},
-			Env:     []acp.EnvVariable{}, // Must be empty array, not nil — ACP validates this
+			Env:     []agentbackend.EnvVar{}, // Must be empty slice, not nil — ACP validates this
 		},
 	}}
 	return mcpServers, auxMCPTransportStdio, exe

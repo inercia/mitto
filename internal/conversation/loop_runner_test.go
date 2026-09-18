@@ -2776,13 +2776,13 @@ func (fakeSaturatedSharedProcess) Capabilities() agentbackend.Capabilities {
 	return NewProcessCapabilities(&acp.AgentCapabilities{})
 }
 func (fakeSaturatedSharedProcess) ProcessDone() <-chan struct{} { return make(chan struct{}) }
-func (fakeSaturatedSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
+func (fakeSaturatedSharedProcess) NewSession(context.Context, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
 }
-func (fakeSaturatedSharedProcess) LoadSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+func (fakeSaturatedSharedProcess) LoadSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
 }
-func (fakeSaturatedSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+func (fakeSaturatedSharedProcess) ResumeSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
 }
 func (fakeSaturatedSharedProcess) RegisterSession(string, *SessionCallbacks) {}
@@ -2925,13 +2925,13 @@ func (f *fakeClassifiedErrSharedProcess) Capabilities() agentbackend.Capabilitie
 	return NewProcessCapabilities(&acp.AgentCapabilities{})
 }
 func (f *fakeClassifiedErrSharedProcess) ProcessDone() <-chan struct{} { return make(chan struct{}) }
-func (f *fakeClassifiedErrSharedProcess) NewSession(context.Context, string, []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeClassifiedErrSharedProcess) NewSession(context.Context, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, f.mkErr()
 }
-func (f *fakeClassifiedErrSharedProcess) LoadSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeClassifiedErrSharedProcess) LoadSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, f.mkErr()
 }
-func (f *fakeClassifiedErrSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeClassifiedErrSharedProcess) ResumeSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, f.mkErr()
 }
 func (f *fakeClassifiedErrSharedProcess) RegisterSession(string, *SessionCallbacks) {}

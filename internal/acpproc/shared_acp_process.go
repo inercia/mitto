@@ -1885,7 +1885,7 @@ func isAgentQueryClosedErr(err error) bool {
 }
 
 // NewSession creates a new ACP session on this shared process.
-func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
+func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*conversation.SessionHandle, error) {
 	p.beginRPC()
 	defer p.endRPC()
 
@@ -2120,7 +2120,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		rpcStart := time.Now()
 		sessResp, err := conn.NewSession(rpcCtx, acp.NewSessionRequest{
 			Cwd:        cwd,
-			McpServers: mcpServers,
+			McpServers: conversation.MCPServersToACP(mcpServers),
 		})
 		rpcDuration := time.Since(rpcStart)
 		rpcCancel()
@@ -2148,12 +2148,10 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			handle := &conversation.SessionHandle{
 				SessionID:     string(sessResp.SessionId),
 				Process:       p,
-				Modes:         sessResp.Modes,
+				Capabilities:  conversation.NewProcessCapabilities(caps),
+				Modes:         conversation.ModeStateFromACP(sessResp.Modes),
 				Models:        models,
-				ModelConfigId: modelCfgId,
-			}
-			if caps != nil {
-				handle.Capabilities = *caps
+				ModelConfigId: string(modelCfgId),
 			}
 			if p.logger != nil {
 				p.logger.Info("Created new ACP session on shared process",
@@ -2242,7 +2240,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 }
 
 // LoadSession attempts to load/resume an existing ACP session.
-func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
+func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*conversation.SessionHandle, error) {
 	p.beginRPC()
 	defer p.endRPC()
 
@@ -2366,7 +2364,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	loadResp, err := conn.LoadSession(rpcCtx, acp.LoadSessionRequest{
 		SessionId:  loadSessionID,
 		Cwd:        cwd,
-		McpServers: mcpServers,
+		McpServers: conversation.MCPServersToACP(mcpServers),
 	})
 	rpcDuration := time.Since(rpcStart)
 
@@ -2414,10 +2412,10 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
-		Capabilities:  *caps,
-		Modes:         loadResp.Modes,
+		Capabilities:  conversation.NewProcessCapabilities(caps),
+		Modes:         conversation.ModeStateFromACP(loadResp.Modes),
 		Models:        loadModels,
-		ModelConfigId: loadModelCfgId,
+		ModelConfigId: string(loadModelCfgId),
 		Process:       p,
 	}
 
@@ -2436,7 +2434,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 // ResumeSession attempts to resume an existing ACP session without replaying history.
 // This is faster than LoadSession but requires the agent to support session/resume
 // and still have the session in memory.
-func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
+func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*conversation.SessionHandle, error) {
 	p.beginRPC()
 	defer p.endRPC()
 
@@ -2474,7 +2472,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	resumeResp, err := conn.ResumeSession(ctx, acp.ResumeSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
 		Cwd:        cwd,
-		McpServers: mcpServers,
+		McpServers: conversation.MCPServersToACP(mcpServers),
 	})
 	rpcDuration := time.Since(rpcStart)
 
@@ -2496,10 +2494,10 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
-		Capabilities:  *caps,
-		Modes:         resumeResp.Modes,
+		Capabilities:  conversation.NewProcessCapabilities(caps),
+		Modes:         conversation.ModeStateFromACP(resumeResp.Modes),
 		Models:        resumeModels,
-		ModelConfigId: resumeModelCfgId,
+		ModelConfigId: string(resumeModelCfgId),
 		Process:       p,
 	}
 

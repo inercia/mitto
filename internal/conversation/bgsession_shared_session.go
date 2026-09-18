@@ -153,16 +153,16 @@ func (bs *BackgroundSession) hsGetPendingSharedWorkingDir() string { return bs.p
 func (bs *BackgroundSession) hsSetPendingSharedWorkingDir(dir string) {
 	bs.pendingSharedWorkingDir = dir
 }
-func (bs *BackgroundSession) hsGetPendingSharedMcpServers() []acp.McpServer {
+func (bs *BackgroundSession) hsGetPendingSharedMcpServers() []agentbackend.MCPServerDescriptor {
 	return bs.pendingSharedMcpServers
 }
-func (bs *BackgroundSession) hsSetPendingSharedMcpServers(servers []acp.McpServer) {
+func (bs *BackgroundSession) hsSetPendingSharedMcpServers(servers []agentbackend.MCPServerDescriptor) {
 	bs.pendingSharedMcpServers = servers
 }
-func (bs *BackgroundSession) hsGetPendingSharedModes() *acp.SessionModeState {
+func (bs *BackgroundSession) hsGetPendingSharedModes() *agentbackend.ModeState {
 	return bs.pendingSharedModes
 }
-func (bs *BackgroundSession) hsSetPendingSharedModes(m *acp.SessionModeState) {
+func (bs *BackgroundSession) hsSetPendingSharedModes(m *agentbackend.ModeState) {
 	bs.pendingSharedModes = m
 }
 func (bs *BackgroundSession) hsGetPendingSharedModels() *SessionModelState {
@@ -171,10 +171,10 @@ func (bs *BackgroundSession) hsGetPendingSharedModels() *SessionModelState {
 func (bs *BackgroundSession) hsSetPendingSharedModels(m *SessionModelState) {
 	bs.pendingSharedModels = m
 }
-func (bs *BackgroundSession) hsGetPendingSharedModelConfigId() acp.SessionConfigId {
+func (bs *BackgroundSession) hsGetPendingSharedModelConfigId() string {
 	return bs.pendingSharedModelCfgId
 }
-func (bs *BackgroundSession) hsSetPendingSharedModelConfigId(id acp.SessionConfigId) {
+func (bs *BackgroundSession) hsSetPendingSharedModelConfigId(id string) {
 	bs.pendingSharedModelCfgId = id
 }
 
@@ -197,13 +197,37 @@ func (bs *BackgroundSession) hsInitACPProcessDone(sharedDone <-chan struct{}) {
 func (bs *BackgroundSession) hsSetResumeMethod(method string) { bs.resumeMethod = method }
 func (bs *BackgroundSession) hsGetResumeMethod() string       { return bs.resumeMethod }
 
-func (bs *BackgroundSession) hsStartMcpServer(caps acp.AgentCapabilities) []acp.McpServer {
-	return bs.startSessionMcpServer(bs.store, caps)
+func (bs *BackgroundSession) hsStartMcpServer(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor {
+	return MCPServersFromACP(bs.startSessionMcpServer(bs.store, caps))
 }
 func (bs *BackgroundSession) hsStopMcpServer() { bs.stopSessionMcpServer() }
 
-func (bs *BackgroundSession) hsApplySessionModes(modes *acp.SessionModeState) {
-	bs.setSessionModes(modes)
+// modeStateToACP is the reverse of ModeStateFromACP, used only here to feed a
+// neutral agentbackend.ModeState (mitto-mx9.1.2: SessionHandle.Modes) into the
+// pre-existing ACP-typed setSessionModes pipeline shared with the direct
+// (non-shared-process) ACP path in bgsession_acp_process.go — that pipeline's
+// own type is unchanged/out of scope for this bead.
+func modeStateToACP(s *agentbackend.ModeState) *acp.SessionModeState {
+	if s == nil {
+		return nil
+	}
+	out := &acp.SessionModeState{
+		CurrentModeId:  acp.SessionModeId(s.CurrentModeID),
+		AvailableModes: make([]acp.SessionMode, 0, len(s.Available)),
+	}
+	for _, m := range s.Available {
+		mode := acp.SessionMode{Id: acp.SessionModeId(m.ID), Name: m.Name}
+		if m.Description != "" {
+			desc := m.Description
+			mode.Description = &desc
+		}
+		out.AvailableModes = append(out.AvailableModes, mode)
+	}
+	return out
+}
+
+func (bs *BackgroundSession) hsApplySessionModes(modes *agentbackend.ModeState) {
+	bs.setSessionModes(modeStateToACP(modes))
 }
 func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
 	bs.setAgentModels(models)
@@ -211,8 +235,8 @@ func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
 func (bs *BackgroundSession) hsApplySynthesizedModelsIfEmpty() {
 	bs.applySynthesizedModelsIfEmpty()
 }
-func (bs *BackgroundSession) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
-	bs.modelConfigId = id
+func (bs *BackgroundSession) hsApplyAgentModelConfigId(id string) {
+	bs.modelConfigId = acp.SessionConfigId(id)
 }
 func (bs *BackgroundSession) hsLogAgentModels(models *SessionModelState) {
 	bs.logAgentModels(models)

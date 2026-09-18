@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversation"
 )
@@ -32,7 +30,7 @@ type Connection struct {
 	process    conversation.SharedProcess
 	provider   agentbackend.ProviderID
 	cwd        string
-	mcpServers []acp.McpServer
+	mcpServers []agentbackend.MCPServerDescriptor
 
 	// hooks, when non-nil, lets the caller supply real file/permission
 	// handling for ClientServices; nil means those requests are rejected
@@ -62,7 +60,7 @@ type Connection struct {
 // carries no per-call cwd, so the adapter is configured with one cwd per
 // Connection (matching one BackgroundSession owning one Connection, the
 // eventual wiring shape from mitto-lrt.7).
-func NewConnection(process conversation.SharedProcess, provider agentbackend.ProviderID, cwd string, mcpServers []acp.McpServer) *Connection {
+func NewConnection(process conversation.SharedProcess, provider agentbackend.ProviderID, cwd string, mcpServers []agentbackend.MCPServerDescriptor) *Connection {
 	return &Connection{
 		state:      agentbackend.LifecycleDisconnected,
 		process:    process,

@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	acp "github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
@@ -25,11 +24,11 @@ const RestartAnyGeneration = -1
 // *internal/web.SharedACPProcess that BackgroundSession calls.
 type SharedProcess interface {
 	// NewSession creates a new ACP session on this process.
-	NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error)
+	NewSession(ctx context.Context, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*SessionHandle, error)
 	// LoadSession loads (replays) an existing ACP session on this process.
-	LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error)
+	LoadSession(ctx context.Context, acpSessionID, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*SessionHandle, error)
 	// ResumeSession resumes a previously archived ACP session on this process.
-	ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error)
+	ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*SessionHandle, error)
 	// RegisterSession wires per-session event callbacks into the multiplex layer.
 	// sessionID is the provider-assigned session identifier as a plain string
 	// (mitto-mx9.1.1: no acp.* type named here; implementations translate at

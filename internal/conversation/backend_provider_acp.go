@@ -97,7 +97,7 @@ type acpLease struct {
 	process    SharedProcess
 	sessionID  acp.SessionId
 	cwd        string
-	mcpServers []acp.McpServer
+	mcpServers []agentbackend.MCPServerDescriptor
 
 	mu     sync.Mutex
 	handle *SessionHandle
@@ -519,6 +519,107 @@ func (c *acpProcessCapabilities) Query(feature agentbackend.Feature) agentbacken
 	default:
 		return agentbackend.CapabilityUnknown
 	}
+}
+
+// MCPServersFromACP translates a slice of acp.McpServer entries into their
+// protocol-neutral agentbackend.MCPServerDescriptor equivalents (mitto-mx9.1.2).
+// Used by SharedProcess implementations' shared-process handshake callers
+// (bgsession_shared_session.go's hsStartMcpServer) that build the entry list
+// via the still-ACP-typed startSessionMcpServer helper. Sse/Acp entries (not
+// constructed anywhere in this codebase) are silently skipped.
+func MCPServersFromACP(servers []acp.McpServer) []agentbackend.MCPServerDescriptor {
+	out := make([]agentbackend.MCPServerDescriptor, 0, len(servers))
+	for _, s := range servers {
+		switch {
+		case s.Http != nil:
+			headers := make([]agentbackend.HTTPHeader, 0, len(s.Http.Headers))
+			for _, h := range s.Http.Headers {
+				headers = append(headers, agentbackend.HTTPHeader{Name: h.Name, Value: h.Value})
+			}
+			out = append(out, agentbackend.MCPServerDescriptor{HTTP: &agentbackend.MCPServerHTTP{
+				Name:    s.Http.Name,
+				URL:     s.Http.Url,
+				Headers: headers,
+			}})
+		case s.Stdio != nil:
+			env := make([]agentbackend.EnvVar, 0, len(s.Stdio.Env))
+			for _, e := range s.Stdio.Env {
+				env = append(env, agentbackend.EnvVar{Name: e.Name, Value: e.Value})
+			}
+			out = append(out, agentbackend.MCPServerDescriptor{Stdio: &agentbackend.MCPServerStdio{
+				Name:    s.Stdio.Name,
+				Command: s.Stdio.Command,
+				Args:    append([]string(nil), s.Stdio.Args...),
+				Env:     env,
+			}})
+		}
+	}
+	return out
+}
+
+// MCPServersToACP is the reverse of MCPServersFromACP: it rebuilds the
+// ACP-shaped []acp.McpServer request payload from the protocol-neutral
+// descriptors that now flow through the SharedProcess.NewSession/LoadSession/
+// ResumeSession interface (mitto-mx9.1.2). Used by SharedProcess
+// implementations (internal/acpproc) at the point they actually issue the
+// ACP RPC.
+func MCPServersToACP(servers []agentbackend.MCPServerDescriptor) []acp.McpServer {
+	out := make([]acp.McpServer, 0, len(servers))
+	for _, s := range servers {
+		switch {
+		case s.HTTP != nil:
+			headers := make([]acp.HttpHeader, 0, len(s.HTTP.Headers))
+			for _, h := range s.HTTP.Headers {
+				headers = append(headers, acp.HttpHeader{Name: h.Name, Value: h.Value})
+			}
+			out = append(out, acp.McpServer{Http: &acp.McpServerHttpInline{
+				Type:    "http",
+				Name:    s.HTTP.Name,
+				Url:     s.HTTP.URL,
+				Headers: headers,
+			}})
+		case s.Stdio != nil:
+			env := make([]acp.EnvVariable, 0, len(s.Stdio.Env))
+			for _, e := range s.Stdio.Env {
+				env = append(env, acp.EnvVariable{Name: e.Name, Value: e.Value})
+			}
+			out = append(out, acp.McpServer{Stdio: &acp.McpServerStdio{
+				Name:    s.Stdio.Name,
+				Command: s.Stdio.Command,
+				Args:    append([]string(nil), s.Stdio.Args...),
+				Env:     env,
+			}})
+		}
+	}
+	return out
+}
+
+// ModeStateFromACP translates a raw ACP SessionModeState into the neutral
+// agentbackend.ModeState (mitto-mx9.1.2), for populating SessionHandle.Modes.
+// Mirrors internal/acpbackend's ToNeutralModeState (duplicated here rather
+// than imported: internal/acpbackend already imports internal/conversation,
+// so importing it back would cycle — see the acpCapabilities translator note
+// above for the same tradeoff). Returns nil for a nil input.
+func ModeStateFromACP(s *acp.SessionModeState) *agentbackend.ModeState {
+	if s == nil {
+		return nil
+	}
+	out := &agentbackend.ModeState{
+		CurrentModeID: string(s.CurrentModeId),
+		Available:     make([]agentbackend.ModeDescriptor, 0, len(s.AvailableModes)),
+	}
+	for _, m := range s.AvailableModes {
+		desc := ""
+		if m.Description != nil {
+			desc = *m.Description
+		}
+		out.Available = append(out.Available, agentbackend.ModeDescriptor{
+			ID:          string(m.Id),
+			Name:        m.Name,
+			Description: desc,
+		})
+	}
+	return out
 }
 
 // Compile-time assertions that acpBackendProvider/acpLease/acpCapabilities

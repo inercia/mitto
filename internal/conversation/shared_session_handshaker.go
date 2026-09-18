@@ -128,14 +128,14 @@ type handshakeDeps interface {
 	hsSetPendingShared(v bool) // caller manages pendingSharedMu
 	hsGetPendingSharedWorkingDir() string
 	hsSetPendingSharedWorkingDir(dir string)
-	hsGetPendingSharedMcpServers() []acp.McpServer
-	hsSetPendingSharedMcpServers(servers []acp.McpServer)
-	hsGetPendingSharedModes() *acp.SessionModeState         // caller manages pendingSharedMu
-	hsSetPendingSharedModes(m *acp.SessionModeState)        // caller manages pendingSharedMu
-	hsGetPendingSharedModels() *SessionModelState           // caller manages pendingSharedMu
-	hsSetPendingSharedModels(m *SessionModelState)          // caller manages pendingSharedMu
-	hsGetPendingSharedModelConfigId() acp.SessionConfigId   // caller manages pendingSharedMu
-	hsSetPendingSharedModelConfigId(id acp.SessionConfigId) // caller manages pendingSharedMu
+	hsGetPendingSharedMcpServers() []agentbackend.MCPServerDescriptor
+	hsSetPendingSharedMcpServers(servers []agentbackend.MCPServerDescriptor)
+	hsGetPendingSharedModes() *agentbackend.ModeState  // caller manages pendingSharedMu
+	hsSetPendingSharedModes(m *agentbackend.ModeState) // caller manages pendingSharedMu
+	hsGetPendingSharedModels() *SessionModelState      // caller manages pendingSharedMu
+	hsSetPendingSharedModels(m *SessionModelState)     // caller manages pendingSharedMu
+	hsGetPendingSharedModelConfigId() string           // caller manages pendingSharedMu
+	hsSetPendingSharedModelConfigId(id string)         // caller manages pendingSharedMu
 
 	// Handshake serialization mutex
 	hsHandshakeLock()
@@ -149,13 +149,13 @@ type handshakeDeps interface {
 	hsGetResumeMethod() string
 
 	// MCP server lifecycle
-	hsStartMcpServer(caps acp.AgentCapabilities) []acp.McpServer
+	hsStartMcpServer(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor
 	hsStopMcpServer()
 
 	// Session-level ACP state applied after session is established
-	hsApplySessionModes(modes *acp.SessionModeState)
+	hsApplySessionModes(modes *agentbackend.ModeState)
 	hsApplyAgentModels(models *SessionModelState)
-	hsApplyAgentModelConfigId(id acp.SessionConfigId)
+	hsApplyAgentModelConfigId(id string)
 	hsLogAgentModels(models *SessionModelState)
 	// hsApplySynthesizedModelsIfEmpty is the shared-process branch of the
 	// mitto-886 local-profile fallback. Invoked once immediately after
@@ -238,7 +238,7 @@ func (c sharedSessionHandshaker) prepareSharedACPSession(d handshakeDeps, shared
 	supportsImages := neutralCaps != nil && neutralCaps.Query(agentbackend.FeatureImages) == agentbackend.CapabilitySupported
 	mcpServers := d.hsStartMcpServer(mcpHttpCapsFromNeutral(neutralCaps))
 	if mcpServers == nil {
-		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
+		mcpServers = []agentbackend.MCPServerDescriptor{} // Must be empty array, not nil — ACP validates this
 	}
 
 	d.hsSetACPClient(NewWebClient(c.buildWebClientConfig(d)))
@@ -283,7 +283,7 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 	// is safe to call unconditionally on every deferred handshake.
 	mcpServers := d.hsStartMcpServer(mcpHttpCapsFromNeutral(d.hsGetSharedProcess().Capabilities()))
 	if mcpServers == nil {
-		mcpServers = []acp.McpServer{} // Must be empty array, not nil — ACP validates this
+		mcpServers = []agentbackend.MCPServerDescriptor{} // Must be empty array, not nil — ACP validates this
 	}
 	d.hsSetPendingSharedMcpServers(mcpServers)
 

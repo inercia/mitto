@@ -26,8 +26,8 @@ type fakeSharedProcess struct {
 	processDone          chan struct{}
 	newSessionHandle     *SessionHandle
 	newSessionErr        error
-	newSessionCalls      []string        // recorded workingDirs
-	newSessionMcpServers []acp.McpServer // mitto-220: mcpServers seen on the last NewSession call
+	newSessionCalls      []string                           // recorded workingDirs
+	newSessionMcpServers []agentbackend.MCPServerDescriptor // mitto-220: mcpServers seen on the last NewSession call
 	loadSessionHandle    *SessionHandle
 	loadSessionErr       error
 	loadSessionCalls     []string // recorded acp_session_ids
@@ -87,7 +87,7 @@ func (f *fakeSharedProcess) Capabilities() agentbackend.Capabilities {
 	return NewProcessCapabilities(f.caps)
 }
 func (f *fakeSharedProcess) ProcessDone() <-chan struct{} { return f.processDone }
-func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, mcpServers []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.newSessionCalls = append(f.newSessionCalls, cwd)
@@ -95,7 +95,7 @@ func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, mcpServe
 	f.newCtxDeadline, f.newCtxHasDeadline = ctx.Deadline()
 	return f.newSessionHandle, f.newSessionErr
 }
-func (f *fakeSharedProcess) LoadSession(ctx context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) LoadSession(ctx context.Context, acpSessionID, _ string, _ []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	f.mu.Lock()
 	f.loadSessionCalls = append(f.loadSessionCalls, acpSessionID)
 	f.loadCtxDeadline, f.loadCtxHasDeadline = ctx.Deadline()
@@ -112,7 +112,7 @@ func (f *fakeSharedProcess) LoadSession(ctx context.Context, acpSessionID, _ str
 	}
 	return nil, errors.New("load not supported")
 }
-func (f *fakeSharedProcess) ResumeSession(_ context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) ResumeSession(_ context.Context, acpSessionID, _ string, _ []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resumeSessionCalls = append(f.resumeSessionCalls, acpSessionID)
@@ -189,11 +189,11 @@ type fakeHandshakeDeps struct {
 	acpID             string
 	pending           bool
 	pendingDir        string
-	pendingMcpSrv     []acp.McpServer
-	pendingModes      *acp.SessionModeState
+	pendingMcpSrv     []agentbackend.MCPServerDescriptor
+	pendingModes      *agentbackend.ModeState
 	pendingModels     *SessionModelState
-	pendingModelCfgId acp.SessionConfigId
-	appliedModelCfgId acp.SessionConfigId
+	pendingModelCfgId string
+	appliedModelCfgId string
 	resumeMethod      string
 
 	// mutexes for pending/handshake
@@ -204,7 +204,7 @@ type fakeHandshakeDeps struct {
 	persistedACPID   int
 	clearedACPID     int
 	notifiedEvents   []string
-	appliedModes     []*acp.SessionModeState
+	appliedModes     []*agentbackend.ModeState
 	appliedModels    []*SessionModelState
 	synthesizedCalls int // mitto-886: hsApplySynthesizedModelsIfEmpty invocations
 	startMcpCalls    int
@@ -214,7 +214,7 @@ type fakeHandshakeDeps struct {
 	// the MCP HTTP binding becoming available between prepare and the deferred
 	// session/new call). Defaults to nil (existing tests get the legacy nil
 	// return).
-	startMcpServerFunc func(acp.AgentCapabilities) []acp.McpServer
+	startMcpServerFunc func(acp.AgentCapabilities) []agentbackend.MCPServerDescriptor
 	stopMcpCalls       int
 	processDonesSet    int
 	niledCreation      int
@@ -264,24 +264,30 @@ func (f *fakeHandshakeDeps) hsMarkContextUnknown() { f.markUnknownCalls++ }
 func (f *fakeHandshakeDeps) hsPendingSharedLock()   { f.pendingMu.Lock() }
 func (f *fakeHandshakeDeps) hsPendingSharedUnlock() { f.pendingMu.Unlock() }
 
-func (f *fakeHandshakeDeps) hsIsPendingShared() bool                         { return f.pending }
-func (f *fakeHandshakeDeps) hsSetPendingShared(v bool)                       { f.pending = v }
-func (f *fakeHandshakeDeps) hsGetPendingSharedWorkingDir() string            { return f.pendingDir }
-func (f *fakeHandshakeDeps) hsSetPendingSharedWorkingDir(dir string)         { f.pendingDir = dir }
-func (f *fakeHandshakeDeps) hsGetPendingSharedMcpServers() []acp.McpServer   { return f.pendingMcpSrv }
-func (f *fakeHandshakeDeps) hsSetPendingSharedMcpServers(s []acp.McpServer)  { f.pendingMcpSrv = s }
-func (f *fakeHandshakeDeps) hsGetPendingSharedModes() *acp.SessionModeState  { return f.pendingModes }
-func (f *fakeHandshakeDeps) hsSetPendingSharedModes(m *acp.SessionModeState) { f.pendingModes = m }
+func (f *fakeHandshakeDeps) hsIsPendingShared() bool                 { return f.pending }
+func (f *fakeHandshakeDeps) hsSetPendingShared(v bool)               { f.pending = v }
+func (f *fakeHandshakeDeps) hsGetPendingSharedWorkingDir() string    { return f.pendingDir }
+func (f *fakeHandshakeDeps) hsSetPendingSharedWorkingDir(dir string) { f.pendingDir = dir }
+func (f *fakeHandshakeDeps) hsGetPendingSharedMcpServers() []agentbackend.MCPServerDescriptor {
+	return f.pendingMcpSrv
+}
+func (f *fakeHandshakeDeps) hsSetPendingSharedMcpServers(s []agentbackend.MCPServerDescriptor) {
+	f.pendingMcpSrv = s
+}
+func (f *fakeHandshakeDeps) hsGetPendingSharedModes() *agentbackend.ModeState { return f.pendingModes }
+func (f *fakeHandshakeDeps) hsSetPendingSharedModes(m *agentbackend.ModeState) {
+	f.pendingModes = m
+}
 func (f *fakeHandshakeDeps) hsGetPendingSharedModels() *SessionModelState {
 	return f.pendingModels
 }
 func (f *fakeHandshakeDeps) hsSetPendingSharedModels(m *SessionModelState) {
 	f.pendingModels = m
 }
-func (f *fakeHandshakeDeps) hsGetPendingSharedModelConfigId() acp.SessionConfigId {
+func (f *fakeHandshakeDeps) hsGetPendingSharedModelConfigId() string {
 	return f.pendingModelCfgId
 }
-func (f *fakeHandshakeDeps) hsSetPendingSharedModelConfigId(id acp.SessionConfigId) {
+func (f *fakeHandshakeDeps) hsSetPendingSharedModelConfigId(id string) {
 	f.pendingModelCfgId = id
 }
 
@@ -300,7 +306,7 @@ func (f *fakeHandshakeDeps) hsSetResumeMethod(method string) {
 }
 func (f *fakeHandshakeDeps) hsGetResumeMethod() string { return f.resumeMethod }
 
-func (f *fakeHandshakeDeps) hsStartMcpServer(caps acp.AgentCapabilities) []acp.McpServer {
+func (f *fakeHandshakeDeps) hsStartMcpServer(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor {
 	f.mu.Lock()
 	f.startMcpCalls++
 	f.startMcpCapsSeen = append(f.startMcpCapsSeen, caps)
@@ -316,7 +322,7 @@ func (f *fakeHandshakeDeps) hsStopMcpServer() {
 	defer f.mu.Unlock()
 	f.stopMcpCalls++
 }
-func (f *fakeHandshakeDeps) hsApplySessionModes(m *acp.SessionModeState) {
+func (f *fakeHandshakeDeps) hsApplySessionModes(m *agentbackend.ModeState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appliedModes = append(f.appliedModes, m)
@@ -331,7 +337,7 @@ func (f *fakeHandshakeDeps) hsApplySynthesizedModelsIfEmpty() {
 	defer f.mu.Unlock()
 	f.synthesizedCalls++
 }
-func (f *fakeHandshakeDeps) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
+func (f *fakeHandshakeDeps) hsApplyAgentModelConfigId(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appliedModelCfgId = id
@@ -509,7 +515,7 @@ func TestHandshaker_EnsureSharedACPSession_RecomputesMcpServersAtDeferredTime(t 
 	d.pendingDir = "my/working/dir"
 	// Stale snapshot as prepareSharedACPSession would have left it when the
 	// HTTP binding was not yet available at prepare time.
-	d.pendingMcpSrv = []acp.McpServer{}
+	d.pendingMcpSrv = []agentbackend.MCPServerDescriptor{}
 
 	fp := newFakeSharedProcess()
 	// By the time the deferred session/new fires, the agent's capabilities
@@ -517,20 +523,19 @@ func TestHandshaker_EnsureSharedACPSession_RecomputesMcpServersAtDeferredTime(t 
 	fp.caps = &acp.AgentCapabilities{McpCapabilities: acp.McpCapabilities{Http: true}}
 	d.sharedProcess = fp
 
-	wantServers := []acp.McpServer{{Http: &acp.McpServerHttpInline{
-		Type: "http",
+	wantServers := []agentbackend.MCPServerDescriptor{{HTTP: &agentbackend.MCPServerHTTP{
 		Name: "mitto",
-		Url:  "http://127.0.0.1:5757/mcp",
-		Headers: []acp.HttpHeader{{
+		URL:  "http://127.0.0.1:5757/mcp",
+		Headers: []agentbackend.HTTPHeader{{
 			Name:  "Mitto-Session-Binding",
 			Value: "freshly-issued-token",
 		}},
 	}}}
 	// Simulates startSessionMcpServer: only returns the HTTP entry once caps
 	// actually advertise Http (i.e. the "binding now available" moment).
-	d.startMcpServerFunc = func(caps acp.AgentCapabilities) []acp.McpServer {
+	d.startMcpServerFunc = func(caps acp.AgentCapabilities) []agentbackend.MCPServerDescriptor {
 		if !caps.McpCapabilities.Http {
-			return []acp.McpServer{}
+			return []agentbackend.MCPServerDescriptor{}
 		}
 		return wantServers
 	}
@@ -553,14 +558,14 @@ func TestHandshaker_EnsureSharedACPSession_RecomputesMcpServersAtDeferredTime(t 
 			len(fp.newSessionMcpServers), fp.newSessionMcpServers)
 	}
 	got := fp.newSessionMcpServers[0]
-	if got.Http == nil || got.Http.Url != wantServers[0].Http.Url || len(got.Http.Headers) != 1 ||
-		got.Http.Headers[0].Value != "freshly-issued-token" {
+	if got.HTTP == nil || got.HTTP.URL != wantServers[0].HTTP.URL || len(got.HTTP.Headers) != 1 ||
+		got.HTTP.Headers[0].Value != "freshly-issued-token" {
 		t.Fatalf("NewSession did not receive the recomputed HTTP binding, got %+v", got)
 	}
 
 	// The pending snapshot itself must also be updated (not left stale), so
 	// any other reader of hsGetPendingSharedMcpServers sees the live value.
-	if len(d.pendingMcpSrv) != 1 || d.pendingMcpSrv[0].Http == nil {
+	if len(d.pendingMcpSrv) != 1 || d.pendingMcpSrv[0].HTTP == nil {
 		t.Fatalf("expected pendingMcpSrv snapshot to be refreshed with the HTTP binding, got %+v", d.pendingMcpSrv)
 	}
 }
@@ -581,12 +586,12 @@ func TestHandshaker_ApplyPendingSharedModes_NilModes(t *testing.T) {
 func TestHandshaker_ApplyPendingSharedModes_Applies(t *testing.T) {
 	c := sharedSessionHandshaker{}
 	d := newFakeHandshakeDeps()
-	d.pendingModes = &acp.SessionModeState{CurrentModeId: "code"}
+	d.pendingModes = &agentbackend.ModeState{CurrentModeID: "code"}
 	d.pendingModels = &SessionModelState{CurrentModelId: "m-1"}
 
 	c.applyPendingSharedModes(d)
 
-	if len(d.appliedModes) != 1 || d.appliedModes[0].CurrentModeId != "code" {
+	if len(d.appliedModes) != 1 || d.appliedModes[0].CurrentModeID != "code" {
 		t.Fatalf("expected mode 'code' applied, got %v", d.appliedModes)
 	}
 	if len(d.appliedModels) != 1 {

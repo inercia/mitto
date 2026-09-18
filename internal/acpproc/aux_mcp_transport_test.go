@@ -53,23 +53,20 @@ func TestBuildAuxProcessorMCPServers_HTTPWhenAgentAdvertisesHTTPCap(t *testing.T
 		t.Fatalf("len(servers) = %d, want 1", len(servers))
 	}
 	s := servers[0]
-	if s.Http == nil {
-		t.Fatalf("servers[0].Http is nil, want non-nil McpServerHttpInline")
+	if s.HTTP == nil {
+		t.Fatalf("servers[0].HTTP is nil, want non-nil MCPServerHTTP")
 	}
 	if s.Stdio != nil {
 		t.Fatalf("servers[0].Stdio = %+v, want nil (no stdio subprocess on HTTP branch)", s.Stdio)
 	}
-	if s.Http.Name != "mitto" {
-		t.Errorf("servers[0].Http.Name = %q, want %q", s.Http.Name, "mitto")
+	if s.HTTP.Name != "mitto" {
+		t.Errorf("servers[0].HTTP.Name = %q, want %q", s.HTTP.Name, "mitto")
 	}
-	if s.Http.Type != "http" {
-		t.Errorf("servers[0].Http.Type = %q, want %q", s.Http.Type, "http")
+	if s.HTTP.URL != "http://127.0.0.1:5757/mcp" {
+		t.Errorf("servers[0].HTTP.URL = %q, want the passed mcpServerURL", s.HTTP.URL)
 	}
-	if s.Http.Url != "http://127.0.0.1:5757/mcp" {
-		t.Errorf("servers[0].Http.Url = %q, want the passed mcpServerURL", s.Http.Url)
-	}
-	if s.Http.Headers == nil {
-		t.Errorf("servers[0].Http.Headers is nil, want non-nil (empty) slice — ACP validates this")
+	if s.HTTP.Headers == nil {
+		t.Errorf("servers[0].HTTP.Headers is nil, want non-nil (empty) slice — ACP validates this")
 	}
 }
 
@@ -105,10 +102,10 @@ func TestBuildAuxProcessorMCPServers_StdioFallbackWhenNoHTTPCap(t *testing.T) {
 			}
 			s := servers[0]
 			if s.Stdio == nil {
-				t.Fatalf("servers[0].Stdio is nil, want non-nil McpServerStdio (regression: HTTP branch chosen without http cap)")
+				t.Fatalf("servers[0].Stdio is nil, want non-nil MCPServerStdio (regression: HTTP branch chosen without http cap)")
 			}
-			if s.Http != nil {
-				t.Errorf("servers[0].Http = %+v, want nil on stdio branch", s.Http)
+			if s.HTTP != nil {
+				t.Errorf("servers[0].HTTP = %+v, want nil on stdio branch", s.HTTP)
 			}
 			if s.Stdio.Name != "mitto" {
 				t.Errorf("servers[0].Stdio.Name = %q, want %q", s.Stdio.Name, "mitto")

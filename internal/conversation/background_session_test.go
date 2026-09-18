@@ -6470,13 +6470,13 @@ func TestTriggerTitleGenerationFromLoop(t *testing.T) {
 // Used in tests that need a non-nil SharedProcess without starting a real ACP process.
 type alwaysFailSharedProcess struct{}
 
-func (p *alwaysFailSharedProcess) NewSession(_ context.Context, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (p *alwaysFailSharedProcess) NewSession(_ context.Context, _ string, _ []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, fmt.Errorf("alwaysFailSharedProcess: NewSession not implemented")
 }
-func (p *alwaysFailSharedProcess) LoadSession(_ context.Context, _, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (p *alwaysFailSharedProcess) LoadSession(_ context.Context, _, _ string, _ []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, fmt.Errorf("alwaysFailSharedProcess: LoadSession not implemented")
 }
-func (p *alwaysFailSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (p *alwaysFailSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
 	return nil, fmt.Errorf("alwaysFailSharedProcess: ResumeSession not implemented")
 }
 func (p *alwaysFailSharedProcess) RegisterSession(_ string, _ *SessionCallbacks) {}

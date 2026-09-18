@@ -61,15 +61,15 @@ func newFakeSharedProcess() *fakeSharedProcess {
 	}
 }
 
-func (f *fakeSharedProcess) NewSession(_ context.Context, _ string, _ []acp.McpServer) (*conversation.SessionHandle, error) {
+func (f *fakeSharedProcess) NewSession(_ context.Context, _ string, _ []agentbackend.MCPServerDescriptor) (*conversation.SessionHandle, error) {
 	return f.newSessionHandle, f.newSessionErr
 }
 
-func (f *fakeSharedProcess) LoadSession(_ context.Context, _, _ string, _ []acp.McpServer) (*conversation.SessionHandle, error) {
+func (f *fakeSharedProcess) LoadSession(_ context.Context, _, _ string, _ []agentbackend.MCPServerDescriptor) (*conversation.SessionHandle, error) {
 	return f.loadSessionHandle, f.loadSessionErr
 }
 
-func (f *fakeSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []acp.McpServer) (*conversation.SessionHandle, error) {
+func (f *fakeSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []agentbackend.MCPServerDescriptor) (*conversation.SessionHandle, error) {
 	return f.resumeSessionHandle, f.resumeSessionErr
 }
 

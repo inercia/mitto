@@ -18,8 +18,6 @@ package conversation
 import (
 	"context"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/runner"
@@ -63,7 +61,7 @@ type AcquireRequest struct {
 	// CWD is the working directory passed to NewSession/LoadSession/ResumeSession.
 	CWD string
 	// MCPServers is the list of MCP servers to advertise to the session.
-	MCPServers []acp.McpServer
+	MCPServers []agentbackend.MCPServerDescriptor
 	// Prewarm requests the underlying process manager pre-warm the process.
 	Prewarm bool
 

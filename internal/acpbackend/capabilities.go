@@ -1,43 +1,38 @@
 package acpbackend
 
 import (
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversation"
 )
 
 // sessionCapabilities is a Capabilities snapshot for one ACP session, derived
-// from the agent's advertised AgentCapabilities plus whether this particular
-// session actually reported a model/mode catalog (SessionHandle.Models /
-// .Modes). Model/mode support is a per-session fact (it depends on what this
-// agent process actually advertised for this session), not a fixed
-// agent-level flag, so it cannot be read off AgentCapabilities alone.
+// from the agent's advertised process-level capabilities plus whether this
+// particular session actually reported a model/mode catalog
+// (SessionHandle.Models / .Modes). Model/mode support is a per-session fact
+// (it depends on what this agent process actually advertised for this
+// session), not a fixed agent-level flag, so it cannot be read off the
+// process-level capabilities alone.
 type sessionCapabilities struct {
-	agent     acp.AgentCapabilities
+	agent     agentbackend.Capabilities
 	hasModels bool
 	hasModes  bool
 }
 
 // newSessionCapabilities builds a sessionCapabilities snapshot from the
-// AgentCapabilities returned at Initialize plus this session's model/mode
-// state (from conversation.SessionHandle.Models/.Modes).
-func newSessionCapabilities(agentCaps acp.AgentCapabilities, models *conversation.SessionModelState, modes *acp.SessionModeState) *sessionCapabilities {
+// process-level Capabilities captured at Initialize (SessionHandle.
+// Capabilities, mitto-mx9.1.2) plus this session's model/mode state (from
+// conversation.SessionHandle.Models/.Modes).
+func newSessionCapabilities(agentCaps agentbackend.Capabilities, models *conversation.SessionModelState, modes *agentbackend.ModeState) *sessionCapabilities {
 	return &sessionCapabilities{
 		agent:     agentCaps,
 		hasModels: models != nil && len(models.AvailableModels) > 0,
-		hasModes:  modes != nil && len(modes.AvailableModes) > 0,
+		hasModes:  modes != nil && len(modes.Available) > 0,
 	}
 }
 
 // Query implements agentbackend.Capabilities.
 func (c *sessionCapabilities) Query(feature agentbackend.Feature) agentbackend.CapabilityState {
 	switch feature {
-	case agentbackend.FeatureImages:
-		if c.agent.PromptCapabilities.Image {
-			return agentbackend.CapabilitySupported
-		}
-		return agentbackend.CapabilityUnsupported
 	case agentbackend.FeatureFiles:
 		// Mitto's ACP Initialize handshake always advertises
 		// ClientCapabilities.Fs{ReadTextFile,WriteTextFile}=true (see
@@ -62,11 +57,17 @@ func (c *sessionCapabilities) Query(feature agentbackend.Feature) agentbackend.C
 		}
 		return agentbackend.CapabilityUnsupported
 	default:
-		// FeatureTerminals and any future feature: not modeled by ACP's
-		// AgentCapabilities/ClientCapabilities in a queryable way here —
-		// report Unknown rather than guessing (ADR
+		// FeatureImages and any other feature this layer doesn't answer
+		// directly (e.g. FeatureTerminals): delegate to the process-level
+		// Capabilities snapshot (mitto-mx9.1.2), which already answers
+		// FeatureImages from the raw AgentCapabilities (see
+		// acpProcessCapabilities.Query in backend_provider_acp.go). Reports
+		// Unknown rather than guessing when agent is nil (ADR
 		// agent-backend-architecture.md §5).
-		return agentbackend.CapabilityUnknown
+		if c.agent == nil {
+			return agentbackend.CapabilityUnknown
+		}
+		return c.agent.Query(feature)
 	}
 }
 
