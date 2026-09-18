@@ -147,7 +147,7 @@ func (l *acpLease) Detach() {
 	if l.sessionID == "" {
 		return
 	}
-	l.process.UnregisterSession(l.sessionID)
+	l.process.UnregisterSession(string(l.sessionID))
 }
 
 // Bind attaches this lease to the real ACP session ID established by a
@@ -258,13 +258,13 @@ func (l *acpLease) SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool
 // mirrors the existing acpCapabilities translator in this same file, which
 // makes the same tradeoff for the same reason.
 //
-// Note: Prompt's returned PromptOutcome carries only StopReason/Content —
-// agentbackend.PromptOutcome has no field for ACP's per-turn Usage yet, so
-// this seam is only wired into call sites that don't need it (Cancel/
-// SetModel/SetMode, and the response-discarding context-flush Prompt in
-// flushContextInPlace). The main prompt-loop Prompt call keeps using
-// SharedProcess directly until PromptOutcome grows a Usage field, to avoid a
-// token-usage-accounting regression (tracked as mx9.1.2 follow-up).
+// mitto-mx9.1.1: SharedProcess.Prompt/Cancel/SetSessionMode/SetSessionModel
+// now take/return agentbackend types directly (no acp.* type named), so this
+// adapter is a thin passthrough + error translation — the neutral<->ACP
+// translation itself now lives at the SharedProcess implementation's own
+// boundary (internal/acpproc.SharedACPProcess). agentbackend.PromptOutcome
+// also now carries per-turn token usage (PromptUsage), routed straight
+// through from the implementation.
 type acpSessionPromptOps struct {
 	process SharedProcess
 }
@@ -360,25 +360,86 @@ func acpLeaseContentBlocksToNeutral(blocks []acp.ContentBlock) []agentbackend.Co
 }
 
 func (o *acpSessionPromptOps) Prompt(ctx context.Context, ref agentbackend.SessionRef, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
-	resp, err := o.process.Prompt(ctx, acp.SessionId(ref.ProviderSession), acpLeaseContentBlocksToACP(content))
+	outcome, err := o.process.Prompt(ctx, string(ref.ProviderSession), content)
 	if err != nil {
 		return agentbackend.PromptOutcome{}, translateACPLeaseError(err, "")
 	}
-	return agentbackend.PromptOutcome{StopReason: acpLeaseStopReasonToNeutral(resp.StopReason)}, nil
+	return outcome, nil
 }
 
 func (o *acpSessionPromptOps) Cancel(ctx context.Context, ref agentbackend.SessionRef) error {
-	return translateACPLeaseError(o.process.Cancel(ctx, acp.SessionId(ref.ProviderSession)), "")
+	return translateACPLeaseError(o.process.Cancel(ctx, string(ref.ProviderSession)), "")
 }
 
 func (o *acpSessionPromptOps) SetModel(ctx context.Context, ref agentbackend.SessionRef, modelID string) error {
-	err := o.process.SetSessionModel(ctx, acp.SessionId(ref.ProviderSession), modelID)
+	err := o.process.SetSessionModel(ctx, string(ref.ProviderSession), modelID)
 	return translateACPLeaseError(err, agentbackend.FeatureModelSelection)
 }
 
 func (o *acpSessionPromptOps) SetMode(ctx context.Context, ref agentbackend.SessionRef, modeID string) error {
-	err := o.process.SetSessionMode(ctx, acp.SessionId(ref.ProviderSession), modeID)
+	err := o.process.SetSessionMode(ctx, string(ref.ProviderSession), modeID)
 	return translateACPLeaseError(err, agentbackend.FeatureModeSelection)
+}
+
+// acpLeaseStopReasonFromNeutral is the reverse of acpLeaseStopReasonToNeutral,
+// used by promptOutcomeToACPResponse to reconstruct an acp.PromptResponse-
+// shaped value from a neutral PromptOutcome for the main prompt-loop's
+// existing ACP-typed downstream bookkeeping (token accounting, follow-up
+// analysis — bgsession_prompt.go/prompt_dispatcher.go/follow_up_coordinator.go,
+// out of scope for mitto-mx9.1.1). The mapping is lossy in this direction only
+// for agentbackend.StopReasonMaxTokens, which collapses both acp.
+// StopReasonMaxTokens and acp.StopReasonMaxTurnRequests on the way in (see
+// acpLeaseStopReasonToNeutral) and so always reconstructs as acp.
+// StopReasonMaxTokens specifically; no consumer of the reconstructed value
+// distinguishes the two ACP variants (only StopReasonEndTurn is checked).
+func acpLeaseStopReasonFromNeutral(r agentbackend.StopReason) acp.StopReason {
+	switch r {
+	case agentbackend.StopReasonEndTurn:
+		return acp.StopReasonEndTurn
+	case agentbackend.StopReasonCancelled:
+		return acp.StopReasonCancelled
+	case agentbackend.StopReasonMaxTokens:
+		return acp.StopReasonMaxTokens
+	case agentbackend.StopReasonRefusal:
+		return acp.StopReasonRefusal
+	default:
+		// No ACP stop reason represents a generic "error" terminal state;
+		// leaving this empty is a safe default since the only production
+		// comparison is against acp.StopReasonEndTurn.
+		return acp.StopReason("")
+	}
+}
+
+// acpLeaseUsageFromNeutral reconstructs an *acp.Usage from the neutral
+// PromptUsage for the same reconstruction purpose as
+// acpLeaseStopReasonFromNeutral. Returns nil when u is nil.
+func acpLeaseUsageFromNeutral(u *agentbackend.PromptUsage) *acp.Usage {
+	if u == nil {
+		return nil
+	}
+	return &acp.Usage{
+		InputTokens:  int(u.InputTokens),
+		OutputTokens: int(u.OutputTokens),
+		TotalTokens:  int(u.TotalTokens),
+	}
+}
+
+// promptOutcomeToACPResponse reconstructs an acp.PromptResponse-shaped value
+// from a neutral PromptOutcome. Used only by the main prompt-loop
+// (bgsession_prompt.go) when it routes its Prompt RPC through the neutral
+// SharedProcess.Prompt seam (mitto-mx9.1.1 acceptance: "all 4 planned
+// hot-path sites route through the neutral seam") but must keep feeding its
+// existing ACP-typed downstream pipeline (accumulateTokenUsage,
+// handlePromptSuccess, the follow-up/after-processors pipeline) unchanged —
+// neutralizing that pipeline's own types is out of scope for this bead.
+// Token-accounting parity is exact for the 3 fields that pipeline reads
+// (Input/Output/TotalTokens); see acpLeaseStopReasonFromNeutral for the one
+// accepted lossy mapping.
+func promptOutcomeToACPResponse(o agentbackend.PromptOutcome) acp.PromptResponse {
+	return acp.PromptResponse{
+		StopReason: acpLeaseStopReasonFromNeutral(o.StopReason),
+		Usage:      acpLeaseUsageFromNeutral(o.Usage),
+	}
 }
 
 // acpCapabilities adapts a process-level agentbackend.Capabilities (as

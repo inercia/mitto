@@ -30,23 +30,23 @@ type fakeSharedProcess struct {
 	resumeSessionHandle *conversation.SessionHandle
 	resumeSessionErr    error
 
-	registered   map[acp.SessionId]*conversation.SessionCallbacks
-	unregistered []acp.SessionId
+	registered   map[string]*conversation.SessionCallbacks
+	unregistered []string
 
-	promptResp acp.PromptResponse
+	promptResp agentbackend.PromptOutcome
 	promptErr  error
-	promptArgs []acp.ContentBlock
+	promptArgs []agentbackend.ContentBlock
 
 	cancelErr    error
-	cancelCalls  []acp.SessionId
+	cancelCalls  []string
 	setModeErr   error
 	setModeCalls []struct {
-		id   acp.SessionId
+		id   string
 		mode string
 	}
 	setModelErr   error
 	setModelCalls []struct {
-		id    acp.SessionId
+		id    string
 		model string
 	}
 
@@ -56,7 +56,7 @@ type fakeSharedProcess struct {
 func newFakeSharedProcess() *fakeSharedProcess {
 	return &fakeSharedProcess{
 		caps:       &acp.AgentCapabilities{},
-		registered: make(map[acp.SessionId]*conversation.SessionCallbacks),
+		registered: make(map[string]*conversation.SessionCallbacks),
 		done:       make(chan struct{}),
 	}
 }
@@ -73,13 +73,13 @@ func (f *fakeSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []ac
 	return f.resumeSessionHandle, f.resumeSessionErr
 }
 
-func (f *fakeSharedProcess) RegisterSession(sessionID acp.SessionId, callbacks *conversation.SessionCallbacks) {
+func (f *fakeSharedProcess) RegisterSession(sessionID string, callbacks *conversation.SessionCallbacks) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registered[sessionID] = callbacks
 }
 
-func (f *fakeSharedProcess) UnregisterSession(sessionID acp.SessionId) {
+func (f *fakeSharedProcess) UnregisterSession(sessionID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.registered, sessionID)
@@ -88,35 +88,35 @@ func (f *fakeSharedProcess) UnregisterSession(sessionID acp.SessionId) {
 
 func (f *fakeSharedProcess) ProcessDone() <-chan struct{} { return f.done }
 
-func (f *fakeSharedProcess) Prompt(_ context.Context, _ acp.SessionId, content []acp.ContentBlock) (acp.PromptResponse, error) {
+func (f *fakeSharedProcess) Prompt(_ context.Context, _ string, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.promptArgs = content
 	return f.promptResp, f.promptErr
 }
 
-func (f *fakeSharedProcess) Cancel(_ context.Context, sessionID acp.SessionId) error {
+func (f *fakeSharedProcess) Cancel(_ context.Context, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cancelCalls = append(f.cancelCalls, sessionID)
 	return f.cancelErr
 }
 
-func (f *fakeSharedProcess) SetSessionMode(_ context.Context, sessionID acp.SessionId, modeID string) error {
+func (f *fakeSharedProcess) SetSessionMode(_ context.Context, sessionID string, modeID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setModeCalls = append(f.setModeCalls, struct {
-		id   acp.SessionId
+		id   string
 		mode string
 	}{sessionID, modeID})
 	return f.setModeErr
 }
 
-func (f *fakeSharedProcess) SetSessionModel(_ context.Context, sessionID acp.SessionId, modelID string) error {
+func (f *fakeSharedProcess) SetSessionModel(_ context.Context, sessionID string, modelID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setModelCalls = append(f.setModelCalls, struct {
-		id    acp.SessionId
+		id    string
 		model string
 	}{sessionID, modelID})
 	return f.setModelErr

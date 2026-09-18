@@ -7,7 +7,6 @@ import (
 	"sync"
 	"testing"
 
-	acp "github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -47,10 +46,10 @@ func TestModelLifecycle_TransientFailureRetainsConversationChoice(t *testing.T) 
 	}
 }
 
-func (p *lifecycleModelProcess) SetSessionModel(_ context.Context, id acp.SessionId, model string) error {
+func (p *lifecycleModelProcess) SetSessionModel(_ context.Context, id string, model string) error {
 	p.modelMu.Lock()
 	defer p.modelMu.Unlock()
-	p.calls = append(p.calls, [2]string{string(id), model})
+	p.calls = append(p.calls, [2]string{id, model})
 	return nil
 }
 

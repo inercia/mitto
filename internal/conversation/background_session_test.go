@@ -6479,19 +6479,19 @@ func (p *alwaysFailSharedProcess) LoadSession(_ context.Context, _, _ string, _ 
 func (p *alwaysFailSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []acp.McpServer) (*SessionHandle, error) {
 	return nil, fmt.Errorf("alwaysFailSharedProcess: ResumeSession not implemented")
 }
-func (p *alwaysFailSharedProcess) RegisterSession(_ acp.SessionId, _ *SessionCallbacks) {}
-func (p *alwaysFailSharedProcess) UnregisterSession(_ acp.SessionId)                    {}
-func (p *alwaysFailSharedProcess) ProcessDone() <-chan struct{}                         { return nil }
-func (p *alwaysFailSharedProcess) Prompt(_ context.Context, _ acp.SessionId, _ []acp.ContentBlock) (acp.PromptResponse, error) {
-	return acp.PromptResponse{}, fmt.Errorf("alwaysFailSharedProcess: Prompt not implemented")
+func (p *alwaysFailSharedProcess) RegisterSession(_ string, _ *SessionCallbacks) {}
+func (p *alwaysFailSharedProcess) UnregisterSession(_ string)                    {}
+func (p *alwaysFailSharedProcess) ProcessDone() <-chan struct{}                  { return nil }
+func (p *alwaysFailSharedProcess) Prompt(_ context.Context, _ string, _ []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
+	return agentbackend.PromptOutcome{}, fmt.Errorf("alwaysFailSharedProcess: Prompt not implemented")
 }
-func (p *alwaysFailSharedProcess) Cancel(_ context.Context, _ acp.SessionId) error {
+func (p *alwaysFailSharedProcess) Cancel(_ context.Context, _ string) error {
 	return fmt.Errorf("alwaysFailSharedProcess: Cancel not implemented")
 }
-func (p *alwaysFailSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _ string) error {
+func (p *alwaysFailSharedProcess) SetSessionMode(_ context.Context, _ string, _ string) error {
 	return fmt.Errorf("alwaysFailSharedProcess: SetSessionMode not implemented")
 }
-func (p *alwaysFailSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, _ string) error {
+func (p *alwaysFailSharedProcess) SetSessionModel(_ context.Context, _ string, _ string) error {
 	return fmt.Errorf("alwaysFailSharedProcess: SetSessionModel not implemented")
 }
 func (p *alwaysFailSharedProcess) Done() <-chan struct{} { return nil }

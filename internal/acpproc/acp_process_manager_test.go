@@ -338,7 +338,7 @@ func TestRetireCancelledAuxSession_UnregistersAndInvalidates(t *testing.T) {
 	client := newAuxiliaryClient()
 	state := &auxiliarySessionState{sessionID: "cancelled", client: client}
 	process := &SharedACPProcess{client: NewMultiplexClient()}
-	process.RegisterSession(acp.SessionId(state.sessionID), &conversation.SessionCallbacks{
+	process.RegisterSession(state.sessionID, &conversation.SessionCallbacks{
 		OnSessionUpdate: client.OnSessionUpdate,
 	})
 	mgr.auxSessions[key] = state
@@ -1548,7 +1548,7 @@ func TestSetSessionModel_FourConcurrentChildSpawns_NoFalseSuccess(t *testing.T) 
 			defer wg.Done()
 			<-start
 			errs[idx] = p.SetSessionModel(context.Background(),
-				acp.SessionId(fmt.Sprintf("child-session-%d", idx)), "model-a")
+				fmt.Sprintf("child-session-%d", idx), "model-a")
 		}(i)
 	}
 	close(start)

@@ -150,7 +150,7 @@ func (bs *BackgroundSession) cmSetSessionMode(ctx context.Context, value string)
 		if ops, ref, ok := bs.leaseSessionOps(); ok {
 			return ops.SetMode(ctx, ref, value)
 		}
-		return bs.sharedProcess.SetSessionMode(ctx, acp.SessionId(bs.acpID), value)
+		return bs.sharedProcess.SetSessionMode(ctx, bs.acpID, value)
 	}
 	if bs.acpConn != nil {
 		_, err := bs.acpConn.SetSessionMode(ctx, acp.SetSessionModeRequest{
@@ -168,7 +168,7 @@ func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID stri
 		if ops, ref, ok := bs.leaseSessionOps(); ok {
 			return ops.SetModel(ctx, ref, modelID)
 		}
-		return bs.sharedProcess.SetSessionModel(ctx, acp.SessionId(bs.acpID), modelID)
+		return bs.sharedProcess.SetSessionModel(ctx, bs.acpID, modelID)
 	}
 	if bs.acpConn != nil {
 		cfgId := bs.modelConfigId

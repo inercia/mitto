@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversation"
 )
@@ -74,7 +72,7 @@ func TestConnection_NewSession_SynthesizesDistinctConversationID(t *testing.T) {
 	}
 
 	// RegisterSession must have been called on the underlying process.
-	if _, ok := fp.registered[acp.SessionId("upstream-1")]; !ok {
+	if _, ok := fp.registered["upstream-1"]; !ok {
 		t.Error("expected the session's callbacks to be registered on the SharedProcess")
 	}
 }

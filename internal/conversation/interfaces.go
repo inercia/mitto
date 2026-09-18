@@ -31,19 +31,24 @@ type SharedProcess interface {
 	// ResumeSession resumes a previously archived ACP session on this process.
 	ResumeSession(ctx context.Context, acpSessionID, cwd string, mcpServers []acp.McpServer) (*SessionHandle, error)
 	// RegisterSession wires per-session event callbacks into the multiplex layer.
-	RegisterSession(sessionID acp.SessionId, callbacks *SessionCallbacks)
+	// sessionID is the provider-assigned session identifier as a plain string
+	// (mitto-mx9.1.1: no acp.* type named here; implementations translate at
+	// their own boundary).
+	RegisterSession(sessionID string, callbacks *SessionCallbacks)
 	// UnregisterSession removes a session's callbacks from the multiplex layer.
-	UnregisterSession(sessionID acp.SessionId)
+	UnregisterSession(sessionID string)
 	// ProcessDone returns a channel closed when the OS process exits.
 	ProcessDone() <-chan struct{}
-	// Prompt sends a prompt to the agent for a specific session.
-	Prompt(ctx context.Context, sessionID acp.SessionId, content []acp.ContentBlock) (acp.PromptResponse, error)
+	// Prompt sends a prompt to the agent for a specific session, returning the
+	// protocol-neutral outcome (mitto-mx9.1.1: content in, outcome out are both
+	// agentbackend types — no acp.* type named here).
+	Prompt(ctx context.Context, sessionID string, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error)
 	// Cancel cancels the current in-progress prompt for a session.
-	Cancel(ctx context.Context, sessionID acp.SessionId) error
+	Cancel(ctx context.Context, sessionID string) error
 	// SetSessionMode switches the session to a new mode (e.g. "code", "default").
-	SetSessionMode(ctx context.Context, sessionID acp.SessionId, modeID string) error
+	SetSessionMode(ctx context.Context, sessionID string, modeID string) error
 	// SetSessionModel switches the session to a different model.
-	SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error
+	SetSessionModel(ctx context.Context, sessionID string, modelID string) error
 	// Done returns a channel closed when the process has fully shut down.
 	Done() <-chan struct{}
 	// Capabilities returns the agent's advertised capabilities as a

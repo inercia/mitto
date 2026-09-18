@@ -13,6 +13,7 @@ import (
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
@@ -1055,7 +1056,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	auxState.client.reset()
 
 	// Send prompt to the auxiliary session
-	_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
+	_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
 	if err != nil {
 		if ctx.Err() != nil {
 			m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
@@ -1105,7 +1106,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		}
 
 		auxState.client.reset()
-		_, err = process.Prompt(ctx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
+		_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
 		if err != nil {
 			if ctx.Err() != nil {
 				m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
@@ -1190,7 +1191,7 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 		defer auxState.mu.Unlock()
 		waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		_, _ = process.Prompt(waitCtx, acp.SessionId(auxState.sessionID), []acp.ContentBlock{acp.TextBlock(message)})
+		_, _ = process.Prompt(waitCtx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
 	}()
 
 	return nil
@@ -1675,7 +1676,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					capturedPurpose := purpose
 					capturedMatched := matched
 					capturedProcess := process
-					capturedSessionID := acp.SessionId(sessionHandle.SessionID)
+					capturedSessionID := sessionHandle.SessionID
 					capturedLogger := m.logger
 					go func() {
 						// De-stagger concurrent prewarmed aux model-set goroutines (mitto-xicp).
@@ -1771,7 +1772,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			return auxTerminalStub.KillTerminal(ctx, params)
 		},
 	}
-	process.RegisterSession(acp.SessionId(sessionHandle.SessionID), callbacks)
+	process.RegisterSession(sessionHandle.SessionID, callbacks)
 
 	// Store the result under a brief auxMu lock.
 	// Defensive double-check: if an entry somehow already exists (shouldn't happen
@@ -1899,14 +1900,14 @@ func (m *ACPProcessManager) retireCancelledAuxSession(process *SharedACPProcess,
 	state.client.retire()
 	cancelCtx, cancel := context.WithTimeout(context.Background(), auxiliaryCancelTimeout)
 	defer cancel()
-	if err := process.Cancel(cancelCtx, acp.SessionId(state.sessionID)); err != nil && m.logger != nil {
+	if err := process.Cancel(cancelCtx, state.sessionID); err != nil && m.logger != nil {
 		m.logger.Warn("Failed to cancel timed-out auxiliary prompt",
 			"workspace_uuid", workspaceUUID,
 			"purpose", purpose,
 			"session_id", state.sessionID,
 			"error", err)
 	}
-	process.UnregisterSession(acp.SessionId(state.sessionID))
+	process.UnregisterSession(state.sessionID)
 	m.invalidateAuxSession(workspaceUUID, purpose, state)
 }
 

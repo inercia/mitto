@@ -18,6 +18,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/acpbackend"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/acpproc/procstart"
 	"github.com/inercia/mitto/internal/agentbackend"
@@ -2513,13 +2514,17 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 }
 
 // RegisterSession registers per-session callbacks with the MultiplexClient.
-func (p *SharedACPProcess) RegisterSession(sessionID acp.SessionId, callbacks *conversation.SessionCallbacks) {
-	p.client.RegisterSession(sessionID, callbacks)
+// sessionID arrives as a plain string per the conversation.SharedProcess
+// interface (mitto-mx9.1.1); translated to acp.SessionId at this boundary for
+// the MultiplexClient, whose own map key stays ACP-typed (internal, same-
+// package concern only).
+func (p *SharedACPProcess) RegisterSession(sessionID string, callbacks *conversation.SessionCallbacks) {
+	p.client.RegisterSession(acp.SessionId(sessionID), callbacks)
 }
 
 // UnregisterSession removes per-session callbacks.
-func (p *SharedACPProcess) UnregisterSession(sessionID acp.SessionId) {
-	p.client.UnregisterSession(sessionID)
+func (p *SharedACPProcess) UnregisterSession(sessionID string) {
+	p.client.UnregisterSession(acp.SessionId(sessionID))
 }
 
 // ProcessDone returns a channel that is closed when the ACP OS process exits.
@@ -2532,7 +2537,10 @@ func (p *SharedACPProcess) ProcessDone() <-chan struct{} {
 }
 
 // Prompt sends a prompt to a specific session on this shared process.
-func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, content []acp.ContentBlock) (acp.PromptResponse, error) {
+// content/the returned outcome are protocol-neutral agentbackend types per
+// the conversation.SharedProcess interface (mitto-mx9.1.1); translated to/from
+// ACP at this boundary using internal/acpbackend's shared translators.
+func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID string, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
 	p.beginRPC()
 	defer p.endRPC()
 
@@ -2541,13 +2549,17 @@ func (p *SharedACPProcess) Prompt(ctx context.Context, sessionID acp.SessionId, 
 	p.mu.RUnlock()
 
 	if conn == nil {
-		return acp.PromptResponse{}, fmt.Errorf("shared ACP process is not running")
+		return agentbackend.PromptOutcome{}, fmt.Errorf("shared ACP process is not running")
 	}
 
-	return conn.Prompt(ctx, acp.PromptRequest{
-		SessionId: sessionID,
-		Prompt:    content,
+	resp, err := conn.Prompt(ctx, acp.PromptRequest{
+		SessionId: acp.SessionId(sessionID),
+		Prompt:    acpbackend.FromNeutralContentBlocks(content),
 	})
+	if err != nil {
+		return agentbackend.PromptOutcome{}, err
+	}
+	return acpbackend.ToNeutralPromptOutcome(resp, nil), nil
 }
 
 // ActiveRPCs returns the number of in-flight RPCs on this process (session/prompt,
@@ -2618,7 +2630,7 @@ func (p *SharedACPProcess) memorySample() (processMemorySample, error) {
 }
 
 // Cancel cancels the current operation for a specific session.
-func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID acp.SessionId) error {
+func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID string) error {
 	p.mu.RLock()
 	conn := p.conn
 	p.mu.RUnlock()
@@ -2627,11 +2639,11 @@ func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID acp.SessionId) 
 		return nil
 	}
 
-	return conn.Cancel(ctx, acp.CancelNotification{SessionId: sessionID})
+	return conn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(sessionID)})
 }
 
 // SetSessionMode sets the mode for a specific session.
-func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.SessionId, modeID string) error {
+func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID string, modeID string) error {
 	p.mu.RLock()
 	conn := p.conn
 	p.mu.RUnlock()
@@ -2641,7 +2653,7 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 	}
 
 	_, err := conn.SetSessionMode(ctx, acp.SetSessionModeRequest{
-		SessionId: sessionID,
+		SessionId: acp.SessionId(sessionID),
 		ModeId:    acp.SessionModeId(modeID),
 	})
 	return err
@@ -2651,7 +2663,10 @@ func (p *SharedACPProcess) SetSessionMode(ctx context.Context, sessionID acp.Ses
 // It serialises concurrent callers via setModelSem (one in-flight RPC at a time per
 // process) and retries on transient timeouts so burst startups don't race the
 // serially-served agent subprocess (mitto-3q9).
-func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.SessionId, modelID string) error {
+func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionIDStr string, modelID string) error {
+	// sessionID keeps its ACP-typed name/usage from here down (RPC requests,
+	// logging) unchanged; only the exported signature is neutral (mitto-mx9.1.1).
+	sessionID := acp.SessionId(sessionIDStr)
 	// Read conn under RLock; keep existing nil-check semantics. processDone is
 	// re-read fresh AFTER the semaphore acquisition below (mitto-qy0j) since a
 	// long queueing wait can span a process restart — capturing it here would

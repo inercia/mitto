@@ -312,7 +312,7 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 		"acp_session_id", handle.SessionID)
 
 	client := d.hsGetACPClient()
-	d.hsGetSharedProcess().RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
+	d.hsGetSharedProcess().RegisterSession(handle.SessionID, &SessionCallbacks{
 		OnSessionUpdate:       client.SessionUpdate,
 		OnReadTextFile:        client.ReadTextFile,
 		OnWriteTextFile:       client.WriteTextFile,
@@ -655,7 +655,7 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	d.hsNilCreationCtx()
 
 	client := d.hsGetACPClient()
-	sharedProcess.RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
+	sharedProcess.RegisterSession(handle.SessionID, &SessionCallbacks{
 		OnSessionUpdate:       client.SessionUpdate,
 		OnReadTextFile:        client.ReadTextFile,
 		OnWriteTextFile:       client.WriteTextFile,

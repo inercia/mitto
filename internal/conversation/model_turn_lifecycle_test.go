@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	acp "github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -18,9 +18,9 @@ import (
 // acknowledge after context cancellation, as an already-sent request may do.
 type modelTurnRPC struct {
 	ctx       context.Context
-	sessionID acp.SessionId
+	sessionID string
 	model     string
-	blocks    []acp.ContentBlock
+	blocks    []agentbackend.ContentBlock
 	reply     chan error
 }
 
@@ -28,7 +28,7 @@ type modelTurnProcess struct {
 	*fakeSharedProcess
 	models  chan modelTurnRPC
 	prompts chan modelTurnRPC
-	cancels chan acp.SessionId
+	cancels chan string
 	stop    chan struct{}
 }
 
@@ -39,7 +39,7 @@ type modelTurnCompletionObserver struct {
 
 func (o *modelTurnCompletionObserver) OnPromptComplete(int) { o.completed <- struct{}{} }
 
-func (p *modelTurnProcess) SetSessionModel(ctx context.Context, id acp.SessionId, model string) error {
+func (p *modelTurnProcess) SetSessionModel(ctx context.Context, id string, model string) error {
 	call := modelTurnRPC{ctx: ctx, sessionID: id, model: model, reply: make(chan error, 1)}
 	p.models <- call
 	select {
@@ -50,18 +50,18 @@ func (p *modelTurnProcess) SetSessionModel(ctx context.Context, id acp.SessionId
 	}
 }
 
-func (p *modelTurnProcess) Prompt(ctx context.Context, id acp.SessionId, blocks []acp.ContentBlock) (acp.PromptResponse, error) {
+func (p *modelTurnProcess) Prompt(ctx context.Context, id string, blocks []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
 	call := modelTurnRPC{ctx: ctx, sessionID: id, blocks: blocks, reply: make(chan error, 1)}
 	p.prompts <- call
 	select {
 	case err := <-call.reply:
-		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, err
+		return agentbackend.PromptOutcome{StopReason: agentbackend.StopReasonEndTurn}, err
 	case <-p.stop:
-		return acp.PromptResponse{}, context.Canceled
+		return agentbackend.PromptOutcome{}, context.Canceled
 	}
 }
 
-func (p *modelTurnProcess) Cancel(_ context.Context, id acp.SessionId) error {
+func (p *modelTurnProcess) Cancel(_ context.Context, id string) error {
 	p.cancels <- id
 	return nil
 }
@@ -72,7 +72,7 @@ func newModelTurnSession(t *testing.T) (*BackgroundSession, *modelTurnProcess) {
 	p := &modelTurnProcess{
 		fakeSharedProcess: newFakeSharedProcess(),
 		models:            make(chan modelTurnRPC, 16), prompts: make(chan modelTurnRPC, 16),
-		cancels: make(chan acp.SessionId, 16), stop: make(chan struct{}),
+		cancels: make(chan string, 16), stop: make(chan struct{}),
 	}
 	bs := &BackgroundSession{
 		ctx: ctx, cancel: cancel, persistedID: "model-turn", acpID: "acp-model-turn",

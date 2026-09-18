@@ -2785,18 +2785,18 @@ func (fakeSaturatedSharedProcess) LoadSession(context.Context, string, string, [
 func (fakeSaturatedSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
 	return nil, fmt.Errorf("failed to get auxiliary session: shared ACP process is saturated: %w", acperrors.ErrSharedProcessSaturated)
 }
-func (fakeSaturatedSharedProcess) RegisterSession(acp.SessionId, *SessionCallbacks) {}
-func (fakeSaturatedSharedProcess) UnregisterSession(acp.SessionId)                  {}
-func (fakeSaturatedSharedProcess) Cancel(context.Context, acp.SessionId) error      { return nil }
-func (fakeSaturatedSharedProcess) SetSessionMode(context.Context, acp.SessionId, string) error {
+func (fakeSaturatedSharedProcess) RegisterSession(string, *SessionCallbacks) {}
+func (fakeSaturatedSharedProcess) UnregisterSession(string)                  {}
+func (fakeSaturatedSharedProcess) Cancel(context.Context, string) error      { return nil }
+func (fakeSaturatedSharedProcess) SetSessionMode(context.Context, string, string) error {
 	return nil
 }
-func (fakeSaturatedSharedProcess) SetSessionModel(context.Context, acp.SessionId, string) error {
+func (fakeSaturatedSharedProcess) SetSessionModel(context.Context, string, string) error {
 	return nil
 }
 func (fakeSaturatedSharedProcess) Done() <-chan struct{} { return make(chan struct{}) }
-func (fakeSaturatedSharedProcess) Prompt(context.Context, acp.SessionId, []acp.ContentBlock) (acp.PromptResponse, error) {
-	return acp.PromptResponse{}, nil
+func (fakeSaturatedSharedProcess) Prompt(context.Context, string, []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
+	return agentbackend.PromptOutcome{}, nil
 }
 func (fakeSaturatedSharedProcess) Generation() int                           { return 0 }
 func (fakeSaturatedSharedProcess) Restart(int) error                         { return nil }
@@ -2934,18 +2934,18 @@ func (f *fakeClassifiedErrSharedProcess) LoadSession(context.Context, string, st
 func (f *fakeClassifiedErrSharedProcess) ResumeSession(context.Context, string, string, []acp.McpServer) (*SessionHandle, error) {
 	return nil, f.mkErr()
 }
-func (f *fakeClassifiedErrSharedProcess) RegisterSession(acp.SessionId, *SessionCallbacks) {}
-func (f *fakeClassifiedErrSharedProcess) UnregisterSession(acp.SessionId)                  {}
-func (f *fakeClassifiedErrSharedProcess) Cancel(context.Context, acp.SessionId) error      { return nil }
-func (f *fakeClassifiedErrSharedProcess) SetSessionMode(context.Context, acp.SessionId, string) error {
+func (f *fakeClassifiedErrSharedProcess) RegisterSession(string, *SessionCallbacks) {}
+func (f *fakeClassifiedErrSharedProcess) UnregisterSession(string)                  {}
+func (f *fakeClassifiedErrSharedProcess) Cancel(context.Context, string) error      { return nil }
+func (f *fakeClassifiedErrSharedProcess) SetSessionMode(context.Context, string, string) error {
 	return nil
 }
-func (f *fakeClassifiedErrSharedProcess) SetSessionModel(context.Context, acp.SessionId, string) error {
+func (f *fakeClassifiedErrSharedProcess) SetSessionModel(context.Context, string, string) error {
 	return nil
 }
 func (f *fakeClassifiedErrSharedProcess) Done() <-chan struct{} { return make(chan struct{}) }
-func (f *fakeClassifiedErrSharedProcess) Prompt(context.Context, acp.SessionId, []acp.ContentBlock) (acp.PromptResponse, error) {
-	return acp.PromptResponse{}, nil
+func (f *fakeClassifiedErrSharedProcess) Prompt(context.Context, string, []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
+	return agentbackend.PromptOutcome{}, nil
 }
 func (f *fakeClassifiedErrSharedProcess) Generation() int                           { return 0 }
 func (f *fakeClassifiedErrSharedProcess) Restart(int) error                         { return nil }

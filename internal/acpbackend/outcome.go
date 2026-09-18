@@ -36,5 +36,20 @@ func ToNeutralPromptOutcome(resp acp.PromptResponse, content []agentbackend.Cont
 	return agentbackend.PromptOutcome{
 		StopReason: ToNeutralStopReason(resp.StopReason),
 		Content:    content,
+		Usage:      ToNeutralUsage(resp.Usage),
+	}
+}
+
+// ToNeutralUsage translates an ACP per-turn Usage snapshot into the neutral
+// PromptUsage (mitto-mx9.1.1). Returns nil when u is nil (no usage reported
+// for this turn) so callers can distinguish "no usage" from "zero usage".
+func ToNeutralUsage(u *acp.Usage) *agentbackend.PromptUsage {
+	if u == nil {
+		return nil
+	}
+	return &agentbackend.PromptUsage{
+		InputTokens:  uint64(u.InputTokens),
+		OutputTokens: uint64(u.OutputTokens),
+		TotalTokens:  uint64(u.TotalTokens),
 	}
 }

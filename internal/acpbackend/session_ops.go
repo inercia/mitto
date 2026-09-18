@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversation"
 )
@@ -94,7 +92,7 @@ func (c *Connection) registerSession(ref agentbackend.SessionRef, handle *conver
 	sess := &acpSession{ref: ref, handle: handle}
 	sess.setCapabilities(newSessionCapabilities(handle.Capabilities, handle.Models, handle.Modes))
 
-	c.process.RegisterSession(acp.SessionId(handle.SessionID), c.buildCallbacks(ref))
+	c.process.RegisterSession(handle.SessionID, c.buildCallbacks(ref))
 
 	c.sessMu.Lock()
 	c.sessions[ref] = sess
@@ -114,17 +112,20 @@ func (c *Connection) lookupSession(ref agentbackend.SessionRef) (*acpSession, er
 	return s, nil
 }
 
-// Prompt implements agentbackend.SessionOps.
+// Prompt implements agentbackend.SessionOps. mitto-mx9.1.1: SharedProcess.
+// Prompt now takes/returns neutral agentbackend types directly, so this is a
+// thin passthrough + error translation (no content/outcome translation left
+// to do here — internal/acpproc.SharedACPProcess does it at its own boundary).
 func (c *Connection) Prompt(ctx context.Context, ref agentbackend.SessionRef, content []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
 	sess, err := c.lookupSession(ref)
 	if err != nil {
 		return agentbackend.PromptOutcome{}, err
 	}
-	resp, err := c.process.Prompt(ctx, acp.SessionId(sess.handle.SessionID), FromNeutralContentBlocks(content))
+	outcome, err := c.process.Prompt(ctx, sess.handle.SessionID, content)
 	if err != nil {
 		return agentbackend.PromptOutcome{}, translateError(err, "")
 	}
-	return ToNeutralPromptOutcome(resp, nil), nil
+	return outcome, nil
 }
 
 // Cancel implements agentbackend.SessionOps.
@@ -133,7 +134,7 @@ func (c *Connection) Cancel(ctx context.Context, ref agentbackend.SessionRef) er
 	if err != nil {
 		return err
 	}
-	return translateError(c.process.Cancel(ctx, acp.SessionId(sess.handle.SessionID)), "")
+	return translateError(c.process.Cancel(ctx, sess.handle.SessionID), "")
 }
 
 // SetModel implements agentbackend.SessionOps. Success is reported only
@@ -144,7 +145,7 @@ func (c *Connection) SetModel(ctx context.Context, ref agentbackend.SessionRef, 
 	if err != nil {
 		return err
 	}
-	if err := c.process.SetSessionModel(ctx, acp.SessionId(sess.handle.SessionID), modelID); err != nil {
+	if err := c.process.SetSessionModel(ctx, sess.handle.SessionID, modelID); err != nil {
 		return translateError(err, agentbackend.FeatureModelSelection)
 	}
 	return nil
@@ -158,7 +159,7 @@ func (c *Connection) SetMode(ctx context.Context, ref agentbackend.SessionRef, m
 	if err != nil {
 		return err
 	}
-	if err := c.process.SetSessionMode(ctx, acp.SessionId(sess.handle.SessionID), modeID); err != nil {
+	if err := c.process.SetSessionMode(ctx, sess.handle.SessionID, modeID); err != nil {
 		return translateError(err, agentbackend.FeatureModeSelection)
 	}
 	return nil

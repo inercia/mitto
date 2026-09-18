@@ -10,8 +10,6 @@ import (
 	"context"
 	"testing"
 
-	acp "github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/agentbackend"
 )
 
@@ -73,7 +71,7 @@ func TestBackgroundSession_KillACPProcess_SharedMode_NilLease_FallsBackToDirectU
 
 	bs.killACPProcess()
 
-	if len(proc.unregistered) != 1 || proc.unregistered[0] != acp.SessionId("acp-sess-1") {
+	if len(proc.unregistered) != 1 || proc.unregistered[0] != "acp-sess-1" {
 		t.Fatalf("unregistered = %v, want exactly [acp-sess-1]", proc.unregistered)
 	}
 }

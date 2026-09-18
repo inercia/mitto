@@ -35,7 +35,7 @@ type fakeBackendSharedProcess struct {
 	newErr, loadErr, resumeErr          error
 	newCalls                            int
 
-	unregistered []acp.SessionId
+	unregistered []string
 	generation   int
 	restarted    []int
 
@@ -45,9 +45,9 @@ type fakeBackendSharedProcess struct {
 	// session ID/content/value it was given, and propagates responses/errors
 	// unchanged (modulo neutral translation).
 	promptCalls   []fakeBackendPromptCall
-	promptResp    acp.PromptResponse
+	promptResp    agentbackend.PromptOutcome
 	promptErr     error
-	cancelCalls   []acp.SessionId
+	cancelCalls   []string
 	cancelErr     error
 	setModeCalls  []fakeBackendSetCall
 	setModeErr    error
@@ -57,13 +57,13 @@ type fakeBackendSharedProcess struct {
 
 // fakeBackendPromptCall records one Prompt() invocation.
 type fakeBackendPromptCall struct {
-	sessionID acp.SessionId
-	blocks    []acp.ContentBlock
+	sessionID string
+	blocks    []agentbackend.ContentBlock
 }
 
 // fakeBackendSetCall records one SetSessionMode/SetSessionModel invocation.
 type fakeBackendSetCall struct {
-	sessionID acp.SessionId
+	sessionID string
 	value     string
 }
 
@@ -92,32 +92,32 @@ func (f *fakeBackendSharedProcess) ResumeSession(context.Context, string, string
 	defer f.mu.Unlock()
 	return f.resumeHandle, f.resumeErr
 }
-func (f *fakeBackendSharedProcess) RegisterSession(acp.SessionId, *SessionCallbacks) {}
-func (f *fakeBackendSharedProcess) UnregisterSession(id acp.SessionId) {
+func (f *fakeBackendSharedProcess) RegisterSession(string, *SessionCallbacks) {}
+func (f *fakeBackendSharedProcess) UnregisterSession(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unregistered = append(f.unregistered, id)
 }
-func (f *fakeBackendSharedProcess) Cancel(_ context.Context, id acp.SessionId) error {
+func (f *fakeBackendSharedProcess) Cancel(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cancelCalls = append(f.cancelCalls, id)
 	return f.cancelErr
 }
-func (f *fakeBackendSharedProcess) SetSessionMode(_ context.Context, id acp.SessionId, mode string) error {
+func (f *fakeBackendSharedProcess) SetSessionMode(_ context.Context, id string, mode string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setModeCalls = append(f.setModeCalls, fakeBackendSetCall{sessionID: id, value: mode})
 	return f.setModeErr
 }
-func (f *fakeBackendSharedProcess) SetSessionModel(_ context.Context, id acp.SessionId, model string) error {
+func (f *fakeBackendSharedProcess) SetSessionModel(_ context.Context, id string, model string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setModelCalls = append(f.setModelCalls, fakeBackendSetCall{sessionID: id, value: model})
 	return f.setModelErr
 }
 func (f *fakeBackendSharedProcess) Done() <-chan struct{} { return f.processDone }
-func (f *fakeBackendSharedProcess) Prompt(_ context.Context, id acp.SessionId, blocks []acp.ContentBlock) (acp.PromptResponse, error) {
+func (f *fakeBackendSharedProcess) Prompt(_ context.Context, id string, blocks []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.promptCalls = append(f.promptCalls, fakeBackendPromptCall{sessionID: id, blocks: blocks})
@@ -231,7 +231,7 @@ func TestACPLease_Detach_UnregistersSessionWithoutKillingProcess(t *testing.T) {
 
 	lease.Detach()
 
-	if len(proc.unregistered) != 1 || proc.unregistered[0] != acp.SessionId("sess-1") {
+	if len(proc.unregistered) != 1 || proc.unregistered[0] != "sess-1" {
 		t.Fatalf("unregistered = %v, want [sess-1]", proc.unregistered)
 	}
 	select {
@@ -561,7 +561,7 @@ func TestACPLease_Bind_AttachesSessionIDEnablingDetach(t *testing.T) {
 
 	lease.Detach()
 
-	if len(proc.unregistered) != 1 || proc.unregistered[0] != acp.SessionId("bound-sess-1") {
+	if len(proc.unregistered) != 1 || proc.unregistered[0] != "bound-sess-1" {
 		t.Fatalf("unregistered = %v, want exactly [bound-sess-1] (Bind must attach the real session ID so Detach targets it, not no-op)", proc.unregistered)
 	}
 }
@@ -665,7 +665,7 @@ func TestACPLease_SessionOps_BoundAfterDefer_ReturnsWorkingOps(t *testing.T) {
 	if err := ops.Cancel(context.Background(), gotRef); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if len(proc.cancelCalls) != 1 || proc.cancelCalls[0] != acp.SessionId("bound-sess-1") {
+	if len(proc.cancelCalls) != 1 || proc.cancelCalls[0] != "bound-sess-1" {
 		t.Fatalf("cancelCalls = %v, want exactly [bound-sess-1]", proc.cancelCalls)
 	}
 }
@@ -699,7 +699,7 @@ func TestACPLease_SessionOps_NonDeferred_ImmediatelyBoundToHandleSessionID(t *te
 // the ACP StopReason back into its neutral counterpart.
 func TestAcpSessionPromptOps_Prompt_TranslatesContentSessionIDAndStopReason(t *testing.T) {
 	proc := newFakeBackendSharedProcess()
-	proc.promptResp = acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	proc.promptResp = agentbackend.PromptOutcome{StopReason: agentbackend.StopReasonEndTurn}
 	ops := &acpSessionPromptOps{process: proc}
 	ref := agentbackend.SessionRef{ProviderSession: "sess-xyz"}
 
@@ -716,7 +716,7 @@ func TestAcpSessionPromptOps_Prompt_TranslatesContentSessionIDAndStopReason(t *t
 		t.Fatalf("promptCalls = %d, want 1", len(proc.promptCalls))
 	}
 	call := proc.promptCalls[0]
-	if call.sessionID != acp.SessionId("sess-xyz") {
+	if call.sessionID != "sess-xyz" {
 		t.Errorf("Prompt sessionID = %q, want %q", call.sessionID, "sess-xyz")
 	}
 	if len(call.blocks) != 1 || call.blocks[0].Text == nil || call.blocks[0].Text.Text != "hello" {
@@ -774,7 +774,7 @@ func TestAcpSessionPromptOps_Cancel_DelegatesWithSessionIDAndTranslatesError(t *
 	if err := ops.Cancel(context.Background(), ref); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if len(proc.cancelCalls) != 1 || proc.cancelCalls[0] != acp.SessionId("sess-cancel-1") {
+	if len(proc.cancelCalls) != 1 || proc.cancelCalls[0] != "sess-cancel-1" {
 		t.Fatalf("cancelCalls = %v, want exactly [sess-cancel-1]", proc.cancelCalls)
 	}
 

@@ -72,7 +72,7 @@ func (bs *BackgroundSession) killACPProcess() {
 			return
 		}
 		if bs.acpID != "" {
-			bs.sharedProcess.UnregisterSession(acp.SessionId(bs.acpID))
+			bs.sharedProcess.UnregisterSession(bs.acpID)
 		}
 		return
 	}

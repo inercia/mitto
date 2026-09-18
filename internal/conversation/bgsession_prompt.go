@@ -15,6 +15,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -556,15 +557,12 @@ func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
 	if bs.sharedProcess != nil {
 		// Route through the neutral seam (mitto-mx9.1) when the lease is
 		// bound: this call discards the response body entirely (only err
-		// matters), so it is safe even though agentbackend.PromptOutcome
-		// doesn't carry ACP's per-turn Usage yet (see acpSessionPromptOps'
-		// doc for why the main prompt loop below still uses SharedProcess
-		// directly).
+		// matters).
 		if ops, ref, ok := bs.leaseSessionOps(); ok {
 			_, err := ops.Prompt(ctx, ref, acpLeaseContentBlocksToNeutral(blocks))
 			return err
 		}
-		_, err := bs.sharedProcess.Prompt(ctx, acp.SessionId(bs.acpID), blocks)
+		_, err := bs.sharedProcess.Prompt(ctx, bs.acpID, acpLeaseContentBlocksToNeutral(blocks))
 		return err
 	}
 	if bs.acpConn != nil {
@@ -1074,7 +1072,17 @@ retryAfterRestart:
 		// A concurrent Cancel now cancels promptCtx; captured transport/ID keep
 		// this attempt from reading state adopted by a newer turn.
 		if sharedProcess != nil {
-			promptResp, err = sharedProcess.Prompt(promptCtx, acp.SessionId(acpSessionIDForPrompt), finalBlocks)
+			// Route through the neutral SessionPromptOps.Prompt seam
+			// (mitto-mx9.1.1: the last of the 4 planned hot-path sites),
+			// then reconstruct an acp.PromptResponse-shaped value so the
+			// existing ACP-typed downstream pipeline (accumulateTokenUsage,
+			// handlePromptSuccess, follow-up/after-processors) keeps working
+			// unchanged — neutralizing that pipeline's own types is out of
+			// scope for this bead. See promptOutcomeToACPResponse's doc for
+			// the token-accounting parity guarantee.
+			var outcome agentbackend.PromptOutcome
+			outcome, err = sharedProcess.Prompt(promptCtx, acpSessionIDForPrompt, acpLeaseContentBlocksToNeutral(finalBlocks))
+			promptResp = promptOutcomeToACPResponse(outcome)
 		} else {
 			promptResp, err = promptConn.Prompt(promptCtx, acp.PromptRequest{
 				SessionId: acp.SessionId(acpSessionIDForPrompt),
@@ -1179,7 +1187,7 @@ func (bs *BackgroundSession) finishCancelledPromptTurn(turn *promptTurn, sendCan
 			if ops, ref, ok := bs.leaseSessionOps(); ok {
 				cancelErr = ops.Cancel(ctx, ref)
 			} else {
-				cancelErr = bs.sharedProcess.Cancel(ctx, acp.SessionId(bs.acpID))
+				cancelErr = bs.sharedProcess.Cancel(ctx, bs.acpID)
 			}
 		} else if bs.acpConn != nil {
 			cancelErr = bs.acpConn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(bs.acpID)})

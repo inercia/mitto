@@ -34,7 +34,7 @@ type fakeSharedProcess struct {
 	resumeSessionHandle  *SessionHandle
 	resumeSessionErr     error
 	resumeSessionCalls   []string // recorded acp_session_ids
-	registeredSessions   []acp.SessionId
+	registeredSessions   []string
 
 	// mitto-1ut: budget observability. recommendedLoadTimeout is returned by
 	// RecommendedLoadTimeout; the *Deadline fields capture the ctx deadline (if
@@ -71,8 +71,8 @@ type fakeSharedProcess struct {
 
 // fakeSharedProcessPromptCall records a single Prompt() call on fakeSharedProcess.
 type fakeSharedProcessPromptCall struct {
-	sessionID acp.SessionId
-	blocks    []acp.ContentBlock
+	sessionID string
+	blocks    []agentbackend.ContentBlock
 }
 
 func newFakeSharedProcess() *fakeSharedProcess {
@@ -121,15 +121,15 @@ func (f *fakeSharedProcess) ResumeSession(_ context.Context, acpSessionID, _ str
 	}
 	return nil, errors.New("resume not supported")
 }
-func (f *fakeSharedProcess) RegisterSession(id acp.SessionId, _ *SessionCallbacks) {
+func (f *fakeSharedProcess) RegisterSession(id string, _ *SessionCallbacks) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registeredSessions = append(f.registeredSessions, id)
 }
-func (f *fakeSharedProcess) UnregisterSession(_ acp.SessionId)               {}
-func (f *fakeSharedProcess) Cancel(_ context.Context, _ acp.SessionId) error { return nil }
-func (f *fakeSharedProcess) Done() <-chan struct{}                           { return f.processDone }
-func (f *fakeSharedProcess) Prompt(_ context.Context, sessionID acp.SessionId, blocks []acp.ContentBlock) (acp.PromptResponse, error) {
+func (f *fakeSharedProcess) UnregisterSession(_ string)               {}
+func (f *fakeSharedProcess) Cancel(_ context.Context, _ string) error { return nil }
+func (f *fakeSharedProcess) Done() <-chan struct{}                    { return f.processDone }
+func (f *fakeSharedProcess) Prompt(_ context.Context, sessionID string, blocks []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
 	f.mu.Lock()
 	f.promptCalls = append(f.promptCalls, fakeSharedProcessPromptCall{sessionID: sessionID, blocks: blocks})
 	block := f.promptBlock
@@ -141,12 +141,12 @@ func (f *fakeSharedProcess) Prompt(_ context.Context, sessionID acp.SessionId, b
 	if block != nil {
 		<-block
 	}
-	return acp.PromptResponse{}, f.promptErr
+	return agentbackend.PromptOutcome{}, f.promptErr
 }
-func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _ string) error {
+func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ string, _ string) error {
 	return nil
 }
-func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, _ string) error {
+func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ string, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.setModelErr) == 0 {

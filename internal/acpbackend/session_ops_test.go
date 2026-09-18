@@ -26,7 +26,7 @@ func newTestSession(t *testing.T, fp *fakeSharedProcess) (*Connection, agentback
 
 func TestSessionOps_Prompt(t *testing.T) {
 	fp := newFakeSharedProcess()
-	fp.promptResp = acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	fp.promptResp = agentbackend.PromptOutcome{StopReason: agentbackend.StopReasonEndTurn}
 	c, ref := newTestSession(t, fp)
 
 	content := []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: "hello"}}}
