@@ -1260,3 +1260,160 @@ describe("draftStore (mitto-sus.6)", () => {
     });
   });
 });
+
+// =============================================================================
+// Composer draft isolation + autosize consolidation (mitto-sus.6)
+// Duplicated from ChatInput.js since the component itself cannot be imported
+// under jsdom (window.preact/htm globals) — see file header. Keep in sync
+// with the source.
+// =============================================================================
+
+// Mirrors the autosize computation in the `useEffect` keyed on `text`
+// (ChatInput.js:734-738) — the SOLE place height is computed after
+// mitto-sus.6 removed the duplicate synchronous pass from `handleInput`.
+function computeAutosizeHeight({ scrollHeight, minHeight, hardMax }) {
+  return Math.max(minHeight, Math.min(scrollHeight, hardMax));
+}
+
+// Mirrors the two-step "reset then measure" DOM sequence performed by the
+// autosize useEffect (ChatInput.js:733-738) against a fake textarea, to
+// prove autosizing writes `style.height` exactly twice per invocation
+// (auto -> measured px) and never more (no duplicate forced-layout pass).
+function applyAutosize(textarea, { minHeight, hardMax }) {
+  const heightWrites = [];
+  const setHeight = (v) => {
+    heightWrites.push(v);
+    textarea.style.height = v;
+  };
+  setHeight("auto");
+  const targetHeight = computeAutosizeHeight({
+    scrollHeight: textarea.scrollHeight,
+    minHeight,
+    hardMax,
+  });
+  setHeight(targetHeight + "px");
+  return heightWrites;
+}
+
+// Mirrors the draft-update portion of `handleInput` (ChatInput.js:1043-1074)
+// after mitto-sus.6 removed the duplicate synchronous autosize pass: a
+// keystroke now performs exactly ONE state write (`setText`) and touches no
+// DOM style directly — sizing is deferred entirely to the `text`-keyed
+// useEffect above.
+function handleInputDraftUpdate({ newValue, setText }) {
+  setText(newValue);
+}
+
+// Mirrors the improve-prompt completion branch (ChatInput.js:1219-1241):
+// the improved text lands in local state (mirrored into the store by
+// `setText`) only if the user is still viewing the session the request was
+// made for; otherwise it is written straight to the store so it is picked
+// up on switch-back, without ever touching this component's local state.
+function resolveImprovePromptWrite({
+  targetSessionId,
+  sessionId,
+  improvedPrompt,
+  setText,
+  setStoredDraft,
+}) {
+  if (targetSessionId === sessionId) {
+    setText(improvedPrompt);
+    return "local";
+  }
+  setStoredDraft(targetSessionId, improvedPrompt);
+  return "background";
+}
+
+describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus.6)", () => {
+  describe("computeAutosizeHeight", () => {
+    test("clamps to minHeight when content is shorter than the minimum", () => {
+      expect(
+        computeAutosizeHeight({
+          scrollHeight: 10,
+          minHeight: 40,
+          hardMax: 400,
+        }),
+      ).toBe(40);
+    });
+
+    test("clamps to hardMax when content exceeds the hard limit", () => {
+      expect(
+        computeAutosizeHeight({
+          scrollHeight: 999,
+          minHeight: 40,
+          hardMax: 400,
+        }),
+      ).toBe(400);
+    });
+
+    test("uses the content's scrollHeight when within bounds", () => {
+      expect(
+        computeAutosizeHeight({
+          scrollHeight: 120,
+          minHeight: 40,
+          hardMax: 400,
+        }),
+      ).toBe(120);
+    });
+  });
+
+  describe("applyAutosize — single measure/write pass per visual update", () => {
+    test("writes style.height exactly twice: reset to auto, then the clamped pixel value", () => {
+      const textarea = { style: { height: "" }, scrollHeight: 120 };
+      const writes = applyAutosize(textarea, { minHeight: 40, hardMax: 400 });
+      expect(writes).toEqual(["auto", "120px"]);
+      expect(textarea.style.height).toBe("120px");
+    });
+
+    test("does not perform a duplicate forced-layout pass beyond the reset+measure pair", () => {
+      const textarea = { style: { height: "" }, scrollHeight: 50 };
+      const writes = applyAutosize(textarea, { minHeight: 40, hardMax: 400 });
+      expect(writes).toHaveLength(2);
+    });
+  });
+
+  describe("handleInputDraftUpdate — the sole per-keystroke side effect", () => {
+    test("calls setText exactly once with the new value and touches no DOM style", () => {
+      const setText = jest.fn();
+      const textarea = { style: { height: "100px" } };
+      handleInputDraftUpdate({ newValue: "hello", setText });
+      expect(setText).toHaveBeenCalledTimes(1);
+      expect(setText).toHaveBeenCalledWith("hello");
+      // Autosizing is deferred to the text-keyed useEffect (mitto-sus.6) —
+      // a keystroke's own handler must never touch textarea.style directly.
+      expect(textarea.style.height).toBe("100px");
+    });
+  });
+
+  describe("resolveImprovePromptWrite — session-aware improve-prompt landing", () => {
+    test("writes to local state (mirrored into the store by setText) when still on the target session", () => {
+      const setText = jest.fn();
+      const setStoredDraft = jest.fn();
+      const outcome = resolveImprovePromptWrite({
+        targetSessionId: "s1",
+        sessionId: "s1",
+        improvedPrompt: "better prompt",
+        setText,
+        setStoredDraft,
+      });
+      expect(outcome).toBe("local");
+      expect(setText).toHaveBeenCalledWith("better prompt");
+      expect(setStoredDraft).not.toHaveBeenCalled();
+    });
+
+    test("writes straight to the store, bypassing local state, when the user switched sessions mid-request", () => {
+      const setText = jest.fn();
+      const setStoredDraft = jest.fn();
+      const outcome = resolveImprovePromptWrite({
+        targetSessionId: "s1",
+        sessionId: "s2",
+        improvedPrompt: "better prompt",
+        setText,
+        setStoredDraft,
+      });
+      expect(outcome).toBe("background");
+      expect(setStoredDraft).toHaveBeenCalledWith("s1", "better prompt");
+      expect(setText).not.toHaveBeenCalled();
+    });
+  });
+});
