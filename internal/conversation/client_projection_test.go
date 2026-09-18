@@ -210,3 +210,79 @@ func TestWebClient_ProjectorPassthrough_MatchesLegacyObserverOutput(t *testing.T
 		}
 	}
 }
+
+// TestWebClient_MittoToolCallCorrelation_UnaffectedByProjection guards the
+// subtle invariant documented in client.go's SessionUpdate: onMittoToolCall
+// correlation is extracted from the raw ACP acp.SessionUpdateToolCall.RawInput
+// BEFORE dispatchViaProjector runs, and the neutral agentbackend.ToolCallPayload
+// translateACPUpdateToNeutral produces has no RawInput field at all. If a
+// future refactor ever moved the mitto_* correlation check to read from the
+// neutral event instead of the raw ACP update, or reordered it to run after
+// projection dispatch, self_id correlation for mitto_* tool calls would
+// silently break only when EnableEventProjection is true. This test pins
+// both branches (correlation ID present vs. RawInput-less fallback) with
+// projection enabled, matching the legacy-path assertions already covered
+// by TestWebClient_SessionUpdate_ToolCall and
+// TestWebClient_MittoToolCallWithoutRawInputUsesSafeFallback.
+func TestWebClient_MittoToolCallCorrelation_UnaffectedByProjection(t *testing.T) {
+	t.Run("self_id extracted from RawInput", func(t *testing.T) {
+		var correlationID string
+		var toolID, toolTitle, toolStatus string
+		client := NewWebClient(WebClientConfig{
+			EnableEventProjection: true,
+			EventProjectionSource: eventprojection.SourceID{Backend: "acp", Provider: "test"},
+			OnMittoToolCall:       func(id string) { correlationID = id },
+			OnToolCall: func(seq int64, id, title, status string) {
+				toolID, toolTitle, toolStatus = id, title, status
+			},
+		})
+		defer client.Close()
+
+		if client.projector == nil {
+			t.Fatal("expected projector to be wired when EnableEventProjection is true")
+		}
+
+		err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+			Update: acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+				ToolCallId: "tool-mitto",
+				Title:      "mitto_conversation_get_current",
+				Status:     acp.ToolCallStatusInProgress,
+				RawInput:   map[string]any{"self_id": "sess-abc"},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("SessionUpdate failed: %v", err)
+		}
+		if correlationID != "sess-abc" {
+			t.Fatalf("correlationID = %q, want %q (projection must not interfere with raw-ACP RawInput correlation)", correlationID, "sess-abc")
+		}
+		// The tool call must still reach the observer via the projector seam.
+		if toolID != "tool-mitto" || toolTitle != "mitto_conversation_get_current" || toolStatus != string(acp.ToolCallStatusInProgress) {
+			t.Fatalf("tool call not delivered via projector: id=%q title=%q status=%q", toolID, toolTitle, toolStatus)
+		}
+	})
+
+	t.Run("RawInput-less fallback preserved", func(t *testing.T) {
+		var correlationID string
+		client := NewWebClient(WebClientConfig{
+			EnableEventProjection: true,
+			EventProjectionSource: eventprojection.SourceID{Backend: "acp", Provider: "test"},
+			OnMittoToolCall:       func(id string) { correlationID = id },
+		})
+		defer client.Close()
+
+		err := client.SessionUpdate(context.Background(), acp.SessionNotification{
+			Update: acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+				ToolCallId: "tool-mitto-2",
+				Title:      "mitto_conversation_get_current",
+				Status:     acp.ToolCallStatusInProgress,
+			}},
+		})
+		if err != nil {
+			t.Fatalf("SessionUpdate failed: %v", err)
+		}
+		if correlationID != "" {
+			t.Fatalf("RawInput-less tool call used ambiguous correlation %q, want callback-owned fallback", correlationID)
+		}
+	})
+}
