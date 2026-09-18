@@ -2,6 +2,7 @@ package processors
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
@@ -114,5 +115,70 @@ func TestApplyOnClose_PromptsIsEnabledGate_NilSnapshotFnFailsClosedToRunning(t *
 	}
 	if runs[0].Outcome != "ok" {
 		t.Errorf("nil PromptsSnapshotFn: run = %+v, want Outcome=ok (fail-closed gate still runs the processor)", runs[0])
+	}
+}
+
+// gatedLegacyCloseProcessorFiles lists the four builtin close-phase
+// processors mitto-3od.3 gated behind the knowledge-router. Kept in sync
+// with the Implementation comment on mitto-3od.3; deliberately excludes
+// curate-memories-on-close (out of scope per mitto-3od's bead description).
+var gatedLegacyCloseProcessorFiles = []string{
+	"../../config/processors/builtin/memorize-preferences.yaml",
+	"../../config/processors/builtin/extract-memories-on-close.yaml",
+	"../../config/processors/builtin/auggie-update-rules.yaml",
+	"../../config/processors/builtin/claude-update-memory.yaml",
+}
+
+// TestGatedLegacyCloseProcessorYAML_ParsesAndCarriesRouterGate is the "yaml
+// validation for the gated processors (still parse...)" acceptance
+// criterion: each file must still load successfully through the real YAML
+// loader (not just compile as Go structs) and its enabledWhen must carry the
+// new suppression clause verbatim.
+func TestGatedLegacyCloseProcessorYAML_ParsesAndCarriesRouterGate(t *testing.T) {
+	loader := NewLoader("../../config/processors/builtin", nil)
+	const wantGate = `!Prompts.IsEnabled("knowledge-router")`
+
+	for _, path := range gatedLegacyCloseProcessorFiles {
+		t.Run(path, func(t *testing.T) {
+			proc, err := loader.LoadFile(path)
+			if err != nil {
+				t.Fatalf("LoadFile(%s): %v", path, err)
+			}
+			if proc.When.On != PhaseConversationClosed {
+				t.Errorf("When.On = %q, want %q", proc.When.On, PhaseConversationClosed)
+			}
+			if !strings.Contains(proc.EnabledWhen, wantGate) {
+				t.Errorf("EnabledWhen = %q, want it to contain %q", proc.EnabledWhen, wantGate)
+			}
+		})
+	}
+}
+
+// TestGatedLegacyCloseProcessorYAML_EnabledWhenUnchangedWhenRouterDisabled
+// verifies the "enabledWhen unchanged when router disabled" half of the
+// acceptance criterion: loads memorize-preferences.yaml's REAL enabledWhen
+// (`!Session.IsLoop && !Prompts.IsEnabled("knowledge-router")`) from disk and
+// checks it still evaluates exactly as its pre-gate form
+// (`!Session.IsLoop`) would once the router is reported disabled — i.e. the
+// new clause is a pure conjunction that changes behavior only when the
+// router is enabled, never regressing the pre-existing IsLoop condition.
+func TestGatedLegacyCloseProcessorYAML_EnabledWhenUnchangedWhenRouterDisabled(t *testing.T) {
+	loader := NewLoader("../../config/processors/builtin", nil)
+	proc, err := loader.LoadFile("../../config/processors/builtin/memorize-preferences.yaml")
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	routerDisabled := func() *config.PromptsSnapshot {
+		return &config.PromptsSnapshot{Names: []string{"knowledge-router"}, EnabledNames: nil}
+	}
+
+	for _, isLoop := range []bool{false, true} {
+		input := &ProcessorInput{IsLoop: isLoop, PromptsSnapshotFn: routerDisabled}
+		got := evaluateEnabledWhen(proc, input, nil)
+		want := !isLoop // the pre-gate expression's only condition
+		if got != want {
+			t.Errorf("IsLoop=%v, router disabled: evaluateEnabledWhen = %v, want %v (pre-gate behavior)", isLoop, got, want)
+		}
 	}
 }

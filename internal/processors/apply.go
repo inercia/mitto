@@ -1786,7 +1786,6 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 
 	applied := 0
 	skipped := 0
-	errored := 0
 	startedAt := time.Now()
 
 	var pendingPrompts []pendingPromptDispatch
@@ -1797,13 +1796,14 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 	// summary). record wraps m.recordRun so every existing call site keeps
 	// its exact ProcessorRun payload while also feeding the summary — local
 	// to ApplyOnClose only; the before/after pipelines have no equivalent
-	// per-close summary and keep calling m.recordRun directly.
+	// per-close summary and keep calling m.recordRun directly. Applied/
+	// Skipped/Errored counts for the persisted sidecar are derived from
+	// summaryEntries by Outcome further below (NOT from the applied/skipped
+	// loop-local counters above, which track "attempted" for the pipeline's
+	// own "complete" log line and can diverge from Outcome=="ok"/"error").
 	var summaryEntries []session.CloseRunProcessorEntry
 	record := func(run ProcessorRun) {
 		m.recordRun(run)
-		if run.Outcome == "error" {
-			errored++
-		}
 		summaryEntries = append(summaryEntries, session.CloseRunProcessorEntry{
 			Name:            run.Name,
 			Outcome:         run.Outcome,
@@ -2038,8 +2038,26 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 	// Failures are logged, not propagated — matches the fire-and-forget
 	// tolerance of the rest of this pipeline (see applyCloseRouterCompletion's
 	// sidecar-write failure handling).
+	//
+	// Applied/Skipped/Errored below are tallied directly from summaryEntries
+	// by Outcome, matching session.CloseRunSummaryEntry's documented contract
+	// (Applied == count of Outcome=="ok"; Applied+Skipped+Errored ==
+	// TotalProcessors) — deliberately NOT the loop-local applied/skipped
+	// counters above, which track "attempted" (passed the enabled/enabledWhen
+	// gate) for the "pipeline complete" log line below and would double-count
+	// a command-mode processor that errors (incremented pre-execution, never
+	// decremented on failure).
+	sidecarApplied, sidecarSkipped, sidecarErrored := 0, 0, 0
 	totalPrimary, totalAuxiliary := 0, 0
 	for _, e := range summaryEntries {
+		switch e.Outcome {
+		case "ok":
+			sidecarApplied++
+		case "skipped":
+			sidecarSkipped++
+		case "error":
+			sidecarErrored++
+		}
 		if e.Outcome != "ok" {
 			continue
 		}
@@ -2056,9 +2074,9 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 		StartedAt:               startedAt.UTC().Format(time.RFC3339),
 		CompletedAt:             time.Now().UTC().Format(time.RFC3339),
 		TotalProcessors:         len(summaryEntries),
-		Applied:                 applied,
-		Skipped:                 skipped,
-		Errored:                 errored,
+		Applied:                 sidecarApplied,
+		Skipped:                 sidecarSkipped,
+		Errored:                 sidecarErrored,
 		TotalEstTokensPrimary:   totalPrimary,
 		TotalEstTokensAuxiliary: totalAuxiliary,
 		Processors:              summaryEntries,
