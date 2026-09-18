@@ -1900,7 +1900,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Trigger.IsManual }}`                   | `true` when this dispatch was fired by a manual "Run Now" click rather than the configured trigger. Mirrors `.Session.IsLoopForced`.                                                                                                                                                                                                                                 |
 | `{{ .Trigger.IsRunOnStart }}`               | `true` when this dispatch was fired by the once-per-boot startup pulse. Mirrors `.Session.IsLoopRunOnStart`.                                                                                                                                                                                                                                                         |
 | `{{ .Prompts.Exists "name" }}`              | Case-insensitive check for a prompt in the effective workspace registry (same view as `mitto_prompt_get`). Empty name and cold-start fail-closed. Template-only.                                                                                                                                                                                                     |
-| `{{ .Prompts.Enabled "name" }}`             | Case-insensitive check for a currently-enabled prompt. Because disabled prompts are pruned from the cache, this shares the set with `Exists` — any name resolvable via `mitto_prompt_get` returns `true`. Empty name and cold-start fail-closed. Template-only.                                                                                                      |
+| `{{ .Prompts.Enabled "name" }}`             | Case-insensitive check for a currently-enabled prompt. Because disabled prompts are pruned from the cache, this shares the set with `Exists` — any name resolvable via `mitto_prompt_get` returns `true`. Empty name and cold-start fail-closed. Template-only. CEL counterpart: `Prompts.IsEnabled("name")` in `enabledWhen` (mitto-3od.1) — same fail-closed rules. |
 
 `.Trigger` is non-nil for **every** loop dispatch — including scheduled and
 `onCompletion` runs — and nil only for non-loop (ad-hoc/human-typed)
@@ -2510,6 +2510,18 @@ enabledWhen: "!Session.IsChild && Permissions.CanStartConversation"
 
 # Require both creation and communication permissions
 enabledWhen: "!Session.IsChild && Permissions.CanStartConversation && Permissions.CanSendPrompt"
+```
+
+#### Prompt Registry
+
+```yaml
+# Legacy close-phase processor disables itself once a consolidating
+# router prompt is enabled in the workspace (mitto-3od.1). Case-insensitive;
+# fail-closed on cold start (unknown snapshot).
+enabledWhen: '!Prompts.IsEnabled("close-phase knowledge router")'
+
+# Only offer a nested driver when its worker prompt is registered AND enabled.
+enabledWhen: 'Prompts.IsEnabled("Feature — implement subpart")'
 ```
 
 #### Combined Conditions
