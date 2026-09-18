@@ -493,6 +493,7 @@ if (isMountedChildRun) {
   };
   const { Message } = await import("./Message.js?mitto-rg79-mounted-tests");
   window.preact = previousPreact;
+  const { fetchAndCacheBeadsIds } = await import("../utils/beadsKnownIds.js");
 
   const html = htm.bind(preact.h);
 
@@ -506,6 +507,24 @@ if (isMountedChildRun) {
   function unmount(container) {
     preact.render(null, container);
     container.remove();
+  }
+
+  /**
+   * Minimal fetch Response-like object matching what the SDK's
+   * transport.js `decodeBody()` reads (`.headers.get("content-type")` +
+   * `.text()`, not `.json()`) — see messagePostProcessors.test.js's
+   * jsonResponse() helper for the same rationale.
+   */
+  function jsonResponse(body) {
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) => (name === "content-type" ? "application/json" : null),
+      },
+      text: () => Promise.resolve(JSON.stringify(body)),
+      json: () => Promise.resolve(body),
+    };
   }
 
   describe("ProvenanceFooter mounted: free-text user message bubble", () => {
@@ -695,6 +714,94 @@ if (isMountedChildRun) {
         ).not.toBeNull();
       } finally {
         unmount(container);
+      }
+    });
+
+    test("registers the beads-ids-updated listener exactly once across content updates, and the handler always uses the block's latest workingDir (mitto-sus.5 Effect A/B split)", async () => {
+      const originalWorkingDir = window.mittoCurrentWorkspace;
+      const originalFetch = global.fetch;
+      let addCalls = 0;
+      let removeCalls = 0;
+      const originalAdd = window.addEventListener.bind(window);
+      const originalRemove = window.removeEventListener.bind(window);
+      window.addEventListener = (type, ...rest) => {
+        if (type === "beads-ids-updated") addCalls++;
+        return originalAdd(type, ...rest);
+      };
+      window.removeEventListener = (type, ...rest) => {
+        if (type === "beads-ids-updated") removeCalls++;
+        return originalRemove(type, ...rest);
+      };
+      global.fetch = (url) =>
+        Promise.resolve(
+          String(url).includes("/api/issues/")
+            ? jsonResponse({})
+            : jsonResponse([{ id: "mitto-effb", title: "t", status: "open" }]),
+        );
+
+      try {
+        window.mittoCurrentWorkspace = "/tmp/ws-effectB-1";
+        const container = mount(
+          agentMessage([{ seq: 1, html: "<p>See mitto-effb</p>", complete: false }]),
+        );
+        try {
+          // Effect A runs against workingDir #1, but its known-IDs cache is
+          // still empty at this point — nothing linked yet.
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          const wrapper = container.querySelector(".markdown-content");
+          expect(wrapper.children[0].querySelector("a.beads-link")).toBeNull();
+
+          // Populate the cache for workingDir #1 *after* mount, then fire the
+          // event: Effect B's listener (registered once, at mount) must still
+          // pick it up using the workingDirRef captured by Effect A.
+          await fetchAndCacheBeadsIds("/tmp/ws-effectB-1");
+          window.dispatchEvent(new Event("beads-ids-updated"));
+          await Promise.resolve();
+          expect(
+            wrapper.children[0].querySelector("a.beads-link"),
+          ).not.toBeNull();
+
+          // Grow the tail block (new chunk) under a *different* workspace and
+          // re-render — Effect A re-runs (htmlContent changed) and must
+          // refresh workingDirRef to the new workspace.
+          window.mittoCurrentWorkspace = "/tmp/ws-effectB-2";
+          preact.render(
+            html`<${Message}
+              message=${agentMessage([
+                {
+                  seq: 1,
+                  html: "<p>See mitto-effb again in this chunk</p>",
+                  complete: false,
+                },
+              ])}
+              isLast=${true}
+              isStreaming=${true}
+            />`,
+            container,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          await fetchAndCacheBeadsIds("/tmp/ws-effectB-2");
+          window.dispatchEvent(new Event("beads-ids-updated"));
+          await Promise.resolve();
+          const wrapperAfter = container.querySelector(".markdown-content");
+          expect(
+            wrapperAfter.children[0].querySelectorAll("a.beads-link"),
+          ).toHaveLength(1);
+
+          // The listener was registered exactly once for this block's whole
+          // lifetime (not once per content update) and not yet removed.
+          expect(addCalls).toBe(1);
+          expect(removeCalls).toBe(0);
+        } finally {
+          unmount(container);
+        }
+        // Unmounting runs Effect B's cleanup exactly once.
+        expect(removeCalls).toBe(1);
+      } finally {
+        window.mittoCurrentWorkspace = originalWorkingDir;
+        global.fetch = originalFetch;
+        window.addEventListener = originalAdd;
+        window.removeEventListener = originalRemove;
       }
     });
   });
