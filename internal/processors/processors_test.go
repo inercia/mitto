@@ -5521,6 +5521,17 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 		}
 	})
 
+	t.Run("auto-detect CLAUDE.md fallback", func(t *testing.T) {
+		ws := t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n"), 0644); err != nil {
+			t.Fatalf("WriteFile CLAUDE.md: %v", err)
+		}
+		out := render(ws, nil)
+		if !strings.Contains(out, "CLAUDE.md") {
+			t.Errorf("expected auto-detected CLAUDE.md fallback in output, got:\n%s", out)
+		}
+	})
+
 	t.Run("explicit PreferencesFile wins over auto-detect", func(t *testing.T) {
 		ws := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(ws, ".augment", "rules"), 0755); err != nil {

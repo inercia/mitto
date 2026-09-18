@@ -183,6 +183,44 @@ func TestKnowledgeRouter_ScopedRule_ClaudeCodeLayout(t *testing.T) {
 	}
 }
 
+// TestKnowledgeRouter_ClaudeMdFallback_PreferencesOnly exercises the
+// CLAUDE.md fallback branch: a workspace with none of the four rules
+// directories but a root CLAUDE.md file must resolve $prefsFile to
+// "CLAUDE.md" for the preferences destination, while rules findings still
+// hit the existing "no rules directory found" skip path (CLAUDE.md is a
+// single file, not a rules directory) — per the mitto-3od.5 plan.
+func TestKnowledgeRouter_ClaudeMdFallback_PreferencesOnly(t *testing.T) {
+	const sessionID = "sess-ac4-claudemd-fallback"
+	store := newCloseRouterApplyTestStore(t, sessionID)
+
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "CLAUDE.md"), []byte("# notes\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile CLAUDE.md: %v", err)
+	}
+
+	prompt := dispatchKnowledgeRouter(t, store, sessionID, workingDir, `{"events":[{"text":"prefers squash commits"}]}`, func(string) (PromptCompletion, error) {
+		return PromptCompletion{FinalMessage: `{"findings":[{"text":"prefers squash commits","destination":"preferences","written":true,"target_path":"CLAUDE.md"}]}`}, nil
+	})
+
+	if !strings.Contains(prompt, "`CLAUDE.md`") {
+		t.Errorf("dispatched prompt does not reference the auto-detected CLAUDE.md fallback; prompt=%s", prompt)
+	}
+	if strings.Contains(prompt, ".augment/rules") || strings.Contains(prompt, ".cursor/rules") || strings.Contains(prompt, ".codex/rules") || strings.Contains(prompt, ".claude/rules") {
+		t.Errorf("dispatched prompt leaked a non-matching agent layout; prompt=%s", prompt)
+	}
+	if !strings.Contains(prompt, "none found — skip rules findings") {
+		t.Errorf("dispatched prompt should fall back to the no-rules-directory skip message when only CLAUDE.md exists; prompt=%s", prompt)
+	}
+
+	state := waitForCloseRouterState(t, store, sessionID, func(s session.CloseRouterState) bool {
+		return len(s.Runs) == 1 && !s.Runs[0].CompletedAt.IsZero()
+	})
+	findings := state.Runs[0].Findings
+	if len(findings) != 1 || findings[0].Destination != "preferences" || findings[0].TargetPath != "CLAUDE.md" {
+		t.Fatalf("Findings = %+v, want one preferences finding targeting CLAUDE.md", findings)
+	}
+}
+
 // --- AC#5: beads-memory-only (prompt-contract lint) -----------------------------------
 
 // TestKnowledgeRouter_BeadsMemory_PromptContract pins the router's memory
