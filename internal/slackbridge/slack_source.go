@@ -268,7 +268,7 @@ func (s *SlackSource) handleSocketEventDurableWithContext(ctx context.Context, e
 			return err
 		}
 		if s.logger != nil {
-			s.logger.Warn("slackbridge: authorization lookup failed; using inline envelope authorizations",
+			s.logger.Debug("slackbridge: authorization lookup failed; using inline envelope authorizations",
 				"error", scrubSlackError(err))
 		}
 		notifySourceObserver(observe, SourceAuthorizationError)

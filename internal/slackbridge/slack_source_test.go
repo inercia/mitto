@@ -1,9 +1,11 @@
 package slackbridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -133,6 +135,37 @@ func TestSlackSource_AuthorizationLookupFailure_FallsBackToInline(t *testing.T) 
 	}
 	if !got.AuthorizationScopeKnown || len(got.Authorizations) != 1 || got.Authorizations[0].UserID != "UDELEGATED" {
 		t.Fatalf("fallback event = %#v", got)
+	}
+}
+
+// TestSlackSource_AuthorizationLookupFailure_FallbackLogsAtDebugNotWarn
+// reproduces mitto-x2a: an authorization-lookup failure with a usable inline
+// authorization set is a complete, delivery-safe fallback (mitto-6tc) that
+// recurs steadily under normal event traffic (e.g. a workspace install
+// without the authorizations:read app-level token scope). It should not
+// surface as an operator-facing WARN on every relevant event -- the
+// underlying signal is preserved separately via SourceAuthorizationError
+// (Manager.observeSource -> ConnectionStatus.LastAuthorizationErrorAt). This
+// currently FAILS because slack_source.go logs the fallback at Warn.
+func TestSlackSource_AuthorizationLookupFailure_FallbackLogsAtDebugNotWarn(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	src := NewSlackSource(Config{}, logger, nil)
+	src.listEventAuthorizations = func(context.Context, string) ([]slack.EventAuthorization, error) {
+		return nil, errors.New("missing_scope")
+	}
+	evt := authorizedEventsAPIEvent("T1", "message", &slackevents.MessageEvent{Channel: "C1", User: "U1"},
+		"1-message-T1-C1", []EventAuthorization{{UserID: "UDELEGATED", IsBot: false}})
+	if err := src.handleSocketEventDurable(evt, newTestSocketmodeClient(), "U-SELF", func(Event) error { return nil }); err != nil {
+		t.Fatalf("fallback err = %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "authorization lookup failed") {
+		t.Fatalf("expected the fallback log line to be emitted; got:\n%s", out)
+	}
+	if strings.Contains(out, "level=WARN") {
+		t.Errorf("a complete inline-authorization fallback (no delivery loss) should log at Debug, not Warn, on every event; got:\n%s", out)
 	}
 }
 
