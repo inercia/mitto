@@ -2,12 +2,14 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment, useMemo, useState, useEffect } = window.preact;
+const { html, Fragment, useMemo, useState, useEffect, useLayoutEffect } =
+  window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
 import { buildRetryTargets, canReplayNamedPrompt, messageKey } from "../lib.js";
 import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
+import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 
 /**
  * @param {Array}    displayMessages   - Coalesced messages to render
@@ -75,6 +77,21 @@ export function MessageList({
   useVisibleInterval(() => setWorkingNow(Date.now()), 2000, {
     enabled: isStreaming && !!agentWorking,
   });
+
+  // mitto-sus.1.1: session-switch firstPaint seam. Dependency-gated (not
+  // remount-gated — the inner message list re-keys on activeSessionId but
+  // this component itself does not unmount), so it fires exactly once per
+  // switch, synchronously after the new session's messages have committed
+  // to the DOM but before the browser paints. Pairs with the
+  // `session.switch.click` mark fired from `switchSession`.
+  useLayoutEffect(() => {
+    perfMark("session.switch.firstPaint");
+    perfMeasure(
+      "session.switch.click-to-firstPaint",
+      "session.switch.click",
+      "session.switch.firstPaint",
+    );
+  }, [activeSessionId]);
 
   // mitto-8fm: clear the persistent "Waiting for MCP servers…" indicator as
   // soon as the agent starts streaming a response — belt-and-braces on top of

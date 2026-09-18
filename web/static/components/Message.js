@@ -24,6 +24,7 @@ import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 import { preloadBeadsIssues } from "../utils/beadsPreload.js";
 import { describeProvenance } from "../utils/promptProvenance.js";
+import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 
 /**
  * Compute human-readable text for a session_change system message.
@@ -695,7 +696,13 @@ function MessageImpl({
     // the same diagram content will hit the cache and reuse the existing SVG.
     useEffect(() => {
       if (agentMessageRef.current) {
+        // mitto-sus.1.1: per-message render post-processor cost seams.
+        // Wrapped individually (not one start/end for the whole effect) so
+        // the epic's suspected root cause of streaming frame drops can be
+        // attributed to a specific processor.
+
         // Wrap tables in scrollable containers for horizontal scrolling on narrow screens
+        perfMark("render.postprocess.tables.start");
         const tables = agentMessageRef.current.querySelectorAll(
           "table:not(.table-wrapper table)",
         );
@@ -708,13 +715,27 @@ function MessageImpl({
           table.parentNode.insertBefore(wrapper, table);
           wrapper.appendChild(table);
         });
+        perfMark("render.postprocess.tables.end");
+        perfMeasure(
+          "render.postprocess.tables",
+          "render.postprocess.tables.start",
+          "render.postprocess.tables.end",
+        );
 
         // Render mermaid diagrams
+        perfMark("render.postprocess.mermaid.start");
         if (typeof window.renderMermaidDiagrams === "function") {
           window.renderMermaidDiagrams(agentMessageRef.current);
         }
+        perfMark("render.postprocess.mermaid.end");
+        perfMeasure(
+          "render.postprocess.mermaid",
+          "render.postprocess.mermaid.start",
+          "render.postprocess.mermaid.end",
+        );
 
         // Linkify beads IDs and warm the show:<id> cache slot for each new link.
+        perfMark("render.postprocess.beadsLinks.start");
         const workingDir = window.mittoCurrentWorkspace || "";
         const { ids, meta } = getBeadsKnownIds(workingDir);
         const linkified = linkifyBeadsRefs(
@@ -723,6 +744,12 @@ function MessageImpl({
           meta,
         );
         preloadBeadsIssues(linkified, workingDir);
+        perfMark("render.postprocess.beadsLinks.end");
+        perfMeasure(
+          "render.postprocess.beadsLinks",
+          "render.postprocess.beadsLinks.start",
+          "render.postprocess.beadsLinks.end",
+        );
       }
 
       const onBeadsUpdated = () => {

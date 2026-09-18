@@ -38,6 +38,8 @@ import {
 
 import { playAgentCompletedSound } from "../utils/audio.js";
 
+import { perfMark } from "../utils/perfMarks.js";
+
 import { getApiPrefix } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus, errorMessage } from "../utils/sdkErrors.js";
@@ -778,6 +780,11 @@ export function useWebSocket({
         const maxSeq = msg.data.max_seq;
         const htmlLen = msg.data.html?.length || 0;
         const isPromptingFromServer = msg.data.is_prompting;
+
+        // mitto-sus.1.1: chunk-received seam — pairs with the existing
+        // `mitto.ws.chunk.applied` mark fired from inside the scheduler
+        // below, so the harness can derive the received→applied budget.
+        perfMark("ws.chunk.received", { seq: msgSeq, htmlLen });
 
         // Update last known seq from this event. Gap detection/fill is now
         // owned internally by SessionStream (mitto-7gta.30).
@@ -2810,6 +2817,11 @@ export function useWebSocket({
   // so the conversation opens already positioned at the latest message.
   const switchSession = useCallback(
     async (sessionId) => {
+      // mitto-sus.1.1: session-switch seam — covers every switch path
+      // (sidebar click, keyboard shortcut, swipe, native menu) since they
+      // all funnel through this callback. Pairs with the firstPaint mark
+      // in MessageList's useLayoutEffect.
+      perfMark("session.switch.click");
       // Selection is immediate UI intent, not a consequence of metadata loading.
       // Activating before the first await keeps unloaded sessions responsive and
       // prevents a slower earlier click from stealing focus after a later click.

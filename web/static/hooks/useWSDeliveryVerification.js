@@ -30,6 +30,7 @@ import {
   getPendingPromptsForSession,
   limitMessages,
 } from "../lib.js";
+import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 
 /**
  * useWSDeliveryVerification
@@ -187,6 +188,10 @@ export function useWSDeliveryVerification({
           userMessage.files = files; // Array of { id, name, mimeType, size, category }
         }
         addMessageToSession(activeSessionId, userMessage);
+        // mitto-sus.1.1: local-render seam — fires only on the fresh-send
+        // path (not retries, which skip the message add and never re-render
+        // a new local bubble).
+        perfMark("prompt.sent.local");
         // Mark any previous streaming message as complete
         updateLastMessage(activeSessionId, (m) =>
           !m.complete && (m.role === ROLE_AGENT || m.role === ROLE_THOUGHT)
@@ -284,6 +289,13 @@ export function useWSDeliveryVerification({
         // Wait for durable ACK, allowing the backend's bounded preflight.
         const result = await attemptSend(INITIAL_ACK_TIMEOUT_MS);
         removePendingPrompt(promptId);
+        // mitto-sus.1.1: network-ACK seam — durable-ACK path.
+        perfMark("prompt.sent.network");
+        perfMeasure(
+          "prompt.sent.local-to-network",
+          "prompt.sent.local",
+          "prompt.sent.network",
+        );
         return result;
       } catch (err) {
         if (err.message !== "ACK_TIMEOUT") {
@@ -316,6 +328,13 @@ export function useWSDeliveryVerification({
 
           if (wasDelivered) {
             removePendingPrompt(promptId);
+            // mitto-sus.1.1: network-ACK seam — reconnect-verified path.
+            perfMark("prompt.sent.network");
+            perfMeasure(
+              "prompt.sent.local-to-network",
+              "prompt.sent.local",
+              "prompt.sent.network",
+            );
             return { success: true, promptId, verifiedOnReconnect: true };
           }
 
@@ -335,6 +354,16 @@ export function useWSDeliveryVerification({
           // Retry the send on the fresh connection
           const result = await attemptSend(retryBudget);
           removePendingPrompt(promptId);
+          // mitto-sus.1.1: network-ACK seam — retry-success path. No
+          // `.local` mark precedes a retry (message add is skipped), so
+          // the measure call is a documented no-op here (missing start
+          // mark degrades silently per perfMeasure's contract).
+          perfMark("prompt.sent.network");
+          perfMeasure(
+            "prompt.sent.local-to-network",
+            "prompt.sent.local",
+            "prompt.sent.network",
+          );
           return { ...result, retriedOnReconnect: true };
         } catch (reconnectErr) {
           if (reconnectErr.message === "ACK_TIMEOUT") {

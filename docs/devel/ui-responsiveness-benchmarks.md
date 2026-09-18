@@ -26,12 +26,12 @@ guard) until all three close.
   non-negative numbers, p50/p95 are logged) rather than hard budget gates
   — see "Proposed budgets" below for why enforcing them as strict
   `expect()` assertions is deferred.
-- **Pending — extend seams** (`mitto-sus.1.1`): add
+- **Landed** (`mitto-sus.1.1`): the four remaining seam families —
   `mitto.prompt.sent.{local,network}` (satisfies the AC's "separates local
   rendering from network completion"), `mitto.ws.chunk.received` (pairs
   with the existing `applied` mark for the received→applied budget),
-  `mitto.session.switch.*`, and `mitto.render.postprocess.*` seams; extend
-  the perf-spec suite to cover each.
+  `mitto.session.switch.*`, and `mitto.render.postprocess.*` — plus one
+  Playwright perf spec per family under `tests/ui/specs/perf/`.
 - **Pending — collectors + scenarios** (`mitto-sus.1.2`): add
   `collectLongTasks` / `collectFrameStats` / `collectPaintLayoutStats` /
   `collectDOMStats` / `collectEventTimings` helpers under
@@ -71,10 +71,17 @@ mounts a `PerformanceObserver` covering `longtask`, `event`, `paint`,
 | `mitto.composer.committed`                    | `ChatInput.js` `handleInput` (next frame)    | Draft state locally rendered                |
 | `mitto.composer.keystroke-to-committed`       | measure, the pair above                      | Keystroke → next-paint latency              |
 | `mitto.ws.chunk.applied`                      | `sessionUpdateScheduler.js` `applyUpdates`   | Background-stream chunk apply cost/cadence  |
-
-Additional seams (`mitto.prompt.sent.{local,network}`,
-`mitto.ws.chunk.received`, `mitto.session.switch.*`,
-`mitto.render.postprocess.*`) are tracked as follow-up `mitto-sus.1.1`.
+| `mitto.prompt.sent.local`                     | `useWSDeliveryVerification.js` `sendPrompt`  | User message locally rendered (fresh sends only) |
+| `mitto.prompt.sent.network`                   | `useWSDeliveryVerification.js` `sendPrompt`  | Prompt ACK confirmed (durable/reconnect/retry paths) |
+| `mitto.prompt.sent.local-to-network`          | measure, the pair above                      | Local render → network-confirmed latency    |
+| `mitto.ws.chunk.received`                     | `useWebSocket.js` `agent_message` handler    | Chunk arrival, paired with `mitto.ws.chunk.applied` |
+| `mitto.session.switch.click`                  | `useWebSocket.js` `switchSession`            | User-intent time for a conversation switch  |
+| `mitto.session.switch.firstPaint`             | `MessageList.js` (`useLayoutEffect` on `activeSessionId`) | New session's messages committed, pre-paint |
+| `mitto.session.switch.click-to-firstPaint`    | measure, the pair above                      | Click → next-paint latency                  |
+| `mitto.render.postprocess.tables.{start,end}` | `Message.js` agent-message `useEffect`       | Table-wrapping cost                         |
+| `mitto.render.postprocess.mermaid.{start,end}`| `Message.js` agent-message `useEffect`       | Mermaid diagram render cost                 |
+| `mitto.render.postprocess.beadsLinks.{start,end}` | `Message.js` agent-message `useEffect`   | Beads-ID linkify + preload cost             |
+| `mitto.render.postprocess.{tables,mermaid,beadsLinks}` | measures, the pairs above           | Per-processor per-message render cost       |
 
 ## Deterministic fixtures
 
