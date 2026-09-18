@@ -952,15 +952,15 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
 
     test("does NOT expand until the user is back within EXPAND_DISTANCE_PX", () => {
       // Still above the expand threshold: stays collapsed.
-      expect(
-        computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1),
-      ).toBe(true);
+      expect(computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1)).toBe(
+        true,
+      );
     });
 
     test("expands once the user returns within EXPAND_DISTANCE_PX of the bottom", () => {
-      expect(
-        computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX - 1),
-      ).toBe(false);
+      expect(computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX - 1)).toBe(
+        false,
+      );
     });
 
     test("dead-band prevents oscillation: a nearly-at-bottom moving target holds state both ways", () => {
@@ -969,9 +969,9 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
         computeIsScrolledUpHysteresis(false, COLLAPSE_DISTANCE_PX - 1),
       ).toBe(false);
       // ...and collapsed state persists just above the expand threshold.
-      expect(
-        computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1),
-      ).toBe(true);
+      expect(computeIsScrolledUpHysteresis(true, EXPAND_DISTANCE_PX + 1)).toBe(
+        true,
+      );
     });
   });
 
@@ -1175,6 +1175,88 @@ describe("ChatInput mobile scroll-driven compact composer (mitto-47l)", () => {
           isTextareaFocused: true,
         }),
       ).toBe(false);
+    });
+  });
+});
+
+// =============================================================================
+// utils/draftStore.js (mitto-sus.6): isolates composer draft state from
+// App's render tree. Unlike ChatInput.js itself, this module has no
+// window.preact/htm dependency, so it is imported directly (not duplicated).
+// =============================================================================
+
+describe("draftStore (mitto-sus.6)", () => {
+  let draftStore;
+
+  beforeEach(async () => {
+    draftStore = await import("../utils/draftStore.js");
+    draftStore._resetDraftStoreForTests();
+  });
+
+  test("getDraft returns empty string for an unset session", () => {
+    expect(draftStore.getDraft("s1")).toBe("");
+  });
+
+  test("setDraft then getDraft round-trips the text for that session", () => {
+    draftStore.setDraft("s1", "hello");
+    expect(draftStore.getDraft("s1")).toBe("hello");
+  });
+
+  test("null sessionId (no-session state) is isolated under its own key", () => {
+    draftStore.setDraft(null, "no-session draft");
+    draftStore.setDraft("s1", "s1 draft");
+    expect(draftStore.getDraft(null)).toBe("no-session draft");
+    expect(draftStore.getDraft("s1")).toBe("s1 draft");
+  });
+
+  test("writes to one session never affect another session's draft", () => {
+    draftStore.setDraft("s1", "one");
+    draftStore.setDraft("s2", "two");
+    expect(draftStore.getDraft("s1")).toBe("one");
+    expect(draftStore.getDraft("s2")).toBe("two");
+  });
+
+  test("subscribe is notified only for its own session id", () => {
+    const s1Callback = jest.fn();
+    const s2Callback = jest.fn();
+    draftStore.subscribe("s1", s1Callback);
+    draftStore.subscribe("s2", s2Callback);
+
+    draftStore.setDraft("s1", "updated");
+
+    expect(s1Callback).toHaveBeenCalledWith("updated");
+    expect(s2Callback).not.toHaveBeenCalled();
+  });
+
+  test("unsubscribe stops further notifications", () => {
+    const callback = jest.fn();
+    const unsubscribe = draftStore.subscribe("s1", callback);
+    unsubscribe();
+
+    draftStore.setDraft("s1", "after unsubscribe");
+
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  test("a throwing listener does not break the store or other listeners", () => {
+    const throwing = jest.fn(() => {
+      throw new Error("boom");
+    });
+    const healthy = jest.fn();
+    draftStore.subscribe("s1", throwing);
+    draftStore.subscribe("s1", healthy);
+
+    expect(() => draftStore.setDraft("s1", "x")).not.toThrow();
+    expect(healthy).toHaveBeenCalledWith("x");
+    expect(draftStore.getDraft("s1")).toBe("x");
+  });
+
+  test("snapshot returns a plain object of all current drafts, no-session under the sentinel key", () => {
+    draftStore.setDraft("s1", "one");
+    draftStore.setDraft(null, "none");
+    expect(draftStore.snapshot()).toEqual({
+      s1: "one",
+      __no_session__: "none",
     });
   });
 });

@@ -19,6 +19,11 @@ import { getContextWindowSize } from "../utils/models.js";
 import { routeDroppedPaths } from "../utils/paths.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import {
+  getDraft as getStoredDraft,
+  setDraft as setStoredDraft,
+  subscribe as subscribeDraft,
+} from "../utils/draftStore.js";
+import {
   getPromptSortMode,
   getUIPromptPanelHeight,
   setUIPromptPanelHeight,
@@ -146,9 +151,7 @@ function PromptStopButton({ onStop }) {
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
- * @param {string} props.sessionId - Current session ID
- * @param {string} props.draft - Current draft text
- * @param {Function} props.onDraftChange - Callback when draft changes
+ * @param {string} props.sessionId - Current session ID. Draft text for this session is read from/written to utils/draftStore.js internally (mitto-sus.6) — no draft/onDraftChange props are needed.
  * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (refreshes global and workspace prompts)
  * @param {number} props.queueLength - Current number of messages in queue
  * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
@@ -179,8 +182,6 @@ export function ChatInput({
   inputRef,
   noSession = false,
   sessionId,
-  draft = "",
-  onDraftChange,
   onPromptsOpen,
   onConfigurePrompts,
   queueLength = 0,
@@ -216,15 +217,27 @@ export function ChatInput({
   flushCommand = "",
   onFlushContext,
 }) {
-  // Use the draft from parent state instead of local state
-  const text = draft;
+  // Draft text is local state seeded from (and mirrored into) the shared
+  // draftStore, instead of flowing through App's `sessionDrafts` state
+  // (mitto-sus.6). This isolates every keystroke's render to this component
+  // — App no longer reconciles its ~4000-line tree on each character typed.
+  const [text, setLocalText] = useState(() => getStoredDraft(sessionId));
+
+  // Rehydrate from the store whenever the mounted session changes, and
+  // subscribe so an external write to *this* session's draft (e.g. the
+  // queue-add success path in useQueueActions.js) is reflected even though
+  // it did not originate from this component's own setText calls.
+  useEffect(() => {
+    setLocalText(getStoredDraft(sessionId));
+    return subscribeDraft(sessionId, setLocalText);
+  }, [sessionId]);
+
   const setText = useCallback(
     (newText) => {
-      if (onDraftChange) {
-        onDraftChange(sessionId, newText);
-      }
+      setLocalText(newText);
+      setStoredDraft(sessionId, newText);
     },
-    [onDraftChange, sessionId],
+    [sessionId],
   );
 
   const [showDropup, setShowDropup] = useState(false);
@@ -1043,13 +1056,10 @@ export function ChatInput({
         );
       });
     }
-    const textarea = e.target;
-    textarea.style.height = "auto";
-    textarea.style.height =
-      Math.max(
-        textareaMinHeight,
-        Math.min(textarea.scrollHeight, textareaHardMax),
-      ) + "px";
+    // Autosizing is handled solely by the `useEffect` keyed on `text` below
+    // (mitto-sus.6) — it already re-runs on every keystroke via the `text`
+    // dependency, so a second synchronous "auto -> measure -> set" pass here
+    // was pure duplicate forced-layout work on the input thread.
 
     // Show slash command picker when typing '/' at the start
     if (
@@ -1206,9 +1216,11 @@ export function ChatInput({
         clearTimeout(timeoutId);
       }
 
-      if (data.improved_prompt && onDraftChange) {
-        onDraftChange(targetSessionId, data.improved_prompt);
+      if (data.improved_prompt) {
         if (targetSessionId === sessionId) {
+          // Still viewing the target session — update local state directly
+          // (also mirrors into the store) so the textarea reflects it now.
+          setText(data.improved_prompt);
           requestAnimationFrame(() => {
             const textarea = textareaRef.current;
             if (textarea) {
@@ -1221,6 +1233,11 @@ export function ChatInput({
               textarea.focus();
             }
           });
+        } else {
+          // User switched away from the target session while the request
+          // was in flight — write straight to the store; it will be picked
+          // up if/when the user switches back (mitto-sus.6).
+          setStoredDraft(targetSessionId, data.improved_prompt);
         }
       }
     } catch (err) {

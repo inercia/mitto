@@ -37,6 +37,7 @@ import {
   computeHeaderTriggerLabel,
 } from "./lib.js";
 import { installPerfBuffer } from "./utils/perfMarks.js";
+import { setDraft as setDraftStore } from "./utils/draftStore.js";
 
 // mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
 // unless `?perf=1` / `window.__mittoPerf` is set (see utils/perfMarks.js);
@@ -534,12 +535,9 @@ function App() {
   const [rcFilePath, setRcFilePath] = useState(null); // Path to RC file when config is read-only due to RC file
   const [swipeDirection, setSwipeDirection] = useState(null); // 'left' or 'right' for animation
   const [swipeArrow, setSwipeArrow] = useState(null); // 'left' or 'right' for arrow indicator
-  // Per-session draft text: { sessionId: draftText } - null key for "no session" state
-  const [sessionDrafts, setSessionDrafts] = useState({});
-  const sessionDraftsRef = useRef(sessionDrafts);
-  useEffect(() => {
-    sessionDraftsRef.current = sessionDrafts;
-  }, [sessionDrafts]);
+  // Per-session composer draft text now lives in utils/draftStore.js
+  // (mitto-sus.6), isolated from this component's render tree — see
+  // `updateDraft` below, the only remaining App-level touchpoint.
   const messagesEndRef = useRef(null);
   const mainContentRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -955,19 +953,12 @@ function App() {
   // needs ALL folders, not just the active session's.
   const { getAgentAuthStateForWorkingDir } = useAgentAuthState();
 
-  // Get the current draft for the active session (null key = no session)
-  const currentDraft = sessionDrafts[activeSessionId ?? "__no_session__"] || "";
-
-  // Update draft for a specific session (or null = no session)
+  // Update draft for a specific session (or null = no session). ChatInput
+  // now owns its own mounted-session draft directly via draftStore
+  // (mitto-sus.6); this adapter remains only for external writers like
+  // useQueueActions' post-enqueue clear of the active session's draft.
   const updateDraft = useCallback((sessionId, text) => {
-    const key = sessionId ?? "__no_session__";
-    setSessionDrafts((prev) => ({ ...prev, [key]: text }));
-  }, []);
-
-  // Ref-based version for async callbacks (avoid stale closure)
-  const updateDraftForSession = useCallback((sessionId, text) => {
-    const key = sessionId ?? "__no_session__";
-    setSessionDrafts((prev) => ({ ...prev, [key]: text }));
+    setDraftStore(sessionId, text);
   }, []);
 
   // Handle loading more messages
@@ -4016,9 +4007,6 @@ function App() {
                       inputRef=${chatInputRef}
                       noSession=${!activeSessionId}
                       sessionId=${activeSessionId}
-                      draft=${currentDraft}
-                      onDraftChange=${updateDraft}
-                      sessionDraftsRef=${sessionDraftsRef}
                       onPromptsOpen=${handlePromptsOpen}
                       onConfigurePrompts=${!configReadonly &&
                       sessionInfo?.working_dir
