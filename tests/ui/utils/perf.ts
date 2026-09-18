@@ -18,6 +18,9 @@ export interface PerfEntry {
   entryType: string;
   startTime: number;
   duration: number;
+  /** User Timing L3 detail payload, when the mark/measure carried one (e.g.
+   * sessionUpdateScheduler.js's "ws.chunk.applied" mark's { count }, mitto-sus.3). */
+  detail?: { count?: number; [key: string]: unknown };
 }
 
 /**

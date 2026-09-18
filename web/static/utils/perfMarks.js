@@ -106,6 +106,11 @@ export function installPerfBuffer() {
           entryType: entry.entryType,
           startTime: entry.startTime,
           duration: entry.duration,
+          // User Timing L3 detail (e.g. perfMark's { count } payload — see
+          // sessionUpdateScheduler.js's "ws.chunk.applied" mark, mitto-sus.3).
+          // Not all entry types carry detail; omit rather than serialize
+          // `undefined` so consumers can rely on `"detail" in entry`.
+          ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
         });
       }
       if (buffer.length > PERF_BUFFER_CAP) {

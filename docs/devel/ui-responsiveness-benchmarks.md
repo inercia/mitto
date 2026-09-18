@@ -58,6 +58,20 @@ guard) until all three close.
   `tests/ui/perf/baseline.json`, its rendered table
   [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md), and the
   budget-promotion decisions below.
+- **Landed** (`mitto-sus.3`): frame-paced foreground coalescing atop the
+  existing `sessionUpdateScheduler.js` — once an active-session content burst
+  is under way, chunks after the first coalesce into at most one
+  `setSessions` commit per animation frame (100ms fallback timer on
+  hidden/throttled tabs), cutting per-chunk React reconciles without
+  delaying the first visible token. `chunk-apply-cost.spec.ts`'s
+  `ws.chunk.applied` marks now carry a `detail.count` payload (surfaced via
+  `PerfEntry.detail` in `tests/ui/utils/perf.ts`) recording how many queued
+  chunks a given apply drained; this scenario's deterministic fixtures
+  happen to arrive already coalesced by the backend's own `StreamBuffer`
+  (see the scenario's own comment), so `maxCoalesced` is recorded via
+  `writePerfSample` for `make bench-ui` rather than asserted as a hard
+  floor here — the coalescing behavior itself is pinned deterministically
+  in `sessionUpdateScheduler.test.js` instead.
 
 ## Enabling instrumentation
 

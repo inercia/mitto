@@ -4,10 +4,28 @@ import {
   sessionWasStreaming,
 } from "./sessionUpdateScheduler.js";
 
+// Timers and animation frames are tracked as independent id -> fn maps (not
+// a single shared slot) because the frame-paced active queue (mitto-sus.3)
+// can have a background setTimeout, a frame-fallback setTimeout, and a
+// requestAnimationFrame callback all pending at once. runTimer()/runFrame()
+// each fire the oldest pending entry of their kind, mirroring "whichever
+// fires first" real-browser semantics; cancel callbacks remove by id so a
+// flush that clears one via clearFrameTimers() is reflected here too.
 function harness(activeSessionId = "active") {
   let state = {};
-  let scheduled = null;
   let renders = 0;
+  let nextTimerId = 1;
+  let nextFrameId = 1;
+  const timers = new Map();
+  const frames = new Map();
+  const runOldest = (map) => {
+    const firstKey = map.keys().next().value;
+    if (firstKey === undefined) return false;
+    const fn = map.get(firstKey);
+    map.delete(firstKey);
+    fn();
+    return true;
+  };
   const scheduler = createSessionUpdateScheduler({
     getActiveSessionId: () => activeSessionId,
     setSessions: (update) => {
@@ -15,22 +33,30 @@ function harness(activeSessionId = "active") {
       renders += 1;
     },
     setTimeoutFn: (fn) => {
-      scheduled = fn;
-      return 1;
+      const id = nextTimerId++;
+      timers.set(id, fn);
+      return id;
     },
-    clearTimeoutFn: () => {
-      scheduled = null;
+    clearTimeoutFn: (id) => {
+      timers.delete(id);
+    },
+    requestFrameFn: (fn) => {
+      const id = nextFrameId++;
+      frames.set(id, fn);
+      return id;
+    },
+    cancelFrameFn: (id) => {
+      frames.delete(id);
     },
   });
   return {
     scheduler,
     state: () => state,
     renders: () => renders,
-    runTimer: () => {
-      const fn = scheduled;
-      scheduled = null;
-      fn?.();
-    },
+    pendingTimers: () => timers.size,
+    pendingFrames: () => frames.size,
+    runTimer: () => runOldest(timers),
+    runFrame: () => runOldest(frames),
     setActive: (id) => {
       activeSessionId = id;
     },
@@ -104,6 +130,115 @@ describe("createSessionUpdateScheduler", () => {
     h.runTimer();
     expect(h.renders()).toBe(0);
     expect(h.state()).toEqual({});
+  });
+});
+
+describe("createSessionUpdateScheduler: frame-paced active queue (mitto-sus.3)", () => {
+  test("the first chunk of a burst still commits synchronously (no wait for a frame)", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", 1));
+    // First-content promptness: no frame/timer needed for the first chunk.
+    expect(h.renders()).toBe(1);
+    expect(h.state().active).toEqual([1]);
+    // A coalescing window is armed for whatever arrives next.
+    expect(h.pendingFrames()).toBe(1);
+  });
+
+  test("coalesces multiple active-session updates within one animation frame into a single render", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", 1)); // sync commit, arms the frame
+    h.scheduler.schedule("active", append("active", 2)); // queued
+    h.scheduler.schedule("active", append("active", 3)); // queued
+    expect(h.renders()).toBe(1);
+    h.runFrame();
+    expect(h.renders()).toBe(2);
+    expect(h.state().active).toEqual([1, 2, 3]);
+    // The window closes after a flush; nothing left pending.
+    expect(h.pendingFrames()).toBe(0);
+    expect(h.pendingTimers()).toBe(0);
+  });
+
+  test("preserves cross-type ordering (message/thought/tool_call/tool_update) within one frame flush", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", "agent_message"));
+    h.scheduler.schedule("active", append("active", "agent_thought"));
+    h.scheduler.schedule("active", append("active", "tool_call"));
+    h.scheduler.schedule("active", append("active", "tool_update"));
+    h.runFrame();
+    expect(h.state().active).toEqual([
+      "agent_message",
+      "agent_thought",
+      "tool_call",
+      "tool_update",
+    ]);
+  });
+
+  test("applyImmediate drains a queued active frame before applying its own terminal update", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", 1)); // sync commit, arms the frame
+    h.scheduler.schedule("active", append("active", 2)); // queued
+    h.scheduler.applyImmediate("active", append("active", "complete"));
+    expect(h.state().active).toEqual([1, 2, "complete"]);
+    expect(h.renders()).toBe(2);
+    // The frame + fallback timer were cancelled as part of the drain.
+    expect(h.pendingFrames()).toBe(0);
+    expect(h.pendingTimers()).toBe(0);
+    // A stray late frame must not double-apply already-drained content.
+    h.runFrame();
+    expect(h.renders()).toBe(2);
+  });
+
+  test("flushSession drains a queued active frame for that session", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", 1));
+    h.scheduler.schedule("active", append("active", 2));
+    expect(h.scheduler.flushSession("active")).toBe(true);
+    expect(h.state().active).toEqual([1, 2]);
+    expect(h.renders()).toBe(2);
+    expect(h.pendingFrames()).toBe(0);
+    expect(h.pendingTimers()).toBe(0);
+  });
+
+  test("a newly active session drains its background queue immediately, then frame-paces further chunks", () => {
+    const h = harness();
+    h.scheduler.schedule("next", append("next", "queued")); // background (not yet active)
+    h.setActive("next");
+    h.scheduler.schedule("next", append("next", "active1")); // idle -> busy: sync commit
+    expect(h.renders()).toBe(1);
+    expect(h.state().next).toEqual(["queued", "active1"]);
+    h.scheduler.schedule("next", append("next", "active2")); // window open: queued
+    expect(h.renders()).toBe(1);
+    h.runFrame();
+    expect(h.renders()).toBe(2);
+    expect(h.state().next).toEqual(["queued", "active1", "active2"]);
+  });
+
+  test("falls back to the timeout when no animation frame fires (hidden/throttled tab)", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", 1)); // sync commit, arms frame + fallback
+    h.scheduler.schedule("active", append("active", 2)); // queued
+    expect(h.renders()).toBe(1);
+    // Fallback timer fires instead of rAF (e.g. hidden tab throttling rAF).
+    h.runTimer();
+    expect(h.renders()).toBe(2);
+    expect(h.state().active).toEqual([1, 2]);
+    // The now-redundant frame request was cancelled by the fallback firing.
+    expect(h.pendingFrames()).toBe(0);
+  });
+
+  test("dispose mid-window cancels the frame/fallback timer and drops queued active updates", () => {
+    const h = harness();
+    h.scheduler.schedule("active", append("active", 1)); // sync commit, arms frame + fallback
+    h.scheduler.schedule("active", append("active", 2)); // queued
+    expect(h.renders()).toBe(1);
+    h.scheduler.dispose();
+    expect(h.pendingFrames()).toBe(0);
+    expect(h.pendingTimers()).toBe(0);
+    // Neither a stray frame nor a stray timer may commit after dispose.
+    h.runFrame();
+    h.runTimer();
+    expect(h.renders()).toBe(1);
+    expect(h.state().active).toEqual([1]);
   });
 });
 

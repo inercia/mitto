@@ -88,5 +88,22 @@ test.describe("Perf: background chunk apply cost", () => {
       `[perf] ws.chunk.applied (long): n=${marks.length} p95=${p95.toFixed(2)}ms`,
     );
     writePerfSample("ws.chunk.applied-long", "p95", p95, { n: marks.length });
+
+    // mitto-sus.3 (record-only, like the rest of this scenario — see the
+    // NOTE above): each mark's `detail.count` is the number of queued
+    // chunks a single apply drained (sessionUpdateScheduler.js's
+    // frame-paced active queue coalesces same-frame chunks into one
+    // setSessions commit). This deterministic fixture's own WS-delivery
+    // count is already tiny (n above), because the backend's StreamBuffer
+    // coalesces before the frontend ever sees a chunk — so this scenario
+    // can't reliably *exercise* frontend-side coalescing (there's rarely
+    // more than one chunk per animation frame to coalesce). Recording
+    // maxCoalesced anyway gives `make bench-ui` a signal for scenarios
+    // where a slower/backed-up client does see multi-chunk frames, without
+    // asserting a hard floor this fixture can't guarantee.
+    const maxCoalesced = Math.max(...marks.map((m) => m.detail?.count ?? 1));
+    // eslint-disable-next-line no-console
+    console.log(`[perf] ws.chunk.applied (long): maxCoalesced=${maxCoalesced}`);
+    writePerfSample("ws.chunk.applied-long", "maxCoalesced", maxCoalesced);
   });
 });
