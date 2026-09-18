@@ -1548,6 +1548,18 @@ func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, 
 // a window sized to the agent's own cold-init ceiling rather than the much
 // shorter aux blast-radius cooldown.
 //
+// PROACTIVE LOAD OVERRIDE (mitto-e9b): both overrides above are REACTIVE —
+// they only fire after a prior timeout/deadline hit already happened on this
+// process. That leaves the FIRST cold NewSession/LoadSession on an already
+// busy process (concurrent foreground RPCs, no failure yet recorded)
+// ungated: it is granted the full extended budget and can dead-wait up to
+// MCPInitTimeout (215s+ observed in production, see mitto-e9b evidence)
+// before the agent's own internal deadline fires — and THAT wait is what
+// feeds the mitto-5eq saturation window and ultimately degrades the
+// workspace. hasOtherActiveRPCLoad() closes this gap by withholding the
+// extended budget whenever other concurrent RPCs are already active,
+// independent of any saturation/deadline history.
+//
 // hasMCPServers is retained on the signature for observability / future gating.
 func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Duration, total time.Duration, extended bool) {
 	_ = hasMCPServers // reserved for future per-request gating
@@ -1563,7 +1575,28 @@ func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Du
 	if p.recentlyHitAgentInternalDeadlineWithin(p.config.MCPInitTimeout) {
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
+	if p.hasOtherActiveRPCLoad() {
+		if p.logger != nil {
+			p.logger.Debug("coldMCPBudget: withholding extended budget, other RPCs active",
+				"active_rpcs", p.ActiveRPCs(),
+				"threshold", auxSessionCreateBusyRPCThreshold)
+		}
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
 	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true
+}
+
+// hasOtherActiveRPCLoad reports whether concurrent RPCs OTHER than the
+// caller's own in-flight NewSession/LoadSession call are active on this
+// process (mitto-e9b). Must only be called from within a
+// beginRPC()/endRPC() pair — coldMCPBudget's only callers — so ActiveRPCs()
+// already includes the caller's own +1; subtracting it avoids mistaking a
+// solo cold call on an otherwise-quiescent process for contention. Reuses
+// auxSessionCreateBusyRPCThreshold (see processBusyByActiveRPCs in
+// acp_process_manager.go) so this proactive-load signal cannot drift from
+// the aux-session bail's definition of "busy".
+func (p *SharedACPProcess) hasOtherActiveRPCLoad() bool {
+	return p.ActiveRPCs()-1 >= auxSessionCreateBusyRPCThreshold
 }
 
 // effectiveMaxAttemptsForBudget returns the retry cap NewSession should honour
