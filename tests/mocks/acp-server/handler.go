@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -519,7 +520,7 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 	}
 
 	// Find matching scenario response
-	matched := s.findMatchingResponse(message)
+	matched, submatches := s.findMatchingResponse(message)
 	var actions []Action
 	if matched != nil {
 		// Apply response-level delay before sending any actions.
@@ -542,7 +543,7 @@ func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {
 	// Execute actions synchronously - streaming happens BEFORE the prompt response
 	// This is the ACP protocol: notifications first, then response
 	for _, action := range actions {
-		s.executeAction(action)
+		s.executeAction(action, submatches)
 	}
 
 	// If an rpc_error action fired, send an error response instead of end_turn.
@@ -587,7 +588,26 @@ func (s *MockACPServer) handleShutdown(req JSONRPCRequest) error {
 // message. Precise markers like "TEST:code-block-split" match a short exact
 // span, whereas greedy ".*" fallbacks match a longer span of boilerplate, so
 // the precise scenario wins. Ties are broken by the (sorted) scenario name.
-func (s *MockACPServer) findMatchingResponse(message string) *Response {
+//
+// The second return value carries the winning pattern's regex submatches (as
+// from regexp.FindStringSubmatch: index 0 is the full match, indices 1..N are
+// capture groups) so response text can echo back runtime-generated values
+// (e.g. a dispatch_id) via expandCaptures — see mitto-3od.6. It is nil when
+// no scenario matched or the winning pattern had no capture groups.
+//
+// Template-aware responses (mitto-3od.6) — those whose own action text uses
+// a "${N}" placeholder — always outrank plain responses regardless of span,
+// checked BEFORE the span comparison. A capture pattern like
+// "\"dispatch_id\":\"([0-9a-fA-F-]{36})\"" necessarily spans the full
+// ~50-character value it must echo back, so it can never win a pure
+// shortest-span contest against incidental short matches elsewhere in a long
+// prompt (e.g. the knowledge-router prompt's own "update...file" text
+// coincidentally matching tool-calls-interleaved's "(fix|edit|update).*file"
+// in a 29-character span). A fixture author opting into "${N}" substitution
+// has already declared unambiguous, deliberate intent to match THIS
+// dispatch — no existing fixture uses "${" in its response text, so this is
+// purely additive and never changes any pre-existing match outcome.
+func (s *MockACPServer) findMatchingResponse(message string) (*Response, []string) {
 	names := make([]string, 0, len(s.scenarios))
 	for name := range s.scenarios {
 		names = append(names, name)
@@ -597,6 +617,8 @@ func (s *MockACPServer) findMatchingResponse(message string) *Response {
 	var best *Response
 	bestName := ""
 	bestSpan := -1
+	bestTemplated := false
+	var bestSubmatches []string
 	for _, name := range names {
 		scenario := s.scenarios[name]
 		for i := range scenario.Responses {
@@ -608,27 +630,80 @@ func (s *MockACPServer) findMatchingResponse(message string) *Response {
 			if err != nil {
 				continue
 			}
-			loc := re.FindStringIndex(message)
+			loc := re.FindStringSubmatchIndex(message)
 			if loc == nil {
 				continue
 			}
 			span := loc[1] - loc[0]
-			if best == nil || span < bestSpan {
+			templated := responseUsesCaptureTemplate(resp)
+			better := best == nil ||
+				(templated && !bestTemplated) ||
+				(templated == bestTemplated && span < bestSpan)
+			if better {
 				best = resp
 				bestName = name
 				bestSpan = span
+				bestTemplated = templated
+				bestSubmatches = re.FindStringSubmatch(message)
 			}
 		}
 	}
 	if best != nil {
-		s.log("Matched scenario: %s (span=%d)", bestName, bestSpan)
-		return best
+		s.log("Matched scenario: %s (span=%d, templated=%v)", bestName, bestSpan, bestTemplated)
+		return best, bestSubmatches
 	}
 	s.log("No matching scenario found")
-	return nil
+	return nil, nil
 }
 
-func (s *MockACPServer) executeAction(action Action) {
+// responseUsesCaptureTemplate reports whether any action text in resp
+// references a "${N}" capture placeholder (mitto-3od.6). Used by
+// findMatchingResponse to give deliberately-templated fixtures priority over
+// the plain shortest-span heuristic.
+func responseUsesCaptureTemplate(resp *Response) bool {
+	hasPlaceholder := func(s string) bool { return strings.Contains(s, "${") }
+	for _, action := range resp.Actions {
+		for _, chunk := range action.Chunks {
+			if hasPlaceholder(chunk) {
+				return true
+			}
+		}
+		if hasPlaceholder(action.Text) || hasPlaceholder(action.Title) || hasPlaceholder(action.Message) {
+			return true
+		}
+	}
+	return false
+}
+
+// expandCaptures replaces "${N}" placeholders (N >= 1) in s with the
+// corresponding regex capture group from submatches (submatches[0] is the
+// full match, submatches[N] is capture group N). A placeholder referencing a
+// missing or out-of-range group expands to "". Only the "${N}" form is
+// recognized (no bare "$N") so literal '$' characters in fixture text are
+// left untouched. A nil/empty submatches leaves s unchanged (mitto-3od.6).
+func expandCaptures(s string, submatches []string) string {
+	if len(submatches) == 0 || !strings.Contains(s, "${") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '{' {
+			end := strings.IndexByte(s[i+2:], '}')
+			if end >= 0 {
+				numStr := s[i+2 : i+2+end]
+				if n, err := strconv.Atoi(numStr); err == nil && n >= 0 && n < len(submatches) {
+					b.WriteString(submatches[n])
+					i += 2 + end
+					continue
+				}
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func (s *MockACPServer) executeAction(action Action, submatches []string) {
 	delay := time.Duration(action.DelayMs) * time.Millisecond
 	if delay == 0 {
 		delay = s.defaultDelay
@@ -639,7 +714,7 @@ func (s *MockACPServer) executeAction(action Action) {
 		for _, chunk := range action.Chunks {
 			s.sendSessionUpdate(SessionUpdate{
 				AgentMessageChunk: &AgentMessageChunk{
-					Content: ContentBlock{Type: "text", Text: chunk},
+					Content: ContentBlock{Type: "text", Text: expandCaptures(chunk, submatches)},
 				},
 			})
 			time.Sleep(delay)
@@ -648,7 +723,7 @@ func (s *MockACPServer) executeAction(action Action) {
 	case "agent_thought":
 		s.sendSessionUpdate(SessionUpdate{
 			AgentThoughtChunk: &AgentThoughtChunk{
-				Content: ContentBlock{Type: "text", Text: action.Text},
+				Content: ContentBlock{Type: "text", Text: expandCaptures(action.Text, submatches)},
 			},
 		})
 		time.Sleep(delay)
@@ -657,7 +732,7 @@ func (s *MockACPServer) executeAction(action Action) {
 		s.sendSessionUpdate(SessionUpdate{
 			ToolCall: &ToolCall{
 				ToolCallID: action.ID,
-				Title:      action.Title,
+				Title:      expandCaptures(action.Title, submatches),
 				Status:     action.Status,
 				RawInput:   action.RawInput,
 			},
@@ -682,7 +757,7 @@ func (s *MockACPServer) executeAction(action Action) {
 
 	case "rpc_error":
 		// Set the pending RPC error; handlePrompt will send an error response after all actions.
-		msg := action.Message
+		msg := expandCaptures(action.Message, submatches)
 		if msg == "" {
 			msg = "Simulated error for testing"
 		}

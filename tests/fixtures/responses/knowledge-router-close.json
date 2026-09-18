@@ -1,0 +1,22 @@
+{
+  "scenario": "mitto-3od6-knowledge-router-close",
+  "description": "mitto-3od.6: echoes the close-phase knowledge-router's PromptProcessorTracked dispatch_id back in the MITTO_PROCESSOR_COMPLETION envelope, via the mock ACP server's regex capture-group substitution (tests/mocks/acp-server/handler.go expandCaptures). This lets the archive -> ApplyOnClose -> auxiliary dispatch -> close-router.json sidecar handshake be exercised end-to-end without weakening parseProcessorCompletion's exact dispatch_id match.",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "\"dispatch_id\":\"([0-9a-fA-F-]{36})\""
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 10,
+          "chunks": [
+            "{\"findings\":[{\"text\":\"mitto-3od.6 close-phase router round-trip probe\",\"destination\":\"none\",\"written\":false,\"target_path\":\"\"}]}\n",
+            "MITTO_PROCESSOR_COMPLETION {\"dispatch_id\":\"${1}\",\"save_count\":0}"
+          ]
+        }
+      ]
+    }
+  ]
+}
