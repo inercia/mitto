@@ -596,6 +596,108 @@ if (isMountedChildRun) {
       }
     });
   });
+
+  describe("AgentMessageBlock keyed rendering (mitto-sus.4)", () => {
+    function agentMessage(blocks, overrides = {}) {
+      return {
+        role: "agent",
+        html: blocks.map((b) => b.html).join(""),
+        blocks,
+        complete: false,
+        timestamp: 0,
+        ...overrides,
+      };
+    }
+
+    test("renders one keyed sub-node per backend seq block", () => {
+      const message = agentMessage([
+        { seq: 1, html: "<p>Hello</p>", complete: true },
+        { seq: 2, html: "<p>World</p>", complete: false },
+      ]);
+      const container = mount(message);
+      try {
+        const wrapper = container.querySelector(".markdown-content");
+        expect(wrapper.children.length).toBe(2);
+        expect(wrapper.children[0].innerHTML).toBe("<p>Hello</p>");
+        expect(wrapper.children[1].innerHTML).toBe("<p>World</p>");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("legacy message without `.blocks` synthesizes and renders a single full-content block (bounded fallback)", () => {
+      const message = {
+        role: "agent",
+        html: "<p>Legacy content</p>",
+        complete: true,
+        timestamp: 0,
+      };
+      const container = mount(message);
+      try {
+        const wrapper = container.querySelector(".markdown-content");
+        expect(wrapper.children.length).toBe(1);
+        expect(wrapper.children[0].innerHTML).toBe("<p>Legacy content</p>");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("a completed block's DOM node identity survives a tail-only update (Preact keyed diff skips it)", () => {
+      const container = mount(
+        agentMessage([
+          { seq: 1, html: "<p>Hello</p>", complete: true },
+          { seq: 2, html: "<p>Wor</p>", complete: false },
+        ]),
+      );
+      try {
+        const wrapperBefore = container.querySelector(".markdown-content");
+        const firstBlockNode = wrapperBefore.children[0];
+
+        preact.render(
+          html`<${Message}
+            message=${agentMessage([
+              { seq: 1, html: "<p>Hello</p>", complete: true },
+              { seq: 2, html: "<p>World</p>", complete: false },
+            ])}
+            isLast=${true}
+            isStreaming=${true}
+          />`,
+          container,
+        );
+
+        const wrapperAfter = container.querySelector(".markdown-content");
+        // Same DOM node reference: Preact's keyed diff left the completed
+        // block untouched instead of replacing the whole subtree.
+        expect(wrapperAfter.children[0]).toBe(firstBlockNode);
+        expect(wrapperAfter.children[1].innerHTML).toBe("<p>World</p>");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("scopes table-wrap post-processing to the block containing the table, not the whole bubble", async () => {
+      const message = agentMessage([
+        { seq: 1, html: "<p>Intro</p>", complete: true },
+        {
+          seq: 2,
+          html: "<table><tr><td>x</td></tr></table>",
+          complete: false,
+        },
+      ]);
+      const container = mount(message);
+      try {
+        // useEffect runs asynchronously after the initial render commit.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const wrapper = container.querySelector(".markdown-content");
+        expect(wrapper.children[0].querySelector(".table-wrapper")).toBeNull();
+        expect(
+          wrapper.children[1].querySelector(".table-wrapper"),
+        ).not.toBeNull();
+      } finally {
+        unmount(container);
+      }
+    });
+  });
 } else {
   describe("ProvenanceFooter mounted behavior (mitto-rg79)", () => {
     test("passes mounted behavior tests in an isolated happy-dom process", () => {

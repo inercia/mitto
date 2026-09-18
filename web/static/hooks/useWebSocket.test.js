@@ -171,6 +171,47 @@ describe("useWebSocket.js: background stream update coalescing (mitto-mnie)", ()
   });
 });
 
+describe("useWebSocket.js: stable-block rendering (mitto-sus.4)", () => {
+  test("same-seq append mutates only the tail block's html, not a full-message rebuild", () => {
+    const idx = useWebSocketJs.indexOf("if (shouldAppend) {");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = useWebSocketJs.slice(idx, idx + 1500);
+    // Tail block is cloned from the existing block list (or seeded once via
+    // makeAgentBlock for a pre-mitto-sus.4 message), then only its own `html`
+    // is concatenated with the incoming chunk.
+    expect(snippet).toMatch(
+      /const blocks =\s*\n\s*last\.blocks && last\.blocks\.length > 0\s*\n\s*\? \[\.\.\.last\.blocks\]\s*\n\s*: \[makeAgentBlock\(last\.seq, existingHtml, false\)\];/,
+    );
+    expect(snippet).toMatch(
+      /blocks\[blocks\.length - 1\] = \{\s*\n\s*\.\.\.blocks\[blocks\.length - 1\],\s*\n\s*html: \(blocks\[blocks\.length - 1\]\.html \|\| ""\) \+ incomingHtml,\s*\n\s*\};/,
+    );
+    expect(snippet).toMatch(/html: newHtml,\s*\n\s*blocks,/);
+  });
+
+  test("a new seq seeds a fresh single-entry block list via makeAgentBlock", () => {
+    const idx = useWebSocketJs.indexOf("// New message - mark seq as seen");
+    expect(idx).toBeGreaterThan(-1);
+    const snippet = useWebSocketJs.slice(idx, idx + 400);
+    expect(snippet).toMatch(
+      /blocks: \[makeAgentBlock\(msgSeq, msg\.data\.html, false\)\],/,
+    );
+  });
+
+  test("both tail-completion sites mirror completion onto the block list via markTailBlockComplete", () => {
+    const occurrences = useWebSocketJs.match(
+      /const blocks = markTailBlockComplete\(last\);/g,
+    );
+    expect(occurrences).toHaveLength(2);
+    // Each site conditionally merges the returned blocks back onto the
+    // message alongside the existing `complete: true` transition, rather
+    // than unconditionally overwriting `blocks` with undefined.
+    const spreadOccurrences = useWebSocketJs.match(
+      /complete: true,\s*\n\s*\.\.\.\(blocks \? \{ blocks \} : \{\}\),/g,
+    );
+    expect(spreadOccurrences).toHaveLength(2);
+  });
+});
+
 describe("useWebSocket.js: live user_prompt provenance wiring (mitto-rg79)", () => {
   test("destructures provenance from the user_prompt WS payload", () => {
     const idx = useWebSocketJs.indexOf('case "user_prompt": {');

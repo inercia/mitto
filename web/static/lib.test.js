@@ -34,6 +34,9 @@ import {
   canReplayNamedPrompt,
   coalesceAgentMessages,
   COALESCE_DEFAULTS,
+  makeAgentBlock,
+  getMessageBlocks,
+  markTailBlockComplete,
   getMaxSeq,
   isStaleClientState,
   resolveHasMoreAfterEventsLoaded,
@@ -614,6 +617,22 @@ describe("convertEventsToMessages", () => {
     expect(result[0].complete).toBe(true);
   });
 
+  test("agent_message event seeds a single-block stable-block list (mitto-sus.4)", () => {
+    const events = [
+      {
+        type: "agent_message",
+        seq: 5,
+        data: { html: "<p>Response</p>" },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].blocks).toEqual([
+      { seq: 5, html: "<p>Response</p>", complete: true },
+    ]);
+  });
+
   test("converts agent_thought event", () => {
     const events = [
       {
@@ -1089,6 +1108,45 @@ describe("coalesceAgentMessages", () => {
     expect(result[0].customProp).toBe("value");
   });
 
+  test("builds a `blocks` array alongside the legacy `html` string (mitto-sus.4)", () => {
+    const messages = [
+      {
+        role: ROLE_AGENT,
+        html: "<p>Part 1</p>",
+        blocks: [{ seq: 1, html: "<p>Part 1</p>", complete: true }],
+        seq: 1,
+        timestamp: 1000,
+      },
+      {
+        role: ROLE_AGENT,
+        html: "<p>Part 2</p>",
+        blocks: [{ seq: 2, html: "<p>Part 2</p>", complete: false }],
+        seq: 2,
+        timestamp: 2000,
+      },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].html).toBe("<p>Part 1</p><p>Part 2</p>");
+    expect(result[0].blocks).toEqual([
+      { seq: 1, html: "<p>Part 1</p>", complete: true },
+      { seq: 2, html: "<p>Part 2</p>", complete: false },
+    ]);
+  });
+
+  test("synthesizes a single block per message when `.blocks` is absent (legacy shape)", () => {
+    const messages = [
+      { role: ROLE_AGENT, html: "<p>Part 1</p>", seq: 1, timestamp: 1000 },
+      { role: ROLE_AGENT, html: "<p>Part 2</p>", seq: 2, timestamp: 2000 },
+    ];
+    const result = coalesceAgentMessages(messages);
+    expect(result).toHaveLength(1);
+    expect(result[0].blocks).toEqual([
+      { seq: 1, html: "<p>Part 1</p>", complete: true },
+      { seq: 2, html: "<p>Part 2</p>", complete: true },
+    ]);
+  });
+
   // Tests for hrBreaksCoalescing option (EXPERIMENTAL)
   describe("with hrBreaksCoalescing option", () => {
     test("HR breaks coalescing when enabled", () => {
@@ -1242,6 +1300,87 @@ describe("coalesceAgentMessages", () => {
   test("COALESCE_DEFAULTS exists and has expected structure", () => {
     expect(COALESCE_DEFAULTS).toBeDefined();
     expect(typeof COALESCE_DEFAULTS.hrBreaksCoalescing).toBe("boolean");
+  });
+});
+
+// =============================================================================
+// Stable-block rendering helpers (mitto-sus.4)
+// =============================================================================
+
+describe("makeAgentBlock", () => {
+  test("builds a block with the given seq/html/complete", () => {
+    expect(makeAgentBlock(3, "<p>Hi</p>", true)).toEqual({
+      seq: 3,
+      html: "<p>Hi</p>",
+      complete: true,
+    });
+  });
+
+  test("defaults complete to false and normalizes nullish seq/html", () => {
+    expect(makeAgentBlock(undefined, undefined)).toEqual({
+      seq: null,
+      html: "",
+      complete: false,
+    });
+  });
+});
+
+describe("getMessageBlocks", () => {
+  test("returns the existing `.blocks` array unchanged when present", () => {
+    const blocks = [{ seq: 1, html: "<p>A</p>", complete: true }];
+    const msg = { blocks, html: "<p>A</p>", seq: 1, complete: true };
+    expect(getMessageBlocks(msg)).toBe(blocks);
+  });
+
+  test("synthesizes a single full-content block for a legacy message without `.blocks` (bounded fallback)", () => {
+    const msg = { html: "<p>Legacy</p>", seq: 9, complete: true };
+    expect(getMessageBlocks(msg)).toEqual([
+      { seq: 9, html: "<p>Legacy</p>", complete: true },
+    ]);
+  });
+
+  test("synthesizes a single block for a message with an empty `.blocks` array", () => {
+    const msg = { blocks: [], html: "<p>Empty blocks</p>", seq: 4 };
+    expect(getMessageBlocks(msg)).toEqual([
+      { seq: 4, html: "<p>Empty blocks</p>", complete: true },
+    ]);
+  });
+
+  test("defaults complete to true when the legacy message has no `.complete` field", () => {
+    const msg = { html: "<p>No complete field</p>", seq: 1 };
+    expect(getMessageBlocks(msg)[0].complete).toBe(true);
+  });
+
+  test("handles a null/undefined message without throwing", () => {
+    expect(getMessageBlocks(undefined)).toEqual([
+      { seq: null, html: "", complete: true },
+    ]);
+  });
+});
+
+describe("markTailBlockComplete", () => {
+  test("flips only the last block's `complete` flag, leaving earlier blocks untouched", () => {
+    const message = {
+      blocks: [
+        { seq: 1, html: "<p>A</p>", complete: true },
+        { seq: 2, html: "<p>B</p>", complete: false },
+      ],
+    };
+    const result = markTailBlockComplete(message);
+    expect(result).toEqual([
+      { seq: 1, html: "<p>A</p>", complete: true },
+      { seq: 2, html: "<p>B</p>", complete: true },
+    ]);
+    // Original blocks array/object is not mutated in place.
+    expect(message.blocks[1].complete).toBe(false);
+  });
+
+  test("returns undefined when the message has no block list", () => {
+    expect(markTailBlockComplete({ html: "<p>No blocks</p>" })).toBeUndefined();
+  });
+
+  test("returns undefined when the message has an empty block list", () => {
+    expect(markTailBlockComplete({ blocks: [] })).toBeUndefined();
   });
 });
 
