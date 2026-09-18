@@ -6,6 +6,12 @@
 // for the full seam catalogue and the (not yet enforced) proposed budgets.
 
 import { Page } from "@playwright/test";
+import * as fs from "fs";
+import * as path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export interface PerfEntry {
   name: string;
@@ -232,4 +238,76 @@ export async function collectDOMStats(page: Page): Promise<DOMStats> {
           : null,
     };
   });
+}
+
+// --- Baseline recording + gating (mitto-sus.1.3) ---------------------------
+//
+// `make bench-ui` runs the perf specs with PERF_RUN=1, causing writePerfSample
+// to append every recorded sample to a per-run results file. `make
+// bench-ui-baseline` additionally aggregates that run into the committed
+// `tests/ui/perf/baseline.json` (via scripts/perf-summary.mjs). Specs that
+// carry a hard budget gate (see docs/devel/ui-responsiveness-benchmarks.md
+// "Proposed budgets") read the committed baseline back via getBaselineValue
+// to compute a relative ceiling; the gate itself only runs under PERF_RUN=1,
+// so `make test-ui`'s smoke-test contract (no PERF_RUN) is unaffected.
+
+const PERF_RESULTS_ROOT = path.resolve(__dirname, "../perf/results");
+const PERF_BASELINE_PATH = path.resolve(__dirname, "../perf/baseline.json");
+
+export interface BaselineSample {
+  n?: number;
+  [metric: string]: number | undefined;
+}
+
+export interface Baseline {
+  recorded_at: string;
+  environment: Record<string, string>;
+  samples: Record<string, BaselineSample>;
+}
+
+/**
+ * Record one perf sample for the current `make bench-ui` run. No-op unless
+ * `PERF_RUN` is set, so calling this from every perf spec has zero effect on
+ * the normal `make test-ui` smoke-test path. Appends one JSON line to
+ * `tests/ui/perf/results/<PERF_RUN_ID>/samples.jsonl` (combined across specs
+ * — Playwright's perf config runs serially with a single worker, so
+ * sequential appendFileSync calls never interleave).
+ */
+export function writePerfSample(
+  scenario: string,
+  metric: string,
+  value: number,
+  meta?: Record<string, unknown>,
+): void {
+  if (!process.env.PERF_RUN) return;
+  const runId = process.env.PERF_RUN_ID || "adhoc";
+  const runDir = path.join(PERF_RESULTS_ROOT, runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  const line = JSON.stringify({
+    scenario,
+    metric,
+    value,
+    ...(meta ? { meta } : {}),
+    ts: new Date().toISOString(),
+  });
+  fs.appendFileSync(path.join(runDir, "samples.jsonl"), line + "\n");
+}
+
+/** Reads the committed `tests/ui/perf/baseline.json`, or null if absent/unreadable. */
+export function loadBaseline(): Baseline | null {
+  try {
+    const raw = fs.readFileSync(PERF_BASELINE_PATH, "utf-8");
+    return JSON.parse(raw) as Baseline;
+  } catch {
+    return null;
+  }
+}
+
+/** Convenience accessor: a single (scenario, metric) value from the baseline, or null. */
+export function getBaselineValue(
+  scenario: string,
+  metric: string,
+): number | null {
+  const value = loadBaseline()?.samples?.[scenario]?.[metric];
+  return typeof value === "number" ? value : null;
 }

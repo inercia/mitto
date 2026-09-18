@@ -50,13 +50,14 @@ guard) until all three close.
   `perf-plain-short` fixture twice across independent sessions and
   asserts both runs assemble byte-identical message text (same-order
   stream chunks) and record the same `mitto.ws.chunk.applied` mark count.
-- **Pending — baseline + budget-promotion** (`mitto-sus.1.3`, blocked by
-  `.1.1` and `.1.2`): record `tests/ui/perf/baseline.json` against a
-  release-style build, add the `make bench-ui` opt-in runner target
-  (kept out of `make test-ui` / CI so ordinary regressions do not blame
-  this suite), render the baseline into a Markdown table, and walk each
-  row of the budget table below to promote it to a hard `expect()` gate,
-  a "record + report" row, or an adjusted threshold with rationale.
+- **Landed** (`mitto-sus.1.3`): the opt-in `make bench-ui` / `make
+  bench-ui-baseline` runner targets, the `writePerfSample()` /
+  `loadBaseline()` / `getBaselineValue()` helpers in `tests/ui/utils/perf.ts`,
+  `scripts/perf-summary.mjs` (aggregates per-run samples into a
+  diff-vs-baseline report or a new committed baseline), the committed
+  `tests/ui/perf/baseline.json`, its rendered table
+  [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md), and the
+  budget-promotion decisions below.
 
 ## Enabling instrumentation
 
@@ -152,32 +153,86 @@ performance.getEntriesByName("mitto.composer.keystroke-to-committed");
 window.__mittoPerfBuffer.filter((e) => e.name.startsWith("mitto."));
 ```
 
-## Environmental controls (for the eventual automated harness)
+## Environmental controls
 
-- Release-style build (`make build`), Playwright-pinned Chromium.
+- Release-style build (`make build`), Playwright-pinned Chromium
+  (`bunx playwright --version`).
 - Viewport 1440×900, `prefers-reduced-motion: reduce`.
-- Warmup: 3 discarded iterations before sampling.
-- Sample count: 30 for input-latency scenarios.
+- Warmup: 3 discarded iterations before sampling for input-latency scenarios
+  (composer keystroke, prompt send, session switch); 1 warmup + 3 samples for
+  stream/frame scenarios (chunk apply, multi-stream, mixed-content render) —
+  these are dominated by fixed fixture playback time rather than per-sample
+  noise, so a larger warmup/sample count buys little.
+- Sample count: 30 for input-latency scenarios; 3 for stream/frame scenarios.
 - Fixed RNG/cadence seed: fixtures above use a fixed 5 ms inter-chunk delay
   rather than a random seed, so no seed parameter is required yet.
 - No DevTools attached during measurement runs.
 
-## Proposed budgets (targets for review, not yet enforced as hard gates)
+### Recording a baseline
 
-| Scenario                                                    | Budget                                             |
-| ------------------------------------------------------------ | --------------------------------------------------- |
-| Keystroke → next-paint (idle composer)                       | p50 ≤ 16 ms, p95 ≤ 50 ms                            |
-| Keystroke → next-paint (during foreground stream)             | p50 ≤ 32 ms, p95 ≤ 100 ms                           |
-| Max long task during streaming                                | ≤ 100 ms (investigate anything > 200 ms)            |
-| Missed-frame rate during streaming (60 Hz baseline)           | < 5 %                                                |
-| Conversation switch click → first paint                       | ≤ 120 ms local, ≤ 300 ms incl. network fetch         |
-| `mitto.ws.chunk.received` → `mitto.ws.chunk.applied` (p95)     | ≤ 8 ms at chunk 200 of `perf-plain-long`             |
-| DOM node count per 1 000 rendered messages                   | record baseline, no hard budget yet                 |
-| Retained heap growth per 10-cycle conversation-switch loop    | < 5 MB delta (leak proxy)                            |
+```bash
+make bench-ui-baseline
+```
 
-These budgets will be reviewed and either promoted to hard `expect()`
-assertions or kept as "record + report" once `mitto-sus.1.3` records
-`baseline.json` against a release-style build.
+This builds a release-style binary (`make build` + `tailwind` +
+`build-mock-acp`), runs only `tests/ui/specs/perf/` with `PERF_RUN=1`
+(env-var contract below), aggregates the run's samples via
+`scripts/perf-summary.mjs`, and overwrites `tests/ui/perf/baseline.json` plus
+the rendered [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md)
+table. **Review the diff before committing** — `git diff
+tests/ui/perf/baseline.json docs/devel/ui-responsiveness-baseline.md` — a
+large unexplained swing usually means hardware contention during the run
+(close other apps) rather than a real regression.
+
+To check the current tree against the committed baseline **without**
+overwriting it, use `make bench-ui` instead: it runs the same suite and
+writes a diff report to `tests/ui/perf/results/latest/diff.md`.
+
+**`PERF_RUN` / `PERF_RUN_ID` env-var contract**: every perf spec calls
+`writePerfSample(scenario, metric, value, meta?)`
+(`tests/ui/utils/perf.ts`), which is a no-op unless `PERF_RUN` is set — so
+plain `make test-ui` (no `PERF_RUN`) is unaffected, byte-identical to before
+`mitto-sus.1.3`. When set, each call appends one JSON line to
+`tests/ui/perf/results/<PERF_RUN_ID>/samples.jsonl` (`PERF_RUN_ID` defaults
+to `adhoc` if unset; `make bench-ui`/`make bench-ui-baseline` always pass
+`PERF_RUN_ID=latest`). The four gated scenarios below (composer idle/during-
+stream, local session switch, `ws.chunk.received→applied`) also read
+`getBaselineValue()` under `PERF_RUN` to compute their ceiling; they no-op
+(skip the assertion) if no baseline is recorded yet.
+
+**Recorded hardware** for the committed baseline: see the "Recorded
+environment" block at the top of
+[ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md) (OS, arch,
+Playwright/Chromium versions — captured automatically by
+`scripts/perf-summary.mjs`; CPU/RAM are not currently probed
+programmatically, so note them manually in that file's environment block if
+recording on notably different hardware).
+
+**`make bench-ui` is intentionally NOT part of `make test-ui` / `test-all`
+/ `test-ci`** — hardware-dependent timing is too noisy across CI runners to
+gate ordinary regressions reliably; only the four rows below get a hard gate,
+and even those compare against a locally-recorded baseline rather than a
+CI-wide fixed number.
+
+## Proposed budgets
+
+Each row below carries a promotion decision (`mitto-sus.1.3`): **gate**
+(hard `expect()` under `PERF_RUN=1`, see the named spec), or **record-only**
+(sample is written via `writePerfSample()` for trend/context, no assertion).
+
+| # | Scenario                                                    | Budget                                             | Decision | Rationale |
+|---|--------------------------------------------------------------|-----------------------------------------------------|----------|-----------|
+| 1 | Keystroke → next-paint (idle composer)                       | p95 ≤ 50 ms (fixed)                                 | **gate** | Fundamental UX; low variance under headless Chromium. Gated on p95 only — p50 is too flake-prone. `composer-latency.spec.ts`. |
+| 2 | Keystroke → next-paint (during foreground stream)             | p95 ≤ baseline × 1.5                                | **gate** (generous) | Same fundamental, but streaming competes for the main thread — baseline-relative rather than fixed. `composer-during-stream.perf.spec.ts`. |
+| 3 | Max long task during streaming                                | ≤ 100 ms (investigate anything > 200 ms)            | record-only | Highly hardware-dependent; hard-gating would flake in CI. `composer-during-stream.perf.spec.ts` / `multi-stream.perf.spec.ts`. |
+| 4 | Missed-frame rate during streaming (60 Hz baseline)           | < 5 %                                                | record-only | `requestAnimationFrame` sampling is noisy; treated as a trend metric. `multi-stream.perf.spec.ts`. |
+| 5 | Conversation switch click → first paint                       | ≤ 120 ms local (fixed), ≤ 300 ms incl. network fetch | **gate** (local part only) | Local paint is deterministic (`session-switch-latency.spec.ts`); the network/background-stream part (`conversation-switch.perf.spec.ts`) involves mock-ACP scheduler cadence and stays record-only. |
+| 6 | `mitto.ws.chunk.received` → `mitto.ws.chunk.applied` (p95)     | ≤ baseline × 1.3                                    | **gate** | Central concern of the mitto-sus epic; must not silently regress. `ws-chunk-received-applied.spec.ts`. |
+| 7 | DOM node count per 1 000 rendered messages                   | record baseline, no hard budget yet                 | record-only | Prescribed by the bead description; DOM size varies too much with content mix to fix a number yet. `history-load.perf.spec.ts`. |
+| 8 | Retained heap growth per 10-cycle conversation-switch loop    | < 5 MB delta (leak proxy)                            | record-only (deferred) | No existing spec drives this specific 10-cycle loop yet — `collectDOMStats()`'s `usedJSHeapBytes` is recorded per history size in `history-load.perf.spec.ts` as a partial proxy, but a dedicated switch-loop harness is left to a future increment (out of scope for this measurement-foundation bead). |
+
+See [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md) for the
+current recorded numbers each gate compares against.
 
 ## Out of scope
 

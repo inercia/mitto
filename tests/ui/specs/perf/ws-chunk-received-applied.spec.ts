@@ -17,7 +17,19 @@
  * measure.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+  getBaselineValue,
+} from "../../utils/perf";
+
+// mitto-sus.1.3 row 6 ("ws.chunk.received -> ws.chunk.applied p95"):
+// promoted to a hard **gate** — central concern of the mitto-sus epic, must
+// not silently regress. Baseline-relative ceiling (1.3x recorded p95) per
+// the plan; skipped if no baseline is recorded yet.
+const RECEIVED_TO_APPLIED_P95_BASELINE_FACTOR = 1.3;
 
 test.describe("Perf: ws chunk received -> applied cost", () => {
   test.describe.configure({ mode: "serial" });
@@ -76,5 +88,17 @@ test.describe("Perf: ws chunk received -> applied cost", () => {
       `[perf] ws.chunk.received-to-applied: n=${pairedDurations.length} ` +
         `p95=${p95.toFixed(2)}ms`,
     );
+    writePerfSample("ws.chunk.received-to-applied", "p95", p95, {
+      n: pairedDurations.length,
+    });
+
+    if (process.env.PERF_RUN) {
+      const baselineP95 = getBaselineValue("ws.chunk.received-to-applied", "p95");
+      if (baselineP95 !== null) {
+        expect(p95).toBeLessThan(
+          baselineP95 * RECEIVED_TO_APPLIED_P95_BASELINE_FACTOR,
+        );
+      }
+    }
   });
 });

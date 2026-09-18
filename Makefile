@@ -1,4 +1,4 @@
-.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-sdk-contract test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-sdk-contract test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report bench-ui bench-ui-baseline test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -203,6 +203,34 @@ test-ui-debug: build tailwind build-mock-acp
 # Show Playwright test report
 test-ui-report:
 	bunx playwright show-report tests/ui/playwright-report
+
+# Opt-in UI benchmark runner (mitto-sus.1.3). NOT part of test-ui / test-all /
+# test-ci so ordinary regressions do not blame this suite (hardware-dependent
+# timing is too noisy to gate CI reliably). Runs only tests/ui/specs/perf/
+# against a release-style build, with PERF_RUN=1 so specs record samples to
+# tests/ui/perf/results/<PERF_RUN_ID>/samples.jsonl (see tests/ui/utils/perf.ts
+# writePerfSample) that scripts/perf-summary.mjs aggregates into a diff
+# against the committed tests/ui/perf/baseline.json.
+bench-ui: build tailwind build-mock-acp
+	@echo "Running UI benchmark suite (release build, PERF_RUN=1)..."
+	rm -rf tests/ui/perf/results/latest
+	PERF_RUN=1 PERF_RUN_ID=latest \
+		bunx playwright test --config=tests/ui/playwright.config.ts tests/ui/specs/perf
+	node scripts/perf-summary.mjs \
+		--results tests/ui/perf/results/latest \
+		--baseline tests/ui/perf/baseline.json \
+		--diff-out tests/ui/perf/results/latest/diff.md
+	@echo "Diff vs committed baseline: tests/ui/perf/results/latest/diff.md"
+
+# Records the current bench-ui run as the new committed baseline + regenerates
+# the rendered baseline table. Manual, review the diff before committing —
+# never wired into any other target.
+bench-ui-baseline: bench-ui
+	node scripts/perf-summary.mjs \
+		--results tests/ui/perf/results/latest \
+		--write-baseline tests/ui/perf/baseline.json \
+		--render docs/devel/ui-responsiveness-baseline.md
+	@echo "Wrote tests/ui/perf/baseline.json and docs/devel/ui-responsiveness-baseline.md. Review, then commit."
 
 # Run all tests (unit + integration + UI)
 test-all: test test-integration test-ui

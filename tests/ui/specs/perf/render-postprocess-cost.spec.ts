@@ -20,7 +20,12 @@
  * family supports investigating.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+} from "../../utils/perf";
 
 const PROCESSORS = ["tables", "mermaid", "beadsLinks"] as const;
 
@@ -76,6 +81,11 @@ test.describe("Perf: render post-processor cost", () => {
         `[perf] render.postprocess.${processor}: n=${durations.length} ` +
           `p95=${p95.toFixed(2)}ms`,
       );
+      // Record-only (mitto-sus.1.3): not one of the 8 budgeted rows —
+      // per-processor render cost signal, no gate yet.
+      writePerfSample(`render.postprocess.${processor}`, "p95", p95, {
+        n: durations.length,
+      });
     }
   });
 });

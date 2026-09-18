@@ -15,7 +15,12 @@
  * enforced) click -> first-paint budget.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+} from "../../utils/perf";
 
 test.describe("Perf: conversation switch latency under background load", () => {
   test.describe.configure({ mode: "serial" });
@@ -79,6 +84,13 @@ test.describe("Perf: conversation switch latency under background load", () => {
       `[perf] session.switch.click-to-firstPaint (under load): n=${durations.length} ` +
         `p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms`,
     );
+    // mitto-sus.1.3 row 5, network part: **record-only** — this scenario
+    // includes a live background stream (mock-ACP scheduler cadence), so
+    // unlike the local-only session-switch-latency.spec.ts it is not gated.
+    writePerfSample("session.switch.network", "p50", p50, {
+      n: durations.length,
+    });
+    writePerfSample("session.switch.network", "p95", p95);
 
     await helpers.waitForStreamingSettled(page);
   });

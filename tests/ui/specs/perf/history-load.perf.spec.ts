@@ -24,7 +24,12 @@ import * as path from "path";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
 import { execFileSync } from "child_process";
-import { enablePerf, collectDOMStats, collectFrameStats } from "../../utils/perf";
+import {
+  enablePerf,
+  collectDOMStats,
+  collectFrameStats,
+  writePerfSample,
+} from "../../utils/perf";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -114,6 +119,16 @@ test.describe("Perf: history-size load cost", () => {
           `heapBytes=${domStats.usedJSHeapBytes ?? "n/a"} ` +
           `scrollFps=${frameStats.fps.toFixed(1)} missedFrames=${frameStats.missedFrames}`,
       );
+      // mitto-sus.1.3 row 7 ("DOM node count per 1 000 rendered messages"):
+      // **record-only** per the bead description — no hard budget yet.
+      writePerfSample(`history-load.${size}`, "domNodes", domStats.domNodes);
+      if (domStats.usedJSHeapBytes !== null) {
+        writePerfSample(
+          `history-load.${size}`,
+          "usedJSHeapBytes",
+          domStats.usedJSHeapBytes,
+        );
+      }
 
       // DOM node count should not shrink as history size grows (monotonic-by-size).
       expect(domStats.domNodes).toBeGreaterThanOrEqual(prevDomNodes);

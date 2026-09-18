@@ -12,7 +12,12 @@
  * see docs/devel/ui-responsiveness-benchmarks.md.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, collectFrameStats, collectLongTasks } from "../../utils/perf";
+import {
+  enablePerf,
+  collectFrameStats,
+  collectLongTasks,
+  writePerfSample,
+} from "../../utils/perf";
 
 test.describe("Perf: foreground frame stability under multi-stream load", () => {
   test.describe.configure({ mode: "serial" });
@@ -63,6 +68,21 @@ test.describe("Perf: foreground frame stability under multi-stream load", () => 
       `[perf] foreground frame stats under multi-stream load: fps=${frameStats.fps.toFixed(1)} ` +
         `missedFrames=${frameStats.missedFrames} longestGap=${frameStats.longestGapMs.toFixed(2)}ms ` +
         `longTasks=${longTasks.count} maxLongTask=${longTasks.maxDuration.toFixed(2)}ms`,
+    );
+    // mitto-sus.1.3 rows 3 & 4 ("max long task" / "missed-frame rate during
+    // streaming"): both **record-only** — highly hardware-dependent, would
+    // flake under hard gating in CI. Reported for trend/context only.
+    writePerfSample("multi-stream.foreground-fps", "fps", frameStats.fps);
+    writePerfSample(
+      "multi-stream.foreground-fps",
+      "missedFrames",
+      frameStats.missedFrames,
+    );
+    writePerfSample(
+      "long-task.multi-stream",
+      "maxDuration",
+      longTasks.maxDuration,
+      { count: longTasks.count },
     );
 
     await helpers.waitForStreamingSettled(page);

@@ -13,7 +13,12 @@
  * enforced) budgets.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+} from "../../utils/perf";
 
 test.describe("Perf: background chunk apply cost", () => {
   test.describe.configure({ mode: "serial" });
@@ -40,6 +45,10 @@ test.describe("Perf: background chunk apply cost", () => {
     }
     // eslint-disable-next-line no-console
     console.log(`[perf] ws.chunk.applied (short): n=${marks.length}`);
+    // Record-only (mitto-sus.1.3): not one of the 8 budgeted rows itself —
+    // this scenario measures apply cadence/count, not received->applied
+    // latency (see ws-chunk-received-applied.spec.ts for the gated pair).
+    writePerfSample("ws.chunk.applied-short", "count", marks.length);
   });
 
   test("records ws.chunk.applied marks for the long (200-chunk) deterministic stream", async ({
@@ -78,5 +87,6 @@ test.describe("Perf: background chunk apply cost", () => {
     console.log(
       `[perf] ws.chunk.applied (long): n=${marks.length} p95=${p95.toFixed(2)}ms`,
     );
+    writePerfSample("ws.chunk.applied-long", "p95", p95, { n: marks.length });
   });
 });

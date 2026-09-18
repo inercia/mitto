@@ -20,7 +20,7 @@
  * see docs/devel/ui-responsiveness-benchmarks.md.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries } from "../../utils/perf";
+import { enablePerf, getPerfEntries, writePerfSample } from "../../utils/perf";
 
 // Exact concatenation of perf-plain-short.json's fixed chunk sequence.
 const EXPECTED_TEXT =
@@ -76,5 +76,8 @@ test.describe("Perf: fixture determinism across repeated runs", () => {
     console.log(
       `[perf] determinism: run1 marks=${first.appliedMarks} run2 marks=${second.appliedMarks} (equal, text matches fixture)`,
     );
+    // Record-only (mitto-sus.1.3): not one of the 8 budgeted rows — this
+    // scenario validates determinism, not a latency budget.
+    writePerfSample("determinism.applied-marks", "count", first.appliedMarks);
   });
 });

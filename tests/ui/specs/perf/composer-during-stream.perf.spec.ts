@@ -18,7 +18,16 @@ import {
   getPerfEntries,
   percentile,
   collectLongTasks,
+  writePerfSample,
+  getBaselineValue,
 } from "../../utils/perf";
+
+// mitto-sus.1.3 row 2 ("Keystroke -> next-paint, during foreground stream"):
+// promoted to a **gate (generous)** — streaming competes for the main
+// thread, so the ceiling is baseline-relative (1.5x the recorded p95)
+// rather than a fixed absolute number. Skipped if no baseline is recorded
+// yet (e.g. the very first `make bench-ui-baseline` run).
+const DURING_STREAM_P95_BASELINE_FACTOR = 1.5;
 
 test.describe("Perf: composer latency during foreground stream", () => {
   test.describe.configure({ mode: "serial" });
@@ -70,6 +79,28 @@ test.describe("Perf: composer latency during foreground stream", () => {
         `longTasks=${longTasks.count} maxLongTask=${longTasks.maxDuration.toFixed(2)}ms ` +
         `tbt=${longTasks.totalBlockingTime.toFixed(2)}ms`,
     );
+    writePerfSample("composer.keystroke-during-stream", "p50", p50, {
+      n: durations.length,
+    });
+    writePerfSample("composer.keystroke-during-stream", "p95", p95);
+    // Row 3 ("max long task during streaming") is record-only (too
+    // hardware-dependent to gate reliably) — reported here for trend/context.
+    writePerfSample(
+      "long-task.during-composer-stream",
+      "maxDuration",
+      longTasks.maxDuration,
+      { count: longTasks.count },
+    );
+
+    if (process.env.PERF_RUN) {
+      const baselineP95 = getBaselineValue(
+        "composer.keystroke-during-stream",
+        "p95",
+      );
+      if (baselineP95 !== null) {
+        expect(p95).toBeLessThan(baselineP95 * DURING_STREAM_P95_BASELINE_FACTOR);
+      }
+    }
 
     await helpers.waitForStreamingSettled(page);
   });

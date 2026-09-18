@@ -1,0 +1,111 @@
+{
+  "recorded_at": "2026-09-18T14:20:16.616Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "playwright": "^1.50.1",
+    "chromium": "Version 1.58.0"
+  },
+  "samples": {
+    "ws.chunk.applied-short": {
+      "n": 0,
+      "count": 2
+    },
+    "ws.chunk.applied-long": {
+      "n": 2,
+      "p95": 0
+    },
+    "composer.keystroke-during-stream": {
+      "n": 36,
+      "p50": 3.300000011920929,
+      "p95": 7.5999999940395355
+    },
+    "long-task.during-composer-stream": {
+      "n": 0,
+      "maxDuration": 0
+    },
+    "composer.keystroke": {
+      "n": 27,
+      "p50": 1.9000000059604645,
+      "p95": 6.300000011920929
+    },
+    "session.switch.network": {
+      "n": 1,
+      "p50": 3.0999999940395355,
+      "p95": 3.0999999940395355
+    },
+    "determinism.applied-marks": {
+      "n": 0,
+      "count": 2
+    },
+    "history-load.small": {
+      "n": 0,
+      "domNodes": 578,
+      "usedJSHeapBytes": 15200000
+    },
+    "history-load.medium": {
+      "n": 0,
+      "domNodes": 578,
+      "usedJSHeapBytes": 15200000
+    },
+    "history-load.max": {
+      "n": 0,
+      "domNodes": 578,
+      "usedJSHeapBytes": 15200000
+    },
+    "multi-stream.foreground-fps": {
+      "n": 0,
+      "fps": 120.47390841463941,
+      "missedFrames": 0
+    },
+    "long-task.multi-stream": {
+      "n": 0,
+      "maxDuration": 0
+    },
+    "prompt.sent.local-to-network": {
+      "n": 1,
+      "p50": 139.30000001192093,
+      "p95": 139.30000001192093
+    },
+    "render.postprocess.tables": {
+      "n": 3,
+      "p95": 0.09999999403953552
+    },
+    "render.postprocess.mermaid": {
+      "n": 3,
+      "p95": 0.09999999403953552
+    },
+    "render.postprocess.beadsLinks": {
+      "n": 3,
+      "p95": 0.09999999403953552
+    },
+    "session.switch.local": {
+      "n": 1,
+      "p50": 3.2999999821186066,
+      "p95": 3.2999999821186066
+    },
+    "render.postprocess.tables-mixed": {
+      "n": 39,
+      "p95": 0.09999999403953552
+    },
+    "render.postprocess.mermaid-mixed": {
+      "n": 39,
+      "p95": 3.4000000059604645
+    },
+    "render.postprocess.beadsLinks-mixed": {
+      "n": 39,
+      "p95": 0
+    },
+    "paint-layout.mixed-delta": {
+      "n": 0,
+      "styleMs": 0,
+      "layoutMs": 0,
+      "paintMs": 0,
+      "scriptingMs": 0
+    },
+    "ws.chunk.received-to-applied": {
+      "n": 1,
+      "p95": 0.19999998807907104
+    }
+  }
+}

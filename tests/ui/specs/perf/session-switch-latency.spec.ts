@@ -12,7 +12,19 @@
  * enforced) click -> first-paint budget.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+} from "../../utils/perf";
+
+// mitto-sus.1.3 row 5 ("Conversation switch click -> first paint"), local
+// part: promoted to a **gate** with a fixed absolute ceiling (no background
+// network fetch is involved when switching between two already-loaded local
+// sessions, so this is the deterministic half of row 5 — see
+// conversation-switch.perf.spec.ts for the record-only, under-load half).
+const LOCAL_SWITCH_P95_BUDGET_MS = 120;
 
 test.describe("Perf: session switch latency", () => {
   test.describe.configure({ mode: "serial" });
@@ -76,5 +88,11 @@ test.describe("Perf: session switch latency", () => {
       `[perf] session.switch.click-to-firstPaint: n=${durations.length} ` +
         `p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms`,
     );
+    writePerfSample("session.switch.local", "p50", p50, { n: durations.length });
+    writePerfSample("session.switch.local", "p95", p95);
+
+    if (process.env.PERF_RUN) {
+      expect(p95).toBeLessThan(LOCAL_SWITCH_P95_BUDGET_MS);
+    }
   });
 });

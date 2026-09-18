@@ -14,7 +14,12 @@
  * budgets.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+} from "../../utils/perf";
 
 test.describe("Perf: prompt send latency (local vs network)", () => {
   test.describe.configure({ mode: "serial" });
@@ -64,5 +69,11 @@ test.describe("Perf: prompt send latency (local vs network)", () => {
       `[perf] prompt.sent.local-to-network: n=${durations.length} ` +
         `p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms`,
     );
+    // Record-only (mitto-sus.1.3): not one of the 8 budgeted rows — useful
+    // baseline signal for the "separates local from network" AC, no gate yet.
+    writePerfSample("prompt.sent.local-to-network", "p50", p50, {
+      n: durations.length,
+    });
+    writePerfSample("prompt.sent.local-to-network", "p95", p95);
   });
 });

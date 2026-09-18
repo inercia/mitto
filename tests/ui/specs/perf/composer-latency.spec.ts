@@ -15,7 +15,19 @@
  * re-deriving how to enable and drain the perf buffer.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
-import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+import {
+  enablePerf,
+  getPerfEntries,
+  percentile,
+  writePerfSample,
+} from "../../utils/perf";
+
+// mitto-sus.1.3 row 1 ("Keystroke -> next-paint, idle composer"): promoted
+// to a hard **gate** on p95 only (p50 is too flake-prone under headless
+// Chromium). Fixed absolute ceiling from
+// docs/devel/ui-responsiveness-benchmarks.md "Proposed budgets" — low
+// variance for this scenario means a baseline-relative ceiling isn't needed.
+const IDLE_P95_BUDGET_MS = 50;
 
 test.describe("Perf: composer keystroke latency", () => {
   test.describe.configure({ mode: "serial" });
@@ -61,6 +73,14 @@ test.describe("Perf: composer keystroke latency", () => {
       `[perf] composer.keystroke-to-committed: n=${durations.length} ` +
         `p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms`,
     );
+    writePerfSample("composer.keystroke", "p50", p50, { n: durations.length });
+    writePerfSample("composer.keystroke", "p95", p95);
+
+    // Only enforced under `make bench-ui` (PERF_RUN=1); make test-ui's
+    // smoke-test contract (no PERF_RUN) is unaffected.
+    if (process.env.PERF_RUN) {
+      expect(p95).toBeLessThan(IDLE_P95_BUDGET_MS);
+    }
   });
 
   test("records no marks when perf instrumentation is not enabled", async ({

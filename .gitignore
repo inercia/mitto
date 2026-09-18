@@ -143,6 +143,11 @@ debug
 # -----------------------------------------------------------------------------
 tests/ui/test-results/
 
+# `make bench-ui` per-run samples/diffs (mitto-sus.1.3). Transient — only
+# tests/ui/perf/baseline.json and docs/devel/ui-responsiveness-baseline.md
+# (written by `make bench-ui-baseline`) are tracked.
+tests/ui/perf/results/
+
 # Smoke test build artifacts
 tests/smoke/.build/
 /mitto-app

@@ -17,6 +17,7 @@ import {
   getPerfEntries,
   percentile,
   collectPaintLayoutStats,
+  writePerfSample,
 } from "../../utils/perf";
 
 const PROCESSORS = ["tables", "mermaid", "beadsLinks"] as const;
@@ -62,6 +63,11 @@ test.describe("Perf: mixed-content stream cost", () => {
       console.log(
         `[perf] render.postprocess.${processor} (mixed): n=${measures.length} p95=${p95.toFixed(2)}ms`,
       );
+      // Record-only (mitto-sus.1.3): same seam as render-postprocess-cost.spec.ts
+      // but under mixed-content load; distinct scenario key to keep them apart.
+      writePerfSample(`render.postprocess.${processor}-mixed`, "p95", p95, {
+        n: measures.length,
+      });
     }
 
     const after = await collectPaintLayoutStats(page);
@@ -72,6 +78,14 @@ test.describe("Perf: mixed-content stream cost", () => {
           `layout=${(after.layoutMs - before.layoutMs).toFixed(2)}ms ` +
           `paint=${(after.paintMs - before.paintMs).toFixed(2)}ms ` +
           `scripting=${(after.scriptingMs - before.scriptingMs).toFixed(2)}ms`,
+      );
+      writePerfSample("paint-layout.mixed-delta", "styleMs", after.styleMs - before.styleMs);
+      writePerfSample("paint-layout.mixed-delta", "layoutMs", after.layoutMs - before.layoutMs);
+      writePerfSample("paint-layout.mixed-delta", "paintMs", after.paintMs - before.paintMs);
+      writePerfSample(
+        "paint-layout.mixed-delta",
+        "scriptingMs",
+        after.scriptingMs - before.scriptingMs,
       );
     } else {
       // eslint-disable-next-line no-console
