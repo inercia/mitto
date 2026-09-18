@@ -36,6 +36,12 @@ import {
   formatLoopMaxDuration,
   computeHeaderTriggerLabel,
 } from "./lib.js";
+import { installPerfBuffer } from "./utils/perfMarks.js";
+
+// mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
+// unless `?perf=1` / `window.__mittoPerf` is set (see utils/perfMarks.js);
+// module-scope so the mark buffer exists before the first render.
+installPerfBuffer();
 
 // Import session tree utilities
 import {

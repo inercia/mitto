@@ -1,0 +1,26 @@
+{
+  "scenario": "perf-plain-short",
+  "description": "Deterministic short plain-text streaming response for the UI responsiveness benchmark suite (mitto-sus.1). Fixed chunk count/cadence so per-chunk apply cost and frame stats are reproducible across runs.",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)perf plain short"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 5,
+          "chunks": [
+            "This is a short, ",
+            "deterministic streaming ",
+            "response used to benchmark ",
+            "plain-text chunk apply cost ",
+            "and frame stability during ",
+            "a brief agent turn."
+          ]
+        }
+      ]
+    }
+  ]
+}

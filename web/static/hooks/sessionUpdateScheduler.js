@@ -2,6 +2,8 @@
 // Active conversations stay immediate; callers can force terminal updates to
 // consume queued chunks first so completion/error state remains authoritative.
 
+import { perfMark } from "../utils/perfMarks.js";
+
 export const BACKGROUND_SESSION_UPDATE_DELAY_MS = 100;
 
 export function sessionWasStreaming(session, hadPendingContent) {
@@ -31,6 +33,9 @@ export function createSessionUpdateScheduler({
 
   const applyUpdates = (updates, finalUpdate) => {
     if (updates.length === 0 && !finalUpdate) return;
+    // mitto-sus.1: per-chunk apply-cost benchmark seam (no-op unless perf
+    // instrumentation is enabled — see utils/perfMarks.js).
+    perfMark("ws.chunk.applied", { count: updates.length });
     setSessions((prev) => {
       const queuedResult = updates.reduce(
         (next, item) => item.update(next),

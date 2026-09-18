@@ -17,6 +17,7 @@ import { getSdkClient } from "../utils/sdkClient.js";
 import { errorMessage } from "../utils/sdkErrors.js";
 import { getContextWindowSize } from "../utils/models.js";
 import { routeDroppedPaths } from "../utils/paths.js";
+import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import {
   getPromptSortMode,
   getUIPromptPanelHeight,
@@ -1027,8 +1028,21 @@ export function ChatInput({
   };
 
   const handleInput = (e) => {
+    // mitto-sus.1: input-latency benchmark seam. Marks are no-ops unless
+    // perf instrumentation is enabled (see utils/perfMarks.js).
+    perfMark("composer.keystroke");
     const newValue = e.target.value;
     setText(newValue);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        perfMark("composer.committed");
+        perfMeasure(
+          "composer.keystroke-to-committed",
+          "composer.keystroke",
+          "composer.committed",
+        );
+      });
+    }
     const textarea = e.target;
     textarea.style.height = "auto";
     textarea.style.height =
