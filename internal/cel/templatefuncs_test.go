@@ -2921,3 +2921,151 @@ func TestBuildTemplateFuncMap_ArgsMap(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// HasStandingBeadsGuidance (mitto-2kw)
+// =============================================================================
+
+// writeStandingFile writes name (workspace-root-relative) under dir with the
+// given content, creating any parent directories.
+func writeStandingFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const standingBothMarkers = "Run `bd ready --exclude-label in-flight` to find work.\n" +
+	"Use `bd remember` for persistent knowledge.\n"
+
+// TestParity_HasStandingBeadsGuidance walks the documented present / absent /
+// partial-marker / oversize / non-canonical-filename / empty-folder / cache
+// cases, asserting the Go helper and the CEL macro rewrite
+// (HasStandingBeadsGuidance() -> __mitto_hasStandingBeadsGuidance(Workspace.Folder))
+// agree at every step (mirrors the TestParity_GitHelpers pattern).
+func TestParity_HasStandingBeadsGuidance(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	check := func(label, folder string, want bool) {
+		t.Helper()
+		ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: folder}}
+		goResult := hasStandingBeadsGuidance(folder)
+		celResult := evalCEL(t, e, "HasStandingBeadsGuidance()", ctx)
+		if goResult != celResult {
+			t.Errorf("%s: parity failure go=%v cel=%v", label, goResult, celResult)
+		}
+		if goResult != want {
+			t.Errorf("%s: got=%v want=%v", label, goResult, want)
+		}
+	}
+
+	t.Run("both markers present in AGENTS.md", func(t *testing.T) {
+		dir := t.TempDir()
+		writeStandingFile(t, dir, "AGENTS.md", standingBothMarkers)
+		check("AGENTS.md both markers", dir, true)
+	})
+
+	t.Run("empty folder is not present (fail-open false)", func(t *testing.T) {
+		check("empty folder string", "", false)
+	})
+
+	t.Run("no standing files at all", func(t *testing.T) {
+		dir := t.TempDir()
+		check("no files", dir, false)
+	})
+
+	t.Run("only one of the two required markers", func(t *testing.T) {
+		dir := t.TempDir()
+		writeStandingFile(t, dir, "AGENTS.md", "Run `bd ready --exclude-label in-flight` to find work.\n")
+		check("only exclude-label marker", dir, false)
+
+		dir2 := t.TempDir()
+		writeStandingFile(t, dir2, "AGENTS.md", "Use `bd remember` for persistent knowledge.\n")
+		check("only bd remember marker", dir2, false)
+	})
+
+	t.Run("markers present but in a non-canonical filename", func(t *testing.T) {
+		dir := t.TempDir()
+		writeStandingFile(t, dir, "README.md", standingBothMarkers)
+		check("README.md not scanned", dir, false)
+	})
+
+	t.Run("second canonical file matches when the first is absent", func(t *testing.T) {
+		dir := t.TempDir()
+		writeStandingFile(t, dir, "CLAUDE.md", standingBothMarkers)
+		check("CLAUDE.md fallback", dir, true)
+	})
+
+	t.Run("case-insensitive marker match", func(t *testing.T) {
+		dir := t.TempDir()
+		writeStandingFile(t, dir, "AGENTS.md", strings.ToUpper(standingBothMarkers))
+		check("uppercased markers", dir, true)
+	})
+
+	t.Run("oversize file treated as absent (fail-open)", func(t *testing.T) {
+		dir := t.TempDir()
+		padding := strings.Repeat("x", standingBeadsGuidanceMaxBytes+1)
+		writeStandingFile(t, dir, "AGENTS.md", standingBothMarkers+padding)
+		check("oversize AGENTS.md", dir, false)
+	})
+
+	t.Run("directory named AGENTS.md is skipped, not a false match", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "AGENTS.md"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		check("AGENTS.md is a directory", dir, false)
+	})
+}
+
+// TestHasStandingBeadsGuidance_Cache verifies the 2s memoisation: a file
+// written AFTER the first (cached) lookup is not observed until the TTL
+// expires, and IS observed once the cache entry ages out.
+func TestHasStandingBeadsGuidance_Cache(t *testing.T) {
+	dir := t.TempDir()
+
+	if hasStandingBeadsGuidance(dir) {
+		t.Fatalf("expected false before any standing file exists")
+	}
+	writeStandingFile(t, dir, "AGENTS.md", standingBothMarkers)
+	if hasStandingBeadsGuidance(dir) {
+		t.Fatalf("expected still-cached false immediately after write (within TTL)")
+	}
+	time.Sleep(standingBeadsGuidanceCacheTTL + 50*time.Millisecond)
+	if !hasStandingBeadsGuidance(dir) {
+		t.Fatalf("expected true after cache TTL expired")
+	}
+}
+
+// TestBuildTemplateFuncMap_HasStandingBeadsGuidanceRenderSmoke verifies the
+// template-func path (used inside beads-track-tasks.yaml's text: body)
+// renders correctly and agrees with the direct helper call.
+func TestBuildTemplateFuncMap_HasStandingBeadsGuidanceRenderSmoke(t *testing.T) {
+	dir := t.TempDir()
+	writeStandingFile(t, dir, "AGENTS.md", standingBothMarkers)
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	got, err := RenderPromptTemplate("t", `{{ if HasStandingBeadsGuidance }}shrunk{{ else }}full{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got != "shrunk" {
+		t.Errorf("render = %q, want %q", got, "shrunk")
+	}
+
+	emptyCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: t.TempDir()}}
+	emptyFM := BuildTemplateFuncMap(emptyCtx)
+	got, err = RenderPromptTemplate("t", `{{ if HasStandingBeadsGuidance }}shrunk{{ else }}full{{ end }}`, emptyCtx, emptyFM)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got != "full" {
+		t.Errorf("render = %q, want %q", got, "full")
+	}
+}
