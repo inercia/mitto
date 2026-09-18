@@ -8327,6 +8327,12 @@ func loadBuiltinProcessorForTest(t *testing.T, name string) *Processor {
 // CommandExists("sh") in addition to the pre-existing bd/.beads gates, and
 // rerun only on token budget (time/message-count reruns removed to avoid
 // repeatedly re-injecting the same index during a long conversation).
+//
+// mitto-i69: `bd prime --help` confirms `--max-memories` is a supported,
+// non-retired flag (the mitto-e3ut.3 test below was wrong to assume
+// otherwise), so this processor now threads it through with a default cap of
+// 60, overridable via MITTO_BEADS_PRIME_MEMORY_LIMIT (0 = unlimited).
+// `--max-memory-chars` remains genuinely unused/retired.
 func TestBeadsPrimeProcessor_UsesShellIndexCommand(t *testing.T) {
 	proc := loadBuiltinProcessorForTest(t, "beads-prime")
 
@@ -8337,16 +8343,23 @@ func TestBeadsPrimeProcessor_UsesShellIndexCommand(t *testing.T) {
 		t.Fatalf("Args = %#v, want [-c, <script>]", proc.Args)
 	}
 	script := proc.Args[1]
-	if !strings.Contains(script, "out=$(bd --readonly prime --memories-only)") {
-		t.Errorf("script does not invoke read-only bd 1.2.2-compatible `bd --readonly prime --memories-only`:\n%s", script)
+	if !strings.Contains(script, `out=$(bd --readonly prime --memories-only --max-memories "$limit")`) {
+		t.Errorf("script does not invoke bd 1.2.2-compatible `bd --readonly prime --memories-only --max-memories \"$limit\"`:\n%s", script)
 	}
-	for _, retiredFlag := range []string{"--max-memories", "--max-memory-chars"} {
-		if strings.Contains(script, retiredFlag) {
-			t.Errorf("script still contains retired bd flag %q:\n%s", retiredFlag, script)
-		}
+	if !strings.Contains(script, `limit="${MITTO_BEADS_PRIME_MEMORY_LIMIT:-60}"`) {
+		t.Errorf("script does not default the memory cap to 60 via MITTO_BEADS_PRIME_MEMORY_LIMIT:\n%s", script)
+	}
+	if strings.Contains(script, "--max-memory-chars") {
+		t.Errorf("script still contains retired bd flag %q:\n%s", "--max-memory-chars", script)
 	}
 	if !strings.Contains(script, "n != expected") {
 		t.Errorf("script does not fail safely on a memory heading/count mismatch:\n%s", script)
+	}
+	if !strings.Contains(script, `showing [0-9]+ of [0-9]+, alphabetical`) {
+		t.Errorf("script does not recognize bd's capped-heading shape (showing K of TOTAL, alphabetical):\n%s", script)
+	}
+	if !strings.Contains(script, "total > expected") {
+		t.Errorf("script does not emit a truncation notice when memories are elided:\n%s", script)
 	}
 
 	if !strings.Contains(proc.EnabledWhen, `CommandExists("sh")`) || !strings.Contains(proc.EnabledWhen, `CommandExists("awk")`) {
@@ -8433,16 +8446,18 @@ func TestBeadsPrimeProcessor_ShellScriptSmoke(t *testing.T) {
 	}
 }
 
-// TestBeadsPrimeProcessor_Bd122CompatibleInvocation reproduces mitto-e3ut.3:
-// bd 1.2.2 accepts the global `--readonly` flag plus `prime --memories-only`
-// but rejects the retired memory-cap flags. No other arguments may be passed.
+// TestBeadsPrimeProcessor_Bd122CompatibleInvocation reproduces mitto-e3ut.3's
+// bd-1.2.2-compatibility gate, updated for mitto-i69: `bd prime --help`
+// confirms `--max-memories` IS a supported flag (not retired as previously
+// assumed), so the processor now invokes `--readonly prime --memories-only
+// --max-memories <limit>` — exactly 5 args, with the default limit of 60.
 func TestBeadsPrimeProcessor_Bd122CompatibleInvocation(t *testing.T) {
 	proc := loadBuiltinProcessorForTest(t, "beads-prime")
 
 	binDir := t.TempDir()
 	fakeBd := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
-		"if [ \"$#\" -ne 3 ] || [ \"$1\" != \"--readonly\" ] || [ \"$2\" != \"prime\" ] || [ \"$3\" != \"--memories-only\" ]; then\n" +
+		"if [ \"$#\" -ne 5 ] || [ \"$1\" != \"--readonly\" ] || [ \"$2\" != \"prime\" ] || [ \"$3\" != \"--memories-only\" ] || [ \"$4\" != \"--max-memories\" ] || [ \"$5\" != \"60\" ]; then\n" +
 		"  printf 'Error: unexpected bd invocation\\n' >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
@@ -8616,6 +8631,153 @@ func TestBeadsPrimeProcessor_ShellScriptRejectsBadSource(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBeadsPrimeProcessor_CapsMemoriesAtLimit reproduces mitto-i69's
+// above-cap case: when `bd` reports its capped heading shape (`showing K of
+// TOTAL, alphabetical`), the awk parser must render exactly the K rendered
+// keys plus a one-line truncation notice naming the TOTAL-K omitted count and
+// the existing `bd memories`/`bd recall` on-demand lookup commands.
+func TestBeadsPrimeProcessor_CapsMemoriesAtLimit(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"cat <<'EOF'\n" +
+		"## Persistent Memories (showing 3 of 10, alphabetical)\n\n" +
+		"### key-a\nbody a\n\n" +
+		"### key-b\nbody b\n\n" +
+		"### key-c\nbody c\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, key := range []string{"key-a", "key-b", "key-c"} {
+		if !strings.Contains(output.Text, key) {
+			t.Errorf("index missing key %q:\n%s", key, output.Text)
+		}
+	}
+	if !strings.Contains(output.Text, "...and 7 more memories not shown") {
+		t.Errorf("index missing truncation notice for the 7 elided memories:\n%s", output.Text)
+	}
+	if !strings.Contains(output.Text, "bd memories <keyword>") || !strings.Contains(output.Text, "bd recall <key>") {
+		t.Errorf("truncation notice missing on-demand lookup instructions:\n%s", output.Text)
+	}
+}
+
+// TestBeadsPrimeProcessor_EnvOverridesLimit reproduces mitto-i69's env
+// override: MITTO_BEADS_PRIME_MEMORY_LIMIT must replace the default cap of
+// 60 in the `--max-memories` argument passed to `bd`.
+func TestBeadsPrimeProcessor_EnvOverridesLimit(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	invocationPath := filepath.Join(binDir, "invocation")
+	fakeBd := fmt.Sprintf("#!/bin/sh\n"+
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n"+
+		"printf '%%s\\n' \"$*\" > %q\n"+
+		"printf '## Persistent Memories (1)\\n\\n### only-key\\nbody\\n'\n", invocationPath)
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("MITTO_BEADS_PRIME_MEMORY_LIMIT", "2")
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(output.Text, "only-key") {
+		t.Errorf("index missing only-key:\n%s", output.Text)
+	}
+	invocation, err := os.ReadFile(invocationPath)
+	if err != nil {
+		t.Fatalf("ReadFile(invocation) error = %v", err)
+	}
+	if got := strings.TrimSpace(string(invocation)); got != "--readonly prime --memories-only --max-memories 2" {
+		t.Errorf("bd invocation = %q, want the env override (2) forwarded as --max-memories", got)
+	}
+}
+
+// TestBeadsPrimeProcessor_LimitZeroIsUnlimited reproduces mitto-i69's
+// documented escape hatch: MITTO_BEADS_PRIME_MEMORY_LIMIT=0 must forward
+// `--max-memories 0` to `bd` (bd's own contract for "unlimited"), and a full,
+// uncapped corpus must render with no truncation notice.
+func TestBeadsPrimeProcessor_LimitZeroIsUnlimited(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	invocationPath := filepath.Join(binDir, "invocation")
+	fakeBd := fmt.Sprintf("#!/bin/sh\n"+
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n"+
+		"printf '%%s\\n' \"$*\" > %q\n"+
+		"printf '## Persistent Memories (5)\\n\\n### k1\\nb\\n\\n### k2\\nb\\n\\n### k3\\nb\\n\\n### k4\\nb\\n\\n### k5\\nb\\n'\n", invocationPath)
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("MITTO_BEADS_PRIME_MEMORY_LIMIT", "0")
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, key := range []string{"k1", "k2", "k3", "k4", "k5"} {
+		if !strings.Contains(output.Text, key) {
+			t.Errorf("index missing key %q:\n%s", key, output.Text)
+		}
+	}
+	if strings.Contains(output.Text, "more memories not shown") {
+		t.Errorf("unlimited index should not contain a truncation notice:\n%s", output.Text)
+	}
+	invocation, err := os.ReadFile(invocationPath)
+	if err != nil {
+		t.Fatalf("ReadFile(invocation) error = %v", err)
+	}
+	if got := strings.TrimSpace(string(invocation)); got != "--readonly prime --memories-only --max-memories 0" {
+		t.Errorf("bd invocation = %q, want the unlimited override (0) forwarded as --max-memories", got)
+	}
+}
+
+// TestBeadsPrimeProcessor_BelowCapHasNoTruncationNotice reproduces mitto-i69's
+// below-cap case: when the corpus is smaller than the cap, `bd` emits its
+// plain unbounded heading (no "showing K of TOTAL"), and the rendered index
+// must contain every key with no truncation notice.
+func TestBeadsPrimeProcessor_BelowCapHasNoTruncationNotice(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"printf '## Persistent Memories (3)\\n\\n### only-a\\nbody\\n\\n### only-b\\nbody\\n\\n### only-c\\nbody\\n'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, key := range []string{"only-a", "only-b", "only-c"} {
+		if !strings.Contains(output.Text, key) {
+			t.Errorf("index missing key %q:\n%s", key, output.Text)
+		}
+	}
+	if strings.Contains(output.Text, "more memories not shown") {
+		t.Errorf("below-cap index should not contain a truncation notice:\n%s", output.Text)
 	}
 }
 
