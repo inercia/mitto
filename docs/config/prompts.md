@@ -1988,6 +1988,7 @@ only runs in workspaces that actually have a beads database.
 | `BeadHasStatus` | `BeadHasStatus "id" "deferred"` | `true` iff bead `id` has any requested comma-separated status.                               |
 | `BeadIsOpen`    | `BeadIsOpen "id"`                | `true` iff bead `id` is not closed.                                                          |
 | `BeadMetadata`  | `BeadMetadata "id" "key"`        | String value of bead `id`'s `metadata[key]`, or `""`.                                        |
+| `HasStandingBeadsGuidance` | `HasStandingBeadsGuidance`  | Zero-arg. `true` iff a canonical agent-instructions file at the workspace root (`AGENTS.md`, `AGENT.md`, `CLAUDE.md`, `CLAUDE.local.md`, `CONVENTIONS.md`, `GEMINI.md`) already carries the standing Beads workflow markers (`bd ready --exclude-label in-flight` AND `bd remember`, case-insensitive). Fail-open (missing / oversize > 256 KB / I/O error → `false`), memoised 2 s per folder. Does not shell out to `bd`. Used by the builtin `beads-track-tasks` / `beads-ready-tasks` processors to shrink or suppress themselves when the workspace already documents the same guidance (mitto-2kw). |
 
 **Models, tools and other prompts**
 
