@@ -675,12 +675,14 @@ func responseUsesCaptureTemplate(resp *Response) bool {
 	return false
 }
 
-// expandCaptures replaces "${N}" placeholders (N >= 1) in s with the
+// expandCaptures replaces "${N}" placeholders (N >= 0) in s with the
 // corresponding regex capture group from submatches (submatches[0] is the
 // full match, submatches[N] is capture group N). A placeholder referencing a
-// missing or out-of-range group expands to "". Only the "${N}" form is
-// recognized (no bare "$N") so literal '$' characters in fixture text are
-// left untouched. A nil/empty submatches leaves s unchanged (mitto-3od.6).
+// missing or out-of-range group (N >= len(submatches)) is left untouched as
+// literal text, since it fails the substitution guard and falls through to
+// per-byte copying. Only the "${N}" form is recognized (no bare "$N") so
+// literal '$' characters in fixture text are left untouched. A nil/empty
+// submatches leaves s unchanged (mitto-3od.6).
 func expandCaptures(s string, submatches []string) string {
 	if len(submatches) == 0 || !strings.Contains(s, "${") {
 		return s
