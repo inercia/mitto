@@ -25,7 +25,11 @@ import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 import { preloadBeadsIssues } from "../utils/beadsPreload.js";
 import { describeProvenance } from "../utils/promptProvenance.js";
-import { perfMark, perfMeasure } from "../utils/perfMarks.js";
+import {
+  processTables,
+  processMermaid,
+  processBeadsLinks,
+} from "../utils/messagePostProcessors.js";
 
 /**
  * Compute human-readable text for a session_change system message.
@@ -255,68 +259,52 @@ function NamedPromptPill({ message }) {
  */
 function AgentMessageBlock({ htmlContent }) {
   const blockRef = useRef(null);
+  // mitto-sus.5: tracks the htmlContent this block last ran the three
+  // processors against, and the workingDir that run used. The streaming tail
+  // block's htmlContent changes on every chunk so Effect A below cannot
+  // avoid re-running via its dependency array alone; this ref lets it bail
+  // out (instead of re-scanning the whole subtree) on the rare re-render
+  // that leaves htmlContent unchanged, and lets Effect B's listener reuse
+  // the same workingDir without re-reading it from `window` on every event.
+  const lastProcessedRef = useRef(null);
+  const workingDirRef = useRef("");
+
+  // Effect A: run the three idempotent processors whenever this block's own
+  // content changes. Each processor's own DOM marker (table-wrapper class,
+  // data-mermaid-processed attribute, beads-link ancestor check) makes a
+  // second call against unchanged content a no-op, so this only needs to
+  // avoid the redundant *call* when htmlContent itself hasn't changed.
   useEffect(() => {
-    if (blockRef.current) {
-      // mitto-sus.1.1: per-message render post-processor cost seams,
-      // now attributed per-block rather than per-whole-bubble.
-      perfMark("render.postprocess.tables.start");
-      const tables = blockRef.current.querySelectorAll(
-        "table:not(.table-wrapper table)",
-      );
-      tables.forEach((table) => {
-        if (table.parentElement?.classList.contains("table-wrapper")) {
-          return;
-        }
-        const wrapper = document.createElement("div");
-        wrapper.className = "table-wrapper";
-        table.parentNode.insertBefore(wrapper, table);
-        wrapper.appendChild(table);
-      });
-      perfMark("render.postprocess.tables.end");
-      perfMeasure(
-        "render.postprocess.tables",
-        "render.postprocess.tables.start",
-        "render.postprocess.tables.end",
-      );
+    if (!blockRef.current) return;
+    if (lastProcessedRef.current === htmlContent) return;
+    lastProcessedRef.current = htmlContent;
 
-      // Render mermaid diagrams
-      perfMark("render.postprocess.mermaid.start");
-      if (typeof window.renderMermaidDiagrams === "function") {
-        window.renderMermaidDiagrams(blockRef.current);
-      }
-      perfMark("render.postprocess.mermaid.end");
-      perfMeasure(
-        "render.postprocess.mermaid",
-        "render.postprocess.mermaid.start",
-        "render.postprocess.mermaid.end",
-      );
+    // mitto-sus.1.1 / mitto-sus.5: per-message render post-processor cost
+    // seams, attributed per-block and delegated to shared idempotent
+    // processors (web/static/utils/messagePostProcessors.js).
+    processTables(blockRef.current);
+    processMermaid(blockRef.current);
 
-      // Linkify beads IDs and warm the show:<id> cache slot for each new link.
-      perfMark("render.postprocess.beadsLinks.start");
-      const workingDir = window.mittoCurrentWorkspace || "";
-      const { ids, meta } = getBeadsKnownIds(workingDir);
-      const linkified = linkifyBeadsRefs(blockRef.current, ids, meta);
-      preloadBeadsIssues(linkified, workingDir);
-      perfMark("render.postprocess.beadsLinks.end");
-      perfMeasure(
-        "render.postprocess.beadsLinks",
-        "render.postprocess.beadsLinks.start",
-        "render.postprocess.beadsLinks.end",
-      );
-    }
+    const workingDir = window.mittoCurrentWorkspace || "";
+    workingDirRef.current = workingDir;
+    processBeadsLinks(blockRef.current, workingDir);
+  }, [htmlContent]);
 
+  // Effect B: register the beads-ids-updated listener once per block
+  // lifetime instead of tearing it down and re-registering it on every
+  // chunk (it used to live inside Effect A above, keyed on htmlContent).
+  // The handler reads blockRef/workingDirRef at fire time, so it stays
+  // correct even though it was registered before the block's first content
+  // landed.
+  useEffect(() => {
     const onBeadsUpdated = () => {
-      if (blockRef.current) {
-        const workingDir = window.mittoCurrentWorkspace || "";
-        const { ids, meta } = getBeadsKnownIds(workingDir);
-        const linkified = linkifyBeadsRefs(blockRef.current, ids, meta);
-        preloadBeadsIssues(linkified, workingDir);
-      }
+      if (!blockRef.current) return;
+      processBeadsLinks(blockRef.current, workingDirRef.current);
     };
     window.addEventListener("beads-ids-updated", onBeadsUpdated);
     return () =>
       window.removeEventListener("beads-ids-updated", onBeadsUpdated);
-  }, [htmlContent]);
+  }, []);
 
   return html`<span
     ref=${blockRef}

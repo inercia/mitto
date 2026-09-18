@@ -284,6 +284,12 @@ async function renderMermaidInContainer(container) {
 
   // Process each mermaid block
   for (const block of mermaidBlocks) {
+    // mitto-sus.5: the container (an AgentMessageBlock's DOM node) may have
+    // unmounted while an earlier iteration of this loop was awaiting
+    // mermaid.render() below (e.g. the streaming message finished and
+    // Preact's keyed diff dropped the block). Bail before doing any more
+    // work against a detached subtree.
+    if (!container.isConnected) return;
     try {
       // Get the diagram definition
       const diagramDef = block.textContent || "";
@@ -314,6 +320,10 @@ async function renderMermaidInContainer(container) {
           window.mermaidSvgCache.delete(firstKey);
         }
       }
+
+      // The await above may have outlived the container's mount; re-check
+      // before mutating a possibly-detached DOM.
+      if (!container.isConnected) return;
 
       // Create a wrapper div and insert the SVG
       const wrapper = document.createElement("div");
