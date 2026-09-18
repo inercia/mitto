@@ -8,14 +8,25 @@ later `mitto-sus.*` children).
 
 ## Status
 
-- **Landed**: the opt-in performance-mark instrumentation (`web/static/utils/perfMarks.js`)
-  and the first instrumented seams (composer keystroke, background chunk
-  apply), plus deterministic mock-ACP streaming fixtures.
-- **Pending** (tracked as the next stage of `mitto-sus.1`): the Playwright
-  benchmark harness under `tests/ui/perf/` that drives these seams/fixtures
-  end-to-end, computes the metrics below, and records `baseline.json`. Until
-  that lands, the marks below can be inspected manually (see "Manual
-  inspection" below) but there is no automated `make bench-ui` target yet.
+- **Landed**: the opt-in performance-mark instrumentation (`web/static/utils/perfMarks.js`),
+  the first instrumented seams (composer keystroke, background chunk apply),
+  deterministic mock-ACP streaming fixtures, and a first Playwright benchmark
+  harness slice under `tests/ui/specs/perf/` (`composer-latency.spec.ts`,
+  `chunk-apply-cost.spec.ts`, sharing `tests/ui/utils/perf.ts` for
+  enable/drain/percentile helpers) that exercises both instrumented seams via
+  the deterministic fixtures and runs as part of the normal `make test-ui` /
+  `npm run test:ui` suite. These specs are **smoke tests of the
+  instrumentation** (marks are recorded, durations are valid non-negative
+  numbers, p50/p95 are logged) rather than hard budget gates — see "Proposed
+  budgets" below for why enforcing them as strict `expect()` assertions is
+  deferred.
+- **Pending** (tracked as follow-up `mitto-sus.*` work): additional seams
+  (`mitto.ws.chunk.received`, `mitto.session.switch.*`,
+  `mitto.render.postprocess.*`), the remaining scenario fixtures (history
+  sizes, multi-stream, mixed-content), a recorded `baseline.json`, and
+  promoting the budget table below to enforced assertions once real baseline
+  numbers exist. There is no `make bench-ui` target yet — the perf specs run
+  via the standard `make test-ui`.
 
 ## Enabling instrumentation
 

@@ -1,0 +1,82 @@
+/**
+ * UI responsiveness benchmark (mitto-sus.1): background/foreground stream
+ * chunk-apply cost.
+ *
+ * Drives the deterministic `perf-plain-short` / `perf-plain-long` mock-ACP
+ * fixtures (tests/fixtures/responses/) and validates the
+ * `mitto.ws.chunk.applied` perf marks recorded by
+ * sessionUpdateScheduler.js's `applyUpdates` seam (see
+ * web/static/utils/perfMarks.js).
+ *
+ * Smoke test of the instrumentation + fixtures, not a hard performance gate —
+ * see docs/devel/ui-responsiveness-benchmarks.md for proposed (not yet
+ * enforced) budgets.
+ */
+import { test, expect } from "../../fixtures/test-fixtures";
+import { enablePerf, getPerfEntries, percentile } from "../../utils/perf";
+
+test.describe("Perf: background chunk apply cost", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(60_000);
+
+  test("records ws.chunk.applied marks for the short deterministic stream", async ({
+    page,
+    helpers,
+  }) => {
+    await enablePerf(page);
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+    await helpers.createFreshSession(page);
+
+    await helpers.sendMessageAndWait(page, "perf plain short");
+    await helpers.waitForStreamingSettled(page);
+
+    const marks = await getPerfEntries(page, "mitto.ws.chunk.applied");
+    expect(marks.length).toBeGreaterThan(0);
+    for (const m of marks) {
+      expect(Number.isFinite(m.startTime)).toBe(true);
+      expect(Number.isFinite(m.duration)).toBe(true);
+      expect(m.duration).toBeGreaterThanOrEqual(0);
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[perf] ws.chunk.applied (short): n=${marks.length}`);
+  });
+
+  test("records ws.chunk.applied marks for the long (200-chunk) deterministic stream", async ({
+    page,
+    helpers,
+  }) => {
+    // Independent page/session (default per-test isolation).
+    await enablePerf(page);
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+    await helpers.createFreshSession(page);
+
+    await helpers.sendMessageAndWait(page, "perf plain long");
+    await helpers.waitForStreamingSettled(page);
+    const marks = await getPerfEntries(page, "mitto.ws.chunk.applied");
+
+    // NOTE: this does NOT assert marks.length scales with the fixture's raw
+    // 200-chunk count. The backend's own StreamBuffer soft-flush window
+    // coalesces rapid chunks into far fewer WebSocket deliveries before the
+    // frontend ever sees them (see waitForStreamingSettled's doc comment),
+    // so `mitto.ws.chunk.applied` — one mark per *scheduler* apply, i.e. per
+    // WS delivery for the active session — legitimately fires a similar,
+    // small number of times for both the short and long fixtures at this
+    // total streaming duration. That coalescing behavior is itself useful
+    // signal for the eventual budget work, not a bug in this seam.
+    expect(marks.length).toBeGreaterThan(0);
+    for (const m of marks) {
+      expect(Number.isFinite(m.startTime)).toBe(true);
+      expect(Number.isFinite(m.duration)).toBe(true);
+      expect(m.duration).toBeGreaterThanOrEqual(0);
+    }
+
+    const durations = marks.map((m) => m.duration);
+    const p95 = percentile(durations, 95);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perf] ws.chunk.applied (long): n=${marks.length} p95=${p95.toFixed(2)}ms`,
+    );
+  });
+});
