@@ -39,7 +39,7 @@ function parseArgs(argv) {
 }
 
 /** Reads every *.jsonl file under `resultsDir` and aggregates by (scenario, metric). */
-function aggregateResults(resultsDir) {
+export function aggregateResults(resultsDir) {
   const samples = {};
   if (!existsSync(resultsDir)) return samples;
   for (const file of readdirSync(resultsDir)) {
@@ -75,7 +75,7 @@ function aggregateResults(resultsDir) {
   return collapsed;
 }
 
-function detectEnvironment() {
+export function detectEnvironment() {
   let playwrightVersion = "unknown";
   try {
     const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
@@ -106,7 +106,7 @@ function detectEnvironment() {
   };
 }
 
-function writeDiff(current, baseline, diffOutPath) {
+export function writeDiff(current, baseline, diffOutPath) {
   const rows = [];
   const scenarios = new Set([
     ...Object.keys(current),
@@ -158,7 +158,7 @@ function writeDiff(current, baseline, diffOutPath) {
   }
 }
 
-function renderBaseline(baseline, renderPath) {
+export function renderBaseline(baseline, renderPath) {
   const lines = [];
   lines.push("# UI Responsiveness Baseline (mitto-sus.1.3)");
   lines.push("");
@@ -199,7 +199,7 @@ function renderBaseline(baseline, renderPath) {
   console.log(`wrote rendered baseline: ${renderPath}`);
 }
 
-function main() {
+export function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.results) {
     console.error("usage: perf-summary.mjs --results <dir> [--baseline <path>] " +
@@ -240,4 +240,8 @@ function main() {
   }
 }
 
-main();
+// Only run the CLI when executed directly (`node scripts/perf-summary.mjs ...`),
+// not when imported for unit testing (scripts/perf-summary.test.mjs).
+if (resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1] ?? "")) {
+  main();
+}
