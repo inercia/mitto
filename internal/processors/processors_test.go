@@ -479,6 +479,62 @@ func TestBuildCELContext_UserData(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_MissingUserDataFields asserts that BuildCELContext
+// (via hook.go's population of ctx.Workspace) derives
+// Workspace.MissingUserDataFieldCount from len(input.MissingUserDataFields),
+// and Workspace.AllUserDataResolved from
+// input.HasUserDataSchema && MissingUserDataFieldCount == 0 — including the
+// fail-closed case where there is no schema at all (mitto-685).
+func TestBuildCELContext_MissingUserDataFields(t *testing.T) {
+	tests := []struct {
+		name             string
+		hasSchema        bool
+		missing          []string
+		wantMissingCount int
+		wantAllResolved  bool
+	}{
+		{
+			name:             "schema with unresolved fields",
+			hasSchema:        true,
+			missing:          []string{"JIRA Ticket", "Branch"},
+			wantMissingCount: 2,
+			wantAllResolved:  false,
+		},
+		{
+			name:             "schema with every field already resolved",
+			hasSchema:        true,
+			missing:          nil,
+			wantMissingCount: 0,
+			wantAllResolved:  true,
+		},
+		{
+			name:             "no schema at all: fail-closed, never 'resolved' even with zero missing",
+			hasSchema:        false,
+			missing:          nil,
+			wantMissingCount: 0,
+			wantAllResolved:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := BuildCELContext(&ProcessorInput{
+				SessionID:             "sess-mitto-685",
+				HasUserDataSchema:     tt.hasSchema,
+				MissingUserDataFields: tt.missing,
+			})
+			if ctx.Workspace.MissingUserDataFieldCount != tt.wantMissingCount {
+				t.Errorf("Workspace.MissingUserDataFieldCount = %d, want %d",
+					ctx.Workspace.MissingUserDataFieldCount, tt.wantMissingCount)
+			}
+			if ctx.Workspace.AllUserDataResolved != tt.wantAllResolved {
+				t.Errorf("Workspace.AllUserDataResolved = %v, want %v",
+					ctx.Workspace.AllUserDataResolved, tt.wantAllResolved)
+			}
+		})
+	}
+}
+
 // TestBuildCELContext_EmptyInput verifies no panics and zero values for new fields
 // when input has no ACP servers, no children, and no user-data JSON.
 func TestBuildCELContext_EmptyInput(t *testing.T) {
@@ -497,6 +553,12 @@ func TestBuildCELContext_EmptyInput(t *testing.T) {
 	}
 	if ctx.Workspace.UserDataSchemaJSON != "" {
 		t.Errorf("expected empty Workspace.UserDataSchemaJSON, got %q", ctx.Workspace.UserDataSchemaJSON)
+	}
+	if ctx.Workspace.MissingUserDataFieldCount != 0 {
+		t.Errorf("expected Workspace.MissingUserDataFieldCount=0, got %d", ctx.Workspace.MissingUserDataFieldCount)
+	}
+	if ctx.Workspace.AllUserDataResolved {
+		t.Error("expected Workspace.AllUserDataResolved=false when there is no schema")
 	}
 }
 

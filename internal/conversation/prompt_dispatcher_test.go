@@ -1515,6 +1515,99 @@ func TestPromptDispatcher_BuildProcessorInput_UserDataJSON(t *testing.T) {
 	}
 }
 
+// TestPromptDispatcher_BuildProcessorInput_MissingUserDataFields is a
+// regression test for mitto-685 ("Gate identify-user-data auxiliary
+// processor on missing work"). It exercises the real workingDir/.mittorc
+// path (not just BuildCELContext) end to end: buildProcessorInput must diff
+// the workspace's user_data schema field names against the session's
+// current userDataMap and populate MissingUserDataFields with exactly the
+// names that have no non-empty value yet, in schema order.
+func TestPromptDispatcher_BuildProcessorInput_MissingUserDataFields(t *testing.T) {
+	p := promptDispatcher{}
+
+	writeMittoRC := func(t *testing.T, dir string) {
+		t.Helper()
+		rcContent := `
+metadata:
+  user_data:
+    - name: "JIRA Ticket"
+      type: string
+    - name: "Branch"
+      type: string
+    - name: "Env"
+      type: string
+`
+		if err := os.WriteFile(filepath.Join(dir, ".mittorc"), []byte(rcContent), 0644); err != nil {
+			t.Fatalf("failed to write .mittorc: %v", err)
+		}
+	}
+
+	t.Run("some fields resolved, some missing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMittoRC(t, dir)
+
+		d := newFakePromptDeps()
+		d.workingDir = dir
+		d.userData = &session.UserData{
+			Attributes: []session.UserDataAttribute{
+				{Name: "JIRA Ticket", Value: "PROJ-1"},
+				{Name: "Branch", Value: "  "}, // whitespace-only counts as missing
+			},
+		}
+
+		input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
+		if !input.HasUserDataSchema {
+			t.Fatal("expected HasUserDataSchema=true when .mittorc defines a schema")
+		}
+		want := []string{"Branch", "Env"}
+		if len(input.MissingUserDataFields) != len(want) {
+			t.Fatalf("MissingUserDataFields = %v, want %v", input.MissingUserDataFields, want)
+		}
+		for i, name := range want {
+			if input.MissingUserDataFields[i] != name {
+				t.Errorf("MissingUserDataFields[%d] = %q, want %q", i, input.MissingUserDataFields[i], name)
+			}
+		}
+	})
+
+	t.Run("every field already resolved", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMittoRC(t, dir)
+
+		d := newFakePromptDeps()
+		d.workingDir = dir
+		d.userData = &session.UserData{
+			Attributes: []session.UserDataAttribute{
+				{Name: "JIRA Ticket", Value: "PROJ-1"},
+				{Name: "Branch", Value: "main"},
+				{Name: "Env", Value: "prod"},
+			},
+		}
+
+		input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
+		if !input.HasUserDataSchema {
+			t.Fatal("expected HasUserDataSchema=true when .mittorc defines a schema")
+		}
+		if len(input.MissingUserDataFields) != 0 {
+			t.Errorf("expected no missing fields, got %v", input.MissingUserDataFields)
+		}
+	})
+
+	t.Run("no schema at all: MissingUserDataFields stays empty", func(t *testing.T) {
+		dir := t.TempDir() // no .mittorc written
+		d := newFakePromptDeps()
+		d.workingDir = dir
+
+		input := p.buildProcessorInput(d, "msg", false, false, PromptMeta{})
+		if input.HasUserDataSchema {
+			t.Fatal("expected HasUserDataSchema=false with no .mittorc schema")
+		}
+		if len(input.MissingUserDataFields) != 0 {
+			t.Errorf("expected no missing fields when there is no schema, got %v", input.MissingUserDataFields)
+		}
+	})
+}
+
 // TestPromptDispatcher_BuildProcessorInput_ModelTagsUseIntendedModel verifies that
 // buildProcessorInput renders ModelName/ModelTags against the model the dispatch's
 // preferredModels resolves to, not the model left active by the previous turn.
