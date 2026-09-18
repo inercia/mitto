@@ -32,7 +32,10 @@ onError: skip
 
 # Only fire when beads is initialised in this workspace, and never for loop sessions
 # (they archive/unarchive frequently and would repeatedly re-scan the same history).
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !Session.IsLoop'
+# Also skip when the knowledge-router processor (knowledge-router.yaml) is enabled —
+# the router already covers this same "durable memory" destination as part of its
+# single classification pass, so running both would duplicate the LLM work (mitto-3od.3).
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !Session.IsLoop && !Prompts.IsEnabled("knowledge-router")'
 
 prompt: |
   You review a Mitto conversation that has just been archived and preserve any durable,

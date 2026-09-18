@@ -512,6 +512,14 @@ type CloseProcessorInput struct {
 	// WriteCloseRouterState both no-op on a nil store. Excluded from JSON —
 	// never sent to external command processors.
 	SessionStore *session.Store `json:"-"`
+	// PromptsSnapshotFn, when non-nil, returns a snapshot of the workspace
+	// prompt registry for the close-phase `Prompts.IsEnabled(name)` CEL
+	// predicate (mitto-3od.3) — used by the legacy memory/rules processors'
+	// enabledWhen to suppress themselves once the knowledge-router processor
+	// is enabled. Mirrors ProcessorInput.PromptsSnapshotFn. Nil is safe:
+	// BuildCELContext leaves ctx.Prompts zero-valued and the predicate
+	// fails closed (returns false). Excluded from JSON (json:"-").
+	PromptsSnapshotFn func() *config.PromptsSnapshot `json:"-"`
 }
 
 // AfterToolCallSnapshot is a lightweight snapshot of one tool call from an agent turn.

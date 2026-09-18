@@ -1786,8 +1786,35 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 
 	applied := 0
 	skipped := 0
+	errored := 0
+	startedAt := time.Now()
 
 	var pendingPrompts []pendingPromptDispatch
+
+	// summaryEntries accumulates one CloseRunProcessorEntry per processor
+	// evaluated by this pipeline, persisted as the close-run-summary.json
+	// sidecar at the end of this function (mitto-3od.3: close-run telemetry
+	// summary). record wraps m.recordRun so every existing call site keeps
+	// its exact ProcessorRun payload while also feeding the summary — local
+	// to ApplyOnClose only; the before/after pipelines have no equivalent
+	// per-close summary and keep calling m.recordRun directly.
+	var summaryEntries []session.CloseRunProcessorEntry
+	record := func(run ProcessorRun) {
+		m.recordRun(run)
+		if run.Outcome == "error" {
+			errored++
+		}
+		summaryEntries = append(summaryEntries, session.CloseRunProcessorEntry{
+			Name:            run.Name,
+			Outcome:         run.Outcome,
+			Mode:            run.Mode,
+			Target:          run.Target,
+			RenderedBytes:   run.RenderedBytes,
+			EstimatedTokens: run.EstimatedTokens,
+			SkipReason:      run.SkipReason,
+			DurationMs:      run.Duration.Milliseconds(),
+		})
+	}
 
 	m.logger.Info("close-phase processor pipeline starting",
 		"total_processors", len(m.processors),
@@ -1803,23 +1830,28 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 
 		if !proc.IsEnabled() {
 			skipped++
-			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonDisabled)})
+			record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonDisabled)})
 			m.logger.Debug("close-phase processor skipped",
 				"name", proc.Name, "reason", "disabled")
 			continue
 		}
 
 		// EnabledWhen CEL gate — reuse the same context builder used elsewhere by
-		// synthesising a minimal ProcessorInput.
+		// synthesising a minimal ProcessorInput. PromptsSnapshotFn is threaded
+		// through so `Prompts.IsEnabled(name)` (mitto-3od.3, e.g. the legacy
+		// memory/rules processors' "!Prompts.IsEnabled(\"knowledge-router\")"
+		// suppression gate) resolves against the live workspace prompt registry
+		// instead of failing closed.
 		if proc.EnabledWhen != "" {
 			procInput := &ProcessorInput{
-				SessionID:     input.SessionID,
-				WorkingDir:    input.WorkingDir,
-				WorkspaceUUID: input.WorkspaceUUID,
+				SessionID:         input.SessionID,
+				WorkingDir:        input.WorkingDir,
+				WorkspaceUUID:     input.WorkspaceUUID,
+				PromptsSnapshotFn: input.PromptsSnapshotFn,
 			}
 			if !evaluateEnabledWhen(proc, procInput, m.logger) {
 				skipped++
-				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEnabledWhen)})
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEnabledWhen)})
 				m.logger.Debug("close-phase processor skipped",
 					"name", proc.Name, "reason", "enabledWhen_false")
 				continue
@@ -1848,7 +1880,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 					"name", proc.Name, "reason", "cascaded_child_close")
 				applied--
 				skipped++
-				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonCascadedChildClose)})
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonCascadedChildClose)})
 				continue
 			}
 
@@ -1857,14 +1889,14 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 					"name", proc.Name)
 				applied--
 				skipped++
-				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonNoPromptExecutor)})
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonNoPromptExecutor)})
 				continue
 			}
 			if input.HistorySnapshotError != "" {
 				m.logger.Error("close-phase source history unavailable; prompt-mode processor not dispatched",
 					"name", proc.Name, "session_id", input.SessionID,
 					"history_error", input.HistorySnapshotError)
-				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Error: input.HistorySnapshotError})
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Error: input.HistorySnapshotError})
 				continue
 			}
 
@@ -1900,7 +1932,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 						"name", proc.Name, "session_id", input.SessionID)
 					applied--
 					skipped++
-					m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonSessionGone)})
+					record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonSessionGone)})
 					continue
 				}
 				if readErr != nil {
@@ -1916,7 +1948,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 						"name", proc.Name)
 					applied--
 					skipped++
-					m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEmptyPrompt)})
+					record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEmptyPrompt)})
 					continue
 				}
 
@@ -1948,7 +1980,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 						m.applyCloseRouterCompletion(store, sessionID, runID, completion, dispatchErr)
 					},
 				}}, true)
-				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Mode: RunModePrompt, Target: RunTargetAuxiliary, RenderedBytes: len(assembledPrompt), EstimatedTokens: EstimateTokens(assembledPrompt), RunKind: RunKindInitial})
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Mode: RunModePrompt, Target: RunTargetAuxiliary, RenderedBytes: len(assembledPrompt), EstimatedTokens: EstimateTokens(assembledPrompt), RunKind: RunKindInitial})
 				m.logger.Info("close-phase knowledge-router dispatched standalone",
 					"name", proc.Name,
 					"session_id", sessionID,
@@ -1963,7 +1995,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 					"name", proc.Name)
 				applied--
 				skipped++
-				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEmptyPrompt)})
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEmptyPrompt)})
 				continue
 			}
 			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
@@ -1971,7 +2003,7 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 				prompt:  assembledPrompt,
 				timeout: proc.GetTimeout().Duration(),
 			})
-			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Mode: RunModePrompt, Target: RunTargetAuxiliary, RenderedBytes: len(assembledPrompt), EstimatedTokens: EstimateTokens(assembledPrompt), RunKind: RunKindInitial})
+			record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Mode: RunModePrompt, Target: RunTargetAuxiliary, RenderedBytes: len(assembledPrompt), EstimatedTokens: EstimateTokens(assembledPrompt), RunKind: RunKindInitial})
 			m.logger.Info("close-phase prompt-mode processor collected for dispatch",
 				"name", proc.Name,
 				"prompt_len", len(assembledPrompt),
@@ -1986,12 +2018,12 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 		if closeErr != nil {
 			m.logger.Warn("close-phase processor execution failed",
 				"name", proc.Name, "error", closeErr)
-			m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Duration: closeExecDur, Error: closeErr.Error()})
+			record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Duration: closeExecDur, Error: closeErr.Error()})
 			continue
 		}
 		// Close-phase command processors are output:discard side-effect runs — no
 		// content is merged into any context (mitto-08q.2).
-		m.recordRun(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Duration: closeExecDur, Mode: RunModeDiscard, RunKind: RunKindInitial})
+		record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Duration: closeExecDur, Mode: RunModeDiscard, RunKind: RunKindInitial})
 	}
 
 	if len(pendingPrompts) > 0 {
@@ -2000,6 +2032,40 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 		// the durable spool when the shared process would shed a proactive
 		// aux session instead of riding out a doomed retry loop.
 		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts, true)
+	}
+
+	// mitto-3od.3: persist a best-effort close-run telemetry summary sidecar.
+	// Failures are logged, not propagated — matches the fire-and-forget
+	// tolerance of the rest of this pipeline (see applyCloseRouterCompletion's
+	// sidecar-write failure handling).
+	totalPrimary, totalAuxiliary := 0, 0
+	for _, e := range summaryEntries {
+		if e.Outcome != "ok" {
+			continue
+		}
+		switch e.Target {
+		case RunTargetPrimary:
+			totalPrimary += e.EstimatedTokens
+		case RunTargetAuxiliary:
+			totalAuxiliary += e.EstimatedTokens
+		}
+	}
+	summaryEntry := session.CloseRunSummaryEntry{
+		RunID:                   newPendingDispatchID(),
+		ArchiveReason:           input.ArchiveReason,
+		StartedAt:               startedAt.UTC().Format(time.RFC3339),
+		CompletedAt:             time.Now().UTC().Format(time.RFC3339),
+		TotalProcessors:         len(summaryEntries),
+		Applied:                 applied,
+		Skipped:                 skipped,
+		Errored:                 errored,
+		TotalEstTokensPrimary:   totalPrimary,
+		TotalEstTokensAuxiliary: totalAuxiliary,
+		Processors:              summaryEntries,
+	}
+	if werr := session.AppendCloseRunSummary(input.SessionStore, input.SessionID, summaryEntry); werr != nil && !errors.Is(werr, session.ErrSessionNotFound) {
+		m.logger.Warn("close-phase: failed to persist close-run summary",
+			"session_id", input.SessionID, "run_id", summaryEntry.RunID, "error", werr)
 	}
 
 	m.logger.Info("close-phase processor pipeline complete",

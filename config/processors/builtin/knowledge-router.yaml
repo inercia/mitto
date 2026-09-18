@@ -12,12 +12,11 @@
 # against the same immutable history snapshot never re-classifies or double-writes
 # an already-persisted finding.
 #
-# NOTE: legacy processors (memorize-preferences, extract-memories-on-close,
-# auggie-update-rules, claude-update-memory) are NOT yet suppressed when this router
-# is enabled — that gating (`enabledWhen: '!Prompts.IsEnabled("knowledge-router")'`
-# on each of them) is a separate, deferred sub-issue (mitto-3od.3). Until it lands,
-# enabling this router means findings may be classified/persisted by BOTH this
-# processor and the legacy ones.
+# NOTE: the legacy processors (memorize-preferences, extract-memories-on-close,
+# auggie-update-rules, claude-update-memory) each carry their own
+# `!Prompts.IsEnabled("knowledge-router")` enabledWhen clause (mitto-3od.3), so
+# enabling this router automatically suppresses them — findings are classified/
+# persisted by exactly one of them, never both.
 ##########################################################################################
 name: knowledge-router
 description: "Single close-phase pass that classifies durable findings from an archived conversation into exactly one destination: preferences, rules, memory, issue, or none"

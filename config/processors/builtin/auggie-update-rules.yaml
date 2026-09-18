@@ -31,8 +31,11 @@ timeout: 300s
 onError: skip
 
 # Only for Auggie sessions, skip loop conversations, and only when rules already exist
-# (initial generation already done).
-enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsLoop && DirExists(".augment/rules")'
+# (initial generation already done). Also skip when the knowledge-router processor
+# (knowledge-router.yaml) is enabled — the router already covers this same "project
+# rules" destination as part of its single classification pass, so running both would
+# duplicate the LLM work (mitto-3od.3).
+enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsLoop && DirExists(".augment/rules") && !Prompts.IsEnabled("knowledge-router")'
 
 prompt: |
   You update `.augment/rules` files for this workspace based on recent conversation insights.

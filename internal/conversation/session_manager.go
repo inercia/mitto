@@ -968,6 +968,7 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		HistorySnapshotError:  historySnapshotError,
 		ProcessorArgOverrides: procArgOverrides,
 		SessionStore:          store,
+		PromptsSnapshotFn:     sm.closePromptsSnapshot(),
 	}
 
 	// Pin the workspace so GC Tier 2/4/6 cannot tear down the shared ACP
@@ -1234,6 +1235,24 @@ func (sm *SessionManager) SetPromptsCache(cache *config.PromptsCache) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.promptsCache = cache
+}
+
+// closePromptsSnapshot returns a lazy fn that snapshots the workspace prompt
+// registry for the close-phase `Prompts.IsEnabled(name)` CEL predicate
+// (mitto-3od.3) — mirrors BackgroundSession.pdPromptsSnapshot. Returns nil
+// when no PromptsCache is wired, so processors.CloseProcessorInput carries a
+// nil PromptsSnapshotFn and evaluateEnabledWhen fails closed on Prompts.*.
+func (sm *SessionManager) closePromptsSnapshot() func() *config.PromptsSnapshot {
+	sm.mu.RLock()
+	cache := sm.promptsCache
+	sm.mu.RUnlock()
+	if cache == nil {
+		return nil
+	}
+	return func() *config.PromptsSnapshot {
+		snap := cache.NamesSnapshot()
+		return &snap
+	}
 }
 
 // SetPreferredModelsResolver sets the function used to resolve a prompt name to its preferredModels list.

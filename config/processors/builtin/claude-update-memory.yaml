@@ -31,8 +31,11 @@ timeout: 300s
 onError: skip
 
 # Only for Claude Code sessions, skip loop conversations, and only when memory files
-# already exist (initial generation already done).
-enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsLoop && (FileExists("CLAUDE.md") || DirExists(".claude"))'
+# already exist (initial generation already done). Also skip when the
+# knowledge-router processor (knowledge-router.yaml) is enabled — the router already
+# covers this same "project memory" destination as part of its single classification
+# pass, so running both would duplicate the LLM work (mitto-3od.3).
+enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsLoop && (FileExists("CLAUDE.md") || DirExists(".claude")) && !Prompts.IsEnabled("knowledge-router")'
 
 prompt: |
   You update Claude Code memory files for this workspace based on recent conversation insights.

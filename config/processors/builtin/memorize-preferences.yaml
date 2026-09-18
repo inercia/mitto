@@ -57,8 +57,11 @@ timeout: 300s
 onError: skip
 
 # Skip loop conversations (they archive/unarchive frequently and would repeatedly
-# re-scan the same history).
-enabledWhen: '!Session.IsLoop'
+# re-scan the same history). Also skip when the knowledge-router processor
+# (config/processors/builtin/knowledge-router.yaml) is enabled — the router already
+# covers this same "personal preferences" destination as part of its single
+# classification pass, so running both would duplicate the LLM work (mitto-3od.3).
+enabledWhen: '!Session.IsLoop && !Prompts.IsEnabled("knowledge-router")'
 
 parameters:
   - name: PreferencesFile
