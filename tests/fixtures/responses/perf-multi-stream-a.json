@@ -1,0 +1,60 @@
+{
+  "scenario": "perf-multi-stream-a",
+  "description": "Deterministic multi-stream a fixture (mitto-sus.1.2): 40-chunk plain-text response with a fixed 5ms inter-chunk cadence, used alongside its siblings to simulate several simultaneous background streams without trigger collisions.",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "(?i)perf multi stream a"
+      },
+      "actions": [
+        {
+          "type": "agent_message",
+          "delay_ms": 5,
+          "chunks": [
+            "chunk 001 of deterministic multi-stream a. ",
+            "chunk 002 of deterministic multi-stream a. ",
+            "chunk 003 of deterministic multi-stream a. ",
+            "chunk 004 of deterministic multi-stream a. ",
+            "chunk 005 of deterministic multi-stream a. ",
+            "chunk 006 of deterministic multi-stream a. ",
+            "chunk 007 of deterministic multi-stream a. ",
+            "chunk 008 of deterministic multi-stream a. ",
+            "chunk 009 of deterministic multi-stream a. ",
+            "chunk 010 of deterministic multi-stream a. ",
+            "chunk 011 of deterministic multi-stream a. ",
+            "chunk 012 of deterministic multi-stream a. ",
+            "chunk 013 of deterministic multi-stream a. ",
+            "chunk 014 of deterministic multi-stream a. ",
+            "chunk 015 of deterministic multi-stream a. ",
+            "chunk 016 of deterministic multi-stream a. ",
+            "chunk 017 of deterministic multi-stream a. ",
+            "chunk 018 of deterministic multi-stream a. ",
+            "chunk 019 of deterministic multi-stream a. ",
+            "chunk 020 of deterministic multi-stream a. ",
+            "chunk 021 of deterministic multi-stream a. ",
+            "chunk 022 of deterministic multi-stream a. ",
+            "chunk 023 of deterministic multi-stream a. ",
+            "chunk 024 of deterministic multi-stream a. ",
+            "chunk 025 of deterministic multi-stream a. ",
+            "chunk 026 of deterministic multi-stream a. ",
+            "chunk 027 of deterministic multi-stream a. ",
+            "chunk 028 of deterministic multi-stream a. ",
+            "chunk 029 of deterministic multi-stream a. ",
+            "chunk 030 of deterministic multi-stream a. ",
+            "chunk 031 of deterministic multi-stream a. ",
+            "chunk 032 of deterministic multi-stream a. ",
+            "chunk 033 of deterministic multi-stream a. ",
+            "chunk 034 of deterministic multi-stream a. ",
+            "chunk 035 of deterministic multi-stream a. ",
+            "chunk 036 of deterministic multi-stream a. ",
+            "chunk 037 of deterministic multi-stream a. ",
+            "chunk 038 of deterministic multi-stream a. ",
+            "chunk 039 of deterministic multi-stream a. ",
+            "chunk 040 of deterministic multi-stream a. "
+          ]
+        }
+      ]
+    }
+  ]
+}

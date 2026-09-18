@@ -32,15 +32,19 @@ guard) until all three close.
   with the existing `applied` mark for the received→applied budget),
   `mitto.session.switch.*`, and `mitto.render.postprocess.*` — plus one
   Playwright perf spec per family under `tests/ui/specs/perf/`.
-- **Pending — collectors + scenarios** (`mitto-sus.1.2`): add
-  `collectLongTasks` / `collectFrameStats` / `collectPaintLayoutStats` /
-  `collectDOMStats` / `collectEventTimings` helpers under
-  `tests/ui/utils/`; add the remaining fixtures (`perf-mixed-long`,
-  `perf-multi-stream-{a,b,c}`, seeded history snapshots); add the
+- **Implemented, pending test/review** (`mitto-sus.1.2`): the
+  `collectLongTasks` / `collectEventTimings` / `collectFrameStats` /
+  `collectPaintLayoutStats` / `collectDOMStats` collectors (see
+  "Collectors" below), the remaining fixtures (`perf-mixed-long`,
+  `perf-multi-stream-{a,b,c}`, seeded history snapshots), and the
   `composer-during-stream` / `stream-mixed` / `history-load` /
-  `conversation-switch` / `multi-stream` scenario specs. This is what
-  makes the harness "report long tasks, frame/render costs, layout/paint,
-  DOM size, and switch latency" per the parent AC.
+  `conversation-switch` / `multi-stream` scenario specs under
+  `tests/ui/specs/perf/*.perf.spec.ts`. This is what makes the harness
+  "report long tasks, frame/render costs, layout/paint, DOM size, and
+  switch latency" per the parent AC. `history-load.perf.spec.ts` is
+  self-seeding (its `beforeAll` builds and runs the `seed-perf-history`
+  Go helper automatically — see "Deterministic fixtures" below) and only
+  skips if that build/run step itself fails (e.g. no Go toolchain).
 - **Pending — baseline + budget-promotion** (`mitto-sus.1.3`, blocked by
   `.1.1` and `.1.2`): record `tests/ui/perf/baseline.json` against a
   release-style build, add the `make bench-ui` opt-in runner target
@@ -83,6 +87,23 @@ mounts a `PerformanceObserver` covering `longtask`, `event`, `paint`,
 | `mitto.render.postprocess.beadsLinks.{start,end}` | `Message.js` agent-message `useEffect`   | Beads-ID linkify + preload cost             |
 | `mitto.render.postprocess.{tables,mermaid,beadsLinks}` | measures, the pairs above           | Per-processor per-message render cost       |
 
+## Collectors
+
+Reusable helpers under `tests/ui/utils/perf.ts` (mitto-sus.1.2) for the
+metric families that don't map onto a single named `mitto.*` mark/measure.
+All read from the same `window.__mittoPerfBuffer` ring buffer as
+`getPerfEntries` (via the new `getPerfEntriesByType`, which filters by native
+`entryType` instead of a `mitto.` name prefix) except `collectFrameStats`
+(in-page `requestAnimationFrame` sampler, no buffer needed):
+
+| Collector                          | Returns                                                    | Notes                                                                 |
+| ----------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `collectLongTasks(page)`           | `{count, maxDuration, totalBlockingTime}`                  | Reduces buffered `longtask` entries; TBT = Σ `max(duration-50, 0)`.   |
+| `collectEventTimings(page, name?)` | `{count, p50, p95}`                                        | Reduces buffered `event`/`first-input` entries, optional name filter. |
+| `collectFrameStats(page, ms)`      | `{fps, missedFrames, longestGapMs}`                        | In-page rAF sampler vs. a 60Hz baseline; no `enablePerf()` needed.    |
+| `collectPaintLayoutStats(page)`    | `{styleMs, layoutMs, paintMs, scriptingMs} \| null`         | Chromium-only (CDP `Performance.getMetrics`); cumulative — diff two calls for a window's cost. `null` elsewhere. |
+| `collectDOMStats(page)`            | `{domNodes, usedJSHeapBytes: number \| null}`               | `usedJSHeapBytes` is Chromium-only (`performance.memory`), `null` elsewhere. |
+
 ## Deterministic fixtures
 
 New mock-ACP response fixtures under `tests/fixtures/responses/`, matched by
@@ -91,9 +112,32 @@ prompt text against the mock ACP server (`tests/mocks/acp-server/`):
 - `perf-plain-short.json` — 6-chunk plain-text response, 5 ms cadence.
 - `perf-plain-long.json` — 200-chunk plain-text response, fixed 5 ms
   inter-chunk cadence, deterministic chunk text (`chunk NNN of ...`).
+- `perf-mixed-long.json` — mixed-content response (code blocks, GFM
+  tables, Mermaid diagrams, absolute URLs, Beads refs) cycled 6 times in
+  one turn, exercising all three render post-processors. Trigger:
+  `perf mixed long`.
+- `perf-multi-stream-{a,b,c}.json` — three plain-text streams (40/80/120
+  chunks) with **distinct** trigger regexes (`perf multi stream a|b|c`)
+  so three concurrent background conversations never collide.
 
-Trigger a fixture by sending a prompt containing `perf plain short` or
-`perf plain long` respectively.
+Trigger a fixture by sending a prompt containing its trigger phrase.
+
+### Seeded history snapshots
+
+`scripts/gen-perf-histories.mjs` generates deterministic (seeded, `--seed`
+flag) history-size snapshots — committed JSON message-list content, not
+sessions — under `tests/ui/perf/fixtures/histories/{small,medium,max}.json`
+(10 / 1,000 / 5,000 messages; `max` is a pragmatic stand-in for the
+conversation-size ceiling since no `MAX_HISTORY` constant is exported from
+`web/static/` today). Regenerate with `node scripts/gen-perf-histories.mjs`.
+
+Loading one of these into an actual session for `history-load.perf.spec.ts`
+is self-seeding: the spec's `test.beforeAll` builds and runs
+`tests/ui/helpers/seed-perf-history`, which reads each snapshot and writes it
+directly into the live session store (bypassing ACP/UI entirely) — the same
+technique `tests/ui/helpers/create-hierarchical-sessions.go` uses for
+parent/child fixtures. No manual step is required; the spec only skips if
+the build/run itself fails (e.g. no Go toolchain available).
 
 ## Manual inspection
 

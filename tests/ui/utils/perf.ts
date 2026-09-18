@@ -49,3 +49,187 @@ export function percentile(values: number[], p: number): number {
   const rank = Math.ceil((p / 100) * sorted.length) - 1;
   return sorted[Math.min(Math.max(rank, 0), sorted.length - 1)];
 }
+
+/**
+ * Drain `window.__mittoPerfBuffer` entries of the given native PerformanceEntry
+ * `entryType` (e.g. "longtask", "event", "first-input"). Unlike getPerfEntries
+ * (name-prefix filter for our own `mitto.*` marks/measures), this is for
+ * browser-native entries whose `name` is not under our control.
+ */
+export async function getPerfEntriesByType(
+  page: Page,
+  entryType: string,
+): Promise<PerfEntry[]> {
+  return page.evaluate((type) => {
+    const buffer =
+      (window as unknown as { __mittoPerfBuffer?: PerfEntry[] })
+        .__mittoPerfBuffer || [];
+    return buffer.filter((entry) => entry.entryType === type);
+  }, entryType);
+}
+
+// --- Collectors (mitto-sus.1.2) -------------------------------------------
+//
+// Reusable helpers for the remaining metric families from the mitto-sus.1
+// parent acceptance criteria: long tasks, input/event timings, frame/render
+// costs, layout/paint, and DOM size. See
+// docs/devel/ui-responsiveness-benchmarks.md "Collectors" for the seam each
+// one reduces and its Chromium-only caveats.
+
+export interface LongTaskStats {
+  count: number;
+  maxDuration: number;
+  /** Sum of max(duration - 50ms, 0) across all long tasks (standard TBT formula). */
+  totalBlockingTime: number;
+}
+
+/** Reduces buffered `longtask` PerformanceObserver entries. Requires enablePerf(). */
+export async function collectLongTasks(page: Page): Promise<LongTaskStats> {
+  const entries = await getPerfEntriesByType(page, "longtask");
+  return {
+    count: entries.length,
+    maxDuration: entries.reduce((max, e) => Math.max(max, e.duration), 0),
+    totalBlockingTime: entries.reduce(
+      (sum, e) => sum + Math.max(e.duration - 50, 0),
+      0,
+    ),
+  };
+}
+
+export interface EventTimingStats {
+  count: number;
+  p50: number;
+  p95: number;
+}
+
+/**
+ * Reduces buffered `event` / `first-input` entries into p50/p95 durations.
+ * Pass `nameFilter` (exact entry name, e.g. "keydown") to narrow to one
+ * interaction type; omit to aggregate across all observed event timings.
+ */
+export async function collectEventTimings(
+  page: Page,
+  nameFilter?: string,
+): Promise<EventTimingStats> {
+  const [eventEntries, firstInputEntries] = await Promise.all([
+    getPerfEntriesByType(page, "event"),
+    getPerfEntriesByType(page, "first-input"),
+  ]);
+  let entries = [...eventEntries, ...firstInputEntries];
+  if (nameFilter) entries = entries.filter((e) => e.name === nameFilter);
+  const durations = entries.map((e) => e.duration);
+  return {
+    count: durations.length,
+    p50: percentile(durations, 50),
+    p95: percentile(durations, 95),
+  };
+}
+
+export interface FrameStats {
+  fps: number;
+  missedFrames: number;
+  longestGapMs: number;
+}
+
+/**
+ * Samples `requestAnimationFrame` callbacks in-page for `durationMs` against
+ * a 60Hz baseline. A "missed" frame is a gap > 1.5x the 60Hz budget (~25ms).
+ * Runs entirely in the page (no PerformanceObserver / enablePerf() needed).
+ */
+export async function collectFrameStats(
+  page: Page,
+  durationMs: number,
+): Promise<FrameStats> {
+  return page.evaluate((duration) => {
+    return new Promise<{
+      fps: number;
+      missedFrames: number;
+      longestGapMs: number;
+    }>((resolve) => {
+      const budgetMs = 1000 / 60;
+      const start = performance.now();
+      let last = start;
+      let frames = 0;
+      let missedFrames = 0;
+      let longestGapMs = 0;
+      function tick(now: number) {
+        if (frames > 0) {
+          const gap = now - last;
+          if (gap > budgetMs * 1.5) missedFrames += 1;
+          if (gap > longestGapMs) longestGapMs = gap;
+        }
+        last = now;
+        frames += 1;
+        if (now - start < duration) {
+          requestAnimationFrame(tick);
+        } else {
+          const elapsedSec = (now - start) / 1000;
+          resolve({
+            fps: elapsedSec > 0 ? frames / elapsedSec : 0,
+            missedFrames,
+            longestGapMs,
+          });
+        }
+      }
+      requestAnimationFrame(tick);
+    });
+  }, durationMs);
+}
+
+export interface PaintLayoutStats {
+  styleMs: number;
+  layoutMs: number;
+  paintMs: number;
+  scriptingMs: number;
+}
+
+/**
+ * Chromium-only: reads cumulative style/layout/paint/scripting time via CDP
+ * `Performance.getMetrics` (values are cumulative since navigation start, in
+ * seconds; converted to ms here). Returns null on non-Chromium browsers or if
+ * CDP is unavailable — callers must treat null as "not measured", never throw.
+ * To measure a window's cost, call before and after and subtract.
+ */
+export async function collectPaintLayoutStats(
+  page: Page,
+): Promise<PaintLayoutStats | null> {
+  const browserName = page.context().browser()?.browserType().name();
+  if (browserName !== "chromium") return null;
+  try {
+    const client = await page.context().newCDPSession(page);
+    await client.send("Performance.enable");
+    const { metrics } = await client.send("Performance.getMetrics");
+    const byName = new Map(metrics.map((m) => [m.name, m.value]));
+    await client.detach().catch(() => {});
+    return {
+      styleMs: (byName.get("RecalcStyleDuration") ?? 0) * 1000,
+      layoutMs: (byName.get("LayoutDuration") ?? 0) * 1000,
+      paintMs: (byName.get("PaintDuration") ?? 0) * 1000,
+      scriptingMs: (byName.get("ScriptDuration") ?? 0) * 1000,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface DOMStats {
+  domNodes: number;
+  usedJSHeapBytes: number | null;
+}
+
+/** DOM node count + (Chromium-only) retained JS heap size; heap is null elsewhere. */
+export async function collectDOMStats(page: Page): Promise<DOMStats> {
+  return page.evaluate(() => {
+    const domNodes = document.getElementsByTagName("*").length;
+    const heap = (
+      performance as unknown as { memory?: { usedJSHeapSize?: number } }
+    ).memory;
+    return {
+      domNodes,
+      usedJSHeapBytes:
+        heap && typeof heap.usedJSHeapSize === "number"
+          ? heap.usedJSHeapSize
+          : null,
+    };
+  });
+}

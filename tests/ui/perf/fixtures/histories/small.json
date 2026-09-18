@@ -1,0 +1,47 @@
+{
+  "name": "small",
+  "seed": 42,
+  "messageCount": 10,
+  "messages": [
+    {
+      "role": "user",
+      "text": "History message 1/5: what changed in conversation switch latency?"
+    },
+    {
+      "role": "agent",
+      "text": "Reply 1/5 about conversation switch latency: this is deterministic filler content (seed-derived) sized to approximate a real agent reply of a few sentences, so DOM node count and layout cost scale realistically with conversation size."
+    },
+    {
+      "role": "user",
+      "text": "History message 2/5: what changed in the streaming buffer?"
+    },
+    {
+      "role": "agent",
+      "text": "Reply 2/5 about the streaming buffer: this is deterministic filler content (seed-derived) sized to approximate a real agent reply of a few sentences, so DOM node count and layout cost scale realistically with conversation size."
+    },
+    {
+      "role": "user",
+      "text": "History message 3/5: what changed in render post-processors?"
+    },
+    {
+      "role": "agent",
+      "text": "Reply 3/5 about render post-processors: this is deterministic filler content (seed-derived) sized to approximate a real agent reply of a few sentences, so DOM node count and layout cost scale realistically with conversation size."
+    },
+    {
+      "role": "user",
+      "text": "History message 4/5: what changed in the perf mark instrumentation?"
+    },
+    {
+      "role": "agent",
+      "text": "Reply 4/5 about the perf mark instrumentation: this is deterministic filler content (seed-derived) sized to approximate a real agent reply of a few sentences, so DOM node count and layout cost scale realistically with conversation size."
+    },
+    {
+      "role": "user",
+      "text": "History message 5/5: what changed in the WebSocket reconnection path?"
+    },
+    {
+      "role": "agent",
+      "text": "Reply 5/5 about the WebSocket reconnection path: this is deterministic filler content (seed-derived) sized to approximate a real agent reply of a few sentences, so DOM node count and layout cost scale realistically with conversation size."
+    }
+  ]
+}
