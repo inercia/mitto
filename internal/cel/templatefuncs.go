@@ -492,6 +492,123 @@ func readFile(folder, path string) string {
 	return string(buf[:n])
 }
 
+// standingBeadsGuidanceCacheTTL bounds how long a HasStandingBeadsGuidance
+// result is memoised per workspace folder (mitto-2kw). Short TTL (vs the 30s
+// beadsCacheTTL) because this is a cheap local file read, not a subprocess
+// exec, and the answer should react quickly if a standing file is added.
+const standingBeadsGuidanceCacheTTL = 2 * time.Second
+
+// standingBeadsGuidanceMaxBytes caps the size of a candidate file that will be
+// scanned for markers. Oversize files are treated as "not present" (fail-open
+// toward re-emitting guidance) rather than partially scanned.
+const standingBeadsGuidanceMaxBytes = 256 * 1024
+
+// standingBeadsGuidanceFiles lists the canonical agent-instructions filenames
+// (workspace-root-relative), scanned in order, for standing Beads guidance.
+// Extendable in this one slice literal as new agent conventions emerge.
+var standingBeadsGuidanceFiles = []string{
+	"AGENTS.md",
+	"AGENT.md",
+	"CLAUDE.md",
+	"CLAUDE.local.md",
+	"CONVENTIONS.md",
+	"GEMINI.md",
+}
+
+// standingBeadsGuidanceMarkers are the distinctive substrings (case-insensitive)
+// that must ALL be present in a candidate file for it to count as standing
+// Beads guidance. Both are written by automated drivers / `bd prime` output
+// into standing instructions files, so requiring both avoids a false positive
+// from a file that only incidentally mentions one of them.
+var standingBeadsGuidanceMarkers = []string{
+	"bd ready --exclude-label in-flight",
+	"bd remember",
+}
+
+var (
+	standingBeadsGuidanceCacheMu sync.Mutex
+	standingBeadsGuidanceCache   = map[string]standingBeadsGuidanceCacheEntry{}
+)
+
+type standingBeadsGuidanceCacheEntry struct {
+	value bool
+	at    time.Time
+}
+
+// hasStandingBeadsGuidance reports whether folder already has, at its root, a
+// canonical agent-instructions file (see standingBeadsGuidanceFiles) that
+// carries standing Beads workflow guidance -- ALL of standingBeadsGuidanceMarkers,
+// matched case-insensitively. Used to shrink/suppress the beads-track-tasks
+// and beads-ready-tasks builtin processors when their guidance would just
+// repeat what the workspace already committed to in a standing instructions
+// file (mitto-2kw).
+//
+// Fail-open: any I/O error, missing file, or oversize file (>
+// standingBeadsGuidanceMaxBytes) is treated as "not present" so the caller
+// keeps emitting its own guidance -- safer to over-inject than to silently
+// drop guidance a workspace actually needs.
+//
+// Results are memoised for standingBeadsGuidanceCacheTTL per folder.
+func hasStandingBeadsGuidance(folder string) bool {
+	if folder == "" {
+		return false
+	}
+	if v, ok := standingBeadsGuidanceCacheLookup(folder); ok {
+		return v
+	}
+	result := computeHasStandingBeadsGuidance(folder)
+	standingBeadsGuidanceCacheStore(folder, result)
+	return result
+}
+
+// computeHasStandingBeadsGuidance does the uncached scan for hasStandingBeadsGuidance.
+func computeHasStandingBeadsGuidance(folder string) bool {
+	for _, name := range standingBeadsGuidanceFiles {
+		info, ok := statResolved(folder, name)
+		if !ok || info.IsDir() || !info.Mode().IsRegular() {
+			continue
+		}
+		if info.Size() > standingBeadsGuidanceMaxBytes {
+			continue
+		}
+		content := readFile(folder, name)
+		if content == "" {
+			continue
+		}
+		lower := strings.ToLower(content)
+		allPresent := true
+		for _, marker := range standingBeadsGuidanceMarkers {
+			if !strings.Contains(lower, strings.ToLower(marker)) {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			return true
+		}
+	}
+	return false
+}
+
+// standingBeadsGuidanceCacheLookup returns the memoised value for folder if
+// present and not expired.
+func standingBeadsGuidanceCacheLookup(folder string) (bool, bool) {
+	standingBeadsGuidanceCacheMu.Lock()
+	defer standingBeadsGuidanceCacheMu.Unlock()
+	e, ok := standingBeadsGuidanceCache[folder]
+	if !ok || time.Since(e.at) >= standingBeadsGuidanceCacheTTL {
+		return false, false
+	}
+	return e.value, true
+}
+
+// standingBeadsGuidanceCacheStore memoises value for folder.
+func standingBeadsGuidanceCacheStore(folder string, value bool) {
+	standingBeadsGuidanceCacheMu.Lock()
+	defer standingBeadsGuidanceCacheMu.Unlock()
+	standingBeadsGuidanceCache[folder] = standingBeadsGuidanceCacheEntry{value: value, at: time.Now()}
+}
+
 // readTemplate reads a workspace-relative file (same path-safety and size-cap
 // semantics as readFile — fail-open, returns "" on missing / directory /
 // oversize / path-escape / symlink-escape) and then renders its contents as a
@@ -1455,6 +1572,13 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// only runs when the workspace actually has a beads database.
 		"BeadsCount": func(labels, statuses string) int { return beadsCount(folder, labels, statuses) },
 		"HasBeads":   func(labels, statuses string) bool { return hasBeads(folder, labels, statuses) },
+		// HasStandingBeadsGuidance() — true iff a canonical agent-instructions
+		// file (AGENTS.md, AGENT.md, CLAUDE.md, CLAUDE.local.md, CONVENTIONS.md,
+		// GEMINI.md) at the workspace root already carries the standing Beads
+		// workflow guidance markers. Lets builtin processors (beads-track-tasks,
+		// beads-ready-tasks) shrink/suppress their own reminder instead of
+		// duplicating it (mitto-2kw). Fail-open (false) on any I/O anomaly.
+		"HasStandingBeadsGuidance": func() bool { return hasStandingBeadsGuidance(folder) },
 		// BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL
 		// comma-separated labels (via `bd show <id> --json`). Fail-open. Scopes to
 		// one issue, unlike HasBeads which aggregates across the workspace.

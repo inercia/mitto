@@ -247,6 +247,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.BinaryBinding(mittoGitRepoBinary),
 			),
 		),
+		cel.Function("__mitto_hasStandingBeadsGuidance",
+			cel.Overload("__mitto_hasStandingBeadsGuidance_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(mittoHasStandingBeadsGuidance),
+			),
+		),
 		cel.Function("__mitto_gitFileModified",
 			cel.Overload("__mitto_gitFileModified_string_string",
 				[]*cel.Type{cel.StringType, cel.StringType},
@@ -329,6 +336,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 			cel.ReceiverMacro("MatchesServerType", 1, acpMatchesServerTypeMacro),
 			cel.GlobalMacro("FileExists", 1, fileExistsMacro),
 			cel.GlobalMacro("DirExists", 1, dirExistsMacro),
+			cel.GlobalMacro("HasStandingBeadsGuidance", 0, hasStandingBeadsGuidanceMacro0),
 			cel.GlobalMacro("GitRepo", 0, gitRepoMacro0),
 			cel.GlobalMacro("GitRepo", 1, gitRepoMacro1),
 			cel.GlobalMacro("GitFileModified", 1, gitFileModifiedMacro),
@@ -653,6 +661,12 @@ func dirExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) 
 	return eh.NewCall("__mitto_dirExists", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
+// hasStandingBeadsGuidanceMacro0 rewrites HasStandingBeadsGuidance() ->
+// __mitto_hasStandingBeadsGuidance(Workspace.Folder).
+func hasStandingBeadsGuidanceMacro0(eh cel.MacroExprFactory, _ celast.Expr, _ []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_hasStandingBeadsGuidance", eh.NewIdent("Workspace.Folder")), nil
+}
+
 // gitRepoMacro0 rewrites GitRepo() -> __mitto_gitRepo(Workspace.Folder).
 func gitRepoMacro0(eh cel.MacroExprFactory, _ celast.Expr, _ []celast.Expr) (celast.Expr, *celcommon.Error) {
 	return eh.NewCall("__mitto_gitRepo", eh.NewIdent("Workspace.Folder")), nil
@@ -918,6 +932,14 @@ func mittoFileExists(folderVal, pathVal ref.Val) ref.Val {
 // Delegates to dirExists (templatefuncs.go).
 func mittoDirExists(folderVal, pathVal ref.Val) ref.Val {
 	return types.Bool(dirExists(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoHasStandingBeadsGuidance reports whether the workspace folder already
+// has a canonical agent-instructions file carrying standing Beads guidance.
+// Delegates to hasStandingBeadsGuidance (templatefuncs.go) -- single source
+// of truth shared with the template FuncMap.
+func mittoHasStandingBeadsGuidance(folderVal ref.Val) ref.Val {
+	return types.Bool(hasStandingBeadsGuidance(valToString(folderVal)))
 }
 
 // mittoGitRepoUnary reports whether the workspace folder is inside a git work

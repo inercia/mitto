@@ -9,6 +9,10 @@
 # Activation conditions:
 #   1. The `bd` command exists on PATH (CommandExists CEL gate)
 #   2. The workspace contains a `.beads` directory (DirExists CEL gate)
+#   3. No standing agent-instructions file (AGENTS.md and friends) already
+#      carries this same guidance (mitto-2kw: !HasStandingBeadsGuidance() CEL
+#      gate). Unlike beads-track-tasks.yaml, this processor has no dynamic
+#      content to preserve, so it is fully suppressed rather than shrunk.
 #
 # Throttling:
 #   - Fires on the first message, then re-runs repeatedly so the agent is reminded
@@ -20,7 +24,7 @@
 name: beads-ready-tasks
 description: "Reminds the agent to review available tasks in the beads database"
 enabled: true
-enabledWhen: 'CommandExists("bd") && DirExists(".beads")'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !HasStandingBeadsGuidance()'
 when:
   on: userPrompt
   match: first
