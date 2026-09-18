@@ -21,6 +21,7 @@ This directory contains technical documentation for developers working on Mitto.
 - **[Web Interface](web-interface.md)** — Browser-based UI architecture, REST API, streaming response handling, responsive design
 
 - **[UI Responsiveness Benchmarks](ui-responsiveness-benchmarks.md)** — Opt-in performance-mark instrumentation, deterministic streaming fixtures, environmental controls, and proposed budgets for measuring UI responsiveness (`mitto-sus.1`)
+  - **[UI Responsiveness Baseline](ui-responsiveness-baseline.md)** — Auto-generated table of the currently committed `tests/ui/perf/baseline.json` numbers each `make bench-ui` gate compares against (`mitto-sus.1.3`)
 
 - **[WebSocket Documentation](websockets/)** — Protocol specification, message types, sequence numbers, synchronization, reconnection handling, and multi-client support (authoritative reference for all real-time communication)
 
