@@ -263,8 +263,14 @@ documented fresh-acquire equivalence rather than by wiring a new call site.
 additive, protocol-neutral leaf package `internal/eventprojection` consumes
 `agentbackend.Event` and emits sequence-numbered `ProjectedEvent`s to a
 caller-supplied `ProjectionSink`. Design mirrors the .4/.6/.7/.9 formula
-(pure package + fake + import guard; **not** wired into
-`BackgroundSession`/`SessionManager` this increment). Key pieces:
+(pure package + fake + import guard). Wired into the production ACP streaming
+path (mitto-mx9.2) as a transparent pass-through in `WebClient.SessionUpdate`
+(see `internal/conversation/client_projection.go`): `StreamBuffer` remains
+the sole allocator of the observable Mitto `seq`, the Projector uses a
+private no-op `SeqAllocator` whose values are discarded by the sink adapter,
+and content chunks (`AgentMessageChunk`/`AgentThoughtChunk`) are `Flush`ed
+after every `Ingest` so per-chunk delivery cadence to observers is
+byte-identical to the legacy direct path. Key pieces:
 
 - **`Projector`** (`projection.go`): coalesces consecutive same-kind/
   same-origin `EventAgentMessage`/`EventAgentThought` chunks to a logical
@@ -518,20 +524,26 @@ explicitly **not** in scope.
 **Shipped, unchanged.** ACP (`internal/acp`, `internal/acpproc`,
 `internal/conversation`) behaves exactly as before this epic. No production
 call site was modified to route through `internal/agentbackend`,
-`internal/acpbackend`, `internal/eventprojection`, or a `BackendProvider`
-lease — every one of those is proven only via unit tests and the
-`agentbackend.FakeHost` non-process fake, never against a live ACP process in
-production. The `docs/devel/acp-behavior-baseline.md` regression baseline
-(mitto-lrt.2) plus its 5 targeted integration tests (lifecycle re-archive,
-startup replay, mid-stream cancel/`after_seq`, failed tool-call status) remain
-the executable proof of "ACP is unchanged" and are re-run as part of this
-ticket's verification pass (see below).
+`internal/acpbackend`, or a `BackendProvider` lease — those remain proven only
+via unit tests and the `agentbackend.FakeHost` non-process fake, never against
+a live ACP process in production. **Exception:** `internal/eventprojection`
+was wired into the production ACP streaming path in mitto-mx9.2 as a
+transparent pass-through in `WebClient.SessionUpdate` (see
+`internal/conversation/client_projection.go`); by design `StreamBuffer`
+remains the sole allocator of the observable Mitto `seq` (the Projector uses
+a private no-op `SeqAllocator`), content chunks are `Flush`ed after every
+`Ingest`, and the ACP contract never sets `UpstreamCursor`, so no dedup/replay
+side effect ever fires — seq/ACK/replay/recorder semantics stay byte-identical
+and ACP behavior remains unchanged. The `docs/devel/acp-behavior-baseline.md`
+regression baseline (mitto-lrt.2) plus its 5 targeted integration tests
+(lifecycle re-archive, startup replay, mid-stream cancel/`after_seq`, failed
+tool-call status) remain the executable proof of "ACP is unchanged" and are
+re-run as part of this ticket's verification pass (see below).
 
 **Additive, tested, mostly not-yet-production-wired.** `internal/agentbackend`
 (neutral contracts + `FakeHost`, mitto-lrt.4), `internal/backendcompat`
 (legacy↔neutral bridge, mitto-lrt.5), `internal/acpbackend` (ACP-to-neutral
-adapter, mitto-lrt.6), `internal/eventprojection` (+ `eventprojectionsession`,
-durable replay/dedup, mitto-lrt.8), `internal/agents/availability.go`
+adapter, mitto-lrt.6), `internal/agents/availability.go`
 (four-state `AvailabilityState`, mitto-lrt.9), the
 client-services/permissions/MCP-binding contracts (§10, mitto-lrt.11), and the
 neutral REST/WS `backend` block + SDK mirrors (§11, mitto-lrt.12) are all real,

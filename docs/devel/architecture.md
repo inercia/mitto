@@ -259,8 +259,12 @@ internal/conversation  (domain: SharedProcess, SessionHandle, SessionCallbacks)
   `ProjectedEvent`s to a caller-supplied `ProjectionSink`, with a durable
   session-sidecar-backed `CheckpointStore` implementation kept in the sibling
   package `internal/eventprojection/eventprojectionsession` to preserve the
-  same import-guard boundary. Not wired into `BackgroundSession`/
-  `SessionManager` in this increment.
+  same import-guard boundary. Wired into the production ACP streaming path
+  (mitto-mx9.2) as a transparent pass-through in `WebClient.SessionUpdate`
+  (see `internal/conversation/client_projection.go`) — `StreamBuffer` remains
+  the sole allocator of the observable Mitto `seq`; the Projector uses a
+  private no-op `SeqAllocator` whose values are discarded by the sink adapter,
+  so seq/ACK/replay/recorder semantics stay byte-identical.
 
 ### `internal/web` - Web Interface Server
 
