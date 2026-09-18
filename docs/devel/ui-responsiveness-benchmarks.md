@@ -32,7 +32,7 @@ guard) until all three close.
   with the existing `applied` mark for the received→applied budget),
   `mitto.session.switch.*`, and `mitto.render.postprocess.*` — plus one
   Playwright perf spec per family under `tests/ui/specs/perf/`.
-- **Implemented, pending test/review** (`mitto-sus.1.2`): the
+- **Implemented and tested, pending review** (`mitto-sus.1.2`): the
   `collectLongTasks` / `collectEventTimings` / `collectFrameStats` /
   `collectPaintLayoutStats` / `collectDOMStats` collectors (see
   "Collectors" below), the remaining fixtures (`perf-mixed-long`,
@@ -45,6 +45,11 @@ guard) until all three close.
   self-seeding (its `beforeAll` builds and runs the `seed-perf-history`
   Go helper automatically — see "Deterministic fixtures" below) and only
   skips if that build/run step itself fails (e.g. no Go toolchain).
+  `determinism.perf.spec.ts` covers the bead's "determinism holds across
+  repeated runs" acceptance criterion directly: it drives the
+  `perf-plain-short` fixture twice across independent sessions and
+  asserts both runs assemble byte-identical message text (same-order
+  stream chunks) and record the same `mitto.ws.chunk.applied` mark count.
 - **Pending — baseline + budget-promotion** (`mitto-sus.1.3`, blocked by
   `.1.1` and `.1.2`): record `tests/ui/perf/baseline.json` against a
   release-style build, add the `make bench-ui` opt-in runner target
