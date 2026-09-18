@@ -42,6 +42,23 @@
 # instead of exiting 65 with a `format/count mismatch`. A keys-without-count
 # response (keys parsed but no count heading) is still a genuine shape mismatch and
 # still fails, preserving the original validation for real corruption.
+#
+# Memory-index context cap (mitto-i69): unbounded corpora make this processor's
+# payload grow linearly forever (measured: 272 keys ~= 3,582 estimated tokens,
+# 71.6% of the processor's context). `bd prime` already implements bounded,
+# deterministic (alphabetical) whole-memory-boundary selection via
+# `--max-memories N`, plus an elision banner — we thread that flag through instead
+# of reimplementing selection here. Default cap is 60 entries; override via the
+# `MITTO_BEADS_PRIME_MEMORY_LIMIT` env var (empty => default 60, `0` => unlimited,
+# forwarded to `bd` unchanged). On the 272-key reference corpus this caps the
+# rendered index to ~60 keys plus a one-line truncation notice (~800 tokens, a
+# ~77% reduction) while keeping every omitted memory reachable via the existing
+# `bd memories <keyword>` / `bd recall <key>` on-demand instructions below. The awk
+# parser recognizes both the unbounded heading (`## Persistent Memories (N)`) and
+# the capped heading `bd` emits when `--max-memories` truncates
+# (`## Persistent Memories (showing K of TOTAL, alphabetical)`), and appends its
+# own truncation line (distinct from `bd`'s own banner, which is stripped along
+# with the rest of the body text) whenever TOTAL > K.
 ##########################################################################################
 name: beads-prime
 description: "Injects a compact beads memory index (keys only) plus bd memories/bd recall lookup instructions at the start of a conversation"
@@ -56,9 +73,10 @@ command: sh
 args:
   - -c
   - |
+    limit="${MITTO_BEADS_PRIME_MEMORY_LIMIT:-60}"
     attempt=1
     while [ "$attempt" -le 2 ]; do
-      out=$(bd --readonly prime --memories-only)
+      out=$(bd --readonly prime --memories-only --max-memories "$limit")
       rc=$?
       if [ "$rc" -ne 0 ]; then
         exit "$rc"
@@ -67,6 +85,7 @@ args:
         BEGIN {
           n = 0
           expected = -1
+          total = -1
           zero_heading = 0
           zero_marker = 0
         }
@@ -75,6 +94,15 @@ args:
           sub(/^## Persistent Memories \(/, "", line)
           sub(/\)$/, "", line)
           expected = line + 0
+          total = expected
+        }
+        /^## Persistent Memories \(showing [0-9]+ of [0-9]+, alphabetical\)$/ {
+          line = $0
+          sub(/^## Persistent Memories \(showing /, "", line)
+          sub(/, alphabetical\)$/, "", line)
+          split(line, parts, " of ")
+          expected = parts[1] + 0
+          total = parts[2] + 0
         }
         /^# Beads Persistent Memories$/ { zero_heading = 1 }
         /^No memories stored\./ { zero_marker = 1 }
@@ -86,6 +114,7 @@ args:
         END {
           if (expected < 0 && zero_heading && zero_marker) {
             expected = 0
+            total = 0
           }
           # mitto-9zp: at restart, `bd prime` can transiently emit output with
           # neither the counted "## Persistent Memories (N)" heading nor the
@@ -96,6 +125,7 @@ args:
           # mismatch and must still fail below.
           if (expected < 0 && n == 0) {
             expected = 0
+            total = 0
           }
           if (expected < 0 || n != expected) {
             printf "expected=%d actual=%d\n", expected, n > "/dev/stderr"
@@ -110,6 +140,13 @@ args:
             print ""
             for (i = 0; i < n; i++) {
               print "- `" keys[i] "`"
+            }
+            # mitto-i69: the elision banner bd emits in its body text is
+            # discarded along with everything else but the headings/keys, so
+            # re-surface the same fact with a single line pointing at the
+            # existing on-demand lookup commands documented below.
+            if (total > expected) {
+              printf "\n> _...and %d more memories not shown (alphabetical cap). Use `bd memories <keyword>` to search or `bd recall <key>` to read one._\n", total - expected
             }
           }
           print ""

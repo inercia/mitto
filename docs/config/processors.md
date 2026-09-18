@@ -209,6 +209,8 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `extract-memories-on-close`   | On archive, extracts durable project knowledge from the conversation and saves it via `bd remember`       | conversationClosed / all | prompt  | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
 | `curate-memories-on-close`    | Merges overlapping memories, safely forgets explicitly superseded entries, and files one review task      | conversationClosed / all | prompt  | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
 
+> **`beads-prime` memory-index cap:** the injected index is capped to the first 60 memory keys in deterministic alphabetical order by default (via `bd prime --max-memories`), so its context cost stays bounded instead of growing linearly with the persistent-memory corpus. When the cap elides entries, a one-line truncation notice reports how many were omitted; every omitted memory remains reachable via `bd memories <keyword>` (search) or `bd recall <key>` (read in full). Override the cap with the `MITTO_BEADS_PRIME_MEMORY_LIMIT` environment variable (`0` disables the cap).
+
 ### Managing Builtin Processors
 
 - **Disable**: Edit the YAML file and set `enabled: false`, or move it to `processors/builtin/disabled/`
