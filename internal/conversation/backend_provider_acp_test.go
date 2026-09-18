@@ -904,3 +904,104 @@ func TestAcpLeaseStopReasonToNeutral_AllCases(t *testing.T) {
 		}
 	}
 }
+
+// TestAcpLeaseStopReasonFromNeutral_AllCases pins the reverse (neutral->ACP)
+// mapping used by promptOutcomeToACPResponse to feed the main prompt-loop's
+// existing ACP-typed downstream pipeline (mitto-mx9.1.1). Per
+// acpLeaseStopReasonFromNeutral's doc, StopReasonMaxTokens always
+// reconstructs as acp.StopReasonMaxTokens specifically (the
+// acp.StopReasonMaxTurnRequests collapse on the way in is one-directional),
+// and StopReasonError has no ACP counterpart so it reconstructs as "".
+func TestAcpLeaseStopReasonFromNeutral_AllCases(t *testing.T) {
+	tests := []struct {
+		in   agentbackend.StopReason
+		want acp.StopReason
+	}{
+		{agentbackend.StopReasonEndTurn, acp.StopReasonEndTurn},
+		{agentbackend.StopReasonCancelled, acp.StopReasonCancelled},
+		{agentbackend.StopReasonMaxTokens, acp.StopReasonMaxTokens},
+		{agentbackend.StopReasonRefusal, acp.StopReasonRefusal},
+		{agentbackend.StopReasonError, acp.StopReason("")},
+		{agentbackend.StopReason("something-unknown"), acp.StopReason("")},
+	}
+	for _, tt := range tests {
+		if got := acpLeaseStopReasonFromNeutral(tt.in); got != tt.want {
+			t.Errorf("acpLeaseStopReasonFromNeutral(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestAcpLeaseUsageFromNeutral_NilAndPopulated covers both branches of the
+// neutral->ACP usage reconstruction: nil (no usage reported) must stay nil
+// rather than becoming a zero-valued *acp.Usage, and a populated PromptUsage
+// must translate its three fields exactly (mitto-mx9.1.1 token-accounting
+// parity for the fields the downstream pipeline actually reads).
+func TestAcpLeaseUsageFromNeutral_NilAndPopulated(t *testing.T) {
+	if got := acpLeaseUsageFromNeutral(nil); got != nil {
+		t.Fatalf("acpLeaseUsageFromNeutral(nil) = %+v, want nil", got)
+	}
+
+	got := acpLeaseUsageFromNeutral(&agentbackend.PromptUsage{
+		InputTokens:  111,
+		OutputTokens: 222,
+		TotalTokens:  333,
+	})
+	if got == nil {
+		t.Fatal("acpLeaseUsageFromNeutral(populated) = nil, want non-nil")
+	}
+	if got.InputTokens != 111 || got.OutputTokens != 222 || got.TotalTokens != 333 {
+		t.Errorf("acpLeaseUsageFromNeutral(populated) = %+v, want {111, 222, 333}", got)
+	}
+}
+
+// TestPromptOutcomeToACPResponse_TokenAccountingParity is the mitto-mx9.1.1
+// acceptance-criteria test for the neutral->ACP direction: "agentbackend.
+// PromptOutcome carries token usage; production token-accounting parity
+// verified against the ACP baseline." promptOutcomeToACPResponse is the
+// real translation the main prompt-loop (bgsession_prompt.go) applies to
+// SharedProcess.Prompt's neutral outcome before feeding the existing
+// ACP-typed accumulateTokenUsage/handlePromptSuccess pipeline; this proves a
+// populated PromptUsage (as internal/acpbackend.ToNeutralPromptOutcome would
+// have produced from an ACP baseline — see
+// TestToNeutralPromptOutcome_UsagePassthrough for that ACP->neutral half of
+// the round trip) reconstructs with exact Input/Output/TotalTokens parity.
+func TestPromptOutcomeToACPResponse_TokenAccountingParity(t *testing.T) {
+	neutral := agentbackend.PromptOutcome{
+		StopReason: agentbackend.StopReasonEndTurn,
+		Usage: &agentbackend.PromptUsage{
+			InputTokens:  1000,
+			OutputTokens: 250,
+			TotalTokens:  1250,
+		},
+	}
+
+	got := promptOutcomeToACPResponse(neutral)
+
+	if got.StopReason != acp.StopReasonEndTurn {
+		t.Errorf("StopReason = %q, want %q", got.StopReason, acp.StopReasonEndTurn)
+	}
+	if got.Usage == nil {
+		t.Fatal("Usage = nil, want non-nil (neutral outcome reported usage)")
+	}
+	if got.Usage.InputTokens != 1000 || got.Usage.OutputTokens != 250 || got.Usage.TotalTokens != 1250 {
+		t.Errorf("Usage = %+v, want {1000, 250, 1250} (exact parity)", got.Usage)
+	}
+}
+
+// TestPromptOutcomeToACPResponse_NoUsageReported proves the "no usage
+// reported" case (Usage == nil, e.g. an agent that doesn't report token
+// usage for a turn) reconstructs as nil rather than a zero-valued
+// *acp.Usage — distinguishing "unknown" from "zero" end-to-end, per
+// PromptUsage's doc.
+func TestPromptOutcomeToACPResponse_NoUsageReported(t *testing.T) {
+	neutral := agentbackend.PromptOutcome{StopReason: agentbackend.StopReasonCancelled}
+
+	got := promptOutcomeToACPResponse(neutral)
+
+	if got.Usage != nil {
+		t.Errorf("Usage = %+v, want nil (neutral outcome reported no usage)", got.Usage)
+	}
+	if got.StopReason != acp.StopReasonCancelled {
+		t.Errorf("StopReason = %q, want %q", got.StopReason, acp.StopReasonCancelled)
+	}
+}
