@@ -86,6 +86,38 @@ Scenarios are JSON files that define how the mock server responds to prompts.
 | `delay` | Wait for specified time |
 | `error` | Simulate an error |
 
+### Capture-Group Substitution
+
+Response text can echo regex capture groups from the trigger pattern using
+`${N}` placeholders (`${0}` = full match, `${1}` = first capture, …). This
+is how a scripted response reflects a runtime-generated value (e.g. a
+`dispatch_id` UUID) back to the caller without hard-coding it into the
+fixture.
+
+```json
+{
+  "trigger": {
+    "type": "prompt",
+    "pattern": "\"dispatch_id\":\"([0-9a-fA-F-]{36})\""
+  },
+  "actions": [
+    {
+      "type": "agent_message",
+      "chunks": [
+        "MITTO_PROCESSOR_COMPLETION {\"dispatch_id\":\"${1}\",\"save_count\":0}"
+      ]
+    }
+  ]
+}
+```
+
+Substitution applies to `agent_message` chunks, `agent_thought` text,
+`tool_call` title, and `error` message. Only the `${N}` form is
+recognised — literal `$` characters in fixture text are left untouched.
+Out-of-range groups are also left literal (e.g. `${5}` stays `${5}` if the
+pattern has only one capture), and any response containing `${` is given
+selection priority over non-templated matches regardless of matched span.
+
 ### Example Scenarios
 
 See `tests/fixtures/responses/` for example scenarios:
@@ -93,6 +125,8 @@ See `tests/fixtures/responses/` for example scenarios:
 - `simple-greeting.json` - Basic greeting responses
 - `file-list.json` - File listing with tool calls
 - `error-response.json` - Error simulation
+- `knowledge-router-close.json` - Capture-group substitution echoing a
+  runtime-generated `dispatch_id`
 
 ## Protocol
 
