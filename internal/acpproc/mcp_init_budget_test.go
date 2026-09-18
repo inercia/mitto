@@ -663,3 +663,99 @@ func TestColdMCPBudget_AgentInternalDeadlineMemoryExpiresAfterMCPInitTimeout(t *
 		t.Fatal("expected extended=true once the agent-internal-deadline memory window (MCPInitTimeout) has fully elapsed")
 	}
 }
+
+// TestColdMCPBudget_HighActiveRPCLoadDoesNotGetExtendedBudget is the mitto-e9b
+// reproduction.
+//
+// Both prior overrides (mitto-a9m: IsSaturated / recentlyHitAgentInternalDeadlineWithin)
+// are REACTIVE — they only withhold the extended budget after a PRIOR
+// timeout/deadline hit already happened on this process. That leaves the
+// FIRST cold NewSession/LoadSession on an already-busy process (concurrent
+// foreground RPCs, no failure yet recorded) ungated: production evidence
+// shows a first attempt on a busy process (workspace 4abb5d84) dead-waiting
+// rpc_ms=214996 (~215s) before the agent's own internal MCP-init deadline
+// fired — and that 215s hold is what feeds the mitto-5eq saturation window
+// and degrades the workspace (state=process_saturated observed 8s later).
+//
+// EXPECTED-AFTER-FIX: coldMCPBudget must withhold the extended budget when
+// OTHER concurrent RPCs are already active on this process (independent of
+// any saturation/deadline history), reusing the same
+// auxSessionCreateBusyRPCThreshold the aux-session proactive bail uses so the
+// two "busy" definitions cannot drift apart.
+func TestColdMCPBudget_HighActiveRPCLoadDoesNotGetExtendedBudget(t *testing.T) {
+	p := &SharedACPProcess{}
+	p.config.MCPInitTimeout = 240 * time.Second
+	// Simulate the caller's own in-flight beginRPC() (+1) plus one OTHER
+	// concurrent RPC already active on the process (+1) = 2, meeting
+	// auxSessionCreateBusyRPCThreshold (1 OTHER RPC).
+	p.activeRPCs.Store(2)
+
+	perAttempt, total, extended := p.coldMCPBudget(true /*hasMCPServers*/)
+	if extended {
+		t.Errorf("coldMCPBudget granted the extended MCP-init budget (perAttempt=%v, total=%v) "+
+			"to a process already serving other concurrent RPCs. A cold session/new on an "+
+			"already-busy process now dead-waits up to MCPInitTimeout (240s, ~215s observed in "+
+			"production) instead of failing fast with the normal bounded budget (%v/%v) — this "+
+			"is the mitto-e9b first-attempt wedge that trips process_saturated degradation.",
+			perAttempt, total, sessionCreateAttemptTimeout, sessionCreateTotalBudget)
+	}
+	if perAttempt != sessionCreateAttemptTimeout {
+		t.Errorf("perAttempt=%v, want normal bounded budget %v when other RPCs are active", perAttempt, sessionCreateAttemptTimeout)
+	}
+	if total != sessionCreateTotalBudget {
+		t.Errorf("total=%v, want normal bounded budget %v when other RPCs are active", total, sessionCreateTotalBudget)
+	}
+}
+
+// TestColdMCPBudget_SoloActiveRPCStillGetsExtendedBudget guards against the
+// mitto-e9b fix over-correcting: ActiveRPCs() already counts the caller's OWN
+// in-flight NewSession/LoadSession call (beginRPC() runs before
+// coldMCPBudget), so a solo cold call on an otherwise-quiescent process
+// (ActiveRPCs()==1, no OTHER RPC) must still be granted the extended budget —
+// hasOtherActiveRPCLoad() must subtract the caller's own +1 before comparing
+// against the threshold.
+func TestColdMCPBudget_SoloActiveRPCStillGetsExtendedBudget(t *testing.T) {
+	p := &SharedACPProcess{}
+	p.config.MCPInitTimeout = 240 * time.Second
+	// Only the caller's own in-flight call is counted — no other RPC active.
+	p.activeRPCs.Store(1)
+
+	_, _, extended := p.coldMCPBudget(true /*hasMCPServers*/)
+	if !extended {
+		t.Fatal("expected extended=true for a solo cold call (ActiveRPCs()==1, no OTHER RPC active) — " +
+			"hasOtherActiveRPCLoad() must exclude the caller's own +1 from beginRPC()")
+	}
+}
+
+// TestColdMCPBudget_SaturatedAndBusyComposesWithoutDoubleCounting verifies the
+// new mitto-e9b load-shed override composes correctly with the pre-existing
+// mitto-a9m saturation override: when a process is BOTH saturated AND under
+// high active-RPC load, coldMCPBudget must still withhold the extended
+// budget (via whichever override trips first) with no double-counting or
+// contradictory result.
+func TestColdMCPBudget_SaturatedAndBusyComposesWithoutDoubleCounting(t *testing.T) {
+	p := &SharedACPProcess{}
+	p.config.MCPInitTimeout = 240 * time.Second
+	// Trip both the pre-existing saturation override AND the new active-RPC
+	// load override simultaneously, mirroring the direct-field-set pattern
+	// used by TestColdMCPBudget_SaturatedProcessDoesNotGetExtendedBudget.
+	p.saturatedUntil = time.Now().Add(30 * time.Second)
+	p.activeRPCs.Store(2)
+
+	if !p.isSaturated() {
+		t.Fatalf("preconditions: expected isSaturated()=true after forcing saturatedUntil into the future")
+	}
+	if !p.hasOtherActiveRPCLoad() {
+		t.Fatalf("preconditions: expected hasOtherActiveRPCLoad()=true with activeRPCs=2")
+	}
+
+	perAttempt, total, extended := p.coldMCPBudget(true /*hasMCPServers*/)
+	if extended {
+		t.Errorf("coldMCPBudget granted the extended budget (perAttempt=%v, total=%v) to a process "+
+			"that is BOTH saturated AND under active-RPC load — expected the normal bounded budget "+
+			"(%v/%v) from either override", perAttempt, total, sessionCreateAttemptTimeout, sessionCreateTotalBudget)
+	}
+	if perAttempt != sessionCreateAttemptTimeout || total != sessionCreateTotalBudget {
+		t.Errorf("perAttempt=%v total=%v, want normal bounded budget %v/%v", perAttempt, total, sessionCreateAttemptTimeout, sessionCreateTotalBudget)
+	}
+}
