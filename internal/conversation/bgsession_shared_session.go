@@ -13,6 +13,7 @@ import (
 
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversion"
+	"github.com/inercia/mitto/internal/eventprojection"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -43,6 +44,17 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 		OnMittoToolCall:      bs.onMittoToolCall,
 		OnContextUsageUpdate: bs.onContextUsageUpdate,
 		OnActivity:           bs.signalAgentActivity,
+		// Wire the eventprojection seam (mitto-mx9.2) as a transparent
+		// pass-through for the ACP integration. ProviderSession may be empty
+		// here (bs.acpID is set later by the deferred handshake) — safe
+		// because ACP never emits an UpstreamCursor, so the SourceID key is
+		// never consulted for dedup/checkpointing. See client_projection.go.
+		EnableEventProjection: true,
+		EventProjectionSource: eventprojection.SourceID{
+			Backend:         "acp",
+			Provider:        agentbackend.ProviderID(bs.acpServer),
+			ProviderSession: agentbackend.ProviderSessionID(bs.acpID),
+		},
 	}
 	if bs.fileLinksConfig.IsEnabled() {
 		cfg.FileLinksConfig = &conversion.FileLinkerConfig{

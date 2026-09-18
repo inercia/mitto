@@ -13,6 +13,7 @@ import (
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/conversion"
+	"github.com/inercia/mitto/internal/eventprojection"
 )
 
 // WebClient implements acp.Client for web-based interaction.
@@ -49,6 +50,14 @@ type WebClient struct {
 	// Stream buffer for all streaming events (markdown, thoughts, tool calls, etc.)
 	// This ensures correct ordering even when markdown content is buffered.
 	streamBuffer *StreamBuffer
+
+	// projector, when non-nil, is a transparent eventprojection.Projector
+	// seam (mitto-mx9.2) interposed between the raw ACP notification and
+	// streamBuffer for message/thought/tool-call/plan updates. nil (the
+	// default for any WebClient not built with EnableEventProjection) keeps
+	// the exact legacy direct-to-streamBuffer path used by existing callers
+	// and tests. See client_projection.go.
+	projector *eventprojection.Projector
 }
 
 // Ensure WebClient implements acp.Client
@@ -88,6 +97,15 @@ type WebClientConfig struct {
 	// FileLinksConfig configures file path detection and linking in agent messages.
 	// If nil, file linking is disabled.
 	FileLinksConfig *conversion.FileLinkerConfig
+	// EnableEventProjection interposes an eventprojection.Projector seam
+	// (mitto-mx9.2) between raw ACP notifications and StreamBuffer for
+	// message/thought/tool-call/plan updates. Defaults to false, which
+	// preserves the exact legacy direct-to-StreamBuffer path for every
+	// existing caller/test. When true, EventProjectionSource identifies the
+	// upstream source for the Projector's Checkpoint (safe to leave its
+	// ProviderSession field empty at construction — see newACPProjector).
+	EnableEventProjection bool
+	EventProjectionSource eventprojection.SourceID
 }
 
 // NewWebClient creates a new web-based ACP client.
@@ -124,6 +142,18 @@ func NewWebClient(config WebClientConfig) *WebClient {
 		FileLinksConfig: config.FileLinksConfig,
 		SeqProvider:     config.SeqProvider,
 	})
+
+	// Wire the optional eventprojection seam (mitto-mx9.2). A construction
+	// failure (only possible with a nil SeqAllocator/CheckpointStore, never
+	// the case here) falls back to the legacy path rather than failing
+	// WebClient creation outright.
+	if config.EnableEventProjection {
+		if proj, err := newACPProjector(config.EventProjectionSource, c.streamBuffer); err == nil {
+			c.projector = proj
+		} else if config.Logger != nil {
+			config.Logger.Warn("eventprojection: failed to construct Projector, using legacy direct StreamBuffer path", "error", err)
+		}
+	}
 
 	return c
 }
@@ -205,18 +235,22 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 	case u.AgentMessageChunk != nil:
 		// Seq is assigned at emit time by StreamBuffer, not here.
 		// This ensures contiguous seq numbers even when chunks are coalesced.
-		content := u.AgentMessageChunk.Content
-		if content.Text != nil {
-			c.streamBuffer.WriteMarkdown(content.Text.Text)
-		}
+		c.dispatchViaProjector(u, true, func() {
+			content := u.AgentMessageChunk.Content
+			if content.Text != nil {
+				c.streamBuffer.WriteMarkdown(content.Text.Text)
+			}
+		})
 
 	case u.AgentThoughtChunk != nil:
 		// Seq is assigned at emit time by StreamBuffer.
 		// Thoughts are buffered if we're in a markdown block, otherwise emitted immediately.
-		thought := u.AgentThoughtChunk.Content
-		if thought.Text != nil {
-			c.streamBuffer.AddThought(thought.Text.Text)
-		}
+		c.dispatchViaProjector(u, true, func() {
+			thought := u.AgentThoughtChunk.Content
+			if thought.Text != nil {
+				c.streamBuffer.AddThought(thought.Text.Text)
+			}
+		})
 
 	case u.ToolCall != nil:
 		// Register MCP correlation BEFORE StreamBuffer processing.
@@ -241,30 +275,36 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 
 		// Seq is assigned at emit time by StreamBuffer.
 		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
-		status := string(u.ToolCall.Status)
-		c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
+		c.dispatchViaProjector(u, false, func() {
+			status := string(u.ToolCall.Status)
+			c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
+		})
 
 	case u.ToolCallUpdate != nil:
 		// Seq is assigned at emit time by StreamBuffer.
-		var status *string
-		if u.ToolCallUpdate.Status != nil {
-			s := string(*u.ToolCallUpdate.Status)
-			status = &s
-		}
-		c.streamBuffer.AddToolUpdate(string(u.ToolCallUpdate.ToolCallId), status)
+		c.dispatchViaProjector(u, false, func() {
+			var status *string
+			if u.ToolCallUpdate.Status != nil {
+				s := string(*u.ToolCallUpdate.Status)
+				status = &s
+			}
+			c.streamBuffer.AddToolUpdate(string(u.ToolCallUpdate.ToolCallId), status)
+		})
 
 	case u.Plan != nil:
 		// Seq is assigned at emit time by StreamBuffer.
 		// Convert ACP plan entries to our PlanEntry type
-		entries := make([]PlanEntry, len(u.Plan.Entries))
-		for i, e := range u.Plan.Entries {
-			entries[i] = PlanEntry{
-				Content:  e.Content,
-				Priority: string(e.Priority),
-				Status:   string(e.Status),
+		c.dispatchViaProjector(u, false, func() {
+			entries := make([]PlanEntry, len(u.Plan.Entries))
+			for i, e := range u.Plan.Entries {
+				entries[i] = PlanEntry{
+					Content:  e.Content,
+					Priority: string(e.Priority),
+					Status:   string(e.Status),
+				}
 			}
-		}
-		c.streamBuffer.AddPlan(entries)
+			c.streamBuffer.AddPlan(entries)
+		})
 
 	case u.AvailableCommandsUpdate != nil:
 		// Available commands are not sequence-dependent; notify immediately.
@@ -298,6 +338,44 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 	}
 
 	return nil
+}
+
+// dispatchViaProjector routes u through c.projector (when configured),
+// translating it to a neutral agentbackend.Event and letting the Projector's
+// sink (streamBufferProjectionSink) drive the same StreamBuffer calls legacy
+// would have made directly. When c.projector is nil, or the update kind has
+// no neutral translation, legacy runs unchanged — this keeps every existing
+// caller/test that constructs a WebClient without EnableEventProjection
+// byte-identical to before this seam existed.
+//
+// flushAfter is true for content-bearing kinds (message/thought): the
+// Projector coalesces consecutive same-kind chunks internally, which would
+// delay per-chunk delivery beyond StreamBuffer's own MarkdownBuffer/
+// ThoughtBuffer cadence; flushing after every Ingest treats each chunk as
+// its own commit boundary, preserving today's per-chunk streaming cadence to
+// observers. Discrete kinds (tool call, tool call update, plan) are already
+// commit boundaries in Projector.Ingest and need no explicit Flush.
+func (c *WebClient) dispatchViaProjector(u acp.SessionUpdate, flushAfter bool, legacy func()) {
+	if c.projector == nil {
+		legacy()
+		return
+	}
+	ev, ok := translateACPUpdateToNeutral(u)
+	if !ok {
+		legacy()
+		return
+	}
+	if err := c.projector.Ingest(ev); err != nil {
+		if c.logger != nil {
+			c.logger.Warn("eventprojection: Ingest failed", "error", err)
+		}
+		return
+	}
+	if flushAfter {
+		if err := c.projector.Flush(); err != nil && c.logger != nil {
+			c.logger.Warn("eventprojection: Flush failed", "error", err)
+		}
+	}
 }
 
 // getNextSeq returns the next sequence number from the provider.

@@ -22,9 +22,13 @@
 // session-sidecar-backed CheckpointStore implementation lives in the
 // sibling package internal/eventprojection/eventprojectionsession (kept
 // outside this leaf so the import guard never has to allow
-// internal/session). Live wiring into BackgroundSession/SessionManager is
-// deferred to later work (mitto-lrt.12+); this package is not imported by
-// internal/conversation in this increment.
+// internal/session). internal/conversation wires a Projector into the
+// production ACP streaming path (WebClient.SessionUpdate, mitto-mx9.2) as a
+// transparent pass-through — see internal/conversation/client_projection.go
+// — while the rest of this package (PromptCorrelation, remote-origin
+// classification, durable checkpointing) stays proven only against the
+// in-memory fakes here and agentbackend.FakeHost until a backend that
+// actually emits UpstreamCursor/OriginRemote exists.
 //
 // Replay/dedup guarantee, precisely stated: reconciling a Checkpoint gives
 // AT-MOST-ONCE PROJECTION of a given upstream identity into a Sink — it is
