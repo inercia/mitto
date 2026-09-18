@@ -415,6 +415,170 @@ func TestACPProcessCapabilities_Query(t *testing.T) {
 	})
 }
 
+// TestMCPServersFromACP_TranslatesStdioAndHTTPSkipsUnrecognized pins the
+// mitto-mx9.1.2 ACP→neutral MCP server translator: Stdio and HTTP entries
+// round-trip their fields (including nested Env/Headers), order is
+// preserved, and an entry with neither Http nor Stdio set (e.g. a Sse-only
+// union member, which this codebase never constructs) is silently skipped
+// rather than producing a zero-value descriptor.
+func TestMCPServersFromACP_TranslatesStdioAndHTTPSkipsUnrecognized(t *testing.T) {
+	in := []acp.McpServer{
+		{Stdio: &acp.McpServerStdio{
+			Name:    "mitto",
+			Command: "/opt/mitto/bin/mitto",
+			Args:    []string{"mcp", "--proxy-to", "http://127.0.0.1:5757/mcp"},
+			Env:     []acp.EnvVariable{{Name: "FOO", Value: "bar"}},
+		}},
+		{Sse: &acp.McpServerSseInline{Url: "http://example.invalid/sse"}}, // unrecognized union member
+		{Http: &acp.McpServerHttpInline{
+			Type:    "http",
+			Name:    "mitto",
+			Url:     "http://127.0.0.1:5757/mcp",
+			Headers: []acp.HttpHeader{{Name: "Authorization", Value: "Bearer tok"}},
+		}},
+	}
+
+	out := MCPServersFromACP(in)
+
+	if len(out) != 2 {
+		t.Fatalf("len(out) = %d, want 2 (Sse-only entry must be skipped)", len(out))
+	}
+
+	stdio := out[0]
+	if stdio.Stdio == nil || stdio.HTTP != nil {
+		t.Fatalf("out[0] = %+v, want Stdio set and HTTP nil", stdio)
+	}
+	if stdio.Stdio.Name != "mitto" || stdio.Stdio.Command != "/opt/mitto/bin/mitto" {
+		t.Errorf("out[0].Stdio = %+v, want Name=mitto Command=/opt/mitto/bin/mitto", stdio.Stdio)
+	}
+	wantArgs := []string{"mcp", "--proxy-to", "http://127.0.0.1:5757/mcp"}
+	if len(stdio.Stdio.Args) != len(wantArgs) {
+		t.Fatalf("out[0].Stdio.Args = %v, want %v", stdio.Stdio.Args, wantArgs)
+	}
+	for i, a := range wantArgs {
+		if stdio.Stdio.Args[i] != a {
+			t.Errorf("out[0].Stdio.Args[%d] = %q, want %q", i, stdio.Stdio.Args[i], a)
+		}
+	}
+	if len(stdio.Stdio.Env) != 1 || stdio.Stdio.Env[0].Name != "FOO" || stdio.Stdio.Env[0].Value != "bar" {
+		t.Errorf("out[0].Stdio.Env = %+v, want [{FOO bar}]", stdio.Stdio.Env)
+	}
+
+	httpEntry := out[1]
+	if httpEntry.HTTP == nil || httpEntry.Stdio != nil {
+		t.Fatalf("out[1] = %+v, want HTTP set and Stdio nil", httpEntry)
+	}
+	if httpEntry.HTTP.Name != "mitto" || httpEntry.HTTP.URL != "http://127.0.0.1:5757/mcp" {
+		t.Errorf("out[1].HTTP = %+v, want Name=mitto URL=http://127.0.0.1:5757/mcp", httpEntry.HTTP)
+	}
+	if len(httpEntry.HTTP.Headers) != 1 || httpEntry.HTTP.Headers[0].Name != "Authorization" || httpEntry.HTTP.Headers[0].Value != "Bearer tok" {
+		t.Errorf("out[1].HTTP.Headers = %+v, want [{Authorization Bearer tok}]", httpEntry.HTTP.Headers)
+	}
+}
+
+// TestMCPServersFromACP_EmptyInputReturnsNonNilEmptySlice guards against
+// regressing to a nil result: ACP validates that McpServers is a non-nil
+// (possibly empty) slice, and MCPServersToACP's output feeds directly into
+// that RPC field, so the intermediate neutral slice must also never be nil.
+func TestMCPServersFromACP_EmptyInputReturnsNonNilEmptySlice(t *testing.T) {
+	out := MCPServersFromACP(nil)
+	if out == nil {
+		t.Fatal("MCPServersFromACP(nil) = nil, want non-nil empty slice")
+	}
+	if len(out) != 0 {
+		t.Errorf("len(out) = %d, want 0", len(out))
+	}
+}
+
+// TestMCPServersToACP_RoundTripsStdioAndHTTP is the reverse of
+// TestMCPServersFromACP_TranslatesStdioAndHTTPSkipsUnrecognized: rebuilding
+// the ACP wire shape from neutral descriptors must reproduce the original
+// fields exactly (this is the direction SharedProcess implementations use
+// right before issuing the session/new RPC).
+func TestMCPServersToACP_RoundTripsStdioAndHTTP(t *testing.T) {
+	in := []agentbackend.MCPServerDescriptor{
+		{HTTP: &agentbackend.MCPServerHTTP{
+			Name:    "mitto",
+			URL:     "http://127.0.0.1:5757/mcp",
+			Headers: []agentbackend.HTTPHeader{{Name: "Authorization", Value: "Bearer tok"}},
+		}},
+		{Stdio: &agentbackend.MCPServerStdio{
+			Name:    "mitto",
+			Command: "/opt/mitto/bin/mitto",
+			Args:    []string{"mcp", "--proxy-to", "http://127.0.0.1:5757/mcp"},
+			Env:     []agentbackend.EnvVar{{Name: "FOO", Value: "bar"}},
+		}},
+	}
+
+	out := MCPServersToACP(in)
+
+	if len(out) != 2 {
+		t.Fatalf("len(out) = %d, want 2", len(out))
+	}
+
+	httpEntry := out[0]
+	if httpEntry.Http == nil || httpEntry.Stdio != nil {
+		t.Fatalf("out[0] = %+v, want Http set and Stdio nil", httpEntry)
+	}
+	if httpEntry.Http.Type != "http" {
+		t.Errorf("out[0].Http.Type = %q, want %q (ACP requires the discriminant)", httpEntry.Http.Type, "http")
+	}
+	if httpEntry.Http.Name != "mitto" || httpEntry.Http.Url != "http://127.0.0.1:5757/mcp" {
+		t.Errorf("out[0].Http = %+v, want Name=mitto Url=http://127.0.0.1:5757/mcp", httpEntry.Http)
+	}
+	if len(httpEntry.Http.Headers) != 1 || httpEntry.Http.Headers[0].Name != "Authorization" || httpEntry.Http.Headers[0].Value != "Bearer tok" {
+		t.Errorf("out[0].Http.Headers = %+v, want [{Authorization Bearer tok}]", httpEntry.Http.Headers)
+	}
+
+	stdio := out[1]
+	if stdio.Stdio == nil || stdio.Http != nil {
+		t.Fatalf("out[1] = %+v, want Stdio set and Http nil", stdio)
+	}
+	if stdio.Stdio.Name != "mitto" || stdio.Stdio.Command != "/opt/mitto/bin/mitto" {
+		t.Errorf("out[1].Stdio = %+v, want Name=mitto Command=/opt/mitto/bin/mitto", stdio.Stdio)
+	}
+	if len(stdio.Stdio.Env) != 1 || stdio.Stdio.Env[0].Name != "FOO" || stdio.Stdio.Env[0].Value != "bar" {
+		t.Errorf("out[1].Stdio.Env = %+v, want [{FOO bar}]", stdio.Stdio.Env)
+	}
+}
+
+// TestModeStateFromACP_NilAndPopulated pins the mitto-mx9.1.2
+// SessionHandle.Modes translation: a nil ACP mode state translates to nil
+// (no session modes advertised), and a populated one carries over the
+// current mode id plus every available mode, handling both a present and an
+// absent (nil) per-mode Description pointer.
+func TestModeStateFromACP_NilAndPopulated(t *testing.T) {
+	if got := ModeStateFromACP(nil); got != nil {
+		t.Fatalf("ModeStateFromACP(nil) = %+v, want nil", got)
+	}
+
+	desc := "Focused on planning, not editing"
+	in := &acp.SessionModeState{
+		CurrentModeId: acp.SessionModeId("plan"),
+		AvailableModes: []acp.SessionMode{
+			{Id: acp.SessionModeId("plan"), Name: "Plan", Description: &desc},
+			{Id: acp.SessionModeId("code"), Name: "Code", Description: nil},
+		},
+	}
+
+	got := ModeStateFromACP(in)
+	if got == nil {
+		t.Fatal("ModeStateFromACP(populated) = nil, want non-nil")
+	}
+	if got.CurrentModeID != "plan" {
+		t.Errorf("CurrentModeID = %q, want %q", got.CurrentModeID, "plan")
+	}
+	if len(got.Available) != 2 {
+		t.Fatalf("len(Available) = %d, want 2", len(got.Available))
+	}
+	if got.Available[0].ID != "plan" || got.Available[0].Name != "Plan" || got.Available[0].Description != desc {
+		t.Errorf("Available[0] = %+v, want {ID:plan Name:Plan Description:%q}", got.Available[0], desc)
+	}
+	if got.Available[1].ID != "code" || got.Available[1].Name != "Code" || got.Available[1].Description != "" {
+		t.Errorf("Available[1] = %+v, want {ID:code Name:Code Description:\"\"} (nil Description pointer -> empty string)", got.Available[1])
+	}
+}
+
 // TestACPBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession
 // proves the mitto-lrt.7 acceptance criterion "missing-session ... cases
 // surface actionable states instead of duplicating work": when
