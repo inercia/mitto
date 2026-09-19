@@ -8623,6 +8623,47 @@ func TestBeadsPrimeProcessor_ShellScriptAcceptsColdEmptyOutput(t *testing.T) {
 	}
 }
 
+// TestBeadsPrimeProcessor_ShellScriptAcceptsStorageUnavailableShape pins
+// mitto-5i6: a bare "## Persistent Memories" heading (no "(N)" count)
+// followed by a "Skipped: beads storage unavailable ..." line — the exact
+// `bd --readonly prime --memories-only` output observed on the
+// cgw-translation workspace when its Dolt-backed store has pending schema
+// migrations it refuses to auto-apply. This shape has zero `### key` lines
+// and no `(N)` heading, so it falls into the same `expected < 0 && n == 0`
+// cold-empty fallback added by mitto-9zp; it must succeed with an empty
+// index rather than exit 65 with "memory index format/count mismatch
+// expected=-1 actual=0" (the exact symptom reported in mitto-5i6, produced
+// by a pre-mitto-9zp build of this processor lacking that fallback).
+func TestBeadsPrimeProcessor_ShellScriptAcceptsStorageUnavailableShape(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "beads-prime")
+
+	binDir := t.TempDir()
+	fakeBd := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'bd version 1.2.2 (test)\\n'; exit 0; fi\n" +
+		"cat <<'EOF'\n" +
+		"[bd prime] If this output is truncated by your host, read the full persisted hook output before continuing; it may contain project memories and session rules not visible in the preview.\n" +
+		"\n" +
+		"\n" +
+		"## Persistent Memories\n" +
+		"\n" +
+		"Skipped: beads storage unavailable (failed to open database: embeddeddolt: init schema: refusing to auto-apply 13 pending schema migrations to a remote-backed database (v53 -> v66): migrating clon...) - persistent memories were NOT injected this session. Run `bd doctor`; if the store is a Dolt server, check it is running and reachable.\n" +
+		"EOF\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(fakeBd), 0755); err != nil {
+		t.Fatalf("WriteFile(fake bd) error = %v", err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	tmpDir := t.TempDir()
+	output, err := NewExecutor(tmpDir, nil).Execute(context.Background(), proc, &ProcessorInput{WorkingDir: tmpDir})
+	if err != nil {
+		t.Fatalf("Execute() rejected storage-unavailable output (mitto-5i6 regression): %v", err)
+	}
+	if !strings.Contains(output.Text, "## Beads Memory Index") ||
+		!strings.Contains(output.Text, "No persistent memories recorded yet.") {
+		t.Errorf("unexpected index for storage-unavailable shape:\n%s", output.Text)
+	}
+}
+
 // TestBeadsPrimeProcessor_ShellScriptRetriesTransientMismatch covers the
 // mitto-e3ut.2 retry path: a concurrent memory update can make one snapshot
 // inconsistent, while an immediate fresh read is valid.
