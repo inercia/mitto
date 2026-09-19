@@ -180,6 +180,7 @@ type fakeHandshakeDeps struct {
 
 	// state knobs
 	sessionID          string
+	acpServer          string
 	logger             *slog.Logger
 	sessionCtx         context.Context
 	creationCtx        context.Context
@@ -236,6 +237,7 @@ func newFakeHandshakeDeps() *fakeHandshakeDeps {
 }
 
 func (f *fakeHandshakeDeps) hsSessionID() string            { return f.sessionID }
+func (f *fakeHandshakeDeps) hsACPServer() string            { return f.acpServer }
 func (f *fakeHandshakeDeps) hsLogger() *slog.Logger         { return f.logger }
 func (f *fakeHandshakeDeps) hsSessionCtx() context.Context  { return f.sessionCtx }
 func (f *fakeHandshakeDeps) hsCreationCtx() context.Context { return f.creationCtx }

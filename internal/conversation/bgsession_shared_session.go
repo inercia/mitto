@@ -133,6 +133,7 @@ func (bs *BackgroundSession) leaseSessionOps() (SessionPromptOps, agentbackend.S
 // =============================================================================
 
 func (bs *BackgroundSession) hsSessionID() string            { return bs.persistedID }
+func (bs *BackgroundSession) hsACPServer() string            { return bs.acpServer }
 func (bs *BackgroundSession) hsLogger() *slog.Logger         { return bs.logger }
 func (bs *BackgroundSession) hsSessionCtx() context.Context  { return bs.ctx }
 func (bs *BackgroundSession) hsCreationCtx() context.Context { return bs.creationCtx }

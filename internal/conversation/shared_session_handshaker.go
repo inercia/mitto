@@ -89,6 +89,11 @@ func isSessionNotFoundErr(err error) bool {
 type handshakeDeps interface {
 	// Identity / lifecycle
 	hsSessionID() string
+	// hsACPServer returns the configured ACP server/provider name (bs.acpServer),
+	// used only to populate agentbackend.SessionRef.Provider when building
+	// neutral-routed SessionCallbacks (mitto-mx9.4) — informational, never
+	// dispatched on.
+	hsACPServer() string
 	hsLogger() *slog.Logger
 	hsSessionCtx() context.Context  // bs.ctx — session lifetime context
 	hsCreationCtx() context.Context // bs.creationCtx (may be nil)
@@ -319,17 +324,16 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 		"acp_session_id", handle.SessionID)
 
 	client := d.hsGetACPClient()
-	d.hsGetSharedProcess().RegisterSession(handle.SessionID, &SessionCallbacks{
-		OnSessionUpdate:       client.SessionUpdate,
-		OnReadTextFile:        client.ReadTextFile,
-		OnWriteTextFile:       client.WriteTextFile,
-		OnRequestPermission:   client.RequestPermission,
-		OnCreateTerminal:      client.CreateTerminal,
-		OnTerminalOutput:      client.TerminalOutput,
-		OnReleaseTerminal:     client.ReleaseTerminal,
-		OnWaitForTerminalExit: client.WaitForTerminalExit,
-		OnKillTerminal:        client.KillTerminal,
-	})
+	// mitto-mx9.4: route fs/permission/terminal requests through the neutral
+	// agentbackend.ClientServices/TerminalServices contracts instead of
+	// wiring ACP callbacks directly to *WebClient methods — see
+	// buildNeutralSessionCallbacks (client_services_callbacks.go).
+	ref := agentbackend.SessionRef{
+		ConversationID:  d.hsSessionID(),
+		Provider:        agentbackend.ProviderID(d.hsACPServer()),
+		ProviderSession: agentbackend.ProviderSessionID(handle.SessionID),
+	}
+	d.hsGetSharedProcess().RegisterSession(handle.SessionID, buildNeutralSessionCallbacks(client, ref))
 
 	d.hsSetACPID(handle.SessionID)
 	// Deferred session/new: this session was created fresh in this process,
@@ -675,17 +679,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	d.hsNilCreationCtx()
 
 	client := d.hsGetACPClient()
-	sharedProcess.RegisterSession(handle.SessionID, &SessionCallbacks{
-		OnSessionUpdate:       client.SessionUpdate,
-		OnReadTextFile:        client.ReadTextFile,
-		OnWriteTextFile:       client.WriteTextFile,
-		OnRequestPermission:   client.RequestPermission,
-		OnCreateTerminal:      client.CreateTerminal,
-		OnTerminalOutput:      client.TerminalOutput,
-		OnReleaseTerminal:     client.ReleaseTerminal,
-		OnWaitForTerminalExit: client.WaitForTerminalExit,
-		OnKillTerminal:        client.KillTerminal,
-	})
+	// mitto-mx9.4: same neutral-contract routing as ensureSharedACPSession above.
+	ref := agentbackend.SessionRef{
+		ConversationID:  d.hsSessionID(),
+		Provider:        agentbackend.ProviderID(d.hsACPServer()),
+		ProviderSession: agentbackend.ProviderSessionID(handle.SessionID),
+	}
+	sharedProcess.RegisterSession(handle.SessionID, buildNeutralSessionCallbacks(client, ref))
 
 	d.hsSetACPID(handle.SessionID)
 	d.hsSetAgentSupportsImages(supportsImages)
