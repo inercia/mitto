@@ -1,0 +1,19 @@
+{
+  "scenario": "perf-queue-quiet",
+  "description": "Deterministic response with a fixed 3s silent gap before any session/update notification, used by the mitto-sus.11 queue-store perf isolation scenario (tests/ui/specs/perf/render-isolation.perf.spec.ts) to keep the agent busy (isStreaming=true, so a REST-queued message is never auto-processed) WITHOUT any chunk delivery -- avoids conflating queueStore isolation with the ongoing per-chunk re-renders a real streaming response would cause. Short, unique, case-sensitive literal trigger (no wildcards) so it reliably wins findMatchingResponse's shortest-match-span selection against broader wildcarded fixtures that can coincidentally match Mitto's injected preamble text (see handler.go's findMatchingResponse doc comment).",
+  "responses": [
+    {
+      "trigger": {
+        "type": "prompt",
+        "pattern": "perfqueuequiet"
+      },
+      "delay_ms": 3000,
+      "actions": [
+        {
+          "type": "agent_message",
+          "chunks": ["Queue-quiet response complete."]
+        }
+      ]
+    }
+  ]
+}

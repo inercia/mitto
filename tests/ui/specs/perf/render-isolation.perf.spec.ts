@@ -21,7 +21,7 @@
 import { Page } from "@playwright/test";
 import { test, expect } from "../../fixtures/test-fixtures";
 import { enablePerf, writePerfSample } from "../../utils/perf";
-import { selectors, timeouts } from "../../utils/selectors";
+import { selectors, timeouts, apiUrl } from "../../utils/selectors";
 
 type RenderCounts = Record<string, number>;
 
@@ -271,5 +271,119 @@ test.describe("Perf: render-domain isolation (mitto-b1k)", () => {
       counts.MessageList || 0,
     );
     writePerfSample("render.toast-no-ws", "ChatInput", counts.ChatInput || 0);
+  });
+
+  test("adding and deleting a queued message via the REST API does not re-render MessageList (mitto-sus.11)", async ({
+    page,
+    helpers,
+    request,
+  }) => {
+    await enablePerf(page);
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+
+    const sessionId = await helpers.createFreshSession(page);
+
+    // Keep the agent busy (isStreaming=true) for the whole scenario so the
+    // queued message is NOT auto-processed by TryProcessQueuedMessage() --
+    // that path only fires when the agent is idle, and would turn this into
+    // a real new agent turn, legitimately re-rendering MessageList and
+    // defeating the isolation assertion below. Unlike "perf plain long"
+    // (continuous 5ms-cadence chunks that would themselves keep re-rendering
+    // MessageList/App throughout the window), the dedicated
+    // "perfqueuequiet" fixture (tests/fixtures/responses/perf-queue-quiet
+    // .json) sends NO session/update notification at all for a fixed 3s
+    // response-level delay -- a wide, deterministic quiet window to run the
+    // queue add/delete round trip in without any unrelated chunk delivery
+    // contaminating the render counts.
+    await helpers.sendMessage(page, "perfqueuequiet");
+    await expect(page.locator(selectors.stopButton)).toBeVisible({
+      timeout: timeouts.agentResponse,
+    });
+
+    // Let the isStreaming=true transition settle before the baseline reset.
+    await page.waitForTimeout(300);
+    await resetRenderCounts(page);
+
+    // POST /queue exercises the exact writer path this increment migrated:
+    // useWebSocket.js's "queue_updated" handler now writes to queueStore.js
+    // keyed by session id instead of an App-level useState (mirrors the
+    // plan's "queue add / delete on the active session" test item).
+    const queuedMessage = helpers.uniqueMessage("Queue-perf");
+    const addResponse = await request.post(
+      apiUrl(`/api/sessions/${sessionId}/queue`),
+      { data: { message: queuedMessage } },
+    );
+    expect(addResponse.ok()).toBeTruthy();
+    const added = await addResponse.json();
+
+    // The queue toggle button only renders once queueLength > 0 -- reading
+    // ChatInput's own self-subscribed useQueueLength(sessionId).
+    await expect(page.locator(selectors.queueToggleButton)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+
+    const countsAfterAdd = await getRenderCounts(page);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perf] render counts after queue add: ${JSON.stringify(countsAfterAdd)}`,
+    );
+    // MessageList has no reason to read queue state at all -- this is the
+    // core cross-domain isolation invariant this scenario exists to pin.
+    expect(countsAfterAdd.MessageList || 0).toBe(0);
+
+    const deleteResponse = await request.delete(
+      apiUrl(`/api/sessions/${sessionId}/queue/${added.id}`),
+    );
+    expect(deleteResponse.ok()).toBeTruthy();
+
+    // The toggle button disappears again once the queue drains back to 0.
+    await expect(page.locator(selectors.queueToggleButton)).toBeHidden({
+      timeout: timeouts.shortAction,
+    });
+
+    const counts = await getRenderCounts(page);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perf] render counts after queue add+delete: ${JSON.stringify(counts)}`,
+    );
+
+    expect(counts.MessageList || 0).toBe(0);
+    // App and SessionList each keep exactly ONE legitimate, documented direct
+    // subscription to the ACTIVE session's queue length (mitto-sus.11's
+    // Implementation comment): App's own useQueueLength(activeSessionId)
+    // drives headerHasQueued (the archive-button gate), and SessionList's
+    // self-subscription drives its sidebar "queued messages" badge. Neither
+    // is prop-drilled from the other, so each fires independently, at most
+    // once per add and once per delete (bounded 2) -- unlike the flat-0
+    // scenarios above, a nonzero count here is the intended reactive
+    // behavior, not a re-render-isolation regression.
+    expect(counts.App || 0).toBeLessThanOrEqual(2);
+    expect(counts.SessionList || 0).toBeLessThanOrEqual(2);
+    // Sanity check: ChatInput/QueueDropdown/App/SessionList ARE the domains
+    // expected to re-render across the add+delete round trip -- a flat 0
+    // here would mean the store wiring is broken, not that isolation
+    // improved.
+    expect(counts.ChatInput || 0).toBeGreaterThan(0);
+    expect(counts.QueueDropdown || 0).toBeGreaterThan(0);
+    expect(counts.App || 0).toBeGreaterThan(0);
+    expect(counts.SessionList || 0).toBeGreaterThan(0);
+
+    writePerfSample("render.queue-add-delete", "App", counts.App || 0);
+    writePerfSample(
+      "render.queue-add-delete",
+      "SessionList",
+      counts.SessionList || 0,
+    );
+    writePerfSample(
+      "render.queue-add-delete",
+      "MessageList",
+      counts.MessageList || 0,
+    );
+    writePerfSample(
+      "render.queue-add-delete",
+      "ChatInput",
+      counts.ChatInput || 0,
+    );
   });
 });
