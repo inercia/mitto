@@ -3501,6 +3501,61 @@ func (o *orderTrackingDeps) pdOnTurnIdle() {
 	*o.order = append(*o.order, "TurnIdle")
 }
 
+// --- mitto-mx9.3: ShouldTriggerLocalAutomation gate regression ---
+//
+// handlePromptSuccess/finalizeTurn now compute
+// localAutomationAllowed := ShouldTriggerLocalAutomation(agentbackend.OriginLocal)
+// and gate title-generation retry, follow-up analysis, after-phase
+// processors, and (via finalizeTurn's pdOnTurnIdle call) loop onCompletion
+// re-fire / child dispatch on it. Because the ACP prompt-completion pipeline
+// calls this with the constant agentbackend.OriginLocal (there is no real
+// inbound-event Origin to thread through — see automation_origin.go's
+// doc-comment), ShouldTriggerLocalAutomation always evaluates true here
+// today, so this test exercises the ONLY reachable branch: it pins that all
+// four automation effects still fire together for a normal, locally-driven
+// end-turn, proving the new gate didn't silently disable any of them. The
+// individual effects are also covered piecemeal by the tests above/below;
+// this test additionally asserts they fire TOGETHER in one localAutomationAllowed
+// evaluation, which is what actually changed in prompt_dispatcher.go.
+//
+// A true OriginRemote-blocks-automation test would require threading a real
+// Origin value into handlePromptSuccess/finalizeTurn's signatures, which
+// Implement phase deliberately did not do (documented deviation: ACP never
+// produces OriginRemote, so hardcoding OriginLocal is behaviour-neutral and
+// avoids a speculative parameter with no live caller). Origin-based blocking
+// itself remains directly pinned at the predicate level by
+// automation_origin_test.go's TestShouldTriggerLocalAutomation_OriginGate and
+// TestShouldTriggerLocalAutomation_HostEchoDoesNotTriggerAutomation.
+func TestPromptDispatcher_HandlePromptSuccessAndFinalizeTurn_LocalAutomation_AllGatesFire_MittoMX93(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.actionButtonsOn = true
+	d.hasProcessorMgr = true
+	d.lastAgentMessage = "agent response here"
+	d.immediateQueue = false
+	d.processNextResult = false // no queued message dispatched -> sessionIdle
+	resp := acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+
+	sessionIdle := p.handlePromptSuccess(d, 1, 1, resp, "user prompt", PromptMeta{}, time.Now(), time.Now())
+	if !sessionIdle {
+		t.Fatal("expected sessionIdle=true (no queued message dispatched, completed end-turn with agent_message)")
+	}
+	if len(d.retryTitleCalls) != 1 {
+		t.Errorf("title-generation retry: got %d calls, want 1", len(d.retryTitleCalls))
+	}
+	if len(d.followUpCalls) != 1 {
+		t.Errorf("follow-up analysis: got %d calls, want 1", len(d.followUpCalls))
+	}
+	if d.afterProcessorCalls != 1 {
+		t.Errorf("after-phase processors: got %d calls, want 1", d.afterProcessorCalls)
+	}
+
+	p.finalizeTurn(d, nil, PromptMeta{}, sessionIdle)
+	if d.turnIdleCalls != 1 {
+		t.Errorf("pdOnTurnIdle (loop onCompletion / child dispatch bridge): got %d calls, want 1", d.turnIdleCalls)
+	}
+}
+
 // --- handlePromptError tests ---
 
 // helper: make a sentinel error that is neither rate-limit nor context-too-large.
