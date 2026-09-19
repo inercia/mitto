@@ -41,6 +41,7 @@ import {
 import { playAgentCompletedSound } from "../utils/audio.js";
 
 import { perfMark } from "../utils/perfMarks.js";
+import * as sessionsStore from "../stores/sessionsStore.js";
 
 import { getApiPrefix } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
@@ -427,6 +428,17 @@ export function useWebSocket({
 
   useEffect(() => {
     sessionsRef.current = sessions;
+  }, [sessions]);
+
+  // Mirror `sessions` into the subscribable per-slice store (mitto-sus.7) so
+  // slice-scoped consumers (see hooks/useSessionsStore.js) can subscribe to
+  // just the messages/summary/info/keepalive slice they render, instead of
+  // re-rendering whenever ANY session's entry changes. Purely additive:
+  // `sessions` remains the single source of truth here; replaceAll() does
+  // its own per-slice diffing so this fires safely on every sessions change
+  // without over-notifying subscribers.
+  useEffect(() => {
+    sessionsStore.replaceAll(sessions);
   }, [sessions]);
 
   useEffect(() => {

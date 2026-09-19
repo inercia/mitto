@@ -2,6 +2,7 @@
 // Renders the active toast stack from the useToast hook.
 const { html } = window.preact;
 import { CloseIcon } from "./Icons.js";
+import { useRenderCounter } from "../hooks/useRenderCounter.js";
 
 // Style config: daisyUI alert variant (severity -> semantic color via --mitto-*
 // token bridge) and icon emoji. The alert-* class carries both background and
@@ -21,6 +22,11 @@ const STYLE_CONFIG = {
  * @param {Function} props.onDismiss - Called with toast id to dismiss
  */
 export function ToastContainer({ toasts, onDismiss }) {
+  // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
+  // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
+  // Placed before the early return so a render that bails on an empty toast
+  // stack is still counted.
+  useRenderCounter("ToastContainer");
   if (!toasts || toasts.length === 0) return null;
 
   return html`

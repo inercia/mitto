@@ -18,6 +18,7 @@ import { errorMessage } from "../utils/sdkErrors.js";
 import { getContextWindowSize } from "../utils/models.js";
 import { routeDroppedPaths } from "../utils/paths.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
+import { useRenderCounter } from "../hooks/useRenderCounter.js";
 import {
   getDraft as getStoredDraft,
   setDraft as setStoredDraft,
@@ -217,6 +218,9 @@ export function ChatInput({
   flushCommand = "",
   onFlushContext,
 }) {
+  // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
+  // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
+  useRenderCounter("ChatInput");
   // Draft text is local state seeded from (and mirrored into) the shared
   // draftStore, instead of flowing through App's `sessionDrafts` state
   // (mitto-sus.6). This isolates every keystroke's render to this component

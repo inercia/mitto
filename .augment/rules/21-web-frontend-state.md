@@ -151,3 +151,36 @@ if (storedSession?.parent_session_id && groupingMode === "folder") {
   if (rootParent?.working_dir) groupKey = rootParent.working_dir || "Unknown";
 }
 ```
+
+## External Subscribable Stores (mitto-sus.6, mitto-sus.7)
+
+For state that changes at high frequency but is only consumed by a narrow
+slice of the tree (composer keystrokes, per-session server updates), prefer a
+**module-level store + per-key subscription** over lifting it into `App`'s
+(or any ancestor's) React state:
+
+- `utils/draftStore.js` — per-session composer draft text. Keystrokes bypass
+  `App`'s setState path entirely; only the mounted `ChatInput` for the
+  affected session subscribes.
+- `stores/sessionsStore.js` — per-session, per-slice (`messages` / `summary`
+  / `info` / `keepalive`) server state, kept live via a single
+  `replaceAll(sessions)` call from `useWebSocket.js`. See
+  `docs/devel/frontend-render-domains.md` for the full render-domain
+  contract and hooks (`hooks/useSessionsStore.js`).
+
+**Why not a Preact context?** A context provider re-renders every consumer on
+every write, same as lifting the state into `App`. A plain module-level
+`Map` + `Set<callback>` per key lets a component subscribe to only the one
+key (and, for `sessionsStore`, the one slice) it renders — writes are O(1)
+with no re-render fan-out to unrelated sessions or unrelated slices of the
+same session.
+
+**Hook wrapper pattern** (Preact does not export `useSyncExternalStore`):
+
+```javascript
+const [value, setValue] = useState(() => getStoredValue(key));
+useEffect(() => {
+  setValue(getStoredValue(key)); // rehydrate on key change
+  return subscribe(key, setValue); // torn down before the next key's subscription
+}, [key]);
+```

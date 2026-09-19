@@ -4,6 +4,7 @@ const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } =
 
 import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
+import { useRenderCounter } from "../hooks/useRenderCounter.js";
 
 import {
   computeUnifiedTree,
@@ -249,6 +250,9 @@ export function SessionList({
   isCreatingSession = false, // True while ANY new-conversation request is in-flight or retrying
   creatingWorkingDirs = new Set(), // Set of workingDirs with an in-flight create request
 }) {
+  // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
+  // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
+  useRenderCounter("SessionList");
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
     () => computeAllSessions(activeSessions, storedSessions),

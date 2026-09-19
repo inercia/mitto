@@ -10,6 +10,7 @@ import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
 import { buildRetryTargets, canReplayNamedPrompt, messageKey } from "../lib.js";
 import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
+import { useRenderCounter } from "../hooks/useRenderCounter.js";
 
 /**
  * @param {Array}    displayMessages   - Coalesced messages to render
@@ -66,6 +67,9 @@ export function MessageList({
   mcpInitState,
   clearMCPInit,
 }) {
+  // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
+  // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
+  useRenderCounter("MessageList");
   // Tick every 2s while the "agent is still working" heartbeat is visible, to
   // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
   // no new heartbeat). 2s resolution is invisible to the eye at mm:ss scale and

@@ -23,6 +23,8 @@ This directory contains technical documentation for developers working on Mitto.
 - **[UI Responsiveness Benchmarks](ui-responsiveness-benchmarks.md)** — Opt-in performance-mark instrumentation, deterministic streaming fixtures, environmental controls, and proposed budgets for measuring UI responsiveness (`mitto-sus.1`)
   - **[UI Responsiveness Baseline](ui-responsiveness-baseline.md)** — Auto-generated table of the currently committed `tests/ui/perf/baseline.json` numbers each `make bench-ui` gate compares against (`mitto-sus.1.3`)
 
+- **[Frontend Render Domains](frontend-render-domains.md)** — Render-count instrumentation, the five named render domains (root/sidebar/active-conversation/composer/notifications), and the `sessionsStore` per-slice subscribable store pattern (`mitto-sus.7`)
+
 - **[WebSocket Documentation](websockets/)** — Protocol specification, message types, sequence numbers, synchronization, reconnection handling, and multi-client support (authoritative reference for all real-time communication)
 
 - **[Workspaces](workspaces.md)** — Multi-workspace architecture, CLI usage, REST API, and workspace persistence

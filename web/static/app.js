@@ -42,6 +42,7 @@ import {
   exposePerfDumpForConsole,
 } from "./utils/perfMarks.js";
 import { setDraft as setDraftStore } from "./utils/draftStore.js";
+import { useRenderCounter } from "./hooks/useRenderCounter.js";
 
 // mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
 // unless `?perf=1` / `window.__mittoPerf` is set (see utils/perfMarks.js);
@@ -251,6 +252,10 @@ import { Tooltip } from "./components/Tooltip.js";
 // =============================================================================
 
 function App() {
+  // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
+  // instrumentation is enabled (`?perf=1` / `window.__mittoPerf`); see
+  // docs/devel/frontend-render-domains.md for the full domain catalogue.
+  useRenderCounter("App");
   // Holds a callback (wired below, once useBeadsIntegration is set up) that
   // useWebSocket invokes when the ACTIVE conversation is removed from view
   // (deleted or archived), so the UI can navigate to the global Dashboard
