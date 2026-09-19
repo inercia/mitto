@@ -1,12 +1,17 @@
 package stats
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/beads"
 )
 
 // fakeBeadsLister returns canned per-directory bd list payloads.
@@ -26,6 +31,24 @@ func (f *fakeBeadsLister) List(_ context.Context, dir string) ([]byte, error) {
 
 func wsLister(ws ...BeadsWorkspace) BeadsWorkspaceLister {
 	return func() []BeadsWorkspace { return ws }
+}
+
+// sequencedLister returns errs[i] (or, once errs is exhausted, payload/nil)
+// on the i-th call, letting listWithRetry tests script "fail N times then
+// succeed" without a bespoke fake per scenario (mitto-ei6).
+type sequencedLister struct {
+	errs    []error
+	payload []byte
+	calls   int
+}
+
+func (f *sequencedLister) List(_ context.Context, _ string) ([]byte, error) {
+	i := f.calls
+	f.calls++
+	if i < len(f.errs) {
+		return nil, f.errs[i]
+	}
+	return f.payload, nil
 }
 
 func newBeadsTestSource(t *testing.T, store Store, lister BeadsLister, ws BeadsWorkspaceLister, now time.Time) *BeadsSource {
@@ -626,5 +649,169 @@ func TestBeadsSource_LoadUptime_QueryErrorFailsOpen(t *testing.T) {
 	}
 	if got := countAt(t, s, bucket, MetricBeadsActiveCycleSecondsSum, BeadsSentinelSessionID, "ws-u5"); got != 1800 {
 		t.Errorf("active cycle sum = %d, want 1800 (uptime query error => fail open to fully up)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mitto-ei6: bd stderr/exit_code surfacing + transient-lock retry in
+// listWithRetry.
+// ---------------------------------------------------------------------------
+
+// lockCmdErr builds a *beads.CmdError whose Stderr matches one of
+// IsTransientLock's patterns, mirroring what internal/beads/cli.go produces
+// for a real dolt lock-contention failure.
+func lockCmdErr() error {
+	return &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: "database is locked", ExitCode: 1}
+}
+
+// TestBeadsSource_ListWithRetry_RetriesOnDeadlineExceeded pins the
+// pre-existing (mitto-c20) retry behavior: a transient per-call timeout is
+// retried up to ListRetries times and succeeds once the underlying lister
+// recovers.
+func TestBeadsSource_ListWithRetry_RetriesOnDeadlineExceeded(t *testing.T) {
+	s, _ := openTestStore(t)
+	lister := &sequencedLister{errs: []error{context.DeadlineExceeded}, payload: []byte(`[]`)}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws", Dir: "/ws"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: time.Now,
+		ListRetries: 2, ListRetryBackoff: time.Millisecond,
+	})
+
+	raw, err := src.listWithRetry(context.Background(), "/ws")
+	if err != nil {
+		t.Fatalf("listWithRetry: %v, want nil after one retry", err)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("listWithRetry payload = %q, want []", raw)
+	}
+	if lister.calls != 2 {
+		t.Errorf("lister.calls = %d, want 2 (1 initial + 1 retry)", lister.calls)
+	}
+}
+
+// TestBeadsSource_ListWithRetry_RetriesOnTransientLock is the mitto-ei6
+// regression: a transient dolt-lock failure (the class internal/beads
+// already retries ONCE internally in runJSONRead, but which listWithRetry
+// previously did not retry at all) must now be absorbed at the stats-pass
+// level too, instead of aborting the whole run.
+func TestBeadsSource_ListWithRetry_RetriesOnTransientLock(t *testing.T) {
+	s, _ := openTestStore(t)
+	lister := &sequencedLister{errs: []error{lockCmdErr(), lockCmdErr()}, payload: []byte(`[]`)}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws", Dir: "/ws"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: time.Now,
+		ListRetries: 2, ListRetryBackoff: time.Millisecond,
+	})
+
+	raw, err := src.listWithRetry(context.Background(), "/ws")
+	if err != nil {
+		t.Fatalf("listWithRetry: %v, want nil after exhausting the transient-lock failures", err)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("listWithRetry payload = %q, want []", raw)
+	}
+	if lister.calls != 3 {
+		t.Errorf("lister.calls = %d, want 3 (1 initial + 2 retries)", lister.calls)
+	}
+}
+
+// TestBeadsSource_ListWithRetry_FailFastOnNonRetryableError is the
+// regression guard from the mitto-ei6 plan: an error that is neither a
+// context.DeadlineExceeded nor a beads.IsTransientLock match (e.g.
+// permission denied) must NOT be retried — runOnce's all-or-nothing pass
+// must still abort immediately rather than silently masking a real,
+// persistent failure behind retry attempts.
+func TestBeadsSource_ListWithRetry_FailFastOnNonRetryableError(t *testing.T) {
+	s, _ := openTestStore(t)
+	permErr := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: "permission denied", ExitCode: 1}
+	lister := &sequencedLister{errs: []error{permErr, permErr, permErr}, payload: []byte(`[]`)}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws", Dir: "/ws"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: time.Now,
+		ListRetries: 2, ListRetryBackoff: time.Millisecond,
+	})
+
+	_, err := src.listWithRetry(context.Background(), "/ws")
+	if err == nil {
+		t.Fatal("listWithRetry: got nil error, want the non-retryable permission error returned immediately")
+	}
+	if lister.calls != 1 {
+		t.Errorf("lister.calls = %d, want 1 (no retry for a non-timeout, non-lock error)", lister.calls)
+	}
+}
+
+// TestBeadsSource_ListWithRetry_LogsStderrAndExitCode confirms the
+// mitto-ei6 log-enrichment half end-to-end: the "retrying" WARN line
+// carries the underlying bd stderr, exit code, and a "lock" reason when a
+// transient-lock failure triggers the retry.
+func TestBeadsSource_ListWithRetry_LogsStderrAndExitCode(t *testing.T) {
+	s, _ := openTestStore(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	lister := &sequencedLister{errs: []error{lockCmdErr()}, payload: []byte(`[]`)}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws", Dir: "/ws"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: time.Now,
+		ListRetries: 2, ListRetryBackoff: time.Millisecond,
+		Logger: logger,
+	})
+
+	if _, err := src.listWithRetry(context.Background(), "/ws"); err != nil {
+		t.Fatalf("listWithRetry: %v, want nil", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"reason=lock", `stderr="database is locked"`, "exit_code=1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("retry log = %q, want it to contain %q", out, want)
+		}
+	}
+}
+
+// TestBeadsSource_RunReportsStderrAndExitCodeOnUnretryableFailure covers the
+// startup/periodic WARN sites in loop(): when runOnce's all-or-nothing pass
+// aborts on a non-retryable *beads.CmdError, the caller-visible error must
+// still let beadsErrorAttrs recover stderr/exit_code (i.e. the CmdError
+// survives runOnce's fmt.Errorf wrapping via errors.As unwrapping).
+func TestBeadsSource_RunReportsStderrAndExitCodeOnUnretryableFailure(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-04-10T12:00:00Z")
+	permErr := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), Stderr: "permission denied opening workspace", ExitCode: 1}
+	lister := &fakeBeadsLister{err: permErr}
+	src := newBeadsTestSource(t, s, lister, wsLister(BeadsWorkspace{UUID: "ws-e", Dir: "/ws/e"}), now)
+
+	err := src.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run: got nil error, want the wrapped permission failure")
+	}
+	if got := beads.StderrOf(err); got != "permission denied opening workspace" {
+		t.Errorf("beads.StderrOf(Run error) = %q, want the CmdError's Stderr to survive runOnce's wrapping", got)
+	}
+	if got := beads.ExitCodeOf(err); got != 1 {
+		t.Errorf("beads.ExitCodeOf(Run error) = %d, want 1", got)
+	}
+
+	attrs := beadsErrorAttrs(err)
+	if len(attrs) != 6 || attrs[2] != "stderr" || attrs[3] != "permission denied opening workspace" || attrs[4] != "exit_code" || attrs[5] != 1 {
+		t.Errorf("beadsErrorAttrs(err) = %v, want [error, err, stderr, <msg>, exit_code, 1]", attrs)
+	}
+}
+
+// TestBeadsErrorAttrs_PlainErrorOmitsStderrAndExitCode confirms
+// beadsErrorAttrs degrades cleanly for an error that is not (and does not
+// wrap) a *beads.CmdError: only the "error" pair is present, with no
+// spurious "stderr"/"exit_code" fields.
+func TestBeadsErrorAttrs_PlainErrorOmitsStderrAndExitCode(t *testing.T) {
+	plain := errors.New("boom")
+	attrs := beadsErrorAttrs(plain)
+	if len(attrs) != 2 || attrs[0] != "error" || attrs[1] != plain {
+		t.Errorf("beadsErrorAttrs(plain) = %v, want [error, boom] with no stderr/exit_code", attrs)
+	}
+}
+
+// TestClassifyRetryReason pins the two retry-reason labels used in the
+// "retrying" WARN log line.
+func TestClassifyRetryReason(t *testing.T) {
+	if got := classifyRetryReason(context.DeadlineExceeded); got != "timeout" {
+		t.Errorf("classifyRetryReason(DeadlineExceeded) = %q, want %q", got, "timeout")
+	}
+	if got := classifyRetryReason(lockCmdErr()); got != "lock" {
+		t.Errorf("classifyRetryReason(lock) = %q, want %q", got, "lock")
 	}
 }
