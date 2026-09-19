@@ -1,55 +1,38 @@
 // =============================================================================
 // Mitto Web Interface — WebSocket Queue sub-hook
 // Extracted from useWebSocket.js (mitto-90f.5).
-// Owns queueLength/queueMessages/queueConfig state and REST callbacks
-// (fetch/delete/add/move). Takes activeSessionId as a parameter so it stays
+// Owns the REST callbacks (fetch/delete/add/move); the queue data itself
+// (messages/length/config) lives in stores/queueStore.js (mitto-sus.11) so
+// consumers subscribe directly instead of receiving it prop-drilled through
+// useWebSocket -> App. Takes activeSessionId as a parameter so it stays
 // reactive to the parent's active-session state.
 // =============================================================================
 
-const { useState, useEffect, useCallback } = window.preact;
+const { useEffect, useCallback } = window.preact;
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus } from "../utils/sdkErrors.js";
+import { setMessages, setLength } from "../stores/queueStore.js";
 
 export function useWSQueue(activeSessionId) {
-  // Queue length for the active session
-  const [queueLength, setQueueLength] = useState(0);
-
-  // Queue messages for the active session
-  // Array of { id, message, title, queued_at }
-  const [queueMessages, setQueueMessages] = useState([]);
-
-  // Queue configuration for the active session
-  // { enabled: bool, max_size: int, delay_seconds: int }
-  const [queueConfig, setQueueConfig] = useState({
-    enabled: true,
-    max_size: 10,
-    delay_seconds: 0,
-  });
-
   // Fetch queue messages for the active session
   const fetchQueueMessages = useCallback(async () => {
-    if (!activeSessionId) {
-      setQueueMessages([]);
-      return;
-    }
+    if (!activeSessionId) return;
     try {
       const data = await getSdkClient().sessions.queue.list(activeSessionId);
-      setQueueMessages(data.messages || []);
-      setQueueLength(data.count || 0);
+      setMessages(activeSessionId, data.messages || []);
+      setLength(activeSessionId, data.count || 0);
     } catch (err) {
       console.error("Failed to fetch queue messages:", err);
     }
   }, [activeSessionId]);
 
-  // Fetch queue messages when active session changes
+  // Fetch queue messages when active session changes. No explicit clear is
+  // needed for a switched-away session: hooks/useQueue.js's readers return
+  // []/0/default for a falsy sessionId regardless of what the store holds.
   useEffect(() => {
     if (activeSessionId) {
       fetchQueueMessages();
-    } else {
-      // Clear queue state when no session is active
-      setQueueMessages([]);
-      setQueueLength(0);
     }
   }, [activeSessionId, fetchQueueMessages]);
 
@@ -127,8 +110,8 @@ export function useWSQueue(activeSessionId) {
           messageId,
           direction,
         );
-        setQueueMessages(data.messages || []);
-        setQueueLength(data.count || 0);
+        setMessages(activeSessionId, data.messages || []);
+        setLength(activeSessionId, data.count || 0);
         return true;
       } catch (err) {
         console.error("Failed to move queue message:", err);
@@ -139,12 +122,6 @@ export function useWSQueue(activeSessionId) {
   );
 
   return {
-    queueLength,
-    queueMessages,
-    queueConfig,
-    setQueueLength,
-    setQueueMessages,
-    setQueueConfig,
     fetchQueueMessages,
     deleteQueueMessage,
     addToQueue,

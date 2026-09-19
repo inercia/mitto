@@ -1,15 +1,32 @@
 /**
- * Tests for useWSQueue.js (mitto-7gta.17 slice S7 Test phase).
+ * Tests for useWSQueue.js (mitto-7gta.17 slice S7 Test phase; updated
+ * mitto-sus.11 for the queueStore migration).
  *
- * Covers the 4 authFetch/secureFetch->getSdkClient() call sites migrated in
- * the Implementation phase: fetchQueueMessages (sessions.queue.list),
- * deleteQueueMessage (sessions.queue.remove), addToQueue
- * (sessions.queue.add, including the 409 queue-full branch), and
- * moveQueueMessage (sessions.queue.move). Mirrors the window.preact stub
- * harness established by useFolderPromptsConfig.test.js (slice S2).
+ * Covers the 4 authFetch/secureFetch->getSdkClient() call sites:
+ * fetchQueueMessages (sessions.queue.list), deleteQueueMessage
+ * (sessions.queue.remove), addToQueue (sessions.queue.add, including the
+ * 409 queue-full branch), and moveQueueMessage (sessions.queue.move).
+ * Mirrors the window.preact stub harness established by
+ * useFolderPromptsConfig.test.js (slice S2).
+ *
+ * The queue data itself (messages/length) no longer lives in this hook's
+ * own useState (mitto-sus.11) -- it's written directly to the module-level
+ * stores/queueStore.js, so assertions read it back via that store's getters
+ * instead of inspecting useState setter calls.
  */
 
-import { describe, test, expect, jest } from "../utils/testing/testGlobals.js";
+import {
+  describe,
+  test,
+  expect,
+  jest,
+  beforeEach,
+} from "../utils/testing/testGlobals.js";
+import {
+  getMessages,
+  getLength,
+  _resetQueueStoreForTests,
+} from "../stores/queueStore.js";
 
 global.window = global.window || {};
 window.mittoApiPrefix = "";
@@ -22,19 +39,17 @@ if (typeof document === "undefined") {
 // shape the endpoint under test).
 global.document.cookie = "mitto_csrf=test-token";
 
-let currentSetters = [];
 let currentEffects = [];
 window.preact = {
-  useState: (initial) => {
-    const setter = jest.fn();
-    currentSetters.push(setter);
-    return [initial, setter];
-  },
   useEffect: (cb, deps) => {
     currentEffects.push({ cb, deps });
   },
   useCallback: (fn) => fn,
 };
+
+beforeEach(() => {
+  _resetQueueStoreForTests();
+});
 
 function jsonResponse(data, status = 200) {
   return {
@@ -50,51 +65,42 @@ function jsonResponse(data, status = 200) {
 }
 
 async function loadHook() {
-  currentSetters = [];
   currentEffects = [];
   const mod = await import("./useWSQueue.js");
   return {
     useWSQueue: mod.useWSQueue,
-    setters: currentSetters,
     effects: currentEffects,
   };
 }
 
-const IDX = {
-  setQueueLength: 0,
-  setQueueMessages: 1,
-  setQueueConfig: 2,
-};
-
 describe("useWSQueue — fetchQueueMessages", () => {
-  test("no activeSessionId: clears messages without fetching", async () => {
+  test("no activeSessionId: no-ops without fetching", async () => {
     global.fetch = jest.fn();
-    const { useWSQueue, setters } = await loadHook();
+    const { useWSQueue } = await loadHook();
     const { fetchQueueMessages } = useWSQueue(null);
     await fetchQueueMessages();
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(setters[IDX.setQueueMessages]).toHaveBeenCalledWith([]);
   });
 
   test("success: GETs the queue and stores messages/count", async () => {
     global.fetch = jest.fn(() =>
       Promise.resolve(jsonResponse({ messages: [{ id: "m1" }], count: 1 })),
     );
-    const { useWSQueue, setters } = await loadHook();
+    const { useWSQueue } = await loadHook();
     const { fetchQueueMessages } = useWSQueue("sess-1");
     await fetchQueueMessages();
     const [url] = global.fetch.mock.calls[0];
     expect(String(url)).toContain("/api/sessions/sess-1/queue");
-    expect(setters[IDX.setQueueMessages]).toHaveBeenCalledWith([{ id: "m1" }]);
-    expect(setters[IDX.setQueueLength]).toHaveBeenCalledWith(1);
+    expect(getMessages("sess-1")).toEqual([{ id: "m1" }]);
+    expect(getLength("sess-1")).toBe(1);
   });
 
   test("a network failure is swallowed (logged, no throw, no state change)", async () => {
     global.fetch = jest.fn(() => Promise.reject(new Error("offline")));
-    const { useWSQueue, setters } = await loadHook();
+    const { useWSQueue } = await loadHook();
     const { fetchQueueMessages } = useWSQueue("sess-1");
     await expect(fetchQueueMessages()).resolves.toBeUndefined();
-    expect(setters[IDX.setQueueMessages]).not.toHaveBeenCalled();
+    expect(getMessages("sess-1")).toEqual([]);
   });
 
   test("load-on-session-change effect fires fetchQueueMessages", async () => {
@@ -212,18 +218,15 @@ describe("useWSQueue — moveQueueMessage", () => {
         jsonResponse({ messages: [{ id: "m1" }, { id: "m2" }], count: 2 }),
       ),
     );
-    const { useWSQueue, setters } = await loadHook();
+    const { useWSQueue } = await loadHook();
     const { moveQueueMessage } = useWSQueue("sess-1");
     const ok = await moveQueueMessage("m1", "up");
     expect(ok).toBe(true);
     const [url, opts] = global.fetch.mock.calls[0];
     expect(String(url)).toContain("/api/sessions/sess-1/queue/m1/move");
     expect(JSON.parse(opts.body)).toEqual({ direction: "up" });
-    expect(setters[IDX.setQueueMessages]).toHaveBeenCalledWith([
-      { id: "m1" },
-      { id: "m2" },
-    ]);
-    expect(setters[IDX.setQueueLength]).toHaveBeenCalledWith(2);
+    expect(getMessages("sess-1")).toEqual([{ id: "m1" }, { id: "m2" }]);
+    expect(getLength("sess-1")).toBe(2);
   });
 
   test("invalid direction: returns false without fetching", async () => {

@@ -20,6 +20,7 @@ import { routeDroppedPaths } from "../utils/paths.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
 import { useSessionInfo } from "../hooks/useSessionsStore.js";
+import { useQueueLength, useQueueConfig } from "../hooks/useQueue.js";
 import {
   getDraft as getStoredDraft,
   setDraft as setStoredDraft,
@@ -153,8 +154,6 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.noSession - Whether there's no active session
  * @param {string} props.sessionId - Current session ID. Draft text for this session is read from/written to utils/draftStore.js internally (mitto-sus.6) — no draft/onDraftChange props are needed.
  * @param {Function} props.onPromptsOpen - Callback when prompts dropdown is opened (refreshes global and workspace prompts)
- * @param {number} props.queueLength - Current number of messages in queue
- * @param {Object} props.queueConfig - Queue configuration { enabled, max_size, delay_seconds }
  * @param {Function} props.onAddToQueue - Callback to add message to queue (Cmd/Ctrl+Enter)
  * @param {Function} props.onToggleQueue - Callback to toggle queue panel visibility
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
@@ -187,8 +186,6 @@ function ChatInputImpl({
   sessionId,
   onPromptsOpen,
   onConfigurePrompts,
-  queueLength = 0,
-  queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
   onAddToQueue,
   onToggleQueue,
   showQueueDropdown = false,
@@ -228,6 +225,11 @@ function ChatInputImpl({
   const sessionInfoSlice = useSessionInfo(sessionId);
   const isReadOnly = sessionInfoSlice?.isReadOnly;
   const isArchived = sessionInfoSlice?.archived || false;
+  // Queue length/config self-subscribe to stores/queueStore.js (mitto-sus.11)
+  // instead of being prop-drilled from App, so an unrelated App re-render
+  // doesn't force this memoized component to reconcile.
+  const queueLength = useQueueLength(sessionId);
+  const queueConfig = useQueueConfig(sessionId);
   const loopConfigured = sessionInfoSlice?.loop_configured || false;
   const workingDir = sessionInfoSlice?.working_dir || "";
   // Draft text is local state seeded from (and mirrored into) the shared

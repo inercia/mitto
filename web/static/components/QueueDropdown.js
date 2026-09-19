@@ -10,6 +10,8 @@ import {
   GripIcon,
 } from "./Icons.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
+import { useRenderCounter } from "../hooks/useRenderCounter.js";
+import { useQueueMessages, useQueueConfig } from "../hooks/useQueue.js";
 import {
   getQueueDropdownHeight,
   setQueueDropdownHeight,
@@ -64,25 +66,28 @@ function formatRelativeTime(scheduledTime) {
  * @param {Object} props
  * @param {boolean} props.isOpen - Whether the dropdown is visible
  * @param {Function} props.onClose - Callback to close the dropdown
- * @param {Array} props.messages - Array of queued messages { id, message, title, queued_at }
+ * @param {string} props.sessionId - Session whose queue to display; self-subscribes
+ *   to stores/queueStore.js (mitto-sus.11) via useQueueMessages/useQueueConfig
+ *   instead of receiving messages/maxSize prop-drilled from App.
  * @param {Function} props.onDelete - Callback to delete a message (messageId) => void
  * @param {Function} props.onMove - Callback to move a message (messageId, direction) => void
  * @param {boolean} props.isDeleting - Whether a delete operation is in progress
  * @param {boolean} props.isMoving - Whether a move operation is in progress
- * @param {number} props.queueLength - Current number of messages in queue
- * @param {number} props.maxSize - Maximum queue size from config
  */
 export function QueueDropdown({
   isOpen,
   onClose,
-  messages = [],
+  sessionId,
   onDelete,
   onMove,
   isDeleting = false,
   isMoving = false,
-  queueLength = 0,
-  maxSize = 10,
 }) {
+  // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
+  // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
+  useRenderCounter("QueueDropdown");
+  const messages = useQueueMessages(sessionId);
+  const maxSize = useQueueConfig(sessionId).max_size;
   const dropdownRef = useRef(null);
   const inactivityTimerRef = useRef(null);
 

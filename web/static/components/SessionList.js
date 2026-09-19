@@ -13,6 +13,7 @@ const {
 import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
+import { useQueueLength } from "../hooks/useQueue.js";
 
 import {
   computeUnifiedTree,
@@ -250,7 +251,6 @@ function SessionListImpl({
   // wire a sidebar button click without further prop churn; no UI trigger
   // exists yet in this increment (mitto-aqo.3).
   onShowDashboard,
-  queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
   onMakeLoop, // Called with (session) to convert a regular session to loop
@@ -261,6 +261,12 @@ function SessionListImpl({
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
   useRenderCounter("SessionList");
+  // Active session's queue length, self-subscribed to stores/queueStore.js
+  // (mitto-sus.11) instead of prop-drilled from App -- only the active
+  // session can show the "queued messages" badge (see hasQueuedMessages
+  // below), so this only re-renders SessionList when that specific slice
+  // actually changes, not on every unrelated App re-render.
+  const queueLength = useQueueLength(activeSessionId);
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
     () => computeAllSessions(activeSessions, storedSessions),

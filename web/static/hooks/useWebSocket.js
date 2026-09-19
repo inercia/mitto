@@ -42,6 +42,7 @@ import { playAgentCompletedSound } from "../utils/audio.js";
 
 import { perfMark } from "../utils/perfMarks.js";
 import * as sessionsStore from "../stores/sessionsStore.js";
+import * as queueStore from "../stores/queueStore.js";
 
 import { getApiPrefix } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
@@ -168,19 +169,11 @@ export function useWebSocket({
     setBackgroundUIPromptTimeout,
   } = useWSNotifications();
 
-  // Queue state + REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5)
-  const {
-    queueLength,
-    queueMessages,
-    queueConfig,
-    setQueueLength,
-    setQueueMessages,
-    setQueueConfig,
-    fetchQueueMessages,
-    deleteQueueMessage,
-    addToQueue,
-    moveQueueMessage,
-  } = useWSQueue(activeSessionId);
+  // Queue REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5). The
+  // queue data itself (messages/length/config) lives in stores/queueStore.js
+  // (mitto-sus.11); only the callbacks are needed here.
+  const { fetchQueueMessages, deleteQueueMessage, addToQueue, moveQueueMessage } =
+    useWSQueue(activeSessionId);
 
   // Available slash commands for the active session (from ACP agent)
   // Array of { name: string, description: string, input_hint?: string }
@@ -599,12 +592,12 @@ export function useWebSocket({
 
         // Update queue length from server
         if (msg.data.queue_length !== undefined) {
-          setQueueLength(msg.data.queue_length);
+          queueStore.setLength(sessionId, msg.data.queue_length);
         }
 
         // Update queue configuration from server
         if (msg.data.queue_config) {
-          setQueueConfig(msg.data.queue_config);
+          queueStore.setConfig(sessionId, msg.data.queue_config);
         }
 
         // Global MCP bind status (same for all sessions); drives a persistent badge.
@@ -2072,20 +2065,22 @@ export function useWebSocket({
       case "queue_updated":
         // Server notifies us about queue state changes
         if (msg.data?.queue_length !== undefined) {
-          setQueueLength(msg.data.queue_length);
+          queueStore.setLength(sessionId, msg.data.queue_length);
           console.log(
             `Queue updated: ${msg.data.action || "unknown"}, length: ${msg.data.queue_length}`,
           );
 
-          // Update queueMessages based on the action to keep in sync
+          // Update the queue messages store based on the action to keep in sync
           const action = msg.data.action;
           const messageId = msg.data.message_id;
           if (action === "removed" && messageId) {
             // Remove the message from local state
-            setQueueMessages((prev) => prev.filter((m) => m.id !== messageId));
+            queueStore.setMessages(sessionId, (prev) =>
+              prev.filter((m) => m.id !== messageId),
+            );
           } else if (action === "cleared") {
             // Clear all messages
-            setQueueMessages([]);
+            queueStore.setMessages(sessionId, []);
           }
           // For "added" action, we don't have the full message data, so dispatch event to refresh
 
@@ -2433,7 +2428,7 @@ export function useWebSocket({
             `Queue message titled: ${msg.data.message_id} -> "${msg.data.title}"`,
           );
           // Update the title in the local queue messages state
-          setQueueMessages((prev) =>
+          queueStore.setMessages(sessionId, (prev) =>
             prev.map((m) =>
               m.id === msg.data.message_id
                 ? { ...m, title: msg.data.title }
@@ -2447,8 +2442,8 @@ export function useWebSocket({
         // Server notifies us that the queue order has changed
         if (msg.data?.messages) {
           console.log(`Queue reordered: ${msg.data.messages.length} messages`);
-          setQueueMessages(msg.data.messages);
-          setQueueLength(msg.data.messages.length);
+          queueStore.setMessages(sessionId, msg.data.messages);
+          queueStore.setLength(sessionId, msg.data.messages.length);
         }
         break;
 
@@ -2670,7 +2665,7 @@ export function useWebSocket({
       data?.queue_length !== undefined &&
       sessionId === activeSessionIdRef.current
     ) {
-      setQueueLength((prev) => {
+      queueStore.setLength(sessionId, (prev) => {
         if (prev !== data.queue_length) {
           console.log(
             `[keepalive] Queue length sync: ${prev} -> ${data.queue_length}`,
@@ -4568,9 +4563,6 @@ export function useWebSocket({
     activeSessions,
     storedSessions,
     fetchStoredSessions,
-    queueLength,
-    queueMessages,
-    queueConfig,
     fetchQueueMessages,
     deleteQueueMessage,
     addToQueue,

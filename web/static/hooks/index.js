@@ -31,3 +31,8 @@ export { useLinkedBeadPhase } from "./useLinkedBeadPhase.js";
 export { useVisibleInterval } from "./useVisibleInterval.js";
 export { useMCPInitState } from "./useMCPInitState.js";
 export { useAgentAuthState } from "./useAgentAuthState.js";
+export {
+  useQueueMessages,
+  useQueueLength,
+  useQueueConfig,
+} from "./useQueue.js";

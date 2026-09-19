@@ -130,6 +130,7 @@ import {
   makeLoopNow,
   useMCPInitState,
   useAgentAuthState,
+  useQueueLength,
 } from "./hooks/index.js";
 
 // Import components
@@ -300,9 +301,6 @@ function App() {
     activeSessions,
     storedSessions,
     fetchStoredSessions,
-    queueLength,
-    queueMessages,
-    queueConfig,
     fetchQueueMessages,
     deleteQueueMessage,
     addToQueue,
@@ -330,6 +328,13 @@ function App() {
   // stores/notificationsStore.js (mitto-sus.11); ToastContainer renders the
   // live toast list itself via useToasts() instead of App passing it down.
   const { showToast, dismissToast } = useToast();
+
+  // Active session's queue length, backed by stores/queueStore.js
+  // (mitto-sus.11) -- only needed here to gate the archive button
+  // (headerHasQueued below); QueueDropdown/ChatInput/SessionList
+  // self-subscribe to their own queue slices instead of receiving them
+  // prop-drilled from here.
+  const queueLength = useQueueLength(activeSessionId);
 
   // Auto-resume GC-suspended sessions when they become the active (focused) session.
   // Covers two cases:
@@ -4006,13 +4011,11 @@ function App() {
                     <${QueueDropdown}
                       isOpen=${showQueueDropdown}
                       onClose=${handleCloseQueueDropdown}
-                      messages=${queueMessages}
+                      sessionId=${activeSessionId}
                       onDelete=${handleDeleteQueueMessage}
                       onMove=${handleMoveQueueMessage}
                       isDeleting=${isDeletingQueueMessage}
                       isMoving=${isMovingQueueMessage}
-                      queueLength=${queueLength}
-                      maxSize=${queueConfig.max_size}
                     />
 
                     <!-- Input -->
@@ -4032,8 +4035,6 @@ function App() {
                       sessionInfo?.working_dir
                         ? handleComposerConfigurePrompts
                         : undefined}
-                      queueLength=${queueLength}
-                      queueConfig=${queueConfig}
                       onAddToQueue=${handleAddToQueue}
                       onToggleQueue=${handleToggleQueueDropdown}
                       showQueueDropdown=${showQueueDropdown}
@@ -4195,7 +4196,6 @@ function App() {
             mainView=${mainView}
             beadsWorkingDir=${beadsWorkingDir}
             onShowDashboard=${handleShowDashboard}
-            queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
             onMakeLoop=${handleMakeLoop}
