@@ -196,9 +196,13 @@ func isJSONErrorObject(b []byte) bool {
 	return false
 }
 
-// isTransientLock reports whether err is a transient dolt/database lock or
-// contention failure that is safe to retry for a read-only command.
-func isTransientLock(err error) bool {
+// IsTransientLock reports whether err is a transient dolt/database lock or
+// contention failure that is safe to retry for a read-only command. Exported
+// (mitto-ei6) so callers outside this package — e.g. internal/stats.BeadsSource,
+// which retries its own `bd list` snapshot pass — can classify the same
+// failure class this package already retries once internally in
+// runJSONRead, without duplicating the stderr pattern list.
+func IsTransientLock(err error) bool {
 	s := strings.ToLower(StderrOf(err))
 	if s == "" {
 		return false
@@ -298,7 +302,7 @@ func (c *cliClient) runJSONRead(ctx context.Context, dir string, args ...string)
 	if err != nil &&
 		!errors.Is(err, context.Canceled) &&
 		!errors.Is(err, context.DeadlineExceeded) &&
-		isTransientLock(err) {
+		IsTransientLock(err) {
 		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, readArgs...)
 	}
 	return out, err

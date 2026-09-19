@@ -33,6 +33,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/inercia/mitto/internal/beads"
 )
 
 // metaKeyLastBeadsPass records the RFC3339 wall-clock time of the last
@@ -66,9 +68,17 @@ var beadsMetrics = []string{
 // BeadsLister exposes just enough of beads.Client for this source: a raw
 // JSON listing of every bead in a workspace directory (the same payload
 // beads.Client.List returns from `bd list --json --all -n 0`). Kept as a
-// dedicated, narrow interface — mirroring SessionLister — so tests inject a
-// fake without pulling in internal/beads, and so this package keeps its
-// no-import constraint on internal/web / internal/conversation.
+// dedicated, narrow interface — mirroring SessionLister — so tests can inject
+// a fake without implementing the full beads.Client surface.
+//
+// This package does import internal/beads (mitto-ei6), but ONLY for its
+// error-classification helpers (StderrOf, ExitCodeOf, IsTransientLock) used
+// to enrich WARN logs and to retry transient dolt-lock failures in
+// listWithRetry — it does NOT widen BeadsLister itself, which stays narrow
+// and beads-package-agnostic. internal/beads is a leaf package below
+// internal/stats, so this creates no import cycle; the no-import constraint
+// in .augment/rules/00-overview.md forbids only internal/web /
+// internal/conversation.
 type BeadsLister interface {
 	List(ctx context.Context, dir string) ([]byte, error)
 }
@@ -265,7 +275,7 @@ func (s *BeadsSource) loop(ctx context.Context) {
 	}
 
 	if err := s.Run(ctx); err != nil {
-		s.logWarn("startup beads source pass failed", "error", err)
+		s.logWarn("startup beads source pass failed", beadsErrorAttrs(err)...)
 	}
 
 	if s.opts.Interval <= 0 {
@@ -281,7 +291,7 @@ func (s *BeadsSource) loop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := s.Run(ctx); err != nil {
-				s.logWarn("periodic beads source pass failed", "error", err)
+				s.logWarn("periodic beads source pass failed", beadsErrorAttrs(err)...)
 			}
 		}
 	}
@@ -418,19 +428,31 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 
 // listWithRetry calls s.lister.List for dir, retrying up to
 // opts.ListRetries additional times -- with a fixed opts.ListRetryBackoff
-// pause between attempts -- ONLY when the failure is
-// context.DeadlineExceeded (mitto-c20): that specific error indicates the
-// per-call `bd list` read budget was transiently exceeded (e.g. under
-// concurrent aux/RPC contention), not a persistent failure, so it is worth
-// absorbing here rather than aborting runOnce's all-or-nothing pass. Any
-// other error (including a caller-canceled ctx, which surfaces as
-// context.Canceled, not context.DeadlineExceeded) is returned immediately
-// without retrying, unchanged from before this fix. The retry loop also
-// exits early if ctx is done or the source is closing.
+// pause between attempts -- ONLY for two known-transient failure classes:
+//
+//   - context.DeadlineExceeded (mitto-c20): the per-call `bd list` read
+//     budget was transiently exceeded (e.g. under concurrent aux/RPC
+//     contention), not a persistent failure.
+//   - beads.IsTransientLock (mitto-ei6): bd's own stderr indicates a dolt
+//     lock/contention failure (another dolt process, database locked,
+//     resource temporarily unavailable). internal/beads already retries
+//     this ONCE internally for read commands (runJSONRead), but that inner
+//     retry has already been exhausted by the time the error reaches here,
+//     so a second-level retry budget at the stats-pass level is needed to
+//     actually absorb a slow-to-clear lock instead of dropping the sample.
+//
+// Both classes are worth absorbing here rather than aborting runOnce's
+// all-or-nothing pass. Any other error (including a caller-canceled ctx,
+// which surfaces as context.Canceled, not context.DeadlineExceeded) is
+// returned immediately without retrying. The retry loop also exits early if
+// ctx is done or the source is closing.
 func (s *BeadsSource) listWithRetry(ctx context.Context, dir string) ([]byte, error) {
 	raw, err := s.lister.List(ctx, dir)
-	for attempt := 0; err != nil && errors.Is(err, context.DeadlineExceeded) && attempt < s.opts.ListRetries; attempt++ {
-		s.logWarn("beads source: transient list timeout, retrying", "dir", dir, "attempt", attempt+1)
+	for attempt := 0; err != nil &&
+		(errors.Is(err, context.DeadlineExceeded) || beads.IsTransientLock(err)) &&
+		attempt < s.opts.ListRetries; attempt++ {
+		s.logWarn("beads source: transient list failure, retrying",
+			append([]any{"dir", dir, "attempt", attempt + 1, "reason", classifyRetryReason(err)}, beadsErrorAttrs(err)...)...)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -601,4 +623,36 @@ func (s *BeadsSource) logWarn(msg string, args ...any) {
 	if s.opts.Logger != nil {
 		s.opts.Logger.Warn(msg, args...)
 	}
+}
+
+// beadsErrorAttrs builds structured slog attributes for a beads-source
+// failure (mitto-ei6): the plain error plus, when the chain contains a
+// *beads.CmdError, its captured stderr and exit code — the diagnostics a
+// human actually needs to tell "dolt lock contention" apart from
+// "permission denied" apart from "bd not installed" in the log line alone,
+// without opening events.jsonl or reproducing the failure. StderrOf /
+// ExitCodeOf walk the error chain via errors.As, so they transparently
+// unwrap runOnce's outer fmt.Errorf wrapping. Returned as a flat []any so
+// callers can pass it directly as the variadic tail of logWarn.
+func beadsErrorAttrs(err error) []any {
+	attrs := []any{"error", err}
+	if stderr := beads.StderrOf(err); stderr != "" {
+		attrs = append(attrs, "stderr", stderr)
+	}
+	if code := beads.ExitCodeOf(err); code != 0 {
+		attrs = append(attrs, "exit_code", code)
+	}
+	return attrs
+}
+
+// classifyRetryReason labels why listWithRetry is retrying, for the
+// "retrying" WARN log line: "timeout" for the pre-existing
+// context.DeadlineExceeded case, "lock" for the new transient dolt-lock
+// case (mitto-ei6). Defaults to "lock" only when actually called from a
+// context where one of the two already matched.
+func classifyRetryReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "lock"
 }
