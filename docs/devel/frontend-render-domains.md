@@ -178,5 +178,5 @@ attempt) rather than per-chunk churn.
 Deferred to a follow-up bead:
 
 - Queue state, background-notification state, and workspaces/config-options
-  state remain owned by `useWebSocket`/`App` — out of scope for this bead
-  (see sibling follow-up beads filed under `mitto-sus` at verify time).
+  state remain owned by `useWebSocket`/`App` — out of scope for this bead;
+  tracked as `mitto-sus.11` (sibling under `mitto-sus`).
