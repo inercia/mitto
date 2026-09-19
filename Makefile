@@ -1,4 +1,4 @@
-.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-sdk-contract test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report bench-ui bench-ui-baseline test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build build-debug install test test-go test-js check-model-tags check-stderr-patterns check-prompts sdk-types check-sdk-types test-integration test-integration-go test-integration-sdk-contract test-integration-cli test-integration-api test-integration-client test-integration-runner test-runner-smoke test-runner-smoke-assert test-bun-tooling test-ui test-ui-headed test-ui-debug test-ui-report bench-ui bench-ui-baseline bench-ui-webkit bench-ui-webkit-baseline bench-ui-ab test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -231,6 +231,42 @@ bench-ui-baseline: bench-ui
 		--write-baseline tests/ui/perf/baseline.json \
 		--render docs/devel/ui-responsiveness-baseline.md
 	@echo "Wrote tests/ui/perf/baseline.json and docs/devel/ui-responsiveness-baseline.md. Review, then commit."
+
+# WebKit leg of the mitto-sus.2 Chromium-vs-WebKit-vs-WKWebView A/B
+# responsiveness profile. PERF_BROWSER=webkit gates the `webkit` project into
+# tests/ui/playwright.config.ts (chromium-only otherwise, so bench-ui / test-ui
+# are unaffected). Chromium-only metrics (CDP PaintLayoutStats, usedJSHeapBytes)
+# are null on this leg by design — see docs/devel/ui-responsiveness-benchmarks.md.
+bench-ui-webkit: build tailwind build-mock-acp
+	@echo "Running UI benchmark suite on WebKit (PERF_RUN=1)..."
+	rm -rf tests/ui/perf/results/latest-webkit
+	PERF_RUN=1 PERF_RUN_ID=latest-webkit PERF_BROWSER=webkit \
+		bunx playwright test --config=tests/ui/playwright.config.ts --project=webkit tests/ui/specs/perf
+	node scripts/perf-summary.mjs \
+		--results tests/ui/perf/results/latest-webkit \
+		--baseline tests/ui/perf/baseline-webkit.json \
+		--diff-out tests/ui/perf/results/latest-webkit/diff.md
+	@echo "Diff vs committed WebKit baseline: tests/ui/perf/results/latest-webkit/diff.md"
+
+# Records the current bench-ui-webkit run as the new committed WebKit
+# baseline. Manual, review the diff before committing — never wired into any
+# other target.
+bench-ui-webkit-baseline: bench-ui-webkit
+	node scripts/perf-summary.mjs \
+		--results tests/ui/perf/results/latest-webkit \
+		--write-baseline tests/ui/perf/baseline-webkit.json
+	@echo "Wrote tests/ui/perf/baseline-webkit.json. Review, then commit."
+
+# Comparative A/B report across all three mitto-sus.2 legs: the committed
+# Chromium and WebKit baselines, plus the WKWebView manual-playbook results
+# under tests/ui/perf/results/latest-wkwebview/ (see
+# docs/devel/ui-responsiveness-benchmarks.md for the playbook — there is no
+# Playwright automation surface for the packaged native app). Does not
+# (re-)run any benchmark itself; run bench-ui-baseline / bench-ui-webkit-baseline
+# and the WKWebView playbook first.
+bench-ui-ab:
+	node scripts/perf-ab.mjs
+	@echo "Wrote tests/ui/perf/results/latest/ab-report.md. Review, then commit alongside docs/devel/ui-responsiveness-ab.md."
 
 # Run all tests (unit + integration + UI)
 test-all: test test-integration test-ui

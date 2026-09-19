@@ -819,6 +819,33 @@ func extractFilenameFromViewerURL(viewerURL string) string {
 	return filepath.Base(filePath)
 }
 
+// dumpPerfBufferToFile writes the given content (JSONL, one line per perf
+// sample, in the same shape tests/ui/utils/perf.ts's writePerfSample()
+// produces) to a caller-supplied path. This exists solely to support the
+// mitto-sus.2 WKWebView-vs-Chromium A/B profile's manual playbook — the
+// packaged native app has no Playwright automation surface, so an operator
+// reproduces each fixture scenario by hand and calls this (via
+// window.mittoPerfDump in the DevTools console, see
+// web/static/utils/perfMarks.js) to persist window.__mittoPerfBuffer.
+// See docs/devel/ui-responsiveness-benchmarks.md for the full playbook.
+//
+// This is exposed to JavaScript via webview.Bind as window.mittoDumpPerfBuffer,
+// but ONLY when MITTO_PERF_DUMP=1 is set (see the w.Bind call below) — a
+// normal launch never registers this bind, so the shipping app has no extra
+// file-write surface reachable from JavaScript.
+func dumpPerfBufferToFile(path, content string) error {
+	if path == "" {
+		return fmt.Errorf("dumpPerfBufferToFile: path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("dumpPerfBufferToFile: creating directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Errorf("dumpPerfBufferToFile: writing file: %w", err)
+	}
+	return nil
+}
+
 // revealInFinder reveals a file or folder in Finder (macOS file browser).
 // This opens Finder with the specified path selected.
 // This is exposed to JavaScript via webview.Bind.
@@ -1418,6 +1445,15 @@ func run() error {
 	w.Bind("mittoPickImages", pickImages)
 	w.Bind("mittoPickFiles", pickFiles)
 	w.Bind("mittoOpenViewer", openViewerInNativeWindow)
+
+	// mitto-sus.2: WKWebView-leg perf-buffer dump for the A/B responsiveness
+	// profile, ONLY when explicitly requested via MITTO_PERF_DUMP=1 — see
+	// dumpPerfBufferToFile's doc comment. Never bound on a normal launch, so
+	// the shipping app gets no extra JS-reachable file-write surface.
+	if os.Getenv("MITTO_PERF_DUMP") == "1" {
+		w.Bind("mittoDumpPerfBuffer", dumpPerfBufferToFile)
+		slog.Info("Perf buffer dump bind enabled (MITTO_PERF_DUMP=1)")
+	}
 
 	// Bind login item functions (start at login)
 	w.Bind("mittoIsLoginItemSupported", isLoginItemSupported)

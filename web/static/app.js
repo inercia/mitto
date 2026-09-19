@@ -36,7 +36,11 @@ import {
   formatLoopMaxDuration,
   computeHeaderTriggerLabel,
 } from "./lib.js";
-import { installPerfBuffer, applyPerfCVFlag } from "./utils/perfMarks.js";
+import {
+  installPerfBuffer,
+  applyPerfCVFlag,
+  exposePerfDumpForConsole,
+} from "./utils/perfMarks.js";
 import { setDraft as setDraftStore } from "./utils/draftStore.js";
 
 // mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
@@ -47,6 +51,11 @@ installPerfBuffer();
 // mitto-sus.8: opt-in virtualization-spike content-visibility prototype. No-op
 // unless `?perf-cv=1` / `window.__mittoPerfCV` is set (see utils/perfMarks.js).
 applyPerfCVFlag();
+
+// mitto-sus.2: expose window.mittoPerfDump for the A/B profile's manual
+// WKWebView playbook. No-op unless perf instrumentation is enabled (see
+// utils/perfMarks.js).
+exposePerfDumpForConsole();
 
 // Import session tree utilities
 import {

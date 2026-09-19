@@ -286,11 +286,18 @@ export function writePerfSample(
   const runId = process.env.PERF_RUN_ID || "adhoc";
   const runDir = path.join(PERF_RESULTS_ROOT, runId);
   fs.mkdirSync(runDir, { recursive: true });
+  // mitto-sus.2: tag every sample with the browser engine it was recorded
+  // under so scripts/perf-ab.mjs can partition the mitto-sus.2 A/B profile's
+  // Chromium/WebKit/WKWebView legs without inferring it from PERF_RUN_ID.
+  // Defaults to "chromium" (the only engine make bench-ui ever used before
+  // this env var existed); the WebKit leg's Makefile targets set
+  // PERF_BROWSER=webkit (see tests/ui/playwright.config.ts).
+  const browserName = process.env.PERF_BROWSER || "chromium";
   const line = JSON.stringify({
     scenario,
     metric,
     value,
-    ...(meta ? { meta } : {}),
+    meta: { ...meta, browserName },
     ts: new Date().toISOString(),
   });
   fs.appendFileSync(path.join(runDir, "samples.jsonl"), line + "\n");

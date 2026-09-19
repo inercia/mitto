@@ -5,6 +5,27 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// mitto-sus.2: the WebKit leg of the Chromium-vs-WebKit-vs-WKWebView A/B
+// responsiveness profile. Added to `projects` ONLY when explicitly requested
+// via PERF_BROWSER=webkit (see Makefile's bench-ui-webkit /
+// bench-ui-webkit-baseline targets), so the default `projects` list — and
+// therefore `make test-ui` / `make bench-ui` — is byte-identical to before.
+// Chromium-only metrics (collectPaintLayoutStats via CDP, DOMStats's
+// usedJSHeapBytes) return null on this leg by design; see
+// docs/devel/ui-responsiveness-benchmarks.md.
+const projects = [
+  {
+    name: "chromium",
+    use: { ...devices["Desktop Chrome"] },
+  },
+];
+if (process.env.PERF_BROWSER === "webkit") {
+  projects.push({
+    name: "webkit",
+    use: { ...devices["Desktop Safari"] },
+  });
+}
+
 /**
  * Playwright configuration for Mitto Web UI tests.
  *
@@ -45,18 +66,9 @@ export default defineConfig({
     actionTimeout: 10000,
   },
 
-  // Configure projects for browsers
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-    // Uncomment to test on more browsers
-    // {
-    //   name: 'firefox',
-    //   use: { ...devices['Desktop Firefox'] },
-    // },
-  ],
+  // Configure projects for browsers. See the `projects` const above (only
+  // chromium by default; webkit is added when PERF_BROWSER=webkit).
+  projects,
 
   // Global timeout for each test
   timeout: 30000,

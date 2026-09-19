@@ -248,6 +248,73 @@ Each row below carries a promotion decision (`mitto-sus.1.3`): **gate**
 See [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md) for the
 current recorded numbers each gate compares against.
 
+## A/B: WebKit and WKWebView legs (mitto-sus.2)
+
+Isolates whether Mitto's perceived slowness vs VS Code is
+**application-dominant**, **engine-dominant**, or **mixed** by running the
+same fixtures/specs above against **three legs**: Chromium (the existing
+baseline), WebKit (Playwright's `webkit` project, a stand-in for Safari), and
+the packaged native macOS app's real `WKWebView`. See
+[ui-responsiveness-ab.md](./ui-responsiveness-ab.md) for the resulting
+comparative report and classification once recorded.
+
+### Chromium and WebKit legs (Playwright)
+
+```bash
+make bench-ui-baseline          # Chromium leg (unchanged) -> tests/ui/perf/baseline.json
+make bench-ui-webkit-baseline   # WebKit leg               -> tests/ui/perf/baseline-webkit.json
+make bench-ui-ab                # comparative report        -> tests/ui/perf/results/latest/ab-report.md
+```
+
+The `webkit` Playwright project (`tests/ui/playwright.config.ts`) is added to
+`projects` **only** when `PERF_BROWSER=webkit` is set — `bench-ui-webkit*`
+sets it; `make test-ui` / `make bench-ui` never do, so both stay
+chromium-only and byte-identical to before this leg existed. Chromium-only
+metrics — `collectPaintLayoutStats()` (CDP `Performance.getMetrics`) and
+`collectDOMStats()`'s `usedJSHeapBytes` (`performance.memory`) — are `null`
+on the WebKit leg by design; `scripts/perf-ab.mjs` renders them as `—` rather
+than fabricating a value.
+
+### WKWebView leg (native app, manual playbook)
+
+There is no Playwright automation surface for the packaged native macOS app,
+so this leg is a documented manual playbook rather than a CI target:
+
+1. Build and launch the app with the perf-dump bind enabled:
+   ```bash
+   make build-mac-app
+   MITTO_PERF_DUMP=1 ./Mitto.app/Contents/MacOS/mitto-app
+   ```
+   (`MITTO_PERF_DUMP=1` is required — a normal launch never registers
+   `window.mittoDumpPerfBuffer`, so the shipping app has no extra
+   JS-reachable file-write surface; see `dumpPerfBufferToFile` in
+   `cmd/mitto-app/main.go`.)
+2. Open the app with perf instrumentation enabled, e.g. navigate to
+   `http://127.0.0.1:<port>/?perf=1` (the port is logged at startup).
+3. For each scenario in `tests/ui/perf/baseline.json`'s `samples`, manually
+   reproduce the same interaction the corresponding Playwright spec performs
+   (e.g. for `composer.keystroke`, type in the composer while idle).
+4. From the WebKit Inspector's JavaScript console, dump the buffer for that
+   scenario:
+   ```js
+   mittoPerfDump("composer.keystroke", "/tmp/mitto-perf-wkwebview/composer.keystroke.jsonl");
+   ```
+5. After all scenarios are recorded, concatenate the per-scenario files into
+   the results directory `perf-ab.mjs` reads:
+   ```bash
+   mkdir -p tests/ui/perf/results/latest-wkwebview
+   cat /tmp/mitto-perf-wkwebview/*.jsonl > tests/ui/perf/results/latest-wkwebview/samples.jsonl
+   make bench-ui-ab
+   ```
+
+`mittoPerfDump` (`window.mittoPerfDump`, wired in `app.js` via
+`exposePerfDumpForConsole()` in `web/static/utils/perfMarks.js`) is a no-op
+unless perf instrumentation is enabled AND the native `mittoDumpPerfBuffer`
+bind is present — it degrades silently under Playwright/Chromium or a normal
+app launch. It writes the same `{scenario, metric, value, meta, ts}` JSONL
+shape `writePerfSample()` produces, so `scripts/perf-summary.mjs` /
+`scripts/perf-ab.mjs` consume it unchanged.
+
 ## Out of scope
 
 Implementing optimizations, virtualization, or a framework/engine decision —

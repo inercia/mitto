@@ -158,3 +158,60 @@ export function installPerfBuffer() {
     // unsupported — degrade silently rather than breaking app bootstrap.
   }
 }
+
+// --- WKWebView leg dump (mitto-sus.2 A/B profile) ---------------------------
+//
+// There is no Playwright automation surface for the packaged native macOS
+// app, so the WKWebView leg of the Chromium-vs-WebKit-vs-WKWebView A/B
+// profile is driven by a documented manual playbook (see
+// docs/devel/ui-responsiveness-benchmarks.md): an operator reproduces each
+// deterministic fixture scenario by hand with `?perf=1` active, then calls
+// `window.mittoPerfDump(scenario, path)` from the DevTools console to
+// persist `window.__mittoPerfBuffer` in the same JSONL shape
+// tests/ui/utils/perf.ts's writePerfSample() produces, so the existing
+// scripts/perf-summary.mjs aggregator can consume it unchanged.
+
+/**
+ * Serializes `window.__mittoPerfBuffer` into one JSON line per entry
+ * (matching writePerfSample's {scenario, metric, value, meta, ts} shape) and
+ * writes it via the native `window.mittoDumpPerfBuffer` bind (only present
+ * in the macOS app when launched with MITTO_PERF_DUMP=1 — see
+ * cmd/mitto-app/main.go's dumpPerfBufferToFile). No-op (returns false)
+ * unless perf instrumentation is enabled or the native bind is absent (e.g.
+ * running under Playwright/Chromium, or a normal app launch) — never
+ * throws.
+ */
+export function dumpPerfBufferToFile(scenario, path) {
+  if (!isPerfEnabled()) return false;
+  if (typeof window.mittoDumpPerfBuffer !== "function") return false;
+  try {
+    const buffer = window.__mittoPerfBuffer || [];
+    const lines = buffer.map((entry) =>
+      JSON.stringify({
+        scenario,
+        metric: entry.name,
+        value: entry.duration,
+        meta: {
+          entryType: entry.entryType,
+          startTime: entry.startTime,
+          ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+        },
+        ts: new Date().toISOString(),
+      }),
+    );
+    window.mittoDumpPerfBuffer(path, lines.length ? lines.join("\n") + "\n" : "");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-shot bootstrap: exposes `dumpPerfBufferToFile` as `window.mittoPerfDump`
+ * so an operator running the manual WKWebView playbook can call it from the
+ * DevTools console. No-op unless perf instrumentation is enabled.
+ */
+export function exposePerfDumpForConsole() {
+  if (!isPerfEnabled()) return;
+  window.mittoPerfDump = dumpPerfBufferToFile;
+}
