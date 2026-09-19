@@ -227,3 +227,48 @@ describe("useWebSocket.js: live user_prompt provenance wiring (mitto-rg79)", () 
     expect(snippet).toMatch(/provenance: provenance \|\| undefined,/);
   });
 });
+
+describe("useWebSocket.js: mount-time session-restore race guard (mitto-sus.8)", () => {
+  // Regression coverage for a real bug found while instrumenting the
+  // virtualization-spike perf harness: the persist-last-active-session
+  // effect used to run unconditionally on mount with the initial `null`
+  // placeholder, synchronously clearing `mitto_last_session_id` in
+  // localStorage before the async cold-start restore (WS "open" handler,
+  // which reads getLastActiveSessionId() over the network) could win the
+  // race — stranding every page reload/restart on the Dashboard. The fix
+  // adds a `hasPersistedActiveSessionOnceRef` guard that skips exactly the
+  // first (mount-time) run of the effect.
+  const idx = useWebSocketJs.indexOf(
+    "const hasPersistedActiveSessionOnceRef = useRef(false);",
+  );
+
+  test("guard ref is declared, initialized to false, ahead of the persist effect", () => {
+    expect(idx).toBeGreaterThan(-1);
+  });
+
+  test("the persist effect depends on activeSessionId and checks the guard before persisting", () => {
+    const snippet = useWebSocketJs.slice(idx, idx + 1200);
+    // Effect body, in order: sync the ref, check the guard...
+    expect(snippet).toMatch(
+      /useEffect\(\(\) => \{\s*\n\s*activeSessionIdRef\.current = activeSessionId;\s*\n\s*if \(!hasPersistedActiveSessionOnceRef\.current\) \{/,
+    );
+    // ...flip it to true and return early (skip persisting) on the first run...
+    expect(snippet).toMatch(
+      /hasPersistedActiveSessionOnceRef\.current = true;[\s\S]*?return;\s*\n\s*\}/,
+    );
+    // ...then persist unconditionally on every subsequent run, gated on
+    // [activeSessionId] so it re-fires on every real session switch.
+    expect(snippet).toMatch(
+      /setLastActiveSessionId\(activeSessionId\);\s*\n\s*\}, \[activeSessionId\]\);/,
+    );
+  });
+
+  test("the early-return branch precedes the persist call textually (mount is skipped, not deferred after)", () => {
+    const snippet = useWebSocketJs.slice(idx, idx + 1200);
+    const returnPos = snippet.indexOf("return;");
+    const persistPos = snippet.indexOf("setLastActiveSessionId(activeSessionId);");
+    expect(returnPos).toBeGreaterThan(-1);
+    expect(persistPos).toBeGreaterThan(-1);
+    expect(returnPos).toBeLessThan(persistPos);
+  });
+});
