@@ -4426,6 +4426,47 @@ func TestBackgroundSession_ConfigOptions_ReturnsCopy(t *testing.T) {
 	}
 }
 
+// TestBackgroundSession_NeutralProviderDiscoverer_NilSafe proves
+// NeutralProviderDiscoverer (mitto-mx9.5) is nil-safe on both a nil
+// *BackgroundSession and a session with no lease set (the common case today
+// — matching bs.lease's own doc), returning (nil, false) rather than
+// panicking.
+func TestBackgroundSession_NeutralProviderDiscoverer_NilSafe(t *testing.T) {
+	var nilBS *BackgroundSession
+	if d, ok := nilBS.NeutralProviderDiscoverer(); d != nil || ok {
+		t.Fatalf("nil *BackgroundSession: NeutralProviderDiscoverer() = (%v, %v), want (nil, false)", d, ok)
+	}
+
+	bs := &BackgroundSession{}
+	if d, ok := bs.NeutralProviderDiscoverer(); d != nil || ok {
+		t.Fatalf("no lease set: NeutralProviderDiscoverer() = (%v, %v), want (nil, false)", d, ok)
+	}
+}
+
+// TestBackgroundSession_NeutralProviderDiscoverer_DelegatesToLease proves
+// NeutralProviderDiscoverer delegates to bs.lease.ProviderDiscoverer()
+// unchanged, using the NewTestProviderDiscoverer/BackgroundSessionTestOpts
+// seam that internal/web/handlers' neutral descriptor tests also rely on.
+func TestBackgroundSession_NeutralProviderDiscoverer_DelegatesToLease(t *testing.T) {
+	want := NewTestProviderDiscoverer(agentbackend.ProviderID("Auggie"))
+	bs := NewTestBackgroundSession(BackgroundSessionTestOpts{
+		SessionID:          "conv-1",
+		ProviderDiscoverer: want,
+	})
+
+	got, ok := bs.NeutralProviderDiscoverer()
+	if !ok || got == nil {
+		t.Fatalf("NeutralProviderDiscoverer() = (%v, %v), want (non-nil, true)", got, ok)
+	}
+	providers, err := got.Providers(context.Background())
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	if len(providers) != 1 || providers[0] != agentbackend.ProviderID("Auggie") {
+		t.Fatalf("Providers() = %v, want [Auggie]", providers)
+	}
+}
+
 // TestBackgroundSession_GetConfigValue tests getting config values.
 func TestBackgroundSession_GetConfigValue(t *testing.T) {
 	bs := &BackgroundSession{}

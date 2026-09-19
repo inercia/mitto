@@ -733,6 +733,15 @@ type BackgroundSessionTestOpts struct {
 	AgentSupportsImages bool
 	AgentModels         *SessionModelState
 	ConfigOptions       []SessionConfigOption
+	// ProviderDiscoverer exposes NeutralProviderDiscoverer() to external
+	// packages (e.g. internal/web/handlers' neutral descriptor projection,
+	// mitto-mx9.5) without depending on a real BackendLease/BackendProvider.
+	// When set, NewTestBackgroundSession wraps it in a minimal internal
+	// BackendLease stub (see testLeaseWithDiscoverer) whose only meaningful
+	// method is ProviderDiscoverer() — every other BackendLease method is a
+	// no-op/zero-value stub, so this must never be used on a path that
+	// exercises real lease behavior beyond discovery.
+	ProviderDiscoverer ProviderDiscoverer
 }
 
 // NewTestBackgroundSession creates a BackgroundSession from test options.
@@ -753,7 +762,74 @@ func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession
 		agentModels:             opts.AgentModels,
 		configOptions:           opts.ConfigOptions,
 	}
+	if opts.ProviderDiscoverer != nil {
+		bs.lease = &testLeaseWithDiscoverer{discoverer: opts.ProviderDiscoverer}
+	}
 	return bs
+}
+
+// testLeaseWithDiscoverer is a minimal BackendLease stub exposing only a
+// configurable ProviderDiscoverer (mitto-mx9.5), for tests outside this
+// package that need to exercise BackgroundSession.NeutralProviderDiscoverer()
+// / its consumers without depending on unexported test doubles or a real
+// lease. Every other BackendLease method is a no-op/zero-value stub; this
+// type must never be used on a path that exercises real lease behavior.
+type testLeaseWithDiscoverer struct {
+	discoverer ProviderDiscoverer
+}
+
+func (l *testLeaseWithDiscoverer) Ref() agentbackend.SessionRef { return agentbackend.SessionRef{} }
+func (l *testLeaseWithDiscoverer) State() agentbackend.LifecycleState {
+	return agentbackend.LifecycleConnected
+}
+func (l *testLeaseWithDiscoverer) Capabilities() agentbackend.Capabilities {
+	return nil
+}
+func (l *testLeaseWithDiscoverer) Detach()                         {}
+func (l *testLeaseWithDiscoverer) Bind(agentbackend.SessionRef)    {}
+func (l *testLeaseWithDiscoverer) Reconnect(context.Context) error { return nil }
+func (l *testLeaseWithDiscoverer) Terminate(context.Context) error { return nil }
+func (l *testLeaseWithDiscoverer) LocalProcess() (SharedProcess, bool) {
+	return nil, false
+}
+func (l *testLeaseWithDiscoverer) SessionHandle() (*SessionHandle, bool) {
+	return nil, false
+}
+func (l *testLeaseWithDiscoverer) SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool) {
+	return nil, agentbackend.SessionRef{}, false
+}
+func (l *testLeaseWithDiscoverer) ProviderDiscoverer() (ProviderDiscoverer, bool) {
+	if l.discoverer == nil {
+		return nil, false
+	}
+	return l.discoverer, true
+}
+
+var _ BackendLease = (*testLeaseWithDiscoverer)(nil)
+
+// testProviderDiscoverer is a minimal ProviderDiscoverer for tests.
+type testProviderDiscoverer struct {
+	providers []agentbackend.ProviderID
+	err       error
+}
+
+func (d *testProviderDiscoverer) Providers(context.Context) ([]agentbackend.ProviderID, error) {
+	return d.providers, d.err
+}
+
+// NewTestProviderDiscoverer returns a ProviderDiscoverer for tests (e.g.
+// internal/web/handlers' neutral descriptor tests, mitto-mx9.5) that reports
+// the given providers with no error. Pair with
+// BackgroundSessionTestOpts.ProviderDiscoverer.
+func NewTestProviderDiscoverer(providers ...agentbackend.ProviderID) ProviderDiscoverer {
+	return &testProviderDiscoverer{providers: providers}
+}
+
+// NewTestProviderDiscovererError returns a ProviderDiscoverer for tests whose
+// Providers call always fails with err, for exercising the "discoverer
+// errored" no-op branch of verifyNeutralProvider-style consumers.
+func NewTestProviderDiscovererError(err error) ProviderDiscoverer {
+	return &testProviderDiscoverer{err: err}
 }
 
 func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, error) {

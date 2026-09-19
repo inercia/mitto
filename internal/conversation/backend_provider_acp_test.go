@@ -589,6 +589,99 @@ func TestModeStateFromACP_NilAndPopulated(t *testing.T) {
 	}
 }
 
+// TestACPBackendProvider_AcquireSession_SetsProviderFromRequestAgent proves
+// AcquireRequest.Agent.Provider is captured on the returned lease for both
+// the normal and DeferSession paths (mitto-mx9.5), since acpLease.Providers
+// reads it back verbatim with no re-derivation.
+func TestACPBackendProvider_AcquireSession_SetsProviderFromRequestAgent(t *testing.T) {
+	tests := []struct {
+		name         string
+		deferSession bool
+	}{
+		{"normal", false},
+		{"defer", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := newFakeBackendSharedProcess()
+			proc.newHandle = &SessionHandle{SessionID: "sess-1"}
+			provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+
+			lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+				Agent:        agentbackend.AgentRef{Backend: "acp", Provider: "Auggie"},
+				Intent:       IntentNew,
+				DeferSession: tt.deferSession,
+			})
+			if err != nil {
+				t.Fatalf("AcquireSession: %v", err)
+			}
+
+			al, ok := lease.(*acpLease)
+			if !ok {
+				t.Fatalf("lease is %T, want *acpLease", lease)
+			}
+			got, err := al.Providers(context.Background())
+			if err != nil {
+				t.Fatalf("Providers: %v", err)
+			}
+			if len(got) != 1 || got[0] != agentbackend.ProviderID("Auggie") {
+				t.Fatalf("Providers() = %v, want [Auggie]", got)
+			}
+		})
+	}
+}
+
+// TestACPLease_ProviderDiscoverer_ReturnsSelfWhenProviderSet proves a lease
+// acquired with a non-empty AgentRef.Provider exposes itself as its own
+// ProviderDiscoverer (mitto-mx9.5), and that Providers() reports exactly the
+// one configured provider — ACP is one-provider-per-process.
+func TestACPLease_ProviderDiscoverer_ReturnsSelfWhenProviderSet(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	proc.newHandle = &SessionHandle{SessionID: "sess-1"}
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+		Agent:  agentbackend.AgentRef{Backend: "acp", Provider: "Auggie"},
+		Intent: IntentNew,
+	})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	discoverer, ok := lease.ProviderDiscoverer()
+	if !ok || discoverer == nil {
+		t.Fatalf("ProviderDiscoverer() = (%v, %v), want (non-nil, true)", discoverer, ok)
+	}
+	got, err := discoverer.Providers(context.Background())
+	if err != nil {
+		t.Fatalf("Providers: %v", err)
+	}
+	if len(got) != 1 || got[0] != agentbackend.ProviderID("Auggie") {
+		t.Fatalf("Providers() = %v, want [Auggie]", got)
+	}
+}
+
+// TestACPLease_ProviderDiscoverer_ReturnsFalseWhenProviderEmpty proves the
+// nil-safe fallback: a lease with no provider identity (should not occur for
+// a lease actually returned by AcquireSession, but guarded defensively)
+// reports (nil, false) rather than a discoverer that would report an invalid
+// empty ProviderID.
+func TestACPLease_ProviderDiscoverer_ReturnsFalseWhenProviderEmpty(t *testing.T) {
+	proc := newFakeBackendSharedProcess()
+	proc.newHandle = &SessionHandle{SessionID: "sess-1"}
+	provider := NewACPBackendProvider(&fakeBackendProcessManager{process: proc})
+	lease, err := provider.AcquireSession(context.Background(), AcquireRequest{
+		Intent: IntentNew, // Agent.Provider left empty
+	})
+	if err != nil {
+		t.Fatalf("AcquireSession: %v", err)
+	}
+
+	discoverer, ok := lease.ProviderDiscoverer()
+	if ok || discoverer != nil {
+		t.Fatalf("ProviderDiscoverer() = (%v, %v), want (nil, false) for an empty provider", discoverer, ok)
+	}
+}
+
 // TestACPBackendProvider_AcquireSession_MissingSession_NoFallbackToNewSession
 // proves the mitto-lrt.7 acceptance criterion "missing-session ... cases
 // surface actionable states instead of duplicating work": when

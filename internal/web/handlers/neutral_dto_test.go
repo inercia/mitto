@@ -8,8 +8,10 @@
 package handlers
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -160,5 +162,83 @@ func TestBuildNeutralBackendDescriptor_ModeSelectionAndConfigOptionsMirror(t *te
 	}
 	if len(opt.Values) != 2 || opt.Values[1].Value != "plan" || opt.Values[1].Description != "Plan-only mode" {
 		t.Errorf("ConfigOptions[0].Values = %+v, unexpected shape", opt.Values)
+	}
+}
+
+// TestBuildNeutralBackendDescriptor_ProviderDiscovererAgrees_LegacyValueKept
+// proves the mitto-mx9.5 verifyNeutralProvider parity check: when the live
+// ProviderDiscoverer's result agrees with the legacy meta.ACPServer-derived
+// AgentRef.Provider (the always-true case for ACP, which is
+// one-provider-per-process), AgentRef.Provider still reports the legacy
+// value unchanged — this is a pure observability/parity check, never a
+// second source of truth.
+func TestBuildNeutralBackendDescriptor_ProviderDiscovererAgrees_LegacyValueKept(t *testing.T) {
+	meta := session.Metadata{SessionID: "conv-7", ACPServer: "Auggie"}
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:          "conv-7",
+		ProviderDiscoverer: conversation.NewTestProviderDiscoverer(agentbackend.ProviderID("Auggie")),
+	})
+	desc := BuildNeutralBackendDescriptor(meta, bs)
+	if desc == nil || desc.AgentRef == nil {
+		t.Fatal("expected a non-nil descriptor/AgentRef")
+	}
+	if desc.AgentRef.Provider != "Auggie" {
+		t.Errorf("AgentRef.Provider = %q, want %q (legacy value, discoverer agrees)", desc.AgentRef.Provider, "Auggie")
+	}
+}
+
+// TestBuildNeutralBackendDescriptor_ProviderDiscovererDisagrees_LegacyValueKept
+// proves the mitto-mx9.5 fail-safe: a live discoverer disagreeing with the
+// persisted identity must NEVER silently overwrite AgentRef.Provider — that
+// field stays sourced from meta.ACPServer regardless of what the discoverer
+// reports (mx9's "no user-visible change" invariant).
+func TestBuildNeutralBackendDescriptor_ProviderDiscovererDisagrees_LegacyValueKept(t *testing.T) {
+	meta := session.Metadata{SessionID: "conv-8", ACPServer: "Auggie"}
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:          "conv-8",
+		ProviderDiscoverer: conversation.NewTestProviderDiscoverer(agentbackend.ProviderID("SomeOtherProvider")),
+	})
+	desc := BuildNeutralBackendDescriptor(meta, bs)
+	if desc == nil || desc.AgentRef == nil {
+		t.Fatal("expected a non-nil descriptor/AgentRef")
+	}
+	if desc.AgentRef.Provider != "Auggie" {
+		t.Errorf("AgentRef.Provider = %q, want %q (legacy value, never overwritten by a disagreeing discoverer)", desc.AgentRef.Provider, "Auggie")
+	}
+}
+
+// TestBuildNeutralBackendDescriptor_ProviderDiscovererErrors_LegacyValueKept
+// proves a discoverer error (or an empty result) is a silent no-op: the
+// descriptor is still built successfully from the legacy value, with no
+// panic and no mutation.
+func TestBuildNeutralBackendDescriptor_ProviderDiscovererErrors_LegacyValueKept(t *testing.T) {
+	meta := session.Metadata{SessionID: "conv-9", ACPServer: "Auggie"}
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID:          "conv-9",
+		ProviderDiscoverer: conversation.NewTestProviderDiscovererError(errors.New("discovery unavailable")),
+	})
+	desc := BuildNeutralBackendDescriptor(meta, bs)
+	if desc == nil || desc.AgentRef == nil {
+		t.Fatal("expected a non-nil descriptor/AgentRef")
+	}
+	if desc.AgentRef.Provider != "Auggie" {
+		t.Errorf("AgentRef.Provider = %q, want %q (legacy value kept on discoverer error)", desc.AgentRef.Provider, "Auggie")
+	}
+}
+
+// TestBuildNeutralBackendDescriptor_NoProviderDiscoverer_LegacyValueKept
+// proves the common case today (no BackendProvider injected, e.g. every
+// existing test above using a bare conversation.NewTestBackgroundSession):
+// verifyNeutralProvider's discoverer lookup returns ok=false and is a no-op,
+// so AgentRef.Provider is unaffected.
+func TestBuildNeutralBackendDescriptor_NoProviderDiscoverer_LegacyValueKept(t *testing.T) {
+	meta := session.Metadata{SessionID: "conv-10", ACPServer: "Auggie"}
+	bs := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{SessionID: "conv-10"})
+	desc := BuildNeutralBackendDescriptor(meta, bs)
+	if desc == nil || desc.AgentRef == nil {
+		t.Fatal("expected a non-nil descriptor/AgentRef")
+	}
+	if desc.AgentRef.Provider != "Auggie" {
+		t.Errorf("AgentRef.Provider = %q, want %q (no discoverer injected)", desc.AgentRef.Provider, "Auggie")
 	}
 }
