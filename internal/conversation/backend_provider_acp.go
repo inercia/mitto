@@ -469,16 +469,32 @@ type acpCapabilities struct {
 
 func (c *acpCapabilities) Query(feature agentbackend.Feature) agentbackend.CapabilityState {
 	switch feature {
+	case agentbackend.FeatureFiles:
+		// Mitto's ACP Initialize handshake always advertises
+		// ClientCapabilities.Fs{ReadTextFile,WriteTextFile}=true (see
+		// internal/acpproc.SharedACPProcess's Initialize call) independent of
+		// which agent is connected, so file support is a constant fact about
+		// this host, not something to read off the agent's capabilities.
+		// Parity with internal/acpbackend's sessionCapabilities.Query
+		// (mitto-mx9.8).
+		return agentbackend.CapabilitySupported
+	case agentbackend.FeaturePermissions:
+		// Mitto always wires a permission handler
+		// (SessionCallbacks.OnRequestPermission), auto-approving when no
+		// interactive client is present — likewise a constant fact about this
+		// host rather than an agent-advertised capability. Parity with
+		// internal/acpbackend's sessionCapabilities.Query (mitto-mx9.8).
+		return agentbackend.CapabilitySupported
 	case agentbackend.FeatureModelSelection:
-		if c.handle != nil && c.handle.Models != nil {
+		if c.handle != nil && c.handle.Models != nil && len(c.handle.Models.AvailableModels) > 0 {
 			return agentbackend.CapabilitySupported
 		}
-		return agentbackend.CapabilityUnknown
+		return agentbackend.CapabilityUnsupported
 	case agentbackend.FeatureModeSelection:
-		if c.handle != nil && c.handle.Modes != nil {
+		if c.handle != nil && c.handle.Modes != nil && len(c.handle.Modes.Available) > 0 {
 			return agentbackend.CapabilitySupported
 		}
-		return agentbackend.CapabilityUnknown
+		return agentbackend.CapabilityUnsupported
 	default:
 		if c.processCaps == nil {
 			return agentbackend.CapabilityUnknown

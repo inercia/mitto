@@ -22,10 +22,13 @@ package conversation
 // already covered:
 //
 //  1. A round-trip test for the ToNeutral/FromNeutral stop-reason pair.
-//  2. A test documenting two real behavioral DISCREPANCIES this test phase
-//     discovered between acpCapabilities and acpbackend's
-//     sessionCapabilities, despite both being commented as "mirrors" of
-//     each other — filed here for the Review phase to triage.
+//  2. TestAcpCapabilities_Query_ParityWithSessionCapabilities_mitto_mx9_8,
+//     which pins acpCapabilities.Query's answers for FeatureFiles,
+//     FeaturePermissions, and empty-catalog ModelSelection/ModeSelection to
+//     be identical to acpbackend's sessionCapabilities.Query — mitto-mx9.8
+//     fixed three real behavioral divergences between the two "mirror"
+//     translators that this test phase discovered (see the fix commit for
+//     the before/after values).
 
 import (
 	"testing"
@@ -52,45 +55,40 @@ func TestAcpLeaseStopReasonFromNeutral_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestAcpCapabilities_Query_DiscrepanciesFromAcpbackendSessionCapabilities
-// documents two behavioral differences this test phase discovered between
-// acpCapabilities (this package) and acpbackend's sessionCapabilities,
-// despite both being commented as "mirrors" of each other. Filed here for
-// the Review phase to triage (fix now vs. follow-up bead) rather than
-// silently papered over — mx9.3's acceptance criteria required the
-// duplicates to be "pinned" against each other for the shared feature set,
-// not that all features behave identically, so this is not treated as a
-// blocking regression, but the discrepancy is real and worth a look:
-//
-//  1. FeatureFiles/FeaturePermissions: acpbackend's sessionCapabilities
-//     hardcodes both as CapabilitySupported (a constant host fact,
-//     independent of any inner capabilities snapshot). acpCapabilities has
-//     no such special case for either feature — both fall through to
-//     `default` and delegate to processCaps, which (acpProcessCapabilities)
-//     doesn't recognize them either and returns CapabilityUnknown.
-//  2. Empty-but-non-nil catalog: acpCapabilities treats "handle.Models is a
-//     non-nil pointer" as sufficient for ModelSelection=Supported, even if
-//     AvailableModels is empty. acpbackend's sessionCapabilities instead
-//     requires len(AvailableModels) > 0, reporting Unsupported for a
-//     non-nil-but-empty catalog. Same asymmetry for Modes/ModeSelection.
-func TestAcpCapabilities_Query_DiscrepanciesFromAcpbackendSessionCapabilities(t *testing.T) {
+// TestAcpCapabilities_Query_ParityWithSessionCapabilities_mitto_mx9_8 pins
+// acpCapabilities.Query (this package) to answer the SAME canonical values
+// as acpbackend's sessionCapabilities.Query
+// (internal/acpbackend/capabilities.go) for the shared feature set — the
+// values also independently chosen by internal/web/handlers/neutral_dto.go's
+// neutralCapabilities. Before mitto-mx9.8's fix, acpCapabilities.Query
+// diverged on all four assertions below (no Files/Permissions special
+// case → Unknown instead of Supported; nil-pointer-only checks for
+// Model/ModeSelection → Supported instead of Unsupported for a
+// non-nil-but-empty catalog).
+func TestAcpCapabilities_Query_ParityWithSessionCapabilities_mitto_mx9_8(t *testing.T) {
 	c := &acpCapabilities{
 		handle:      &SessionHandle{Models: &SessionModelState{}, Modes: &agentbackend.ModeState{}},
 		processCaps: NewProcessCapabilities(&acp.AgentCapabilities{}),
 	}
 
-	// Discrepancy 1: unlike sessionCapabilities, Files/Permissions are NOT
-	// hardcoded Supported here — they delegate and come back Unknown.
-	if got := c.Query(agentbackend.FeatureFiles); got != agentbackend.CapabilityUnknown {
-		t.Errorf("Files = %v, want Unknown (acpCapabilities has no Files special-case, unlike acpbackend's sessionCapabilities)", got)
+	// Canonical: Files/Permissions are constant host facts (Mitto's ACP
+	// handshake always advertises Fs read/write, and always wires an
+	// auto-approving permission handler) — sessionCapabilities hardcodes
+	// both Supported; acpCapabilities must match.
+	if got := c.Query(agentbackend.FeatureFiles); got != agentbackend.CapabilitySupported {
+		t.Errorf("Files = %v, want Supported (parity with acpbackend's sessionCapabilities)", got)
 	}
-	if got := c.Query(agentbackend.FeaturePermissions); got != agentbackend.CapabilityUnknown {
-		t.Errorf("Permissions = %v, want Unknown (acpCapabilities has no Permissions special-case, unlike acpbackend's sessionCapabilities)", got)
+	if got := c.Query(agentbackend.FeaturePermissions); got != agentbackend.CapabilitySupported {
+		t.Errorf("Permissions = %v, want Supported (parity with acpbackend's sessionCapabilities)", got)
 	}
 
-	// Discrepancy 2: a non-nil-but-empty catalog reports Supported here,
-	// where acpbackend's sessionCapabilities would report Unsupported.
-	if got := c.Query(agentbackend.FeatureModelSelection); got != agentbackend.CapabilitySupported {
-		t.Errorf("ModelSelection (empty catalog) = %v, want Supported (nil-pointer-only check, unlike acpbackend's len()>0 check)", got)
+	// Canonical: a non-nil-but-empty catalog means the feature is
+	// definitively NOT available (Unsupported), not merely Unknown/guessed
+	// Supported — sessionCapabilities requires len(...) > 0.
+	if got := c.Query(agentbackend.FeatureModelSelection); got != agentbackend.CapabilityUnsupported {
+		t.Errorf("ModelSelection (empty catalog) = %v, want Unsupported (parity with acpbackend's sessionCapabilities len()>0 check)", got)
+	}
+	if got := c.Query(agentbackend.FeatureModeSelection); got != agentbackend.CapabilityUnsupported {
+		t.Errorf("ModeSelection (empty catalog) = %v, want Unsupported (parity with acpbackend's sessionCapabilities len()>0 check)", got)
 	}
 }

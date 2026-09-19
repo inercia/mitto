@@ -334,21 +334,31 @@ func (g *gatingSharedProcess) ResumeSession(ctx context.Context, id, cwd string,
 }
 
 // TestACPCapabilities_Query proves the ACP capabilities adapter answers only
-// what is directly knowable from AgentCapabilities/SessionHandle, reporting
-// CapabilityUnknown rather than guessing otherwise.
+// what is directly knowable from AgentCapabilities/SessionHandle (reporting
+// CapabilityUnknown rather than guessing for undecidable features), while
+// FeatureFiles/FeaturePermissions are constant host facts and
+// FeatureModelSelection/FeatureModeSelection require a non-empty catalog to
+// report Supported (mitto-mx9.8: parity with internal/acpbackend's
+// sessionCapabilities.Query).
 func TestACPCapabilities_Query(t *testing.T) {
 	caps := &acpCapabilities{
 		processCaps: NewProcessCapabilities(&acp.AgentCapabilities{PromptCapabilities: acp.PromptCapabilities{Image: true}}),
-		handle:      &SessionHandle{Models: &SessionModelState{}},
+		handle:      &SessionHandle{Models: &SessionModelState{AvailableModels: []ModelInfo{{ModelId: "m1"}}}},
 	}
 	if got := caps.Query(agentbackend.FeatureImages); got != agentbackend.CapabilitySupported {
 		t.Errorf("Query(FeatureImages) = %v, want Supported", got)
 	}
-	if got := caps.Query(agentbackend.FeatureModelSelection); got != agentbackend.CapabilitySupported {
-		t.Errorf("Query(FeatureModelSelection) = %v, want Supported", got)
+	if got := caps.Query(agentbackend.FeatureFiles); got != agentbackend.CapabilitySupported {
+		t.Errorf("Query(FeatureFiles) = %v, want Supported (constant host fact)", got)
 	}
-	if got := caps.Query(agentbackend.FeatureModeSelection); got != agentbackend.CapabilityUnknown {
-		t.Errorf("Query(FeatureModeSelection) = %v, want Unknown (handle.Modes is nil)", got)
+	if got := caps.Query(agentbackend.FeaturePermissions); got != agentbackend.CapabilitySupported {
+		t.Errorf("Query(FeaturePermissions) = %v, want Supported (constant host fact)", got)
+	}
+	if got := caps.Query(agentbackend.FeatureModelSelection); got != agentbackend.CapabilitySupported {
+		t.Errorf("Query(FeatureModelSelection) = %v, want Supported (non-empty catalog)", got)
+	}
+	if got := caps.Query(agentbackend.FeatureModeSelection); got != agentbackend.CapabilityUnsupported {
+		t.Errorf("Query(FeatureModeSelection) = %v, want Unsupported (handle.Modes is nil)", got)
 	}
 	if got := caps.Query(agentbackend.FeatureTerminals); got != agentbackend.CapabilityUnknown {
 		t.Errorf("Query(FeatureTerminals) = %v, want Unknown", got)
