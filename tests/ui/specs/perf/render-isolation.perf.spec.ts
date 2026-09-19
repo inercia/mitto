@@ -209,4 +209,67 @@ test.describe("Perf: render-domain isolation (mitto-b1k)", () => {
       counts.ChatInput || 0,
     );
   });
+
+  test("a toast fired without a WS round trip does not re-render App/SessionList/MessageList/ChatInput (mitto-sus.11)", async ({
+    page,
+    helpers,
+  }) => {
+    await enablePerf(page);
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+
+    await page.waitForTimeout(300);
+    await resetRenderCounts(page);
+
+    // Fire the same window event useBackgroundNotifications.js's
+    // `mitto:notification` listener reacts to on a WS `notification`
+    // message -- exercises stores/notificationsStore.js's showToast() call
+    // site without an actual WS round trip (mirrors the plan's "showToast
+    // fired via module-level import" scenario).
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new CustomEvent("mitto:notification", {
+          detail: {
+            title: "Render isolation toast",
+            message: "fired without a WS round trip",
+            style: "info",
+          },
+        }),
+      );
+    });
+
+    // The toast renders (ToastContainer self-subscribes) -- App does not
+    // need to re-render for this to happen.
+    await expect(page.locator(".toast .alert")).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+
+    const counts = await getRenderCounts(page);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perf] render counts after showToast (no WS): ${JSON.stringify(counts)}`,
+    );
+
+    expect(counts.App || 0).toBe(0);
+    expect(counts.SessionList || 0).toBe(0);
+    expect(counts.MessageList || 0).toBe(0);
+    expect(counts.ChatInput || 0).toBe(0);
+    // Sanity check: ToastContainer is the ONLY domain expected to
+    // re-render -- a flat 0 here would mean the toast never actually
+    // rendered, not that isolation improved.
+    expect(counts.ToastContainer || 0).toBeGreaterThan(0);
+
+    writePerfSample("render.toast-no-ws", "App", counts.App || 0);
+    writePerfSample(
+      "render.toast-no-ws",
+      "SessionList",
+      counts.SessionList || 0,
+    );
+    writePerfSample(
+      "render.toast-no-ws",
+      "MessageList",
+      counts.MessageList || 0,
+    );
+    writePerfSample("render.toast-no-ws", "ChatInput", counts.ChatInput || 0);
+  });
 });
