@@ -1,7 +1,7 @@
 // Mitto Web Interface - Chat Input Component
 // Handles message composition, image uploads, and predefined prompts
 
-const { useState, useEffect, useRef, useCallback, useMemo, html } =
+const { useState, useEffect, useRef, useCallback, useMemo, html, memo } =
   window.preact;
 
 import {
@@ -19,6 +19,7 @@ import { getContextWindowSize } from "../utils/models.js";
 import { routeDroppedPaths } from "../utils/paths.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
+import { useSessionInfo } from "../hooks/useSessionsStore.js";
 import {
   getDraft as getStoredDraft,
   setDraft as setStoredDraft,
@@ -145,8 +146,6 @@ function PromptStopButton({ onStop }) {
  * @param {Function} props.onCancel - Callback to cancel streaming
  * @param {boolean} props.disabled - Whether input is disabled
  * @param {boolean} props.isStreaming - Whether agent is currently streaming
- * @param {boolean} props.isReadOnly - Whether session is read-only
- * @param {boolean} props.isArchived - Whether session is archived (disables input)
  * @param {boolean} [props.isScrolledUp] - Whether the user has deliberately scrolled UP away from the bottom (hysteresis-driven signal from useScrollManagement: true only after scrolling up several lines, cleared only once back near the bottom). On mobile this collapses the composer to a compact affordance; returning to the bottom, tapping the affordance, or focusing the textarea restores it. The asymmetric thresholds live in the hook so a moving bottom (streaming/expansion) does not toggle the collapse.
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
@@ -161,22 +160,25 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
- * @param {boolean} props.loopConfigured - Whether a loop config exists (shows editor, disables queue buttons)
  * @param {Function} props.onOpenLoopSettings - Opens the conversation panel on the Loop tab
  * @param {Function} [props.onLoopPrompt] - Called with (prompt, opts) when a loop-flagged prompt is selected, where opts is { asLoop } (the resolved per-send override). Routes to app-level branching (decideLoopAction). When absent, loop prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
- * @param {string} props.workingDir - Workspace directory path (for smart file path insertion on native app drag & drop)
  * @param {string} props.sendKeyMode - Key mode for sending messages: "enter" (default) or "ctrl-enter"
+ *
+ * `isReadOnly`, `isArchived`, `loopConfigured`, and `workingDir` are NOT
+ * props — they are read internally from `useSessionInfo(sessionId)`
+ * (mitto-b1k) so this component only reconciles when THIS session's info
+ * slice changes, not on every unrelated App re-render (e.g. another
+ * session's message stream, which used to bump the App-computed
+ * `sessionInfo.messageCount` field App passed down).
  */
-export function ChatInput({
+function ChatInputImpl({
   onSend,
   onCancel,
   disabled,
   isStreaming,
   isRunning = true,
-  isReadOnly,
-  isArchived = false,
   isScrolledUp = false,
   isArchivePending = false,
   predefinedPrompts = [],
@@ -192,7 +194,6 @@ export function ChatInput({
   showQueueDropdown = false,
   actionButtons = [],
   availableCommands = [],
-  loopConfigured = false,
   onOpenLoopSettings,
   onLoopPrompt,
   agentSupportsImages = false,
@@ -201,7 +202,6 @@ export function ChatInput({
   onResume,
   activeUIPrompt = null,
   onUIPromptAnswer,
-  workingDir = "",
   sendKeyMode = "enter",
   configOptions = [],
   onSetConfigOption,
@@ -221,6 +221,15 @@ export function ChatInput({
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
   useRenderCounter("ChatInput");
+  // Read isReadOnly/archived/loop_configured/working_dir directly from the
+  // subscribable per-session info slice (mitto-b1k) instead of App-passed
+  // props derived from the noisier `sessionInfo` object (which also carries
+  // `messageCount`, bumped on every message — see useWSSessionSelectors.js).
+  const sessionInfoSlice = useSessionInfo(sessionId);
+  const isReadOnly = sessionInfoSlice?.isReadOnly;
+  const isArchived = sessionInfoSlice?.archived || false;
+  const loopConfigured = sessionInfoSlice?.loop_configured || false;
+  const workingDir = sessionInfoSlice?.working_dir || "";
   // Draft text is local state seeded from (and mirrored into) the shared
   // draftStore, instead of flowing through App's `sessionDrafts` state
   // (mitto-sus.6). This isolates every keystroke's render to this component
@@ -3338,3 +3347,12 @@ ${activeUIPrompt.text || ""}</textarea
     </form>
   `;
 }
+
+// memo() (mitto-b1k): isReadOnly/isArchived/loopConfigured/workingDir are
+// now read internally from the store instead of App-passed props, so the
+// remaining props are reference-stable across a background session's
+// chunks and across the active session's own message-only chunks (which no
+// longer bump a `sessionInfo.messageCount`-carrying prop here). A
+// shallow-prop-equal memo() stops the composer from reconciling on those
+// ticks. See docs/devel/frontend-render-domains.md.
+export const ChatInput = memo(ChatInputImpl);

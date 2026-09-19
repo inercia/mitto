@@ -14,8 +14,6 @@ const {
 // Import shared library functions
 import {
   computeAllSessions,
-  coalesceAgentMessages,
-  COALESCE_DEFAULTS,
   limitMessages,
   getWorkspaceVisualInfo,
   getBasename,
@@ -43,11 +41,15 @@ import {
 } from "./utils/perfMarks.js";
 import { setDraft as setDraftStore } from "./utils/draftStore.js";
 import { useRenderCounter } from "./hooks/useRenderCounter.js";
+import { installRenderCountsReset } from "./utils/renderCounters.js";
 
 // mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
 // unless `?perf=1` / `window.__mittoPerf` is set (see utils/perfMarks.js);
 // module-scope so the mark buffer exists before the first render.
 installPerfBuffer();
+// mitto-b1k: opt-in render-count reset hook for the before/after
+// render-isolation Playwright spec. Same gate/timing as installPerfBuffer().
+installRenderCountsReset();
 
 // mitto-sus.8: opt-in virtualization-spike content-visibility prototype. No-op
 // unless `?perf-cv=1` / `window.__mittoPerfCV` is set (see utils/perfMarks.js).
@@ -468,19 +470,13 @@ function App() {
     clearPlanForSession,
   } = useAgentPlan({ activeSessionId });
 
-  // Coalesce consecutive agent messages for display.
-  // The backend's MarkdownBuffer flushes content at semantic boundaries (paragraphs,
-  // headers, horizontal rules, etc.), creating separate events. This is correct for
-  // tracking and sync, but creates a poor visual experience where each flush appears
-  // as a separate message bubble. This combines them for rendering.
-  //
-  // EXPERIMENT: hrBreaksCoalescing - when enabled, <hr/> elements break coalescing,
-  // creating visual separation between sections. See COALESCE_DEFAULTS in lib.js.
-  const displayMessages = useMemo(() => {
-    return coalesceAgentMessages(messages, {
-      hrBreaksCoalescing: COALESCE_DEFAULTS.hrBreaksCoalescing,
-    });
-  }, [messages]);
+  // NOTE: the coalesced `displayMessages` derivation used to live here and
+  // be passed down as a prop. It now lives inside MessageList itself
+  // (mitto-b1k), which reads the active session's raw messages directly
+  // from stores/sessionsStore.js via useActiveSessionMessages() instead of
+  // an App-passed prop — see components/MessageList.js. `messages` (this
+  // component's own copy, from useWebSocket) is still used below for the
+  // copy-conversation actions, the ACP-reconnecting banner, and SessionPanel.
 
   const [deleteDialog, setDeleteDialog] = useState({
     isOpen: false,
@@ -3912,8 +3908,6 @@ function App() {
                     `}
                     <!-- Messages list (scrollable container + scroll-to-bottom button) -->
                     <${MessageList}
-                      displayMessages=${displayMessages}
-                      messages=${messages}
                       hasMoreMessages=${hasMoreMessages}
                       hasReachedLimit=${hasReachedLimit}
                       isLoadingMore=${isLoadingMore}
@@ -4019,8 +4013,6 @@ function App() {
                       isStreaming=${isStreaming}
                       isRunning=${isRunning}
                       isScrolledUp=${isScrolledUp}
-                      isReadOnly=${sessionInfo?.isReadOnly}
-                      isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}
                       inputRef=${chatInputRef}
                       noSession=${!activeSessionId}
@@ -4041,7 +4033,6 @@ function App() {
                       showQueueDropdown=${showQueueDropdown}
                       actionButtons=${actionButtons}
                       availableCommands=${availableCommands}
-                      loopConfigured=${sessionInfo?.loop_configured || false}
                       onOpenLoopSettings=${() => handleOpenSidePanelTab("loop")}
                       onLoopPrompt=${(prompt, opts) =>
                         handleSendPromptToConversation(
@@ -4084,7 +4075,6 @@ function App() {
                           label,
                           freeText,
                         )}
-                      workingDir=${sessionInfo?.working_dir || ""}
                       sendKeyMode=${sendKeyMode}
                       configOptions=${configOptions}
                       onSetConfigOption=${setConfigOption}

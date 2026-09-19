@@ -51,3 +51,19 @@ export function resetRenderCounts() {
     window.__mittoRenderCounts = {};
   }
 }
+
+/**
+ * One-shot bootstrap (mitto-b1k): exposes resetRenderCounts() on
+ * `window.__mittoResetRenderCounts`, mirroring how `installPerfBuffer()`
+ * (utils/perfMarks.js) exposes `window.__mittoPerfBuffer` -- called once
+ * from app.js at module scope. No-op unless perf instrumentation is
+ * enabled; lets a before/after render-isolation Playwright spec reset
+ * counters mid-run (e.g. after initial mount has settled, before
+ * exercising the scenario under measurement) without a full page reload.
+ * Idempotent -- safe to call more than once (e.g. hot reload).
+ */
+export function installRenderCountsReset() {
+  if (!isPerfEnabled()) return;
+  if (typeof window === "undefined") return;
+  window.__mittoResetRenderCounts = resetRenderCounts;
+}

@@ -2,19 +2,24 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment, useMemo, useState, useEffect, useLayoutEffect } =
+const { html, Fragment, useMemo, useState, useEffect, useLayoutEffect, memo } =
   window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
-import { buildRetryTargets, canReplayNamedPrompt, messageKey } from "../lib.js";
+import {
+  buildRetryTargets,
+  canReplayNamedPrompt,
+  messageKey,
+  coalesceAgentMessages,
+  COALESCE_DEFAULTS,
+} from "../lib.js";
 import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
+import { useActiveSessionMessages } from "../hooks/useSessionsStore.js";
 
 /**
- * @param {Array}    displayMessages   - Coalesced messages to render
- * @param {Array}    messages          - Raw messages (length check for empty state)
  * @param {boolean}  hasMoreMessages
  * @param {boolean}  hasReachedLimit
  * @param {boolean}  isLoadingMore
@@ -43,9 +48,7 @@ import { useRenderCounter } from "../hooks/useRenderCounter.js";
  *                                        early (e.g. on first stream chunk) instead of waiting
  *                                        for the safety-cap sweep.
  */
-export function MessageList({
-  displayMessages,
-  messages,
+function MessageListImpl({
   hasMoreMessages,
   hasReachedLimit,
   isLoadingMore,
@@ -70,6 +73,18 @@ export function MessageList({
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
   useRenderCounter("MessageList");
+  // Read this session's messages directly from the subscribable store
+  // (mitto-b1k) instead of an App-passed prop, so a WS chunk to a
+  // *different* (background) session never causes this component to
+  // reconcile: `useActiveSessionMessages` only notifies when THIS
+  // session id's messages slice changes. Coalescing (moved here from
+  // app.js) recomputes only when the raw messages array reference changes.
+  const messages = useActiveSessionMessages(activeSessionId);
+  const displayMessages = useMemo(() => {
+    return coalesceAgentMessages(messages, {
+      hrBreaksCoalescing: COALESCE_DEFAULTS.hrBreaksCoalescing,
+    });
+  }, [messages]);
   // Tick every 2s while the "agent is still working" heartbeat is visible, to
   // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
   // no new heartbeat). 2s resolution is invisible to the eye at mm:ss scale and
@@ -448,3 +463,10 @@ export function MessageList({
     </${Fragment}>
   `;
 }
+
+// memo() (mitto-b1k): now that `messages`/`displayMessages` are read
+// internally from the store instead of App-passed props, the remaining
+// props are reference-stable across a background session's chunks — a
+// shallow-prop-equal memo() stops this component from reconciling on
+// unrelated App re-renders. See docs/devel/frontend-render-domains.md.
+export const MessageList = memo(MessageListImpl);

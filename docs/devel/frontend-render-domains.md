@@ -76,15 +76,47 @@ Shipped in this increment:
   (`hooks/useSessionsStore.js`), kept live via a single additive
   `sessionsStore.replaceAll(sessions)` effect in `useWebSocket.js`.
 
-Deferred to a follow-up increment (tracked on the bead's close-reason):
+## Status after mitto-b1k
 
-- Migrating `SessionList` to `useSessionSummary`/a summary-list selector,
-  `MessageList` to `useActiveSessionMessages`, in place of their current
-  `activeSessions`/`storedSessions`/`messages` props — the actual read-side
-  swap that stops those components from re-rendering on an unrelated
-  session's background chunk.
-- `memo()` on the three boundary regions once the above read-side swap makes
-  their props reference-stable across background chunks.
+Shipped:
+
+- `MessageList` reads the active session's messages directly via
+  `useActiveSessionMessages(activeSessionId)` instead of an App-passed
+  `messages`/`displayMessages` prop; the `coalesceAgentMessages` derivation
+  moved from `app.js` into `MessageList` itself. Wrapped in `memo()`.
+- `ChatInput` reads `working_dir` / `isReadOnly` / `archived` /
+  `loop_configured` via `useSessionInfo(sessionId)` instead of App-passed
+  props sourced from the noisier `sessionInfo` object (which also carries
+  `messageCount`, bumped on every message to the active session — see
+  `hooks/useWSSessionSelectors.js`). Wrapped in `memo()`.
+- `utils/renderCounters.js` exposes `window.__mittoResetRenderCounts` via a
+  new `installRenderCountsReset()` bootstrap call (mirrors
+  `installPerfBuffer()`), so a Playwright spec can reset counters mid-run.
+
+Deferred to a follow-up bead (SessionList's read-side swap turned out to be
+materially larger than originally scoped):
+
+- `SessionList` still takes the `activeSessions`/`storedSessions` props and
+  is **not** wrapped in `memo()`. Two blockers surfaced during
+  implementation:
+  1. `computeAllSessions()` (`lib.js`) merges in far more raw per-session
+     fields than the mitto-sus.7 summary-slice extractor captures
+     (`loop_configured`, `next_scheduled_at`, `loop_frequency`,
+     `loop_trigger`/`loop_triggers`, and more) — safely expanding the
+     summary slice means touching that merge function's field list one by
+     one, which is its own bounded piece of work.
+  2. At least two callback props `App` passes to `SessionList` are inline
+     arrow functions recreated every render (`onClose`,
+     `onBeadsCreate`), and several more (`toggleTheme`,
+     `handleShowSettings`, `handleBeadsOpen`, etc.) were not confirmed
+     stable. Wrapping `SessionList` in `memo()` without first auditing and
+     stabilizing all ~20 of its callback props would be a no-op that adds
+     complexity without isolating anything — worse than leaving it as-is.
+  `SessionList` still benefits today from the existing structural-
+  fingerprint memoization of `activeSessions` (`useWebSocket.js`), which
+  already keeps that array's reference stable across background message-only
+  chunks (it excludes `messageCount` and per-message timestamps from the
+  fingerprint) — the remaining work is `memo()` + the callback audit.
 - Callback-identity stabilization audit for the ~20 callbacks `App` passes
   to `SessionList`/`MessageList`/`ChatInput`.
 - Queue state, background-notification state, and workspaces/config-options
