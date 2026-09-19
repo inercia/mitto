@@ -6,6 +6,15 @@
 # Uses text-mode (no external command) with Go-template {{ }} accessors that are
 # rendered at runtime against the live session context (.Session, .ACP, .Parent,
 # .Children, .Workspace).
+#
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed. The rendered header embeds the LIVE
+#     child/agent list, which changes as children spawn or die, so a
+#     periodic refire is justified — but token count (which tracks real
+#     context turnover) is a better proxy than wall-clock time or message
+#     count. A genuine fresh-context event (session resume/compaction) also
+#     naturally refires this processor via IsFirstMessage.
 ##########################################################################################
 name: session-context
 description: "Injects session identity and context into the first message"
@@ -14,8 +23,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
     afterTokens: 80000
 mutate: prepend
 priority: 10

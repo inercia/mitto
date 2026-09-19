@@ -22,7 +22,9 @@
 #   - Fires on the first message, then re-runs only after enough token budget has
 #     been consumed (afterTokens) to justify a fresh index. Time/message-count
 #     reruns were removed (mitto-telc) to avoid repeatedly re-injecting the same
-#     index during a long-lived conversation.
+#     index during a long-lived conversation. This is the reference pattern the
+#     mitto-8n5 audit standardized every other userPrompt+match:first builtin
+#     processor on (afterTokens-only; no afterTime/afterSentMsgs).
 #
 # Implementation note: command-mode processors exec their `command` directly (no
 # shell), so the `bd --readonly prime | awk ...` pipeline requires an explicit `sh -c`

@@ -12,6 +12,13 @@
 #
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 # Only activates when the ACP server is Auggie and no rules files exist yet.
+#
+# Throttling (mitto-8n5 audit): no `rerun` block is configured — this is
+# intentional, not an oversight. The task is genuinely one-shot (generate
+# the initial rules files once); `enabledWhen` already self-suppresses
+# permanently once .augment/rules exists, so a rerun cadence would have
+# nothing left to refresh. Ongoing updates are handled separately by
+# auggie-update-rules.yaml (on: conversationClosed).
 ##########################################################################################
 name: auggie-manage-rules
 description: "Generate initial .augment/rules/ files from workspace analysis"

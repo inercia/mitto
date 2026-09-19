@@ -5,6 +5,15 @@
 # the agent to use mitto_ui_options, mitto_ui_textbox, mitto_ui_form, and
 # mitto_ui_notify instead of asking the user to type responses manually.
 #
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed. This guidance is immutable static
+#     text — a fixed 30-minute/20-message cadence was reinjecting it while
+#     still retained in context. Token consumption correlates with actual
+#     context turnover, unlike wall-clock time or message count; a genuine
+#     fresh-context event (session resume/compaction) already refires
+#     match:first processors naturally via IsFirstMessage.
+#
 # Uses text-mode (no external command).
 ##########################################################################################
 name: use-ui-tools
@@ -15,8 +24,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
     afterTokens: 80000
 mutate: append
 priority: 92

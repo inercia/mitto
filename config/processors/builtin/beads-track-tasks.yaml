@@ -8,9 +8,14 @@
 # Activation conditions:
 #   - The `bd` command exists on PATH (CommandExists CEL gate)
 #
-# Throttling:
-#   - Fires on the first message, then re-runs repeatedly to keep the reminder fresh
-#     without spamming every single message.
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed. The bullet-list body is immutable
+#     static guidance — a fixed 30-minute/20-message cadence was reinjecting
+#     it while still retained in context. Token consumption correlates with
+#     actual context turnover, unlike wall-clock time or message count; a
+#     genuine fresh-context event (session resume/compaction) already
+#     refires match:first processors naturally via IsFirstMessage.
 #
 # Dedup (mitto-2kw): this processor keeps firing even when a standing
 # agent-instructions file (AGENTS.md and friends) already covers the same
@@ -31,8 +36,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
     afterTokens: 80000
 mutate: append
 priority: 93

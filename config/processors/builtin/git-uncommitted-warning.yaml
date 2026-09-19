@@ -12,9 +12,15 @@
 # Both gates fail-closed to false outside a repo or when git is unavailable, so this
 # processor stays silent on non-git workspaces and clean trees automatically.
 #
-# Throttling:
-#   - Fires on the first message, then re-runs periodically (matches session-context)
-#     so the warning stays fresh across long conversations without spamming every turn.
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed. Unlike purely static guidance, the
+#     injected text embeds the LIVE `git status` output, so a periodic
+#     refire is genuinely justified — but token count (which tracks real
+#     context turnover) is a better proxy than wall-clock time or message
+#     count for "the working tree has probably changed since we last
+#     warned". A genuine fresh-context event (session resume/compaction)
+#     also naturally refires this processor via IsFirstMessage.
 #
 # Uses text-mode (no external command).
 ##########################################################################################
@@ -26,9 +32,7 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
-    afterTokens: 80000
+    afterTokens: 60000
 mutate: prepend
 priority: 15
 text: |

@@ -14,9 +14,15 @@
 #      gate). Unlike beads-track-tasks.yaml, this processor has no dynamic
 #      content to preserve, so it is fully suppressed rather than shrunk.
 #
-# Throttling:
-#   - Fires on the first message, then re-runs repeatedly so the agent is reminded
-#     about outstanding work without spamming every message.
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed to justify a fresh reminder. This text
+#     is immutable static guidance — a fixed 30-minute/20-message cadence was
+#     reinjecting the same reminder while it was still retained in context.
+#     Token consumption correlates with actual context turnover, unlike
+#     wall-clock time or message count; a genuine fresh-context event
+#     (session resume/compaction) already refires match:first processors
+#     naturally via the IsFirstMessage reset, with no extra mechanism needed.
 #
 # Uses text-mode (no external command). The agent itself runs `bd ready` to see the
 # current list of available tasks.
@@ -29,8 +35,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
     afterTokens: 80000
 mutate: append
 priority: 94

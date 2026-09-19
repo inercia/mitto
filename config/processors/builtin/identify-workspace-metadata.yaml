@@ -10,6 +10,12 @@
 #
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 # Only activates when a .mittorc file exists but lacks a metadata description.
+#
+# Throttling (mitto-8n5 audit): no `rerun` block is configured — this is
+# intentional, not an oversight. The task is genuinely one-shot (fill in
+# missing metadata once); `enabledWhen` already self-suppresses permanently
+# once metadata.description is set, so a rerun cadence would have nothing
+# left to refresh.
 ##########################################################################################
 name: identify-workspace-metadata
 description: "Analyzes the project and fills in workspace metadata (description, URL) in .mittorc"

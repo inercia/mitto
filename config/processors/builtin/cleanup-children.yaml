@@ -10,9 +10,14 @@
 #   2. All children are currently idle, i.e. none are prompting (Children.PromptingCount == 0)
 #   3. The mitto_conversation_delete_* MCP tool is available (Tools.HasPattern CEL)
 #
-# Throttling:
-#   - Fires on the first message, then re-runs every 10 user messages or 15 minutes
-#   - This prevents spamming the reminder on every single message
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed. The reminder embeds the LIVE child
+#     count and child list, so a periodic refire is justified — but token
+#     count (which tracks real context turnover) is a better proxy than
+#     wall-clock time or message count. A genuine fresh-context event
+#     (session resume/compaction) also naturally refires this processor via
+#     IsFirstMessage.
 ##########################################################################################
 name: cleanup-children
 description: "Reminds the agent to clean up idle child conversations it no longer needs"
@@ -21,8 +26,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterSentMsgs: 10
-    afterTime: 15m
     afterTokens: 40000
 mutate: append
 priority: 95

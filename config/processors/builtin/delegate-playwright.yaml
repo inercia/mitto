@@ -17,6 +17,15 @@
 #
 # Model tags track the live model (session/set_model aware), unlike ACP server
 # tags/names, which are a static property of the server binary.
+#
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed. This guidance is immutable static
+#     text — a fixed 30-minute/20-message cadence was reinjecting it while
+#     still retained in context. Token consumption correlates with actual
+#     context turnover, unlike wall-clock time or message count; a genuine
+#     fresh-context event (session resume/compaction) already refires
+#     match:first processors naturally via IsFirstMessage.
 ##########################################################################################
 name: delegate-playwright
 description: "Delegates Playwright browser automation to a faster model when using a premium reasoning model"
@@ -25,8 +34,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 30m
-    afterSentMsgs: 20
     afterTokens: 80000
 mutate: append
 priority: 91

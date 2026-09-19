@@ -3,7 +3,15 @@
 #
 # This processor appends a note asking the agent to verify MCP tool availability
 # and show installation instructions if needed. It runs on the first message
-# and re-runs repeatedly to re-check.
+# and re-runs periodically to re-check.
+#
+# Throttling (retuned mitto-8n5):
+#   - Fires on the first message, then re-runs only after enough token budget
+#     (afterTokens) has been consumed to justify re-checking. The text itself
+#     is static, but the goal is behavioral (nudge until MCP tools are
+#     installed); `enabledWhen` already fully suppresses this processor once
+#     `mitto_*` tools are detected, so a moderate token-only cadence is safe
+#     without a time/message trigger that could reinject the nudge mid-task.
 #
 # Uses text-mode (no external command).
 ##########################################################################################
@@ -15,8 +23,6 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTime: 20m
-    afterSentMsgs: 15
     afterTokens: 60000
 mutate: append
 priority: 15

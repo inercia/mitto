@@ -12,6 +12,13 @@
 #
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 # Only activates when the ACP server is Claude Code and no memory files exist yet.
+#
+# Throttling (mitto-8n5 audit): no `rerun` block is configured — this is
+# intentional, not an oversight. The task is genuinely one-shot (generate
+# the initial memory files once); `enabledWhen` already self-suppresses
+# permanently once CLAUDE.md or .claude exists, so a rerun cadence would
+# have nothing left to refresh. Ongoing updates are handled separately by
+# claude-update-memory.yaml (on: conversationClosed).
 ##########################################################################################
 name: claude-manage-memory
 description: "Generate initial Claude Code memory files from workspace analysis"
