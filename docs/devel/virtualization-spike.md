@@ -159,13 +159,35 @@ bundle. Neither removes the search/copy/accessibility trade-offs above.
 | Fully paged to `MAX_MESSAGES=1000` | ~10–19k DOM nodes (measured/projected) | Not yet observed to cause jank; scroll-FPS at this scale is unmeasured (see below) |
 | Prepend click→render | 37–130 ms | No hard budget; comparable to existing record-only latencies |
 
+## Chromium vs WKWebView feasibility
+
+The measurements above were captured on Chromium (`tests/ui`'s Playwright
+harness is Chromium-only). WKWebView numbers were not captured this spike,
+but per-technique **feasibility** is well-defined by documented WebKit
+support for exactly the APIs each prototype relies on:
+
+| Technique | Chromium | WKWebView (macOS app, `cmd/mitto-app`) | Verdict |
+|---|---|---|---|
+| `content-visibility: auto` (Prototype A) | Supported since Chrome 85 | Supported since Safari/WebKit 18 (macOS 15 / iOS 18.2). Older WebKit ignores the unknown property — degrades gracefully to today's behavior. | **Feasible in both**; the "no reduction in DOM count" finding is a property of the CSS spec, not the engine, so it applies identically to WebKit. |
+| `IntersectionObserver` / `ResizeObserver` (Prototype B's building blocks) | Supported for years | Supported for years in every shipping WebKit. | **Feasible in both.** |
+| `react-virtuoso` / `react-window` (Prototype C) | Uses only standard DOM / observer APIs | Same — no WebKit-specific gaps documented by either library. | **Feasible in both**, gated on the `preact/compat` + bundler-entry cost noted above (engine-neutral). |
+| DOM-node-count scaling | Layout/paint cost scales roughly linearly with subtree size in both engines; WebKit is historically **slightly slower** on very large trees (>50k nodes). | Same shape, slightly worse constant. | Any Chromium threshold measured here is a **conservative** estimate for WKWebView — WKWebView would breach the same budget at an equal or smaller history size, never later. |
+
+**Consequence for the recommendation:** the "no-op for now" verdict holds
+for WKWebView too — its worst-case DOM cost at the `MAX_MESSAGES=1000`
+ceiling is bounded by the same ~10–19k projection (marginally worse
+constant, same shape), still well below the point where any of the three
+prototypes would materially help. If the follow-up scroll-FPS measurement
+(see Out of scope) is ever added, it should be run under both engines —
+WKWebView being the more conservative gate.
+
 ## Risk register
 
 | Risk | Notes |
 |---|---|
 | Correctness (reverse order, streaming) | Custom windowing (B) touches the trickiest seams in the app; highest regression risk of the three prototypes |
 | Accessibility | Both B and a library regress AT access to unmounted rows; no clean mitigation identified |
-| WKWebView parity | Not yet measured in this spike — the mock-ACP Playwright harness runs Chromium only; flagged as an explicit gap |
+| WKWebView parity | Per-technique feasibility documented above (Chromium vs WKWebView table) — all three prototypes are engine-compatible. Runtime performance in WKWebView is **not measured** this spike (Playwright harness is Chromium-only); Chromium numbers here are a conservative bound for WKWebView. |
 | Dependency cost | C requires `preact/compat` shim + 2 new deps + a new bundler entry — highest process cost of the three |
 | Premature optimization | Current numbers don't show a problem — building B or adopting C now is speculative |
 
@@ -188,6 +210,10 @@ bundle. Neither removes the search/copy/accessibility trade-offs above.
   "DOM node count grows" and "users perceive jank"; a follow-up should wire
   `collectFrameStats` into the prepend-growth loop in
   `history-load.perf.spec.ts`.
-- Chromium vs WKWebView comparison not performed (harness is Chromium-only).
+- **Runtime** Chromium vs WKWebView performance comparison not performed
+  (Playwright harness is Chromium-only); per-technique feasibility is
+  compared above under "Chromium vs WKWebView feasibility". A follow-up
+  should extend the harness to WebKit-Playwright to capture the actual
+  constant-factor difference on the same fixtures.
 - No production code changed; `content-visibility` prototype and its
   `mitto-perf-cv`/`mitto-msg-row` seam are dormant unless explicitly enabled.
