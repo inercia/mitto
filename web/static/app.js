@@ -300,14 +300,6 @@ function App() {
     activeSessions,
     storedSessions,
     fetchStoredSessions,
-    backgroundCompletion,
-    clearBackgroundCompletion,
-    loopStarted,
-    clearLoopStarted,
-    backgroundUIPrompt,
-    clearBackgroundUIPrompt,
-    backgroundUIPromptTimeout,
-    clearBackgroundUIPromptTimeout,
     queueLength,
     queueMessages,
     queueConfig,
@@ -334,7 +326,10 @@ function App() {
     creatingWorkingDirs,
   } = useWebSocket({ onActiveSessionRemovedRef, onNoInitialSessionRef });
 
-  const { showToast, dismissToast, toasts } = useToast();
+  // showToast/dismissToast are stable module-level functions backed by
+  // stores/notificationsStore.js (mitto-sus.11); ToastContainer renders the
+  // live toast list itself via useToasts() instead of App passing it down.
+  const { showToast, dismissToast } = useToast();
 
   // Auto-resume GC-suspended sessions when they become the active (focused) session.
   // Covers two cases:
@@ -851,125 +846,19 @@ function App() {
     }
   }, [swipeArrow]);
 
-  // Show toast and native notification when a background session completes
-  useEffect(() => {
-    if (backgroundCompletion) {
-      // Show native macOS notification (not sticky — auto-dismisses)
-      if (
-        window.mittoNativeNotificationsEnabled &&
-        typeof window.mittoShowNativeNotification === "function"
-      ) {
-        window.mittoShowNativeNotification(
-          backgroundCompletion.sessionName || "Conversation",
-          "Agent completed",
-          backgroundCompletion.sessionId,
-          false,
-        );
-      }
-
-      // Show in-app toast
-      showToast({
-        style: "success",
-        title: backgroundCompletion.sessionName || "Conversation",
-        message: "finished",
-        duration: 5000,
-        onClick: () => focusSession(backgroundCompletion.sessionId),
-      });
-      clearBackgroundCompletion();
-    }
-  }, [
-    backgroundCompletion,
-    clearBackgroundCompletion,
-    showToast,
-    focusSession,
-  ]);
-
-  // Show toast and native notification when a loop prompt starts
-  useEffect(() => {
-    if (loopStarted) {
-      // Show native macOS notification (not sticky — auto-dismisses)
-      if (
-        window.mittoNativeNotificationsEnabled &&
-        typeof window.mittoShowNativeNotification === "function"
-      ) {
-        window.mittoShowNativeNotification(
-          loopStarted.sessionName || "Loop Conversation",
-          "Loop run started",
-          loopStarted.sessionId,
-          false,
-        );
-      }
-
-      // Show in-app toast
-      showToast({
-        style: "info",
-        title: loopStarted.sessionName || "Loop Conversation",
-        message: "loop run started",
-        duration: 5000,
-        onClick: () => focusSession(loopStarted.sessionId),
-      });
-      clearLoopStarted();
-    }
-  }, [loopStarted, clearLoopStarted, showToast, focusSession]);
-
-  // Show toast when a UI prompt arrives in a background session
-  useEffect(() => {
-    if (backgroundUIPrompt) {
-      // In-app toast (native notification is handled in useWebSocket)
-      showToast({
-        style: "warning",
-        title: `Question in ${backgroundUIPrompt.sessionName || "conversation"}`,
-        duration: 8000,
-        onClick: () => focusSession(backgroundUIPrompt.sessionId),
-      });
-      clearBackgroundUIPrompt();
-    }
-  }, [backgroundUIPrompt, clearBackgroundUIPrompt, showToast, focusSession]);
-
-  // Show toast and native notification when a background UI prompt times out
-  // This fires when a blocking prompt expired while the user was not viewing the session.
-  useEffect(() => {
-    if (backgroundUIPromptTimeout) {
-      const sessionName =
-        backgroundUIPromptTimeout.sessionName || "Conversation";
-      // Show native macOS notification (sticky — user needs to go check the session)
-      if (
-        window.mittoNativeNotificationsEnabled &&
-        typeof window.mittoShowNativeNotification === "function"
-      ) {
-        window.mittoShowNativeNotification(
-          sessionName,
-          backgroundUIPromptTimeout.question || "Agent needed your input",
-          backgroundUIPromptTimeout.sessionId,
-          true, // sticky — keep until dismissed
-        );
-      }
-      // Show in-app toast
-      showToast({
-        style: "warning",
-        title: `Missed prompt in ${sessionName}`,
-        message:
-          backgroundUIPromptTimeout.question || "Agent needed your input",
-        duration: 10000,
-        onClick: () => focusSession(backgroundUIPromptTimeout.sessionId),
-      });
-      clearBackgroundUIPromptTimeout();
-    }
-  }, [
-    backgroundUIPromptTimeout,
-    clearBackgroundUIPromptTimeout,
-    showToast,
-    focusSession,
-  ]);
-
   // Background notification event listeners (extracted to
   // hooks/useBackgroundNotifications.js): runner fallback, memory recycle,
-  // ACP start/permanent errors, hook failures, generic notifications, and
-  // active-session native-notification cleanup. activeWorkspaceUUID drives
-  // workspace-scoped notification filtering for mitto_workspace_ui_notify
-  // (mitto-6bn) so only clients viewing the target workspace see the toast.
+  // ACP start/permanent errors, hook failures, generic notifications,
+  // active-session native-notification cleanup, and (mitto-sus.11) the
+  // background-completion / loop-started / background-UI-prompt /
+  // background-UI-prompt-timeout → toast bridges that used to be four
+  // separate App-level `useEffect`s reading App `useState`. The hook reads
+  // those four signals straight from stores/notificationsStore.js and
+  // `showToast` is a stable module-level function, so none of this touches
+  // App's render tree anymore. activeWorkspaceUUID drives workspace-scoped
+  // notification filtering for mitto_workspace_ui_notify (mitto-6bn) so
+  // only clients viewing the target workspace see the toast.
   useBackgroundNotifications({
-    showToast,
     focusSession,
     activeSessionId,
     activeWorkspaceUUID: sessionInfo?.workspace_uuid ?? null,
@@ -3746,8 +3635,8 @@ function App() {
           }}
         />
 
-        <!-- Unified toast container -->
-        <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
+        <!-- Unified toast container: self-subscribes via useToasts() (mitto-sus.11) -->
+        <${ToastContainer} />
 
         <!-- Main content area: dashboard, beads view, or conversation -->
         ${mainView === "dashboard"

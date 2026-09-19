@@ -2,11 +2,31 @@
 // Registers the App's background event-listener effects that surface toasts and
 // native notifications for server-pushed events (runner fallback, memory recycle,
 // ACP start/permanent errors, hook failures, and generic notifications), plus the
-// cleanup of native notifications for the active conversation on focus.
-// Side-effect only: returns nothing.
+// cleanup of native notifications for the active conversation on focus. Also
+// bridges the four background-notification signals in
+// stores/notificationsStore.js (mitto-sus.11) -- background-session
+// completion, loop-started, background UI prompt, and background UI prompt
+// timeout -- to a toast (+ optional native notification), the same job the
+// four App-level `useEffect`s used to do when those signals were App
+// `useState`. Side-effect only: returns nothing.
+//
+// `showToast` is imported directly from the module-level notificationsStore
+// (mitto-sus.11) instead of being taken as a prop, since it is now a stable
+// function -- this drops it from every effect's dependency array below.
 const { useEffect, useRef } = window.preact;
 
 import { playAgentCompletedSound } from "../utils/index.js";
+import {
+  showToast,
+  subscribeBackgroundCompletion,
+  clearBackgroundCompletion,
+  subscribeLoopStarted,
+  clearLoopStarted,
+  subscribeBackgroundUIPrompt,
+  clearBackgroundUIPrompt,
+  subscribeBackgroundUIPromptTimeout,
+  clearBackgroundUIPromptTimeout,
+} from "../stores/notificationsStore.js";
 
 // Minimum interval between "Slack journal rejecting" toasts for the same
 // Slack app (mitto-mfd). The journal re-emits its connection-status feed on
@@ -19,7 +39,6 @@ const SLACK_JOURNAL_TOAST_THROTTLE_MS = 5 * 60 * 1000;
  * Wires the background notification window-event listeners.
  *
  * @param {Object} deps
- * @param {Function} deps.showToast - Toast dispatcher from useToast.
  * @param {Function} deps.focusSession - Brings a conversation into focus by id.
  * @param {string|null} deps.activeSessionId - Currently focused conversation id.
  * @param {string|null} deps.activeWorkspaceUUID - Currently viewed workspace UUID; when a
@@ -29,7 +48,6 @@ const SLACK_JOURNAL_TOAST_THROTTLE_MS = 5 * 60 * 1000;
  *   workspace_uuid always show (backward compatible).
  */
 export function useBackgroundNotifications({
-  showToast,
   focusSession,
   activeSessionId,
   activeWorkspaceUUID,
@@ -51,7 +69,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:runner_fallback", handleRunnerFallback);
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for memory-recycle events (GC Tier 4 restarted a bloated idle agent)
   useEffect(() => {
@@ -78,7 +96,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:memory_recycled", handleMemoryRecycled);
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for health-recycle events (GC Tier 5/6 restarted a wedged agent
   // process that stopped completing session/new or session/load RPCs, mitto-aoo)
@@ -103,7 +121,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:agent_recycled", handleHealthRecycled);
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for degraded-state events (GC Tier 5 detected — or cleared — a
   // saturated / MCP-init-gated / MCP-init-wedged shared ACP process, fired
@@ -140,7 +158,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:agent_degraded", handleAgentDegraded);
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for MCP-init progress events (mitto-8ul.1): agent is blocked waiting
   // for MCP servers to initialize on cold start. Informational, low-priority toast.
@@ -167,7 +185,7 @@ export function useBackgroundNotifications({
         handleMCPInitializing,
       );
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for MCP-init timeout events (mitto-8ul.1): the agent gave up on its
   // MCP-init wait and aborted the pending session/new. Persistent error toast.
@@ -201,7 +219,7 @@ export function useBackgroundNotifications({
         handleMCPInitTimedOut,
       );
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for prewarm pin alert events (mitto-mw0): the adaptive pre-warming
   // controller pinned a workspace due to slow/broken MCP init, OR force-expired
@@ -236,7 +254,7 @@ export function useBackgroundNotifications({
         handlePrewarmPinAlert,
       );
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for ACP start failed events
   useEffect(() => {
@@ -260,7 +278,7 @@ export function useBackgroundNotifications({
         handleAcpStartFailed,
       );
     };
-  }, [showToast, focusSession]);
+  }, [focusSession]);
 
   // Listen for ACP permanent error events (non-retryable errors with guidance)
   useEffect(() => {
@@ -291,7 +309,7 @@ export function useBackgroundNotifications({
         handleAcpPermanentError,
       );
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for hook failed events. Transient failures (e.g. cloudflared
   // loopback DNS refusal during bootstrap, mitto-y6i) are rendered as a
@@ -318,7 +336,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:hook_failed", handleHookFailed);
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for Slack durable-journal-rejecting events (mitto-mfd): the
   // journal has started rejecting Accept() calls (e.g. it hit its hard cap)
@@ -354,7 +372,7 @@ export function useBackgroundNotifications({
         handleSlackJournalRejecting,
       );
     };
-  }, [showToast]);
+  }, []);
 
   // Listen for mitto:notification events dispatched by useWebSocket
   useEffect(() => {
@@ -423,7 +441,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:notification", handleNotification);
     };
-  }, [showToast, focusSession, activeWorkspaceUUID]);
+  }, [focusSession, activeWorkspaceUUID]);
 
   // Remove native notifications for the active session when switching to it
   // This prevents stale notifications from lingering in Notification Center
@@ -435,4 +453,103 @@ export function useBackgroundNotifications({
       window.mittoRemoveNotificationsForSession(activeSessionId);
     }
   }, [activeSessionId]);
+
+  // Bridge stores/notificationsStore.js's four background-notification
+  // signals to a toast (+ optional native notification), then clear the
+  // slot. Moved from App's own useEffect-per-slot (mitto-sus.11) -- this
+  // hook holds no React state for them (subscribe callback runs
+  // imperatively), so a background completion/loop-start/UI-prompt event no
+  // longer re-renders App at all.
+  useEffect(() => {
+    return subscribeBackgroundCompletion((backgroundCompletion) => {
+      if (!backgroundCompletion) return;
+      if (
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
+        window.mittoShowNativeNotification(
+          backgroundCompletion.sessionName || "Conversation",
+          "Agent completed",
+          backgroundCompletion.sessionId,
+          false,
+        );
+      }
+      showToast({
+        style: "success",
+        title: backgroundCompletion.sessionName || "Conversation",
+        message: "finished",
+        duration: 5000,
+        onClick: () => focusSession(backgroundCompletion.sessionId),
+      });
+      clearBackgroundCompletion();
+    });
+  }, [focusSession]);
+
+  useEffect(() => {
+    return subscribeLoopStarted((loopStarted) => {
+      if (!loopStarted) return;
+      if (
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
+        window.mittoShowNativeNotification(
+          loopStarted.sessionName || "Loop Conversation",
+          "Loop run started",
+          loopStarted.sessionId,
+          false,
+        );
+      }
+      showToast({
+        style: "info",
+        title: loopStarted.sessionName || "Loop Conversation",
+        message: "loop run started",
+        duration: 5000,
+        onClick: () => focusSession(loopStarted.sessionId),
+      });
+      clearLoopStarted();
+    });
+  }, [focusSession]);
+
+  useEffect(() => {
+    return subscribeBackgroundUIPrompt((backgroundUIPrompt) => {
+      if (!backgroundUIPrompt) return;
+      // In-app toast (native notification is handled in useWebSocket)
+      showToast({
+        style: "warning",
+        title: `Question in ${backgroundUIPrompt.sessionName || "conversation"}`,
+        duration: 8000,
+        onClick: () => focusSession(backgroundUIPrompt.sessionId),
+      });
+      clearBackgroundUIPrompt();
+    });
+  }, [focusSession]);
+
+  useEffect(() => {
+    return subscribeBackgroundUIPromptTimeout((backgroundUIPromptTimeout) => {
+      if (!backgroundUIPromptTimeout) return;
+      const sessionName =
+        backgroundUIPromptTimeout.sessionName || "Conversation";
+      // Native notification is sticky — user needs to go check the session.
+      if (
+        window.mittoNativeNotificationsEnabled &&
+        typeof window.mittoShowNativeNotification === "function"
+      ) {
+        window.mittoShowNativeNotification(
+          sessionName,
+          backgroundUIPromptTimeout.question || "Agent needed your input",
+          backgroundUIPromptTimeout.sessionId,
+          true,
+        );
+      }
+      showToast({
+        style: "warning",
+        title: `Missed prompt in ${sessionName}`,
+        message:
+          backgroundUIPromptTimeout.question || "Agent needed your input",
+        duration: 10000,
+        onClick: () => focusSession(backgroundUIPromptTimeout.sessionId),
+      });
+      clearBackgroundUIPromptTimeout();
+    });
+  }, [focusSession]);
 }

@@ -1,8 +1,12 @@
 // web/static/components/ToastContainer.js
-// Renders the active toast stack from the useToast hook.
+// Renders the active toast stack. Self-subscribes to the module-level
+// stores/notificationsStore.js (mitto-sus.11) via useToasts()/dismissToast
+// instead of taking `toasts`/`onDismiss` as props from App, so a toast
+// show/dismiss re-renders only this component -- not App's whole subtree.
 const { html } = window.preact;
 import { CloseIcon } from "./Icons.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
+import { useToasts, useToast } from "../hooks/useToast.js";
 
 // Style config: daisyUI alert variant (severity -> semantic color via --mitto-*
 // token bridge) and icon emoji. The alert-* class carries both background and
@@ -14,19 +18,15 @@ const STYLE_CONFIG = {
   error: { alert: "alert-error", icon: "❌" },
 };
 
-/**
- * Renders all active toasts stacked from top-center.
- *
- * @param {Object} props
- * @param {Array}    props.toasts    - Array of toast objects from useToast
- * @param {Function} props.onDismiss - Called with toast id to dismiss
- */
-export function ToastContainer({ toasts, onDismiss }) {
+/** Renders all active toasts stacked from top-center. Takes no props. */
+export function ToastContainer() {
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
   // Placed before the early return so a render that bails on an empty toast
   // stack is still counted.
   useRenderCounter("ToastContainer");
+  const toasts = useToasts();
+  const { dismissToast: onDismiss } = useToast();
   if (!toasts || toasts.length === 0) return null;
 
   return html`

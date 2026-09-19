@@ -6,7 +6,7 @@ export { useSwipeNavigation } from "./useSwipeNavigation.js";
 export { useResizeHandle } from "./useResizeHandle.js";
 export { useSwipeToAction } from "./useSwipeToDelete.js";
 export { useInfiniteScroll } from "./useInfiniteScroll.js";
-export { useToast } from "./useToast.js";
+export { useToast, useToasts } from "./useToast.js";
 export { useTheme } from "./useTheme.js";
 export { useBackgroundNotifications } from "./useBackgroundNotifications.js";
 export { useScrollManagement } from "./useScrollManagement.js";

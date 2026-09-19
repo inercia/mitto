@@ -157,20 +157,15 @@ export function useWebSocket({
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
-  // Background notification state (completions, loop started, background UI prompts) — extracted to useWSNotifications sub-hook, mitto-90f.5
+  // Background notification setters (completions, loop started, background UI
+  // prompts) — extracted to useWSNotifications sub-hook (mitto-90f.5). The
+  // values themselves live in stores/notificationsStore.js (mitto-sus.11);
+  // only the setters are needed here to populate them from WS messages.
   const {
-    backgroundCompletion,
     setBackgroundCompletion,
-    clearBackgroundCompletion,
-    loopStarted,
     setLoopStarted,
-    clearLoopStarted,
-    backgroundUIPrompt,
     setBackgroundUIPrompt,
-    clearBackgroundUIPrompt,
-    backgroundUIPromptTimeout,
     setBackgroundUIPromptTimeout,
-    clearBackgroundUIPromptTimeout,
   } = useWSNotifications();
 
   // Queue state + REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5)
@@ -4573,14 +4568,6 @@ export function useWebSocket({
     activeSessions,
     storedSessions,
     fetchStoredSessions,
-    backgroundCompletion,
-    clearBackgroundCompletion,
-    loopStarted,
-    clearLoopStarted,
-    backgroundUIPrompt,
-    clearBackgroundUIPrompt,
-    backgroundUIPromptTimeout,
-    clearBackgroundUIPromptTimeout,
     queueLength,
     queueMessages,
     queueConfig,

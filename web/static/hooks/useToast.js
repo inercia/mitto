@@ -1,86 +1,32 @@
 // web/static/hooks/useToast.js
-// Central toast notification manager for Mitto Web Interface.
-const { useState, useCallback, useRef, useEffect } = window.preact;
+// Central toast notification hook for Mitto Web Interface. Backed by the
+// module-level stores/notificationsStore.js (mitto-sus.11) instead of
+// component state, so `showToast`/`dismissToast` are stable functions
+// across renders -- passing them into a `useCallback` dep array never
+// forces a recreation -- and only `ToastContainer` (via `useToasts()`)
+// re-renders on a toast show/dismiss, not the caller of `useToast()`.
+const { useState, useEffect } = window.preact;
 
-let toastIdCounter = 0;
-
-// Default durations by severity (milliseconds)
-const DURATION_BY_STYLE = {
-  info: 5000,
-  success: 5000,
-  warning: 10000,
-  error: 10000,
-};
+import {
+  showToast,
+  dismissToast,
+  getToasts,
+  subscribeToasts,
+} from "../stores/notificationsStore.js";
 
 /**
- * Central toast notification manager.
- * Returns { showToast, dismissToast, toasts }.
- *
- * @param {Object} options
- * @param {number} options.maxToasts - Maximum number of toasts shown simultaneously (default: 5)
+ * Returns the stable `showToast`/`dismissToast` functions. Does not
+ * subscribe to the toast list itself -- components that render the list
+ * (currently only `ToastContainer`) should use `useToasts()` instead.
+ * Returns { showToast, dismissToast }.
  */
-export function useToast({ maxToasts = 5 } = {}) {
-  const [toasts, setToasts] = useState([]);
-  const timersRef = useRef({});
+export function useToast() {
+  return { showToast, dismissToast };
+}
 
-  // Cleanup all pending timers on unmount
-  useEffect(() => {
-    return () => {
-      const timers = timersRef.current;
-      Object.keys(timers).forEach((id) => clearTimeout(timers[id]));
-      timersRef.current = {};
-    };
-  }, []);
-
-  const dismissToast = useCallback((id) => {
-    // Clear timer if any
-    if (timersRef.current[id]) {
-      clearTimeout(timersRef.current[id]);
-      delete timersRef.current[id];
-    }
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
-  const showToast = useCallback(
-    ({
-      style = "info", // "info" | "success" | "warning" | "error"
-      title, // Required: main text
-      message = "", // Optional: detail text below title
-      duration = null, // Override auto-duration (ms). null = use severity default
-      onClick = null, // Optional click handler (e.g., switch session)
-      dismissable = true, // Show close button
-      sticky = false, // Never auto-dismiss (overrides duration)
-    }) => {
-      const id = ++toastIdCounter;
-      const toast = { id, style, title, message, onClick, dismissable };
-
-      setToasts((prev) => {
-        const next = [...prev, toast];
-        // Evict oldest if over max
-        if (next.length > maxToasts) {
-          const evicted = next.shift();
-          if (timersRef.current[evicted.id]) {
-            clearTimeout(timersRef.current[evicted.id]);
-            delete timersRef.current[evicted.id];
-          }
-        }
-        return next;
-      });
-
-      // Auto-dismiss unless sticky. Error toasts never auto-dismiss so users
-      // cannot miss critical messages; they stay until manually closed.
-      if (!sticky && style !== "error") {
-        const ms = duration ?? DURATION_BY_STYLE[style] ?? 5000;
-        timersRef.current[id] = setTimeout(() => {
-          delete timersRef.current[id];
-          setToasts((prev) => prev.filter((t) => t.id !== id));
-        }, ms);
-      }
-
-      return id;
-    },
-    [maxToasts],
-  );
-
-  return { showToast, dismissToast, toasts };
+/** Subscribes to the live toast stack. Used by ToastContainer only. */
+export function useToasts() {
+  const [toasts, setToasts] = useState(getToasts);
+  useEffect(() => subscribeToasts(setToasts), []);
+  return toasts;
 }
