@@ -105,3 +105,49 @@ func TestBuiltinProcessors_OneShot_NoRerunConfigured(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinProcessors_UserPromptFirst_HasDocumentedRerunRationale pins the
+// mitto-8n5 acceptance criterion "each first-message processor has a
+// documented rerun rationale". YAML comments are not preserved by the parsed
+// Processor struct, so this test reads the raw file contents (not the parsed
+// config) and asserts a rerun/throttling rationale marker is present for
+// every builtin on:userPrompt + match:first processor — both the ones whose
+// rerun cadence was retuned and the ones intentionally left one-shot.
+func TestBuiltinProcessors_UserPromptFirst_HasDocumentedRerunRationale(t *testing.T) {
+	const dir = "../../config/processors/builtin"
+	loader := NewLoader(dir, nil)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", dir, err)
+	}
+
+	checked := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		proc, err := loader.LoadFile(path)
+		if err != nil {
+			t.Fatalf("LoadFile(%q): %v", path, err)
+		}
+		if proc == nil || proc.When.On != PhaseUserPrompt || proc.When.Match != MatchFirst {
+			continue
+		}
+		checked++
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%q): %v", path, err)
+		}
+		if !strings.Contains(strings.ToLower(string(raw)), "mitto-8n5") {
+			t.Errorf("%s (%s): missing a documented rerun rationale — expected a comment referencing mitto-8n5 explaining why this processor's rerun cadence (or absence of one) is correct",
+				proc.Name, e.Name())
+		}
+	}
+
+	if checked == 0 {
+		t.Fatalf("no userPrompt+match:first processors were found under %q — test setup likely broken", dir)
+	}
+}
