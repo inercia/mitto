@@ -35,6 +35,11 @@ type fakeSharedProcess struct {
 	resumeSessionErr     error
 	resumeSessionCalls   []string // recorded acp_session_ids
 	registeredSessions   []string
+	// registeredCallbacks records the *SessionCallbacks passed to each
+	// RegisterSession call, in order (mitto-mx9.4: lets tests prove the
+	// handshaker wires the neutral-routed callbacks from
+	// buildNeutralSessionCallbacks rather than a nil/placeholder value).
+	registeredCallbacks []*SessionCallbacks
 
 	// mitto-1ut: budget observability. recommendedLoadTimeout is returned by
 	// RecommendedLoadTimeout; the *Deadline fields capture the ctx deadline (if
@@ -121,10 +126,11 @@ func (f *fakeSharedProcess) ResumeSession(_ context.Context, acpSessionID, _ str
 	}
 	return nil, errors.New("resume not supported")
 }
-func (f *fakeSharedProcess) RegisterSession(id string, _ *SessionCallbacks) {
+func (f *fakeSharedProcess) RegisterSession(id string, cb *SessionCallbacks) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registeredSessions = append(f.registeredSessions, id)
+	f.registeredCallbacks = append(f.registeredCallbacks, cb)
 }
 func (f *fakeSharedProcess) UnregisterSession(_ string)               {}
 func (f *fakeSharedProcess) Cancel(_ context.Context, _ string) error { return nil }
@@ -225,6 +231,14 @@ type fakeHandshakeDeps struct {
 	// === New in mitto-s9g2: ACP context virginity tracking ===
 	markFreshCalls   int
 	markUnknownCalls int
+
+	// webClientConfigOverride, when non-nil, is returned by
+	// hsBuildWebClientConfig instead of the default SeqProvider-only config
+	// (mitto-mx9.4: lets resume-path tests configure AutoApprove/OnPermission
+	// on the *WebClient that resumeSharedACPSession rebuilds internally via
+	// hsSetACPClient(NewWebClient(c.buildWebClientConfig(d))), since that
+	// rebuild would otherwise clobber a client set directly on acpClient).
+	webClientConfigOverride *WebClientConfig
 }
 
 func newFakeHandshakeDeps() *fakeHandshakeDeps {
@@ -248,6 +262,9 @@ func (f *fakeHandshakeDeps) hsNilCreationCtx() {
 	f.niledCreation++
 }
 func (f *fakeHandshakeDeps) hsBuildWebClientConfig() WebClientConfig {
+	if f.webClientConfigOverride != nil {
+		return *f.webClientConfigOverride
+	}
 	return WebClientConfig{SeqProvider: &fakeSeqProvider{}}
 }
 
@@ -491,6 +508,56 @@ func TestHandshaker_EnsureSharedACPSession_PendingTrue_Success(t *testing.T) {
 	}
 	if len(fp.registeredSessions) != 1 {
 		t.Fatalf("expected 1 RegisterSession call, got %d", len(fp.registeredSessions))
+	}
+}
+
+// TestHandshaker_EnsureSharedACPSession_RegistersNeutralCallbacks proves
+// (mitto-mx9.4) that the deferred handshake's RegisterSession call carries
+// callbacks built by buildNeutralSessionCallbacks — not a nil/placeholder
+// value and not the pre-mitto-mx9.4 direct *WebClient-method wiring. Every
+// fs/permission/terminal hook must be populated, and invoking
+// OnRequestPermission must exercise the real neutral-routed auto-approve
+// behavior (mittoAcp.AutoApprovePermission's "prefer allow" selection),
+// end-to-end through the registered callback.
+func TestHandshaker_EnsureSharedACPSession_RegistersNeutralCallbacks(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	d.pending = true
+	d.pendingDir = "my/working/dir"
+	d.acpServer = "auggie"
+	d.acpClient = NewWebClient(WebClientConfig{AutoApprove: true})
+	fp := newFakeSharedProcess()
+	d.sharedProcess = fp
+
+	if err := c.ensureSharedACPSession(d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fp.registeredCallbacks) != 1 {
+		t.Fatalf("expected 1 RegisterSession call, got %d", len(fp.registeredCallbacks))
+	}
+	cb := fp.registeredCallbacks[0]
+	if cb == nil {
+		t.Fatal("registered callbacks must not be nil")
+	}
+	if cb.OnSessionUpdate == nil || cb.OnReadTextFile == nil || cb.OnWriteTextFile == nil ||
+		cb.OnRequestPermission == nil || cb.OnCreateTerminal == nil || cb.OnTerminalOutput == nil ||
+		cb.OnReleaseTerminal == nil || cb.OnWaitForTerminalExit == nil || cb.OnKillTerminal == nil {
+		t.Fatalf("expected all SessionCallbacks hooks populated, got %+v", cb)
+	}
+
+	// End-to-end: the registered OnRequestPermission must route through the
+	// neutral seam's auto-approve behavior, preferring an "allow" option.
+	resp, err := cb.OnRequestPermission(context.Background(), acp.RequestPermissionRequest{
+		Options: []acp.PermissionOption{
+			{OptionId: "deny", Name: "Deny", Kind: acp.PermissionOptionKindRejectOnce},
+			{OptionId: "allow", Name: "Allow", Kind: acp.PermissionOptionKindAllowOnce},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OnRequestPermission failed: %v", err)
+	}
+	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "allow" {
+		t.Fatalf("expected auto-approve to select 'allow', got %+v", resp.Outcome)
 	}
 }
 
@@ -777,6 +844,55 @@ func TestHandshaker_ResumeSharedACPSession_CreatesNew_WhenNoID(t *testing.T) {
 	}
 	if d.firstPromptCleared != 0 {
 		t.Fatalf("expected hsClearFirstPromptIfRetained NOT called on the \"new\" branch, got %d calls", d.firstPromptCleared)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_RegistersNeutralCallbacks is the
+// resume-path counterpart of
+// TestHandshaker_EnsureSharedACPSession_RegistersNeutralCallbacks
+// (mitto-mx9.4): the resumeSharedACPSession RegisterSession call site must
+// also route through buildNeutralSessionCallbacks, with a working
+// interactive-permission escape hatch (client.onPermission) when
+// AutoApprove is false.
+func TestHandshaker_ResumeSharedACPSession_RegistersNeutralCallbacks(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	d.acpServer = "auggie"
+	var interactiveCalled bool
+	d.webClientConfigOverride = &WebClientConfig{
+		SeqProvider: &fakeSeqProvider{},
+		AutoApprove: false,
+		OnPermission: func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+			interactiveCalled = true
+			return acp.RequestPermissionResponse{
+				Outcome: acp.RequestPermissionOutcome{Selected: &acp.RequestPermissionOutcomeSelected{OptionId: "picked"}},
+			}, nil
+		},
+	}
+	fp := newFakeSharedProcess()
+
+	if err := c.resumeSharedACPSession(d, fp, "cwd", ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fp.registeredCallbacks) != 1 {
+		t.Fatalf("expected 1 RegisterSession call, got %d", len(fp.registeredCallbacks))
+	}
+	cb := fp.registeredCallbacks[0]
+	if cb == nil || cb.OnRequestPermission == nil {
+		t.Fatal("expected populated OnRequestPermission callback")
+	}
+
+	resp, err := cb.OnRequestPermission(context.Background(), acp.RequestPermissionRequest{
+		Options: []acp.PermissionOption{{OptionId: "allow", Name: "Allow", Kind: acp.PermissionOptionKindAllowOnce}},
+	})
+	if err != nil {
+		t.Fatalf("OnRequestPermission failed: %v", err)
+	}
+	if !interactiveCalled {
+		t.Fatal("expected the interactive escape hatch (client.onPermission) to be invoked")
+	}
+	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "picked" {
+		t.Fatalf("expected the interactive handler's response to pass through unchanged, got %+v", resp.Outcome)
 	}
 }
 
