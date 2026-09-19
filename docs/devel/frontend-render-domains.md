@@ -119,14 +119,64 @@ Also shipped, in the mitto-b1k reopen pass that completed `SessionList`:
     (`useTheme`, `useAgentAuthState`, `useBeadsIntegration`,
     `useWorkspacePrompts`).
 
+## Test phase: regression spec + before/after render counts
+
+Shipped: `tests/ui/specs/perf/render-isolation.perf.spec.ts` — a Playwright
+regression spec covering the three AC scenarios (background chunk, composer
+keystroke, idle keepalive), asserting `MessageList`/`ChatInput` never
+re-render on an unrelated background session's activity and `SessionList`
+stays within a small bounded tolerance (see below). Run via `bunx playwright
+test --config=tests/ui/playwright.config.ts tests/ui/specs/perf/render-isolation.perf.spec.ts`,
+or as part of `make bench-ui` (records samples via `writePerfSample`).
+
+Writing this spec surfaced a real regression the unit-test-only migration
+had missed: several props passed to `ChatInput`/`SessionList` from `app.js`
+(`onOpenLoopDialog`/`onOpenPromptParamDialog` passed into
+`useBeadsIntegration`, and `onConfigurePrompts`/`onOpenLoopSettings`/
+`onLoopPrompt`/`onOpenPromptParamDialog`/`onResume`/`onUIPromptAnswer`/
+`onFlushContext` passed directly to `ChatInput`) were still inline JSX
+arrows recreated on every `App` render, defeating `memo()` on both
+components for a background session's chunks. Fixed by `useCallback`-wrapping
+all of them; two callbacks (`handleComposerLoopPrompt`/
+`handleComposerFlushContext`, and `handleSendPromptToConversation` itself)
+additionally read `activeSession`/`allSessions` through a ref instead of
+taking the object as a `useCallback` dep, since `computeAllSessions()`
+(`lib.js`) rebuilds new object references for every session whenever ANY
+session's summary changes (a pre-existing, documented over-invalidation) —
+depending on the object directly would have recreated these callbacks on an
+unrelated session's title assignment, not just when the active session
+itself changes.
+
+**Numeric render counts** (Chromium, mock ACP, `tests/fixtures/responses/perf-plain-long.json`'s
+200-chunk/5ms fixture). "Before" = `ffc12503` (mitto-sus.7, pre-`memo()`/
+pre-callback-stabilization baseline) — that commit predates
+`window.__mittoResetRenderCounts`, so its counts are cumulative since page
+load, not scenario-isolated; "after" = post-migration HEAD, reset
+immediately before each scenario via `window.__mittoResetRenderCounts`:
+
+| Scenario                | Component     | Before (ffc12503, cumulative) | After (HEAD, scenario delta)                          |
+| ----------------------- | ------------- | ----------------------------- | ----------------------------------------------------- |
+| Background chunk        | `SessionList` | 81                            | 2 (tolerance ≤3 — see spec comment)                   |
+| Background chunk        | `MessageList` | 69                            | 0                                                     |
+| Background chunk        | `ChatInput`   | 80                            | 0                                                     |
+| Composer keystroke      | `SessionList` | 21                            | 0                                                     |
+| Composer keystroke      | `MessageList` | 12                            | 0                                                     |
+| Composer keystroke      | `ChatInput`   | 36                            | 22 (expected — composer's own local draft-text state) |
+| Idle keepalive interval | `SessionList` | 64                            | 0                                                     |
+| Idle keepalive interval | `MessageList` | 50                            | 0                                                     |
+| Idle keepalive interval | `ChatInput`   | 59                            | 0                                                     |
+
+The "before" numbers are dominated by every domain re-rendering in lockstep
+on every WS chunk (the pre-`mitto-sus.7`/pre-`mitto-b1k` coupling this whole
+effort targets) compounded with cumulative measurement; the "after" numbers
+show `MessageList`/`ChatInput` fully isolated from a background session's
+chunks and keepalive traffic, and `SessionList`'s residual 0-3 tied to the
+background session's own legitimate one-shot summary changes (its
+`isStreaming` flag settling, and the backend's post-completion title-retry
+attempt) rather than per-chunk churn.
+
 Deferred to a follow-up bead:
 
-- Numeric before/after render-count measurements (background chunk /
-  keystroke / keepalive scenarios) captured against a pre-migration
-  baseline and post-migration HEAD.
-- A Playwright regression spec under `tests/ui/specs/perf/` asserting the
-  post-migration render-count bounds, so future regressions are caught by
-  CI.
 - Queue state, background-notification state, and workspaces/config-options
   state remain owned by `useWebSocket`/`App` — out of scope for this bead
   (see sibling follow-up beads filed under `mitto-sus` at verify time).

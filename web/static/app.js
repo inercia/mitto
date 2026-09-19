@@ -563,6 +563,35 @@ function App() {
     () => computeAllSessions(activeSessions, storedSessions),
     [activeSessions, storedSessions],
   );
+  // mitto-b1k: ref mirror (rule 21-web-frontend-state) so callbacks that only
+  // need allSessions inside an async/event-handler body (not for their own
+  // render output) can read the latest snapshot without taking it as a
+  // useCallback dep -- computeAllSessions() rebuilds new object references
+  // for every session whenever ANY session's summary changes, so a direct
+  // dep would recreate those callbacks (and defeat memo() on their prop
+  // consumers) on an unrelated session's update.
+  const allSessionsRef = useRef(allSessions);
+  allSessionsRef.current = allSessions;
+
+  // mitto-b1k: useCallback (stable [] deps -- setState setters are always
+  // stable) so these two dialog openers keep their identity across App
+  // re-renders. See the usage site below for why this matters.
+  const handleOpenLoopDialog = useCallback(
+    (prompt, onSchedule) => setLoopScheduleDialog({ prompt, onSchedule }),
+    [],
+  );
+  const handleOpenPromptParamDialog = useCallback(
+    (prompt, parameters, onSubmit, opts = {}) =>
+      setPromptParamDialog({
+        prompt,
+        parameters,
+        onSubmit,
+        workingDir: opts.workingDir,
+        initialValues: opts.initialValues,
+        hostSessionId: opts.hostSessionId,
+      }),
+    [],
+  );
 
   // Beads integration: view state, issue-session map, prompt helpers, handlers.
   // (Extracted to hooks/useBeadsIntegration.js)
@@ -597,17 +626,17 @@ function App() {
     setShowSidePanel,
     setSidePanelTab,
     activeSessionId,
-    onOpenLoopDialog: (prompt, onSchedule) =>
-      setLoopScheduleDialog({ prompt, onSchedule }),
-    onOpenPromptParamDialog: (prompt, parameters, onSubmit, opts = {}) =>
-      setPromptParamDialog({
-        prompt,
-        parameters,
-        onSubmit,
-        workingDir: opts.workingDir,
-        initialValues: opts.initialValues,
-        hostSessionId: opts.hostSessionId,
-      }),
+    // mitto-b1k: useCallback (stable [] deps -- setState setters are always
+    // stable) so these don't recreate on every App render. Both are in
+    // useBeadsIntegration's own handleRunBeadsListPrompt dependency array;
+    // passing fresh inline arrows here defeated that hook's useCallback
+    // wrapping, silently recreating onRunBeadsListPrompt on every App render
+    // (including background-chunk renders unrelated to beads) and defeating
+    // memo() on SessionList, which consumes handleRunBeadsListPrompt as its
+    // onRunBeadsListPrompt prop -- caught by the render-isolation regression
+    // spec (tests/ui/specs/perf/render-isolation.perf.spec.ts).
+    onOpenLoopDialog: handleOpenLoopDialog,
+    onOpenPromptParamDialog: handleOpenPromptParamDialog,
   });
 
   // Ref mirror of beadsIssueOpen: the native swipe-gesture handlers are
@@ -2543,7 +2572,7 @@ function App() {
       const autoArgs = autofillConversationMenuArgs(
         prompt,
         sessionId,
-        allSessions,
+        allSessionsRef.current,
       );
       const knownNames = new Set(
         Object.keys(autoArgs).filter((k) => autoArgs[k] !== undefined),
@@ -2612,7 +2641,6 @@ function App() {
       showToast,
       focusSession,
       setPromptParamDialog,
-      allSessions,
     ],
   );
 
@@ -2626,6 +2654,47 @@ function App() {
         : null,
     [allSessions, activeSessionId],
   );
+
+  // mitto-b1k: useCallback-wrap the ChatInput props that used to be inline
+  // JSX arrows -- each recreated on every App render (including ones caused
+  // by an unrelated background session's chunks) and defeating memo() on
+  // ChatInput. Caught by the render-isolation regression spec
+  // (tests/ui/specs/perf/render-isolation.perf.spec.ts).
+  //
+  // activeSession is read through a ref (rule 21-web-frontend-state), not
+  // taken as a useCallback dep directly: computeAllSessions() (lib.js) -- a
+  // pre-existing, documented over-invalidation (see
+  // docs/devel/frontend-render-domains.md) -- rebuilds brand-new object
+  // references for EVERY session whenever ANY session's summary changes, so
+  // depending on the activeSession object would recreate these callbacks on
+  // an unrelated background session's title-assignment, not just when the
+  // active session itself changes.
+  const activeSessionRef = useRef(activeSession);
+  activeSessionRef.current = activeSession;
+
+  const handleComposerConfigurePrompts = useCallback(() => {
+    handleShowWorkspacesForFolder(sessionInfo?.working_dir, "prompts");
+  }, [handleShowWorkspacesForFolder, sessionInfo?.working_dir]);
+  const handleComposerOpenLoopSettings = useCallback(
+    () => handleOpenSidePanelTab("loop"),
+    [handleOpenSidePanelTab],
+  );
+  const handleComposerLoopPrompt = useCallback(
+    (prompt, opts) =>
+      handleSendPromptToConversation(activeSessionRef.current, prompt, opts),
+    [handleSendPromptToConversation],
+  );
+  const handleComposerResume = useCallback(
+    () => ensureResumed(activeSessionId),
+    [ensureResumed, activeSessionId],
+  );
+  const handleComposerUIPromptAnswer = useCallback(
+    (requestId, optionId, label, freeText) =>
+      sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText),
+    [sendUIPromptAnswer, activeSessionId],
+  );
+  // handleComposerFlushContext (needs handleFlushContext, declared later in
+  // this component) is defined just below that declaration, further down.
 
   // ----- Header title inline editing (click title to rename, mitto-dpd) -----
   // Mirrors the inline-rename pattern in ConversationPropertiesPanel.js /
@@ -2973,6 +3042,14 @@ function App() {
       }
     },
     [activeSessionId, showToast],
+  );
+  // mitto-b1k: see the other handleComposer* callbacks above (ChatInput
+  // memo() stabilization, including why activeSessionRef is used instead of
+  // activeSession directly) -- this one lives here because it needs
+  // handleFlushContext, declared just above.
+  const handleComposerFlushContext = useCallback(
+    () => handleFlushContext(activeSessionRef.current),
+    [handleFlushContext],
   );
 
   const handleAutoRename = useCallback(
@@ -4064,11 +4141,7 @@ function App() {
                       onPromptsOpen=${handlePromptsOpen}
                       onConfigurePrompts=${!configReadonly &&
                       sessionInfo?.working_dir
-                        ? () =>
-                            handleShowWorkspacesForFolder(
-                              sessionInfo.working_dir,
-                              "prompts",
-                            )
+                        ? handleComposerConfigurePrompts
                         : undefined}
                       queueLength=${queueLength}
                       queueConfig=${queueConfig}
@@ -4077,48 +4150,18 @@ function App() {
                       showQueueDropdown=${showQueueDropdown}
                       actionButtons=${actionButtons}
                       availableCommands=${availableCommands}
-                      onOpenLoopSettings=${() => handleOpenSidePanelTab("loop")}
-                      onLoopPrompt=${(prompt, opts) =>
-                        handleSendPromptToConversation(
-                          activeSession,
-                          prompt,
-                          opts,
-                        )}
-                      onOpenPromptParamDialog=${(
-                        prompt,
-                        parameters,
-                        onSubmit,
-                        opts = {},
-                      ) =>
-                        setPromptParamDialog({
-                          prompt,
-                          parameters,
-                          onSubmit,
-                          workingDir: opts.workingDir,
-                          initialValues: opts.initialValues,
-                          hostSessionId: opts.hostSessionId,
-                        })}
+                      onOpenLoopSettings=${handleComposerOpenLoopSettings}
+                      onLoopPrompt=${handleComposerLoopPrompt}
+                      onOpenPromptParamDialog=${handleOpenPromptParamDialog}
                       agentSupportsImages=${sessionInfo?.agent_supports_images ??
                       false}
                       acpReady=${connected && sessionInfo
                         ? (sessionInfo.acp_ready ?? true)
                         : true}
                       gcSuspended=${sessionInfo?.gc_suspended || false}
-                      onResume=${() => ensureResumed(activeSessionId)}
+                      onResume=${handleComposerResume}
                       activeUIPrompt=${activeUIPrompt}
-                      onUIPromptAnswer=${(
-                        requestId,
-                        optionId,
-                        label,
-                        freeText,
-                      ) =>
-                        sendUIPromptAnswer(
-                          activeSessionId,
-                          requestId,
-                          optionId,
-                          label,
-                          freeText,
-                        )}
+                      onUIPromptAnswer=${handleComposerUIPromptAnswer}
                       sendKeyMode=${sendKeyMode}
                       configOptions=${configOptions}
                       onSetConfigOption=${setConfigOption}
@@ -4127,7 +4170,7 @@ function App() {
                       tokenUsage=${sessionInfo?.usage ?? null}
                       flushCommand=${sessionInfo?.context_flush_command || ""}
                       onFlushContext=${activeSessionId
-                        ? () => handleFlushContext(activeSession)
+                        ? handleComposerFlushContext
                         : undefined}
                     />
                   </div>
@@ -4156,15 +4199,7 @@ function App() {
           allPrompts=${workspacePrompts}
           hasBeadsWorkspace=${hasBeadsWorkspace}
           messages=${messages}
-          onOpenPromptParamDialog=${(prompt, parameters, onSubmit, opts = {}) =>
-            setPromptParamDialog({
-              prompt,
-              parameters,
-              onSubmit,
-              workingDir: opts.workingDir,
-              initialValues: opts.initialValues,
-              hostSessionId: opts.hostSessionId,
-            })}
+          onOpenPromptParamDialog=${handleOpenPromptParamDialog}
           showToast=${showToast}
         />
 
