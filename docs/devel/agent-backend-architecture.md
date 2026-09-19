@@ -418,10 +418,27 @@ does not reopen either question.
 
 ## 10. Client services, permissions & secure MCP binding (mitto-lrt.11)
 
-Additive, tested-but-inert, matching the mitto-lrt.4/.6/.7 shape: new neutral
+Additive, tested, matching the mitto-lrt.4/.6/.7 shape: new neutral
 types in `internal/agentbackend`, adapter glue in `internal/acpbackend`,
-proven by the non-process fake + contract tests. No production behavior
-change; live `BackgroundSession`/`mcpserver` wiring is deferred.
+proven by the non-process fake + contract tests. **`BackgroundSession`
+now consumes the `ClientServices`/`TerminalServices` contracts in
+production for fs/permission/terminal request handling on the shared-
+process path (mitto-mx9.4)**: `internal/conversation/shared_session_handshaker.go`
+builds `agentbackend.SessionRef{ConversationID, Provider, ProviderSession}`
+at each `RegisterSession` call site and routes the ACP callbacks through
+an in-package `webClientNeutralServices` adapter
+(`internal/conversation/client_services_neutral.go` +
+`client_services_callbacks.go`) that implements the neutral contracts —
+kept in-package to avoid an `internal/conversation` → `internal/acpbackend`
+import cycle. `acpbackend.Connection`'s own
+`NewSession/LoadSession/ResumeSession` remain inert (that live wiring is
+still deferred to mitto-lrt.7 / mx9.5), and the `mcpserver` binding path
+is deliberately untouched — the mitto-apvg authenticated, immutable MCP
+transport→conversation binding flows unchanged through
+`hsStartMcpServer` → `[]agentbackend.MCPServerDescriptor` →
+`SharedProcess.NewSession/LoadSession/ResumeSession`, and no binding
+value is ever logged, persisted, or passed through argv on the new
+callback path.
 
 - **Client-service boundary.** `TerminalServices` is a new optional
   contract (`CreateTerminal`/`TerminalOutput`/`WaitForTerminalExit`/
