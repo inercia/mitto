@@ -807,6 +807,65 @@ func TestEmitStatusLockedLogsInfoOnTransitionSilentOnCounterBump(t *testing.T) {
 	}
 }
 
+// TestEmitStatusLockedNoLogFloodOnRepeatedFrames pins mitto-qba's acceptance
+// criterion "DEBUG volume for this message drops from tens-of-thousands/6h to
+// the number of actual transitions" directly against the bug report's
+// scenario: many socket frames in a row reporting the same steady-state
+// (state=connected, only counters/timestamps advancing) must produce ZERO
+// "slackbridge: connection state changed" log lines in total, not merely one
+// per call. A single interleaved genuine transition must still log exactly
+// once.
+func TestEmitStatusLockedNoLogFloodOnRepeatedFrames(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	manager := NewManager(nil, nil, nil, nil, logger)
+	t.Cleanup(manager.Close)
+
+	manager.mu.Lock()
+	manager.emitStatusLocked(ConnectionStatus{AppID: "app", State: "connected", SubscriptionCount: 1})
+	manager.mu.Unlock()
+	buf.Reset() // drop the initial "first status" INFO line; count only the steady-state frames below.
+
+	const frames = 50
+	for i := 0; i < frames; i++ {
+		manager.mu.Lock()
+		manager.emitStatusLocked(ConnectionStatus{
+			AppID:             "app",
+			State:             "connected",
+			SubscriptionCount: 1,
+			EventsAPIReceived: uint64(i + 1),
+			AcceptedCount:     uint64(i + 1),
+			DeliveredCount:    i + 1,
+			LastEnvelopeAt:    time.Now(),
+		})
+		manager.mu.Unlock()
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("expected zero log lines across %d identical-state frames (mitto-qba); got:\n%s", frames, out)
+	}
+	if n := strings.Count(buf.String(), "level="); n != 0 {
+		t.Errorf("expected 0 log lines total, counted %d", n)
+	}
+
+	// A genuine transition interleaved among steady-state frames still logs
+	// exactly once, at INFO.
+	manager.mu.Lock()
+	manager.emitStatusLocked(ConnectionStatus{
+		AppID:             "app",
+		State:             "disconnected",
+		SubscriptionCount: 1,
+		EventsAPIReceived: frames + 1,
+	})
+	manager.mu.Unlock()
+	out := buf.String()
+	if got := strings.Count(out, "level="); got != 1 {
+		t.Errorf("expected exactly 1 log line for the genuine transition; got %d in:\n%s", got, out)
+	}
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected the genuine transition to log at INFO; got:\n%s", out)
+	}
+}
+
 // TestManagerDoesNotConnectWithoutSubscriptionConfig pins the worker-lifetime
 // boundary: credentials alone do not connect an app. A worker requires either
 // an active dispatch subscription or persisted subscription configuration.
