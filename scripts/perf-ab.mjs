@@ -24,7 +24,8 @@ function parseArgs(argv) {
     const key = argv[i];
     if (!key.startsWith("--")) continue;
     const name = key.slice(2);
-    const value = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
+    const value =
+      argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
     args[name] = value;
   }
   return args;
@@ -41,7 +42,8 @@ function loadBaselineSamples(path) {
 
 /** ratio = current/base, or null if either side is missing/zero-base. */
 function ratio(current, base) {
-  if (typeof current !== "number" || typeof base !== "number" || base === 0) return null;
+  if (typeof current !== "number" || typeof base !== "number" || base === 0)
+    return null;
   return current / base;
 }
 
@@ -123,9 +125,15 @@ export function renderReport(rows) {
 export function main() {
   const args = parseArgs(process.argv.slice(2));
   const chromiumPath = resolve(args.chromium ?? "tests/ui/perf/baseline.json");
-  const webkitPath = resolve(args.webkit ?? "tests/ui/perf/baseline-webkit.json");
-  const wkwebviewDir = resolve(args.wkwebview ?? "tests/ui/perf/results/latest-wkwebview");
-  const outPath = resolve(args.out ?? "tests/ui/perf/results/latest/ab-report.md");
+  const webkitPath = resolve(
+    args.webkit ?? "tests/ui/perf/baseline-webkit.json",
+  );
+  const wkwebviewDir = resolve(
+    args.wkwebview ?? "tests/ui/perf/results/latest-wkwebview",
+  );
+  const outPath = resolve(
+    args.out ?? "tests/ui/perf/results/latest/ab-report.md",
+  );
 
   const chromium = loadBaselineSamples(chromiumPath);
   const webkit = loadBaselineSamples(webkitPath);
@@ -145,6 +153,8 @@ export function main() {
   console.log(`wrote A/B report: ${outPath}`);
 }
 
-if (resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1] ?? "")) {
+if (
+  resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1] ?? "")
+) {
   main();
 }

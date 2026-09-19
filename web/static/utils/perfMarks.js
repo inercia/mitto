@@ -199,7 +199,10 @@ export function dumpPerfBufferToFile(scenario, path) {
         ts: new Date().toISOString(),
       }),
     );
-    window.mittoDumpPerfBuffer(path, lines.length ? lines.join("\n") + "\n" : "");
+    window.mittoDumpPerfBuffer(
+      path,
+      lines.length ? lines.join("\n") + "\n" : "",
+    );
     return true;
   } catch {
     return false;
