@@ -751,11 +751,13 @@ func TestManagerOnSlackEventLostAfterBootCredentialRace(t *testing.T) {
 	}
 }
 
-// TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump reproduces the
-// fix for the INFO-log flood: emitStatusLocked must log at INFO only on a
-// meaningful state transition (or the first status for an app), and at DEBUG
-// when only counters/timestamps that don't reflect a state change move.
-func TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump(t *testing.T) {
+// TestEmitStatusLockedLogsInfoOnTransitionSilentOnCounterBump reproduces the
+// fix for the log flood (mitto-qba): emitStatusLocked must log at INFO only
+// on a meaningful state transition (or the first status for an app), and
+// must not log at all when only counters/timestamps that don't reflect a
+// state change move (previously logged at DEBUG on every socket frame,
+// producing tens of thousands of identical-state lines per session).
+func TestEmitStatusLockedLogsInfoOnTransitionSilentOnCounterBump(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	manager := NewManager(nil, nil, nil, nil, logger)
@@ -771,7 +773,7 @@ func TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump(t *testing.T) {
 	}
 
 	// Pure counter bump: same State/SubscriptionCount/error fields, only
-	// EventsAPIReceived/IgnoredCount move -> DEBUG, not INFO.
+	// EventsAPIReceived/IgnoredCount move -> no log line at all.
 	buf.Reset()
 	manager.mu.Lock()
 	manager.emitStatusLocked(ConnectionStatus{
@@ -783,8 +785,8 @@ func TestEmitStatusLockedLogsInfoOnTransitionDebugOnCounterBump(t *testing.T) {
 	})
 	manager.mu.Unlock()
 	out = buf.String()
-	if !strings.Contains(out, "level=DEBUG") || strings.Contains(out, "level=INFO") {
-		t.Errorf("expected level=DEBUG (not INFO) for a pure counter bump; got:\n%s", out)
+	if out != "" {
+		t.Errorf("expected no log line for a pure counter bump; got:\n%s", out)
 	}
 
 	// Real transition: State + ErrorClass change -> INFO.

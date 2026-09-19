@@ -947,10 +947,11 @@ func (m *Manager) emitStatusLocked(status ConnectionStatus) {
 	m.statuses[status.AppID] = status
 	fn := m.onStatus
 	if m.logger != nil {
-		// INFO only for a meaningful state transition; a pure counter bump
+		// Log only on a meaningful state transition; a pure counter bump
 		// (envelopes/accepted/ignored/delivered counts, connected/envelope
-		// timestamps) is logged at DEBUG so a busy workspace doesn't flood
-		// the console with identical-state INFO lines on every envelope.
+		// timestamps) is not logged at all (mitto-qba) so a busy workspace
+		// doesn't flood the console with tens of thousands of
+		// identical-state lines per session — one per socket frame/envelope.
 		meaningful := !hadPrevious ||
 			previous.State != status.State ||
 			previous.ErrorClass != status.ErrorClass ||
@@ -961,15 +962,13 @@ func (m *Manager) emitStatusLocked(status ConnectionStatus) {
 			!previous.RetryAt.Equal(status.RetryAt) ||
 			!previous.LastAuthorizationErrorAt.Equal(status.LastAuthorizationErrorAt) ||
 			!previous.LastJournalErrorAt.Equal(status.LastJournalErrorAt)
-		args := []any{"app_id", status.AppID, "state", status.State, "subscription_count", status.SubscriptionCount,
-			"events_api_received", status.EventsAPIReceived, "accepted_count", status.AcceptedCount, "ignored_count", status.IgnoredCount,
-			"pending_count", status.PendingCount, "failed_count", status.FailedCount, "dead_letter_count", status.DeadLetterCount,
-			"delivered_count", status.DeliveredCount, "connected_at", status.ConnectedAt, "last_envelope_at", status.LastEnvelopeAt,
-			"last_authorization_error_at", status.LastAuthorizationErrorAt, "last_journal_error_at", status.LastJournalErrorAt, "error_class", status.ErrorClass}
 		if meaningful {
-			m.logger.Info("slackbridge: connection state changed", args...)
-		} else {
-			m.logger.Debug("slackbridge: connection state changed", args...)
+			m.logger.Info("slackbridge: connection state changed",
+				"app_id", status.AppID, "state", status.State, "subscription_count", status.SubscriptionCount,
+				"events_api_received", status.EventsAPIReceived, "accepted_count", status.AcceptedCount, "ignored_count", status.IgnoredCount,
+				"pending_count", status.PendingCount, "failed_count", status.FailedCount, "dead_letter_count", status.DeadLetterCount,
+				"delivered_count", status.DeliveredCount, "connected_at", status.ConnectedAt, "last_envelope_at", status.LastEnvelopeAt,
+				"last_authorization_error_at", status.LastAuthorizationErrorAt, "last_journal_error_at", status.LastJournalErrorAt, "error_class", status.ErrorClass)
 		}
 	}
 	if fn != nil && !m.statusClosed {
