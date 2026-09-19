@@ -12,6 +12,12 @@ import (
 // (it depends on what this agent process actually advertised for this
 // session), not a fixed agent-level flag, so it cannot be read off the
 // process-level capabilities alone.
+//
+// mitto-mx9.3: this package (acpbackend) imports internal/conversation (for
+// SessionModelState just below), which is why internal/conversation cannot
+// import this package back — internal/conversation/backend_provider_acp.go's
+// acpCapabilities duplicates this Query() logic for that reason, pinned
+// together by a parity test in internal/conversation.
 type sessionCapabilities struct {
 	agent     agentbackend.Capabilities
 	hasModels bool

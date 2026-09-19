@@ -18,6 +18,7 @@ import (
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
+	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -1525,8 +1526,26 @@ func (p promptDispatcher) handlePromptSuccess(
 	// not yet idle); it gates agentIdle after-phase processors below.
 	dispatched := d.pdProcessNextQueuedMessage()
 
+	// mitto-mx9.3: gate local automation (title generation, follow-up
+	// analysis, after-phase processors, and — via pdOnTurnIdle in
+	// finalizeTurn below — loop onCompletion re-fire / child dispatch) on
+	// ShouldTriggerLocalAutomation. This is the production consumption
+	// point for automation_origin.go's origin-gating predicate: the ACP
+	// prompt-completion pipeline is driven entirely by this session's own
+	// Prompt() RPC response, never by an inbound event notification, so
+	// Origin is always OriginLocal here by construction — mirroring
+	// internal/acpbackend/events.go's own invariant that every inbound ACP
+	// event is tagged OriginLocal. A future event-delivery-driven backend
+	// (e.g. an AHP host echoing another client's turn) must replace this
+	// hardcoded constant with the real inbound event's Origin so an echoed
+	// turn cannot redundantly re-trigger automation that already ran for
+	// the client that actually caused it.
+	localAutomationAllowed := ShouldTriggerLocalAutomation(agentbackend.OriginLocal)
+
 	// Retry title generation if session still has no title.
-	d.pdRetryTitleGenerationIfNeeded(message)
+	if localAutomationAllowed {
+		d.pdRetryTitleGenerationIfNeeded(message)
+	}
 
 	// Read the last agent message once and reuse for both follow-up analysis
 	// and the sessionIdle gate below (mitto-vn3). Cheap when store is nil.
@@ -1534,7 +1553,7 @@ func (p promptDispatcher) handlePromptSuccess(
 
 	// Async follow-up analysis (non-blocking).
 	isEndTurn := promptResp.StopReason == acp.StopReasonEndTurn
-	if d.pdActionButtonsEnabled() && isEndTurn {
+	if localAutomationAllowed && d.pdActionButtonsEnabled() && isEndTurn {
 		if agentMessage != "" {
 			if d.pdHasImmediateQueuedMessages() {
 				if l := d.pdLogger(); l != nil {
@@ -1550,8 +1569,10 @@ func (p promptDispatcher) handlePromptSuccess(
 	// The agentIdle flag here is queue-drain only; it is intentionally NOT
 	// gated on turn semantics so the after-processors pipeline keeps firing
 	// for every terminal turn (including cancels / max_turn_requests).
-	d.pdApplyAfterProcessors(d.pdSessionCtx(), message, meta.SenderID,
-		string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp, !dispatched)
+	if localAutomationAllowed {
+		d.pdApplyAfterProcessors(d.pdSessionCtx(), message, meta.SenderID,
+			string(promptResp.StopReason), promptStartedAt, promptEndedAt, promptResp, !dispatched)
+	}
 
 	// sessionIdle gates the on-completion loop hook (pdOnTurnIdle → LoopRunner
 	// armCompletionTimer). It must be true only when the turn actually reached
@@ -1580,8 +1601,15 @@ func (p promptDispatcher) finalizeTurn(d promptDeps, err error, meta PromptMeta,
 	}
 
 	// Notify the on-completion loop hook once the agent has stopped and the
-	// session is fully idle.
-	if sessionIdle {
+	// session is fully idle. Gated by ShouldTriggerLocalAutomation
+	// (mitto-mx9.3) for the same reason as handlePromptSuccess above: this
+	// is the sole production call path into LoopRunner.OnConversationIdle
+	// (loop onCompletion re-fire) and, transitively, OnChildEndResponse
+	// (child dispatch) — both have exactly one production caller each,
+	// reached only through this hook. Gating here therefore protects the
+	// entire onCompletion/child-dispatch chain without needing a redundant,
+	// origin-blind check duplicated deeper in loop_runner.go.
+	if sessionIdle && ShouldTriggerLocalAutomation(agentbackend.OriginLocal) {
 		d.pdOnTurnIdle()
 	}
 

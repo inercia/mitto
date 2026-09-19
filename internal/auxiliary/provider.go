@@ -2,6 +2,18 @@ package auxiliary
 
 import "context"
 
+// mitto-mx9.3 audit: this package's public surface (ProcessProvider,
+// ProcessQuiescenceProvider below, plus prompts.go/outcome.go/utils.go) is
+// neutral by construction — it takes/returns plain strings and errors, never
+// an ACP SDK type (acp.PromptResponse, acp.StopReason, etc.) or a raw
+// *acp-go-sdk connection. Auxiliary/hidden-session utility tasks (title
+// generation, follow-up analysis, improve-prompt) already flow through this
+// seam rather than touching ACP directly, so there is nothing to wire onto
+// internal/acpbackend's translators here. Keep it that way: a future change
+// that has this package import "github.com/coder/acp-go-sdk" or
+// internal/acpbackend directly would reintroduce the protocol coupling this
+// package exists to avoid.
+
 // ProcessProvider creates and manages auxiliary ACP sessions within workspace processes.
 // This interface allows the auxiliary package to remain independent of the web package
 // while still leveraging workspace-scoped ACP processes.

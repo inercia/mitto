@@ -293,6 +293,15 @@ func translateACPLeaseError(err error, feature agentbackend.Feature) error {
 
 // acpLeaseStopReasonToNeutral translates an ACP stop reason into its neutral
 // counterpart, mirroring internal/acpbackend's ToNeutralStopReason.
+//
+// mitto-mx9.3: this is an intentional duplicate, not dead drift-risk code.
+// internal/acpbackend already imports internal/conversation (capabilities.go
+// uses conversation.SessionModelState), so internal/conversation cannot
+// import internal/acpbackend without creating a cycle — this package cannot
+// call acpbackend.ToNeutralStopReason directly. The two mappings are pinned
+// against each other by a parity test (added in the Test phase) rather than
+// consolidated; breaking the cycle (e.g. moving SessionModelState to a leaf
+// package) is tracked as a separate, deliberately out-of-scope follow-up.
 func acpLeaseStopReasonToNeutral(r acp.StopReason) agentbackend.StopReason {
 	switch r {
 	case acp.StopReasonEndTurn:
@@ -447,6 +456,12 @@ func promptOutcomeToACPResponse(o agentbackend.PromptOutcome) acp.PromptResponse
 // session-aware agentbackend.Capabilities. Model/mode selection is a
 // per-session fact only the handle knows about; everything else (Images,
 // MCP-HTTP, ...) is a process-level fact delegated to processCaps.
+//
+// mitto-mx9.3: mirrors internal/acpbackend's sessionCapabilities (same
+// cycle constraint as acpLeaseStopReasonToNeutral above — acpbackend already
+// imports this package, so this package cannot import acpbackend back). The
+// two Query() implementations are pinned against each other by a parity
+// test (added in the Test phase) for the shared feature set.
 type acpCapabilities struct {
 	handle      *SessionHandle
 	processCaps agentbackend.Capabilities

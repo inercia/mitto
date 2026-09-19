@@ -12,6 +12,12 @@ import (
 // since both represent a turn ending due to an exhausted budget rather than a
 // definite error, refusal, or cancellation. Any other/unrecognized value maps
 // to StopReasonError so callers never observe an undefined stop reason.
+//
+// mitto-mx9.3: internal/conversation/backend_provider_acp.go duplicates this
+// mapping as acpLeaseStopReasonToNeutral because this package (acpbackend)
+// already imports internal/conversation (see capabilities.go below), so that
+// package cannot import this one back without a cycle. The two are pinned
+// together by a parity test in internal/conversation.
 func ToNeutralStopReason(r acp.StopReason) agentbackend.StopReason {
 	switch r {
 	case acp.StopReasonEndTurn:
