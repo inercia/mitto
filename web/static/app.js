@@ -1646,54 +1646,106 @@ function App() {
     archiveSession,
   ]);
 
-  const handleNewSession = async (workspace = null, folderFilter = null) => {
-    // If a specific workspace is provided, create session directly in that workspace
-    if (workspace) {
-      setShowSidebar(false);
-      const result = await newSession({
-        workingDir: workspace.working_dir,
-        acpServer: workspace.acp_server,
-      });
-      // Handle creation result
-      if (result?.errorCode === "session_creation_timeout") {
-        showToast({
-          style: "warning",
-          title: result.retrying
-            ? "Agent is busy \u2014 retrying automatically\u2026"
-            : result.error || "Agent is busy",
-          duration: result.retrying ? 30000 : 5000,
-        });
-      } else if (
-        result?.errorCode === "no_workspace_configured" &&
-        !configReadonly
-      ) {
-        setSettingsDialog({ isOpen: true, forceOpen: true });
-      } else if (result?.sessionId) {
-        // newSession activates the new conversation; switch away from the beads
-        // panel so the new conversation is shown instead of the beads view.
-        setMainView("conversation");
-        // Focus the input after creating new session
-        setTimeout(() => {
-          if (chatInputRef.current) {
-            chatInputRef.current.focus();
-          }
-        }, 100);
-      }
-      return;
-    }
-
-    // If folder filter provided, show workspace dialog filtered to that folder
-    if (folderFilter) {
-      const filteredWs = workspaces.filter(
-        (ws) => ws.working_dir === folderFilter,
-      );
-      if (filteredWs.length === 1) {
-        // Single workspace in folder - create directly
+  // mitto-b1k: wrapped in useCallback (was a plain function recreated every
+  // App render) so SessionList's onNewSession prop is reference-stable and
+  // memo() on SessionList can actually skip background-chunk re-renders.
+  const handleNewSession = useCallback(
+    async (workspace = null, folderFilter = null) => {
+      // If a specific workspace is provided, create session directly in that workspace
+      if (workspace) {
         setShowSidebar(false);
         const result = await newSession({
-          workingDir: filteredWs[0].working_dir,
-          acpServer: filteredWs[0].acp_server,
+          workingDir: workspace.working_dir,
+          acpServer: workspace.acp_server,
         });
+        // Handle creation result
+        if (result?.errorCode === "session_creation_timeout") {
+          showToast({
+            style: "warning",
+            title: result.retrying
+              ? "Agent is busy \u2014 retrying automatically\u2026"
+              : result.error || "Agent is busy",
+            duration: result.retrying ? 30000 : 5000,
+          });
+        } else if (
+          result?.errorCode === "no_workspace_configured" &&
+          !configReadonly
+        ) {
+          setSettingsDialog({ isOpen: true, forceOpen: true });
+        } else if (result?.sessionId) {
+          // newSession activates the new conversation; switch away from the beads
+          // panel so the new conversation is shown instead of the beads view.
+          setMainView("conversation");
+          // Focus the input after creating new session
+          setTimeout(() => {
+            if (chatInputRef.current) {
+              chatInputRef.current.focus();
+            }
+          }, 100);
+        }
+        return;
+      }
+
+      // If folder filter provided, show workspace dialog filtered to that folder
+      if (folderFilter) {
+        const filteredWs = workspaces.filter(
+          (ws) => ws.working_dir === folderFilter,
+        );
+        if (filteredWs.length === 1) {
+          // Single workspace in folder - create directly
+          setShowSidebar(false);
+          const result = await newSession({
+            workingDir: filteredWs[0].working_dir,
+            acpServer: filteredWs[0].acp_server,
+          });
+          if (result?.errorCode === "session_creation_timeout") {
+            showToast({
+              style: "warning",
+              title: result.retrying
+                ? "Agent is busy \u2014 retrying automatically\u2026"
+                : result.error || "Agent is busy",
+              duration: result.retrying ? 30000 : 5000,
+            });
+          } else if (
+            result?.errorCode === "no_workspace_configured" &&
+            !configReadonly
+          ) {
+            setSettingsDialog({ isOpen: true, forceOpen: true });
+          } else if (result?.sessionId) {
+            // Switch away from the beads panel so the new conversation is shown.
+            setMainView("conversation");
+            setTimeout(() => {
+              if (chatInputRef.current) chatInputRef.current.focus();
+            }, 100);
+          }
+        } else if (filteredWs.length > 1) {
+          setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
+          setShowSidebar(false);
+        }
+        return;
+      }
+
+      // If no workspaces configured, open settings dialog (unless config is read-only)
+      if (workspaces.length === 0) {
+        if (!configReadonly) {
+          setSettingsDialog({ isOpen: true, forceOpen: true });
+        }
+        setShowSidebar(false);
+        return;
+      }
+      // If multiple workspaces, show workspace selector
+      if (workspaces.length > 1) {
+        setWorkspaceDialog({ isOpen: true });
+        setShowSidebar(false);
+      } else {
+        // Single workspace - create session directly with workspace info
+        setShowSidebar(false);
+        const ws = workspaces[0];
+        const result = await newSession({
+          workingDir: ws.working_dir,
+          acpServer: ws.acp_server,
+        });
+        // Handle creation result
         if (result?.errorCode === "session_creation_timeout") {
           showToast({
             style: "warning",
@@ -1710,63 +1762,17 @@ function App() {
         } else if (result?.sessionId) {
           // Switch away from the beads panel so the new conversation is shown.
           setMainView("conversation");
+          // Focus the input after creating new session
           setTimeout(() => {
-            if (chatInputRef.current) chatInputRef.current.focus();
+            if (chatInputRef.current) {
+              chatInputRef.current.focus();
+            }
           }, 100);
         }
-      } else if (filteredWs.length > 1) {
-        setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
-        setShowSidebar(false);
       }
-      return;
-    }
-
-    // If no workspaces configured, open settings dialog (unless config is read-only)
-    if (workspaces.length === 0) {
-      if (!configReadonly) {
-        setSettingsDialog({ isOpen: true, forceOpen: true });
-      }
-      setShowSidebar(false);
-      return;
-    }
-    // If multiple workspaces, show workspace selector
-    if (workspaces.length > 1) {
-      setWorkspaceDialog({ isOpen: true });
-      setShowSidebar(false);
-    } else {
-      // Single workspace - create session directly with workspace info
-      setShowSidebar(false);
-      const ws = workspaces[0];
-      const result = await newSession({
-        workingDir: ws.working_dir,
-        acpServer: ws.acp_server,
-      });
-      // Handle creation result
-      if (result?.errorCode === "session_creation_timeout") {
-        showToast({
-          style: "warning",
-          title: result.retrying
-            ? "Agent is busy \u2014 retrying automatically\u2026"
-            : result.error || "Agent is busy",
-          duration: result.retrying ? 30000 : 5000,
-        });
-      } else if (
-        result?.errorCode === "no_workspace_configured" &&
-        !configReadonly
-      ) {
-        setSettingsDialog({ isOpen: true, forceOpen: true });
-      } else if (result?.sessionId) {
-        // Switch away from the beads panel so the new conversation is shown.
-        setMainView("conversation");
-        // Focus the input after creating new session
-        setTimeout(() => {
-          if (chatInputRef.current) {
-            chatInputRef.current.focus();
-          }
-        }, 100);
-      }
-    }
-  };
+    },
+    [configReadonly, newSession, showToast, workspaces],
+  );
 
   const handleWorkspaceSelect = async (workspace) => {
     setWorkspaceDialog({ isOpen: false });
@@ -1800,18 +1806,20 @@ function App() {
     }
   };
 
-  const handleShowSettings = () => {
+  // mitto-b1k: useCallback so SessionList's onShowSettings/onShowWorkspaces
+  // props stay reference-stable (see handleNewSession comment above).
+  const handleShowSettings = useCallback(() => {
     // Don't open settings dialog if config is read-only
     if (configReadonly) {
       return;
     }
     setSettingsDialog({ isOpen: true, forceOpen: false });
-  };
+  }, [configReadonly]);
 
-  const handleShowWorkspaces = () => {
+  const handleShowWorkspaces = useCallback(() => {
     if (configReadonly) return;
     setWorkspacesDialog({ isOpen: true });
-  };
+  }, [configReadonly]);
 
   const handleShowWorkspacesForFolder = useCallback(
     (workingDir, tab) => {
@@ -1821,9 +1829,20 @@ function App() {
     [configReadonly],
   );
 
-  const handleShowKeyboardShortcuts = () => {
+  // mitto-b1k: useCallback so SessionList's onShowKeyboardShortcuts prop
+  // stays reference-stable (see handleNewSession comment above).
+  const handleShowKeyboardShortcuts = useCallback(() => {
     setKeyboardShortcutsDialog({ isOpen: true });
-  };
+  }, []);
+
+  // mitto-b1k: two SessionList props were previously inline JSX arrow
+  // functions (a new identity every App render, which alone would defeat
+  // memo() on SessionList regardless of any other prop stabilization).
+  const handleSidebarClose = useCallback(() => setShowSidebar(false), []);
+  const handleBeadsCreateFromSidebar = useCallback(
+    (workingDir) => setQuickCreate({ open: true, workingDir }),
+    [],
+  );
 
   // Message-queue dropdown actions/state (extracted to hooks/useQueueActions.js):
   // open/close/toggle, add/delete/move queued messages, badge pulse, auto-close
@@ -1910,18 +1929,23 @@ function App() {
     }
   }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
 
-  const handleSelectSession = (sessionId, opts) => {
-    switchSession(sessionId);
-    // keepSidebarOpen is set when the selection is an auto-focus triggered by
-    // expanding a folder (see SessionList.handleFolderOpened). In that case the
-    // mobile sidebar drawer must stay open — only direct conversation clicks
-    // close it.
-    if (!opts?.keepSidebarOpen) {
-      setShowSidebar(false);
-      setShowSidePanel(false);
-    }
-    setMainView("conversation");
-  };
+  // mitto-b1k: useCallback so SessionList's onSelect prop stays
+  // reference-stable (see handleNewSession comment above).
+  const handleSelectSession = useCallback(
+    (sessionId, opts) => {
+      switchSession(sessionId);
+      // keepSidebarOpen is set when the selection is an auto-focus triggered
+      // by expanding a folder (see SessionList.handleFolderOpened). In that
+      // case the mobile sidebar drawer must stay open — only direct
+      // conversation clicks close it.
+      if (!opts?.keepSidebarOpen) {
+        setShowSidebar(false);
+        setShowSidePanel(false);
+      }
+      setMainView("conversation");
+    },
+    [switchSession],
+  );
 
   // Handle badge click action — routes through the "finder" OpenTarget
   // (mitto-b7d). Sends {action:"open", target_id:"finder"} to /api/badge-click;
@@ -2130,34 +2154,48 @@ function App() {
     [activeSessionId, switchSession],
   );
 
-  const handleDeleteSession = async (session) => {
-    // A conversation that is still receiving a response must always be
-    // confirmed before deletion. For the active conversation the live
-    // top-level streaming state is authoritative; otherwise fall back to the
-    // per-session flag.
-    const isPrompting =
-      session?.isStreaming ||
-      (session?.session_id === activeSessionId && isStreaming) ||
-      false;
+  // mitto-b1k: useCallback so SessionList's onDelete prop stays
+  // reference-stable (see handleNewSession comment above).
+  const handleDeleteSession = useCallback(
+    async (session) => {
+      // A conversation that is still receiving a response must always be
+      // confirmed before deletion. For the active conversation the live
+      // top-level streaming state is authoritative; otherwise fall back to
+      // the per-session flag.
+      const isPrompting =
+        session?.isStreaming ||
+        (session?.session_id === activeSessionId && isStreaming) ||
+        false;
 
-    // Delete immediately only when no confirmation is required: mode is "never",
-    // or mode is "responding" while the agent is not currently responding.
-    if (
-      deleteConfirmMode === "never" ||
-      (deleteConfirmMode === "responding" && !isPrompting)
-    ) {
-      // Clean up plan entries, expiration tracking, and completion timers for this session
-      clearPlanForSession(session.session_id);
-      await removeSession(session.session_id);
-      fetchStoredSessions();
-      return;
-    }
-    // Otherwise show the confirmation dialog
-    setDeleteDialog({
-      isOpen: true,
-      session: { ...session, isStreaming: isPrompting },
-    });
-  };
+      // Delete immediately only when no confirmation is required: mode is
+      // "never", or mode is "responding" while the agent is not currently
+      // responding.
+      if (
+        deleteConfirmMode === "never" ||
+        (deleteConfirmMode === "responding" && !isPrompting)
+      ) {
+        // Clean up plan entries, expiration tracking, and completion timers
+        // for this session
+        clearPlanForSession(session.session_id);
+        await removeSession(session.session_id);
+        fetchStoredSessions();
+        return;
+      }
+      // Otherwise show the confirmation dialog
+      setDeleteDialog({
+        isOpen: true,
+        session: { ...session, isStreaming: isPrompting },
+      });
+    },
+    [
+      activeSessionId,
+      isStreaming,
+      deleteConfirmMode,
+      clearPlanForSession,
+      removeSession,
+      fetchStoredSessions,
+    ],
+  );
 
   const handleConfirmDelete = async () => {
     const session = deleteDialog.session;
@@ -2189,18 +2227,24 @@ function App() {
     [setSessionColor],
   );
 
-  const handleArchiveSession = async (session, archived) => {
-    await archiveSession(session.session_id, archived);
+  // mitto-b1k: useCallback so SessionList's onArchive prop stays
+  // reference-stable (see handleNewSession comment above).
+  const handleArchiveSession = useCallback(
+    async (session, archived) => {
+      await archiveSession(session.session_id, archived);
 
-    if (!archived) {
-      // When unarchiving, select the session
-      switchSession(session.session_id);
-    }
-    // When archiving the active conversation, navigation to that conversation's
-    // folder Tasks (beads) view is handled inside useWebSocket's archiveSession
-    // (synchronously, same window) and the session_archived broadcast handler
-    // (cross-window), mirroring how deletion defers to removeSession (mitto-17d).
-  };
+      if (!archived) {
+        // When unarchiving, select the session
+        switchSession(session.session_id);
+      }
+      // When archiving the active conversation, navigation to that
+      // conversation's folder Tasks (beads) view is handled inside
+      // useWebSocket's archiveSession (synchronously, same window) and the
+      // session_archived broadcast handler (cross-window), mirroring how
+      // deletion defers to removeSession (mitto-17d).
+    },
+    [archiveSession, switchSession],
+  );
 
   // Convert an existing regular conversation to a loop one. First try to restore
   // settings that were preserved by a previous "un-loop" (POST /loop/restore);
@@ -4198,7 +4242,7 @@ function App() {
             onArchive=${handleArchiveSession}
             onSetColor=${handleSetSessionColor}
             onAutoRename=${handleAutoRename}
-            onClose=${() => setShowSidebar(false)}
+            onClose=${handleSidebarClose}
             workspaces=${workspaces}
             theme=${theme}
             onToggleTheme=${toggleTheme}
@@ -4219,8 +4263,7 @@ function App() {
             openInTargets=${openInTargets}
             onOpenTarget=${handleOpenTarget}
             onBeadsOpen=${handleBeadsOpen}
-            onBeadsCreate=${(wd) =>
-              setQuickCreate({ open: true, workingDir: wd })}
+            onBeadsCreate=${handleBeadsCreateFromSidebar}
             onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
             onRunBeadsListPrompt=${handleRunBeadsListPrompt}
             onBeadsRefresh=${handleBeadsRefresh}

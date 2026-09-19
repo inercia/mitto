@@ -1,6 +1,14 @@
 // Mitto Web Interface - Session List Component
-const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } =
-  window.preact;
+const {
+  html,
+  Fragment,
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  memo,
+} = window.preact;
 
 import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
@@ -196,7 +204,7 @@ function withoutArchivedKeys(groups) {
   return out;
 }
 
-export function SessionList({
+function SessionListImpl({
   activeSessions,
   storedSessions,
   activeSessionId,
@@ -2266,3 +2274,20 @@ export function SessionList({
     </${Fragment}>
   `;
 }
+
+// memo() (mitto-b1k): App.js's onSelect/onNewSession/onDelete/onArchive/
+// onShowSettings/onShowWorkspaces/onShowKeyboardShortcuts/onClose/
+// onBeadsCreate props were previously plain functions or inline JSX arrows
+// recreated on every App render, which would have defeated memo() here
+// regardless of any other prop; those were converted to useCallback (see
+// app.js "mitto-b1k" comments). Every remaining prop is already
+// useCallback-wrapped (from app.js or its extraction hooks), a primitive, or
+// a useState-owned array/Set — including `activeSessions`, which
+// useWebSocket.js already memoizes behind a structural fingerprint that
+// excludes messageCount/timestamps (see its "Get all active sessions as
+// array for sidebar" comment), so a background session's message-only chunk
+// does not change its reference either. With every prop now reference-stable
+// across a background chunk, this shallow-prop-equal memo() stops
+// SessionList from reconciling on unrelated App re-renders. See
+// docs/devel/frontend-render-domains.md.
+export const SessionList = memo(SessionListImpl);

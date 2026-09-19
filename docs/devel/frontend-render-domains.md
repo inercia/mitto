@@ -93,32 +93,40 @@ Shipped:
   new `installRenderCountsReset()` bootstrap call (mirrors
   `installPerfBuffer()`), so a Playwright spec can reset counters mid-run.
 
-Deferred to a follow-up bead (SessionList's read-side swap turned out to be
-materially larger than originally scoped):
+Also shipped, in the mitto-b1k reopen pass that completed `SessionList`:
 
-- `SessionList` still takes the `activeSessions`/`storedSessions` props and
-  is **not** wrapped in `memo()`. Two blockers surfaced during
-  implementation:
-  1. `computeAllSessions()` (`lib.js`) merges in far more raw per-session
-     fields than the mitto-sus.7 summary-slice extractor captures
-     (`loop_configured`, `next_scheduled_at`, `loop_frequency`,
-     `loop_trigger`/`loop_triggers`, and more) — safely expanding the
-     summary slice means touching that merge function's field list one by
-     one, which is its own bounded piece of work.
-  2. At least two callback props `App` passes to `SessionList` are inline
-     arrow functions recreated every render (`onClose`,
-     `onBeadsCreate`), and several more (`toggleTheme`,
-     `handleShowSettings`, `handleBeadsOpen`, etc.) were not confirmed
-     stable. Wrapping `SessionList` in `memo()` without first auditing and
-     stabilizing all ~20 of its callback props would be a no-op that adds
-     complexity without isolating anything — worse than leaving it as-is.
-  `SessionList` still benefits today from the existing structural-
-  fingerprint memoization of `activeSessions` (`useWebSocket.js`), which
-  already keeps that array's reference stable across background message-only
-  chunks (it excludes `messageCount` and per-message timestamps from the
-  fingerprint) — the remaining work is `memo()` + the callback audit.
-- Callback-identity stabilization audit for the ~20 callbacks `App` passes
-  to `SessionList`/`MessageList`/`ChatInput`.
+- `SessionList` is now wrapped in `memo()` (exported as
+  `memo(SessionListImpl)`), and every prop `App` passes it is
+  reference-stable across a background session's chunks:
+  - `activeSessions` was **already** reference-stable via the existing
+    structural-fingerprint memoization in `useWebSocket.js` (it excludes
+    `messageCount` and per-message timestamps from the fingerprint), and
+    `storedSessions`/`workspaces`/`openInTargets` are plain `useState`
+    arrays that only change reference on an explicit update — so no
+    `useSessionSummaries()`/`subscribeSessionIds` store-selector
+    infrastructure was needed to satisfy this bead's acceptance criterion;
+    building one would have duplicated `computeAllSessions()`'s ~30-field
+    merge logic (`lib.js`) in a second, untested code path for no
+    additional isolation. This is a deliberate deviation from the original
+    Plan comment's design, per the "smallest coherent increment, no
+    gold-plating" principle already invoked once on this bead.
+  - The seven callback props that were plain functions or inline JSX arrows
+    (`onSelect`, `onNewSession`, `onDelete`, `onArchive`, `onShowSettings`,
+    `onShowWorkspaces`, `onShowKeyboardShortcuts`, plus the `onClose` and
+    `onBeadsCreate` inline arrows) are now `useCallback`-wrapped in
+    `app.js`. Every other callback prop was already `useCallback`-wrapped,
+    either directly in `app.js` or in the extraction hooks it composes
+    (`useTheme`, `useAgentAuthState`, `useBeadsIntegration`,
+    `useWorkspacePrompts`).
+
+Deferred to a follow-up bead:
+
+- Numeric before/after render-count measurements (background chunk /
+  keystroke / keepalive scenarios) captured against a pre-migration
+  baseline and post-migration HEAD.
+- A Playwright regression spec under `tests/ui/specs/perf/` asserting the
+  post-migration render-count bounds, so future regressions are caught by
+  CI.
 - Queue state, background-notification state, and workspaces/config-options
   state remain owned by `useWebSocket`/`App` — out of scope for this bead
   (see sibling follow-up beads filed under `mitto-sus` at verify time).
