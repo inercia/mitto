@@ -3341,7 +3341,8 @@ flushEntries:
 // drifts far past the historical envelope. Enforcement is warn-only — the
 // batch is never split, dropped, or truncated, since every processor's
 // output must still be produced; only cost/latency risk is surfaced. See
-// docs/devel/architecture.md "Close-phase batched prompt-mode dispatch".
+// docs/devel/processors.md "Close-Phase Batched Dispatch Size/Token
+// Observability (mitto-sl5)".
 const maxCombinedCloseBatchPromptBytes = 256 * 1024
 
 // dispatchPromptBatch dispatches prompt-mode processors as fire-and-forget.
