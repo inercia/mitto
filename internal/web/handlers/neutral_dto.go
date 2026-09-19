@@ -8,6 +8,9 @@ package handlers
 // keep their current meaning unchanged. See docs/devel/agent-backend-architecture.md.
 
 import (
+	"context"
+	"log/slog"
+
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/backendcompat"
 	"github.com/inercia/mitto/internal/conversation"
@@ -128,7 +131,42 @@ func BuildNeutralBackendDescriptor(meta session.Metadata, bs *conversation.Backg
 		desc.ConfigOptions = out
 	}
 
+	verifyNeutralProvider(bs, desc)
+
 	return desc
+}
+
+// verifyNeutralProvider consults bs's live ProviderDiscoverer (mitto-mx9.5),
+// when one is available, and cross-checks its result against
+// desc.AgentRef.Provider (derived from the persisted meta.ACPServer field).
+// This is the first production call site for agentbackend.ProviderDiscovery
+// (via the conversation.ProviderDiscoverer seam) outside of tests/fakes.
+//
+// It never mutates desc: AgentRef.Provider stays sourced from persisted
+// identity, since a live probe disagreeing must not silently rewrite an
+// identity field derived from on-disk metadata (see the mismatch branch
+// below). Today the two values are always equal — ACP is one-provider-
+// per-process, so the discoverer reports exactly the same provider the
+// legacy path already derived from meta.ACPServer — so this is purely an
+// observability/parity check; it becomes meaningful once a non-ACP backend
+// can expose more than one provider through the same lease.
+func verifyNeutralProvider(bs *conversation.BackgroundSession, desc *NeutralBackendDescriptor) {
+	if bs == nil || desc == nil || desc.AgentRef == nil {
+		return
+	}
+	discoverer, ok := bs.NeutralProviderDiscoverer()
+	if !ok {
+		return
+	}
+	providers, err := discoverer.Providers(context.Background())
+	if err != nil || len(providers) == 0 {
+		return
+	}
+	if string(providers[0]) != desc.AgentRef.Provider {
+		slog.Debug("neutral_dto: provider discoverer disagrees with legacy identity; keeping legacy value",
+			"legacy_provider", desc.AgentRef.Provider,
+			"discovered_provider", providers[0])
+	}
 }
 
 // neutralCapabilities projects the subset of agentbackend.Feature states

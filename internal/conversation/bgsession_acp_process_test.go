@@ -32,6 +32,7 @@ func (l *spyBackendLease) SessionHandle() (*SessionHandle, bool)   { return nil,
 func (l *spyBackendLease) SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool) {
 	return nil, agentbackend.SessionRef{}, false
 }
+func (l *spyBackendLease) ProviderDiscoverer() (ProviderDiscoverer, bool) { return nil, false }
 
 var _ BackendLease = (*spyBackendLease)(nil)
 

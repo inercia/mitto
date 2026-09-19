@@ -440,6 +440,26 @@ transport→conversation binding flows unchanged through
 value is ever logged, persisted, or passed through argv on the new
 callback path.
 
+**Update (mitto-mx9.5).** `agentbackend.ProviderDiscovery` gained its first
+production consumer outside tests/fakes. Since `internal/acpbackend` (the
+`ProviderDiscovery` implementation for ACP) already imports
+`internal/conversation`, that package cannot import `acpbackend` back — so
+the wiring instead adds a structurally-identical
+`internal/conversation.ProviderDiscoverer` seam, exposed via
+`BackendLease.ProviderDiscoverer()` (implemented by `acpLease`, mirroring
+`SessionOps()`) and `BackgroundSession.NeutralProviderDiscoverer()`.
+`handlers.BuildNeutralBackendDescriptor` consults it to cross-check the
+REST/WS `backend.agent_ref.provider` field (derived from persisted
+`meta.ACPServer`) against the live discoverer's result — a parity/
+observability check only: a disagreement is logged at DEBUG and never
+mutates the persisted-identity-derived field. ACP is one-provider-per-
+process, so the two values always agree today; the seam becomes
+informationally meaningful once a non-ACP backend can expose more than one
+provider through the same lease. `acpbackend.Connection`'s own
+`NewSession/LoadSession/ResumeSession` remain inert, unaffected by this —
+that is still the separate mitto-lrt.7 session-creation wiring gap noted
+above.
+
 - **Client-service boundary.** `TerminalServices` is a new optional
   contract (`CreateTerminal`/`TerminalOutput`/`WaitForTerminalExit`/
   `KillTerminal`/`ReleaseTerminal`), kept separate from `ClientServices` so a

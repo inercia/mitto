@@ -99,6 +99,22 @@ type SessionPromptOps interface {
 	SetMode(ctx context.Context, ref agentbackend.SessionRef, modeID string) error
 }
 
+// ProviderDiscoverer is the neutral provider-discovery seam a BackendLease
+// exposes (mitto-mx9.5). It is structurally identical to
+// agentbackend.ProviderDiscovery.Providers — any value that already
+// satisfies that contract (e.g. the fake host used by the non-ACP backend)
+// satisfies this one too, with no adapter needed — but is declared as its
+// own interface here rather than imported, because internal/acpbackend
+// (which implements agentbackend.ProviderDiscovery for the ACP path) already
+// imports internal/conversation for conversation.SharedProcess, so this
+// package cannot import internal/acpbackend back without a cycle.
+type ProviderDiscoverer interface {
+	// Providers reports the provider(s) reachable through this lease's
+	// backend connection. Implementations must only read already-known
+	// connection state — never invoke a local install/status/MCP script.
+	Providers(ctx context.Context) ([]agentbackend.ProviderID, error)
+}
+
 // BackendLease models ownership of one acquired backend session.
 type BackendLease interface {
 	// Ref returns the neutral session identity for this lease.
@@ -153,6 +169,13 @@ type BackendLease interface {
 	// is false (mitto-mx9.1 additive routing: this accessor supplements
 	// LocalProcess/SessionHandle rather than replacing them yet).
 	SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool)
+
+	// ProviderDiscoverer returns the neutral provider-discovery seam
+	// (mitto-mx9.5) for this lease's backend connection, when the backend
+	// exposes one. Returns (nil, false) when it does not — a nil-safe,
+	// common state mirroring SessionOps' own (nil, ref, false) pattern;
+	// callers must treat that as "no discovery available", not an error.
+	ProviderDiscoverer() (ProviderDiscoverer, bool)
 }
 
 // BackendProvider acquires a BackendLease for a conversation. It is the

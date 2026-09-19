@@ -57,6 +57,7 @@ func (p *acpBackendProvider) AcquireSession(ctx context.Context, req AcquireRequ
 	if req.DeferSession {
 		return &acpLease{
 			process:    process,
+			provider:   req.Agent.Provider,
 			ref:        req.Session,
 			cwd:        req.CWD,
 			mcpServers: req.MCPServers,
@@ -86,6 +87,7 @@ func (p *acpBackendProvider) AcquireSession(ctx context.Context, req AcquireRequ
 		process:    process,
 		handle:     handle,
 		sessionID:  acp.SessionId(handle.SessionID),
+		provider:   req.Agent.Provider,
 		ref:        ref,
 		cwd:        req.CWD,
 		mcpServers: req.MCPServers,
@@ -96,6 +98,7 @@ func (p *acpBackendProvider) AcquireSession(ctx context.Context, req AcquireRequ
 type acpLease struct {
 	process    SharedProcess
 	sessionID  acp.SessionId
+	provider   agentbackend.ProviderID // set once at construction from AcquireRequest.Agent.Provider; never mutated afterwards
 	cwd        string
 	mcpServers []agentbackend.MCPServerDescriptor
 
@@ -239,6 +242,31 @@ func (l *acpLease) SessionOps() (SessionPromptOps, agentbackend.SessionRef, bool
 		return nil, agentbackend.SessionRef{}, false
 	}
 	return &acpSessionPromptOps{process: l.process}, ref, true
+}
+
+// Providers implements ProviderDiscoverer by reporting this lease's single
+// configured provider. It mirrors acpbackend.Connection.Providers (the ACP
+// protocol runs exactly one agent per process) but cannot delegate to it
+// directly: internal/acpbackend already imports internal/conversation (for
+// conversation.SharedProcess), so importing it back here would cycle — see
+// the acpSessionPromptOps package-cycle note above for the same tradeoff.
+// l.provider is set once at construction and never mutated, so this is a
+// pure, lock-free read of already-established connection state; no local
+// install/status/MCP script is invoked.
+func (l *acpLease) Providers(ctx context.Context) ([]agentbackend.ProviderID, error) {
+	return []agentbackend.ProviderID{l.provider}, nil
+}
+
+// ProviderDiscoverer implements BackendLease.ProviderDiscoverer. A lease
+// with no provider identity (should not occur for a lease actually returned
+// by AcquireSession, which always sets it from AcquireRequest.Agent.Provider)
+// reports (nil, false) rather than a discoverer that would report an
+// invalid empty ProviderID.
+func (l *acpLease) ProviderDiscoverer() (ProviderDiscoverer, bool) {
+	if l.provider == "" {
+		return nil, false
+	}
+	return l, true
 }
 
 // acpSessionPromptOps adapts an already-established SharedProcess onto
@@ -658,9 +686,11 @@ func ModeStateFromACP(s *acp.SessionModeState) *agentbackend.ModeState {
 // = (*SharedACPProcess)(nil)` convention so interface drift fails the build
 // here rather than at call sites.
 var (
-	_ BackendProvider           = (*acpBackendProvider)(nil)
-	_ BackendLease              = (*acpLease)(nil)
-	_ agentbackend.Capabilities = (*acpCapabilities)(nil)
-	_ agentbackend.Capabilities = (*acpProcessCapabilities)(nil)
-	_ SessionPromptOps          = (*acpSessionPromptOps)(nil)
+	_ BackendProvider                = (*acpBackendProvider)(nil)
+	_ BackendLease                   = (*acpLease)(nil)
+	_ ProviderDiscoverer             = (*acpLease)(nil)
+	_ agentbackend.ProviderDiscovery = (*acpLease)(nil) // structurally identical to ProviderDiscoverer; pins the two contracts together
+	_ agentbackend.Capabilities      = (*acpCapabilities)(nil)
+	_ agentbackend.Capabilities      = (*acpProcessCapabilities)(nil)
+	_ SessionPromptOps               = (*acpSessionPromptOps)(nil)
 )

@@ -167,6 +167,19 @@ func (l *fakeRemoteLease) SessionOps() (SessionPromptOps, agentbackend.SessionRe
 	return ops, ref, true
 }
 
+// ProviderDiscoverer implements BackendLease.ProviderDiscoverer by
+// delegating to l.ops when the fake host also implements
+// agentbackend.ProviderDiscovery — which agentbackend.NewFakeHost's
+// concrete type does, and which is structurally identical to
+// ProviderDiscoverer (see backend_provider.go's doc comment), so no adapter
+// is needed. Proves the discovery seam is backend-agnostic, not ACP-only.
+func (l *fakeRemoteLease) ProviderDiscoverer() (ProviderDiscoverer, bool) {
+	if pd, ok := l.ops.(agentbackend.ProviderDiscovery); ok {
+		return pd, true
+	}
+	return nil, false
+}
+
 var (
 	_ BackendProvider = (*fakeRemoteBackendProvider)(nil)
 	_ BackendLease    = (*fakeRemoteLease)(nil)

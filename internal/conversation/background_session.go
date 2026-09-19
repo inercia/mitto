@@ -1777,6 +1777,21 @@ func (bs *BackgroundSession) CurrentModelName() string {
 	return ModelDisplayName(models, models.CurrentModelId)
 }
 
+// NeutralProviderDiscoverer returns the neutral provider-discovery seam
+// (mitto-mx9.5) backing this session's lease, when a BackendProvider was
+// injected (SessionManager.SetBackendProvider) and that lease exposes one.
+// Nil-safe: returns (nil, false) whenever no lease is set (the common case
+// today, matching bs.lease's own doc) or the lease doesn't implement
+// discovery — mirroring the AgentModels()/ConfigOptions() nil-safe getter
+// pattern above, and (like those) safe to call from any goroutine since
+// bs.lease is set once at construction and never mutated afterwards.
+func (bs *BackgroundSession) NeutralProviderDiscoverer() (ProviderDiscoverer, bool) {
+	if bs == nil || bs.lease == nil {
+		return nil, false
+	}
+	return bs.lease.ProviderDiscoverer()
+}
+
 // --- Observer Management ---
 
 // AddObserver adds an observer to receive session events.
