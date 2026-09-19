@@ -660,6 +660,45 @@ the two most recent `user_prompt` seqs. All fields are omitted from the
 WebSocket payload when zero, so sessions with no processor telemetry
 (empty) or only pre-mitto-08q.2 events (legacy) render no new UI.
 
+### Close-Phase Batched Dispatch Size/Token Observability (mitto-sl5)
+
+Close-phase `conversationClosed` prompt-mode processors are collected by
+`ApplyOnClose` and handed to `dispatchPromptBatch`, which combines every
+collected processor's rendered prompt into a single request when more than
+one is pending (batching optimization — one auxiliary session instead of N).
+Each memory-processor prompt embeds its own conversation-history/rules
+context, so the combined payload can grow large: an observed window saw 44
+batched dispatches (5 processors each: `extract-memories-on-close`,
+`claude-update-memory`, `memorize-preferences`, `auggie-update-rules`,
+`curate-memories-on-close`) with `combined_prompt_len` ranging 26KB–200KB.
+
+`dispatchPromptBatch`'s `slog.Info("prompt-mode processors dispatched
+(batched)", ...)` line carries, in addition to the original
+`combined_prompt_len`:
+
+- `combined_estimated_tokens` — `EstimateTokens(combinedPrompt)` for the
+  whole batch.
+- `processor_names` / `processor_prompt_lens` / `processor_estimated_tokens`
+  — parallel per-processor slices (same order as the `##Requirement N`
+  sections in the combined prompt), so per-processor cost is visible at the
+  dispatch log line without cross-referencing the `close-run-summary.json`
+  sidecar (`session.CloseRunProcessorEntry.RenderedBytes`/`EstimatedTokens`,
+  populated per-processor at collection time — see `ApplyOnClose`).
+
+The single-processor path (`prompt-mode processor dispatched (single)`)
+gained a matching `estimated_tokens` field for parity.
+
+**Soft ceiling (`maxCombinedCloseBatchPromptBytes = 256 * 1024`,
+`internal/processors/apply.go`):** when `combined_prompt_len` exceeds this,
+an additional `slog.Warn("close-phase batched prompt exceeds soft
+ceiling", ...)` line is emitted with the same fields plus
+`soft_ceiling_bytes`, so a size regression is grep-able at `WARN` level
+without waiting for a manual log-analysis pass. The ceiling is
+**warn-only** — the batch is never split, dropped, or truncated: every
+processor's output must still be produced (this is an observability/cost
+concern, not a correctness one), so enforcement only surfaces the risk
+rather than acting on it.
+
 ## Integration Points
 
 The unified pipeline integrates at a single point in `BackgroundSession.PromptWithMeta()`:

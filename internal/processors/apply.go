@@ -3332,6 +3332,18 @@ flushEntries:
 	}
 }
 
+// maxCombinedCloseBatchPromptBytes is a documented soft ceiling for
+// close-phase batched prompt-mode dispatch payloads (mitto-sl5). Observed
+// max as of 2026-09-19 was ~200KB combining 5 memory processors
+// (extract-memories-on-close, claude-update-memory, memorize-preferences,
+// auggie-update-rules, curate-memories-on-close); the ceiling is set well
+// above that so a regression is visible (via the WARN log below) before it
+// drifts far past the historical envelope. Enforcement is warn-only — the
+// batch is never split, dropped, or truncated, since every processor's
+// output must still be produced; only cost/latency risk is surfaced. See
+// docs/devel/architecture.md "Close-phase batched prompt-mode dispatch".
+const maxCombinedCloseBatchPromptBytes = 256 * 1024
+
 // dispatchPromptBatch dispatches prompt-mode processors as fire-and-forget.
 // If there is a single processor, it dispatches directly with the processor name.
 // If there are multiple processors, it combines their prompts into a single
@@ -3359,6 +3371,7 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 		m.logger.Info("prompt-mode processor dispatched (single)",
 			"name", prompts[0].name,
 			"prompt_len", len(prompts[0].prompt),
+			"estimated_tokens", EstimateTokens(prompts[0].prompt),
 		)
 		return
 	}
@@ -3367,7 +3380,9 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 	var sb strings.Builder
 	sb.WriteString("We would like to fulfill the following requirements:\n\n")
 	maxTimeout := time.Duration(0)
-	var names []string
+	names := make([]string, 0, len(prompts))
+	promptLens := make([]int, 0, len(prompts))
+	estimatedTokens := make([]int, 0, len(prompts))
 	for i, p := range prompts {
 		fmt.Fprintf(&sb, "## Requirement %d: %s\n\n", i+1, p.name)
 		sb.WriteString(p.prompt)
@@ -3376,10 +3391,14 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 			maxTimeout = p.timeout
 		}
 		names = append(names, p.name)
+		promptLens = append(promptLens, len(p.prompt))
+		estimatedTokens = append(estimatedTokens, EstimateTokens(p.prompt))
 	}
 
 	combinedName := strings.Join(names, "+")
 	combinedPrompt := sb.String()
+	combinedLen := len(combinedPrompt)
+	combinedEstimatedTokens := EstimateTokens(combinedPrompt)
 
 	go m.dispatchWithRetry(workspaceUUID, combinedName, combinedPrompt, maxTimeout,
 		"batched prompt-mode processor dispatch skipped: shared ACP process not available",
@@ -3390,8 +3409,27 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 	m.logger.Info("prompt-mode processors dispatched (batched)",
 		"names", combinedName,
 		"count", len(prompts),
-		"combined_prompt_len", len(combinedPrompt),
+		"combined_prompt_len", combinedLen,
+		"combined_estimated_tokens", combinedEstimatedTokens,
+		"processor_names", names,
+		"processor_prompt_lens", promptLens,
+		"processor_estimated_tokens", estimatedTokens,
 	)
+
+	// Soft-ceiling check (mitto-sl5): warn-only, never splits/drops/truncates
+	// the batch — see maxCombinedCloseBatchPromptBytes doc comment.
+	if combinedLen > maxCombinedCloseBatchPromptBytes {
+		m.logger.Warn("close-phase batched prompt exceeds soft ceiling",
+			"names", combinedName,
+			"count", len(prompts),
+			"combined_prompt_len", combinedLen,
+			"combined_estimated_tokens", combinedEstimatedTokens,
+			"soft_ceiling_bytes", maxCombinedCloseBatchPromptBytes,
+			"processor_names", names,
+			"processor_prompt_lens", promptLens,
+			"processor_estimated_tokens", estimatedTokens,
+		)
+	}
 }
 
 // ProcessorsDir returns the processors directory path.
