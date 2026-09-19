@@ -534,7 +534,19 @@ remains the sole allocator of the observable Mitto `seq` (the Projector uses
 a private no-op `SeqAllocator`), content chunks are `Flush`ed after every
 `Ingest`, and the ACP contract never sets `UpstreamCursor`, so no dedup/replay
 side effect ever fires — seq/ACK/replay/recorder semantics stay byte-identical
-and ACP behavior remains unchanged. The `docs/devel/acp-behavior-baseline.md`
+and ACP behavior remains unchanged. **Second exception:** the neutral
+origin-gating predicate `ShouldTriggerLocalAutomation`
+(`internal/conversation/automation_origin.go`) was wired into the production
+prompt-completion pipeline in mitto-mx9.3 as the gate for title-generation
+retry, follow-up analysis, after-phase processors (all in
+`promptDispatcher.handlePromptSuccess`), and `pdOnTurnIdle` — the single
+bridge into `LoopRunner.OnConversationIdle`/loop `onCompletion` re-fire and,
+transitively, `OnChildEndResponse`/child dispatch (in
+`promptDispatcher.finalizeTurn`). Because ACP never produces `OriginRemote`,
+every callsite passes `agentbackend.OriginLocal` as a hardcoded constant, so
+the predicate always evaluates `true` on the ACP path and behavior stays
+byte-identical; the gate becomes meaningful only once a future host-echo
+backend produces genuine `OriginRemote` events. The `docs/devel/acp-behavior-baseline.md`
 regression baseline (mitto-lrt.2) plus its 5 targeted integration tests
 (lifecycle re-archive, startup replay, mid-stream cancel/`after_seq`, failed
 tool-call status) remain the executable proof of "ACP is unchanged" and are
