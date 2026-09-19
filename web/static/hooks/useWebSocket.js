@@ -148,13 +148,11 @@ export function useWebSocket({
   // Global MCP server bind status from the `connected` message: { available, reason, port } | null
   const [mcpStatus, setMcpStatus] = useState(null);
 
-  const {
-    workspaces,
-    acpServers,
-    fetchWorkspaces,
-    addWorkspace,
-    removeWorkspace,
-  } = useWSWorkspaces();
+  // workspaces/acpServers data lives in stores/workspacesStore.js
+  // (mitto-sus.11); consumers read it via hooks/useWorkspacesStore.js
+  // instead of receiving it prop-drilled through this hook's return value.
+  const { fetchWorkspaces, addWorkspace, removeWorkspace } =
+    useWSWorkspaces();
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
@@ -2848,8 +2846,11 @@ export function useWebSocket({
   // sendToSession lives in useWSConnection (C1) — mitto-90f.6.2.
   // Composer callbacks use sendToSessionRef.current(...) via sendToSessionStable.
 
-  // Config options (per-session, extracted to useWSConfigOptions sub-hook, mitto-90f.5)
-  const { configOptions, setConfigOption } = useWSConfigOptions(
+  // Config options (per-session, extracted to useWSConfigOptions sub-hook,
+  // mitto-90f.5). The data itself lives in stores/configOptionsStore.js
+  // (mitto-sus.11); consumers read it via useConfigOptions(sessionId)
+  // instead of receiving it prop-drilled through this hook's return value.
+  const { setConfigOption } = useWSConfigOptions(
     activeSession,
     activeSessionId,
     sendToSessionStable,
@@ -4567,15 +4568,12 @@ export function useWebSocket({
     deleteQueueMessage,
     addToQueue,
     moveQueueMessage,
-    workspaces,
-    acpServers,
     addWorkspace,
     removeWorkspace,
     refreshWorkspaces: fetchWorkspaces,
     forceReconnectActiveSession,
     reconnectAllSessionsStaggered,
     availableCommands,
-    configOptions,
     setConfigOption,
     activeUIPrompt,
     sendUIPromptAnswer,

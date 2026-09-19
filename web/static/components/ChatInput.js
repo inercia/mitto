@@ -21,6 +21,7 @@ import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
 import { useSessionInfo } from "../hooks/useSessionsStore.js";
 import { useQueueLength, useQueueConfig } from "../hooks/useQueue.js";
+import { useConfigOptions } from "../hooks/useWorkspacesStore.js";
 import {
   getDraft as getStoredDraft,
   setDraft as setStoredDraft,
@@ -200,7 +201,6 @@ function ChatInputImpl({
   activeUIPrompt = null,
   onUIPromptAnswer,
   sendKeyMode = "enter",
-  configOptions = [],
   onSetConfigOption,
   // Global model profiles (config.models) — needed by PromptsMenu to resolve
   // structured preferredModels ({modelName}/{modelTag}) into an override chip.
@@ -230,6 +230,11 @@ function ChatInputImpl({
   // doesn't force this memoized component to reconcile.
   const queueLength = useQueueLength(sessionId);
   const queueConfig = useQueueConfig(sessionId);
+  // Config options self-subscribe to stores/configOptionsStore.js
+  // (mitto-sus.11) instead of an App-passed prop, so an unrelated active-
+  // session `info` touch (which does NOT change config_options) no longer
+  // forces this memoized component to reconcile.
+  const configOptions = useConfigOptions(sessionId);
   const loopConfigured = sessionInfoSlice?.loop_configured || false;
   const workingDir = sessionInfoSlice?.working_dir || "";
   // Draft text is local state seeded from (and mirrored into) the shared

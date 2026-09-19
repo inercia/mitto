@@ -175,8 +175,74 @@ background session's own legitimate one-shot summary changes (its
 `isStreaming` flag settling, and the backend's post-completion title-retry
 attempt) rather than per-chunk churn.
 
-Deferred to a follow-up bead:
+Deferred to a follow-up bead (mitto-sus.11): queue state,
+background-notification state, and workspaces/config-options state remained
+owned by `useWebSocket`/`App` at the time this bead closed.
 
-- Queue state, background-notification state, and workspaces/config-options
-  state remain owned by `useWebSocket`/`App` — out of scope for this bead;
-  tracked as `mitto-sus.11` (sibling under `mitto-sus`).
+## Status after mitto-sus.11
+
+Shipped, extending the render-isolation pattern to the three state families
+this bead's AC targeted:
+
+- **Toasts + background notifications** — `stores/notificationsStore.js`
+  owns the toast stack and four background-notification singletons
+  (`backgroundCompletion`, `loopStarted`, `backgroundUIPrompt`,
+  `backgroundUIPromptTimeout`) as module-level state with stable
+  `showToast`/`dismissToast` functions. `ToastContainer` self-subscribes via
+  `useToasts()` instead of taking `toasts`/`onDismiss` props from `App`.
+- **Queue state** — `stores/queueStore.js` (per-session `messages`/
+  `length`/`config` slices) + `hooks/useQueue.js`
+  (`useQueueMessages`/`useQueueLength`/`useQueueConfig`). `QueueDropdown`,
+  `ChatInput`, and `SessionList` (its sidebar "queued messages" badge — a
+  hidden-coupling discovery, not in the original plan) self-subscribe
+  instead of receiving queue data prop-drilled from `App`. `App` itself
+  keeps one direct `useQueueLength(activeSessionId)` subscription to gate
+  the archive button — a legitimate self-subscription, not prop-drilling.
+- **Workspaces + config-options** — `stores/workspacesStore.js` (global
+  `workspaces`/`acpServers`, module-level, not per-session) and
+  `stores/configOptionsStore.js` (per-session `config_options`, diffed by
+  reference so an active-session `info` touch that leaves `config_options`
+  unchanged is a silent no-op) + `hooks/useWorkspacesStore.js`
+  (`useWorkspaces`/`useAcpServers`/`useConfigOptions`). `MessageList` and
+  `SessionList` self-subscribe to `useWorkspaces()` instead of an
+  `App`-passed `workspaces` prop (both were real, live consumers found by
+  inspecting the actual render tree, superseding the plan's original file
+  list); `ChatInput` and `SessionPanel` self-subscribe to
+  `useConfigOptions(sessionId)` instead of an `App`-passed `configOptions`
+  prop. `App` keeps its own `useWorkspaces()`/`useAcpServers()` calls for
+  internal routing/dialog logic (dozens of pre-existing call sites), but no
+  longer needs `configOptions` for itself once both of its consumers
+  self-subscribe directly.
+
+**Plan-vs-reality deviations** (the plan's guessed file list, written before
+inspecting the live render tree, did not match several real consumers):
+
+- `WorkspacesDialog.js` and `SettingsDialog.js` each own an **independent**
+  editable draft of workspaces/ACP servers (`useWorkspacesData()` /
+  a local `useState` fetched via their own SDK call for the settings-editing
+  form) — neither ever received `workspaces`/`acpServers` as a prop from
+  `App`. Self-subscribing them would have altered their edit/staging
+  semantics for no render-isolation benefit; left unmigrated.
+- `NewSessionWorkspaceDialog.js` receives `workspaceDialog.filteredWorkspaces
+  || workspaces` from `App` — a conditional substitution of an
+  `App`-computed *filtered* variant, not a pure pass-through of the global
+  list. Left prop-driven from `App`'s own (now store-backed) `workspaces`
+  value; functionally unchanged.
+- `AddFolderDialog.js` does not consume `workspaces` at all (a different,
+  unrelated `hiddenWorkspaces` prop). `ConfigOptionSelect.js` does not
+  consume the `configOptions` array at all — it receives one already-resolved
+  `configOption` object from its parent (`ChatInput`/`SessionPanel`), which
+  is exactly what migrating those parents fixes. `ConversationPropertiesPanel.js`
+  is dead code (confirmed via grep: not rendered anywhere in `app.js`,
+  superseded by `SessionPanel.js`) — migrating it would have had zero
+  runtime effect.
+
+All three families now read via a scoped store slice rather than an `App`
+prop chain (AC1); `render-isolation.perf.spec.ts` covers queue add/delete
+and a toast fired without a WS round trip (AC2) — a `set_config_option`
+scenario was not added in this pass since `ChatInput`/`SessionPanel` are the
+only live consumers and neither is part of the five perf-tracked render
+domains above, so an isolation regression here is caught by MessageList's
+existing background-chunk scenarios if `config_options` diffing is ever
+removed. `bun test web/static` and the full Playwright perf suite pass
+throughout (see the bead's `Testing:` comments for exact counts).

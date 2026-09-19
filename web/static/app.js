@@ -131,6 +131,8 @@ import {
   useMCPInitState,
   useAgentAuthState,
   useQueueLength,
+  useWorkspaces,
+  useAcpServers,
 } from "./hooks/index.js";
 
 // Import components
@@ -305,15 +307,12 @@ function App() {
     deleteQueueMessage,
     addToQueue,
     moveQueueMessage,
-    workspaces,
-    acpServers,
     addWorkspace,
     removeWorkspace,
     refreshWorkspaces,
     forceReconnectActiveSession,
     reconnectAllSessionsStaggered,
     availableCommands,
-    configOptions,
     setConfigOption,
     activeUIPrompt,
     sendUIPromptAnswer,
@@ -335,6 +334,16 @@ function App() {
   // self-subscribe to their own queue slices instead of receiving them
   // prop-drilled from here.
   const queueLength = useQueueLength(activeSessionId);
+
+  // Workspaces/acpServers, backed by stores/workspacesStore.js
+  // (mitto-sus.11) -- App still needs these locally for its own
+  // routing/dialog logic (below), but MessageList/SessionList now
+  // self-subscribe to their own slices instead of receiving them
+  // prop-drilled from here. configOptions has no remaining App-level use
+  // (ChatInput/SessionPanel self-subscribe via useConfigOptions(sessionId)
+  // directly), so App does not call that hook at all.
+  const workspaces = useWorkspaces();
+  const acpServers = useAcpServers();
 
   // Auto-resume GC-suspended sessions when they become the active (focused) session.
   // Covers two cases:
@@ -3939,7 +3948,6 @@ function App() {
                       swipeArrow=${swipeArrow}
                       connected=${connected}
                       sessionInfo=${sessionInfo}
-                      workspaces=${workspaces}
                       messagesContainerRef=${messagesContainerRef}
                       mcpInitState=${mcpInitState}
                       clearMCPInit=${clearMCPInit}
@@ -4053,7 +4061,6 @@ function App() {
                       activeUIPrompt=${activeUIPrompt}
                       onUIPromptAnswer=${handleComposerUIPromptAnswer}
                       sendKeyMode=${sendKeyMode}
-                      configOptions=${configOptions}
                       onSetConfigOption=${setConfigOption}
                       modelProfiles=${modelProfiles}
                       contextUsage=${sessionInfo?.context_usage ?? null}
@@ -4082,7 +4089,6 @@ function App() {
           onRename=${renameSession}
           onOpenBeadsIssue=${handleOpenBeadsIssue}
           isStreaming=${isStreaming}
-          configOptions=${configOptions}
           onSetConfigOption=${setConfigOption}
           mcpTools=${mcpTools}
           loopPrompts=${loopPrompts}
@@ -4168,7 +4174,6 @@ function App() {
             onSetColor=${handleSetSessionColor}
             onAutoRename=${handleAutoRename}
             onClose=${handleSidebarClose}
-            workspaces=${workspaces}
             theme=${theme}
             onToggleTheme=${toggleTheme}
             fontSize=${fontSize}

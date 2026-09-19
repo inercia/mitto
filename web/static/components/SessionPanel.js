@@ -24,6 +24,7 @@ import { formatTimeAgo } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { isNativeApp } from "../utils/index.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
+import { useConfigOptions } from "../hooks/useWorkspacesStore.js";
 import { LoopSettingsTab } from "./LoopSettingsTab.js";
 import { CallbackTriggerSection } from "./CallbackTriggerSection.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -140,7 +141,6 @@ export function SessionPanel({
   onRename,
   onOpenBeadsIssue,
   isStreaming = false,
-  configOptions = [],
   onSetConfigOption,
   mcpTools = [],
   loopPrompts = [],
@@ -150,6 +150,12 @@ export function SessionPanel({
   showToast,
   messages = [],
 }) {
+  // Config options self-subscribe to stores/configOptionsStore.js
+  // (mitto-sus.11) instead of an App-passed prop, so an unrelated active-
+  // session `info` touch (which does NOT change config_options) no longer
+  // forces this component to reconcile.
+  const configOptions = useConfigOptions(sessionId);
+
   // --- Tab state ---
   const [currentTab, setCurrentTab] = useState(activeTab);
   useEffect(() => setCurrentTab(activeTab), [activeTab]);

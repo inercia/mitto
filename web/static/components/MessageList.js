@@ -18,6 +18,7 @@ import { useVisibleInterval } from "../hooks/useVisibleInterval.js";
 import { perfMark, perfMeasure } from "../utils/perfMarks.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
 import { useActiveSessionMessages } from "../hooks/useSessionsStore.js";
+import { useWorkspaces } from "../hooks/useWorkspacesStore.js";
 
 /**
  * @param {boolean}  hasMoreMessages
@@ -39,7 +40,6 @@ import { useActiveSessionMessages } from "../hooks/useSessionsStore.js";
  * @param {string}   swipeArrow        - 'left'|'right'|null
  * @param {boolean}  connected
  * @param {object}   sessionInfo
- * @param {Array}    workspaces
  * @param {object}   messagesContainerRef - ref attached to the scrollable container
  * @param {object}   mcpInitState      - Active session workspace's MCP-init state from
  *                                        useMCPInitState ({ initializing, timedOutAt, servers })
@@ -65,7 +65,6 @@ function MessageListImpl({
   swipeArrow,
   connected,
   sessionInfo,
-  workspaces,
   messagesContainerRef,
   mcpInitState,
   clearMCPInit,
@@ -80,6 +79,11 @@ function MessageListImpl({
   // session id's messages slice changes. Coalescing (moved here from
   // app.js) recomputes only when the raw messages array reference changes.
   const messages = useActiveSessionMessages(activeSessionId);
+  // Workspaces self-subscribe via stores/workspacesStore.js (mitto-sus.11)
+  // instead of an App-passed prop -- workspaces rarely change, but this
+  // keeps App's own re-renders from ever forcing this memoized component
+  // to reconcile just because it happened to pass this prop through.
+  const workspaces = useWorkspaces();
   const displayMessages = useMemo(() => {
     return coalesceAgentMessages(messages, {
       hrBreaksCoalescing: COALESCE_DEFAULTS.hrBreaksCoalescing,

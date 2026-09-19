@@ -1,23 +1,23 @@
 // =============================================================================
 // Mitto Web Interface — WebSocket Workspaces sub-hook
 // Extracted from useWebSocket.js (mitto-90f.5).
-// Owns workspaces + acpServers state, exposes fetch/add/remove callbacks,
-// and keeps workspacesRef in sync for potential callback consumers.
+// Owns the REST callbacks (fetch/add/remove); the workspaces/acpServers data
+// itself lives in stores/workspacesStore.js (mitto-sus.11) so consumers
+// subscribe directly instead of receiving it prop-drilled through
+// useWebSocket -> App.
 // =============================================================================
 
-const { useState, useEffect, useRef, useCallback } = window.preact;
+const { useEffect, useCallback } = window.preact;
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorMessage } from "../utils/sdkErrors.js";
+import {
+  getWorkspaces,
+  setWorkspaces,
+  setAcpServers,
+} from "../stores/workspacesStore.js";
 
 export function useWSWorkspaces() {
-  // Workspaces state: list of configured workspaces from server
-  const [workspaces, setWorkspaces] = useState([]);
-  // Available ACP servers from config
-  const [acpServers, setAcpServers] = useState([]);
-
-  const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
-
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
     try {
@@ -63,7 +63,7 @@ export function useWSWorkspaces() {
   const removeWorkspace = useCallback(
     async (workingDir) => {
       try {
-        const ws = (workspacesRef.current || []).find(
+        const ws = getWorkspaces().find(
           (w) => w.working_dir === workingDir,
         );
         if (!ws?.uuid) {
@@ -83,14 +83,7 @@ export function useWSWorkspaces() {
     [fetchWorkspaces],
   );
 
-  useEffect(() => {
-    workspacesRef.current = workspaces;
-  }, [workspaces]);
-
   return {
-    workspaces,
-    acpServers,
-    workspacesRef,
     fetchWorkspaces,
     addWorkspace,
     removeWorkspace,

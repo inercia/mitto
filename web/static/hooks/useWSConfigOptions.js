@@ -1,21 +1,28 @@
 // =============================================================================
 // Mitto Web Interface — WebSocket ConfigOptions sub-hook
-// Extracted from useWebSocket.js (mitto-90f.5). Derives per-session
-// configOptions from the active session's info and exposes a setter that
-// dispatches a set_config_option message.
+// Extracted from useWebSocket.js (mitto-90f.5). Writes the active session's
+// config_options into stores/configOptionsStore.js (mitto-sus.11) so
+// consumers subscribe directly instead of receiving it prop-drilled through
+// useWebSocket -> App, and exposes a setter that dispatches a
+// set_config_option message.
 // =============================================================================
 
-const { useMemo, useCallback } = window.preact;
+const { useEffect, useCallback } = window.preact;
+
+import { setConfigOptions } from "../stores/configOptionsStore.js";
 
 export function useWSConfigOptions(
   activeSession,
   activeSessionId,
   sendToSession,
 ) {
-  // Derive configOptions from the active session's info (per-session, not global)
-  const configOptions = useMemo(() => {
-    if (!activeSessionId) return [];
-    return activeSession?.info?.config_options || [];
+  // Write configOptions into the per-session store (per-session, not global).
+  // The store no-ops on a reference-equal value, so an active-session `info`
+  // touch that leaves `config_options` untouched (the common case) does not
+  // notify subscribers -- only a genuine config_option_changed update does.
+  useEffect(() => {
+    if (!activeSessionId) return;
+    setConfigOptions(activeSessionId, activeSession?.info?.config_options);
   }, [activeSession, activeSessionId]);
 
   // Change a session config option value
@@ -33,5 +40,5 @@ export function useWSConfigOptions(
     [activeSessionId, sendToSession],
   );
 
-  return { configOptions, setConfigOption };
+  return { setConfigOption };
 }

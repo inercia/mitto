@@ -36,3 +36,8 @@ export {
   useQueueLength,
   useQueueConfig,
 } from "./useQueue.js";
+export {
+  useWorkspaces,
+  useAcpServers,
+  useConfigOptions,
+} from "./useWorkspacesStore.js";

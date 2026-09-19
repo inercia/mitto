@@ -14,6 +14,7 @@ import { apiUrl } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { useRenderCounter } from "../hooks/useRenderCounter.js";
 import { useQueueLength } from "../hooks/useQueue.js";
+import { useWorkspaces } from "../hooks/useWorkspacesStore.js";
 
 import {
   computeUnifiedTree,
@@ -217,7 +218,6 @@ function SessionListImpl({
   onSetColor, // Called with (session, hexColor) to set/clear a conversation's background color
   onAutoRename, // Called with (session) to force title regeneration from extended context
   onClose,
-  workspaces,
   theme,
   onToggleTheme,
   fontSize,
@@ -267,6 +267,11 @@ function SessionListImpl({
   // below), so this only re-renders SessionList when that specific slice
   // actually changes, not on every unrelated App re-render.
   const queueLength = useQueueLength(activeSessionId);
+  // Workspaces self-subscribe via stores/workspacesStore.js (mitto-sus.11)
+  // instead of an App-passed prop -- workspaces rarely change, but this
+  // keeps App's own re-renders from ever forcing this memoized component
+  // to reconcile just because it happened to pass this prop through.
+  const workspaces = useWorkspaces();
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
     () => computeAllSessions(activeSessions, storedSessions),
