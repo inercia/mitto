@@ -573,3 +573,6 @@ default-on flip (mitto-is2.5) — are tracked as sibling beads under the
 2. **Session Export**: Export sessions to different formats (Markdown, HTML)
 3. **Multiple Storage Backends**: Support for database or cloud storage
 4. **Session Sharing**: Share sessions between users or machines
+5. **Conversation-list virtualization**: measured and designed (not yet
+   implemented) in [virtualization-spike.md](./virtualization-spike.md) —
+   current recommendation is no-op pending a real scroll-jank threshold.

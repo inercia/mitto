@@ -252,3 +252,9 @@ current recorded numbers each gate compares against.
 
 Implementing optimizations, virtualization, or a framework/engine decision —
 see the parent epic `mitto-sus` and its later children.
+
+Conversation-list virtualization specifically was measured and designed (not
+implemented) in [virtualization-spike.md](./virtualization-spike.md)
+(`mitto-sus.8`) — see that doc for the measured DOM-growth curve, the
+`content-visibility` prototype's finding (doesn't reduce DOM node count),
+the custom-windowing design write-up, and the library feasibility note.

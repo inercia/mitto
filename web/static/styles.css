@@ -178,6 +178,20 @@
   animation: fadeIn 0.2s ease-out forwards;
 }
 
+/* mitto-sus.8 virtualization-spike prototype A: content-visibility skip
+   rendering for offscreen message rows. Scoped under .mitto-perf-cv (toggled
+   by applyPerfCVFlag() in perfMarks.js, opt-in via ?perf-cv=1 /
+   window.__mittoPerfCV) so this has ZERO effect on production — the
+   .mitto-msg-row class itself (added unconditionally by MessageEnter in
+   Message.js) carries no styling on its own. contain-intrinsic-size is a
+   rough single-line-bubble estimate; see docs/devel/virtualization-spike.md
+   for the measured intrinsic-size drift on taller rows (tables/Mermaid/code)
+   and why this is a measurement prototype, not a production rollout. */
+.mitto-perf-cv .mitto-msg-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
+}
+
 /* Session swipe transition animations */
 @keyframes slideInFromRight {
   from {

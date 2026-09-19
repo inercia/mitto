@@ -401,8 +401,26 @@ export function useWebSocket({
   const [workingDirMap, setWorkingDirMap] = useState({});
   const workingDirMapRef = useRef({});
 
+  // Guards the very first run of the effect below so mount doesn't clobber
+  // localStorage before the cold-start restore (connectToEvents's "open"
+  // handler, which reads getLastActiveSessionId()) gets a chance to run.
+  const hasPersistedActiveSessionOnceRef = useRef(false);
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
+    if (!hasPersistedActiveSessionOnceRef.current) {
+      hasPersistedActiveSessionOnceRef.current = true;
+      // Skip persisting on mount: activeSessionId is always the initial
+      // `null` placeholder here, never a real "user has no active session"
+      // signal yet. Persisting it synchronously would race the async
+      // cold-start restore below (WS "open" fires later, over the network,
+      // and reads getLastActiveSessionId() to decide which session to
+      // resume) — always losing that race and clearing whatever
+      // mitto_last_session_id a previous page load had written, stranding
+      // the user on the Dashboard on every single reload/restart
+      // (mitto-sus.8: found while instrumenting the virtualization-spike
+      // perf harness, which reproduced this on every page.reload()).
+      return;
+    }
     // Persist last active session ID
     setLastActiveSessionId(activeSessionId);
   }, [activeSessionId]);

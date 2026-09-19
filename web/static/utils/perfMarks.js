@@ -50,6 +50,40 @@ export function _resetPerfEnabledCacheForTests() {
 }
 
 /**
+ * Whether the mitto-sus.8 virtualization-spike `content-visibility`
+ * prototype is enabled for this page load (separate from isPerfEnabled() —
+ * this one gates a CSS/layout experiment, not just measurement).
+ * Enable via `?perf-cv=1` in the page URL, or `window.__mittoPerfCV = true`
+ * before bootstrap. See docs/devel/virtualization-spike.md.
+ */
+export function isPerfCVEnabled() {
+  try {
+    return (
+      window.__mittoPerfCV === true ||
+      new URLSearchParams(window.location.search).get("perf-cv") === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-shot bootstrap: toggles the `.mitto-perf-cv` class on the document
+ * root when isPerfCVEnabled() — the scope styles.css's
+ * `.mitto-perf-cv .mitto-msg-row` content-visibility rule targets. No-op
+ * (and no DOM mutation at all) unless enabled, so this has zero effect on
+ * the production data path when the flag is off.
+ */
+export function applyPerfCVFlag() {
+  if (!isPerfCVEnabled()) return;
+  try {
+    document.documentElement.classList.add("mitto-perf-cv");
+  } catch {
+    // Non-browser environment (e.g. SSR/test) — degrade silently.
+  }
+}
+
+/**
  * Records a named `mitto.<name>` performance mark. No-op unless perf
  * instrumentation is enabled. Never throws — instrumentation must not break
  * the production data path.

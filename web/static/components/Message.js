@@ -137,9 +137,14 @@ function MessageEnter(props) {
       clearTimeout(timeoutId);
     };
   }, []);
+  // mitto-msg-row: stable per-row class carrying no styling of its own,
+  // present unconditionally (zero prod effect). It's the seam the
+  // mitto-sus.8 content-visibility spike prototype (styles.css
+  // `.mitto-perf-cv .mitto-msg-row`) targets without touching every
+  // message-type return block individually.
   const finalClass = className
-    ? `message-enter ${className}`
-    : "message-enter";
+    ? `message-enter mitto-msg-row ${className}`
+    : "message-enter mitto-msg-row";
   return html`<div ref=${ref} class=${finalClass}>${props.children}</div>`;
 }
 

@@ -36,13 +36,17 @@ import {
   formatLoopMaxDuration,
   computeHeaderTriggerLabel,
 } from "./lib.js";
-import { installPerfBuffer } from "./utils/perfMarks.js";
+import { installPerfBuffer, applyPerfCVFlag } from "./utils/perfMarks.js";
 import { setDraft as setDraftStore } from "./utils/draftStore.js";
 
 // mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
 // unless `?perf=1` / `window.__mittoPerf` is set (see utils/perfMarks.js);
 // module-scope so the mark buffer exists before the first render.
 installPerfBuffer();
+
+// mitto-sus.8: opt-in virtualization-spike content-visibility prototype. No-op
+// unless `?perf-cv=1` / `window.__mittoPerfCV` is set (see utils/perfMarks.js).
+applyPerfCVFlag();
 
 // Import session tree utilities
 import {

@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-18T14:20:16.616Z",
+  "recorded_at": "2026-09-19T03:46:03.083Z",
   "environment": {
     "os": "darwin",
     "arch": "arm64",
@@ -13,12 +13,13 @@
     },
     "ws.chunk.applied-long": {
       "n": 2,
-      "p95": 0
+      "p95": 0,
+      "maxCoalesced": 0
     },
     "composer.keystroke-during-stream": {
       "n": 36,
-      "p50": 3.300000011920929,
-      "p95": 7.5999999940395355
+      "p50": 3.899999976158142,
+      "p95": 7.399999976158142
     },
     "long-task.during-composer-stream": {
       "n": 0,
@@ -26,13 +27,13 @@
     },
     "composer.keystroke": {
       "n": 27,
-      "p50": 1.9000000059604645,
-      "p95": 6.300000011920929
+      "p50": 1.5,
+      "p95": 6.899999976158142
     },
     "session.switch.network": {
       "n": 1,
-      "p50": 3.0999999940395355,
-      "p95": 3.0999999940395355
+      "p50": 3.900000035762787,
+      "p95": 3.900000035762787
     },
     "determinism.applied-marks": {
       "n": 0,
@@ -40,22 +41,78 @@
     },
     "history-load.small": {
       "n": 0,
-      "domNodes": 578,
-      "usedJSHeapBytes": 15200000
+      "domNodes": 639,
+      "usedJSHeapBytes": 17100000
     },
     "history-load.medium": {
       "n": 0,
-      "domNodes": 578,
-      "usedJSHeapBytes": 15200000
+      "domNodes": 1021,
+      "usedJSHeapBytes": 17100000
+    },
+    "history-load.medium.prepend-step-0": {
+      "n": 0,
+      "domNodes": 1975,
+      "latencyMs": 72,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
+    },
+    "history-load.medium.prepend-step-1": {
+      "n": 0,
+      "domNodes": 2450,
+      "latencyMs": 130,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
+    },
+    "history-load.medium.prepend-step-2": {
+      "n": 0,
+      "domNodes": 2925,
+      "latencyMs": 44,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
+    },
+    "history-load.medium.prepend-step-3": {
+      "n": 0,
+      "domNodes": 3400,
+      "latencyMs": 40,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
     },
     "history-load.max": {
       "n": 0,
-      "domNodes": 578,
-      "usedJSHeapBytes": 15200000
+      "domNodes": 1021,
+      "usedJSHeapBytes": 17100000
+    },
+    "history-load.max.prepend-step-0": {
+      "n": 0,
+      "domNodes": 1975,
+      "latencyMs": 60,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
+    },
+    "history-load.max.prepend-step-1": {
+      "n": 0,
+      "domNodes": 2450,
+      "latencyMs": 37,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
+    },
+    "history-load.max.prepend-step-2": {
+      "n": 0,
+      "domNodes": 2925,
+      "latencyMs": 44,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
+    },
+    "history-load.max.prepend-step-3": {
+      "n": 0,
+      "domNodes": 3400,
+      "latencyMs": 40,
+      "layoutDeltaMs": 0,
+      "paintDeltaMs": 0
     },
     "multi-stream.foreground-fps": {
       "n": 0,
-      "fps": 120.47390841463941,
+      "fps": 120.58627581708026,
       "missedFrames": 0
     },
     "long-task.multi-stream": {
@@ -64,37 +121,37 @@
     },
     "prompt.sent.local-to-network": {
       "n": 1,
-      "p50": 139.30000001192093,
-      "p95": 139.30000001192093
+      "p50": 156.19999998807907,
+      "p95": 156.19999998807907
     },
     "render.postprocess.tables": {
       "n": 3,
-      "p95": 0.09999999403953552
+      "p95": 0.10000002384185791
     },
     "render.postprocess.mermaid": {
       "n": 3,
-      "p95": 0.09999999403953552
+      "p95": 0.19999998807907104
     },
     "render.postprocess.beadsLinks": {
       "n": 3,
-      "p95": 0.09999999403953552
+      "p95": 0.10000002384185791
     },
     "session.switch.local": {
       "n": 1,
-      "p50": 3.2999999821186066,
-      "p95": 3.2999999821186066
+      "p50": 4.300000011920929,
+      "p95": 4.300000011920929
     },
     "render.postprocess.tables-mixed": {
       "n": 39,
-      "p95": 0.09999999403953552
+      "p95": 0.10000002384185791
     },
     "render.postprocess.mermaid-mixed": {
       "n": 39,
-      "p95": 3.4000000059604645
+      "p95": 3.700000047683716
     },
     "render.postprocess.beadsLinks-mixed": {
       "n": 39,
-      "p95": 0
+      "p95": 0.10000002384185791
     },
     "paint-layout.mixed-delta": {
       "n": 0,
@@ -105,7 +162,7 @@
     },
     "ws.chunk.received-to-applied": {
       "n": 1,
-      "p95": 0.19999998807907104
+      "p95": 0.30000001192092896
     }
   }
 }

@@ -1,6 +1,8 @@
 /**
- * UI responsiveness benchmark (mitto-sus.1.2): DOM size and scroll-jank cost
- * as conversation history grows (small / medium / max).
+ * UI responsiveness benchmark (mitto-sus.1.2, extended by mitto-sus.8): DOM
+ * size and scroll-jank cost as conversation history grows (small / medium /
+ * max), PLUS DOM/layout/paint growth as the user pages back through history
+ * via "Load earlier messages" (prepend).
  *
  * Self-seeding: `test.beforeAll` builds (if needed) and runs the
  * `seed-perf-history` Go helper, which writes sessions directly into the
@@ -18,6 +20,19 @@
  *
  * Smoke test of DOM/frame collectors against real large payloads, not a hard
  * performance gate — see docs/devel/ui-responsiveness-benchmarks.md.
+ *
+ * mitto-sus.8 fix: the initial-load measurement used to follow a fixed
+ * `page.waitForTimeout(300)` after reload, which is a race against the
+ * WebSocket reconnect + `load_events` round trip — under CI load this can
+ * fire BEFORE any message renders, so all three sizes were measuring the
+ * same near-empty app shell (explains the previously-identical
+ * `domNodes=578` baseline rows for small/medium/max). Replaced with a
+ * deterministic wait on the actual rendered user-message count. This also
+ * surfaces the real architectural fact the spike needed to measure: initial
+ * DOM size is capped by `INITIAL_EVENTS_LIMIT` (50 events / session — see
+ * web/static/lib.js), not by total history size, so medium and max render
+ * near-identical DOM on first paint; growth only happens once the user pages
+ * back via "Load earlier messages" (prepend), which is now measured below.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
 import * as path from "path";
@@ -28,6 +43,7 @@ import {
   enablePerf,
   collectDOMStats,
   collectFrameStats,
+  collectPaintLayoutStats,
   writePerfSample,
 } from "../../utils/perf";
 
@@ -37,6 +53,27 @@ const SIZES = ["small", "medium", "max"] as const;
 const repoRoot = path.resolve(__dirname, "../../../..");
 const mittoDir = process.env.MITTO_DIR || "/tmp/mitto-test";
 const markerFile = path.join(mittoDir, "perf-history-sessions.json");
+
+// Mirrors scripts/gen-perf-histories.mjs's (name, message count) table, so
+// the spec can compute how many user messages should render initially
+// without re-parsing the snapshot files.
+const SIZE_MESSAGE_COUNTS: Record<(typeof SIZES)[number], number> = {
+  small: 10,
+  medium: 1000,
+  max: 5000,
+};
+
+// Mirrors web/static/lib.js's INITIAL_EVENTS_LIMIT (not imported: that
+// module touches browser globals at parse time, so UI perf specs keep a
+// local mirror — same pattern gen-perf-histories.mjs uses for its own
+// "no exported MAX_HISTORY constant" cap comment above).
+const INITIAL_EVENTS_LIMIT = 50;
+
+// Bounded number of "Load earlier messages" clicks to measure per size.
+// Not exhaustive (max could page back ~50 times before MAX_MESSAGES=1000
+// caps further loads) — enough to establish a growth trend without making
+// the spec slow.
+const PREPEND_STEPS = 4;
 
 let seedingAvailable = false;
 
@@ -74,6 +111,8 @@ test.describe("Perf: history-size load cost", () => {
   test("reports DOM node count and scroll frame stats for small/medium/max histories", async ({
     page,
     helpers,
+    selectors,
+    timeouts,
   }) => {
     if (!seedingAvailable) {
       console.log(
@@ -104,7 +143,16 @@ test.describe("Perf: history-size load cost", () => {
       );
       await page.reload();
       await helpers.waitForAppReady(page);
-      await page.waitForTimeout(300);
+
+      // Deterministic wait (mitto-sus.8 fix — see file header): wait for the
+      // actual rendered user-message count instead of a fixed timeout, which
+      // used to race the WebSocket reconnect + load_events round trip.
+      const totalMessages = SIZE_MESSAGE_COUNTS[size];
+      const expectedUserMessages = Math.min(
+        Math.floor(totalMessages / 2),
+        Math.floor(INITIAL_EVENTS_LIMIT / 2),
+      );
+      await helpers.waitForMessagesLoaded(page, expectedUserMessages);
 
       const domStats = await collectDOMStats(page);
       expect(domStats.domNodes).toBeGreaterThan(0);
@@ -133,6 +181,70 @@ test.describe("Perf: history-size load cost", () => {
       // DOM node count should not shrink as history size grows (monotonic-by-size).
       expect(domStats.domNodes).toBeGreaterThanOrEqual(prevDomNodes);
       prevDomNodes = domStats.domNodes;
+
+      // mitto-sus.8: measure DOM/layout/paint growth + latency as the user
+      // pages back through history via "Load earlier messages" (prepend).
+      // This is where unbounded DOM growth actually happens (up to
+      // MAX_MESSAGES=1000, see web/static/lib.js) — the initial-load
+      // measurement above is capped by INITIAL_EVENTS_LIMIT regardless of
+      // total history size.
+      let prevStepDomNodes = domStats.domNodes;
+      for (let step = 0; step < PREPEND_STEPS; step++) {
+        const limitReached = page.locator(
+          '[data-testid="limit-reached-indicator"]',
+        );
+        const loadMoreButton = page.locator(
+          '[data-testid="load-more-button"]',
+        );
+        if (await limitReached.isVisible().catch(() => false)) break;
+        if (!(await loadMoreButton.isVisible().catch(() => false))) break;
+
+        const beforeCount = await page.locator(selectors.userMessage).count();
+        const beforePaint = await collectPaintLayoutStats(page);
+        const t0 = Date.now();
+        await loadMoreButton.click();
+        await expect(page.locator(selectors.userMessage)).not.toHaveCount(
+          beforeCount,
+          { timeout: timeouts.appReady },
+        );
+        const latencyMs = Date.now() - t0;
+        const afterPaint = await collectPaintLayoutStats(page);
+        const stepDomStats = await collectDOMStats(page);
+
+        // eslint-disable-next-line no-console
+        console.log(
+          `[perf] history-load "${size}" prepend-step ${step}: ` +
+            `domNodes=${stepDomStats.domNodes} latencyMs=${latencyMs}`,
+        );
+        writePerfSample(
+          `history-load.${size}.prepend-step-${step}`,
+          "domNodes",
+          stepDomStats.domNodes,
+        );
+        writePerfSample(
+          `history-load.${size}.prepend-step-${step}`,
+          "latencyMs",
+          latencyMs,
+        );
+        if (beforePaint && afterPaint) {
+          writePerfSample(
+            `history-load.${size}.prepend-step-${step}`,
+            "layoutDeltaMs",
+            afterPaint.layoutMs - beforePaint.layoutMs,
+          );
+          writePerfSample(
+            `history-load.${size}.prepend-step-${step}`,
+            "paintDeltaMs",
+            afterPaint.paintMs - beforePaint.paintMs,
+          );
+        }
+
+        // DOM should never shrink as more history is prepended.
+        expect(stepDomStats.domNodes).toBeGreaterThanOrEqual(
+          prevStepDomNodes,
+        );
+        prevStepDomNodes = stepDomStats.domNodes;
+      }
     }
   });
 });
