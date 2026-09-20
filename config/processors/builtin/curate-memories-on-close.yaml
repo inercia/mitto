@@ -33,6 +33,18 @@
 # Priority 210 — runs AFTER extract-memories-on-close (200) so the curator can also
 # consider any memories that processor may have just added in this session.
 #
+# Workspace-scoped maintenance gating (mitto-1kl): unlike ordinary close-phase
+# processors, this one does NOT dispatch on every eligible conversation close.
+# ApplyOnClose (internal/processors/apply.go, name-guarded on
+# "curate-memories-on-close") gates dispatch against a persisted, workspace-scoped
+# memory-curation.json ledger: a run only fires once MinInterval has elapsed since
+# the last completed run OR at least MinChangedMemories memories have been added or
+# removed since then. Concurrent conversation closes coalesce into at most one
+# in-flight dispatch. This processor's own close-history snapshot is deliberately
+# dropped — global memory compaction does not depend on any single conversation's
+# transcript — and its input here is a bounded, index-first `bd prime` scan (see
+# step 1 below), never the full `bd memories --json` store.
+#
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 ##########################################################################################
 name: curate-memories-on-close
@@ -49,18 +61,59 @@ onError: skip
 # (they archive/unarchive frequently and would repeatedly re-scan the same store).
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !Session.IsLoop'
 
+# Gating knobs read by the mitto-1kl name-guarded orchestration in
+# internal/processors/apply.go (parseMemoryCurationDuration/parseMemoryCurationInt).
+# Overridable per workspace via .mittorc without editing this file.
+parameters:
+  - name: MinInterval
+    type: text
+    description: "Minimum time between maintenance runs (Go duration syntax, e.g. 24h)"
+    default: "24h"
+  - name: MinChangedMemories
+    type: text
+    description: "Minimum number of memories added/removed since the last run that forces an early re-run even before MinInterval elapses"
+    default: "5"
+  - name: IndexMaxMemories
+    type: text
+    description: "Max memory keys included in the bounded bd prime index handed to the agent"
+    default: "60"
+  - name: BodyRecallCap
+    type: text
+    description: "Max number of full memory bodies (bd recall) the agent may pull in one run"
+    default: "20"
+
 prompt: |
   You curate the beads memory store for {{ .Workspace.Folder }} after a conversation
   has closed. Your PRIMARY job is to reduce redundancy by MERGING memories that cover
   the same topic into one canonical survivor. Your SECONDARY job is to forget entries
   that are DEMONSTRABLY dead — nothing more. When in doubt, KEEP the memory.
 
-  ## 1. Load the current memories
+  This is a gated, infrequent workspace-maintenance pass (not a per-conversation
+  step) — Mitto only dispatches you after enough time or enough memory churn has
+  accumulated, so treat this as a periodic bounded scan, not a full audit.
 
-  Run `bd memories --json` to get the full store (a JSON object mapping key → full
-  body). If it is empty or has fewer than 3 memories, exit silently.
+  ## 1. Load a bounded index — do NOT load the full store
 
-  ## 2. Classify each memory
+  Run:
+
+      bd --readonly prime --memories-only --max-memories {{ .Args.IndexMaxMemories }}
+
+  This returns KEYS/TITLES ONLY, never full bodies. Do **NOT** run
+  `bd memories --json` — loading the entire store defeats the purpose of this
+  bounded pass (a 273-memory store costs ~190k estimated tokens as full JSON vs a
+  few hundred tokens as this index). If the index is empty or lists fewer than 3
+  keys, exit silently.
+
+  ## 2. Pull full bodies only for promising candidates
+
+  From the index, pick AT MOST {{ .Args.BodyRecallCap }} keys that look like
+  merge/forget/uncertain candidates (similar-sounding titles, keys referencing the
+  same file/feature/issue, or titles suggesting staleness). For each picked key,
+  run `bd recall <key>` to read its full body. Do not exceed the cap — if more keys
+  look promising than the cap allows, prioritize the strongest candidates and leave
+  the rest for a later run; everything not recalled this run is implicitly `keep`.
+
+  ## 3. Classify each recalled memory
 
   For each key, decide exactly one of:
 
@@ -73,13 +126,13 @@ prompt: |
                   context or from your own judgment that another memory covers the
                   same ground — the self-declaration must be literal and must name
                   a survivor key. (This is normally the result of a PRIOR run's
-                  merge step — see step 3 — reaching the age guardrail.)
+                  merge step — see step 4 — reaching the age guardrail.)
   - `uncertain` — refers to concrete files, PRs, issue IDs, branches, or ticket
                   numbers that may no longer exist / be current, but you cannot
                   confidently confirm it is stale, and it is not a `merge` case.
   - `keep`      — anything else. This is the default.
 
-  ## 3. Merge overlapping memories (primary action)
+  ## 4. Merge overlapping memories (primary action)
 
   For each `merge` cluster:
 
@@ -101,7 +154,7 @@ prompt: |
 
          bd remember --key <loser-key> "SUPERSEDED by <survivor-key> on <YYYY-MM-DD UTC> -- merged into that entry. Original memory: <full-original-body>"
 
-  ## 4. Enforce guardrails BEFORE forgetting
+  ## 5. Enforce guardrails BEFORE forgetting
 
   Apply ALL of these; violating any single one means the memory stays:
 
@@ -114,14 +167,16 @@ prompt: |
     does not, keep the candidate.
   - **Do not forget memories younger than 7 days.** Require an explicit UTC marker
     date in the candidate's own declaration (the `on <YYYY-MM-DD UTC>` written in
-    step 3) and verify that at least 7 days have elapsed. `bd memories --json` does
-    not expose per-memory timestamps. If the declaration has no date or the date is
-    malformed, keep the memory and include its key in the review task instead.
+    step 4) and verify that at least 7 days have elapsed. The recalled body is the
+    only source of per-memory timestamps — this index-first pass never loads the
+    full store, so there is no other place to check. If the declaration has no
+    date or the date is malformed, keep the memory and include its key in the
+    review task instead.
   - **No secrets in `bd create`/`bd comment` titles or descriptions.** When filing
-    or updating the review task in step 6, copy memory KEYS only — never paste a
+    or updating the review task in step 7, copy memory KEYS only — never paste a
     memory body verbatim into the beads issue.
 
-  ## 5. Act on `forget` candidates
+  ## 6. Act on `forget` candidates
 
   For each `forget` candidate that PASSES every guardrail above (up to the cap of 3
   total this run):
@@ -130,7 +185,7 @@ prompt: |
 
   For `keep`: do nothing.
 
-  ## 6. File AT MOST ONE review task for `uncertain` candidates
+  ## 7. File AT MOST ONE review task for `uncertain` candidates
 
   Collect ALL `uncertain` candidates from this run — do not create one issue per
   candidate. If the list is empty, skip this section entirely.
@@ -168,7 +223,7 @@ prompt: |
   The description (and any comment in step 2) lists ONLY keys and one-line reasons
   — never memory bodies, and never secrets.
 
-  ## 7. Completion
+  ## 8. Completion
 
   This is a background clean-up processor with no attached UI — do NOT call
   `mitto_ui_notify` (it requires a live session and will fail here). If nothing

@@ -117,6 +117,14 @@ const (
 	// time a saturated dispatch gives up (mitto-3421). See
 	// internal/processors.FilePendingDispatchStore.
 	PendingProcessorDispatchDirName = "pending-processor-dispatch"
+
+	// MemoryCurationStateDirName is the name of the subdirectory holding
+	// per-workspace memory-curation.json ledgers (one JSON file per
+	// workspace UUID) that gate curate-memories-on-close dispatch by
+	// interval and/or change-count threshold instead of firing on every
+	// conversation close (mitto-1kl). See internal/session.
+	// ReadMemoryCurationState/WriteMemoryCurationState.
+	MemoryCurationStateDirName = "memory-curation"
 )
 
 var (
@@ -588,6 +596,19 @@ func PendingProcessorDispatchDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, PendingProcessorDispatchDirName), nil
+}
+
+// MemoryCurationStateDir returns the directory holding per-workspace
+// memory-curation.json ledgers ($MITTO_DIR/memory-curation). The directory
+// is not created here; callers persist via fileutil.WriteJSONAtomic, which
+// creates it on first write. Mirrors the PendingProcessorDispatchDir pattern
+// (mitto-1kl).
+func MemoryCurationStateDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, MemoryCurationStateDirName), nil
 }
 
 // ResetCache clears the cached directory path.

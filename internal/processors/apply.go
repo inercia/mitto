@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
+	"github.com/inercia/mitto/internal/bdexec"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -37,6 +40,118 @@ const archiveReasonParentDeleted = "parent_deleted"
 // can be parsed as a single strict JSON object. Every other prompt-mode
 // close processor keeps today's behavior byte-for-byte.
 const knowledgeRouterProcessorName = "knowledge-router"
+
+// curateMemoriesProcessorName is the builtin close-phase processor
+// (config/processors/builtin/curate-memories-on-close.yaml) that ApplyOnClose
+// gates against a workspace-scoped memory-curation.json ledger (mitto-1kl)
+// instead of dispatching on every eligible conversation close: an interval
+// and/or changed-memory-count threshold must be crossed since the last
+// completed run, and concurrent closes coalesce into at most one in-flight
+// dispatch. Unlike knowledgeRouterProcessorName's per-session orchestration,
+// this processor's ledger is workspace-scoped (see
+// session.MemoryCurationState) because global memory compaction does not
+// depend on any single conversation's transcript.
+const curateMemoriesProcessorName = "curate-memories-on-close"
+
+// Defaults for the memory-curation gate, used when the processor's own
+// `parameters:` (MinInterval/MinChangedMemories) are absent or fail to
+// parse. Mirror the defaults declared in curate-memories-on-close.yaml.
+const (
+	defaultMemoryCurationMinInterval        = 24 * time.Hour
+	defaultMemoryCurationMinChangedMemories = 5
+)
+
+// memoryCurationInFlightLease bounds how long an in-flight marker in the
+// memory-curation.json ledger is honored before a fresh dispatch treats it
+// as a crashed run and overwrites it. Comfortably above the processor's own
+// 300s timeout.
+const memoryCurationInFlightLease = 15 * time.Minute
+
+// memoryCurationDispatchMu/Gates serialize the read-check-write sequence on
+// one workspace's memory-curation.json ledger so two concurrent closes
+// cannot both observe "not in-flight" and both dispatch. Process-global and
+// keyed by workspace UUID for the same reason as dispatchAdmissionGates:
+// ApplyOnClose runs through independently-cloned *Manager instances per
+// close (SessionManager.ApplyOnCloseProcessors clones a fresh *Manager), so
+// a per-instance mutex would not serialize across them.
+var (
+	memoryCurationDispatchMu    sync.Mutex
+	memoryCurationDispatchGates = make(map[string]*sync.Mutex)
+)
+
+// memoryCurationGateFor returns the workspace's dispatch gate, creating it
+// on first use. Callers must Unlock() once their check-and-mark (or
+// completion read-modify-write) transaction has finished.
+func memoryCurationGateFor(workspaceUUID string) *sync.Mutex {
+	memoryCurationDispatchMu.Lock()
+	defer memoryCurationDispatchMu.Unlock()
+	gate, ok := memoryCurationDispatchGates[workspaceUUID]
+	if !ok {
+		gate = &sync.Mutex{}
+		memoryCurationDispatchGates[workspaceUUID] = gate
+	}
+	return gate
+}
+
+// parseMemoryCurationDuration parses s as a time.Duration, falling back to
+// def on empty input or a parse error.
+func parseMemoryCurationDuration(s string, def time.Duration) time.Duration {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+// parseMemoryCurationInt parses s as a non-negative int, falling back to def
+// on empty input or a parse error. 0 is a valid, meaningful result (the
+// change-threshold gate treats 0 as "always crossed").
+func parseMemoryCurationInt(s string, def int) int {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// countBdMemories runs `bd --readonly memories --json` in workingDir and
+// returns the number of keys in the returned JSON object. This is a
+// context-free count: the JSON body (memory keys AND bodies) is parsed and
+// discarded entirely within this function — it is never rendered into any
+// prompt or sent to a model, only used to decide the change-threshold gate
+// in countBdMemories's caller (mitto-1kl). Bounded by a short timeout since
+// this runs synchronously in the close pipeline.
+func countBdMemories(ctx context.Context, workingDir string) (int, error) {
+	if _, err := exec.LookPath("bd"); err != nil {
+		return 0, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	release, err := bdexec.Acquire(cctx, workingDir)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	cmd := exec.CommandContext(cctx, "bd", "--readonly", "memories", "--json")
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	var memories map[string]json.RawMessage
+	if err := json.Unmarshal(out, &memories); err != nil {
+		return 0, err
+	}
+	return len(memories), nil
+}
 
 // wrapUserRequest wraps the user's original message in an explicit delimiter so
 // that processor-injected prepend/append text (e.g. session-context, reminders)
@@ -157,6 +272,17 @@ const (
 	// removed concurrently, so dispatching the router would target a
 	// sidecar that can never be written.
 	SkipReasonSessionGone SkipReason = "session_gone"
+	// SkipReasonMaintenanceInFlight (mitto-1kl) is used by the close-phase
+	// curate-memories-on-close gating when another maintenance run for the
+	// same workspace is already dispatched and its in-flight lease has not
+	// expired — the mechanism that coalesces concurrent closes into at most
+	// one dispatch.
+	SkipReasonMaintenanceInFlight SkipReason = "maintenance_in_flight"
+	// SkipReasonMaintenanceBelowThreshold (mitto-1kl) is used by the
+	// close-phase curate-memories-on-close gating when neither the minimum
+	// interval nor the minimum changed-memory-count threshold has been
+	// crossed since the last completed run.
+	SkipReasonMaintenanceBelowThreshold SkipReason = "maintenance_below_threshold"
 )
 
 // ProcessorRun captures a single processor invocation for the conversation
@@ -1892,6 +2018,137 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonNoPromptExecutor)})
 				continue
 			}
+
+			// mitto-1kl: name-guarded curate-memories-on-close gating. This
+			// processor's input is the bounded, index-first bd prime output
+			// its own prompt body assembles — not the conversation
+			// transcript — so the close-history snapshot is deliberately
+			// never appended, and a HistorySnapshotError (source session
+			// unavailable) does not block it either, since it never needs
+			// that snapshot. Handled entirely here; every other prompt-mode
+			// processor falls through unchanged below.
+			if proc.Name == curateMemoriesProcessorName {
+				assembledPrompt := substituteCloseVariables(proc.Prompt, input)
+				resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
+				tctx := &config.PromptEnabledContext{}
+				tctx.Session.ID = input.SessionID
+				tctx.Workspace.UUID = input.WorkspaceUUID
+				tctx.Workspace.Folder = input.WorkingDir
+				tctx.Args = resolvedArgs
+				funcs := config.BuildTemplateFuncMap(tctx)
+				if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
+					m.logger.Warn("close-phase memory curation: template render failed; using unrendered body",
+						"name", proc.Name, "error", rerr)
+				} else {
+					assembledPrompt = rendered
+				}
+				if strings.TrimSpace(assembledPrompt) == "" {
+					m.logger.Debug("close-phase prompt-mode processor skipped: rendered prompt is empty",
+						"name", proc.Name)
+					applied--
+					skipped++
+					record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonEmptyPrompt)})
+					continue
+				}
+
+				minInterval := parseMemoryCurationDuration(resolvedArgs["MinInterval"], defaultMemoryCurationMinInterval)
+				minChanged := parseMemoryCurationInt(resolvedArgs["MinChangedMemories"], defaultMemoryCurationMinChangedMemories)
+
+				gate := memoryCurationGateFor(input.WorkspaceUUID)
+				gate.Lock()
+
+				state, readErr := session.ReadMemoryCurationState("", input.WorkspaceUUID)
+				if readErr != nil {
+					m.logger.Warn("close-phase memory curation: ledger read failed; proceeding with a full pass",
+						"name", proc.Name, "workspace_uuid", input.WorkspaceUUID, "error", readErr)
+					state = session.MemoryCurationState{Version: session.MemoryCurationSidecarVersion}
+				}
+
+				now := time.Now()
+				if m.clock != nil {
+					now = m.clock()
+				}
+
+				// In-flight coalescing: a live (non-stale) marker means another
+				// close already dispatched a run for this workspace.
+				if state.InFlightRunID != "" && now.Sub(state.InFlightStartedAt) < memoryCurationInFlightLease {
+					gate.Unlock()
+					applied--
+					skipped++
+					record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonMaintenanceInFlight)})
+					m.logger.Debug("close-phase memory curation skipped: another run in flight",
+						"name", proc.Name, "workspace_uuid", input.WorkspaceUUID)
+					continue
+				}
+
+				// Cheap, context-free count (see countBdMemories) used only to
+				// decide the change-threshold gate below — never rendered into
+				// any prompt. On failure, fail open (dispatch) rather than
+				// silently starving maintenance forever.
+				currentCount, countErr := countBdMemories(ctx, input.WorkingDir)
+				countKnown := countErr == nil
+				if !countKnown {
+					m.logger.Warn("close-phase memory curation: memory count failed; gating fails open to dispatch",
+						"name", proc.Name, "workspace_uuid", input.WorkspaceUUID, "error", countErr)
+				}
+
+				intervalElapsed := state.LastRunAt.IsZero() || now.Sub(state.LastRunAt) >= minInterval
+				delta := currentCount - state.LastRunMemoryCount
+				if delta < 0 {
+					delta = -delta
+				}
+				thresholdCrossed := !countKnown || minChanged <= 0 || delta >= minChanged
+
+				if !intervalElapsed && !thresholdCrossed {
+					gate.Unlock()
+					applied--
+					skipped++
+					record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "skipped", SkipReason: string(SkipReasonMaintenanceBelowThreshold)})
+					m.logger.Debug("close-phase memory curation skipped: below interval and change thresholds",
+						"name", proc.Name, "workspace_uuid", input.WorkspaceUUID,
+						"since_last_run", now.Sub(state.LastRunAt).String(), "min_interval", minInterval.String(),
+						"changed", delta, "min_changed", minChanged)
+					continue
+				}
+
+				// Record the in-flight run BEFORE dispatch (crash-safety
+				// marker, mirrors the knowledge-router pattern): if the
+				// process dies mid-run, a stale marker is recognized as
+				// crashed by the lease check above and overwritten.
+				runID := newPendingDispatchID()
+				state.InFlightRunID = runID
+				state.InFlightStartedAt = now
+				if werr := session.WriteMemoryCurationState("", input.WorkspaceUUID, state); werr != nil {
+					m.logger.Warn("close-phase memory curation: failed to record in-flight run",
+						"name", proc.Name, "workspace_uuid", input.WorkspaceUUID, "run_id", runID, "error", werr)
+				}
+				gate.Unlock()
+
+				// Preserve the last-known count when this run's own count was
+				// unavailable, instead of persisting a misleading 0 on completion.
+				finalCount := state.LastRunMemoryCount
+				if countKnown {
+					finalCount = currentCount
+				}
+				workspaceUUID := input.WorkspaceUUID
+				// Dispatched standalone (mirrors the knowledge-router pattern)
+				// so completion can be attributed unambiguously to this run.
+				m.dispatchPromptBatch(workspaceUUID, []pendingPromptDispatch{{
+					name:    proc.Name,
+					prompt:  assembledPrompt,
+					timeout: proc.GetTimeout().Duration(),
+					onCompletion: func(completion PromptCompletion, dispatchErr error) {
+						m.applyMemoryCurationCompletion(workspaceUUID, runID, finalCount, dispatchErr)
+					},
+				}}, true)
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "ok", Mode: RunModePrompt, Target: RunTargetAuxiliary, RenderedBytes: len(assembledPrompt), EstimatedTokens: EstimateTokens(assembledPrompt), RunKind: RunKindInitial})
+				m.logger.Info("close-phase memory curation dispatched",
+					"name", proc.Name, "workspace_uuid", workspaceUUID, "run_id", runID,
+					"prompt_len", len(assembledPrompt), "interval_elapsed", intervalElapsed, "threshold_crossed", thresholdCrossed,
+				)
+				continue
+			}
+
 			if input.HistorySnapshotError != "" {
 				m.logger.Error("close-phase source history unavailable; prompt-mode processor not dispatched",
 					"name", proc.Name, "session_id", input.SessionID,
@@ -2091,6 +2348,65 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 		"applied", applied,
 		"skipped", skipped,
 	)
+}
+
+// applyMemoryCurationCompletion completes the in-flight memory-curation.json
+// run recorded before dispatch (mitto-1kl). Invoked asynchronously as a
+// pendingPromptDispatch.onCompletion callback once dispatchWithRetry reaches
+// a terminal outcome for the standalone curate-memories-on-close dispatch.
+//
+// dispatchErr non-nil means the dispatch itself did not complete this run
+// (spooled for later retry, or gave up after exhausting retries) — the
+// in-flight marker is deliberately left in place so a subsequent close either
+// waits out the lease (memoryCurationInFlightLease) or, once it expires,
+// treats this as a crashed run and dispatches fresh.
+//
+// memoryCount is the workspace's bd memory-store key count observed
+// immediately before this dispatch (or the prior LastRunMemoryCount if that
+// count could not be obtained) — see the finalCount computation at the
+// mitto-1kl gating call site.
+func (m *Manager) applyMemoryCurationCompletion(workspaceUUID, runID string, memoryCount int, dispatchErr error) {
+	if workspaceUUID == "" || runID == "" {
+		return
+	}
+	if dispatchErr != nil {
+		if m.logger != nil {
+			m.logger.Debug("close-phase memory curation: dispatch did not complete; leaving run in-flight",
+				"workspace_uuid", workspaceUUID, "run_id", runID, "error", dispatchErr)
+		}
+		return
+	}
+
+	gate := memoryCurationGateFor(workspaceUUID)
+	gate.Lock()
+	defer gate.Unlock()
+
+	state, err := session.ReadMemoryCurationState("", workspaceUUID)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("close-phase memory curation: ledger read failed on completion",
+				"workspace_uuid", workspaceUUID, "run_id", runID, "error", err)
+		}
+		return
+	}
+	if state.InFlightRunID != runID {
+		// A newer run already superseded this one (e.g. a stale-lease
+		// takeover) or the ledger was reset externally — do not clobber it.
+		return
+	}
+
+	now := time.Now()
+	if m.clock != nil {
+		now = m.clock()
+	}
+	state.InFlightRunID = ""
+	state.InFlightStartedAt = time.Time{}
+	state.LastRunAt = now
+	state.LastRunMemoryCount = memoryCount
+	if werr := session.WriteMemoryCurationState("", workspaceUUID, state); werr != nil && m.logger != nil {
+		m.logger.Warn("close-phase memory curation: failed to persist completion",
+			"workspace_uuid", workspaceUUID, "run_id", runID, "error", werr)
+	}
 }
 
 // buildCloseRouterStateBlock renders the <mitto_close_router_state> block

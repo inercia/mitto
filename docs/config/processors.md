@@ -555,6 +555,43 @@ Command-mode is also supported. Command processors receive the close event as JS
 on stdin (`sessionId`, `workingDir`, `archiveReason`, `archivedAt`); stdout is
 discarded (only `output: discard` is allowed for this phase).
 
+#### Gated workspace-maintenance close processors
+
+Most `conversationClosed` processors are meant to analyze the closing conversation
+itself, so they dispatch on every eligible close. A different class of work —
+periodic, workspace-wide maintenance that does not depend on any single
+conversation's transcript — should instead run only occasionally. The built-in
+`curate-memories-on-close` processor (mitto-1kl) is the reference implementation:
+it merges/prunes the workspace's `bd` memory store, which only needs to happen
+after enough time or enough memory churn has accumulated, not after every close.
+
+This is implemented as bespoke, name-guarded orchestration in `ApplyOnClose`
+(`internal/processors/apply.go`), not a general YAML feature — a processor opts in
+only by using the exact reserved name `curate-memories-on-close`. For that
+processor, Mitto:
+
+- Persists a workspace-scoped ledger (`memory-curation.json` under
+  `$MITTO_DIR/memory-curation/<workspace-uuid>.json`, one file per workspace — see
+  `internal/session.MemoryCurationState`) tracking the last completed run's
+  timestamp and observed memory count.
+- Gates dispatch on two `parameters:` (overridable per workspace like any other
+  processor parameter): `MinInterval` (minimum time since the last run) and
+  `MinChangedMemories` (minimum memories added/removed since the last run). A run
+  fires once **either** threshold is crossed.
+- Coalesces concurrent conversation closes into at most one in-flight dispatch per
+  workspace via an in-flight marker with a lease, so a burst of closes never fires
+  more than one maintenance pass at a time.
+- Never appends the close-history snapshot to this processor's prompt — its input
+  is instead a bounded, index-first `bd prime --memories-only --max-memories N`
+  scan the prompt body itself runs, keeping context cost independent of the total
+  memory-store size.
+
+Telemetry distinguishes a gated skip from a real dispatch via two additional
+`SkipReason` values recorded on the processor's `ProcessorRun` (visible in the
+conversation Stats tab): `maintenance_in_flight` (another run for the same
+workspace is still in its lease window) and `maintenance_below_threshold`
+(neither `MinInterval` nor `MinChangedMemories` has been crossed).
+
 ## Full Configuration Schema
 
 Each YAML document in the processors directory defines one processor. A file may contain
