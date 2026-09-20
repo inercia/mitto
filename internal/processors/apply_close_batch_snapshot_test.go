@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inercia/mitto/internal/session"
 )
 
 // waitForPendingDispatchEntries polls store.Load(workspaceUUID) until at
@@ -253,5 +255,184 @@ func TestApplyOnClose_SharedSnapshot_SpoolReplay_PreservesExactlyOneBlock(t *tes
 	}
 	if got := snapshotBlockCount(replayed); got != 1 {
 		t.Fatalf("replayed prompt snapshot block count = %d, want exactly 1", got)
+	}
+}
+
+// TestApplyOnClose_SharedSnapshot_TelemetryAttributedExactlyOnce is the
+// mitto-353 telemetry acceptance criterion: for an N-processor batch, the
+// persisted close-run-summary sidecar must contain exactly ONE synthetic
+// sharedCloseHistorySnapshotRunName entry carrying the snapshot's own
+// bytes/tokens, and every real processor's own entry must remain body-only
+// (not inflated by a per-processor copy of the snapshot).
+func TestApplyOnClose_SharedSnapshot_TelemetryAttributedExactlyOnce(t *testing.T) {
+	sessionID := "sess-telemetry-once"
+	store := newCloseRouterApplyTestStore(t, sessionID)
+
+	m := NewManager("", nil)
+	m.SetPromptFunc(func(context.Context, string, string, string) error { return nil })
+	m.processors = []*Processor{
+		{Name: "proc-a", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Prompt: "Body for processor a."},
+		{Name: "proc-b", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Prompt: "Body for processor b."},
+		{Name: "proc-c", When: WhenConfig{On: PhaseConversationClosed, Match: MatchAll}, Prompt: "Body for processor c."},
+	}
+
+	// A snapshot payload deliberately much larger than any processor's own
+	// body, so a mis-attributed (per-processor) copy would be obvious.
+	snapshot := `{"events":[{"seq":1,"text":"this is a realistic chunk of archived conversation history that is far longer than any single processor instruction body"}]}`
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:       sessionID,
+		SessionStore:    store,
+		ArchiveReason:   "manual",
+		HistorySnapshot: snapshot,
+	})
+
+	summary, err := session.ReadCloseRunSummary(store, sessionID)
+	if err != nil {
+		t.Fatalf("ReadCloseRunSummary: %v", err)
+	}
+	if len(summary.Runs) != 1 {
+		t.Fatalf("Runs = %+v, want exactly 1 persisted run", summary.Runs)
+	}
+	run := summary.Runs[0]
+
+	var sharedEntries []session.CloseRunProcessorEntry
+	var processorEntries []session.CloseRunProcessorEntry
+	for _, p := range run.Processors {
+		if p.Name == sharedCloseHistorySnapshotRunName {
+			sharedEntries = append(sharedEntries, p)
+			continue
+		}
+		processorEntries = append(processorEntries, p)
+	}
+
+	if len(sharedEntries) != 1 {
+		t.Fatalf("synthetic %s entries = %d, want exactly 1; run.Processors=%+v", sharedCloseHistorySnapshotRunName, len(sharedEntries), run.Processors)
+	}
+	shared := sharedEntries[0]
+	if shared.RenderedBytes == 0 || shared.EstimatedTokens == 0 {
+		t.Errorf("synthetic snapshot entry has zero size: %+v", shared)
+	}
+	if shared.Target != RunTargetAuxiliary {
+		t.Errorf("synthetic snapshot entry Target = %q, want %q", shared.Target, RunTargetAuxiliary)
+	}
+
+	if len(processorEntries) != len(m.processors) {
+		t.Fatalf("processor entries = %d, want %d (one per real processor, no duplication)", len(processorEntries), len(m.processors))
+	}
+	for _, p := range processorEntries {
+		// Each real processor's own RenderedBytes must reflect only its own
+		// body, never a duplicated copy of the (much larger) shared snapshot.
+		if p.RenderedBytes >= shared.RenderedBytes {
+			t.Errorf("processor %q RenderedBytes = %d, want far smaller than the shared snapshot's %d (would indicate a duplicated per-processor copy)",
+				p.Name, p.RenderedBytes, shared.RenderedBytes)
+		}
+	}
+}
+
+// TestApplyOnClose_SharedSnapshot_FourProcessorBatchTokenReduction is the
+// mitto-353 acceptance criterion: "a representative four-processor batch
+// demonstrates at least a 50 percent rendered-token reduction without losing
+// source history". It compares the actual (shared-envelope) dispatched
+// prompt against the arithmetic equivalent of the pre-refactor behavior
+// (the same snapshot block duplicated once per processor instead of once
+// for the whole batch), while confirming the source history text itself
+// still appears intact exactly once.
+func TestApplyOnClose_SharedSnapshot_FourProcessorBatchTokenReduction(t *testing.T) {
+	m := NewManager("", nil)
+	for _, name := range []string{"proc-a", "proc-b", "proc-c", "proc-d"} {
+		m.processors = append(m.processors, &Processor{
+			Name:   name,
+			When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+			Prompt: "Please review the archived conversation and act on requirement " + name + ".",
+		})
+	}
+
+	// A realistic bounded snapshot: several events, each with modest text,
+	// intentionally large relative to any single processor's own body so a
+	// per-processor duplication would dominate the token count.
+	const snapshotEventText = "user or assistant message text from the archived conversation, bounded per the last-50-event and per-text size caps"
+	snapshot := `{"events":[`
+	for i := 0; i < 12; i++ {
+		if i > 0 {
+			snapshot += ","
+		}
+		snapshot += `{"seq":` + string(rune('0'+i%10)) + `,"text":"` + snapshotEventText + `"}`
+	}
+	snapshot += `]}`
+
+	body := applyCloseAndCaptureSpooledPrompt(t, m, "ws-four-reduction", CloseProcessorInput{
+		SessionID:       "sess-four-reduction",
+		HistorySnapshot: snapshot,
+	})
+
+	if got := snapshotBlockCount(body); got != 1 {
+		t.Fatalf("snapshot block count = %d, want exactly 1 in the actual dispatched batch", got)
+	}
+	if !strings.Contains(body, snapshotEventText) {
+		t.Fatalf("dispatched batch lost the source history text: %q", body)
+	}
+
+	startTag, endTag := "<mitto_close_history_snapshot>", "</mitto_close_history_snapshot>"
+	startIdx := strings.Index(body, startTag)
+	endIdx := strings.Index(body, endTag)
+	if startIdx < 0 || endIdx < 0 || endIdx < startIdx {
+		t.Fatalf("could not locate snapshot block bounds in body: %q", body)
+	}
+	snapshotBlockLen := (endIdx + len(endTag)) - startIdx
+
+	const numProcessors = 4
+	actualTokens := EstimateTokens(body)
+	// Arithmetic equivalent of the pre-refactor behavior: the same
+	// non-snapshot content (batch header + all processor bodies), but with
+	// the snapshot block duplicated once per processor instead of shared.
+	bodyWithoutOneSnapshotCopy := len(body) - snapshotBlockLen
+	preRefactorEquivalentLen := bodyWithoutOneSnapshotCopy + numProcessors*snapshotBlockLen
+	preRefactorEquivalentTokens := EstimateTokens(string(make([]byte, preRefactorEquivalentLen)))
+
+	if preRefactorEquivalentTokens == 0 {
+		t.Fatalf("preRefactorEquivalentTokens = 0, cannot compute a reduction ratio")
+	}
+	reduction := float64(preRefactorEquivalentTokens-actualTokens) / float64(preRefactorEquivalentTokens)
+	if reduction < 0.5 {
+		t.Fatalf("rendered-token reduction = %.1f%%, want >= 50%%: actual=%d tokens, pre-refactor-equivalent=%d tokens (snapshot block = %d bytes, duplicated %dx)",
+			reduction*100, actualTokens, preRefactorEquivalentTokens, snapshotBlockLen, numProcessors)
+	}
+}
+
+// TestBuiltinCloseConversationProcessors_DoNotInvokeConversationHistoryTool
+// is the mitto-353 acceptance criterion: "built-in close processors do not
+// call mitto_conversation_history for the source conversation". The four
+// migrated conversationClosed prompts still *mention* the tool name (to warn
+// the agent away from it, since the source session may already be deleted),
+// so this asserts the specific "do not call" phrasing survives and rejects
+// any positive invocation instruction creeping back in.
+func TestBuiltinCloseConversationProcessors_DoNotInvokeConversationHistoryTool(t *testing.T) {
+	for _, name := range []string{
+		"extract-memories-on-close",
+		"memorize-preferences",
+		"claude-update-memory",
+		"auggie-update-rules",
+	} {
+		t.Run(name, func(t *testing.T) {
+			proc := loadBuiltinProcessorForTest(t, name)
+
+			if !strings.Contains(proc.Prompt, "do not call") {
+				t.Errorf("%s prompt no longer warns against calling the tool (missing \"do not call\"):\n%s", name, proc.Prompt)
+			}
+			if !strings.Contains(proc.Prompt, "mitto_conversation_history") {
+				t.Errorf("%s prompt dropped the mitto_conversation_history mention entirely; the warning needs to name the tool:\n%s", name, proc.Prompt)
+			}
+			for _, positivePhrase := range []string{
+				"Use the `mitto_conversation_history`",
+				"Use `mitto_conversation_history`",
+				"call the `mitto_conversation_history` tool",
+				"call `mitto_conversation_history`",
+			} {
+				if strings.Contains(proc.Prompt, positivePhrase) {
+					t.Errorf("%s prompt reintroduces a positive instruction to invoke the tool (%q):\n%s", name, positivePhrase, proc.Prompt)
+				}
+			}
+		})
 	}
 }
