@@ -16,10 +16,15 @@ package stats
 //
 // A single ReplaceDeltas call covers every workspace's data in one
 // transaction, because ReplaceDeltas' DELETE is scoped by (metric, ts_bucket)
-// only — not by workspace (see stats.go). Consequently a Run pass is
-// all-or-nothing: if any workspace's `bd list` fails or returns unparseable
-// JSON, the whole pass aborts WITHOUT writing, so a transient failure in one
-// workspace cannot wipe another workspace's previously-good data.
+// only — not by workspace (see stats.go). A per-workspace `bd list`/parse
+// failure is therefore isolated rather than aborting the whole pass
+// (mitto-lre): runOnce logs it, skips folding that workspace's items, and
+// re-reads its last-known-good rows via Store.Query so they are re-included,
+// unchanged, in the same ReplaceDeltas call — every healthy workspace's
+// freshly computed data still lands, and the failing workspace's history is
+// preserved rather than blanked by the workspace-agnostic DELETE. Run still
+// returns a non-nil error summarizing which workspace(s) failed, but only
+// after the write has already happened.
 //
 // Wiring into internal/web (server startup + beads-watcher-driven debounced
 // refresh) is mitto-5rm6.3, not this file.
@@ -355,11 +360,14 @@ func (s *BeadsSource) Run(ctx context.Context) error {
 // runOnce performs exactly one full pass. Split out of Run so the
 // coalescing loop there can re-invoke it without re-running the CAS gate.
 //
-// All-or-nothing: if any workspace's List or JSON parse fails, runOnce
-// returns that error immediately WITHOUT calling ReplaceDeltas, so a
-// transient failure never wipes previously-good data for an unrelated
-// workspace (see the package doc comment for why a partial write is unsafe
-// here).
+// Per-workspace isolation (mitto-lre): a workspace whose List or JSON parse
+// fails is skipped (logged, not folded into agg) rather than aborting the
+// whole pass. Its last-known-good rows are re-read via Store.Query below and
+// re-included unchanged in the same ReplaceDeltas call, so the
+// workspace-agnostic DELETE (see the package doc comment) does not blank its
+// history just because a sibling workspace's `bd list` succeeded. The
+// aggregated failures (if any) are returned as a non-nil error AFTER the
+// write, so callers still observe the failure without losing healthy data.
 func (s *BeadsSource) runOnce(ctx context.Context) error {
 	workspaces := s.workspaces()
 	s.logInfo("beads source pass starting", "workspaces", len(workspaces))
@@ -369,6 +377,8 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 	uptime := s.loadUptime(ctx, to)
 
 	agg := make(map[beadsBucketKey]*beadsBucketAgg)
+	var failedWorkspaces []BeadsWorkspace
+	var failures []error
 	for _, ws := range workspaces {
 		select {
 		case <-ctx.Done():
@@ -382,11 +392,19 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 		}
 		raw, err := s.listWithRetry(ctx, ws.Dir)
 		if err != nil {
-			return fmt.Errorf("stats: beads source: list %s: %w", ws.Dir, err)
+			s.logWarn("beads source: workspace list failed, skipping pass for this workspace (preserving its existing data)",
+				append([]any{"dir", ws.Dir, "workspace", ws.UUID}, beadsErrorAttrs(err)...)...)
+			failedWorkspaces = append(failedWorkspaces, ws)
+			failures = append(failures, fmt.Errorf("stats: beads source: list %s: %w", ws.Dir, err))
+			continue
 		}
 		var items []beadsItem
 		if err := json.Unmarshal(raw, &items); err != nil {
-			return fmt.Errorf("stats: beads source: parse %s: %w", ws.Dir, err)
+			s.logWarn("beads source: workspace parse failed, skipping pass for this workspace (preserving its existing data)",
+				"dir", ws.Dir, "workspace", ws.UUID, "error", err)
+			failedWorkspaces = append(failedWorkspaces, ws)
+			failures = append(failures, fmt.Errorf("stats: beads source: parse %s: %w", ws.Dir, err))
+			continue
 		}
 		for _, it := range items {
 			s.foldItem(it, ws.UUID, agg, uptime)
@@ -416,13 +434,40 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 		}
 	}
 
+	// mitto-lre: re-read each failed workspace's last-known-good rows and
+	// re-include them, unchanged, in this pass's deltas. ReplaceDeltas'
+	// DELETE is scoped by (metric, ts_bucket) only — not by workspace — so
+	// without this, writing the healthy workspaces' new data below would
+	// silently blank a failing workspace's entire history instead of merely
+	// skipping its refresh for this tick.
+	for _, ws := range failedWorkspaces {
+		pts, err := s.store.Query(ctx, Query{
+			RangeFrom: beadsWindowFrom,
+			RangeTo:   to,
+			Bucket:    BucketHour,
+			Metrics:   beadsMetrics,
+			Workspace: ws.UUID,
+		})
+		if err != nil {
+			s.logWarn("beads source: failed to read back existing data for unreachable workspace; its history may be blanked this pass",
+				"workspace", ws.UUID, "error", err)
+			continue
+		}
+		for _, p := range pts {
+			deltas = append(deltas, Delta{TSBucket: p.TS, Metric: p.Metric, SessionID: BeadsSentinelSessionID, Workspace: ws.UUID, Value: p.Value})
+		}
+	}
+
 	if err := s.store.ReplaceDeltas(ctx, beadsMetrics, beadsWindowFrom, to, deltas); err != nil {
 		return fmt.Errorf("stats: beads source: replace deltas: %w", err)
 	}
 	if err := s.store.SetMeta(ctx, metaKeyLastBeadsPass, now.Format(time.RFC3339)); err != nil {
 		s.logWarn("beads source meta stamp failed", "error", err)
 	}
-	s.logInfo("beads source pass done", "buckets", len(agg), "deltas", len(deltas))
+	s.logInfo("beads source pass done", "buckets", len(agg), "deltas", len(deltas), "failed_workspaces", len(failedWorkspaces))
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
 	return nil
 }
 

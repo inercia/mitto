@@ -319,6 +319,70 @@ func TestBeadsSource_NonStringMetadataValueDoesNotAbortPass(t *testing.T) {
 	}
 }
 
+// perDirBeadsLister returns per-directory canned payloads or errors,
+// letting a test script "workspace A succeeds, workspace B fails" --
+// fakeBeadsLister's single global err field applies to every dir, which
+// can't express a mixed healthy/failing multi-workspace scenario.
+type perDirBeadsLister struct {
+	payloads map[string][]byte
+	errs     map[string]error
+}
+
+func (f *perDirBeadsLister) List(_ context.Context, dir string) ([]byte, error) {
+	if err, ok := f.errs[dir]; ok {
+		return nil, err
+	}
+	return f.payloads[dir], nil
+}
+
+// TestBeadsSource_CrossWorkspaceListFailureDropsHealthyWorkspaceData
+// reproduces mitto-lre: the periodic pass is all-or-nothing across EVERY
+// configured workspace (see runOnce's doc comment), so a single external
+// workspace's non-transient `bd list` failure -- e.g. the reported
+// agentgateway repo returning "bd exited with non-zero status: exit status
+// 1" -- aborts the whole pass and silently drops a perfectly-healthy
+// CO-LOCATED workspace's new data point for that tick too, not just the
+// failing workspace's.
+//
+// This asserts the DESIRED post-fix contract, not today's behavior: a
+// single failing workspace must not prevent a healthy workspace's new data
+// from being persisted. It currently FAILS (ws-good's beads_opened count is
+// 0, not 1) because runOnce returns before ever calling ReplaceDeltas once
+// ws-bad's List call errors -- see the investigation comment on mitto-lre
+// for the full root-cause analysis. The fix phase must isolate ws-bad's
+// failure (e.g. a workspace-scoped ReplaceDeltas) so this test passes
+// without weakening TestBeadsSource_ListErrorAbortsWithoutWriting's
+// "aborted pass must not destroy previously-good data" guarantee.
+func TestBeadsSource_CrossWorkspaceListFailureDropsHealthyWorkspaceData(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-09-20T18:00:00Z")
+
+	goodDir := "/ws/good"
+	badDir := "/Users/alvaro/Development/adobe/ethos/agentgateway"
+	goodPayload := []byte(`[{"id":"good-1","status":"open","created_at":"2026-09-20T17:00:00Z"}]`)
+	listErr := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), ExitCode: 1}
+
+	lister := &perDirBeadsLister{
+		payloads: map[string][]byte{goodDir: goodPayload},
+		errs:     map[string]error{badDir: listErr},
+	}
+	src := newBeadsTestSource(t, s, lister, wsLister(
+		BeadsWorkspace{UUID: "ws-good", Dir: goodDir},
+		BeadsWorkspace{UUID: "ws-bad", Dir: badDir},
+	), now)
+
+	// Run may still report ws-bad's failure (e.g. a non-fatal partial-
+	// failure signal) -- the fix's exact error-return shape is left open
+	// (see the investigation comment's three candidate designs). What must
+	// hold regardless is that ws-good's healthy data from THIS pass lands.
+	_ = src.Run(context.Background())
+
+	openedBucket := hourBucket(t, "2026-09-20T17:00:00Z")
+	if got := countAt(t, s, openedBucket, MetricBeadsOpened, BeadsSentinelSessionID, "ws-good"); got != 1 {
+		t.Errorf("mitto-lre: beads_opened @ws-good = %d, want 1 -- ws-bad's `bd list` failure must be isolated to ws-bad and must not drop ws-good's healthy new data for the whole pass", got)
+	}
+}
+
 // blockingBeadsLister lets a test hold one Run pass "in flight" (blocked
 // inside List) while other concurrent Run calls pile up, so the test can
 // deterministically observe how many full passes actually execute.
