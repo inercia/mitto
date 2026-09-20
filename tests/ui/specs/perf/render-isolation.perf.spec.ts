@@ -386,4 +386,97 @@ test.describe("Perf: render-domain isolation (mitto-b1k)", () => {
       counts.ChatInput || 0,
     );
   });
+
+  test("changing a session's model config option does not re-render SessionList/MessageList (mitto-sus.11)", async ({
+    page,
+    helpers,
+  }) => {
+    await enablePerf(page);
+    await helpers.navigateAndWait(page);
+    await helpers.clearLocalStorage(page);
+
+    await helpers.createFreshSession(page);
+
+    // The mock ACP server always advertises exactly one config option (the
+    // "Model" select, see tests/mocks/acp-server/main.go's
+    // buildModelConfigOption), defaulting to "Sonnet 4.6" -- rendered in
+    // ChatInput's toolbar via ConfigOptionSelect (variant="toolbar").
+    const selector = page.locator(".chat-input-model-selector");
+    const trigger = selector.locator('summary[aria-label="Model"]');
+    await expect(trigger).toBeVisible({ timeout: timeouts.appReady });
+    await expect(trigger).toContainText("Sonnet 4.6");
+
+    await page.waitForTimeout(300);
+    await resetRenderCounts(page);
+
+    // Exercises the exact writer path this increment migrated:
+    // useWSConfigOptions.js's effect writes the resulting
+    // config_option_changed session/update into configOptionsStore.js keyed
+    // by session id instead of an App-level useMemo on activeSession.info
+    // (mirrors the plan's "set_config_option change on the active session"
+    // test item).
+    await trigger.click();
+    await selector.locator('button:has-text("Haiku 4.5")').click();
+    // The trigger label updates OPTIMISTICALLY the instant the option is
+    // clicked (ConfigOptionSelect's own localValue state -- see that
+    // component's header comment), independent of the real WS round trip
+    // (set_config_option -> mock ACP RPC -> config_option_update
+    // notification -> config_option_changed broadcast -> configOptionsStore
+    // write). Waiting on the label alone would read render counts before
+    // that round trip -- and thus the ChatInput re-render this scenario
+    // means to exercise -- actually lands, so poll the render-count side
+    // effect itself instead.
+    await expect(trigger).toContainText("Haiku 4.5", {
+      timeout: timeouts.shortAction,
+    });
+    await expect
+      .poll(async () => (await getRenderCounts(page)).ChatInput || 0, {
+        timeout: timeouts.shortAction,
+      })
+      .toBeGreaterThan(0);
+
+    const counts = await getRenderCounts(page);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[perf] render counts after set_config_option: ${JSON.stringify(counts)}`,
+    );
+
+    // Neither MessageList nor SessionList reads config_options -- but
+    // changing the ACTIVE session's config option (unlike the background-
+    // chunk/keepalive scenarios above, which deliberately avoid touching the
+    // active session) still updates `sessions[activeSessionId].info`, which
+    // ripples through two PRE-EXISTING, out-of-scope-for-this-bead App-level
+    // derivations neither MessageList nor SessionList self-subscribes past
+    // yet: useWSSessionSelectors.js's `sessionInfo` useMemo (keyed off the
+    // whole `activeSession` reference, still passed to MessageList as a
+    // prop -- the same coupling ChatInput was migrated off of in mitto-b1k)
+    // and App's own `activeSessions` useMemo (keyed off the whole `sessions`
+    // map, feeding SessionList). A small bounded bump here is therefore
+    // expected, not a regression introduced by this migration -- mirrors the
+    // tolerance already documented for the background-chunk scenario above.
+    expect(counts.MessageList || 0).toBeLessThanOrEqual(2);
+    expect(counts.SessionList || 0).toBeLessThanOrEqual(2);
+    // Sanity check: ChatInput's own domain (where the config selector lives,
+    // now self-subscribed via useConfigOptions(sessionId) instead of an
+    // App-passed prop) IS expected to re-render on this change -- a flat 0
+    // here would mean the store wiring is broken, not that isolation
+    // improved.
+    expect(counts.ChatInput || 0).toBeGreaterThan(0);
+
+    writePerfSample(
+      "render.set-config-option",
+      "SessionList",
+      counts.SessionList || 0,
+    );
+    writePerfSample(
+      "render.set-config-option",
+      "MessageList",
+      counts.MessageList || 0,
+    );
+    writePerfSample(
+      "render.set-config-option",
+      "ChatInput",
+      counts.ChatInput || 0,
+    );
+  });
 });
