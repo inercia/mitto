@@ -666,11 +666,10 @@ Close-phase `conversationClosed` prompt-mode processors are collected by
 `ApplyOnClose` and handed to `dispatchPromptBatch`, which combines every
 collected processor's rendered prompt into a single request when more than
 one is pending (batching optimization — one auxiliary session instead of N).
-Each memory-processor prompt embeds its own conversation-history/rules
-context, so the combined payload can grow large: an observed window saw 44
-batched dispatches (5 processors each: `extract-memories-on-close`,
-`claude-update-memory`, `memorize-preferences`, `auggie-update-rules`,
-`curate-memories-on-close`) with `combined_prompt_len` ranging 26KB–200KB.
+As of mitto-353 the close-history snapshot is attached **once** to the batch
+envelope rather than embedded in every processor's own body, so the combined
+payload no longer duplicates the snapshot N times; per-processor bodies
+themselves are typically small.
 
 `dispatchPromptBatch`'s `slog.Info("prompt-mode processors dispatched
 (batched)", ...)` line carries, in addition to the original
@@ -684,9 +683,28 @@ batched dispatches (5 processors each: `extract-memories-on-close`,
   dispatch log line without cross-referencing the `close-run-summary.json`
   sidecar (`session.CloseRunProcessorEntry.RenderedBytes`/`EstimatedTokens`,
   populated per-processor at collection time — see `ApplyOnClose`).
+- `shared_snapshot_bytes` / `shared_snapshot_estimated_tokens` /
+  `body_only_combined_len` (mitto-353) — the size of the shared close-history
+  snapshot block that the envelope prepends exactly once, plus the combined
+  processor-body length excluding that block, so the batch's shared vs.
+  per-processor cost is legible without arithmetic.
 
 The single-processor path (`prompt-mode processor dispatched (single)`)
-gained a matching `estimated_tokens` field for parity.
+gained a matching `estimated_tokens` field for parity plus the same
+`shared_snapshot_bytes` field.
+
+**Shared-snapshot telemetry attribution (mitto-353).** When the envelope
+attaches a shared snapshot block, `ApplyOnClose` records one synthetic
+`ProcessorRun` named `__close_history_snapshot__` (Phase `close`, Mode
+`prompt`, Target `auxiliary`, `RenderedBytes = len(sharedSnapshotBlock)`,
+`EstimatedTokens = EstimateTokens(sharedSnapshotBlock)`) into the
+`close-run-summary.json` sidecar. Per-processor `ProcessorRun` entries stay
+**body-only** — the shared snapshot's cost is attributed exactly once for
+the whole batch instead of being folded into every processor's own
+`RenderedBytes`/`EstimatedTokens`. The two standalone dispatch paths
+(`knowledge-router`, memory-curation) keep their own inline snapshot
+handling and pass an empty `sharedSnapshotBlock` to `dispatchPromptBatch`
+so the envelope does not double-attach.
 
 **Soft ceiling (`maxCombinedCloseBatchPromptBytes = 256 * 1024`,
 `internal/processors/apply.go`):** when `combined_prompt_len` exceeds this,
