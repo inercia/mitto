@@ -238,11 +238,15 @@ inspecting the live render tree, did not match several real consumers):
   runtime effect.
 
 All three families now read via a scoped store slice rather than an `App`
-prop chain (AC1); `render-isolation.perf.spec.ts` covers queue add/delete
-and a toast fired without a WS round trip (AC2) — a `set_config_option`
-scenario was not added in this pass since `ChatInput`/`SessionPanel` are the
-only live consumers and neither is part of the five perf-tracked render
-domains above, so an isolation regression here is caught by MessageList's
-existing background-chunk scenarios if `config_options` diffing is ever
-removed. `bun test web/static` and the full Playwright perf suite pass
-throughout (see the bead's `Testing:` comments for exact counts).
+prop chain (AC1); `render-isolation.perf.spec.ts` covers a toast fired
+without a WS round trip, queue add/delete on the active session, and a
+`set_config_option` change on the active session (AC2 — one scenario per
+migrated family). The `set_config_option` scenario asserts `ChatInput`
+(the domain that self-subscribes via `useConfigOptions(sessionId)`)
+re-renders `> 0` and bounds `MessageList`/`SessionList` to `≤ 2` — the
+residual is tied to two pre-existing, out-of-scope App-level derivations
+(`useWSSessionSelectors.js`'s `sessionInfo` `useMemo` still keyed off the
+whole `activeSession` reference, and `App`'s `activeSessions` `useMemo`
+keyed off the whole `sessions` map) that predate this bead. `bun test
+web/static` and the full Playwright perf suite pass throughout (see the
+bead's `Testing:` comments for exact counts).
