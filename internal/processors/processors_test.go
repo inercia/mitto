@@ -9005,3 +9005,46 @@ func TestCurateMemoriesOnCloseProcessor_SingleDedupedReviewBead(t *testing.T) {
 		t.Error("prompt does not guard the review bead description against bodies/secrets")
 	}
 }
+
+// TestCurateMemoriesOnCloseProcessor_BoundedIndexFirstInput pins the
+// mitto-1kl acceptance criterion that this processor's own input is
+// index-first and bounded by a documented budget rather than an unconditional
+// full-store load: it must declare the four gating/bound parameters
+// (MinInterval, MinChangedMemories, IndexMaxMemories, BodyRecallCap) with
+// non-empty defaults, instruct loading the bounded `bd prime` index before
+// anything else, and explicitly forbid the unbounded `bd memories --json`
+// load as its primary input.
+func TestCurateMemoriesOnCloseProcessor_BoundedIndexFirstInput(t *testing.T) {
+	proc := loadBuiltinProcessorForTest(t, "curate-memories-on-close")
+
+	wantParams := map[string]string{
+		"MinInterval":        "24h",
+		"MinChangedMemories": "5",
+		"IndexMaxMemories":   "60",
+		"BodyRecallCap":      "20",
+	}
+	byName := make(map[string]string, len(proc.Parameters))
+	for _, p := range proc.Parameters {
+		byName[p.Name] = p.Default
+	}
+	for name, wantDefault := range wantParams {
+		got, ok := byName[name]
+		if !ok {
+			t.Errorf("processor missing bounding parameter %q", name)
+			continue
+		}
+		if got != wantDefault {
+			t.Errorf("parameter %q default = %q, want %q", name, got, wantDefault)
+		}
+	}
+
+	if !strings.Contains(proc.Prompt, "bd --readonly prime --memories-only --max-memories {{ .Args.IndexMaxMemories }}") {
+		t.Error("prompt does not load the bounded index via `bd prime --memories-only --max-memories` first")
+	}
+	if !strings.Contains(proc.Prompt, "Do **NOT** run\n`bd memories --json`") {
+		t.Error("prompt no longer explicitly forbids the unbounded `bd memories --json` load")
+	}
+	if !strings.Contains(proc.Prompt, "AT MOST {{ .Args.BodyRecallCap }}") {
+		t.Error("prompt does not cap full-body recalls at the configured BodyRecallCap")
+	}
+}
