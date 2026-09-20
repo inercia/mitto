@@ -22,7 +22,7 @@ func TestDispatchPromptBatch_BatchedLogsCombinedTokensAndPerProcessorBreakdown(t
 		{name: "extract-memories-on-close", prompt: strings.Repeat("a", 100)},
 		{name: "claude-update-memory", prompt: strings.Repeat("b", 250)},
 	}
-	m.dispatchPromptBatch("ws", prompts, false)
+	m.dispatchPromptBatch("ws", prompts, false, "")
 
 	rec := findLogRecord(t, handler.snapshot(), "prompt-mode processors dispatched (batched)")
 
@@ -67,7 +67,7 @@ func TestDispatchPromptBatch_SingleLogsEstimatedTokens(t *testing.T) {
 	m.SetPromptFunc(func(context.Context, string, string, string) error { return nil })
 
 	prompt := strings.Repeat("z", 40)
-	m.dispatchPromptBatch("ws", []pendingPromptDispatch{{name: "solo-processor", prompt: prompt}}, false)
+	m.dispatchPromptBatch("ws", []pendingPromptDispatch{{name: "solo-processor", prompt: prompt}}, false, "")
 
 	rec := findLogRecord(t, handler.snapshot(), "prompt-mode processor dispatched (single)")
 	if got := rec.Attrs["estimated_tokens"]; got != int64(EstimateTokens(prompt)) {
@@ -92,7 +92,7 @@ func TestDispatchPromptBatch_WarnsWhenCombinedPromptExceedsSoftCeiling(t *testin
 		{name: "proc-a", prompt: big},
 		{name: "proc-b", prompt: big},
 	}
-	m.dispatchPromptBatch("ws", prompts, false)
+	m.dispatchPromptBatch("ws", prompts, false, "")
 
 	batched := findLogRecord(t, handler.snapshot(), "prompt-mode processors dispatched (batched)")
 	combinedLen := batched.Attrs["combined_prompt_len"].(int64)
@@ -124,7 +124,7 @@ func TestDispatchPromptBatch_NoWarnUnderSoftCeiling(t *testing.T) {
 		{name: "proc-a", prompt: "short prompt one"},
 		{name: "proc-b", prompt: "short prompt two"},
 	}
-	m.dispatchPromptBatch("ws", prompts, false)
+	m.dispatchPromptBatch("ws", prompts, false, "")
 
 	for _, rec := range handler.snapshot() {
 		if rec.Message == "close-phase batched prompt exceeds soft ceiling" {

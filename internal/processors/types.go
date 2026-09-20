@@ -495,8 +495,12 @@ type CloseProcessorInput struct {
 	// ArchivedAt is when the session was archived.
 	ArchivedAt time.Time `json:"archivedAt"`
 	// HistorySnapshot is a bounded immutable copy of user/agent history captured
-	// synchronously before a delete can remove the source session. It is appended
-	// to every prompt-mode close processor and excluded from command stdin.
+	// synchronously before a delete can remove the source session. It is
+	// attached once to the close-phase batch envelope (mitto-353) — not
+	// appended to every individual prompt-mode close processor's own body, to
+	// avoid an N-processor batch delivering N identical copies — and excluded
+	// from command stdin. See dispatchPromptBatch's sharedSnapshotBlock
+	// parameter.
 	HistorySnapshot string `json:"-"`
 	// HistorySnapshotError distinguishes unavailable source history from a valid
 	// empty snapshot. Prompt-mode work is not dispatched when this is non-empty.
