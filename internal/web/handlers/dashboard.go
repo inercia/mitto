@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/inercia/mitto/internal/beads"
 )
@@ -45,6 +46,54 @@ type dashboardLists struct {
 type dashboardResponse struct {
 	Stats dashboardStats `json:"stats"`
 	Lists dashboardLists `json:"lists"`
+}
+
+// dashboardSnapshotTTL bounds how long a per-(working_dir, list name)
+// fallback snapshot may be served after its last successful fetch (mitto-opn).
+// A transient contention burst (bd SIGKILLed under dolt lock contention)
+// typically clears within one or two of the frontend's 15s poll cycles;
+// capping the fallback well below that horizon still absorbs the burst while
+// preventing a genuinely broken workspace (e.g. persistent schema skew) from
+// silently showing stale data forever instead of eventually surfacing as [].
+const dashboardSnapshotTTL = 5 * time.Minute
+
+// dashboardSnapshotEntry is the last known-good result for one
+// (working_dir, list name) pair, captured the last time its fetch succeeded.
+type dashboardSnapshotEntry struct {
+	items      []map[string]any
+	capturedAt time.Time
+}
+
+// dashboardSnapshotKey builds the map key for a (working_dir, list name)
+// pair used by getDashboardSnapshot / storeDashboardSnapshot.
+func dashboardSnapshotKey(dir, listName string) string {
+	return dir + "\x00" + listName
+}
+
+// getDashboardSnapshot returns the last known-good items captured for
+// (dir, listName), and whether one exists within dashboardSnapshotTTL.
+func (h *Handlers) getDashboardSnapshot(dir, listName string) ([]map[string]any, bool) {
+	h.dashboardSnapshotMu.Lock()
+	defer h.dashboardSnapshotMu.Unlock()
+	entry, ok := h.dashboardSnapshot[dashboardSnapshotKey(dir, listName)]
+	if !ok || time.Since(entry.capturedAt) > dashboardSnapshotTTL {
+		return nil, false
+	}
+	return entry.items, true
+}
+
+// storeDashboardSnapshot records items as the last known-good result for
+// (dir, listName), overwriting any previous entry.
+func (h *Handlers) storeDashboardSnapshot(dir, listName string, items []map[string]any) {
+	h.dashboardSnapshotMu.Lock()
+	defer h.dashboardSnapshotMu.Unlock()
+	if h.dashboardSnapshot == nil {
+		h.dashboardSnapshot = make(map[string]dashboardSnapshotEntry)
+	}
+	h.dashboardSnapshot[dashboardSnapshotKey(dir, listName)] = dashboardSnapshotEntry{
+		items:      items,
+		capturedAt: time.Now(),
+	}
 }
 
 // HandleDashboard handles GET /api/dashboard.
@@ -230,6 +279,17 @@ func (h *Handlers) dashboardCollect(
 							"list", listName, "working_dir", dir, "error", err, "stderr", beads.StderrOf(err))
 					}
 				}
+				// mitto-opn: a single transient failure (e.g. bd SIGKILLed
+				// under dolt lock contention) must not blank a previously
+				// populated tile. Fall back to the last known-good snapshot
+				// for this (dir, listName) instead of contributing nothing.
+				if snap, ok := h.getDashboardSnapshot(dir, listName); ok {
+					if h.deps.Logger != nil {
+						h.deps.Logger.Info("dashboard: serving last known-good snapshot after transient bd failure",
+							"list", listName, "working_dir", dir)
+					}
+					results[i] = result{items: snap}
+				}
 				return
 			}
 			var raw []map[string]any
@@ -251,6 +311,7 @@ func (h *Handlers) dashboardCollect(
 				item["working_dir"] = dir
 				kept = append(kept, item)
 			}
+			h.storeDashboardSnapshot(dir, listName, kept)
 			results[i] = result{items: kept}
 		}()
 	}

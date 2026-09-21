@@ -451,6 +451,79 @@ func TestDashboardCollect_SchemaSkewWorkspace_WarnStormNotDeduped(t *testing.T) 
 	}
 }
 
+// contentionSigkillClient reproduces mitto-opn: a workspace's `bd` invocation
+// succeeds on the first dashboard poll, then times out and is SIGKILLed on a
+// later poll during a dolt/bd contention burst. The error shape mirrors the
+// production signature exactly (internal/beads/cli.go preserveContextError +
+// execRunner.Run's "bd command timed out" wrapping observed in the bug
+// report's log line: `error="context deadline exceeded\nbd command timed
+// out: signal: killed" stderr=""`).
+type contentionSigkillClient struct {
+	stubBeadsClient
+	calls int32
+}
+
+func (c *contentionSigkillClient) List(_ context.Context, dir string) ([]byte, error) {
+	n := atomic.AddInt32(&c.calls, 1)
+	if n == 1 {
+		// First poll: bd is healthy, one in_progress item comes back.
+		return []byte(`[{"id":"x-1","status":"in_progress","priority":2,"updated_at":"2026-09-20T21:00:00Z"}]`), nil
+	}
+	// Second poll: contention burst kills the bd subprocess before it can
+	// respond, exactly as logged in mitto-opn.
+	return nil, errors.Join(context.DeadlineExceeded, errors.New("bd command timed out: signal: killed"))
+}
+
+func (c *contentionSigkillClient) Ready(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
+
+// TestHandleDashboard_ContentionSigkill_TileSurvivesTransientTimeout
+// reproduces mitto-opn: the web dashboard polls per-workspace beads counts
+// every 15s (and again on every `mitto:beads_changed` push event). Under a
+// dolt/bd contention burst, an individual `bd` invocation can blow past its
+// 45s read deadline and get SIGKILLed. Today, dashboardCollect treats that
+// exactly like any other per-workspace failure: it drops the workspace from
+// the response entirely (internal/web/handlers/dashboard.go's per-goroutine
+// error branch just logs and returns without contributing any items), so a
+// single transient contention spike blanks a previously-populated tile
+// instead of falling back to the last known-good snapshot.
+//
+// This test drives two consecutive /api/dashboard requests against the same
+// workspace: the first succeeds and populates one in_progress item, the
+// second fails with the exact SIGKILL error shape from the bug report. The
+// desired behavior (no user-visible data loss from a single transient
+// contention spike) is that the second response still surfaces the
+// previously-seen item; today it does not, so this assertion fails.
+func TestHandleDashboard_ContentionSigkill_TileSurvivesTransientTimeout(t *testing.T) {
+	dir := "/Users/alvaro/Development/inercia/mitto"
+	client := &contentionSigkillClient{}
+	wss := []config.WorkspaceSettings{{WorkingDir: dir, ACPServer: "acp"}}
+	s := newDashboardTestServer(t, client, wss)
+
+	// Poll #1: bd is healthy.
+	w1 := httptest.NewRecorder()
+	s.HandleDashboard(w1, localhostRequest("/api/dashboard"))
+	if w1.Code != http.StatusOK {
+		t.Fatalf("poll #1 status = %d, want %d; body=%s", w1.Code, http.StatusOK, w1.Body.String())
+	}
+	d1 := decodeDashboardBody(t, w1)
+	if got := len(d1.Lists.InProgress); got != 1 {
+		t.Fatalf("poll #1 in_progress length = %d, want 1 (setup must succeed before the contention poll)", got)
+	}
+
+	// Poll #2: contention burst SIGKILLs the bd subprocess for this workspace.
+	w2 := httptest.NewRecorder()
+	s.HandleDashboard(w2, localhostRequest("/api/dashboard"))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("poll #2 status = %d, want %d; body=%s", w2.Code, http.StatusOK, w2.Body.String())
+	}
+	d2 := decodeDashboardBody(t, w2)
+	if got := len(d2.Lists.InProgress); got != 1 {
+		t.Errorf("mitto-opn reproduced: poll #2 in_progress length = %d, want 1 (a single transient SIGKILL timeout dropped the tile instead of preserving the last known-good snapshot)", got)
+	}
+}
+
 // twoDigit returns a zero-padded two-digit decimal for small non-negative ints.
 func twoDigit(n int) string {
 	if n < 10 {

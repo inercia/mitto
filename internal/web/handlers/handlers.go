@@ -524,6 +524,15 @@ type Handlers struct {
 	// HandleCreateSession so two concurrent requests for the same key cannot
 	// both miss the scan and create duplicate conversations. See lockReuseTitle.
 	reuseTitleLocks map[string]*sync.Mutex
+
+	// dashboardSnapshotMu guards dashboardSnapshot.
+	dashboardSnapshotMu sync.Mutex
+	// dashboardSnapshot holds the last known-good items per (working_dir,
+	// list name) key, so a single transient per-workspace bd failure (e.g. a
+	// SIGKILL under dolt contention, mitto-opn) falls back to the previous
+	// successful result instead of blanking that workspace's tile. See
+	// dashboardCollect in dashboard.go.
+	dashboardSnapshot map[string]dashboardSnapshotEntry
 }
 
 // New creates a new Handlers with the given dependencies.
