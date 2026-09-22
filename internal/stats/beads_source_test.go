@@ -879,3 +879,154 @@ func TestClassifyRetryReason(t *testing.T) {
 		t.Errorf("classifyRetryReason(lock) = %q, want %q", got, "lock")
 	}
 }
+
+// debugCapturingLogger builds a slog.Logger writing text-formatted lines
+// (including DEBUG, which the default handler level would otherwise drop)
+// into buf, for asserting on the WARN->DEBUG downgrade behavior below
+// (mitto-3v0).
+func debugCapturingLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+const listFailedMsg = "beads source: workspace list failed, skipping pass for this workspace (preserving its existing data)"
+
+// TestBeadsSource_PerWorkspaceFailureLoggedOnceThenDebug_mitto3v0 pins the
+// steady-state WARN->DEBUG downgrade: a workspace whose `bd list` fails
+// identically on every pass must WARN once (the first failure) and then
+// downgrade every subsequent identical repeat to DEBUG -- this is the fix
+// for the 116-WARN-in-35-min storm reported against two persistently
+// broken external adobe/ethos workspaces (mitto-3v0).
+func TestBeadsSource_PerWorkspaceFailureLoggedOnceThenDebug_mitto3v0(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-04-10T12:00:00Z")
+	var buf bytes.Buffer
+	listErr := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), ExitCode: 1}
+	lister := &fakeBeadsLister{err: listErr}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws-a", Dir: "/ws/a"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: func() time.Time { return now }, Logger: debugCapturingLogger(&buf),
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := src.Run(context.Background()); err == nil {
+			t.Fatalf("Run[%d]: got nil error, want the list failure to be reported", i)
+		}
+	}
+
+	out := buf.String()
+	warnCount := strings.Count(out, `level=WARN msg="`+listFailedMsg)
+	debugCount := strings.Count(out, `level=DEBUG msg="`+listFailedMsg)
+	if warnCount != 1 {
+		t.Errorf("WARN count = %d, want 1 (only the first failure)\nlog:\n%s", warnCount, out)
+	}
+	if debugCount != 2 {
+		t.Errorf("DEBUG count = %d, want 2 (steady-state repeats)\nlog:\n%s", debugCount, out)
+	}
+}
+
+// TestBeadsSource_FailureSignatureChangeReemitWarn_mitto3v0 confirms a
+// changed failure (different underlying error, e.g. the workspace starts
+// failing for a new reason) re-emits WARN rather than being folded into the
+// previous failure's DEBUG steady state -- a signature change is
+// operator-relevant, not steady-state noise.
+func TestBeadsSource_FailureSignatureChangeReemitWarn_mitto3v0(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-04-10T12:00:00Z")
+	var buf bytes.Buffer
+	errA := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), ExitCode: 1}
+	errB := &beads.CmdError{Err: errors.New("boom: workspace corrupted"), ExitCode: 1}
+	lister := &sequencedLister{errs: []error{errA, errB}}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws-a", Dir: "/ws/a"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: func() time.Time { return now }, Logger: debugCapturingLogger(&buf),
+	})
+
+	for i := 0; i < 2; i++ {
+		if err := src.Run(context.Background()); err == nil {
+			t.Fatalf("Run[%d]: got nil error, want the list failure to be reported", i)
+		}
+	}
+
+	out := buf.String()
+	warnCount := strings.Count(out, `level=WARN msg="`+listFailedMsg)
+	if warnCount != 2 {
+		t.Errorf("WARN count = %d, want 2 (signature changed between passes)\nlog:\n%s", warnCount, out)
+	}
+	if strings.Contains(out, `level=DEBUG msg="`+listFailedMsg) {
+		t.Errorf("unexpected DEBUG line for a signature change:\n%s", out)
+	}
+}
+
+// TestBeadsSource_RecoveryEmitsInfo_mitto3v0 confirms a workspace that
+// recovers (its list+parse succeed again after failing) emits exactly one
+// "workspace recovered" INFO line on the pass that recovers, and does not
+// repeat it on subsequent healthy passes.
+func TestBeadsSource_RecoveryEmitsInfo_mitto3v0(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-04-10T12:00:00Z")
+	var buf bytes.Buffer
+	listErr := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), ExitCode: 1}
+	lister := &sequencedLister{errs: []error{listErr}, payload: []byte(`[]`)}
+	src := NewBeadsSource(s, lister, wsLister(BeadsWorkspace{UUID: "ws-a", Dir: "/ws/a"}), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: func() time.Time { return now }, Logger: debugCapturingLogger(&buf),
+	})
+
+	if err := src.Run(context.Background()); err == nil {
+		t.Fatal("Run[0]: got nil error, want the initial list failure to be reported")
+	}
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run[1]: %v, want nil (workspace recovered)", err)
+	}
+	if err := src.Run(context.Background()); err != nil {
+		t.Fatalf("Run[2]: %v, want nil (still healthy)", err)
+	}
+
+	out := buf.String()
+	warnCount := strings.Count(out, `level=WARN msg="`+listFailedMsg)
+	recoveredCount := strings.Count(out, `msg="beads source: workspace recovered"`)
+	if warnCount != 1 {
+		t.Errorf("WARN count = %d, want 1\nlog:\n%s", warnCount, out)
+	}
+	if recoveredCount != 1 {
+		t.Errorf("recovered INFO count = %d, want 1 (one-shot, not repeated on later healthy passes)\nlog:\n%s", recoveredCount, out)
+	}
+	if !strings.Contains(out, "previous_error=") {
+		t.Errorf("recovered line missing previous_error attr:\n%s", out)
+	}
+}
+
+// TestBeadsSource_TwoWorkspacesTrackedIndependently_mitto3v0 confirms the
+// per-workspace failure signature map does not cross-contaminate between
+// workspaces: two workspaces failing for different reasons each get their
+// own single WARN followed by their own DEBUG steady state.
+func TestBeadsSource_TwoWorkspacesTrackedIndependently_mitto3v0(t *testing.T) {
+	s, _ := openTestStore(t)
+	now := hourBucket(t, "2026-04-10T12:00:00Z")
+	var buf bytes.Buffer
+	errA := &beads.CmdError{Err: errors.New("bd exited with non-zero status: exit status 1"), ExitCode: 1}
+	errB := &beads.CmdError{Err: errors.New("boom: workspace corrupted"), ExitCode: 1}
+	lister := &perDirBeadsLister{errs: map[string]error{"/ws/a": errA, "/ws/b": errB}}
+	src := NewBeadsSource(s, lister, wsLister(
+		BeadsWorkspace{UUID: "ws-a", Dir: "/ws/a"},
+		BeadsWorkspace{UUID: "ws-b", Dir: "/ws/b"},
+	), BeadsSourceOptions{
+		Interval: -1, StartupDelay: 0, Now: func() time.Time { return now }, Logger: debugCapturingLogger(&buf),
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := src.Run(context.Background()); err == nil {
+			t.Fatalf("Run[%d]: got nil error, want both list failures to be reported", i)
+		}
+	}
+
+	out := buf.String()
+	warnCount := strings.Count(out, `level=WARN msg="`+listFailedMsg)
+	debugCount := strings.Count(out, `level=DEBUG msg="`+listFailedMsg)
+	if warnCount != 2 {
+		t.Errorf("WARN count = %d, want 2 (one per workspace's first failure)\nlog:\n%s", warnCount, out)
+	}
+	if debugCount != 4 {
+		t.Errorf("DEBUG count = %d, want 4 (2 repeats x 2 workspaces)\nlog:\n%s", debugCount, out)
+	}
+	if !strings.Contains(out, "workspace=ws-a") || !strings.Contains(out, "workspace=ws-b") {
+		t.Errorf("expected both workspace UUIDs in log output:\n%s", out)
+	}
+}
