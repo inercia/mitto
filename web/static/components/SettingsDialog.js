@@ -1260,7 +1260,9 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
  *     - 200 + has_active === false             → open wizard.
  *     Folder plan fields: working_dir, workspace_name?, workspace_uuids[],
  *       archived_conversations, non_archived_conversations,
- *       replacement_candidates[] (array of server-name strings).
+ *       replacement_candidates[] (array of server-name strings),
+ *       merge_target_exists? (true iff reassigning to any candidate merges
+ *       into a pre-existing workspace on that agent — mitto-kr1 absorb path).
  *   POST /api/acp-servers/{name}/reassign-and-delete → executes with
  *     {folders: {"<working_dir>": "<newServer>" | ""}} (map; "" means delete).
  *     - 409 envelope: error.details.active_session_ids[] — session IDs that
@@ -1409,10 +1411,13 @@ function ACPServerDeleteWizard({
       f.workspace_name || getBasename(f.working_dir) || f.working_dir;
     const total = folderTotal(f);
     if (choice.newServer) {
+      const mergeNote = f.merge_target_exists
+        ? " (merges into existing workspace)"
+        : "";
       return {
         key: f.working_dir,
         kind: "reassign",
-        text: `${label} → reassign to "${choice.newServer}": ${total} conversation(s) will keep working on the new agent.`,
+        text: `${label} → reassign to "${choice.newServer}": ${total} conversation(s) will keep working on the new agent.${mergeNote}`,
       };
     }
     return {
@@ -1575,6 +1580,19 @@ function ACPServerDeleteWizard({
 
           ${currentCandidates.length > 0
             ? html`
+                ${currentFolder.merge_target_exists &&
+                html`
+                  <div role="alert" class="alert alert-info alert-soft text-sm">
+                    <div>
+                      Reassigning to any of these agents will
+                      <span class="font-semibold">merge</span> this folder's
+                      conversations into an existing workspace on the chosen
+                      agent. Existing workspace metadata (name, user data,
+                      <code class="text-xs">.mittorc</code>) is preserved; the
+                      rescued workspace's own UUID is dropped.
+                    </div>
+                  </div>
+                `}
                 <div class="form-control">
                   <label class="label pb-1">
                     <span class="label-text">Choose the new agent:</span>
@@ -1719,6 +1737,19 @@ function ACPServerDeleteWizard({
                 ? execResult.deleted_workspaces.length
                 : 0)}
             </li>
+            ${(execResult.absorbed_workspace_count ||
+              (Array.isArray(execResult.absorbed_workspaces)
+                ? execResult.absorbed_workspaces.length
+                : 0)) > 0 &&
+            html`
+              <li>
+                Workspaces merged into existing:
+                ${" "}${execResult.absorbed_workspace_count ||
+                (Array.isArray(execResult.absorbed_workspaces)
+                  ? execResult.absorbed_workspaces.length
+                  : 0)}
+              </li>
+            `}
           </ul>
         </div>
       `}

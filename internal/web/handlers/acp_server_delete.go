@@ -54,6 +54,15 @@ type ACPServerFolderPlan struct {
 	// ReplacementCandidates are OTHER ACP servers already configured for this
 	// folder (workspace-registered), sorted by name for stable ordering.
 	ReplacementCandidates []string `json:"replacement_candidates"`
+	// MergeTargetExists is true iff reassigning this folder to ANY candidate
+	// in ReplacementCandidates will merge the rescued workspace into a
+	// pre-existing workspace at (WorkingDir, candidate) — i.e. reassignFolder
+	// will absorb (drop) the rescued workspace UUID rather than rename it in
+	// place (see mitto-kr1). This always mirrors len(ReplacementCandidates) >
+	// 0, since candidates are drawn exclusively from ACP servers already
+	// registered for this folder — every candidate is by construction an
+	// existing workspace merge target.
+	MergeTargetExists bool `json:"merge_target_exists,omitempty"`
 }
 
 // ACPServerReassignAndDeleteRequest carries the user's per-folder choices.
@@ -70,17 +79,22 @@ type ACPServerReassignAndDeleteRequest struct {
 
 // ACPServerReassignAndDeleteResponse summarises what the execute step did.
 // Counts mirror the array lengths for easy consumption by the wizard's success
-// step (which shows totals rather than IDs).
+// step (which shows totals rather than IDs). AbsorbedWorkspaces lists rescued
+// workspaces that were dropped (rather than reassigned) because the folder
+// already had a workspace at (dir, newServer); avoids emitting duplicate
+// (dir, server) workspaces the UI cannot distinguish (mitto-kr1).
 type ACPServerReassignAndDeleteResponse struct {
 	Server                      string   `json:"server"`
 	ReassignedConversations     []string `json:"reassigned_conversations,omitempty"`
 	DeletedConversations        []string `json:"deleted_conversations,omitempty"`
 	ReassignedWorkspaces        []string `json:"reassigned_workspaces,omitempty"`
 	DeletedWorkspaces           []string `json:"deleted_workspaces,omitempty"`
+	AbsorbedWorkspaces          []string `json:"absorbed_workspaces,omitempty"`
 	ReassignedConversationCount int      `json:"reassigned_conversation_count"`
 	DeletedConversationCount    int      `json:"deleted_conversation_count"`
 	ReassignedWorkspaceCount    int      `json:"reassigned_workspace_count"`
 	DeletedWorkspaceCount       int      `json:"deleted_workspace_count"`
+	AbsorbedWorkspaceCount      int      `json:"absorbed_workspace_count"`
 }
 
 // deleteChoice reports the user's chosen action for a folder.
@@ -274,6 +288,7 @@ func (h *Handlers) HandleACPServerPrepareDelete(w http.ResponseWriter, r *http.R
 			plan.ReplacementCandidates = append(plan.ReplacementCandidates, ws.ACPServer)
 		}
 		sort.Strings(plan.ReplacementCandidates)
+		plan.MergeTargetExists = len(plan.ReplacementCandidates) > 0
 
 		resp.Folders = append(resp.Folders, plan)
 	}
@@ -418,6 +433,7 @@ func (h *Handlers) HandleACPServerReassignAndDelete(w http.ResponseWriter, r *ht
 	resp.DeletedConversationCount = len(resp.DeletedConversations)
 	resp.ReassignedWorkspaceCount = len(resp.ReassignedWorkspaces)
 	resp.DeletedWorkspaceCount = len(resp.DeletedWorkspaces)
+	resp.AbsorbedWorkspaceCount = len(resp.AbsorbedWorkspaces)
 	writeJSONOK(w, resp)
 }
 
@@ -473,17 +489,48 @@ func (h *Handlers) reassignFolder(dir, oldServer, newServer string, metas []sess
 	}
 
 	// Reassign every workspace config for (dir, oldServer) → newServer.
+	// If the folder already has a workspace at (dir, newServer) (the ONLY case
+	// where newServer appears in prepare-delete's ReplacementCandidates —
+	// candidates are drawn exclusively from ACP servers already registered for
+	// the folder), absorb the rescued workspace instead of renaming it, so we
+	// don't emit two workspaces with identical (dir, server) that the "Select
+	// Workspace" dialog can't tell apart (mitto-kr1). Sessions bound to
+	// (dir, oldServer) were already rewritten to newServer above, so no session
+	// data is stranded when a rescued UUID is dropped.
+	//
+	// hasTargetPeer is a snapshot from BEFORE the loop mutates the registry;
+	// once true it stays true (rename-in-place would only add another peer).
+	// The first-rescue-wins branch below flips it locally so any later rescued
+	// workspace for the same folder is absorbed against the just-renamed peer,
+	// which prevents an oldServer-side same-(dir,server) duplicate group from
+	// silently reappearing on the newServer side after the reassign.
+	hasTargetPeer := false
+	for _, ws := range sm.GetWorkspaces() {
+		if ws.WorkingDir == dir && ws.ACPServer == newServer {
+			hasTargetPeer = true
+			break
+		}
+	}
+
 	for _, ws := range sm.GetWorkspaces() {
 		if ws.WorkingDir != dir || ws.ACPServer != oldServer {
 			continue
 		}
-		// Preserve UUID so external references (e.g. beads config keyed by
-		// workspace UUID) survive the switch.
+		if hasTargetPeer {
+			sm.RemoveWorkspace(ws.UUID)
+			resp.AbsorbedWorkspaces = append(resp.AbsorbedWorkspaces, ws.UUID)
+			continue
+		}
+		// No pre-existing peer → rename in place, preserving UUID so external
+		// references (e.g. beads config keyed by workspace UUID) survive the
+		// switch. Any further rescued workspaces for the same folder must be
+		// absorbed against this one.
 		updated := ws
 		updated.ACPServer = newServer
 		sm.RemoveWorkspace(ws.UUID)
 		sm.AddWorkspace(updated)
 		resp.ReassignedWorkspaces = append(resp.ReassignedWorkspaces, ws.UUID)
+		hasTargetPeer = true
 	}
 	return nil
 }
