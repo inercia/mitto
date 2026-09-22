@@ -213,6 +213,21 @@ type BeadsSource struct {
 	inProgress atomic.Bool
 	pending    atomic.Bool
 
+	// lastFailures records, per workspace UUID, the signature (see
+	// failureSignature) of the most recent list/parse failure. A workspace
+	// with no entry (or an entry cleared on recovery) is considered healthy.
+	// Used by runOnce to downgrade steady-state repeats of an identical
+	// failure from WARN to DEBUG, re-emit WARN on a signature change (e.g.
+	// list failure -> parse failure, or a different exit code/stderr), and
+	// emit a one-shot INFO line when a previously-failing workspace recovers
+	// (mitto-3v0: a persistently-failing external workspace's `bd list`
+	// otherwise WARNs on every pass -- 116 times in ~35 min observed against
+	// two broken adobe/ethos workspaces polled every ~15s by the
+	// watcher-triggered refresh). Guarded by lastFailuresMu, independent of
+	// inProgress/pending (which coalesce concurrent Run calls, not state).
+	lastFailuresMu sync.Mutex
+	lastFailures   map[string]string
+
 	closeOnce sync.Once
 	closed    chan struct{}
 	done      chan struct{}
@@ -233,12 +248,13 @@ func NewBeadsSource(store Store, lister BeadsLister, workspaces BeadsWorkspaceLi
 		panic("stats: NewBeadsSource: workspaces is nil")
 	}
 	return &BeadsSource{
-		store:      store,
-		lister:     lister,
-		workspaces: workspaces,
-		opts:       opts.withDefaults(),
-		closed:     make(chan struct{}),
-		done:       make(chan struct{}),
+		store:        store,
+		lister:       lister,
+		workspaces:   workspaces,
+		opts:         opts.withDefaults(),
+		lastFailures: make(map[string]string),
+		closed:       make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -392,20 +408,23 @@ func (s *BeadsSource) runOnce(ctx context.Context) error {
 		}
 		raw, err := s.listWithRetry(ctx, ws.Dir)
 		if err != nil {
-			s.logWarn("beads source: workspace list failed, skipping pass for this workspace (preserving its existing data)",
-				append([]any{"dir", ws.Dir, "workspace", ws.UUID}, beadsErrorAttrs(err)...)...)
+			s.logFailurePass(ws, failureSignature("list", err),
+				"beads source: workspace list failed, skipping pass for this workspace (preserving its existing data)",
+				beadsErrorAttrs(err)...)
 			failedWorkspaces = append(failedWorkspaces, ws)
 			failures = append(failures, fmt.Errorf("stats: beads source: list %s: %w", ws.Dir, err))
 			continue
 		}
 		var items []beadsItem
 		if err := json.Unmarshal(raw, &items); err != nil {
-			s.logWarn("beads source: workspace parse failed, skipping pass for this workspace (preserving its existing data)",
-				"dir", ws.Dir, "workspace", ws.UUID, "error", err)
+			s.logFailurePass(ws, failureSignature("parse", err),
+				"beads source: workspace parse failed, skipping pass for this workspace (preserving its existing data)",
+				"error", err)
 			failedWorkspaces = append(failedWorkspaces, ws)
 			failures = append(failures, fmt.Errorf("stats: beads source: parse %s: %w", ws.Dir, err))
 			continue
 		}
+		s.logFailureRecovered(ws)
 		for _, it := range items {
 			s.foldItem(it, ws.UUID, agg, uptime)
 		}
@@ -668,6 +687,85 @@ func (s *BeadsSource) logWarn(msg string, args ...any) {
 	if s.opts.Logger != nil {
 		s.opts.Logger.Warn(msg, args...)
 	}
+}
+
+// logDebug is the DEBUG counterpart of logInfo/logWarn, used by
+// logFailurePass to downgrade steady-state repeats of an identical
+// per-workspace failure (mitto-3v0).
+func (s *BeadsSource) logDebug(msg string, args ...any) {
+	if s.opts.Logger != nil {
+		s.opts.Logger.Debug(msg, args...)
+	}
+}
+
+// logFailurePass logs a per-workspace list/parse failure in runOnce,
+// downgrading a WARN to DEBUG once the exact same failure (per sig, see
+// failureSignature) has already been reported for this workspace, and
+// re-emitting WARN the moment the signature changes -- e.g. a transient
+// list failure recovers and is then replaced by a persistent parse failure,
+// or the exit code/stderr changes. This is what turns a persistently,
+// deterministically failing external workspace's `bd list` from a
+// continuous WARN storm (116 occurrences in ~35 min observed against two
+// broken adobe/ethos workspaces, mitto-3v0) into a single WARN followed by
+// DEBUG-level repeats, without weakening the data-preservation contract:
+// failedWorkspaces/failures (and thus the ReplaceDeltas read-back-and-skip
+// path) are populated by the caller exactly as before regardless of which
+// level this logs at.
+//
+// dir/workspace attributes are added here so every call site does not need
+// to repeat them; attrs is the failure-kind-specific tail (e.g. the result
+// of beadsErrorAttrs for a list failure, or a plain "error", err pair for a
+// parse failure).
+func (s *BeadsSource) logFailurePass(ws BeadsWorkspace, sig, msg string, attrs ...any) {
+	s.lastFailuresMu.Lock()
+	prev, hadPrev := s.lastFailures[ws.UUID]
+	s.lastFailures[ws.UUID] = sig
+	s.lastFailuresMu.Unlock()
+
+	full := append([]any{"dir", ws.Dir, "workspace", ws.UUID}, attrs...)
+	if hadPrev && prev == sig {
+		s.logDebug(msg, append(full, "repeated", true)...)
+		return
+	}
+	s.logWarn(msg, full...)
+}
+
+// logFailureRecovered is logFailurePass's symmetrical counterpart: called by
+// runOnce every time a workspace's list+parse succeed, it clears any
+// tracked failure for that workspace and, only if one was actually tracked
+// (i.e. the workspace is transitioning from failing to healthy, not merely
+// confirming it is still healthy), emits a one-shot INFO line naming the
+// error that just cleared -- so a fixed/transient external workspace's
+// recovery is visible in the log without re-emitting anything on every
+// subsequent healthy pass (mitto-3v0).
+func (s *BeadsSource) logFailureRecovered(ws BeadsWorkspace) {
+	s.lastFailuresMu.Lock()
+	prev, hadPrev := s.lastFailures[ws.UUID]
+	if hadPrev {
+		delete(s.lastFailures, ws.UUID)
+	}
+	s.lastFailuresMu.Unlock()
+
+	if hadPrev {
+		s.logInfo("beads source: workspace recovered", "dir", ws.Dir, "workspace", ws.UUID, "previous_error", prev)
+	}
+}
+
+// failureSignature returns a stable identity string for a runOnce
+// list/parse failure, used by logFailurePass to tell a persistently
+// identical failure (steady state -> downgrade to DEBUG) apart from a fresh
+// or changed one (-> WARN). kind ("list" or "parse") keeps a transition
+// between the two failure kinds from being masked as a "repeat" of the
+// other. Prefers the captured stderr/exit code from a *beads.CmdError
+// (stable across retries of the same underlying command failure, and more
+// precise than the wrapped error's message) and falls back to err.Error()
+// for errors that don't carry that enrichment, e.g. a json.Unmarshal parse
+// error.
+func failureSignature(kind string, err error) string {
+	if stderr := beads.StderrOf(err); stderr != "" {
+		return fmt.Sprintf("%s:%d:%s", kind, beads.ExitCodeOf(err), stderr)
+	}
+	return kind + ":" + err.Error()
 }
 
 // beadsErrorAttrs builds structured slog attributes for a beads-source
