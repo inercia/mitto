@@ -108,6 +108,11 @@ func TestHandleACPServerPrepareDelete_FoldersAndCandidates(t *testing.T) {
 	if !equalStrings(f1.WorkspaceUUIDs, []string{"ws-a"}) {
 		t.Errorf("folder[0] workspaces = %v", f1.WorkspaceUUIDs)
 	}
+	// /dir1 has a candidate ("other") backed by an existing workspace
+	// (ws-b) → reassigning here will merge into it (mitto-kr1 absorb path).
+	if !f1.MergeTargetExists {
+		t.Errorf("folder[0] MergeTargetExists = false, want true (has candidate %v)", f1.ReplacementCandidates)
+	}
 	// /dir2 has no other workspace-registered server → no candidates.
 	f2 := resp.Folders[1]
 	if f2.WorkingDir != "/dir2" || f2.ArchivedConversations != 0 || f2.NonArchivedConversations != 1 {
@@ -115,6 +120,9 @@ func TestHandleACPServerPrepareDelete_FoldersAndCandidates(t *testing.T) {
 	}
 	if len(f2.ReplacementCandidates) != 0 {
 		t.Errorf("folder[1] candidates = %v (want empty)", f2.ReplacementCandidates)
+	}
+	if f2.MergeTargetExists {
+		t.Errorf("folder[1] MergeTargetExists = true, want false (no candidates)")
 	}
 }
 
