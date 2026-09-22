@@ -41,6 +41,7 @@ import {
 } from "./utils/perfMarks.js";
 import { setDraft as setDraftStore } from "./utils/draftStore.js";
 import { useRenderCounter } from "./hooks/useRenderCounter.js";
+import { useActiveSessionMessages } from "./hooks/useSessionsStore.js";
 import { installRenderCountsReset } from "./utils/renderCounters.js";
 
 // mitto-sus.1: opt-in UI responsiveness benchmark instrumentation. No-op
@@ -1325,11 +1326,15 @@ function App() {
   // Messages-area scroll management (extracted to hooks/useScrollManagement.js):
   // at-bottom tracking, new-message indicator, auto-scroll on new content,
   // instant positioning on session switch, and prepend scroll restoration.
+  // Read the same store slice that MessageList renders. Using useWebSocket's
+  // parallel `messages` selector here let the layout effect scroll the old DOM
+  // before MessageList's store subscription committed the new conversation.
   // messagesContainerRef and scrollPreservationRef are owned by App (shared with
   // the render, useInfiniteScroll, and handleLoadMore) and passed in.
+  const scrollMessages = useActiveSessionMessages(activeSessionId);
   const { isUserAtBottom, hasNewMessages, isScrolledUp, scrollToBottom } =
     useScrollManagement({
-      messages,
+      messages: scrollMessages,
       activeSessionId,
       mainView,
       isStreaming,

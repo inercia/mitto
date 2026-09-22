@@ -20,7 +20,10 @@ import {
   beforeEach,
 } from "../utils/testing/testGlobals.js";
 
-import { replaceAll, _resetSessionsStoreForTests } from "../stores/sessionsStore.js";
+import {
+  replaceAll,
+  _resetSessionsStoreForTests,
+} from "../stores/sessionsStore.js";
 
 global.window = global.window || {};
 
@@ -46,10 +49,20 @@ window.preact = {
     };
     return [inst.state, setState];
   },
+  useRef: (initial) => {
+    const inst = current;
+    const index = inst.refIndex++;
+    if (!inst.refs[index]) inst.refs[index] = { current: initial };
+    return inst.refs[index];
+  },
   useEffect: (cb, deps) => {
     const inst = current;
     const changed = !inst.effectRan || !depsEqual(inst.effectDeps, deps);
     if (changed) {
+      if (inst.deferEffects) {
+        inst.pendingEffect = { cb, deps };
+        return;
+      }
       if (typeof inst.cleanup === "function") inst.cleanup();
       inst.cleanup = cb() || null;
       inst.effectDeps = deps;
@@ -65,11 +78,16 @@ function makeInstance() {
     effectRan: false,
     effectDeps: undefined,
     cleanup: null,
+    refs: [],
+    refIndex: 0,
+    deferEffects: false,
+    pendingEffect: null,
   };
 }
 
 function render(inst, hookFn, ...args) {
   current = inst;
+  inst.refIndex = 0;
   const result = hookFn(...args);
   current = null;
   return result;
@@ -132,6 +150,19 @@ describe("useSessionsStore hooks (mitto-sus.7) > live updates via subscription",
 });
 
 describe("useSessionsStore hooks (mitto-sus.7) > session-id switch resubscribes cleanly", () => {
+  test("returns the new session snapshot before the passive effect resubscribes", async () => {
+    const { useActiveSessionMessages } = await loadHooks();
+    replaceAll({ s1: { messages: ["s1-msg"] }, s2: { messages: ["s2-msg"] } });
+    const inst = makeInstance();
+
+    expect(render(inst, useActiveSessionMessages, "s1")).toEqual(["s1-msg"]);
+
+    // Real Preact runs useEffect after the switched render commits. Defer the
+    // test effect to verify that render itself never leaks s1 into s2's DOM.
+    inst.deferEffects = true;
+    expect(render(inst, useActiveSessionMessages, "s2")).toEqual(["s2-msg"]);
+  });
+
   test("switching sessionId tears down the old subscription and adopts the new session's value", async () => {
     const { useActiveSessionMessages } = await loadHooks();
     replaceAll({ s1: { messages: ["s1-msg"] }, s2: { messages: ["s2-msg"] } });
