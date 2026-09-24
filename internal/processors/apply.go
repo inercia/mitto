@@ -136,7 +136,12 @@ func parseMemoryCurationInt(s string, def int) int {
 // discarded entirely within this function — it is never rendered into any
 // prompt or sent to a model, only used to decide the change-threshold gate
 // in countBdMemories's caller (mitto-1kl). Bounded by a short timeout since
-// this runs synchronously in the close pipeline.
+// this runs synchronously in the close pipeline. Failure here (including a
+// deadline exceeded while waiting on bdexec's process-wide execution slots
+// under load) is expected, safe-by-design, fail-open behavior — see the
+// caller in ApplyOnClose, which logs it at Info rather than Warn
+// (mitto-bitr): no memory is ever lost, only the change-threshold
+// coalescing optimization is skipped for this close.
 func countBdMemories(ctx context.Context, workingDir string) (int, error) {
 	if _, err := exec.LookPath("bd"); err != nil {
 		return 0, err
@@ -2110,11 +2115,17 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 				// Cheap, context-free count (see countBdMemories) used only to
 				// decide the change-threshold gate below — never rendered into
 				// any prompt. On failure, fail open (dispatch) rather than
-				// silently starving maintenance forever.
+				// silently starving maintenance forever. This is intended,
+				// safe-by-design behavior (no memory is ever lost — only the
+				// change-threshold coalescing optimization is skipped), so it
+				// is logged at Info rather than Warn (mitto-bitr): a busy host
+				// or a caller close to its own deadline can make this
+				// best-effort, gating-only count fail routinely, and that is
+				// not an operator-actionable warning.
 				currentCount, countErr := countBdMemories(ctx, input.WorkingDir)
 				countKnown := countErr == nil
 				if !countKnown {
-					m.logger.Warn("close-phase memory curation: memory count failed; gating fails open to dispatch",
+					m.logger.Info("close-phase memory curation: memory count failed; gating fails open to dispatch",
 						"name", proc.Name, "workspace_uuid", input.WorkspaceUUID, "error", countErr)
 				}
 

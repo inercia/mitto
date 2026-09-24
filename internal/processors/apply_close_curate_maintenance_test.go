@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/bdexec"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -451,5 +454,101 @@ func TestApplyOnClose_CurateMemories_IntervalCrossing_DispatchesDespiteLowDelta(
 	runs := rec.snapshot()
 	if len(runs) != 1 || runs[0].Outcome != "ok" {
 		t.Fatalf("runs = %+v, want exactly one dispatched (ok) run", runs)
+	}
+}
+
+// --- Count timeout (mitto-bitr): must not be logged as WARN -----------------
+
+// occupyAllBdSlots calls bdexec.Acquire once per process-wide execution slot
+// (bdexec.MaxConcurrent) against distinct scratch directories (so only the
+// shared global `slots` channel is contended, not any per-database mutex)
+// and never releases them for the duration of the test. This reproduces the
+// LITERAL "context deadline exceeded" error bdexec.Acquire returns when its
+// own `case <-ctx.Done()` branch wins — the actual production path for
+// mitto-bitr — as opposed to killing a slow subprocess mid-flight, which
+// instead surfaces as "signal: killed".
+func occupyAllBdSlots(t *testing.T) {
+	t.Helper()
+	for i := 0; i < bdexec.MaxConcurrent; i++ {
+		release, err := bdexec.Acquire(context.Background(), t.TempDir())
+		if err != nil {
+			t.Fatalf("bdexec.Acquire(warm-up slot %d) error = %v", i, err)
+		}
+		t.Cleanup(release)
+	}
+}
+
+// TestApplyOnClose_CurateMemories_CountTimeout_NotLoggedAsWarn reproduces
+// mitto-bitr: countBdMemories derives its context via
+// context.WithTimeout(ctx, 10*time.Second), which inherits whichever
+// deadline is EARLIER, and then contends for bdexec's process-wide execution
+// slots. When every slot is already held (busy host, other bd invocations in
+// flight) and the caller's own context has a short deadline, bdexec.Acquire's
+// `case <-ctx.Done()` branch wins and returns the exact
+// "context deadline exceeded" error family reported by the bug — before bd
+// is even invoked, so bd itself is healthy and would have answered. The gate
+// must still fail open (dispatch anyway — safe, unchanged by this bug), but
+// per the bead's acceptance criteria the timeout must no longer be logged at
+// WARN. This test currently FAILS (the WARN fires) until the fix demotes the
+// log level and/or gives the count its own independent deadline.
+func TestApplyOnClose_CurateMemories_CountTimeout_NotLoggedAsWarn(t *testing.T) {
+	isolateMemoryCurationDir(t)
+	installFakeBdMemoryCount(t, 10) // bd itself is healthy; only the slot wait times out
+	occupyAllBdSlots(t)
+	const workspaceUUID = "ws-curate-count-timeout"
+
+	fixedNow := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	if err := session.WriteMemoryCurationState("", workspaceUUID, session.MemoryCurationState{
+		LastRunAt:          fixedNow.Add(-1 * time.Hour), // interval NOT elapsed
+		LastRunMemoryCount: 10,
+	}); err != nil {
+		t.Fatalf("WriteMemoryCurationState() error = %v", err)
+	}
+
+	handler := &recordingLogHandler{}
+	m := NewManager("", slog.New(handler))
+	m.processors = []*Processor{{
+		Name:   curateMemoriesProcessorName,
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "curate the memory store",
+	}}
+	m.SetClock(func() time.Time { return fixedNow })
+	var calls atomic.Int32
+	release := make(chan struct{})
+	close(release)
+	m.SetPromptCompletionFunc(blockingPromptCompletionFunc(release, &calls))
+
+	// A short-lived context: countBdMemories' inner
+	// context.WithTimeout(ctx, 10*time.Second) inherits this 300ms deadline
+	// instead of its own 10s ceiling. With every bdexec slot already held
+	// (occupyAllBdSlots above), Acquire blocks on this deadline and returns
+	// ctx.Err() — literally "context deadline exceeded".
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	m.ApplyOnClose(ctx, CloseProcessorInput{
+		SessionID: "s1", WorkspaceUUID: workspaceUUID, WorkingDir: t.TempDir(),
+	})
+
+	waitForCompletionCalls(t, &calls, 1) // fail-open: still dispatches despite the count failure
+
+	var found bool
+	for _, rec := range handler.snapshot() {
+		if !strings.Contains(rec.Message, "memory count failed") {
+			continue
+		}
+		found = true
+		errAttr := fmt.Sprint(rec.Attrs["error"])
+		if !strings.Contains(errAttr, "deadline exceeded") {
+			t.Fatalf("count-failure log record error attr = %q, want to contain %q (test setup did not reproduce a genuine timeout)",
+				errAttr, "deadline exceeded")
+		}
+		if rec.Level == slog.LevelWarn {
+			t.Errorf("count timeout logged at WARN (msg=%q attrs=%v); mitto-bitr requires the timeout to no longer be logged as WARN once countBdMemories fails with a context deadline",
+				rec.Message, rec.Attrs)
+		}
+	}
+	if !found {
+		t.Fatalf("no %q log record captured — test setup did not reproduce the count failure", "memory count failed")
 	}
 }
