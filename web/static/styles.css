@@ -403,6 +403,19 @@
   );
 }
 
+/* mitto-pdv0: daisyUI .chat uses `grid-template-columns: auto 1fr` (chat-start)
+   / `1fr auto` (chat-end), and a long unbroken code line inside .chat-bubble
+   widens the 1fr track past the viewport. We can't use overflow:hidden on
+   .chat-bubble without clipping the (hidden but still-present) tail, so clamp
+   the content track instead — long <pre> lines wrap/scroll within the bubble
+   rather than pushing the page. Mirrored for chat-end. */
+.chat.chat-start {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.chat.chat-end {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 /* Keep the sidebar filter-tab bar (Conversations) and the Tasks panel toolbar
    at the same height so the horizontal divider lines between the two
    side-by-side panels align. Both panel headers already share p-4 + text-lg, so

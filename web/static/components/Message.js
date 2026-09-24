@@ -691,9 +691,9 @@ function MessageImpl({
     // startup pulse). Absent for ordinary human-typed messages.
     const provenanceInfo = describeProvenance(message.provenance);
     return html`
-      <${MessageEnter} class="flex flex-col items-end gap-1 mb-3">
+      <${MessageEnter} class="chat chat-end group mb-2">
         <div
-          class="group max-w-[95%] md:max-w-[75%] px-4 py-2 rounded-2xl bg-mitto-user text-mitto-user-text border border-mitto-user-border rounded-br-sm"
+          class="chat-bubble bg-mitto-user text-mitto-user-text rounded-2xl before:hidden max-w-[95%] md:max-w-[75%]"
         >
           ${hasImages &&
           html`
@@ -722,34 +722,34 @@ function MessageImpl({
                 class="markdown-content markdown-content-user whitespace-pre-wrap font-sans text-sm m-0"
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
-          <div class="flex items-center justify-end gap-1 mt-1">
-            <${Tooltip}
-              tip=${userCopied ? "Copied!" : "Copy as Markdown"}
-              open=${userCopied}
-              placement="top"
-            >
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
-                aria-label="Copy as Markdown"
-                data-testid="copy-message-markdown"
-                onClick=${handleUserCopy}
-              >
-                ${userCopied
-                  ? html`<${CheckIcon}
-                      className="w-3.5 h-3.5 text-mitto-success"
-                    />`
-                  : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
-              </button>
-            <//>
-            ${userTimeStr &&
-            html`<div class="message-timestamp">${userTimeStr}</div>`}
-          </div>
         </div>
-        <${ProvenanceFooter}
-          provenanceInfo=${provenanceInfo}
-          testId="user-message-provenance"
-        />
+        <div class="chat-footer flex items-center justify-end gap-1">
+          <${Tooltip}
+            tip=${userCopied ? "Copied!" : "Copy as Markdown"}
+            open=${userCopied}
+            placement="top"
+          >
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label="Copy as Markdown"
+              data-testid="copy-message-markdown"
+              onClick=${handleUserCopy}
+            >
+              ${userCopied
+                ? html`<${CheckIcon}
+                    className="w-3.5 h-3.5 text-mitto-success"
+                  />`
+                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+            </button>
+          <//>
+          ${userTimeStr &&
+          html`<div class="message-timestamp">${userTimeStr}</div>`}
+          <${ProvenanceFooter}
+            provenanceInfo=${provenanceInfo}
+            testId="user-message-provenance"
+          />
+        </div>
       <//>
     `;
   }
@@ -784,9 +784,9 @@ function MessageImpl({
       ? formatMessageTime(message.timestamp)
       : null;
     return html`
-      <${MessageEnter} class="flex justify-start mb-3 group">
+      <${MessageEnter} class="chat chat-start group mb-2">
         <div
-          class="max-w-[95%] md:max-w-[75%] px-4 py-3 rounded-2xl bg-mitto-agent text-mitto-text rounded-bl-sm"
+          class="chat-bubble bg-mitto-agent text-mitto-text rounded-2xl before:hidden max-w-[95%] md:max-w-[75%]"
         >
           <div
             class="markdown-content text-sm ${showCursor
@@ -800,29 +800,29 @@ function MessageImpl({
               />`,
             )}
           </div>
-          <div class="flex items-center gap-1 mt-1">
-            <${Tooltip}
-              tip=${agentCopied ? "Copied!" : "Copy as Markdown"}
-              open=${agentCopied}
-              placement="top"
+        </div>
+        <div class="chat-footer flex items-center gap-1">
+          <${Tooltip}
+            tip=${agentCopied ? "Copied!" : "Copy as Markdown"}
+            open=${agentCopied}
+            placement="top"
+          >
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label="Copy as Markdown"
+              data-testid="copy-message-markdown"
+              onClick=${handleAgentCopy}
             >
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
-                aria-label="Copy as Markdown"
-                data-testid="copy-message-markdown"
-                onClick=${handleAgentCopy}
-              >
-                ${agentCopied
-                  ? html`<${CheckIcon}
-                      className="w-3.5 h-3.5 text-mitto-success"
-                    />`
-                  : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
-              </button>
-            <//>
-            ${agentTimeStr &&
-            html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
-          </div>
+              ${agentCopied
+                ? html`<${CheckIcon}
+                    className="w-3.5 h-3.5 text-mitto-success"
+                  />`
+                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+            </button>
+          <//>
+          ${agentTimeStr &&
+          html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
         </div>
       <//>
     `;
