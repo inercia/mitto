@@ -2874,6 +2874,21 @@ func TestLoopRunner_ResumeFailures_TransientSaturation_DoesNotArchiveHealthyLoop
 	})
 	sm.SetACPProcessManager(fakeSaturatedProcessManager{})
 
+	// mitto-n2fn: resumeSessionWithConstraint now retries ErrSharedProcessSaturated
+	// on a bounded resumeSaturationMaxWait/resumeSaturationRetryInterval cadence
+	// before giving up. fakeSaturatedProcessManager never un-saturates, so each
+	// RunOnce()'s ResumeSession call would otherwise block for the full
+	// production resumeSaturationMaxWait (120s) before still failing — shrink
+	// both to keep this test fast without changing its outcome.
+	origMaxWait := resumeSaturationMaxWait
+	origInterval := resumeSaturationRetryInterval
+	resumeSaturationMaxWait = 10 * time.Millisecond
+	resumeSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() {
+		resumeSaturationMaxWait = origMaxWait
+		resumeSaturationRetryInterval = origInterval
+	})
+
 	runner := NewLoopRunner(store, sm, nil)
 
 	var stopped bool

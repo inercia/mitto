@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
@@ -3610,4 +3611,167 @@ func TestSessionManager_BroadcastAgentAuthState_ClearedUsesClearedMessageType(t 
 func TestSessionManager_BroadcastAgentAuthState_NoEventsManager_NoPanic(t *testing.T) {
 	sm := NewSessionManagerWithOptions(SessionManagerOptions{AutoApprove: true})
 	sm.broadcastAgentAuthState("sess-3", "ws-x", "/path3", true) // must not panic
+}
+
+// saturationThenHealthyProcessManager is a minimal ProcessManager stub (mirrors
+// loop_runner_test.go's fakeSaturatedProcessManager) whose GetOrCreateProcess
+// always hands back the SAME saturationThenHealthySharedProcess instance, so
+// the process's internal failure counter is shared across every resume
+// attempt made against this manager.
+type saturationThenHealthyProcessManager struct {
+	proc *saturationThenHealthySharedProcess
+}
+
+func (m *saturationThenHealthyProcessManager) GetOrCreateProcess(*config.WorkspaceSettings, string, string, map[string]string, *runner.Runner, bool) (SharedProcess, error) {
+	return m.proc, nil
+}
+func (m *saturationThenHealthyProcessManager) EnsurePrewarmed(string, *slog.Logger) {}
+func (m *saturationThenHealthyProcessManager) ClearGCSuspended(string)              {}
+func (m *saturationThenHealthyProcessManager) IsGCSuspended(string) bool            { return false }
+func (m *saturationThenHealthyProcessManager) StopGC()                              {}
+func (m *saturationThenHealthyProcessManager) Close()                               {}
+func (m *saturationThenHealthyProcessManager) ProcessCount() int                    { return 1 }
+func (m *saturationThenHealthyProcessManager) ColdProcessCount() int                { return 0 }
+func (m *saturationThenHealthyProcessManager) PinWorkspace(string, string, time.Duration, int) bool {
+	return true
+}
+func (m *saturationThenHealthyProcessManager) HasLiveProcess(string) bool { return true }
+
+// saturationThenHealthySharedProcess implements SharedProcess; the first
+// maxFailures calls to any session-establishing RPC (NewSession/LoadSession/
+// ResumeSession) fail with an error wrapping acperrors.ErrSharedProcessSaturated
+// — mirroring the exact production shape from mitto-n2fn ("shared ACP process
+// became saturated mid-flight ... failing fast: ... process saturated
+// (reactive degradation): context deadline exceeded") — before the process
+// "un-saturates" (e.g. a GC Tier 5 saturated-idle recycle clears it) and
+// starts succeeding.
+type saturationThenHealthySharedProcess struct {
+	mu          sync.Mutex
+	attempts    int
+	maxFailures int
+}
+
+func (p *saturationThenHealthySharedProcess) attempt() (*SessionHandle, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.attempts++
+	if p.attempts <= p.maxFailures {
+		return nil, fmt.Errorf("session/new: shared ACP process became saturated mid-flight (after 1 attempt(s)); failing fast: %w: context deadline exceeded",
+			acperrors.ErrProcessSaturated)
+	}
+	return &SessionHandle{SessionID: "acp-session-after-recycle"}, nil
+}
+
+func (p *saturationThenHealthySharedProcess) Capabilities() agentbackend.Capabilities {
+	return NewProcessCapabilities(nil)
+}
+func (p *saturationThenHealthySharedProcess) ProcessDone() <-chan struct{} {
+	return make(chan struct{})
+}
+func (p *saturationThenHealthySharedProcess) NewSession(context.Context, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
+	return p.attempt()
+}
+func (p *saturationThenHealthySharedProcess) LoadSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
+	return p.attempt()
+}
+func (p *saturationThenHealthySharedProcess) ResumeSession(context.Context, string, string, []agentbackend.MCPServerDescriptor) (*SessionHandle, error) {
+	return p.attempt()
+}
+func (p *saturationThenHealthySharedProcess) RegisterSession(string, *SessionCallbacks) {}
+func (p *saturationThenHealthySharedProcess) UnregisterSession(string)                  {}
+func (p *saturationThenHealthySharedProcess) Cancel(context.Context, string) error      { return nil }
+func (p *saturationThenHealthySharedProcess) SetSessionMode(context.Context, string, string) error {
+	return nil
+}
+func (p *saturationThenHealthySharedProcess) SetSessionModel(context.Context, string, string) error {
+	return nil
+}
+func (p *saturationThenHealthySharedProcess) Done() <-chan struct{} { return make(chan struct{}) }
+func (p *saturationThenHealthySharedProcess) Prompt(context.Context, string, []agentbackend.ContentBlock) (agentbackend.PromptOutcome, error) {
+	return agentbackend.PromptOutcome{}, nil
+}
+func (p *saturationThenHealthySharedProcess) Generation() int                           { return 0 }
+func (p *saturationThenHealthySharedProcess) Restart(int) error                         { return nil }
+func (p *saturationThenHealthySharedProcess) RecommendedLoadTimeout(bool) time.Duration { return 0 }
+func (p *saturationThenHealthySharedProcess) MCPInitDone() bool                         { return true }
+func (p *saturationThenHealthySharedProcess) WaitForMCPInit(context.Context) bool       { return true }
+
+// TestResumeSessionBackground_TransientSaturation_FailsFastInsteadOfRetrying
+// reproduces mitto-n2fn: the user-facing resume path (ResumeSessionBackground,
+// called from internal/web/session_ws.go's async cold-start resume goroutine,
+// and ResumeSession, called from handleEnsureResumed) has NO saturation-aware
+// retry, unlike internal/processors/apply.go's dispatchWithRetry, which rides
+// out an errors.Is(err, acperrors.ErrSharedProcessSaturated) failure on a
+// bounded ~120s (dispatchSaturationMaxWait) cadence tied to the ~30s GC Tier 5
+// saturated-idle recycle that is the only event which actually clears
+// saturation.
+//
+// Here the shared process fails its first 2 session-establishing RPCs with
+// the exact "became saturated mid-flight ... failing fast" shape from the
+// bead's production evidence, then succeeds (simulating a GC recycle clearing
+// saturation shortly after). A single ResumeSessionBackground call should
+// transparently retry through that transient window and return the resumed
+// session with no error — mirroring the processor path's tolerance.
+//
+// This FAILS today: resumeSessionWithConstraint makes exactly one attempt
+// against the SharedProcess per call, with no retry loop for
+// ErrSharedProcessSaturated, so the very first (still-saturated) attempt's
+// error is returned immediately to the caller — which is what surfaces as
+// the reported "Failed to resume session (async)" / "(ensure_resumed)"
+// ERROR + BroadcastACPStartFailed toast for real users.
+func TestResumeSessionBackground_TransientSaturation_FailsFastInsteadOfRetrying(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "sess-n2fn-saturation-resume"
+	const wsUUID = "ws-n2fn-saturation-resume"
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{UUID: wsUUID, WorkingDir: workingDir, ACPServer: "test-server"},
+		},
+	})
+	sm.SetStore(store)
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "test-server", Command: "echo hello"},
+		},
+	})
+	// The process un-saturates after 2 failed attempts (simulating a GC
+	// recycle). A saturation-aware retry should ride this out within a
+	// single ResumeSessionBackground call.
+	sm.SetACPProcessManager(&saturationThenHealthyProcessManager{
+		proc: &saturationThenHealthySharedProcess{maxFailures: 2},
+	})
+
+	// Shrink the saturation retry cadence (mitto-n2fn fix) so this test does
+	// not sleep the production 5s interval between attempts.
+	origInterval := resumeSaturationRetryInterval
+	resumeSaturationRetryInterval = time.Millisecond
+	t.Cleanup(func() { resumeSaturationRetryInterval = origInterval })
+
+	bs, err := sm.ResumeSessionBackground(sid, "test", workingDir)
+	if err != nil {
+		t.Fatalf("bug reproduced (mitto-n2fn): ResumeSessionBackground failed fast on transient "+
+			"shared-ACP-process saturation instead of retrying until the process un-saturates "+
+			"(mirroring the processor path's dispatchSaturationMaxWait policy in "+
+			"internal/processors/apply.go) — got err: %v", err)
+	}
+	if bs == nil {
+		t.Fatal("ResumeSessionBackground returned a nil session with no error")
+	}
+	bs.Close("test_cleanup")
 }

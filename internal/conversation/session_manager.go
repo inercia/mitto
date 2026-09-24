@@ -42,6 +42,53 @@ const maxConcurrentSessionResumes = 5
 // a session is automatically archived to prevent infinite retry loops on app restart.
 const ACPStartFailureThreshold = 3
 
+// resumeSaturationMaxWait bounds how long resumeSessionWithConstraint will keep
+// retrying a session resume while the shared ACP process reports itself
+// saturated, before giving up and returning the error to the caller (mitto-n2fn).
+// Mirrors internal/processors/apply.go's dispatchSaturationMaxWait: saturation is
+// cleared ONLY by GC Tier 5's saturated-idle recycle (internal/acpproc/acp_process_gc.go),
+// which runs on a 30s ticker, so 120s spans ~4 ticks. Without this, the
+// user-facing resume path bubbled the very first (possibly still-saturated)
+// attempt's error straight up as "Failed to resume session", even though a
+// resume moments later would have succeeded — unlike the processor dispatch
+// path, which already tolerates saturation storms via the same policy.
+// var (not const) so tests can shrink the bound.
+var resumeSaturationMaxWait = 120 * time.Second
+
+// resumeSaturationRetryInterval is the fixed polling interval used while a
+// session resume waits out a sustained shared-process saturation window.
+// Mirrors internal/processors/apply.go's dispatchSaturationRetryInterval — a
+// fixed cadence rather than exponential backoff, since we are waiting for a
+// periodic external event (the GC recycle tick) rather than hoping a flaky
+// call succeeds sooner. var (not const) so tests can shrink the cadence.
+var resumeSaturationRetryInterval = 5 * time.Second
+
+// isResumeSaturationRetryableErr reports whether err represents shared-ACP-
+// process SATURATION specifically — worth retrying via the bounded
+// resumeSaturationMaxWait/resumeSaturationRetryInterval wait loop in
+// resumeSessionWithConstraint, since saturation is cleared by a periodic,
+// predictable external event (the GC Tier 5 recycle tick) that a short wait
+// can plausibly span.
+//
+// Deliberately narrower than the sibling classification a few lines below
+// (mittoAcp.IsMCPInitTimeout / ErrSharedProcessSaturated /
+// ErrProcessClosedConcurrently / IsAgentInternalDeadlineErr /
+// IsAgentQueryClosedErr) that exempts transient shapes from the hard
+// ACP-start-failure counter/auto-archive: those other shapes have no such
+// periodic clearing event, so retrying them in a blocking loop would not
+// reliably resolve and would instead turn an already-fast failure into one
+// that blocks for the full resumeSaturationMaxWait on every attempt whenever
+// the underlying condition is, in fact, persistent rather than transient —
+// regressing callers like LoopRunner (which already re-resumes on its own
+// schedule) and existing tests
+// (TestLoopRunner_ResumeFailures_AgentInternalDeadline_DoesNotArchiveHealthyLoop,
+// TestSessionManager_ResumeSession_AgentInternalDeadline_DoesNotCountAsHardFailure)
+// that intentionally exercise an ALWAYS-failing fake process expecting a
+// fast, uncounted failure rather than a 120s block (mitto-n2fn).
+func isResumeSaturationRetryableErr(err error) bool {
+	return err != nil && errors.Is(err, acperrors.ErrSharedProcessSaturated)
+}
+
 // DefaultMaxMessagesPerSession is the default maximum number of messages to retain per session.
 // When exceeded, the oldest messages are automatically pruned after each new event is recorded.
 // This prevents unbounded session growth (especially for loop sessions) which can cause
@@ -3120,6 +3167,41 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		}
 		cfg.SharedProcess, cfg.BackendLease = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
 		bs, err = ResumeBackgroundSession(cfg)
+	}
+
+	// mitto-n2fn: a still-saturated shared ACP process is TRANSIENT — cleared
+	// only by the periodic GC Tier 5 saturated-idle recycle (~30s ticker) — so
+	// retry on a fixed cadence, bounded to resumeSaturationMaxWait, mirroring
+	// internal/processors/apply.go's dispatchWithRetry saturation policy at
+	// this layer instead of bubbling the first (possibly still-saturated)
+	// attempt's error straight to the caller. getSharedProcess is called again
+	// each attempt so a GC recycle landing between attempts hands back a fresh,
+	// un-saturated process instance. The resume-semaphore permit is kept held
+	// for the whole bounded window (same as the ErrProcessClosedConcurrently
+	// retry immediately above) rather than released/reacquired around each
+	// attempt: saturation is itself a signal that the shared process is
+	// already the system's bottleneck, so a few permits waiting it out here
+	// does not meaningfully change contention for other workspaces sharing
+	// the global cap.
+	if err != nil && isResumeSaturationRetryableErr(err) {
+		saturationDeadline := time.Now().Add(resumeSaturationMaxWait)
+		for isResumeSaturationRetryableErr(err) && time.Now().Before(saturationDeadline) {
+			select {
+			case <-resumeCtx.Done():
+			case <-time.After(resumeSaturationRetryInterval):
+			}
+			if resumeCtx.Err() != nil {
+				break
+			}
+			if sm.logger != nil {
+				sm.logger.Debug("Retrying session resume after transient shared-process saturation",
+					"session_id", sessionID,
+					"foreground", foreground,
+					"error", err)
+			}
+			cfg.SharedProcess, cfg.BackendLease = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+			bs, err = ResumeBackgroundSession(cfg)
+		}
 	}
 	// Release the startup semaphore now that the expensive ACP work is done.
 	// This happens on BOTH the success and error paths (both are immediately below).
