@@ -542,6 +542,17 @@ const (
 // "fetch failed"). A bare 5xx that lacks the marker is intentionally NOT
 // treated as an upstream outage here — it keeps flowing through the generic
 // -32603 HTTP-status branch of FormatACPError unchanged.
+//
+// mitto-1jp7: a third network-level variant surfaces as undici reporting the
+// underlying socket was "terminated" mid-request (the TCP/TLS connection was
+// reset) inside the same -32603 "fetch failed" envelope, with no apiStatus
+// and no UND_ERR_CONNECT_TIMEOUT code — observed co-occurring with Slack
+// "connection reset by peer" during the same local network blip. The exact
+// key/quoting of the "terminated" marker in the raw envelope is not
+// guaranteed (it may appear as a bare "details":"terminated" JSON field or
+// inlined in the message text), so match the bare word scoped to the same
+// "fetch failed" envelope prefix as the connect-timeout variant, rather than
+// anchoring on one exact JSON shape.
 func IsUpstreamUnavailableError(err error) bool {
 	if err == nil {
 		return false
@@ -549,6 +560,10 @@ func IsUpstreamUnavailableError(err error) bool {
 	errMsgLower := strings.ToLower(err.Error())
 	if strings.Contains(errMsgLower, "und_err_connect_timeout") ||
 		strings.Contains(errMsgLower, "connect timeout error") {
+		return true
+	}
+	if strings.Contains(errMsgLower, "fetch failed") &&
+		strings.Contains(errMsgLower, "terminated") {
 		return true
 	}
 	return strings.Contains(errMsgLower, `"apistatus":"unavailable"`)

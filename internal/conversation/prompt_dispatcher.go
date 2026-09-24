@@ -1687,7 +1687,21 @@ func (p promptDispatcher) handlePromptError(
 	inactivityWatchdogFired bool,
 ) (retry bool) {
 	if l := d.pdLogger(); l != nil {
-		l.Error("prompt_failed",
+		// mitto-1jp7: a prompt failure classified as a self-healing transient
+		// upstream outage (provider brownout / rate-limit) already gets a
+		// clear, retry-oriented user-facing message via
+		// FormatACPErrorWithContext and Mitto's own auto-restart/retry paths
+		// — logging it at ERROR is noisy and misleading (it reads as a Mitto
+		// defect). Downgrade those classified cases to WARN; keep ERROR for
+		// everything else so genuine, unclassified failures stay loud. The
+		// log key stays "prompt_failed" so existing consumers (coldstart
+		// aggregation reads the Outcome string, not this log level;
+		// internal/cmd/prompt.go's trace summary is unaffected) keep working.
+		logLevel := slog.LevelError
+		if mittoAcp.IsUpstreamUnavailableError(err) || mittoAcp.IsRateLimitError(err) {
+			logLevel = slog.LevelWarn
+		}
+		l.Log(context.Background(), logLevel, "prompt_failed",
 			"session_id", d.pdSessionID(),
 			"error", err.Error(),
 			"observer_count", observerCount)
