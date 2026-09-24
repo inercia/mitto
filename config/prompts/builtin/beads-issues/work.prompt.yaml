@@ -9,7 +9,7 @@ parameters:
 description: Check whether this bead is actionable, resolve user-answerable blockers, then plan and dispatch implementation work
 backgroundColor: '#B2DFDB'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

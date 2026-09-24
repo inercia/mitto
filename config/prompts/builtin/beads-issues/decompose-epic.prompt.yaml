@@ -13,7 +13,7 @@ group: Tasks
 # exposed in the CEL context — we still want the entry to appear on all open
 # epics so the user gets a clear "already expanded" message instead of a
 # silently-missing menu item.
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Type == "epic" && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Type == "epic" && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

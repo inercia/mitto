@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,5 +46,40 @@ func TestWorkflowPromptsHiddenForLinkedSupportIssues(t *testing.T) {
 				t.Errorf("enabledWhen = %q, want %q", prompt.EnabledWhen, spec.enabledWhen)
 			}
 		})
+	}
+}
+
+func TestTasksBeadsIssuePromptsHiddenForSupportIssues(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	prompts, err := LoadPromptsFromDir("../../config/prompts/builtin")
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDir: %v", err)
+	}
+
+	const itemGuard = `!(Item.Labels != null && "support-question" in Item.Labels)`
+	const sessionGuard = `!(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`
+	found := 0
+	for _, prompt := range prompts {
+		menus, _ := ParseMenuTokens(prompt.Menus)
+		hasBeadsIssuesMenu := false
+		for _, menu := range menus {
+			if menu == "beadsIssues" {
+				hasBeadsIssuesMenu = true
+				break
+			}
+		}
+		if prompt.Group != "Tasks" || !hasBeadsIssuesMenu {
+			continue
+		}
+		found++
+		if !strings.Contains(prompt.EnabledWhen, itemGuard) {
+			t.Errorf("%s: enabledWhen does not exclude selected support-question rows: %q", prompt.Path, prompt.EnabledWhen)
+		}
+		if !strings.Contains(prompt.EnabledWhen, sessionGuard) {
+			t.Errorf("%s: enabledWhen does not exclude linked support-question conversations: %q", prompt.Path, prompt.EnabledWhen)
+		}
+	}
+	if found == 0 {
+		t.Fatal("builtin corpus contains no Tasks prompts in the beadsIssues menu")
 	}
 }

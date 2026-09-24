@@ -13,7 +13,7 @@ parameters:
 description: Auto-loop — keep advancing this bead toward completion, then self-terminate when nothing ready remains
 backgroundColor: '#C8E6C9'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 loop:
   trigger: [onCompletion]
   onCompletion:

@@ -9,7 +9,7 @@ parameters:
 description: Explain why this bead needs human help, identify the exact missing input or action, and ask for what is needed to unblock it
 backgroundColor: '#FFCCBC'
 group: Tasks
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status != "closed" && "needs-human" in Item.Labels) || (Item.Id == "" && Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "needs-human")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status != "closed" && "needs-human" in Item.Labels) || (Item.Id == "" && Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "needs-human"))) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

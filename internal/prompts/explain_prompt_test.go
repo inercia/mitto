@@ -44,8 +44,9 @@ func TestBuiltinBeadsExplainPrompt(t *testing.T) {
 	if explain.Group != "Tasks" {
 		t.Fatalf("Explain group = %q, want Tasks", explain.Group)
 	}
-	if explain.EnabledWhen != `CommandExists("bd") && DirExists(".beads")` {
-		t.Fatalf("Explain enabledWhen = %q, want beads availability gate", explain.EnabledWhen)
+	wantEnabledWhen := `CommandExists("bd") && DirExists(".beads") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`
+	if explain.EnabledWhen != wantEnabledWhen {
+		t.Fatalf("Explain enabledWhen = %q, want %q", explain.EnabledWhen, wantEnabledWhen)
 	}
 	if len(explain.Parameters) != 1 || explain.Parameters[0].Name != "IssueID" || explain.Parameters[0].Type != "beadsId" {
 		t.Fatalf("Explain parameters = %+v, want one IssueID beadsId parameter", explain.Parameters)

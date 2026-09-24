@@ -9,7 +9,7 @@ parameters:
 description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
 backgroundColor: '#B3E5FC'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

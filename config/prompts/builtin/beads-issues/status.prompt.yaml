@@ -9,7 +9,7 @@ parameters:
 description: Fact-check this bead's implementation status against the codebase
 backgroundColor: '#F0F4C3'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads")
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 preferredModels:
   - modelTag: Coding
 target:

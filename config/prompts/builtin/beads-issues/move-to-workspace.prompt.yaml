@@ -16,7 +16,7 @@ parameters:
 description: Move this bead (with its labels, comments and descendants) into another workspace folder's beads database
 backgroundColor: '#B3E5FC'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads")
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

@@ -9,7 +9,7 @@ parameters:
 description: 'Discuss a bead interactively — ask what to explore, work it through together, and capture any agreed decisions back into the tracker (beads only, no code changes)'
 backgroundColor: '#F8BBD0'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads")
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

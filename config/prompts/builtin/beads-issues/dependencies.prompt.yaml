@@ -8,7 +8,7 @@ parameters:
 description: 'Map and wire this bead''s relationships: what blocks it, what it blocks, related beads, and its parent'
 backgroundColor: '#FFCCBC'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

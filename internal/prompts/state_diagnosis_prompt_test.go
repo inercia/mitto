@@ -37,12 +37,12 @@ func TestBuiltinStateDiagnosisPrompts(t *testing.T) {
 	}{
 		{
 			name:        "Why is deferred?",
-			enabledWhen: `CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status == "deferred") || (Item.Id == "" && Session.HasBeadsIssue && BeadHasStatus(Session.BeadsIssue, "deferred")))`,
+			enabledWhen: `CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status == "deferred") || (Item.Id == "" && Session.HasBeadsIssue && BeadHasStatus(Session.BeadsIssue, "deferred"))) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`,
 			state:       "deferred",
 		},
 		{
 			name:        "Why needs human?",
-			enabledWhen: `CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status != "closed" && "needs-human" in Item.Labels) || (Item.Id == "" && Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "needs-human")))`,
+			enabledWhen: `CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status != "closed" && "needs-human" in Item.Labels) || (Item.Id == "" && Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "needs-human"))) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))`,
 			state:       "needs-human",
 		},
 	}

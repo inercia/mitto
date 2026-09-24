@@ -9,7 +9,7 @@ parameters:
 description: Review for incomplete work, follow-up items, and edge cases — for a specific bead or the whole conversation — organize them (grouping related items under epics), and file them as beads
 backgroundColor: '#DCEDC8'
 group: Tasks
-enabledWhen: CommandExists("bd") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
+enabledWhen: 'CommandExists("bd") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   title: 'Identify follow-up issues'
   reuse:

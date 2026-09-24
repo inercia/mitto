@@ -9,7 +9,7 @@ parameters:
 description: Explain why this bead is deferred, determine what is still needed, and ask for the smallest help required to resume it
 backgroundColor: '#FFE0B2'
 group: Tasks
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status == "deferred") || (Item.Id == "" && Session.HasBeadsIssue && BeadHasStatus(Session.BeadsIssue, "deferred")))'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status == "deferred") || (Item.Id == "" && Session.HasBeadsIssue && BeadHasStatus(Session.BeadsIssue, "deferred"))) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 target:
   reuse:
     issue: true

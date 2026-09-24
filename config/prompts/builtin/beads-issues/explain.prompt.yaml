@@ -8,7 +8,7 @@ parameters:
 description: Explain this bead in plain language — including how to unblock it when blocked or deferred — read-only
 backgroundColor: '#B2EBF2'
 group: Tasks
-enabledWhen: CommandExists("bd") && DirExists(".beads")
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
 prompt: |
   {{ template "_shared/session-context" . }}
 
