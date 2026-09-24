@@ -251,6 +251,16 @@ func (acpCallbackSink) onToolCall(d acpCallbackDeps, seq int64, id, title, statu
 // (mitto-220) instead of falling back to the stable session ID.
 const mittoSelfIDInitSentinel = "init"
 
+// mittoSelfIDSelfSentinel is another known-bad self_id value some agents send
+// (mitto-aowh): the literal string "self", generalized from the unrelated
+// conversation_id="self" self-dispatch convention used by tools like
+// mitto_conversation_send_prompt. Like mittoSelfIDInitSentinel it is not a
+// real per-conversation session ID, so it must be replaced with the stable
+// session ID rather than registered verbatim (which the ambiguous_self_id
+// guard would reject, losing the tool call for STDIO-only agents that lack
+// the HTTP binding fallback).
+const mittoSelfIDSelfSentinel = "self"
+
 // onMittoToolCall is called when any mitto_* tool call is detected.
 // It registers a correlation ID (requestID) with the global MCP server to associate
 // MCP tool requests with this ACP session. This enables session-aware tool behavior
@@ -260,11 +270,13 @@ func (acpCallbackSink) onMittoToolCall(d acpCallbackDeps, requestID string) {
 	if d.cbIsClosed() {
 		return
 	}
-	if requestID == "" || requestID == mittoSelfIDInitSentinel {
+	if requestID == "" || requestID == mittoSelfIDInitSentinel || requestID == mittoSelfIDSelfSentinel {
 		// Some agents omit RawInput from ACP tool_call events, and others send
-		// the literal "init" sentinel before resolving their real self_id. The
-		// conversation's stable ID is the only safe legacy correlation key;
-		// shared placeholders such as "init" can cross-wire concurrent callers.
+		// a known-bad sentinel ("init" before resolving their real self_id, or
+		// "self" generalized from the conversation_id convention) instead of
+		// their actual self_id. The conversation's stable ID is the only safe
+		// legacy correlation key; shared placeholders can cross-wire
+		// concurrent callers.
 		requestID = d.cbSessionID()
 	}
 
