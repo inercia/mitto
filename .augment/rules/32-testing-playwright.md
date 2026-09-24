@@ -163,6 +163,10 @@ const stats = await page.evaluate(() => ({
 
 Keep such scripts as **on-demand diagnostics** (`tests/tools/` or `/tmp`); do NOT wire them into the CI suite as assertions — the numbers depend on system load. See beads memory `playwright-getanimations-ondemand-profiling` for the full pattern.
 
+## Perf Assertions: Poll the Effect, Not the Optimistic Label
+
+When a perf spec measures whether a WS round trip caused a specific subtree to re-render, do NOT synchronize on a UI element whose value can be updated optimistically (e.g. `ConfigOptionSelect`'s trigger label flips the moment the option is clicked, before the `set_config_option` → RPC → `config_option_changed` broadcast completes). Reading render counts after the label check produces a false green because the counts are captured before the intended re-render lands. Assert the optimistic label as a click-landed sanity check, then `expect.poll` the target component's render-count itself before reading final counts — see `tests/ui/specs/perf/render-isolation.perf.spec.ts:420` (`set_config_option` scenario) and beads memory `playwright-perf-poll-render-count-not-optimistic-label`. Bounded-tolerance corollary: scenarios that mutate ACTIVE-session state ripple through pre-existing App-level `sessionInfo`/`activeSessions` useMemos, so allow a small (≤2) bump on `MessageList`/`SessionList` rather than asserting 0 until those derivations are themselves migrated to per-slice subscriptions.
+
 ## Browser-Specific Issues
 
 | Issue | Browser | Cause |
