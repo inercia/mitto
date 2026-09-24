@@ -175,6 +175,15 @@ func setupSettingsFile(t *testing.T, servers []config.ACPServerSettings) {
 	}
 }
 
+// TestHandleACPServerReassignAndDelete_ReassignFolder covers the collision
+// case: the folder already has a workspace on the replacement server (ws-2 on
+// "new") when the deleted server's workspace (ws-1 on "old") is reassigned to
+// "new". mitto-kr1: the rescued workspace must be absorbed (dropped) rather
+// than renamed in place, otherwise the folder ends up with two workspaces on
+// (dir, new) that the "Select Workspace" dialog cannot tell apart. This is
+// also the only branch reachable via prepare-delete, because
+// ReplacementCandidates are drawn exclusively from ACP servers already
+// registered for the folder.
 func TestHandleACPServerReassignAndDelete_ReassignFolder(t *testing.T) {
 	setupSettingsFile(t, []config.ACPServerSettings{
 		{Name: "old", Command: "old-cmd"},
@@ -225,8 +234,15 @@ func TestHandleACPServerReassignAndDelete_ReassignFolder(t *testing.T) {
 	if reassignResp.ReassignedConversationCount != 2 {
 		t.Errorf("ReassignedConversationCount = %d, want 2", reassignResp.ReassignedConversationCount)
 	}
-	if reassignResp.ReassignedWorkspaceCount != 1 {
-		t.Errorf("ReassignedWorkspaceCount = %d, want 1", reassignResp.ReassignedWorkspaceCount)
+	// Collision: ws-1 must be absorbed, NOT renamed onto ws-2's slot.
+	if reassignResp.ReassignedWorkspaceCount != 0 {
+		t.Errorf("ReassignedWorkspaceCount = %d, want 0 (absorbed on collision)", reassignResp.ReassignedWorkspaceCount)
+	}
+	if reassignResp.AbsorbedWorkspaceCount != 1 {
+		t.Errorf("AbsorbedWorkspaceCount = %d, want 1", reassignResp.AbsorbedWorkspaceCount)
+	}
+	if !equalStrings(reassignResp.AbsorbedWorkspaces, []string{"ws-1"}) {
+		t.Errorf("AbsorbedWorkspaces = %v, want [ws-1]", reassignResp.AbsorbedWorkspaces)
 	}
 	if reassignResp.DeletedConversationCount != 0 {
 		t.Errorf("DeletedConversationCount = %d, want 0", reassignResp.DeletedConversationCount)
@@ -253,19 +269,21 @@ func TestHandleACPServerReassignAndDelete_ReassignFolder(t *testing.T) {
 		}
 	}
 
-	// The workspace config for /dir1+old should be gone; the folder still has
-	// ws-2 (new) intact.
-	found := false
-	for _, ws := range sm.GetWorkspaces() {
-		if ws.WorkingDir == "/dir1" && ws.ACPServer == "old" {
-			t.Errorf("workspace for /dir1+old still present: %+v", ws)
-		}
-		if ws.UUID == "ws-2" && ws.ACPServer == "new" {
-			found = true
-		}
+	// The workspace config for /dir1+old is gone AND ws-1 was not
+	// resurrected under a duplicate (dir, new) entry — the folder retains
+	// exactly one workspace (ws-2). This is the property the linter
+	// (workspace_lint.DuplicateWorkingDirs) uses to WARN, and mitto-kr1's
+	// user-visible symptom (two indistinguishable rows in the Select
+	// Workspace dialog).
+	dirWs := sm.GetWorkspacesForFolder("/dir1")
+	if len(dirWs) != 1 {
+		t.Fatalf("workspaces for /dir1 = %d, want 1: %+v", len(dirWs), dirWs)
 	}
-	if !found {
-		t.Errorf("original ws-2/new workspace lost after reassign")
+	if dirWs[0].UUID != "ws-2" || dirWs[0].ACPServer != "new" {
+		t.Errorf("surviving workspace = %+v, want ws-2/new", dirWs[0])
+	}
+	if groups := sm.WorkspaceRegistry().DuplicateWorkingDirs(); len(groups) != 0 {
+		t.Errorf("DuplicateWorkingDirs = %+v, want none after absorb", groups)
 	}
 
 	// The server should have been removed from in-memory config AND settings.json.
@@ -281,6 +299,116 @@ func TestHandleACPServerReassignAndDelete_ReassignFolder(t *testing.T) {
 	}
 	if _, err := cfgOnDisk.GetServer("new"); err != nil {
 		t.Errorf("settings.json lost 'new' server: %v", err)
+	}
+}
+
+// TestHandleACPServerReassignAndDelete_ReassignFolder_NoCollision covers the
+// rename-in-place branch: the folder has NO pre-existing workspace on the
+// replacement server. Frontend flows don't produce this shape today (candidates
+// come from existing peers only), but the API allows any registered ACP server
+// as a replacement, so the branch is exercised and asserted to preserve the
+// rescued workspace's UUID (mitto-kr1).
+func TestHandleACPServerReassignAndDelete_ReassignFolder_NoCollision(t *testing.T) {
+	setupSettingsFile(t, []config.ACPServerSettings{
+		{Name: "old", Command: "old-cmd"},
+		{Name: "new", Command: "new-cmd"},
+	})
+
+	store := newACPDelStore(t)
+	must(t, store.Create(session.Metadata{
+		SessionID: "conv-1", ACPServer: "old", WorkingDir: "/dir1",
+		ACPSessionID: "acp-old-1",
+	}))
+
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "ws-only", WorkingDir: "/dir1", ACPServer: "old"},
+	})
+	cfg := &config.Config{ACPServers: []config.ACPServer{
+		{Name: "old", Command: "old-cmd"},
+		{Name: "new", Command: "new-cmd"},
+	}}
+	h := newACPDelHandlers(t, sm, cfg, store)
+
+	body := strings.NewReader(`{"folders":{"/dir1":"new"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/acp-servers/old/reassign-and-delete", body)
+	req.SetPathValue("name", "old")
+	w := httptest.NewRecorder()
+	h.HandleACPServerReassignAndDelete(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	var resp ACPServerReassignAndDeleteResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.ReassignedWorkspaceCount != 1 || !equalStrings(resp.ReassignedWorkspaces, []string{"ws-only"}) {
+		t.Errorf("ReassignedWorkspaces = %v (count %d), want [ws-only]",
+			resp.ReassignedWorkspaces, resp.ReassignedWorkspaceCount)
+	}
+	if resp.AbsorbedWorkspaceCount != 0 {
+		t.Errorf("AbsorbedWorkspaceCount = %d, want 0 (no collision)", resp.AbsorbedWorkspaceCount)
+	}
+
+	dirWs := sm.GetWorkspacesForFolder("/dir1")
+	if len(dirWs) != 1 || dirWs[0].UUID != "ws-only" || dirWs[0].ACPServer != "new" {
+		t.Errorf("folder workspaces = %+v, want single ws-only/new", dirWs)
+	}
+}
+
+// TestHandleACPServerReassignAndDelete_ReassignFolder_MultipleRescuedAbsorbAfterFirst
+// covers a rare shape: /dir1 has TWO workspaces on the deleted server (a
+// same-dir+same-ACP duplicate group that the linter already WARNs about) and
+// none on the replacement server. The first rescued workspace is renamed in
+// place; any additional rescued workspaces must be absorbed against it,
+// otherwise the pre-existing oldServer-side duplicate would silently
+// reappear on the newServer side.
+func TestHandleACPServerReassignAndDelete_ReassignFolder_MultipleRescuedAbsorbAfterFirst(t *testing.T) {
+	setupSettingsFile(t, []config.ACPServerSettings{
+		{Name: "old", Command: "old-cmd"},
+		{Name: "new", Command: "new-cmd"},
+	})
+
+	store := newACPDelStore(t)
+	must(t, store.Create(session.Metadata{SessionID: "conv-a", ACPServer: "old", WorkingDir: "/dir1"}))
+
+	sm := conversation.NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "ws-a1", WorkingDir: "/dir1", ACPServer: "old"},
+		{UUID: "ws-a2", WorkingDir: "/dir1", ACPServer: "old"},
+	})
+	cfg := &config.Config{ACPServers: []config.ACPServer{
+		{Name: "old", Command: "old-cmd"},
+		{Name: "new", Command: "new-cmd"},
+	}}
+	h := newACPDelHandlers(t, sm, cfg, store)
+
+	body := strings.NewReader(`{"folders":{"/dir1":"new"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/acp-servers/old/reassign-and-delete", body)
+	req.SetPathValue("name", "old")
+	w := httptest.NewRecorder()
+	h.HandleACPServerReassignAndDelete(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	var resp ACPServerReassignAndDeleteResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.ReassignedWorkspaceCount != 1 {
+		t.Errorf("ReassignedWorkspaceCount = %d, want 1 (first rescue renamed)", resp.ReassignedWorkspaceCount)
+	}
+	if resp.AbsorbedWorkspaceCount != 1 {
+		t.Errorf("AbsorbedWorkspaceCount = %d, want 1 (second rescue absorbed)", resp.AbsorbedWorkspaceCount)
+	}
+	dirWs := sm.GetWorkspacesForFolder("/dir1")
+	if len(dirWs) != 1 {
+		t.Errorf("folder workspaces = %d, want 1: %+v", len(dirWs), dirWs)
+	}
+	if groups := sm.WorkspaceRegistry().DuplicateWorkingDirs(); len(groups) != 0 {
+		t.Errorf("DuplicateWorkingDirs = %+v, want none", groups)
 	}
 }
 
