@@ -583,6 +583,71 @@ func TestGitHubCopilot_StatusDetection(t *testing.T) {
 	}
 }
 
+// TestGitHubCopilot_MCPList_UsesEffectiveCLIOutput verifies that the real
+// mcp-list.sh delegates source merging to Copilot from the requested workspace.
+// Copilot combines user, workspace, plugin, managed, and built-in servers; a
+// script that reads only ~/.copilot/mcp-config.json silently omits the rest.
+func TestGitHubCopilot_MCPList_UsesEffectiveCLIOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+
+	builtinDir := builtinAgentsDirForTest(t)
+	agentsDir := filepath.Dir(builtinDir)
+	scriptPath := filepath.Join(builtinDir, "github-copilot", "cmds", "mcp-list.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real github-copilot mcp-list.sh not found: %v", err)
+	}
+
+	workspaceDir := t.TempDir()
+	cwdFile := filepath.Join(t.TempDir(), "copilot-cwd")
+	binDir := t.TempDir()
+	shim := `#!/bin/bash
+if [ "$1" != "mcp" ] || [ "$2" != "list" ] || [ "$3" != "--json" ]; then
+  echo "unexpected arguments" >&2
+  exit 2
+fi
+printf '%s' "$PWD" > "$COPILOT_TEST_CWD_FILE"
+cat <<'JSON'
+{"mcpServers":{"github-mcp-server":{"type":"http","url":"https://api.githubcopilot.com/mcp/","source":"builtin","enabled":true},"mitto":{"type":"http","url":"http://127.0.0.1:5757/mcp","source":"user","enabled":true},"wealthfolio":{"type":"http","url":"http://127.0.0.1:3000/mcp","headers":{"X-Test":"value"},"source":"workspace","enabled":true}}}
+JSON
+`
+	if err := os.WriteFile(filepath.Join(binDir, "copilot"), []byte(shim), 0755); err != nil {
+		t.Fatalf("failed to write copilot shim: %v", err)
+	}
+	t.Setenv("COPILOT_TEST_CWD_FILE", cwdFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := NewManager(agentsDir, nil)
+	out, err := m.ListMCPServers(context.Background(), "github-copilot", &MCPListInput{Path: workspaceDir})
+	if err != nil {
+		t.Fatalf("ListMCPServers failed: %v", err)
+	}
+	if len(out.Servers) != 3 {
+		t.Fatalf("servers = %+v, want three effective Copilot servers", out.Servers)
+	}
+
+	byName := make(map[string]MCPServer, len(out.Servers))
+	for _, server := range out.Servers {
+		byName[server.Name] = server
+	}
+	for _, name := range []string{"github-mcp-server", "mitto", "wealthfolio"} {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("effective Copilot server %q missing from %+v", name, out.Servers)
+		}
+	}
+	if got := byName["wealthfolio"].Headers["X-Test"]; got != "value" {
+		t.Errorf("wealthfolio header = %q, want %q", got, "value")
+	}
+	gotCWD, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("read Copilot shim cwd: %v", err)
+	}
+	if string(gotCWD) != workspaceDir {
+		t.Errorf("copilot cwd = %q, want workspace %q", gotCWD, workspaceDir)
+	}
+}
+
 // TestGitHubCopilot_MCPInstall_UsesCorrectConfigPath verifies that the real
 // config/agents/builtin/github-copilot/cmds/mcp-install.sh script writes a
 // user-scope server to ~/.copilot/mcp-config.json — the exact file

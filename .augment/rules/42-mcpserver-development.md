@@ -151,13 +151,13 @@ if agent.HasCommand(agents.CommandMCPList) {
 
 API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`).
 
-**`cmds/*.sh` audit (mitto-sys.11, generalized by mitto-o8k)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty. Audit the FULL script set per agent (`status.sh`, `install.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`) — a fix that only touches `mcp-list.sh` leaves `mcp-install/remove.sh` silently writing to a path nothing reads (mitto-o8k anti-pattern). MCP-writing scripts must also include any mandatory schema discriminator (e.g. Copilot's `"type": "local"|"http"`), else the CLI's validator silently ignores the entry. Verify against actual docs/source when adding or fixing one:
+**`cmds/*.sh` audit (mitto-sys.11, generalized by mitto-o8k + mitto-rj95)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty OR reports only a subset of what the agent actually loads. Audit the FULL script set per agent (`status.sh`, `install.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`) — a fix that only touches `mcp-list.sh` leaves `mcp-install/remove.sh` silently writing to a path nothing reads (mitto-o8k anti-pattern). MCP-writing scripts must also include any mandatory schema discriminator (e.g. Copilot's `"type": "local"|"http"`), else the CLI's validator silently ignores the entry. **For LISTING specifically (mitto-rj95): when the target CLI exposes an authoritative dump command (`copilot mcp list --json`, `claude mcp list --json`, etc.), PREFER delegating to it from the workspace directory over parsing config files directly** — the CLI applies its own source loading (user + project + git-root + built-in + plugin) and precedence rules; file-scan will miss built-in servers, workspace/git-root `.mcp.json` / `.github/mcp.json`, and per-scope enable state. Writing scripts still need a concrete file path since they mutate user-scope config; only the listing side can safely delegate. Verify against actual docs/source when adding or fixing one:
 
 | Agent | Status | Notes |
 |---|---|---|
 | cursor, goose | OK | `~/.cursor/mcp.json`/`mcpServers`; `~/.config/goose/config.yaml`/`extensions` |
 | opencode | BROKEN (mitto-sys.13) | wrong path/key (`mcp` not `mcpServers`), command-as-array, `environment` not `env` |
-| github-copilot | OK (mitto-8ux + mitto-o8k) | `~/.copilot/mcp-config.json`; install/remove scripts also fixed; `type` discriminator required |
+| github-copilot | OK (mitto-8ux + mitto-o8k + mitto-rj95) | `~/.copilot/mcp-config.json` (user); install/remove scripts fixed + `type` discriminator required; `mcp-list.sh` delegates to `copilot mcp list --json` from the workspace dir so built-in (`github-mcp-server`) + workspace `.mcp.json`/`.github/mcp.json` sources are included |
 | qwen-code | BROKEN (mitto-sys.15) | wrong path: real is `~/.qwen` |
 | junie | stub (mitto-sys.10) | always returns `{"servers": []}` |
 
