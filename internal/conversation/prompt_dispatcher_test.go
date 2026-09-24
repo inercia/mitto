@@ -3692,6 +3692,56 @@ func TestPromptDispatcher_HandlePromptError_WatchdogFired_PersistsErrorEvent(t *
 	}
 }
 
+// TestPromptDispatcher_HandlePromptError_LogLevelGating is the mitto-1jp7
+// regression test: prompt_failed must log at WARN when the error classifies
+// as a self-healing transient upstream outage or a rate limit (both already
+// get a clear, retry-oriented user-facing message and Mitto's own
+// auto-restart/retry handling), and must keep logging at ERROR for every
+// other, unclassified failure so genuine defects stay loud.
+func TestPromptDispatcher_HandlePromptError_LogLevelGating(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantLevel string
+	}{
+		{
+			name:      "upstream-unavailable (fetch failed + terminated) logs at WARN",
+			err:       errors.New("Internal error: fetch failed: terminated"),
+			wantLevel: "WARN",
+		},
+		{
+			name:      "rate limit error logs at WARN",
+			err:       errors.New("rate limit exceeded, please retry later"),
+			wantLevel: "WARN",
+		},
+		{
+			name:      "unclassified generic error still logs at ERROR",
+			err:       transientErr(),
+			wantLevel: "ERROR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			p := promptDispatcher{}
+			d := newFakePromptDeps()
+			d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			autoRetried := false
+			p.handlePromptError(d, tt.err, &autoRetried, 0, false)
+
+			out := buf.String()
+			if !strings.Contains(out, "prompt_failed") {
+				t.Fatalf("expected prompt_failed log entry, got: %q", out)
+			}
+			if !strings.Contains(out, "level="+tt.wantLevel) {
+				t.Errorf("expected level=%s, got log output: %q", tt.wantLevel, out)
+			}
+		})
+	}
+}
+
 func TestPromptDispatcher_HandlePromptError_ACPDead_AlreadyAutoRetried_NoRetry(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()

@@ -803,6 +803,21 @@ func TestIsUpstreamUnavailableError(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "mitto-1jp7 fetch failed + terminated (undici connection reset mid-request)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error: fetch failed","data":{"details":"terminated"}}`),
+			want: true,
+		},
+		{
+			name: "mitto-1jp7 fetch failed + terminated inlined in message text (no apiStatus/data envelope)",
+			err:  errors.New("Internal error: fetch failed: terminated"),
+			want: true,
+		},
+		{
+			name: "terminated alone without fetch failed is NOT an upstream outage (avoid matching unrelated -32603 errors)",
+			err:  errors.New(`{"code":-32603,"message":"process are terminated"}`),
+			want: false,
+		},
+		{
 			name: "bare HTTP 500 without apiStatus marker is NOT an upstream outage",
 			err:  errors.New("Internal error: HTTP error: 500 Internal Server Error"),
 			want: false,
