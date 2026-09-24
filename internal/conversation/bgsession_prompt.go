@@ -1876,6 +1876,19 @@ func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
 
 func (bs *BackgroundSession) pdContextIsEmpty() bool { return bs.acpContextIsEmpty() }
 
+// === New in mitto-k9hc: per-session circuit breaker on repeated flush failures ===
+
+// pdFlushFailCount returns the number of CONSECUTIVE in-place context-flush
+// failures recorded on this conversation so far.
+func (bs *BackgroundSession) pdFlushFailCount() int32 { return bs.acpFlushFailures.Load() }
+
+// pdRecordFlushFailure records one more consecutive flush failure.
+func (bs *BackgroundSession) pdRecordFlushFailure() { bs.noteFlushFailure() }
+
+// pdResetFlushFailure clears the consecutive flush-failure counter after a
+// successful in-place flush.
+func (bs *BackgroundSession) pdResetFlushFailure() { bs.resetFlushFailures() }
+
 // Cold-start diagnostics (mitto-3mv WI-2). Delegates to the nil-safe helper.
 func (bs *BackgroundSession) pdColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }
 

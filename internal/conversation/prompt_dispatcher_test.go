@@ -151,6 +151,17 @@ type fakePromptDeps struct {
 	contextFlushCommand    string
 	flushContextInPlaceErr error
 	flushContextCalled     bool
+	// flushContextCallCount (mitto-k9hc) counts pdFlushContextInPlace
+	// invocations across multiple createFreshContextSession calls, to pin
+	// the missing per-session circuit breaker on repeated flush failures.
+	flushContextCallCount int
+	// flushFailCount (mitto-k9hc) backs pdFlushFailCount/pdRecordFlushFailure/
+	// pdResetFlushFailure, mirroring BackgroundSession.acpFlushFailures —
+	// a persistent, CONSECUTIVE-failure counter that survives across
+	// multiple createFreshContextSession calls on the same fake (unlike
+	// flushContextCalled/flushContextCallCount, which only observe RPC
+	// invocations).
+	flushFailCount int32
 
 	// === mitto-pchx.3: per-conversation prompt-argument cache ===
 	// promptParams is returned by pdResolvePromptParameters (nil ⇒ resolver returns nil).
@@ -622,7 +633,28 @@ func (f *fakePromptDeps) pdFlushContextInPlace(_ context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.flushContextCalled = true
+	f.flushContextCallCount++
 	return f.flushContextInPlaceErr
+}
+
+// === New in mitto-k9hc: per-session circuit breaker on repeated flush failures ===
+
+func (f *fakePromptDeps) pdFlushFailCount() int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.flushFailCount
+}
+
+func (f *fakePromptDeps) pdRecordFlushFailure() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flushFailCount++
+}
+
+func (f *fakePromptDeps) pdResetFlushFailure() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flushFailCount = 0
 }
 
 // mitto-3mv WI-2: cold-start trace stub — no-op in tests.
@@ -2304,6 +2336,53 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushSuccess_NoNewSessionFal
 	}
 	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "flush" {
 		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_RepeatedFlushFailures_NoCircuitBreaker
+// reproduces mitto-k9hc Defect B: createFreshContextSession has no
+// per-session circuit breaker for repeated in-place-flush failures. A
+// session whose flush RPC deterministically fails (e.g. a wedged Auggie
+// "/clear" command returning "context deadline exceeded" on every call,
+// as observed in production: 23 consecutive failures, one every ~40s)
+// pays the full 30s flush timeout on EVERY FreshContext loop iteration,
+// forever, because nothing remembers "this session's flush keeps
+// failing." Once fixed, the dispatcher must stop attempting the flush RPC
+// after a small number of consecutive failures on the same session and go
+// straight to the pdACPConnNewSession fallback instead.
+//
+// This simulates 3 consecutive FreshContext iterations on the same
+// session (mirroring the real burst: each iteration's new-session
+// fallback succeeds, but the freshly-created session re-wedges on the
+// very next iteration's flush attempt) and asserts pdFlushContextInPlace
+// is called strictly fewer times than the iteration count — i.e. the
+// circuit breaker trips and skips at least one retry.
+//
+// FAILS today: there is no breaker, so pdFlushContextInPlace is called
+// once per iteration, every iteration (flushContextCallCount == iterations).
+func TestPromptDispatcher_CreateFreshContextSession_RepeatedFlushFailures_NoCircuitBreaker(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.flushContextInPlaceErr = errors.New("context deadline exceeded")
+	d.hasACPConn = true
+	d.acpNewSessionID = "fresh-after-flush-fail"
+
+	const iterations = 3
+	for i := 0; i < iterations; i++ {
+		id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+		if err != nil {
+			t.Fatalf("iteration %d: expected nil error via new-session fallback, got %v", i, err)
+		}
+		if id != "fresh-after-flush-fail" {
+			t.Fatalf("iteration %d: expected fallback session id, got %q", i, id)
+		}
+	}
+
+	if d.flushContextCallCount >= iterations {
+		t.Fatalf("mitto-k9hc: pdFlushContextInPlace called %d times across %d iterations on the same session; "+
+			"expected a circuit breaker to trip after repeated consecutive failures and skip at least one retry "+
+			"instead of paying the full 30s flush timeout every iteration", d.flushContextCallCount, iterations)
 	}
 }
 

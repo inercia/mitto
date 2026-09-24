@@ -384,6 +384,17 @@ type BackgroundSession struct {
 	// acpContextIsEmpty/markACPContextFresh/markACPContextUnknown/noteACPTurnDispatched.
 	acpContextTurns atomic.Int64
 
+	// acpFlushFailures counts CONSECUTIVE in-place context-flush failures on
+	// this conversation (mitto-k9hc). createFreshContextSession gates the
+	// flush RPC on this counter: once it reaches flushFailureTripThreshold,
+	// further FreshContext loop iterations skip the (deterministically
+	// failing, 30s-timeout) flush RPC entirely and go straight to the
+	// new-ACP-session fallback, instead of paying the full timeout every
+	// iteration. Reset to 0 only by a successful flush — a successful
+	// new-session fallback does NOT reset it, since the underlying wedge is
+	// agent-instance-wide and the fresh session typically inherits it.
+	acpFlushFailures atomic.Int32
+
 	// creationCtx is the context passed for the initial ACP session creation RPC.
 	// It is set from BackgroundSessionConfig.CreationCtx and nil'd out after the RPC
 	// completes so we don't hold a reference longer than necessary.
@@ -1465,6 +1476,18 @@ func (bs *BackgroundSession) noteACPTurnDispatched() {
 // (created fresh in this process, no turns dispatched since). Returns false for
 // the unknown sentinel, so resumed/loaded sessions always fail safe to "not empty".
 func (bs *BackgroundSession) acpContextIsEmpty() bool { return bs.acpContextTurns.Load() == 0 }
+
+// noteFlushFailure records one more consecutive in-place context-flush
+// failure and returns the updated count (mitto-k9hc). Deliberately NOT reset
+// by a successful pdACPConnNewSession fallback — the underlying wedge is
+// agent-instance-wide (the fresh session inherits the same failure mode), so
+// the counter must persist across sessions until a real flush succeeds. Only
+// resetFlushFailures (on flush success) clears it.
+func (bs *BackgroundSession) noteFlushFailure() int32 { return bs.acpFlushFailures.Add(1) }
+
+// resetFlushFailures clears the consecutive flush-failure counter after a
+// successful in-place context flush (mitto-k9hc).
+func (bs *BackgroundSession) resetFlushFailures() { bs.acpFlushFailures.Store(0) }
 
 // acpContextTurnsSinceReset returns the number of ACP turns dispatched on the
 // current session since it was last known to be empty (fresh-create or clear).

@@ -238,6 +238,19 @@ type promptDeps interface {
 	// sessions, where virginity cannot be asserted.
 	pdContextIsEmpty() bool
 
+	// === New in mitto-k9hc: per-session circuit breaker on repeated flush failures ===
+
+	// pdFlushFailCount returns the number of CONSECUTIVE in-place
+	// context-flush failures recorded on this conversation so far.
+	// createFreshContextSession gates the flush RPC on this counter to avoid
+	// paying the full flush timeout on every iteration of a wedged session.
+	pdFlushFailCount() int32
+	// pdRecordFlushFailure records one more consecutive flush failure.
+	pdRecordFlushFailure()
+	// pdResetFlushFailure clears the consecutive flush-failure counter after
+	// a successful in-place flush.
+	pdResetFlushFailure()
+
 	// Cold-start diagnostics (mitto-3mv WI-2). Nil-safe — no-op when the
 	// session's cold-start trace has not been begun or has been finalized.
 	pdColdPhase(name string, kv ...any)
@@ -1130,12 +1143,17 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	}
 
 	var flushErr error
-	// Prefer in-place flush when the ACP server has a flush command configured.
-	if cmd := d.pdContextFlushCommand(); cmd != "" {
+	cmd := d.pdContextFlushCommand()
+	switch {
+	case cmd != "" && d.pdFlushFailCount() < flushFailureTripThreshold:
+		// Prefer in-place flush when the ACP server has a flush command
+		// configured and the session hasn't tripped the flush-failure
+		// circuit breaker yet (mitto-k9hc).
 		flushCtx, flushCancel := context.WithTimeout(d.pdSessionCtx(), 30*time.Second)
 		err := d.pdFlushContextInPlace(flushCtx)
 		flushCancel()
 		if err == nil {
+			d.pdResetFlushFailure()
 			if l := d.pdLogger(); l != nil {
 				l.Info("In-place context flush succeeded for loop FreshContext run",
 					"session_id", d.pdSessionID())
@@ -1145,6 +1163,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 			// Main prompt continues on the existing (now-flushed) session.
 			return "", nil
 		}
+		d.pdRecordFlushFailure()
 		flushErr = err
 		if l := d.pdLogger(); l != nil {
 			l.Warn("In-place context flush failed, falling back to a fresh ACP session",
@@ -1156,6 +1175,23 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 		// same upstream error on every RPC) cannot be recovered by continuing
 		// on the same session. Fall through to the new-ACP-session fallback
 		// below so FreshContext can still escalate to a clean session.
+	case cmd != "":
+		// mitto-k9hc: circuit breaker open — this session's flush RPC has
+		// failed flushFailureTripThreshold+ times in a row (deterministic,
+		// not transient: the fresh sessions created by prior fallbacks
+		// inherited the same agent-instance-wide wedge). Skip the wasted
+		// 30s-timeout RPC entirely and go straight to the new-session
+		// fallback below.
+		if l := d.pdLogger(); l != nil {
+			l.Info("Skipping in-place context flush after repeated consecutive failures; going straight to new ACP session",
+				"consecutive_failures", d.pdFlushFailCount(),
+				"session_id", d.pdSessionID())
+		}
+		// Preserve the pre-breaker abort behavior for the no-ACP-conn (shared
+		// process) case below: skipping the RPC must not silently look like
+		// "nothing to clear" when the session is known-wedged and there is no
+		// new-session fallback available.
+		flushErr = fmt.Errorf("in-place context flush circuit breaker open after %d consecutive failures", d.pdFlushFailCount())
 	}
 
 	// Fallback: create a new ACP session (direct-conn only).
@@ -1189,6 +1225,14 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	}
 	return "", fmt.Errorf("failed to initialize fresh context: %w", err)
 }
+
+// flushFailureTripThreshold is the number of CONSECUTIVE in-place
+// context-flush failures on a session after which createFreshContextSession
+// stops attempting the flush RPC and goes straight to the new-ACP-session
+// fallback (mitto-k9hc). Below the threshold, the flush is retried normally
+// so a single transient failure does not permanently disable flushing on an
+// otherwise-healthy session.
+const flushFailureTripThreshold = 2
 
 // modelSwitchBudget bounds the entire pre-dispatch selection including its warm
 // retry. Selection is synchronous: a temporary model must never land in a later
