@@ -616,6 +616,82 @@ if (isMountedChildRun) {
     });
   });
 
+  describe("daisyUI chat bubble structure (mounted, mitto-pdv0)", () => {
+    test("user message renders a chat-end wrapper with the bubble/footer split and the load-bearing bg-mitto-user selector preserved on .chat-bubble", () => {
+      const container = mount({
+        role: "user",
+        text: "Hello there",
+        timestamp: 1000,
+      });
+      try {
+        const chatEl = container.querySelector(".chat");
+        expect(chatEl).not.toBeNull();
+        expect(chatEl.classList.contains("chat-end")).toBe(true);
+        expect(chatEl.classList.contains("chat-start")).toBe(false);
+
+        // bg-mitto-user (the selector used by tests/ui/utils/selectors.ts and
+        // several Playwright specs) must still resolve, and it must live on
+        // the bubble element itself, not some ancestor/descendant.
+        const bubble = chatEl.querySelector(".chat-bubble");
+        expect(bubble).not.toBeNull();
+        expect(bubble.classList.contains("bg-mitto-user")).toBe(true);
+        expect(container.querySelector(".bg-mitto-user")).toBe(bubble);
+
+        // Copy button + timestamp live in a sibling .chat-footer, not inside
+        // the bubble (daisyUI's chat-footer is the canonical slot for this).
+        const footer = chatEl.querySelector(".chat-footer");
+        expect(footer).not.toBeNull();
+        expect(bubble.querySelector(".chat-footer")).toBeNull();
+        expect(
+          footer.querySelector('[data-testid="copy-message-markdown"]'),
+        ).not.toBeNull();
+        expect(footer.querySelector(".message-timestamp")).not.toBeNull();
+        expect(bubble.querySelector(".message-timestamp")).toBeNull();
+
+        // Message text itself renders inside the bubble.
+        expect(bubble.textContent).toContain("Hello there");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("agent message renders a chat-start wrapper with the bubble/footer split and the load-bearing bg-mitto-agent selector preserved on .chat-bubble", () => {
+      const container = mount({
+        role: "agent",
+        html: "<p>Hi back</p>",
+        blocks: [{ seq: 1, html: "<p>Hi back</p>", complete: true }],
+        complete: true,
+        timestamp: 2000,
+      });
+      try {
+        const chatEl = container.querySelector(".chat");
+        expect(chatEl).not.toBeNull();
+        expect(chatEl.classList.contains("chat-start")).toBe(true);
+        expect(chatEl.classList.contains("chat-end")).toBe(false);
+
+        const bubble = chatEl.querySelector(".chat-bubble");
+        expect(bubble).not.toBeNull();
+        expect(bubble.classList.contains("bg-mitto-agent")).toBe(true);
+        expect(container.querySelector(".bg-mitto-agent")).toBe(bubble);
+
+        const footer = chatEl.querySelector(".chat-footer");
+        expect(footer).not.toBeNull();
+        expect(bubble.querySelector(".chat-footer")).toBeNull();
+        expect(
+          footer.querySelector('[data-testid="copy-message-markdown"]'),
+        ).not.toBeNull();
+        expect(footer.querySelector(".message-timestamp")).not.toBeNull();
+        expect(bubble.querySelector(".message-timestamp")).toBeNull();
+
+        expect(bubble.querySelector(".markdown-content").innerHTML).toContain(
+          "Hi back",
+        );
+      } finally {
+        unmount(container);
+      }
+    });
+  });
+
   describe("AgentMessageBlock keyed rendering (mitto-sus.4)", () => {
     function agentMessage(blocks, overrides = {}) {
       return {
@@ -1185,5 +1261,36 @@ describe("source-scan guard — Message.js prefers workspace props over globals"
     );
     expect(src).toMatch(/workspaceUUID=\$\{sessionInfo\?\.workspace_uuid\}/);
     expect(src).toMatch(/workspacePath=\$\{sessionInfo\?\.working_dir\}/);
+  });
+});
+
+// =============================================================================
+// mitto-pdv0: daisyUI .chat grid-overflow guard (styles.css)
+// =============================================================================
+
+describe("source-scan guard — styles.css clamps .chat grid tracks (mitto-pdv0)", () => {
+  test("chat-start and chat-end both clamp their content track to minmax(0, 1fr) so a long unbroken code line can't widen the page", () => {
+    const stylesCss = readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "styles.css",
+      ),
+      "utf8",
+    );
+    const startIdx = stylesCss.indexOf(".chat.chat-start {");
+    const endIdx = stylesCss.indexOf(".chat.chat-end {");
+    expect(startIdx).toBeGreaterThan(-1);
+    expect(endIdx).toBeGreaterThan(-1);
+
+    const startRule = stylesCss.slice(startIdx, startIdx + 100);
+    expect(startRule).toMatch(
+      /grid-template-columns:\s*auto minmax\(0,\s*1fr\);/,
+    );
+
+    const endRule = stylesCss.slice(endIdx, endIdx + 100);
+    expect(endRule).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/,
+    );
   });
 });
