@@ -2593,8 +2593,18 @@ func (m *Manager) applyCloseRouterCompletion(store *session.Store, sessionID, ru
 	state, err := session.ReadCloseRouterState(store, sessionID)
 	if err != nil {
 		if m.logger != nil {
-			m.logger.Warn("close-phase knowledge-router: sidecar read failed while recording completion",
-				"session_id", sessionID, "run_id", runID, "error", err)
+			// mitto-3k0z: a session torn down (Store.Delete) between the
+			// dispatch and this completion callback is a normal teardown
+			// race, not a failure — the pre-dispatch read at this
+			// function's call site above already downgrades the same
+			// error to DEBUG for the identical reason.
+			if errors.Is(err, session.ErrSessionNotFound) {
+				m.logger.Debug("close-phase knowledge-router: sidecar read skipped; session already gone",
+					"session_id", sessionID, "run_id", runID, "error", err)
+			} else {
+				m.logger.Warn("close-phase knowledge-router: sidecar read failed while recording completion",
+					"session_id", sessionID, "run_id", runID, "error", err)
+			}
 		}
 		return
 	}
@@ -2618,8 +2628,13 @@ func (m *Manager) applyCloseRouterCompletion(store *session.Store, sessionID, ru
 		return
 	}
 	if werr := session.WriteCloseRouterState(store, sessionID, state); werr != nil && m.logger != nil {
-		m.logger.Warn("close-phase knowledge-router: failed to persist completion",
-			"session_id", sessionID, "run_id", runID, "error", werr)
+		if errors.Is(werr, session.ErrSessionNotFound) {
+			m.logger.Debug("close-phase knowledge-router: sidecar write skipped; session already gone",
+				"session_id", sessionID, "run_id", runID, "error", werr)
+		} else {
+			m.logger.Warn("close-phase knowledge-router: failed to persist completion",
+				"session_id", sessionID, "run_id", runID, "error", werr)
+		}
 	}
 }
 
@@ -2972,11 +2987,26 @@ func clearSustainedBusy(workspaceUUID string) {
 // silently logged and the work was lost with no retry and no UI signal
 // (mitto-exr). failLog lets single vs batched dispatch keep their distinct
 // terminal wording.
+//
+// errDispatchDeferredToSpool (mitto-3k0z) is the sentinel lastErr for the
+// proactive spool-first deferral branch below. That branch returns without
+// ever attempting an RPC, so completion/lastErr must NOT keep their
+// zero-value "success, empty message" shape — an onCompletion callback (e.g.
+// applyCloseRouterCompletion) cannot otherwise distinguish "genuinely
+// completed with an empty message" from "never dispatched at all", and
+// mis-parses the empty FinalMessage as a completed run with no findings,
+// permanently discarding the real findings once the spooled batch is later
+// flushed. Callbacks that already special-case a non-nil dispatchErr by
+// leaving their state untouched (the same handling as any other dispatch
+// failure) get the correct behavior for free.
 // onCompletion is variadic (rather than a plain trailing parameter) so every
 // existing call site — production and the many direct-call unit tests below
 // — keeps compiling unchanged; only dispatchPromptBatch's single-prompt path
 // ever passes one, to invoke a pendingPromptDispatch's per-entry callback
 // (mitto-3od.2: the close-phase knowledge-router integration).
+// errDispatchDeferredToSpool is documented alongside dispatchWithRetry above.
+var errDispatchDeferredToSpool = errors.New("dispatch deferred to durable spool without an RPC attempt")
+
 func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout time.Duration, skipLog, failLog string, deferrableWhenBusy bool, onCompletion ...func(PromptCompletion, error)) {
 	var completion PromptCompletion
 	var lastErr error
@@ -3064,6 +3094,10 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 					"name", name,
 				)
 			}
+			// mitto-3k0z: signal the deferred onCompletion callback (if any)
+			// that no RPC was attempted, so it does not mistake this for a
+			// genuine (if empty) completion.
+			lastErr = errDispatchDeferredToSpool
 			return
 		}
 		// Could not actually persist the deferral (no pendingDispatchStore

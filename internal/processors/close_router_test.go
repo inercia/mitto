@@ -500,3 +500,102 @@ func TestApplyOnClose_KnowledgeRouter_SessionGone_SkipsDispatch(t *testing.T) {
 		t.Fatalf("recorded skip reasons = %v, want %q present", skipReasons, SkipReasonSessionGone)
 	}
 }
+
+// TestApplyOnClose_KnowledgeRouter_SpoolDeferral_MustNotFalselyCompleteRun is
+// the mitto-3k0z reproduction. ApplyOnClose dispatches the close-phase
+// knowledge-router standalone via dispatchPromptBatch -> dispatchWithRetry
+// (deferrableWhenBusy=true). When the shared ACP process would shed a
+// proactive auxiliary session (shouldDeferDispatchFunc reports true,
+// mitto-z4w), dispatchWithRetry skips the RPC entirely and persists the
+// batch straight to the durable spool — but its deferred onCompletion
+// callback (`defer func() { cb(completion, lastErr) }()`, apply.go:2985)
+// still fires, with a zero-value PromptCompletion{} and a nil dispatchErr,
+// because those locals are never updated on the early-return deferral path.
+//
+// applyCloseRouterCompletion cannot distinguish that from a genuine (but
+// unparseable) completion: dispatchErr == nil skips the early return, the
+// empty FinalMessage fails to parse, and the in-flight run is marked
+// CompletedAt with empty Findings — permanently. The real findings, when the
+// spooled batch is eventually delivered by FlushPendingDispatches, have no
+// callback to report back to (the closure is not part of the persisted
+// PendingDispatchEntry), so they are silently discarded. This is the
+// "silent knowledge loss" this bead is about.
+//
+// Expected (post-fix) contract: a spool-deferred dispatch has NOT actually
+// completed, so the run must be left in-flight (CompletedAt.IsZero()) —
+// exactly like TestApplyCloseRouterCompletion_DispatchError_LeavesRunInFlight
+// — so a later retry against the same snapshot hash can reclassify it.
+func TestApplyOnClose_KnowledgeRouter_SpoolDeferral_MustNotFalselyCompleteRun(t *testing.T) {
+	const sessionID = "sess-router-spool-defer"
+	const workspaceUUID = "ws-router-spool-defer"
+	store := newCloseRouterApplyTestStore(t, sessionID)
+	pendingStore := &FilePendingDispatchStore{BaseDir: t.TempDir()}
+
+	proc := &Processor{
+		Name:   knowledgeRouterProcessorName,
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "classify findings",
+	}
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPendingDispatchStore(pendingStore)
+
+	var completionCalls atomic.Int32
+	m.SetPromptCompletionFunc(func(context.Context, string, string, string, string) (PromptCompletion, error) {
+		completionCalls.Add(1)
+		return PromptCompletion{FinalMessage: `{"findings":[{"text":"prefers dark mode","destination":"preferences","written":true,"target_path":"p.md"}]}`}, nil
+	})
+	// Simulate the shared ACP process being busy right after the turn ends —
+	// the ordinary case for close-phase dispatch (mitto-z4w) — forcing the
+	// spool-first deferral branch instead of an RPC attempt.
+	m.SetShouldDeferDispatchFunc(func(ws string) bool { return ws == workspaceUUID })
+
+	const historySnapshot = `{"events":[{"role":"user","text":"I prefer dark mode"}]}`
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:       sessionID,
+		WorkspaceUUID:   workspaceUUID,
+		SessionStore:    store,
+		HistorySnapshot: historySnapshot,
+	})
+
+	// Actively watch the sidecar for up to 500ms for the run to be (wrongly)
+	// marked complete. The AppendClaimed entry lands in the spool BEFORE the
+	// deferral check even runs (apply.go:3003-3018), so waiting on the spool
+	// alone races ahead of the deferred onCompletion callback and produces a
+	// false pass — poll the actual side effect (the sidecar write) instead.
+	// The buggy path resolves near-instantly (observed <30ms end-to-end for
+	// this whole test), so 500ms reliably catches the regression without
+	// slowing the suite when the run correctly stays in-flight.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var state session.CloseRouterState
+	for {
+		var err error
+		state, err = session.ReadCloseRouterState(store, sessionID)
+		if err != nil {
+			t.Fatalf("ReadCloseRouterState: %v", err)
+		}
+		if len(state.Runs) == 1 && !state.Runs[0].CompletedAt.IsZero() {
+			break // reproduced: falsely marked complete already
+		}
+		if time.Now().After(deadline) {
+			break // stayed in-flight through the whole window
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := completionCalls.Load(); got != 0 {
+		t.Fatalf("promptCompletionFunc call count = %d, want 0 (a spool-deferred dispatch must never reach the RPC)", got)
+	}
+
+	if len(state.Runs) != 1 {
+		t.Fatalf("Runs = %+v, want exactly 1 in-flight run", state.Runs)
+	}
+	if !state.Runs[0].CompletedAt.IsZero() {
+		t.Fatalf("run.CompletedAt = %v, want zero: a spool-deferred dispatch has NOT actually completed — "+
+			"marking it complete with empty Findings silently discards the real findings once the spool is later flushed (mitto-3k0z)",
+			state.Runs[0].CompletedAt)
+	}
+	if len(state.Runs[0].Findings) != 0 {
+		t.Fatalf("Findings = %+v, want empty (nothing was ever classified yet)", state.Runs[0].Findings)
+	}
+}
