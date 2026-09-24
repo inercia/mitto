@@ -543,6 +543,61 @@ depends entirely on how often verification is needed (see Open Question #8).
   construction_ on exactly the hard cases. Scope "parity" to the deterministic
   subset and measure judgment quality separately.
 
+## Critique / Risk Register
+
+This section is a deliberately adversarial review of the design above. The
+architecture is sound and worth building, but several load-bearing statements
+elsewhere in this document read as more settled in prose than they are in fact.
+It separates **verified** claims from **assumptions that must be proven before
+build**, and ranks the risks that most threaten feasibility.
+
+### Is the new system equivalent or better?
+
+Answered along the two axes this document already separates — the honest answer
+differs by axis:
+
+| Axis                                                                                             | Verdict                        | Rationale                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Mechanical scheduling** (pick / lease / fairness / caps / observability)                       | **Better**                     | Tested Go state transitions beat prose re-executed every turn; cross-folder fairness and global caps are impossible from inside a single folder's loop today.                         |
+| **Semantic supervision** (already-landed-fix, prose disjointness, implicit-dependency ranking)   | **Not equivalent, as written** | Moving scheduling to Go removes the place these judgments happen _inline_. They are correctly parked with the LLM (§3), but must return as extra verifier/ranker worker turns.        |
+
+Net: **better on reliability, observability, and fairness; roughly lateral on
+cost; a regression risk on semantic judgment quality unless verifier workers are
+explicitly funded.** The cost motivation ("every reconciliation is a premium
+turn") is only half true — mechanical ticks become effectively free, but
+semantic verification still costs turns. Whether the net cost win survives
+depends entirely on how often verification is needed (see Open Question #8).
+
+### Load-bearing risks
+
+| ID  | Severity        | Risk                                                                                                                                                                                                                                                                                                                                                                             | Evidence / mitigation                                                                                                                                                                                                                                             |
+| --- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | **Critical**    | **Claim exclusivity is assumed, not verified.** The entire Beads-native ownership boundary rests on `bd update --claim` being a _fail-if-held_ mutex. The installed CLI help says only "sets assignee to you, status to in_progress; **idempotent if already claimed by you**" — it is **silent on the foreign-claim case**, which strongly implies it overwrites rather than rejects. | Verify empirically before any other work. If `--claim` is atomic-but-not-exclusive, ownership needs an explicit compare-and-swap on `claimed_by` (a read-check-write is a TOCTOU race), and the "no Mitto-side lease" simplification is back in question.        |
+| R2  | **High**        | **The reused semaphore is the wrong primitive and is in-memory only.** `tryReserveWorkspaceSlot` serializes _loop dispatch_ keyed by `WorkingDir+ACPServer` at `DefaultLoopWorkspaceConcurrency = 1`; it does not model "worker capacity," so it cannot express per-folder **Maximum workers** > 1. It is a process-local map, giving **zero** cross-process protection (see Open Question #5). | Model worker capacity as its own concept. Be explicit that per-folder concurrency > 1 is only safe with git worktrees (see R3); otherwise cap serial. Do not conflate "shared-ACP dispatch serialization" with "how many beads may be in flight."               |
+| R3  | **High**        | **The shared working tree — not disjointness knowledge — is the concurrency blocker.** Stage 4 gates parallelism on a `work_paths` manifest, but even _perfect_ disjointness does not make two agents editing **one git working tree** safe (git index, build outputs, test runs collide).                                                                                        | Real parallelism requires **git worktrees or strict serialization**. Name this explicitly; today's safe answer is serial. Matches the recorded concurrent-driver working-tree hazard.                                                                          |
+| R4  | **Medium-High** | **The migration guard uses the very technique being deprecated.** Detecting "active conversations originating from `Loop processing tasks`" is exactly the conversation-classification fragility listed as a _motivation_ for the rewrite (§Motivation).                                                                                                                          | Make the durable bead lease the **primary** cross-process interlock during overlap, and replace origin-sniffing with a folder-level advisory marker (bead label or `folders.json` flag). See the revised Migration Plan constraint below.                        |
+| R5  | **Medium**      | **An event-driven Go reconciler is a dispatch-storm risk.** "Reacts to every relevant event" across all folders is the fan-out pattern that produced the mitto-hjx aggregate storm (thousands of retry failures + a healthy loop auto-archived under saturation).                                                                                                                 | Any new dispatch-fanout path must route through an admission barrier (`observeSustainedBusy`/`clearSustainedBusy` or equivalent) and coalesce redundant ticks. Design this in from the start, not as a later patch.                                              |
+| R6  | **Medium**      | **The no-progress circuit breaker false-positives on legitimate idle.** `tasksNoProgressLimit = 3` auto-pauses onTasks loops whose touched-bead set repeats, and already misfires on "at concurrency cap / all filtered" states.                                                                                                                                                 | A Go manager that idles correctly ("nothing ready") must not inherit or trip this breaker; ensure the "nothing to do" state produces no churn and no auto-pause.                                                                                                |
+| R7  | **Medium**      | **Claim close/release is subtler than "unset the lease."** `claimed_by`/`claim_heartbeat_at` are _liveness_ keys, but `claimed_at` is a _historical fact_ that must be promoted to `work_started_at` before unset (mitto-v3en) or cycle-time signal is destroyed.                                                                                                                 | A Go reimplementation of claim/close must reproduce the promotion logic in `shared/claim-clear.tmpl`, not blindly unset the `claim_*` group.                                                                                                                    |
+
+### Corrections to earlier sections
+
+- **§Scheduling & Fairness overstates the semaphore reuse.** The existing
+  per-workspace semaphore protects shared-ACP _dispatch_ (default cap 1); it is
+  not a worker-capacity model and provides no cross-process guarantee. Treat it
+  as one input, not the concurrency solution.
+- **§Motivation's cost claim is only half true.** Replace "every reconciliation
+  is a premium model turn" with the axis-split verdict above: mechanical ticks
+  become free; semantic verification still costs turns.
+- **§Migration Plan's primary interlock is inverted.** The durable bead lease
+  should be the _primary_ cross-process guard during the overlap window; the
+  conversation-origin check is fragile and should be demoted or replaced.
+- **§Migration Plan's "parity" is only mechanically measurable.** The shadow
+  evaluator (stage 1) cannot compute the semantic decisions (landed-fix,
+  disjointness, implicit deps), so it diverges from the current loops _by
+  construction_ on exactly the hard cases. Scope "parity" to the deterministic
+  subset and measure judgment quality separately.
+
 ## Open Questions
 
 Items marked **[verify first]** gate the design; items marked **[partially
