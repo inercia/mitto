@@ -315,6 +315,71 @@ app launch. It writes the same `{scenario, metric, value, meta, ts}` JSONL
 shape `writePerfSample()` produces, so `scripts/perf-summary.mjs` /
 `scripts/perf-ab.mjs` consume it unchanged.
 
+### iOS Simulator (Mobile Safari) leg (mitto-sus.12)
+
+Mobile Safari has no native file-write bind and no Playwright automation
+surface, so — like the WKWebView leg — this is a documented manual playbook.
+It reuses the reusable perf-dump endpoint below instead of a native bind,
+since the iOS Simulator shares the host machine's loopback interface.
+
+**Prerequisites:** Xcode with an iOS Simulator runtime installed
+(`xcrun simctl list runtimes`).
+
+1. Boot a simulator and launch Safari on it:
+   ```bash
+   xcrun simctl boot "iPhone 15" 2>/dev/null || true
+   open -a Simulator
+   xcrun simctl launch booted com.apple.mobilesafari
+   ```
+2. Launch Mitto from the repo root with the perf-dump endpoint enabled (see
+   "Reusable perf-dump endpoint" below):
+   ```bash
+   MITTO_PERF_DUMP=1 ./mitto
+   ```
+3. In the Simulator's Safari, navigate to `http://127.0.0.1:<port>/?perf=1`
+   (the Simulator shares the host's loopback interface, so no LAN IP is
+   needed).
+4. For each scenario in `tests/ui/perf/baseline.json`'s `samples`, manually
+   reproduce the same interaction the corresponding Playwright spec performs.
+5. Open **macOS Safari → Develop → Simulator → \<page\>** to get a Web
+   Inspector console attached to the Simulator's tab, then dump the buffer
+   for that scenario to the perf-dump endpoint:
+   ```js
+   await mittoPerfDumpServer("composer.keystroke", "ios-safari");
+   ```
+   Each call appends to `tests/ui/perf/results/latest-ios-safari/samples.jsonl`
+   on the host — no manual file concatenation step (unlike the WKWebView leg).
+6. After all scenarios are recorded, write the baseline and refresh the A/B
+   report:
+   ```bash
+   node scripts/perf-summary.mjs --results tests/ui/perf/results/latest-ios-safari \
+     --write-baseline tests/ui/perf/baseline-ios-safari.json
+   make bench-ui-ab
+   ```
+7. Record a sidecar `tests/ui/perf/baseline-ios-safari.env.txt` alongside the
+   baseline noting the device model, iOS version, Safari build, and Mitto
+   commit — the iOS Simulator does not report all of this to `navigator`.
+
+`mittoPerfDumpServer` (`window.mittoPerfDumpServer`, wired in `app.js` via
+the same `exposePerfDumpForConsole()`) is a no-op (resolves `false`) unless
+perf instrumentation is enabled; it degrades to `false` rather than throwing
+if the endpoint is disabled/unreachable.
+
+#### Reusable perf-dump endpoint
+
+`POST /api/perf/dump?label=<label>&scenario=<scenario>`
+(`internal/web/handlers/perf_dump.go`) is a dev-only, browser-agnostic
+sample-delivery leg: any browser can POST the same JSONL body
+`writePerfSample()` produces and have it appended to
+`tests/ui/perf/results/latest-<label>/samples.jsonl`. It exists **only**
+when the process is launched with `MITTO_PERF_DUMP=1` (absent from the route
+table otherwise, so a shipping build 404s rather than 403s), and is
+restricted to loopback connections regardless of that flag, mirroring
+`internal/web/handlers/image_frompath.go`'s defense-in-depth. `label` is
+restricted to `^[a-z0-9][a-z0-9-]{0,63}$` to prevent path traversal. This is
+the delivery mechanism the iOS Safari leg above uses; a future increment
+could migrate the WKWebView leg onto it too (out of scope for mitto-sus.12).
+
 ## Out of scope
 
 Implementing optimizations, virtualization, or a framework/engine decision —

@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/inercia/mitto/internal/web/middleware"
 )
@@ -238,6 +239,18 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/save-file-to-path", handler: http.HandlerFunc(s.apiHandlers.HandleSaveFileToPath)},
 		apiRoute{pattern: "/api/check-file-exists", handler: http.HandlerFunc(s.apiHandlers.HandleCheckFileExists)},
 	)
+
+	// Reusable perf-dump endpoint (mitto-sus.12) — a dev-only delivery leg
+	// for perf samples from browsers with no native file-write bind (e.g.
+	// iOS Simulator Safari). Registered only when MITTO_PERF_DUMP=1, the
+	// same flag cmd/mitto-app/main.go uses to bind the native WKWebView
+	// dump function, so a shipping build returns 404 (route absent
+	// entirely) rather than merely 403 for this path.
+	if os.Getenv("MITTO_PERF_DUMP") == "1" {
+		routes = append(routes,
+			apiRoute{method: "POST", pattern: "/api/perf/dump", handler: http.HandlerFunc(s.apiHandlers.HandlePerfDump)},
+		)
+	}
 
 	// Auth info endpoint (public, used by login page to adapt its UI).
 	routes = append(routes,

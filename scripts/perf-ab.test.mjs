@@ -81,27 +81,56 @@ describe("renderReport", () => {
       { "composer.keystroke": { p50: 10 } },
       { "composer.keystroke": { p50: 15 } },
       { "composer.keystroke": { p50: 30 } },
+      { "composer.keystroke": { p50: 22.5 } },
     );
     const md = renderReport(rows);
 
     expect(md).toContain("# UI Responsiveness A/B Report (mitto-sus.2)");
     expect(md).toContain(
-      "| Scenario | Metric | Chromium | WebKit | WKWebView | WebKit/Chromium | WKWebView/WebKit |",
+      "| Scenario | Metric | Chromium | WebKit | WKWebView | iOS Safari | WebKit/Chromium | WKWebView/WebKit | iOS Safari/WebKit |",
     );
     expect(md).toContain(
-      "| composer.keystroke | p50 | 10.00 | 15.00 | 30.00 | 1.50x | 2.00x |",
+      "| composer.keystroke | p50 | 10.00 | 15.00 | 30.00 | 22.50 | 1.50x | 2.00x | 1.50x |",
     );
   });
 
   test("renders missing values and ratios as an em dash", () => {
     const rows = buildComparison({ s: { p50: 10 } }, null, null);
     const md = renderReport(rows);
-    expect(md).toContain("| s | p50 | 10.00 | — | — | — | — |");
+    expect(md).toContain("| s | p50 | 10.00 | — | — | — | — | — | — |");
   });
 
   test("renders an empty table body (header only) for no rows", () => {
     const md = renderReport([]);
-    expect(md).toContain("|---|---|---|---|---|---|---|");
-    expect(md).not.toMatch(/\| .+ \| .+ \| .+ \| .+ \| .+ \| .+x \|/);
+    expect(md).toContain("|---|---|---|---|---|---|---|---|---|");
+    expect(md).not.toMatch(
+      /\| .+ \| .+ \| .+ \| .+ \| .+ \| .+ \| .+ \| .+x \|/,
+    );
+  });
+});
+
+describe("buildComparison — iOS Safari leg (mitto-sus.12)", () => {
+  test("cross-joins the iOS Safari leg alongside the other three", () => {
+    const rows = buildComparison({ s: { p50: 10 } }, null, null, {
+      s: { p50: 5 },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].iosSafari).toBe(5);
+  });
+
+  test("computes ios-safari/webkit ratio", () => {
+    const rows = buildComparison(null, { s: { p50: 10 } }, null, {
+      s: { p50: 25 },
+    });
+    expect(rows[0].iosSafariOverWebkit).toBeCloseTo(2.5);
+  });
+
+  test("iOS Safari leg is optional — omitting it renders as missing, not a throw", () => {
+    expect(() =>
+      buildComparison({ s: { p50: 10 } }, { s: { p50: 5 } }, null),
+    ).not.toThrow();
+    const rows = buildComparison({ s: { p50: 10 } }, { s: { p50: 5 } }, null);
+    expect(rows[0].iosSafari).toBeUndefined();
+    expect(rows[0].iosSafariOverWebkit).toBeNull();
   });
 });

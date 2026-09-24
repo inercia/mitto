@@ -173,36 +173,43 @@ export function installPerfBuffer() {
 
 /**
  * Serializes `window.__mittoPerfBuffer` into one JSON line per entry
- * (matching writePerfSample's {scenario, metric, value, meta, ts} shape) and
- * writes it via the native `window.mittoDumpPerfBuffer` bind (only present
- * in the macOS app when launched with MITTO_PERF_DUMP=1 — see
- * cmd/mitto-app/main.go's dumpPerfBufferToFile). No-op (returns false)
- * unless perf instrumentation is enabled or the native bind is absent (e.g.
- * running under Playwright/Chromium, or a normal app launch) — never
- * throws.
+ * (matching writePerfSample's {scenario, metric, value, meta, ts} shape).
+ * Shared by both perf-dump delivery legs (native file bind and the
+ * POST /api/perf/dump endpoint, mitto-sus.12) so they never drift. Returns
+ * an empty string for an empty/missing buffer; never throws.
+ */
+export function serializePerfBufferToJSONL(scenario) {
+  const buffer = window.__mittoPerfBuffer || [];
+  const lines = buffer.map((entry) =>
+    JSON.stringify({
+      scenario,
+      metric: entry.name,
+      value: entry.duration,
+      meta: {
+        entryType: entry.entryType,
+        startTime: entry.startTime,
+        ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+      },
+      ts: new Date().toISOString(),
+    }),
+  );
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
+/**
+ * Writes `window.__mittoPerfBuffer` (serialized via
+ * serializePerfBufferToJSONL) via the native `window.mittoDumpPerfBuffer`
+ * bind (only present in the macOS app when launched with MITTO_PERF_DUMP=1
+ * — see cmd/mitto-app/main.go's dumpPerfBufferToFile). No-op (returns
+ * false) unless perf instrumentation is enabled or the native bind is
+ * absent (e.g. running under Playwright/Chromium, or a normal app launch)
+ * — never throws.
  */
 export function dumpPerfBufferToFile(scenario, path) {
   if (!isPerfEnabled()) return false;
   if (typeof window.mittoDumpPerfBuffer !== "function") return false;
   try {
-    const buffer = window.__mittoPerfBuffer || [];
-    const lines = buffer.map((entry) =>
-      JSON.stringify({
-        scenario,
-        metric: entry.name,
-        value: entry.duration,
-        meta: {
-          entryType: entry.entryType,
-          startTime: entry.startTime,
-          ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
-        },
-        ts: new Date().toISOString(),
-      }),
-    );
-    window.mittoDumpPerfBuffer(
-      path,
-      lines.length ? lines.join("\n") + "\n" : "",
-    );
+    window.mittoDumpPerfBuffer(path, serializePerfBufferToJSONL(scenario));
     return true;
   } catch {
     return false;
@@ -210,11 +217,43 @@ export function dumpPerfBufferToFile(scenario, path) {
 }
 
 /**
+ * POSTs `window.__mittoPerfBuffer` (serialized via
+ * serializePerfBufferToJSONL) to `POST /api/perf/dump?label=<label>&scenario=<scenario>`
+ * — the reusable dev-only perf-dump endpoint (mitto-sus.12,
+ * internal/web/handlers/perf_dump.go). Used by browser legs with no native
+ * file-write bind, e.g. iOS Simulator Safari (inspectable via macOS
+ * Safari's Develop menu). Resolves `false` (never throws) unless perf
+ * instrumentation is enabled, the endpoint is disabled/unreachable
+ * (MITTO_PERF_DUMP unset → 404), or the response is otherwise non-2xx —
+ * an operator calling this from the console gets a boolean, not an
+ * unhandled rejection.
+ */
+export async function dumpPerfBufferToServer(scenario, label) {
+  if (!isPerfEnabled()) return false;
+  try {
+    const prefix = window.mittoApiPrefix || "";
+    const qs = new URLSearchParams({ label, scenario }).toString();
+    const response = await fetch(`${prefix}/api/perf/dump?${qs}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/x-ndjson" },
+      body: serializePerfBufferToJSONL(scenario),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * One-shot bootstrap: exposes `dumpPerfBufferToFile` as `window.mittoPerfDump`
- * so an operator running the manual WKWebView playbook can call it from the
- * DevTools console. No-op unless perf instrumentation is enabled.
+ * and `dumpPerfBufferToServer` as `window.mittoPerfDumpServer` so an
+ * operator running a manual playbook (WKWebView or iOS Simulator Safari)
+ * can call either from the DevTools/Web Inspector console. No-op unless
+ * perf instrumentation is enabled.
  */
 export function exposePerfDumpForConsole() {
   if (!isPerfEnabled()) return;
   window.mittoPerfDump = dumpPerfBufferToFile;
+  window.mittoPerfDumpServer = dumpPerfBufferToServer;
 }

@@ -5,6 +5,7 @@
 
 import {
   dumpPerfBufferToFile,
+  dumpPerfBufferToServer,
   exposePerfDumpForConsole,
   _resetPerfEnabledCacheForTests,
 } from "./perfMarks.js";
@@ -16,6 +17,9 @@ function resetPerfState() {
   delete window.__mittoPerfBuffer;
   delete window.mittoDumpPerfBuffer;
   delete window.mittoPerfDump;
+  delete window.mittoPerfDumpServer;
+  delete window.mittoApiPrefix;
+  delete global.fetch;
 }
 
 beforeEach(() => {
@@ -121,6 +125,69 @@ describe("dumpPerfBufferToFile", () => {
   });
 });
 
+describe("dumpPerfBufferToServer", () => {
+  test("returns false and does not call fetch when perf is disabled", async () => {
+    global.fetch = mock(() => Promise.resolve({ ok: true }));
+    window.__mittoPerfBuffer = [
+      { name: "mitto.x", entryType: "mark", startTime: 1, duration: 0 },
+    ];
+
+    expect(await dumpPerfBufferToServer("scenario", "ios-safari")).toBe(false);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test("POSTs the serialized JSONL body to /api/perf/dump with label/scenario query params", async () => {
+    window.__mittoPerf = true;
+    window.mittoApiPrefix = "/mitto";
+    window.__mittoPerfBuffer = [
+      {
+        name: "mitto.composer.keystroke",
+        entryType: "mark",
+        startTime: 12.5,
+        duration: 3.25,
+      },
+    ];
+    global.fetch = mock(() => Promise.resolve({ ok: true }));
+
+    expect(
+      await dumpPerfBufferToServer("composer.keystroke", "ios-safari"),
+    ).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe(
+      "/mitto/api/perf/dump?label=ios-safari&scenario=composer.keystroke",
+    );
+    expect(options.method).toBe("POST");
+    expect(options.credentials).toBe("include");
+    const lines = options.body
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      scenario: "composer.keystroke",
+      metric: "mitto.composer.keystroke",
+      value: 3.25,
+    });
+  });
+
+  test("returns false when the response is non-2xx", async () => {
+    window.__mittoPerf = true;
+    global.fetch = mock(() => Promise.resolve({ ok: false }));
+
+    expect(await dumpPerfBufferToServer("scenario", "ios-safari")).toBe(false);
+  });
+
+  test("never throws — a rejected fetch degrades to false", async () => {
+    window.__mittoPerf = true;
+    global.fetch = mock(() => Promise.reject(new Error("network down")));
+
+    await expect(
+      dumpPerfBufferToServer("scenario", "ios-safari"),
+    ).resolves.toBe(false);
+  });
+});
+
 describe("exposePerfDumpForConsole", () => {
   test("does not set window.mittoPerfDump when perf is disabled", () => {
     exposePerfDumpForConsole();
@@ -131,5 +198,11 @@ describe("exposePerfDumpForConsole", () => {
     window.__mittoPerf = true;
     exposePerfDumpForConsole();
     expect(window.mittoPerfDump).toBe(dumpPerfBufferToFile);
+  });
+
+  test("exposes dumpPerfBufferToServer as window.mittoPerfDumpServer when perf is enabled", () => {
+    window.__mittoPerf = true;
+    exposePerfDumpForConsole();
+    expect(window.mittoPerfDumpServer).toBe(dumpPerfBufferToServer);
   });
 });
