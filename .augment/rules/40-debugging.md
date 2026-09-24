@@ -150,10 +150,11 @@ Build mock server (`make build-mock-acp`), extract events from `events.jsonl`, c
 
 ## Rebuild-verification protocol (recurring trap)
 
-After a user-reported rebuild+restart, **never** analyze the new log until you've confirmed the fix is in the running binary. Bitten repeatedly (mitto-54k.3/54k.5, mitto-xetv, mitto-mzvc). Three cheap checks:
+After a user-reported rebuild+restart, **never** analyze the new log until you've confirmed the fix is in the running binary. Bitten repeatedly (mitto-54k.3/54k.5, mitto-xetv, mitto-mzvc, mitto-e9b). Checks:
 
-1. **Binary mtime vs commit time** — `ls -la ./mitto` vs `git show -s --format=%ci <fix-commit>`; if mtime < commit ci, fix is **not** live.
-2. **Symbol check** — `strings ./mitto | grep <new-symbol>` (log-literal, new bd-id, new const). Zero hits = not compiled in.
-3. **Post-restart log grep** for a new log-line literal introduced by the fix.
+1. **Identify the running binary** — `ps -p <pid> -o comm=,lstart=`. On macOS the daemon is almost always `Mitto.app/Contents/MacOS/mitto-app`, not `./mitto`. **Make-target divergence (mitto-e9b)**: `make build` only rebuilds `./mitto` (CLI); the app bundle needs `make build-mac-app` + relaunch. Checking `./mitto` mtime while the bundle is stale gives false-positive verification.
+2. **Binary mtime vs commit time** — `ls -la <that-binary>` vs `git show -s --format=%ci <fix-commit>`; if mtime < commit ci, fix is **not** live.
+3. **Symbol check** — `strings <that-binary> | grep <new-symbol>` (log-literal, new bd-id, new const). Zero hits = not compiled in.
+4. **Post-restart log grep** for a new log-line literal. Beware self-referential false positives: agent tool-call echoes containing the search literal get logged in the same session — inspect timestamps to distinguish real hits from echoes.
 
-Run at least (2) before drawing conclusions from post-restart measurements.
+Run at least (3) against the ACTUAL running binary before drawing conclusions from post-restart measurements.
