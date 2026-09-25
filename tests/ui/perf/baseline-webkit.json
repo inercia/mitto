@@ -1,0 +1,175 @@
+{
+  "recorded_at": "2026-09-25T18:36:50.202Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "playwright": "^1.50.1",
+    "chromium": "Version 1.58.0"
+  },
+  "samples": {
+    "ws.chunk.applied-short": {
+      "n": 0,
+      "count": 2
+    },
+    "ws.chunk.applied-long": {
+      "n": 2,
+      "p95": 0,
+      "maxCoalesced": 0
+    },
+    "composer.keystroke-during-stream": {
+      "n": 36,
+      "p50": 7,
+      "p95": 13
+    },
+    "long-task.during-composer-stream": {
+      "n": 0,
+      "maxDuration": 0
+    },
+    "composer.keystroke": {
+      "n": 27,
+      "p50": 7,
+      "p95": 12
+    },
+    "session.switch.network": {
+      "n": 1,
+      "p50": 3,
+      "p95": 3
+    },
+    "determinism.applied-marks": {
+      "n": 0,
+      "count": 2
+    },
+    "history-load.small": {
+      "n": 0,
+      "domNodes": 637
+    },
+    "history-load.medium": {
+      "n": 0,
+      "domNodes": 1021
+    },
+    "history-load.medium.prepend-step-0": {
+      "n": 0,
+      "domNodes": 1975,
+      "latencyMs": 193
+    },
+    "history-load.medium.prepend-step-1": {
+      "n": 0,
+      "domNodes": 2450,
+      "latencyMs": 153
+    },
+    "history-load.medium.prepend-step-2": {
+      "n": 0,
+      "domNodes": 2925,
+      "latencyMs": 152
+    },
+    "history-load.medium.prepend-step-3": {
+      "n": 0,
+      "domNodes": 3400,
+      "latencyMs": 75
+    },
+    "history-load.max": {
+      "n": 0,
+      "domNodes": 1021
+    },
+    "history-load.max.prepend-step-0": {
+      "n": 0,
+      "domNodes": 1975,
+      "latencyMs": 172
+    },
+    "history-load.max.prepend-step-1": {
+      "n": 0,
+      "domNodes": 2450,
+      "latencyMs": 161
+    },
+    "history-load.max.prepend-step-2": {
+      "n": 0,
+      "domNodes": 2925,
+      "latencyMs": 51
+    },
+    "history-load.max.prepend-step-3": {
+      "n": 0,
+      "domNodes": 3400,
+      "latencyMs": 170
+    },
+    "multi-stream.foreground-fps": {
+      "n": 0,
+      "fps": 60.58588548601864,
+      "missedFrames": 0
+    },
+    "long-task.multi-stream": {
+      "n": 0,
+      "maxDuration": 0
+    },
+    "render.background-chunk": {
+      "n": 0,
+      "SessionList": 2,
+      "MessageList": 0,
+      "ChatInput": 0
+    },
+    "render.keystroke": {
+      "n": 0,
+      "SessionList": 0,
+      "MessageList": 0,
+      "ChatInput": 22
+    },
+    "render.keepalive-idle": {
+      "n": 0,
+      "SessionList": 0,
+      "MessageList": 0,
+      "ChatInput": 0
+    },
+    "render.toast-no-ws": {
+      "n": 0,
+      "App": 0,
+      "SessionList": 0,
+      "MessageList": 0,
+      "ChatInput": 0
+    },
+    "render.queue-add-delete": {
+      "n": 0,
+      "App": 2,
+      "SessionList": 2,
+      "MessageList": 0,
+      "ChatInput": 2
+    },
+    "render.set-config-option": {
+      "n": 0,
+      "SessionList": 1,
+      "MessageList": 2,
+      "ChatInput": 1
+    },
+    "render.postprocess.tables": {
+      "n": 3,
+      "p95": 0
+    },
+    "render.postprocess.mermaid": {
+      "n": 3,
+      "p95": 0
+    },
+    "render.postprocess.beadsLinks": {
+      "n": 3,
+      "p95": 0
+    },
+    "session.switch.local": {
+      "n": 1,
+      "p50": 3,
+      "p95": 3
+    },
+    "render.postprocess.tables-mixed": {
+      "n": 39,
+      "p95": 0
+    },
+    "render.postprocess.mermaid-mixed": {
+      "n": 39,
+      "p95": 3
+    },
+    "render.postprocess.beadsLinks-mixed": {
+      "n": 39,
+      "p95": 0
+    },
+    "ws.chunk.received-to-applied": {
+      "n": 1,
+      "p95": 0
+    }
+  }
+}
