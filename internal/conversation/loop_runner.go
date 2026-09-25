@@ -1691,20 +1691,32 @@ func (r *LoopRunner) fireOnCompletion(sessionID string) {
 			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 			return
 		}
-		if r.logger == nil {
+		if errors.Is(err, ErrSessionBusy) {
+			if r.logger != nil {
+				r.logger.Debug("On-completion loop firing skipped, session busy",
+					"session_id", sessionID)
+			}
 			return
 		}
-		if errors.Is(err, ErrSessionBusy) {
-			r.logger.Debug("On-completion loop firing skipped, session busy",
-				"session_id", sessionID)
-		} else if errors.Is(err, ErrLoopDispatchCoalesced) {
-			r.logger.Debug("On-completion loop firing coalesced, another trigger already in flight",
-				"session_id", sessionID)
-		} else {
-			r.logger.Warn("On-completion loop firing failed",
-				"session_id", sessionID,
-				"error", err)
+		if errors.Is(err, ErrLoopDispatchCoalesced) {
+			if r.logger != nil {
+				r.logger.Debug("On-completion loop firing coalesced, another trigger already in flight",
+					"session_id", sessionID)
+			}
+			return
 		}
+		// A synchronous PromptWithMeta failure (mitto-efw) never reaches
+		// deliverPrompt's OnComplete callback, so route it through the same
+		// trigger-agnostic ceiling as every other delivery-failure path —
+		// otherwise deliveryFailures never increments and this onCompletion
+		// re-arm loop re-fires forever with only a bare WARN log.
+		contextTurns := contextTurnsUnknown
+		if r.sessionManager != nil {
+			if bs := r.sessionManager.GetSession(sessionID); bs != nil {
+				contextTurns = bs.acpContextTurnsSinceReset()
+			}
+		}
+		r.handleDeliveryFailure(sessionID, meta.Name, loop, loopStore, err, true, true, session.TriggerOnCompletion, contextTurns)
 	}
 }
 
@@ -2243,11 +2255,14 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 		if errors.Is(err, ErrPromptResolveFailed) {
 			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 		} else {
-			if r.logger != nil {
-				r.logger.Error("Failed to deliver loop prompt",
-					"session_id", sessionID,
-					"error", err)
-			}
+			// A synchronous PromptWithMeta failure (e.g. a permanently-unready
+			// model pin returning "still initializing" before the async turn
+			// even starts) never reaches deliverPrompt's OnComplete callback,
+			// so it must be routed through the same trigger-agnostic ceiling
+			// used by the async failure path (mitto-efw) — otherwise
+			// deliveryFailures never increments, MaxLoopDeliveryFailures never
+			// trips, and the loop re-fires forever with only a bare ERROR log.
+			r.handleDeliveryFailure(sessionID, meta.Name, loop, loopStore, err, true, false, session.TriggerSchedule, bs.acpContextTurnsSinceReset())
 		}
 		return 0, 0, 1
 	}
