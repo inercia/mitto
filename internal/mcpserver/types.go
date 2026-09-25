@@ -450,8 +450,9 @@ type ConversationUpdateInput struct {
 
 	// ModelTag, when non-nil, switches the target conversation's active model to
 	// the first available model whose profile carries this tag (see
-	// config.ProfilesByTag + SelectPreferredModel semantics). Empty string clears
-	// any prior transient model override and restores the caller-selected baseline.
+	// config.ProfilesByTag + SelectHighestPriorityModel semantics — strict,
+	// ignores the current model). Empty string clears any prior transient model
+	// override and restores the caller-selected baseline.
 	// The target must be a currently running conversation whose agent has
 	// advertised a model catalog. Applied through the same path as the user's
 	// manual model-dropdown click, so the change persists as the new baseline,

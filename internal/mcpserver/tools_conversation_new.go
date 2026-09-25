@@ -36,11 +36,12 @@ type ConversationStartInput struct {
 	Workspace  string `json:"workspace,omitempty"`   // Optional workspace UUID for cross-workspace operations
 	// ModelTag, when non-empty, pins the new conversation's active model from the
 	// first turn to the first available model whose profile carries this tag (see
-	// config.ProfilesByTag + SelectPreferredModel). Applied through the same
-	// SetConfigOption path as the user's manual model-dropdown click, so the
-	// change persists as the new baseline. Requires the started agent to have
-	// advertised a model catalog; if no available model matches, spawn fails
-	// loudly so callers can retry or spawn without pinning.
+	// config.ProfilesByTag + SelectHighestPriorityModel — strict, ignores the
+	// current model). Applied through the same SetConfigOption path as the
+	// user's manual model-dropdown click, so the change persists as the new
+	// baseline. Requires the started agent to have advertised a model catalog;
+	// if no available model matches, spawn fails loudly so callers can retry or
+	// spawn without pinning.
 	ModelTag string `json:"model_tag,omitempty"`
 	// Loop configuration (optional) - creates the conversation as a loop
 	LoopPrompt string `json:"loop_prompt,omitempty"` // The prompt to send in the loop

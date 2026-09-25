@@ -84,8 +84,7 @@ func (bs *BackgroundSession) restoreBaselineIfOverride() {
 }
 
 // ApplyModelTag resolves the given preferred-model tag against the agent's
-// advertised model catalog (using the same SelectPreferredModel semantics as
-// prompt-level preferredModels) and switches the session's active model via the
+// advertised model catalog and switches the session's active model via the
 // same SetConfigOption path used by the user's manual model-dropdown click, so
 // the change persists as the new baseline. An empty tag clears any transient
 // prompt-level model override. Returns the resolved model id on success, "" when
@@ -94,6 +93,17 @@ func (bs *BackgroundSession) restoreBaselineIfOverride() {
 // SetConfigOption call fails. Used by mcp tool handlers that would otherwise
 // need to import conversation-package internals (avoids the mcpserver→conversation
 // import cycle).
+//
+// Uses SelectHighestPriorityModel (strict: ignores the current model), NOT
+// SelectPreferredModel (keep-current). ApplyModelTag is only invoked when a
+// caller explicitly passes model_tag to mitto_conversation_new/_update — a
+// manual-equivalent operator selection — so it must honor the highest-priority
+// tag-bearing profile rather than silently keeping a current model that merely
+// satisfies a lower-priority one. This matches the documented "first available
+// profile carrying this tag" contract (mitto-9eci). SelectPreferredModel's
+// keep-current behavior remains correct for prompt_dispatcher.go's per-turn
+// preferredModels frontmatter, which must not fight the operator's active model
+// every turn — do not change that path.
 func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (string, error) {
 	if tag == "" {
 		bs.restoreBaselineIfOverride()
@@ -104,7 +114,7 @@ func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (str
 		return "", fmt.Errorf("agent has not advertised a model catalog")
 	}
 	profiles := bs.mittoConfig.EffectiveModelProfiles()
-	resolved := SelectPreferredModel(
+	resolved := SelectHighestPriorityModel(
 		[]config.PromptPreferredModel{{ModelTag: tag}},
 		profiles, models,
 	)
