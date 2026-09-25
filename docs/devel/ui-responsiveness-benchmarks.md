@@ -58,6 +58,11 @@ guard) until all three close.
   `tests/ui/perf/baseline.json`, its rendered table
   [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md), and the
   budget-promotion decisions below.
+- **In progress** (`mitto-sus.10`): turning the epic's one-time responsiveness
+  gains into maintained constraints and closing the framework question. See
+  [Regression triage playbook](#regression-triage-playbook) below and the
+  frontend-stack ADR at
+  [docs/devel/adr/0001-frontend-stack.md](./adr/0001-frontend-stack.md).
 - **Landed** (`mitto-sus.3`): frame-paced foreground coalescing atop the
   existing `sessionUpdateScheduler.js` — once an active-session content burst
   is under way, chunks after the first coalesce into at most one
@@ -244,9 +249,62 @@ Each row below carries a promotion decision (`mitto-sus.1.3`): **gate**
 | 6 | `mitto.ws.chunk.received` → `mitto.ws.chunk.applied` (p95)     | ≤ baseline × 1.3                                    | **gate** | Central concern of the mitto-sus epic; must not silently regress. `ws-chunk-received-applied.spec.ts`. |
 | 7 | DOM node count per 1 000 rendered messages                   | record baseline, no hard budget yet                 | record-only | Prescribed by the bead description; DOM size varies too much with content mix to fix a number yet. `history-load.perf.spec.ts`. |
 | 8 | Retained heap growth per 10-cycle conversation-switch loop    | < 5 MB delta (leak proxy)                            | record-only (deferred) | No existing spec drives this specific 10-cycle loop yet — `collectDOMStats()`'s `usedJSHeapBytes` is recorded per history size in `history-load.perf.spec.ts` as a partial proxy, but a dedicated switch-loop harness is left to a future increment (out of scope for this measurement-foundation bead). |
+| 9 | Initial-load DOM node count per seeded history size (small/medium/max) | ≤ baseline × 1.05                          | **gate** (mitto-sus.10.1) | Deterministic proxy for unbounded DOM growth on the initial-load path (capped by `INITIAL_EVENTS_LIMIT`, see the spec's file header) without hard-coding an absolute number. `history-load.perf.spec.ts`. |
+| 10 | Per-processor render-postprocess invocation count for a single rendered message (`tables`/`mermaid`/`beadsLinks`) | ≤ baseline `n` | **gate** (mitto-sus.10.1) | A duplicate-invocation regression (e.g. a processor re-running on an unrelated re-render) grows this count independently of per-call duration, which the existing p95 sample would not catch. `render-postprocess-cost.spec.ts`. |
+
+Rows 9–10 (mitto-sus.10.1) follow the same `PERF_RUN=1` + `getBaselineValue()`
+no-op-until-baseline-exists contract as rows 1, 2, 5, and 6 — see the env-var
+contract note above.
 
 See [ui-responsiveness-baseline.md](./ui-responsiveness-baseline.md) for the
 current recorded numbers each gate compares against.
+
+## Regression triage playbook
+
+When `make bench-ui` (or a CI/manual `make bench-ui-baseline` review) reports
+a regression against the committed baseline, use this playbook rather than
+guessing from the aggregate diff alone:
+
+1. **Capture a trace.** Re-run the single failing spec against a live app
+   instance with instrumentation enabled (`?perf=1`), then inspect the raw
+   entries in the browser console:
+   ```js
+   window.__mittoPerfBuffer.filter((e) => e.name.startsWith("mitto."));
+   performance.getEntriesByName("mitto.<seam-name>");
+   ```
+   For a specific budgeted scenario, target its spec directly:
+   ```bash
+   bunx playwright test --config=tests/ui/playwright.config.ts \
+     tests/ui/specs/perf/<scenario>.spec.ts
+   ```
+2. **Diff against the committed baseline**, not just the failing assertion's
+   message — `make bench-ui` already writes a full comparison to
+   `tests/ui/perf/results/latest/diff.md`; review every row, not only the one
+   that failed, since a broad regression (e.g. a shared hook re-rendering more
+   often) often shows up first as a small bump across several scenarios.
+3. **Rule out hardware contention before rule out code.** A large,
+   unexplained swing on a single run is more often a noisy CI runner or a
+   background process on a local machine than a real regression — re-run once
+   with other apps closed before filing a bead. The four hard-gated
+   wall-clock rows (1, 2, 5, 6) already use a generous baseline-relative
+   multiplier for exactly this reason; the counter-based rows (9, 10, and the
+   render-isolation exact-count assertions) do not have this noise source, so
+   a failure there is a stronger correctness signal.
+4. **Bisect with `git bisect` scoped to the failing spec** once hardware
+   contention is ruled out — the deterministic mock-ACP fixtures
+   (`tests/fixtures/responses/perf-*.json`) make each perf spec reproducible
+   across commits, unlike a manual reproduction against a live agent.
+5. **File a bead** referencing the specific row/scenario and the before/after
+   numbers from the diff report; do not silently adjust the baseline to make
+   the gate pass again unless the regression is an accepted, deliberate
+   trade-off (in which case say so explicitly in the bead and the
+   `make bench-ui-baseline` commit message).
+
+**The "documented non-flaky manual release gate"** this benchmark suite
+provides is exactly this: `make bench-ui-baseline` run + reviewed diff before
+a release, rather than a hard CI gate on every commit (see "environmental
+controls" above for why `make bench-ui` is intentionally excluded from
+`make test-ui` / `test-all` / `test-ci`).
 
 ## A/B: WebKit and WKWebView legs (mitto-sus.2)
 

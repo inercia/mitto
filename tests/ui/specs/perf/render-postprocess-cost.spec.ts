@@ -18,10 +18,21 @@
  * docs/devel/ui-responsiveness-benchmarks.md for the epic's suspected
  * root-cause framing (post-processor cost during streaming) this seam
  * family supports investigating.
+ *
+ * mitto-sus.10.1: additionally gates the per-processor **invocation count**
+ * (how many times a processor ran for this single rendered message) against
+ * the committed baseline under `PERF_RUN=1` — a duplicate-invocation
+ * regression (e.g. a processor re-running on an unrelated re-render) would
+ * inflate this count even if per-call duration stays flat, so it is a
+ * deterministic proxy the p95-duration sample alone would miss. No-ops
+ * (skips the assertion) if no baseline is recorded yet, mirroring the other
+ * baseline-relative gates in ws-chunk-received-applied.spec.ts /
+ * composer-during-stream.perf.spec.ts.
  */
 import { test, expect } from "../../fixtures/test-fixtures";
 import {
   enablePerf,
+  getBaselineValue,
   getPerfEntries,
   percentile,
   writePerfSample,
@@ -86,6 +97,22 @@ test.describe("Perf: render post-processor cost", () => {
       writePerfSample(`render.postprocess.${processor}`, "p95", p95, {
         n: durations.length,
       });
+
+      // mitto-sus.10.1: deterministic invocation-count gate. Only runs under
+      // PERF_RUN=1 (writePerfSample's own contract) and only once a baseline
+      // "n" is recorded for this exact scenario/processor, so plain
+      // `make test-ui` and the very first `make bench-ui-baseline` run are
+      // unaffected. A duplicate-processing regression would grow this count
+      // without necessarily moving p95, so it is asserted independently.
+      if (process.env.PERF_RUN) {
+        const baselineN = getBaselineValue(
+          `render.postprocess.${processor}`,
+          "n",
+        );
+        if (baselineN !== null) {
+          expect(startMarks.length).toBeLessThanOrEqual(baselineN);
+        }
+      }
     }
   });
 });

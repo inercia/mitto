@@ -20,8 +20,9 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Web Interface](web-interface.md)** — Browser-based UI architecture, REST API, streaming response handling, responsive design
 
-- **[UI Responsiveness Benchmarks](ui-responsiveness-benchmarks.md)** — Opt-in performance-mark instrumentation, deterministic streaming fixtures, environmental controls, and proposed budgets for measuring UI responsiveness (`mitto-sus.1`)
+- **[UI Responsiveness Benchmarks](ui-responsiveness-benchmarks.md)** — Opt-in performance-mark instrumentation, deterministic streaming fixtures, environmental controls, proposed budgets, and the regression triage playbook for measuring UI responsiveness (`mitto-sus.1`, `mitto-sus.10`)
   - **[UI Responsiveness Baseline](ui-responsiveness-baseline.md)** — Auto-generated table of the currently committed `tests/ui/perf/baseline.json` numbers each `make bench-ui` gate compares against (`mitto-sus.1.3`)
+  - **[ADR 0001: Frontend Stack](adr/0001-frontend-stack.md)** — Per-layer Retain/Replace/Reject-and-revisit decision for Preact, HTM, daisyUI, Tailwind, and WKWebView, with evidence and revisit conditions (`mitto-sus.10`)
 
 - **[Frontend Render Domains](frontend-render-domains.md)** — Render-count instrumentation, the five named render domains (root/sidebar/active-conversation/composer/notifications), and the `sessionsStore` per-slice subscribable store pattern (`mitto-sus.7`)
 

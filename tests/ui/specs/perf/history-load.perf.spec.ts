@@ -44,8 +44,19 @@ import {
   collectDOMStats,
   collectFrameStats,
   collectPaintLayoutStats,
+  getBaselineValue,
   writePerfSample,
 } from "../../utils/perf";
+
+// mitto-sus.10.1: soft ceiling (5% headroom over the committed baseline) for
+// the initial-load DOM node count per seeded size. Only enforced under
+// PERF_RUN=1 and only once a baseline is recorded (getBaselineValue()
+// returns null otherwise), so plain `make test-ui` and the first
+// `make bench-ui-baseline` run are unaffected. Catches unbounded DOM growth
+// on the initial-load path (capped by INITIAL_EVENTS_LIMIT, see file header)
+// without hard-coding a number that would need updating on every legitimate
+// UI change.
+const DOM_NODE_CEILING_FACTOR = 1.05;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -181,6 +192,19 @@ test.describe("Perf: history-size load cost", () => {
       // DOM node count should not shrink as history size grows (monotonic-by-size).
       expect(domStats.domNodes).toBeGreaterThanOrEqual(prevDomNodes);
       prevDomNodes = domStats.domNodes;
+
+      // mitto-sus.10.1: deterministic soft ceiling against the baseline.
+      if (process.env.PERF_RUN) {
+        const baselineDomNodes = getBaselineValue(
+          `history-load.${size}`,
+          "domNodes",
+        );
+        if (baselineDomNodes !== null) {
+          expect(domStats.domNodes).toBeLessThanOrEqual(
+            baselineDomNodes * DOM_NODE_CEILING_FACTOR,
+          );
+        }
+      }
 
       // mitto-sus.8: measure DOM/layout/paint growth + latency as the user
       // pages back through history via "Load earlier messages" (prepend).
