@@ -152,8 +152,33 @@ prompt: |
   - **No existing bead** for its key → **create** one (3.5).
   - **Existing open bead** → **update** it: refresh evidence (newest snippet, current
     count/window), re-evaluate priority, and append a one-line recurrence note.
-  - **Existing closed bead that has recurred** → reopen (`bd update <id> --status open`)
-    and note "recurred on <date>".
+  - **Existing closed bead that is a `bug` and carries the terminal `fixed` label**
+    → do **not** reopen the code bead. A code bug whose fix is already merged but
+    not yet deployed will keep producing the same log signature until the deploy
+    lands; reopening it just triggers `loop-processing.prompt.yaml`'s terminal-label
+    stripper on every pass (no new `Fix [tier:` comment exists after the reopen),
+    causing a `fixed → stripped → fixed` churn cycle instead of a real fix. Route
+    the recurrence to its **operational sibling** instead:
+    ```bash
+    bd list --label operational,deploy-gap --json \
+      | jq -r --arg id "<code-bead-id>" '.[] | select(.dependencies[]?.id==$id) | .id'
+    ```
+    - **Sibling found** → update it with the recurrence note (as for any existing
+      open bead, 3.5).
+    - **No sibling yet** → create one and cross-link both beads:
+      ```bash
+      bd create "Deploy-gap: <code-bead-title> fix on branch, awaiting merge to main" \
+        --type chore --priority <same as code bead> \
+        --labels "operational,deploy-gap,log-analysis" \
+        --external-ref "log-analysis:<key>" \
+        --deps "depends-on:<code-bead-id>" \
+        --body-file /tmp/log-deploy-gap.md
+      bd comment <code-bead-id> "Split: operational deploy-gap tracking moved to <new-id>. Do not reopen this bead for this recurrence."
+      ```
+    Never `bd update <code-bead-id> --status open` in this case.
+  - **Existing closed bead that has recurred** (any other type, or a `bug` without
+    the terminal `fixed` label — these genuinely need reopening) → reopen
+    (`bd update <id> --status open`) and note "recurred on <date>".
   - A finding is **actionable** if it warrants future work (a real error/crash, a storm,
     a security concern, or a "needs investigation" item). Skip purely informational lines.
 
