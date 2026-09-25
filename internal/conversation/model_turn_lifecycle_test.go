@@ -478,6 +478,58 @@ func TestPromptTurn_ManualSelectionDuringOverridePersistsBaseline(t *testing.T) 
 	}
 }
 
+// TestApplyModelTag_StrictSelection_SwitchesAwayFromLowerPriorityCurrent pins
+// the mitto-9eci fix: ApplyModelTag must use SelectHighestPriorityModel
+// (strict, ignores the current model), not SelectPreferredModel (keep-current).
+// Setup: two profiles carry the requested tag; the LOWER-priority one (listed
+// second) matches the currently-active model, while the HIGHER-priority one
+// (listed first) resolves to a different available model. Before the fix,
+// ApplyModelTag would keep the current model because it already satisfied a
+// tagged profile; after the fix it must switch to the higher-priority
+// profile's model and issue a SetSessionModel RPC for it.
+func TestApplyModelTag_StrictSelection_SwitchesAwayFromLowerPriorityCurrent(t *testing.T) {
+	bs, proc := newModelTurnSession(t)
+	// lifecycleModels(): CurrentModelId="default" (Name "Default"), plus
+	// "initial"/"Initial" and "manual"/"Manual" available. bs is idle (no
+	// turn dispatched), so ApplyModelTag takes the immediate (non-deferred)
+	// SetConfigOption path.
+	bs.mittoConfig.Models = []config.ModelProfile{
+		{Name: "HighPriority", Tags: []string{"Coding"}, Criteria: &config.ACPServerConstraint{Pattern: "Initial", MatchMode: "exact"}},
+		{Name: "LowPriority", Tags: []string{"Coding"}, Criteria: &config.ACPServerConstraint{Pattern: "Default", MatchMode: "exact"}},
+	}
+
+	type applyResult struct {
+		resolved string
+		err      error
+	}
+	resultCh := make(chan applyResult, 1)
+	go func() {
+		resolved, err := bs.ApplyModelTag(context.Background(), "Coding")
+		resultCh <- applyResult{resolved: resolved, err: err}
+	}()
+
+	// Strict selection must pick the HIGHER-priority profile's model
+	// ("initial"), not the LOWER-priority one that happens to already be
+	// active ("default") — proving the current model is genuinely ignored.
+	call := modelTurnExpectModel(t, proc, "initial")
+	call.reply <- nil
+
+	res := <-resultCh
+	if res.err != nil {
+		t.Fatalf("ApplyModelTag returned error: %v", res.err)
+	}
+	if res.resolved != "initial" {
+		t.Fatalf("resolved id = %q, want %q (strict highest-priority selection)", res.resolved, "initial")
+	}
+	if got := bs.cmGetCurrentModelID(); got != "initial" {
+		t.Fatalf("active model = %q, want switched to %q", got, "initial")
+	}
+	if got := bs.GetBaselineModel(); got != "initial" {
+		t.Fatalf("baseline model = %q, want promoted to %q", got, "initial")
+	}
+	modelTurnNoRPC(t, proc.models)
+}
+
 func TestPromptTurn_StartupRestoreIsNotPerTurnOverride(t *testing.T) {
 	bs, proc := newModelTurnSession(t)
 	// A resumed ACP session advertises its default, but the conversation already
