@@ -51,9 +51,16 @@ const pendingDispatchMaxAge = 24 * time.Hour
 const pendingDispatchMaxAgeTransient = 7 * 24 * time.Hour
 
 // pendingDispatchMaxEntries caps the number of entries retained per
-// workspace spool (mitto-yfv8). Append drops the oldest entries first once
-// the cap is exceeded, bounding spool growth independent of the age cap.
+// workspace spool (mitto-yfv8). Once the cap is exceeded, boundPendingDispatchEntries
+// evicts entries from the largest same-name bucket first (mitto-8ynr), bounding
+// spool growth independent of the age cap.
 const pendingDispatchMaxEntries = 32
+
+// pendingDispatchWatermarkEntries is the spool depth at which capacity
+// pressure is surfaced via WARN, ahead of any actual eviction (mitto-8ynr
+// acceptance criterion #1: "capacity pressure is surfaced before eviction").
+// 75% of pendingDispatchMaxEntries.
+const pendingDispatchWatermarkEntries = pendingDispatchMaxEntries * 3 / 4
 
 // pendingDispatchWarmPerSweep bounds how many present-but-idle workspaces a
 // single SweepPendingDispatchDir pass will attempt to warm via
@@ -99,11 +106,13 @@ type PendingDispatchEntry struct {
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
 }
 
-// PendingDispatchAppendResult reports the persisted entry (including its ID)
-// and any oldest entries evicted by the bounded spool cap.
+// PendingDispatchAppendResult reports the persisted entry (including its ID),
+// any entries evicted by the bounded spool cap, and the resulting spool depth
+// (post-eviction) so callers can surface capacity pressure (mitto-8ynr).
 type PendingDispatchAppendResult struct {
 	Entry   PendingDispatchEntry
 	Dropped []PendingDispatchEntry
+	Depth   int
 }
 
 // PendingDispatchClaim is one atomic snapshot marked in-progress in the spool.
@@ -237,7 +246,7 @@ func (s *FilePendingDispatchStore) append(entry PendingDispatchEntry, claimed bo
 	if err := s.writeLocked(path, entries); err != nil {
 		return PendingDispatchAppendResult{}, err
 	}
-	return PendingDispatchAppendResult{Entry: entry, Dropped: dropped}, nil
+	return PendingDispatchAppendResult{Entry: entry, Dropped: dropped, Depth: len(entries)}, nil
 }
 
 // Load returns the currently pending entries for inspection and tests. Entries older than
@@ -530,19 +539,64 @@ func partitionPendingDispatchEntries(entries []PendingDispatchEntry, recoverable
 	return fresh, expired
 }
 
+// boundPendingDispatchEntries bounds spool depth to pendingDispatchMaxEntries
+// once exceeded. mitto-8ynr: a high-frequency processor (e.g. identify-user-data,
+// re-enqueued every couple of turns) sharing one workspace-scoped spool with a
+// low-frequency, high-value processor (e.g. extract-memories-on-close) must not
+// evict the latter merely because it is older — pure FIFO drop-oldest lets the
+// flooder crowd out rare entries indefinitely. Instead, evict from the largest
+// same-name bucket of unclaimed entries first (oldest within that bucket), so a
+// flood only ever evicts its own backlog; only once every unclaimed entry
+// belongs to a single bucket does eviction fall back to that bucket's oldest,
+// matching prior FIFO behavior in the degenerate single-processor case.
 func boundPendingDispatchEntries(entries []PendingDispatchEntry) (kept, dropped []PendingDispatchEntry) {
 	if len(entries) <= pendingDispatchMaxEntries {
 		return entries, nil
 	}
 	excess := len(entries) - pendingDispatchMaxEntries
-	kept = make([]PendingDispatchEntry, 0, len(entries))
-	for _, entry := range entries {
+
+	// Index unclaimed entries by processor name, oldest first within each
+	// bucket (entries are already in append/temporal order).
+	byName := make(map[string][]int)
+	for i, entry := range entries {
 		// Never evict an in-flight entry: doing so would reopen the exact crash
 		// window the claim protocol closes. Temporary overflow is preferable when
 		// every entry is active; it contracts as completions are acknowledged.
-		if excess > 0 && entry.ClaimedBy == "" {
+		if entry.ClaimedBy == "" {
+			byName[entry.Name] = append(byName[entry.Name], i)
+		}
+	}
+
+	dropIdx := make(map[int]bool, excess)
+	for excess > 0 {
+		// Pick the largest remaining bucket; tie-break deterministically by name
+		// so results do not depend on Go's randomized map iteration order.
+		largestName := ""
+		largestCount := 0
+		for name, idxs := range byName {
+			if len(idxs) == 0 {
+				continue
+			}
+			if len(idxs) > largestCount || (len(idxs) == largestCount && name < largestName) {
+				largestCount = len(idxs)
+				largestName = name
+			}
+		}
+		if largestCount == 0 {
+			// No unclaimed entries left to drop: permit temporary overflow.
+			break
+		}
+		idxs := byName[largestName]
+		dropIdx[idxs[0]] = true
+		byName[largestName] = idxs[1:]
+		excess--
+	}
+
+	kept = make([]PendingDispatchEntry, 0, len(entries)-len(dropIdx))
+	dropped = make([]PendingDispatchEntry, 0, len(dropIdx))
+	for i, entry := range entries {
+		if dropIdx[i] {
 			dropped = append(dropped, entry)
-			excess--
 			continue
 		}
 		kept = append(kept, entry)

@@ -3055,6 +3055,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		}
 		entry = appendResult.Entry
 		trackedPersisted = true
+		m.logPendingDispatchWatermark(workspaceUUID, appendResult.Depth)
 		m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
 	}
 
@@ -3094,6 +3095,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 			} else {
 				deferred = true
 				entry = appendResult.Entry
+				m.logPendingDispatchWatermark(workspaceUUID, appendResult.Depth)
 				m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
 			}
 		}
@@ -3251,6 +3253,7 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 		} else {
 			persisted = true
 			entry = appendResult.Entry
+			m.logPendingDispatchWatermark(workspaceUUID, appendResult.Depth)
 			m.logPendingDispatchDrops(workspaceUUID, appendResult.Dropped)
 		}
 	}
@@ -3298,6 +3301,19 @@ func (m *Manager) logPendingDispatchDrops(workspaceUUID string, dropped []Pendin
 			"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID,
 			"name", entry.Name, "max_entries", pendingDispatchMaxEntries)
 	}
+}
+
+// logPendingDispatchWatermark surfaces capacity pressure before any eviction
+// occurs (mitto-8ynr acceptance criterion #1), once a workspace's spool depth
+// reaches pendingDispatchWatermarkEntries. Called after every Append/
+// AppendClaimed so operators see the spool filling up well before the first
+// "dropping oldest entry at capacity" ERROR fires.
+func (m *Manager) logPendingDispatchWatermark(workspaceUUID string, depth int) {
+	if m.logger == nil || depth < pendingDispatchWatermarkEntries {
+		return
+	}
+	m.logger.Warn("pending-dispatch spool: approaching capacity",
+		"workspace_uuid", workspaceUUID, "depth", depth, "max_entries", pendingDispatchMaxEntries)
 }
 
 func (m *Manager) acknowledgeCompletedDispatch(entry PendingDispatchEntry) bool {
