@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-09-19T03:46:03.083Z",
+  "recorded_at": "2026-09-25T20:32:16.123Z",
   "environment": {
     "os": "darwin",
     "arch": "arm64",
@@ -9,7 +9,7 @@
   "samples": {
     "ws.chunk.applied-short": {
       "n": 0,
-      "count": 2
+      "count": 3
     },
     "ws.chunk.applied-long": {
       "n": 2,
@@ -18,8 +18,8 @@
     },
     "composer.keystroke-during-stream": {
       "n": 36,
-      "p50": 3.899999976158142,
-      "p95": 7.399999976158142
+      "p50": 3.799999952316284,
+      "p95": 6.5
     },
     "long-task.during-composer-stream": {
       "n": 0,
@@ -27,13 +27,13 @@
     },
     "composer.keystroke": {
       "n": 27,
-      "p50": 1.5,
-      "p95": 6.899999976158142
+      "p50": 1.3000000715255737,
+      "p95": 9
     },
     "session.switch.network": {
       "n": 1,
-      "p50": 3.900000035762787,
-      "p95": 3.900000035762787
+      "p50": 1.899999976158142,
+      "p95": 1.899999976158142
     },
     "determinism.applied-marks": {
       "n": 0,
@@ -41,18 +41,18 @@
     },
     "history-load.small": {
       "n": 0,
-      "domNodes": 639,
-      "usedJSHeapBytes": 17100000
+      "domNodes": 637,
+      "usedJSHeapBytes": 18200000
     },
     "history-load.medium": {
       "n": 0,
       "domNodes": 1021,
-      "usedJSHeapBytes": 17100000
+      "usedJSHeapBytes": 18200000
     },
     "history-load.medium.prepend-step-0": {
       "n": 0,
       "domNodes": 1975,
-      "latencyMs": 72,
+      "latencyMs": 2496,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
@@ -66,53 +66,53 @@
     "history-load.medium.prepend-step-2": {
       "n": 0,
       "domNodes": 2925,
-      "latencyMs": 44,
+      "latencyMs": 129,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
     "history-load.medium.prepend-step-3": {
       "n": 0,
       "domNodes": 3400,
-      "latencyMs": 40,
+      "latencyMs": 133,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
     "history-load.max": {
       "n": 0,
       "domNodes": 1021,
-      "usedJSHeapBytes": 17100000
+      "usedJSHeapBytes": 18200000
     },
     "history-load.max.prepend-step-0": {
       "n": 0,
       "domNodes": 1975,
-      "latencyMs": 60,
+      "latencyMs": 2492,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
     "history-load.max.prepend-step-1": {
       "n": 0,
       "domNodes": 2450,
-      "latencyMs": 37,
+      "latencyMs": 138,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
     "history-load.max.prepend-step-2": {
       "n": 0,
       "domNodes": 2925,
-      "latencyMs": 44,
+      "latencyMs": 131,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
     "history-load.max.prepend-step-3": {
       "n": 0,
       "domNodes": 3400,
-      "latencyMs": 40,
+      "latencyMs": 129,
       "layoutDeltaMs": 0,
       "paintDeltaMs": 0
     },
     "multi-stream.foreground-fps": {
       "n": 0,
-      "fps": 120.58627581708026,
+      "fps": 120.64253815520051,
       "missedFrames": 0
     },
     "long-task.multi-stream": {
@@ -121,25 +121,63 @@
     },
     "prompt.sent.local-to-network": {
       "n": 1,
-      "p50": 156.19999998807907,
-      "p95": 156.19999998807907
+      "p50": 135.5,
+      "p95": 135.5
+    },
+    "render.background-chunk": {
+      "n": 0,
+      "SessionList": 2,
+      "MessageList": 0,
+      "ChatInput": 0
+    },
+    "render.keystroke": {
+      "n": 0,
+      "SessionList": 0,
+      "MessageList": 0,
+      "ChatInput": 22
+    },
+    "render.keepalive-idle": {
+      "n": 0,
+      "SessionList": 0,
+      "MessageList": 0,
+      "ChatInput": 0
+    },
+    "render.toast-no-ws": {
+      "n": 0,
+      "App": 0,
+      "SessionList": 0,
+      "MessageList": 0,
+      "ChatInput": 0
+    },
+    "render.queue-add-delete": {
+      "n": 0,
+      "App": 2,
+      "SessionList": 2,
+      "MessageList": 0,
+      "ChatInput": 2
+    },
+    "render.set-config-option": {
+      "n": 0,
+      "SessionList": 1,
+      "MessageList": 2,
+      "ChatInput": 1
     },
     "render.postprocess.tables": {
       "n": 3,
-      "p95": 0.10000002384185791
+      "p95": 0
     },
     "render.postprocess.mermaid": {
       "n": 3,
-      "p95": 0.19999998807907104
+      "p95": 0.10000002384185791
     },
     "render.postprocess.beadsLinks": {
       "n": 3,
-      "p95": 0.10000002384185791
+      "p95": 0
     },
     "session.switch.local": {
       "n": 1,
-      "p50": 4.300000011920929,
-      "p95": 4.300000011920929
+      "p50": 4.100000023841858,
+      "p95": 4.100000023841858
     },
     "render.postprocess.tables-mixed": {
       "n": 39,
@@ -147,7 +185,7 @@
     },
     "render.postprocess.mermaid-mixed": {
       "n": 39,
-      "p95": 3.700000047683716
+      "p95": 4
     },
     "render.postprocess.beadsLinks-mixed": {
       "n": 39,
@@ -162,7 +200,7 @@
     },
     "ws.chunk.received-to-applied": {
       "n": 1,
-      "p95": 0.30000001192092896
+      "p95": 0.10000002384185791
     }
   }
 }
