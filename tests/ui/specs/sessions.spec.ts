@@ -13,27 +13,15 @@ const __dirname = path.dirname(__filename);
 
 test.describe("Session Management", () => {
   test.beforeEach(async ({ page, helpers }) => {
-    // navigateAndWait resets the conversation filter tab in localStorage via
-    // addInitScript before the page loads.  However the app's React side also
-    // has an auto-tab-switch effect that switches to the Loop tab whenever
-    // the active session has loop_enabled=true (e.g. after the
-    // loop-prompt-pill.spec.ts suite).  We therefore explicitly click the
-    // Conversations tab after the app is ready so all session-management tests
-    // always start on the correct tab.
     await helpers.navigateAndWait(page);
-    // Click the Conversations tab if it is not already selected.
-    const conversationsTab = page.getByRole("tab", { name: "Conversations" });
-    if (await conversationsTab.isVisible()) {
-      const isSelected = await conversationsTab.getAttribute("aria-selected");
-      if (isSelected !== "true") {
-        await conversationsTab.click();
-      }
-    }
   });
 
   test("should display sessions sidebar", async ({ page, timeouts }) => {
+    // The sidebar heading was renamed to "Mitto" in the daisyUI 5 upgrade
+    // (see tests/ui/utils/selectors.ts:conversationsHeader) — there is no
+    // longer a "Conversations" tab or heading anywhere in the app.
     const conversationsHeader = page.getByRole("heading", {
-      name: "Conversations",
+      name: "Mitto",
     });
     await expect(conversationsHeader).toBeVisible({
       timeout: timeouts.appReady,
@@ -143,17 +131,17 @@ test.describe("Session API", () => {
 });
 
 /**
- * Active-conversation removal navigation (mitto-17d).
+ * Active-conversation removal navigation.
  *
- * When the ACTIVE conversation is removed from view, the UI switches to that
- * conversation's folder Tasks (beads) view so the user stays in the same
- * workspace context instead of being bounced to another conversation or an
+ * When the ACTIVE conversation is removed from view, the UI navigates to the
+ * global Dashboard instead of being bounced to another conversation or an
  * empty state. This covers the archive path (the delete path shares the same
  * onActiveSessionRemoved callback wiring in useWebSocket).
  *
- * The Beads backend shells out to the external `bd` binary, which is not
- * guaranteed in CI, so /api/issues is mocked with an empty list — the test
- * only asserts that the Tasks view for the right folder mounts.
+ * Originally (mitto-17d) this landed on the conversation's folder Tasks
+ * (beads) view; that was superseded by mitto-ce3, which routes to the
+ * workspace-agnostic Dashboard instead (see the onActiveSessionRemovedRef
+ * wiring in app.js) — so this test now asserts the Dashboard mounts.
  */
 const projectRoot = path.resolve(__dirname, "../../..");
 const WORKSPACE_ALPHA = path.join(
@@ -162,10 +150,10 @@ const WORKSPACE_ALPHA = path.join(
 );
 const AGENT_NAME = "mock-acp";
 
-testWithCleanup.describe("Active conversation removal opens the folder Tasks view", () => {
+testWithCleanup.describe("Active conversation removal opens the Dashboard", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl }) => {
-    // Mock the beads list so the Tasks view renders without the external `bd`
-    // binary; an empty list is enough to confirm the view mounted.
+    // Mock the beads list so any Tasks view that happens to render doesn't
+    // depend on the external `bd` binary; an empty list is enough.
     await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
@@ -174,14 +162,14 @@ testWithCleanup.describe("Active conversation removal opens the folder Tasks vie
       });
     });
 
-    // Ensure the project-alpha workspace exists so its folder Tasks view resolves.
+    // Ensure the project-alpha workspace exists.
     await request.post(apiUrl("/api/workspaces"), {
       data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
     });
   });
 
   testWithCleanup(
-    "archiving the active conversation switches to that folder's Tasks view",
+    "archiving the active conversation switches to the Dashboard",
     async ({ page, request, apiUrl, helpers, timeouts }) => {
       // Seed a conversation in project-alpha and make it the active conversation.
       const createResp = await request.post(apiUrl("/api/sessions"), {
@@ -202,20 +190,21 @@ testWithCleanup.describe("Active conversation removal opens the folder Tasks vie
       await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
       await sessionItem.click({ button: "right" });
 
-      const menu = page.locator(".menu.fixed.z-50.shadow-xl").first();
+      // ContextMenu.js (daisyUI conversion) dropped the "z-50" class in
+      // favor of an inline z-index style; match on the remaining stable
+      // classes instead.
+      const menu = page.locator(".menu.fixed.shadow-xl").first();
       await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
       await menu
         .getByRole("button", { name: "Archive", exact: true })
         .click();
 
-      // The UI navigates to the archived conversation's folder Tasks (beads)
-      // view (mitto-17d). The BeadsView header is unique to that view and is
-      // scoped to the folder basename, so it confirms both that we left the
-      // conversation view and that we opened the correct folder's Tasks.
-      const beadsHeader = page
-        .locator("span.text-lg.flex-1")
-        .filter({ hasText: "project-alpha" });
-      await expect(beadsHeader).toBeVisible({ timeout: timeouts.appReady });
+      // The UI navigates to the global Dashboard (mitto-ce3). Same
+      // mounted-heading selector used by dashboard.spec.ts / dashboard-charts.spec.ts.
+      const dashboardHeading = page
+        .locator("span.font-semibold", { hasText: "Dashboard" })
+        .first();
+      await expect(dashboardHeading).toBeVisible({ timeout: timeouts.appReady });
     },
   );
 });

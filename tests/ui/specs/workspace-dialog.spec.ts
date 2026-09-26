@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures/test-fixtures";
+import type { Page } from "@playwright/test";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -29,6 +30,28 @@ const TEST_WORKSPACES = [
   { name: "docs", path: path.join(projectRoot, "docs") },
 ];
 
+/**
+ * Opens the "Select Workspace" picker via the global `mittoNewConversation`
+ * hook — the same call the native Cmd+N menu makes.
+ *
+ * The sidebar's per-folder "new conversation" button (selectors.newSessionButton)
+ * now creates a session DIRECTLY when its folder has exactly one matching
+ * workspace (see handleNewSessionInFolder in SessionList.js, mitto-n0qj) —
+ * which is the common case for these single-ACP-server test workspaces — so
+ * it no longer opens this picker. `mittoNewConversation` unconditionally
+ * shows the full picker whenever more than one workspace is configured,
+ * regardless of the currently selected folder, so it reliably reaches the
+ * dialog under test here.
+ */
+async function openWorkspaceDialog(page: Page) {
+  await page.evaluate(() => {
+    (window as any).mittoNewConversation?.();
+  });
+  const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
+  await expect(dialog).toBeVisible({ timeout: 5000 });
+  return dialog;
+}
+
 test.describe("Workspace Dialog", () => {
   // Skip entire suite in Docker — requires 7 host-local workspace paths
   test.beforeEach(() => {
@@ -49,13 +72,8 @@ test.describe("Workspace Dialog", () => {
     await helpers.navigateAndWait(page);
   });
 
-  test("should show filter input when more than 5 workspaces", async ({ page, selectors }) => {
-    // Click new session button to open workspace dialog
-    await page.locator(selectors.newSessionButton).click();
-
-    // Wait for dialog to appear
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+  test("should show filter input when more than 5 workspaces", async ({ page }) => {
+    await openWorkspaceDialog(page);
 
     // Filter input should be visible (only shown when > 5 workspaces)
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
@@ -65,11 +83,8 @@ test.describe("Workspace Dialog", () => {
     await expect(filterInput).toBeFocused();
   });
 
-  test("should filter workspaces by name", async ({ page, selectors }) => {
-    await page.locator(selectors.newSessionButton).click();
-
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+  test("should filter workspaces by name", async ({ page }) => {
+    const dialog = await openWorkspaceDialog(page);
 
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
     await expect(filterInput).toBeVisible();
@@ -97,11 +112,8 @@ test.describe("Workspace Dialog", () => {
     await expect(dialog.locator("div[title*='/internal']").first()).not.toBeVisible();
   });
 
-  test("should show 'no match' message when filter has no results", async ({ page, selectors }) => {
-    await page.locator(selectors.newSessionButton).click();
-
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+  test("should show 'no match' message when filter has no results", async ({ page }) => {
+    await openWorkspaceDialog(page);
 
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
     await filterInput.fill("nonexistent-workspace-xyz");
@@ -110,10 +122,7 @@ test.describe("Workspace Dialog", () => {
   });
 
   test("should select workspace with number key when filter is empty", async ({ page, selectors }) => {
-    await page.locator(selectors.newSessionButton).click();
-
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+    const dialog = await openWorkspaceDialog(page);
 
     // Wait for dialog to be fully ready (filter input may capture focus)
     await page.waitForTimeout(200);
@@ -131,11 +140,8 @@ test.describe("Workspace Dialog", () => {
     await expect(page.locator(selectors.chatInput)).toBeEnabled({ timeout: 10000 });
   });
 
-  test("should close dialog with Escape key", async ({ page, selectors }) => {
-    await page.locator(selectors.newSessionButton).click();
-
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+  test("should close dialog with Escape key", async ({ page }) => {
+    const dialog = await openWorkspaceDialog(page);
 
     // Wait for dialog to be fully ready (filter input may capture focus)
     await page.waitForTimeout(200);
@@ -147,24 +153,20 @@ test.describe("Workspace Dialog", () => {
     await expect(dialog).toBeHidden({ timeout: 5000 });
   });
 
-  test(`should show numeric prefixes only for first ${WORKSPACE_FILTER_THRESHOLD} items`, async ({ page, selectors }) => {
-    await page.locator(selectors.newSessionButton).click();
+  test(`should show numeric prefixes only for first ${WORKSPACE_FILTER_THRESHOLD} items`, async ({ page }) => {
+    const dialog = await openWorkspaceDialog(page);
 
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
-
-    // Check that numbers 1-N are visible as badges (N = WORKSPACE_FILTER_THRESHOLD)
+    // Check that numbers 1-N are visible as badges (N = WORKSPACE_FILTER_THRESHOLD).
+    // The numeric-prefix badge div uses class "rounded" (NOT "rounded-lg" —
+    // that belongs to the WorkspaceBadge abbreviation chip rendered next to it).
     for (let i = 1; i <= WORKSPACE_FILTER_THRESHOLD; i++) {
-      const badge = dialog.locator(`div.rounded-lg:has-text("${i}")`).first();
+      const badge = dialog.locator(`div.rounded:has-text("${i}")`).first();
       await expect(badge).toBeVisible();
     }
   });
 
-  test("should select workspace with number key even when filter has text", async ({ page, selectors }) => {
-    await page.locator(selectors.newSessionButton).click();
-
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+  test("should select workspace with number key even when filter has text", async ({ page }) => {
+    const dialog = await openWorkspaceDialog(page);
 
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');
 
@@ -179,22 +181,14 @@ test.describe("Workspace Dialog", () => {
   });
 
   test("should focus filter input when opened via mittoNewConversation", async ({ page, selectors }) => {
-    // First create a session so we have a chat input to focus
-    await page.locator(selectors.newSessionButton).click();
-    const dialog = page.locator(".modal-box").filter({ hasText: "Select Workspace" });
-    await expect(dialog).toBeVisible({ timeout: 5000 });
-
-    // Wait for dialog to be fully ready
-    await page.waitForTimeout(200);
-
-    // Click on the dialog body to ensure focus is not on the filter input
-    await page.locator("text=Select Workspace").click();
-
-    // Select first workspace to create session
-    await page.keyboard.press("1");
-    await expect(dialog).toBeHidden({ timeout: 10000 });
-
-    // Wait for session to be created and chat input to be enabled
+    // First create a session directly so we have a chat input to focus. The
+    // sidebar's per-folder button now creates the session immediately (its
+    // folder has exactly one matching workspace) rather than opening the
+    // picker, which suits this precondition fine. By this point in the suite
+    // several folders may already have sessions (each earlier test creates
+    // one via its own number-key selection), so multiple per-folder buttons
+    // can be present — any one of them works here, hence `.first()`.
+    await page.locator(selectors.newSessionButton).first().click();
     const chatInput = page.locator(selectors.chatInput);
     await expect(chatInput).toBeEnabled({ timeout: 10000 });
 
@@ -202,13 +196,9 @@ test.describe("Workspace Dialog", () => {
     await chatInput.focus();
     await expect(chatInput).toBeFocused();
 
-    // Now trigger mittoNewConversation (same as Cmd+N from native menu)
-    await page.evaluate(() => {
-      (window as any).mittoNewConversation?.();
-    });
-
-    // Wait for dialog to appear
-    await expect(dialog).toBeVisible({ timeout: 5000 });
+    // Now trigger mittoNewConversation (same as Cmd+N from native menu). With
+    // more than one workspace configured this opens the full picker dialog.
+    await openWorkspaceDialog(page);
 
     // The filter input should receive focus (not the chat input)
     const filterInput = page.locator('input[placeholder="Filter workspaces..."]');

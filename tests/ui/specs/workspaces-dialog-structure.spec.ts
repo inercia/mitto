@@ -40,17 +40,24 @@ async function openDialog(page: Page) {
   await expect(dialog(page)).toBeVisible({ timeout: 5000 });
 }
 
+async function selectFolderHeader(page: Page) {
+  await page.locator(`[data-folder-name="${FOLDER_NAME}"]`).click();
+}
+
 async function selectWorkspaceChild(page: Page) {
+  // Folders default to collapsed once the tree has more than
+  // WORKSPACES_EDITOR_COLLAPSE_THRESHOLD (5) entries (WorkspacesDialog.js) —
+  // true whenever this spec runs after workspace-dialog.spec.ts seeds its 7
+  // extra workspaces in the same test run. Click the header first so the
+  // folder is selected and force-expanded (expandFolder is idempotent-open,
+  // unlike the chevron's toggleFolder) before drilling into a child.
+  await selectFolderHeader(page);
   const folderGroup = page
     .locator(`[data-folder-name="${FOLDER_NAME}"]`)
     .locator("..");
   await expect(folderGroup).toBeVisible({ timeout: 5000 });
   // Click the workspace child (not the folder header).
   await folderGroup.locator(".ml-4 > div").first().click();
-}
-
-async function selectFolderHeader(page: Page) {
-  await page.locator(`[data-folder-name="${FOLDER_NAME}"]`).click();
 }
 
 // Click a tab and assert its content panel renders at least one element.
