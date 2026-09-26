@@ -26,8 +26,8 @@ const AGENT_NAME = "mock-acp";
 // Context menus render as fixed-position daisyUI menus; this matches both the
 // main menu and any open submenu while avoiding dialogs (which use different
 // classes). The menu chrome is the daisyUI `menu` component on a fixed-position
-// <ul> (bg-base-200 rounded-box shadow-xl fixed z-50).
-const MENU = ".menu.fixed.z-50.shadow-xl";
+// <ul> (bg-base-200 rounded-box shadow-xl fixed; z-index applied via inline style).
+const MENU = ".menu.fixed.shadow-xl";
 
 testWithCleanup.describe("Group Context Menu - New submenu", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
@@ -202,7 +202,7 @@ testWithCleanup.describe("Group Context Menu - New submenu", () => {
       const readGeom = () =>
         page.evaluate(() => {
           const menus = Array.from(
-            document.querySelectorAll(".menu.fixed.z-50.shadow-xl"),
+            document.querySelectorAll(".menu.fixed.shadow-xl"),
           );
           const sub = menus.find((m) => m.closest("li.relative"));
           const li = sub ? sub.closest("li.relative") : null;

@@ -369,7 +369,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       // outside the right-docked panel. The span is flex-1 (its center lies
       // under the panel), so click near its left edge to land on the list side.
       await page
-        .locator("span.text-lg.font-semibold")
+        .locator("span.text-2xl.font-semibold")
         .filter({ hasText: "Tasks" })
         .click({ position: { x: 5, y: 10 } });
       await expect(panel).toBeHidden({ timeout: timeouts.shortAction });
@@ -377,7 +377,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   );
 
   testWithCleanup(
-    "the fullscreen toggle expands the panel and hides the backdrop",
+    "the fullscreen toggle expands the panel (dock mode has no backdrop)",
     async ({ page, timeouts }) => {
       await openBeads(page, timeouts);
       const panel = page.locator(DETAIL_PANEL);
@@ -389,26 +389,33 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Normal mode (desktop): a doubled fixed-width panel (w-[40rem]) capped at
-      // 85% of the beads view so the dimming backdrop always retains room. The
-      // width is UA-driven (not a viewport breakpoint) so it also applies in a
-      // narrow native-app window; the desktop test UA yields the desktop layout.
-      await expect(panel).toHaveClass(/w-\[40rem\]/);
-      await expect(panel).toHaveClass(/max-w-\[85%\]/);
-      await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
+      // Normal mode (desktop): a docked panel whose width is driven by the
+      // --dock-w CSS custom property on the .drawer-dock root (40rem docked,
+      // 100% fullscreen), not by w-[40rem]/max-w-[85%] utility classes. The
+      // panel is always rendered with the Drawer's `dock` mode, which never
+      // shows a dimming backdrop (`.drawer-dock > .drawer-side >
+      // .drawer-overlay { display: none }`) — closing happens via Escape or
+      // the panel's own controls, in both docked and fullscreen states.
+      const drawerRoot = page.locator(
+        'div.drawer-dock:has-text("Short issue")',
+      );
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
+      // The backdrop element is still rendered (Drawer always mounts it) but
+      // CSS-hidden by `.drawer-dock > .drawer-side > .drawer-overlay { display:
+      // none }` — assert hidden, not absent (toHaveCount(0) would be wrong).
+      await expect(page.locator(PANEL_BACKDROP)).toBeHidden();
 
-      // Toggle fullscreen: the panel fills the beads view width (w-full) and the
-      // backdrop is gone.
+      // Toggle fullscreen: the panel fills the beads view width (--dock-w:
+      // 100%); still no backdrop.
       await page.locator('button[data-tip="Fullscreen"]').click();
-      await expect(panel).toHaveClass(/w-full/);
-      await expect(panel).not.toHaveClass(/w-\[40rem\]/);
-      await expect(page.locator(PANEL_BACKDROP)).toHaveCount(0);
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
+      await expect(page.locator(PANEL_BACKDROP)).toBeHidden();
 
-      // Toggle back: the panel returns to its fixed doubled width and the
-      // backdrop reappears.
+      // Toggle back: the panel returns to its docked width (40rem); still no
+      // backdrop.
       await page.locator('button[data-tip="Exit fullscreen"]').click();
-      await expect(panel).toHaveClass(/w-\[40rem\]/);
-      await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
+      await expect(page.locator(PANEL_BACKDROP)).toBeHidden();
     },
   );
 
@@ -827,7 +834,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
       await expect(dialog.locator("h3")).toHaveText("Delete epic");
       await expect(dialog).toContainText("This epic has 4 descendant issues.");
       await expect(dialog).toContainText("Close the 3 open child issues");
-      await expect(dialog).toContainText("Delete all 4 child issues (permanent)");
+      await expect(dialog).toContainText("Delete all 4 child");
+      await expect(dialog).toContainText("(permanent)");
 
       const noneRadio = dialog.locator('input[type="radio"][value="none"]');
       const closeRadio = dialog.locator('input[type="radio"][value="close"]');
@@ -1337,37 +1345,41 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
       await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
       await expect(page.getByText(LONG_TITLE)).toHaveCount(0);
 
-      // The standalone viewer opens expanded (fullscreen) but exposes a toggle
-      // so it can be collapsed to the docked strip. The dock-mode Drawer drives
-      // its width via the --dock-w CSS var on the .drawer-dock root: 100% when
-      // fullscreen, 40rem when collapsed. The data-tip attribute selectors
-      // match exactly so "Fullscreen" never substring-matches "Exit fullscreen".
+      // The standalone viewer opens docked (BeadsIssueView passes
+      // initialFullscreen=false) but exposes a toggle so it can be expanded
+      // to fullscreen. The dock-mode Drawer drives its width via the
+      // --dock-w CSS var on the .drawer-dock root: 40rem when docked, 100%
+      // when fullscreen. The data-tip attribute selectors match exactly so
+      // "Fullscreen" never substring-matches "Exit fullscreen".
       const drawerRoot = page.locator(
         'div.drawer-dock:has(h2:has-text("Short issue"))',
       );
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
+      const expandBtn = issuePanel.locator('button[data-tip="Fullscreen"]');
+      await expect(expandBtn).toBeVisible();
+
+      // Expand: the panel grows to fullscreen and the toggle flips to the
+      // collapse state ("Exit fullscreen").
+      await expandBtn.click();
       await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
       const collapseBtn = issuePanel.locator(
         'button[data-tip="Exit fullscreen"]',
       );
       await expect(collapseBtn).toBeVisible();
 
-      // Collapse: the panel shrinks to the 40rem docked strip and the toggle
-      // flips to the expand state ("Fullscreen").
+      // Collapse again: back to docked, toggle returns to "Fullscreen".
       await collapseBtn.click();
       await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
-      const expandBtn = issuePanel.locator('button[data-tip="Fullscreen"]');
-      await expect(expandBtn).toBeVisible();
-
-      // Expand again: back to fullscreen, toggle returns to "Exit fullscreen".
-      await expandBtn.click();
-      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
       await expect(
-        issuePanel.locator('button[data-tip="Exit fullscreen"]'),
+        issuePanel.locator('button[data-tip="Fullscreen"]'),
       ).toBeVisible();
 
       // Close the detail panel → returns to the originating conversation with
-      // its properties panel re-opened (not left on the beads list).
-      await issuePanel.locator('button[data-tip="Close"]').click();
+      // its properties panel re-opened (not left on the beads list). The panel
+      // toolbar now has TWO buttons whose data-tip/aria-label both read
+      // "Close" (the issue status-close action and the panel-close X); use the
+      // stable data-testid to disambiguate.
+      await issuePanel.locator('[data-testid="beads-panel-close"]').click();
 
       // Back in the conversation: the conversation properties panel (with the
       // linked-issue link) is shown again and the beads table remains absent.
@@ -1676,10 +1688,11 @@ const SUBMENU_ISSUES = [0, 1, 2].map((n) => ({
 }));
 
 // Both the parent menu and any open submenu render as a fixed daisyUI menu.
-const CTX_MENU = ".menu.fixed.z-50.shadow-xl";
+const CTX_MENU = ".menu.fixed.shadow-xl";
 
-// The new-issue create panel is opened by clicking the "+" button in the beads toolbar.
-const NEW_ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("New Issue"))';
+// The new-issue create panel is opened by clicking the "+" button in the beads toolbar;
+// create-mode renders the TitleField input (no "New Issue" heading).
+const NEW_ISSUE_PANEL = 'div.properties-panel:has(input#new-issue-title)';
 
 testWithCleanup.describe("Beads view - submenu positioning", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
@@ -1741,11 +1754,15 @@ testWithCleanup.describe("Beads view - submenu positioning", () => {
 
       // 2) It does not cover the parent menu: the horizontal overlap is at most a
       //    small connecting bridge (the old bug overlapped by the full ~150px
-      //    parent-menu width).
+      //    parent-menu width). The bridge width tracks the daisyUI `.menu`
+      //    item's left inset inside the parent <ul> (padding + the 4px flip
+      //    offset in ContextMenu.js) — daisyUI 5's default menu padding is
+      //    wider than daisyUI 4's, so the tolerance is a generous cap rather
+      //    than an exact pixel match.
       const overlap =
         Math.min(subBox!.x + subBox!.width, parentBox!.x + parentBox!.width) -
         Math.max(subBox!.x, parentBox!.x);
-      expect(overlap).toBeLessThanOrEqual(24);
+      expect(overlap).toBeLessThanOrEqual(32);
 
       // 3) Since the parent menu sits at the right edge, the submenu opened to its
       //    left (its left edge is left of the parent menu's left edge).
@@ -1805,8 +1822,10 @@ testWithCleanup.describe("Beads view - create form fields", () => {
       const panel = page.locator(NEW_ISSUE_PANEL);
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Fill in description (required).
-      const descEditor = panel.locator(".cm-editor").first();
+      // Fill in description (required). CodeMirror 6 puts the actual
+      // contenteditable region on .cm-content (a descendant of .cm-editor);
+      // clicking the outer .cm-editor wrapper does not focus it.
+      const descEditor = panel.locator(".cm-content").first();
       await descEditor.click();
       await page.keyboard.type("Test description for create form");
 

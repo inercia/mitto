@@ -44,8 +44,8 @@ const CONDITIONAL_PROMPT_NAME = "Conditional Test";
 // Context menus render as fixed-position daisyUI menus; this matches both the
 // main menu and any open submenu while avoiding dialogs (which use different
 // classes). The menu chrome is the daisyUI `menu` component on a fixed-position
-// <ul> (bg-base-200 rounded-box shadow-xl fixed z-50).
-const MENU = ".menu.fixed.z-50.shadow-xl";
+// <ul> (bg-base-200 rounded-box shadow-xl fixed; z-index applied via inline style).
+const MENU = ".menu.fixed.shadow-xl";
 
 testWithCleanup.describe("Conversation Context Menu - prompt submenus", () => {
   let sessionId: string;

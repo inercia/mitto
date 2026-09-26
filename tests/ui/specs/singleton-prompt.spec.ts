@@ -28,7 +28,7 @@ const WORKSPACE_ALPHA = path.join(
 const AGENT_NAME = "mock-acp";
 
 // daisyUI fixed context menus share this class combination.
-const MENU = ".menu.fixed.z-50.shadow-xl";
+const MENU = ".menu.fixed.shadow-xl";
 
 const MOCK_ISSUES = [
   {
@@ -182,9 +182,13 @@ testWithCleanup.describe("Singleton Prompts — beads list menu", () => {
       await expect(promptItem2).toBeVisible({ timeout: timeouts.appReady });
       await promptItem2.click();
 
-      // Key singleton signal: reuse toast instead of "Started ...".
+      // Key singleton signal: reuse toast instead of "Started ...". The first
+      // run already left the new conversation active, so the reused
+      // conversation IS the currently-active one — the toast helper's
+      // sameSession branch fires ("Prompt enqueued into current conversation")
+      // rather than the cross-conversation "Continued in existing ..." wording.
       await expect(
-        page.getByText('Reusing existing "Singleton List Review" conversation'),
+        page.getByText("Prompt enqueued into current conversation"),
       ).toBeVisible({ timeout: timeouts.appReady });
 
       // --- No-duplicate assertion: exactly ONE conversation has this origin. ---
