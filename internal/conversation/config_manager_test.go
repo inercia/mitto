@@ -903,3 +903,70 @@ func TestConfigManager_ApplyConfigConstraints_FallsBackOnPermanentlyGoneBaseline
 		t.Fatalf("expected baseline self-healed to 'm-1', got %q", d.baselineModel)
 	}
 }
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_SwapsAndSelfHeals is
+// the mitto-a7wm runtime counterpart of the startup fallback path: given a
+// live conversation whose pinned baseline was refused mid-session (Augment
+// 404 unimplemented), tryRuntimeFallbackToAvailableModel must resolve the
+// current model option + constraint, swap the baseline to an available model,
+// and record the two persistent session_change events (model_unavailable +
+// model) that drive the timeline pill and stats retagging.
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_SwapsAndSelfHeals(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "retired-model" // in-catalog at startup, retired upstream mid-session
+	d.currentModelID = "m-1"          // agent's default is still live
+
+	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err != nil {
+		t.Fatalf("expected runtime fallback to succeed, got %v", err)
+	}
+	if d.baselineModel != "m-1" {
+		t.Fatalf("expected baseline self-healed to 'm-1', got %q", d.baselineModel)
+	}
+
+	// Two session_change events: model_unavailable (naming the retired one) + model (naming the swap target).
+	if len(d.sessionChanges) != 2 {
+		t.Fatalf("expected 2 session_change events (model_unavailable + model), got %d: %v", len(d.sessionChanges), d.sessionChanges)
+	}
+	if d.sessionChanges[0][0] != "model_unavailable" || d.sessionChanges[0][1] != "retired-model" {
+		t.Errorf("expected first event {model_unavailable, retired-model, \"\"}, got %v", d.sessionChanges[0])
+	}
+	if d.sessionChanges[1][0] != ConfigOptionCategoryModel || d.sessionChanges[1][1] != "m-1" || d.sessionChanges[1][2] != "retired-model" {
+		t.Errorf("expected second event {model, m-1, retired-model}, got %v", d.sessionChanges[1])
+	}
+}
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_NoModelOption_NoOp
+// asserts the safety path for agents that never advertise a model catalog:
+// there is nothing to fall back FROM, so the runtime entry point must be a
+// no-op returning nil (never a spurious error).
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_NoModelOption_NoOp(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	// Strip the model option so cmFindByCategory returns ok=false.
+	d.configOptions = d.configOptions[1:] // keep only the mode option
+	d.baselineModel = "retired-model"
+
+	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err != nil {
+		t.Fatalf("expected no-op nil on missing model option, got %v", err)
+	}
+	if len(d.sessionChanges) != 0 {
+		t.Fatalf("expected no session_change events on no-op, got %v", d.sessionChanges)
+	}
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("expected no model RPC on no-op, got %v", d.modelRPCCalls)
+	}
+}
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_ClosedSession asserts
+// the runtime fallback refuses to operate on a closed session (defensive:
+// callers may fire the classifier after the session is torn down).
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_ClosedSession(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.closed = true
+
+	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err == nil {
+		t.Fatal("expected error on closed session, got nil")
+	}
+}

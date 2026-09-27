@@ -141,6 +141,17 @@ type promptDeps interface {
 	// so a temporary override is always released on a definitive turn-ending
 	// error, even when the queue itself is deliberately left un-advanced.
 	pdRestoreBaselineIfOverride()
+	// pdTryFallbackModelOnRuntimeUnavailable (mitto-a7wm) attempts a runtime
+	// swap of the conversation's pinned baseline model to an available one
+	// when the upstream refused the current model at prompt-send time (Augment
+	// httpStatus:404 + apiStatus:"unimplemented"). Delegates to the config
+	// manager's runtime fallback so success emits the same
+	// "model_unavailable" + "model" session_change events as the startup-drift
+	// recovery path. Returns nil on successful swap (or graceful no-op when
+	// the agent never advertised a model catalog); returns an error only when
+	// no usable fallback exists. Never blocks longer than the config manager's
+	// constraint-switch caller budget.
+	pdTryFallbackModelOnRuntimeUnavailable(ctx context.Context) error
 	// pdAuthGuidanceAlreadySurfaced/pdMarkAuthGuidanceSurfaced/pdClearAuthGuidanceSurfaced
 	// (mitto-6vs) dedupe the durable auth-expiry guidance recorded by
 	// handlePromptError's auth branch: recorded once per outage streak,
@@ -1791,6 +1802,36 @@ func (p promptDispatcher) handlePromptError(
 		})
 		d.pdRestoreBaselineIfOverride() // mitto-1yo: turn is over, agent unusable
 		return false
+	}
+
+	// Pinned model refused upstream at prompt-send time (mitto-a7wm): the
+	// model was in the ACP catalog at startup but Augment's /chat-stream now
+	// returns httpStatus:404 + apiStatus:"unimplemented" for it (typically a
+	// backend-side retire/rename). Auto-swap to an available model rather
+	// than letting the loop grind through backoff/retry on every cadence
+	// until MaxLoopDeliveryFailures trips. The fallback path emits the same
+	// "model_unavailable" + "model" session_change events as the startup-drift
+	// recovery, so the timeline pill and stats retagging are consistent. On
+	// swap success we notify observers with an actionable "switched to X"
+	// message and end the turn (no queue-stop, no ACP restart); on failure we
+	// fall through to the generic transient block below so the operator still
+	// sees the raw upstream error.
+	if mittoAcp.IsModelUnavailableAtRuntimeError(err) {
+		swapCtx, swapCancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
+		swapErr := d.pdTryFallbackModelOnRuntimeUnavailable(swapCtx)
+		swapCancel()
+		if swapErr == nil {
+			d.pdNotifyObservers(func(o SessionObserver) {
+				o.OnError("The selected model was retired upstream; switched this conversation to an available model. " +
+					"Please resend your message, or wait for the loop's next tick.")
+			})
+			d.pdRestoreBaselineIfOverride() // mitto-1yo: turn is over
+			return false
+		}
+		if l := d.pdLogger(); l != nil {
+			l.Warn("mitto-a7wm: runtime model fallback failed; falling through to generic transient handler",
+				"session_id", d.pdSessionID(), "error", swapErr)
+		}
 	}
 
 	// Transient error: ACP process is still alive.

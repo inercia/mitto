@@ -926,3 +926,98 @@ func TestFormatACPError_AgentInternalJSError_mitto_3sc(t *testing.T) {
 		t.Errorf("FormatACPError(err) = %q; want a message naming this as an agent-internal defect (mitto-3sc)", got)
 	}
 }
+
+// TestIsModelUnavailableAtRuntimeError is the classifier truth table for the
+// mitto-a7wm predicate: a JSON-RPC -32603 "Internal error" whose data carries
+// httpStatus:404 AND apiStatus:"unimplemented" (Augment's /chat-stream saying
+// the pinned model was retired after session boot). Adjacent shapes MUST NOT
+// match — apiStatus:"unavailable" belongs to IsUpstreamUnavailableError, a
+// bare 404 or bare -32603 must keep flowing to their existing branches.
+func TestIsModelUnavailableAtRuntimeError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "mitto-a7wm exact payload (Augment chat-stream 404 unimplemented, selected model retired)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error: Server responded with 404 Not Found on https://xlb.api.augmentcode.com/chat-stream: the selected model is not available for this session","data":{"httpStatus":404,"apiStatus":"unimplemented","details":"the selected model is not available for this session"}}`),
+			want: true,
+		},
+		{
+			name: "structured markers only (no human-readable detail string)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":404,"apiStatus":"unimplemented"}}`),
+			want: true,
+		},
+		{
+			name: "apiStatus unavailable (that's IsUpstreamUnavailableError's domain, must NOT match)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":500,"apiStatus":"unavailable"}}`),
+			want: false,
+		},
+		{
+			name: "bare 404 without apiStatus:unimplemented (must NOT match — not a retired-model signal)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":404}}`),
+			want: false,
+		},
+		{
+			name: "apiStatus unimplemented but wrong httpStatus (must NOT match — narrow signature required)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Internal error","data":{"httpStatus":501,"apiStatus":"unimplemented"}}`),
+			want: false,
+		},
+		{
+			name: "not a -32603 envelope (must NOT match)",
+			err:  fmt.Errorf(`{"code":-32000,"message":"Server error","data":{"httpStatus":404,"apiStatus":"unimplemented"}}`),
+			want: false,
+		},
+		{
+			name: "-32603 without the Internal error label (must NOT match)",
+			err:  fmt.Errorf(`{"code":-32603,"message":"Other","data":{"httpStatus":404,"apiStatus":"unimplemented"}}`),
+			want: false,
+		},
+		{
+			name: "unrelated generic error",
+			err:  errors.New("some other io failure"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsModelUnavailableAtRuntimeError(tt.err); got != tt.want {
+				t.Errorf("IsModelUnavailableAtRuntimeError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFormatACPError_ModelUnavailableAtRuntime_mitto_a7wm asserts the operator
+// wording for a retired-upstream-model failure: the message must NOT be shaped
+// as a provider outage ("unavailable"), a generic tool timeout, or an opaque
+// internal error; it must name the retired model + auto-swap remediation.
+func TestFormatACPError_ModelUnavailableAtRuntime_mitto_a7wm(t *testing.T) {
+	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: Server responded with 404 Not Found on https://xlb.api.augmentcode.com/chat-stream: the selected model is not available for this session","data":{"httpStatus":404,"apiStatus":"unimplemented"}}`)
+
+	if !IsModelUnavailableAtRuntimeError(err) {
+		t.Fatalf("IsModelUnavailableAtRuntimeError(%v) = false, want true", err)
+	}
+
+	got := FormatACPError(err)
+
+	if containsIgnoreCase(got, "provider outage") || containsIgnoreCase(got, "temporarily unavailable") {
+		t.Errorf("FormatACPError(err) = %q; a retired-model failure must not be shaped as a provider outage (mitto-a7wm)", got)
+	}
+	if containsIgnoreCase(got, "tool operation") || containsIgnoreCase(got, "smaller steps") {
+		t.Errorf("FormatACPError(err) = %q; a retired-model failure must not be shaped as a generic tool timeout (mitto-a7wm)", got)
+	}
+	if !containsIgnoreCase(got, "no longer available") {
+		t.Errorf("FormatACPError(err) = %q; want a message naming the retired-model failure (mitto-a7wm)", got)
+	}
+	if !containsIgnoreCase(got, "switch") {
+		t.Errorf("FormatACPError(err) = %q; want a message naming the auto-swap remediation (mitto-a7wm)", got)
+	}
+}

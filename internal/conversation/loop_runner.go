@@ -2760,6 +2760,32 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 		return
 	}
 
+	// mitto-a7wm: the prompt dispatcher's handlePromptError branch may have
+	// already swapped this session's pinned baseline model in response to an
+	// Augment /chat-stream httpStatus:404 + apiStatus:"unimplemented" refusal
+	// of the retired model. When the swap SUCCEEDED, the immediately-following
+	// delivery failure (this call) is the one that TRIGGERED the swap — the
+	// next natural loop tick will use the newly-selected model and succeed,
+	// so counting this failure toward MaxLoopDeliveryFailures would auto-pause
+	// an otherwise-recovered loop. Consume the marker exactly once and skip
+	// the counter for the swap-success tick only. If the swap FAILED (no usable
+	// fallback model), the marker was never armed, so this branch is a no-op
+	// and the failure keeps counting — preserving the auto-pause escape hatch
+	// for persistently unfallback-able situations (the exact scenario
+	// mitto-a7wm was filed against).
+	if r.sessionManager != nil {
+		if bs := r.sessionManager.GetSession(sessionID); bs != nil && bs.ConsumeRuntimeModelSwapSucceeded() {
+			if r.logger != nil {
+				r.logger.Warn("Loop delivery failed with retired-upstream-model signal; runtime model swap succeeded, not counting this trigger failure toward auto-pause (will retry with new model on next natural cadence)",
+					"session_id", sessionID,
+					"session_name", sessionName,
+					"failure_class", "runtime_model_swapped",
+					"error", err)
+			}
+			return
+		}
+	}
+
 	if mittoAcp.IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
 			if r.onLoopUpdated != nil {

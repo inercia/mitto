@@ -83,6 +83,31 @@ func (bs *BackgroundSession) restoreBaselineIfOverride() {
 	bs.configMgr.restoreBaselineIfOverride(bs)
 }
 
+// TryFallbackModelOnRuntimeUnavailable auto-swaps the conversation's pinned
+// baseline model to an available one when the current model was refused at
+// prompt-send time (mitto-a7wm — see configManager.tryRuntimeFallbackToAvailableModel).
+// Thin delegator; the classifier check lives at the prompt-dispatch call site
+// so this method stays generic and callable from any runtime failure path
+// (loop delivery, ad-hoc prompts, background retries). On success, arms
+// runtimeModelSwapSucceeded so the loop runner's delivery-failure carve-out
+// consumes it exactly once (see ConsumeRuntimeModelSwapSucceeded).
+func (bs *BackgroundSession) TryFallbackModelOnRuntimeUnavailable(ctx context.Context) error {
+	err := bs.configMgr.tryRuntimeFallbackToAvailableModel(bs, ctx)
+	if err == nil {
+		bs.runtimeModelSwapSucceeded.Store(true)
+	}
+	return err
+}
+
+// ConsumeRuntimeModelSwapSucceeded returns whether the most-recent runtime
+// model swap succeeded AND clears the marker in one atomic step. Callers
+// (loop runner's handleDeliveryFailure) use it to identify the single
+// delivery failure that triggered a successful swap so its counter increment
+// can be skipped without hiding subsequent failures. See mitto-a7wm.
+func (bs *BackgroundSession) ConsumeRuntimeModelSwapSucceeded() bool {
+	return bs.runtimeModelSwapSucceeded.Swap(false)
+}
+
 // ApplyModelTag resolves the given preferred-model tag against the agent's
 // advertised model catalog and switches the session's active model via the
 // same SetConfigOption path used by the user's manual model-dropdown click, so

@@ -1502,6 +1502,14 @@ func (bs *BackgroundSession) pdRecordErrorEvent(seq int64, msg string) error {
 // need to restore without also advancing/draining the queue.
 func (bs *BackgroundSession) pdRestoreBaselineIfOverride() { bs.restoreBaselineIfOverride() }
 
+// pdTryFallbackModelOnRuntimeUnavailable delegates to the BackgroundSession's
+// public TryFallbackModelOnRuntimeUnavailable entry point so the prompt
+// dispatcher's handlePromptError branch can trigger a runtime model swap
+// when the upstream refused the pinned model (mitto-a7wm).
+func (bs *BackgroundSession) pdTryFallbackModelOnRuntimeUnavailable(ctx context.Context) error {
+	return bs.TryFallbackModelOnRuntimeUnavailable(ctx)
+}
+
 // pdAuthGuidanceAlreadySurfaced reports whether the durable auth-expiry
 // guidance has already been recorded for the current outage streak (mitto-6vs).
 func (bs *BackgroundSession) pdAuthGuidanceAlreadySurfaced() bool {

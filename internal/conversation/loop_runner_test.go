@@ -10213,3 +10213,148 @@ func TestLoopRunner_TriggerNowWithSlackEvent_BusySession(t *testing.T) {
 		t.Errorf("TriggerNowWithSlackEvent() error = %v, want ErrSessionBusy", err)
 	}
 }
+
+// errRuntimeModelUnavailable_mitto_a7wm mirrors the exact payload observed
+// when Augment's /chat-stream retires a session's pinned model mid-conversation:
+// -32603 "Internal error" with httpStatus:404 + apiStatus:"unimplemented".
+var errRuntimeModelUnavailable_mitto_a7wm = fmt.Errorf(`{"code":-32603,"message":"Internal error: Server responded with 404 Not Found on https://xlb.api.augmentcode.com/chat-stream: the selected model is not available for this session","data":{"httpStatus":404,"apiStatus":"unimplemented","details":"the selected model is not available for this session"}}`)
+
+// TestLoopRunner_DeliveryFailure_RuntimeModelSwapped_DoesNotAutoPause pins
+// the mitto-a7wm carve-out: when the prompt dispatcher has already swapped
+// the pinned model in response to an upstream 404-unimplemented refusal
+// (BackgroundSession.runtimeModelSwapSucceeded == true), the ONE failure
+// that triggered the swap must not count toward MaxLoopDeliveryFailures —
+// the next natural loop tick will succeed on the newly-selected model, and
+// counting this trigger failure would auto-pause an otherwise-recovered
+// loop.
+func TestLoopRunner_DeliveryFailure_RuntimeModelSwapped_DoesNotAutoPause(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "runtime-model-swap-success"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	bs := NewMinimalBackgroundSession(sessionID, "/tmp", "")
+	// Arm the marker exactly as TryFallbackModelOnRuntimeUnavailable would
+	// after a successful runtime swap.
+	bs.runtimeModelSwapSucceeded.Store(true)
+	sm.sessions[sessionID] = bs
+
+	runner := NewLoopRunner(store, sm, slog.Default())
+
+	// Fire the trigger-failure delivery event ONCE (the swap-triggering tick).
+	runner.handleDeliveryFailure(sessionID, "cgw-runtime-swap", loop, loopStore, errRuntimeModelUnavailable_mitto_a7wm, true, false, session.TriggerSchedule, contextTurnsUnknown)
+
+	// Marker must have been consumed exactly once (test-and-clear semantics).
+	if bs.runtimeModelSwapSucceeded.Load() {
+		t.Error("expected runtimeModelSwapSucceeded to be cleared after handleDeliveryFailure consumed it")
+	}
+
+	// deliveryFailures counter must remain at zero for the swap-triggering tick.
+	runner.deliveryFailuresMu.Lock()
+	failures := runner.deliveryFailures[sessionID]
+	runner.deliveryFailuresMu.Unlock()
+	if failures != 0 {
+		t.Errorf("mitto-a7wm: deliveryFailures[%q] = %d after a swap-success carve-out, want 0", sessionID, failures)
+	}
+
+	after, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !after.Enabled {
+		t.Errorf("mitto-a7wm: loop.Enabled = false after a swap-success trigger failure; want true (loop must not auto-pause)")
+	}
+	if after.StoppedReason == session.StoppedReasonDeliveryFailures {
+		t.Errorf("mitto-a7wm: loop.StoppedReason = %q; want unset (swap-success trigger must not be classified as delivery failure)", after.StoppedReason)
+	}
+}
+
+// TestLoopRunner_DeliveryFailure_RuntimeModelUnavailable_SwapFailed_StillAutoPauses
+// pins the mitto-a7wm escape hatch: if the runtime model swap FAILED (no
+// usable fallback model — the marker was never armed), a persistent stream
+// of 404-unimplemented failures MUST still auto-pause the loop via
+// MaxLoopDeliveryFailures. Without this behavior the loop would grind on
+// forever, which is the exact scenario mitto-a7wm was filed against.
+func TestLoopRunner_DeliveryFailure_RuntimeModelUnavailable_SwapFailed_StillAutoPauses(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "runtime-model-swap-failed"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:    "iterate",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	// Register a session WITHOUT arming the marker — mirrors the swap-failed
+	// (or no-model-catalog) path where handlePromptError fell through to the
+	// generic transient handler.
+	bs := NewMinimalBackgroundSession(sessionID, "/tmp", "")
+	sm.sessions[sessionID] = bs
+
+	runner := NewLoopRunner(store, sm, slog.Default())
+
+	for i := 0; i < MaxLoopDeliveryFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-runtime-swap-failed", loop, loopStore, errRuntimeModelUnavailable_mitto_a7wm, true, false, session.TriggerSchedule, contextTurnsUnknown)
+	}
+
+	after, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if after.Enabled {
+		t.Errorf("mitto-a7wm: loop.Enabled = true after %d consecutive unfallback-able runtime-model-unavailable failures; want false — the escape hatch must fire when no usable fallback model exists", MaxLoopDeliveryFailures)
+	}
+	if after.StoppedReason != session.StoppedReasonDeliveryFailures {
+		t.Errorf("mitto-a7wm: loop.StoppedReason = %q; want StoppedReasonDeliveryFailures — persistent unfallback-able 404 must classify as a genuine delivery failure", after.StoppedReason)
+	}
+}
+
+// TestBackgroundSession_RuntimeModelSwapMarker_ArmAndConsume pins the atomic
+// arm/consume semantics of the mitto-a7wm marker: successful swaps arm it,
+// ConsumeRuntimeModelSwapSucceeded returns true exactly once (test-and-clear),
+// and subsequent consumes return false until the next successful swap.
+func TestBackgroundSession_RuntimeModelSwapMarker_ArmAndConsume(t *testing.T) {
+	bs := NewMinimalBackgroundSession("t-arm-consume", "/tmp", "")
+
+	if bs.ConsumeRuntimeModelSwapSucceeded() {
+		t.Error("expected ConsumeRuntimeModelSwapSucceeded() = false on a fresh session")
+	}
+
+	bs.runtimeModelSwapSucceeded.Store(true)
+	if !bs.ConsumeRuntimeModelSwapSucceeded() {
+		t.Error("expected ConsumeRuntimeModelSwapSucceeded() = true after arming")
+	}
+	if bs.ConsumeRuntimeModelSwapSucceeded() {
+		t.Error("expected ConsumeRuntimeModelSwapSucceeded() = false after consuming (test-and-clear)")
+	}
+}

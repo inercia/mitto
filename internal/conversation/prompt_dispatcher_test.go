@@ -179,6 +179,13 @@ type fakePromptDeps struct {
 	// restoreBaselineCalls counts pdRestoreBaselineIfOverride invocations.
 	restoreBaselineCalls int
 
+	// === mitto-a7wm: runtime model fallback ===
+	// runtimeFallbackErr, when non-nil, is the error returned by
+	// pdTryFallbackModelOnRuntimeUnavailable so tests can drive the swap-failure
+	// branch of handlePromptError; nil = swap succeeds.
+	runtimeFallbackErr   error
+	runtimeFallbackCalls int
+
 	// === New in mitto-6vs: durable auth-expiry guidance dedupe ===
 	authGuidanceSurfaced   bool
 	markAuthGuidanceCalls  int
@@ -405,6 +412,12 @@ func (f *fakePromptDeps) pdRestoreBaselineIfOverride() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.restoreBaselineCalls++
+}
+func (f *fakePromptDeps) pdTryFallbackModelOnRuntimeUnavailable(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runtimeFallbackCalls++
+	return f.runtimeFallbackErr
 }
 func (f *fakePromptDeps) pdAuthGuidanceAlreadySurfaced() bool {
 	f.mu.Lock()
@@ -4347,5 +4360,102 @@ func TestPromptDispatcher_FinalizeTurn_EndTurnWithoutAgentMessage_DoesNotFireTur
 	if d.turnIdleCalls != 0 {
 		t.Fatalf("mitto-vn3: pdOnTurnIdle must NOT fire on endTurn with zero "+
 			"agent_message events, got %d calls", d.turnIdleCalls)
+	}
+}
+
+// runtimeModelUnavailableErr builds the exact bead payload that Augment's
+// /chat-stream returns when a session's pinned model has been retired
+// upstream mid-session (mitto-a7wm): -32603 "Internal error" with data
+// carrying httpStatus:404 and apiStatus:"unimplemented".
+func runtimeModelUnavailableErr() error {
+	return errors.New(`{"code":-32603,"message":"Internal error: Server responded with 404 Not Found on https://xlb.api.augmentcode.com/chat-stream: the selected model is not available for this session","data":{"httpStatus":404,"apiStatus":"unimplemented","details":"the selected model is not available for this session"}}`)
+}
+
+// TestPromptDispatcher_HandlePromptError_RuntimeModelUnavailable_FallsBackAndSwaps
+// asserts the mitto-a7wm auto-swap path: when the upstream refuses the pinned
+// model at prompt-send time, handlePromptError must invoke the runtime
+// fallback (exactly once), release any active per-prompt override, notify
+// observers with the actionable "switched to X" message rather than the raw
+// upstream error, and NOT advance the queue with the failed prompt (the swap
+// itself is the turn's terminal action).
+func TestPromptDispatcher_HandlePromptError_RuntimeModelUnavailable_FallsBackAndSwaps(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.acpDead = false          // ACP process is alive; only the model was refused upstream
+	d.runtimeFallbackErr = nil // swap succeeds
+
+	autoRetried := false
+	retry := p.handlePromptError(d, runtimeModelUnavailableErr(), &autoRetried, 0, false)
+
+	if retry {
+		t.Fatal("expected retry=false for successful runtime model fallback (turn is over)")
+	}
+	if d.runtimeFallbackCalls != 1 {
+		t.Fatalf("expected exactly 1 pdTryFallbackModelOnRuntimeUnavailable call, got %d", d.runtimeFallbackCalls)
+	}
+	if len(d.notifiedErrors) != 1 {
+		t.Fatalf("expected 1 observer notification, got %d: %v", len(d.notifiedErrors), d.notifiedErrors)
+	}
+	if !strings.Contains(strings.ToLower(d.notifiedErrors[0]), "switched") {
+		t.Errorf("expected notification to name the auto-swap remediation, got %q", d.notifiedErrors[0])
+	}
+	if strings.Contains(strings.ToLower(d.notifiedErrors[0]), "unimplemented") ||
+		strings.Contains(d.notifiedErrors[0], "-32603") {
+		t.Errorf("expected notification to NOT leak the raw upstream error envelope, got %q", d.notifiedErrors[0])
+	}
+	if d.processNextCalled != 0 {
+		t.Fatalf("expected no queue advance on runtime-model fallback (turn is over), got %d", d.processNextCalled)
+	}
+	if d.restoreBaselineCalls != 1 {
+		t.Fatalf("expected 1 restoreBaselineIfOverride call, got %d", d.restoreBaselineCalls)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_RuntimeModelUnavailable_SwapFails_FallsThroughToGeneric
+// asserts the mitto-a7wm swap-failure path: if the runtime fallback returns
+// an error (no usable fallback model), the code path must fall through to
+// the existing transient-error handler so the operator still sees the raw
+// upstream error and the queue advance rules kick in normally.
+func TestPromptDispatcher_HandlePromptError_RuntimeModelUnavailable_SwapFails_FallsThroughToGeneric(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.acpDead = false
+	d.runtimeFallbackErr = errors.New("no usable fallback model")
+
+	autoRetried := false
+	retry := p.handlePromptError(d, runtimeModelUnavailableErr(), &autoRetried, 0, false)
+
+	if retry {
+		t.Fatal("expected retry=false on swap failure (falls through to generic transient handler)")
+	}
+	if d.runtimeFallbackCalls != 1 {
+		t.Fatalf("expected exactly 1 pdTryFallbackModelOnRuntimeUnavailable call, got %d", d.runtimeFallbackCalls)
+	}
+	if len(d.notifiedErrors) != 1 {
+		t.Fatalf("expected 1 observer notification on fall-through, got %d", len(d.notifiedErrors))
+	}
+	if strings.Contains(strings.ToLower(d.notifiedErrors[0]), "switched") {
+		t.Errorf("expected fall-through notification to NOT claim a swap happened, got %q", d.notifiedErrors[0])
+	}
+	// The generic transient path advances the queue.
+	if d.processNextCalled != 1 {
+		t.Fatalf("expected generic transient path to advance queue on fall-through, got %d", d.processNextCalled)
+	}
+}
+
+// TestPromptDispatcher_HandlePromptError_UnrelatedError_DoesNotInvokeRuntimeFallback
+// pins that the classifier gate is exact: unrelated transient errors must
+// NOT trigger a spurious model swap (would otherwise churn baselines on
+// every rate-limit / provider-outage / auth failure).
+func TestPromptDispatcher_HandlePromptError_UnrelatedError_DoesNotInvokeRuntimeFallback(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.acpDead = false
+
+	autoRetried := false
+	p.handlePromptError(d, transientErr(), &autoRetried, 0, false)
+
+	if d.runtimeFallbackCalls != 0 {
+		t.Fatalf("expected no runtime fallback call for unrelated error, got %d", d.runtimeFallbackCalls)
 	}
 }

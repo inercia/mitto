@@ -566,6 +566,36 @@ func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Contex
 	return nil
 }
 
+// tryRuntimeFallbackToAvailableModel is the runtime counterpart of the
+// startup fallback path in applyConfigConstraintsWithParentCtx: it resolves
+// the current model config option + ACP server constraint and delegates to
+// fallbackToAvailableModel so the conversation auto-swaps to an available
+// model when the pinned baseline is refused mid-session (mitto-a7wm — Augment
+// /chat-stream returning httpStatus:404 + apiStatus:"unimplemented" for a
+// model that WAS in the ACP catalog at startup but was retired backend-side).
+// Success path is identical to the startup drift case: same "model_unavailable"
+// + "model" session_change events, same self-heal of the persisted baseline,
+// so timeline/stats/pill behavior matches. Returns nil when there is no model
+// option present (nothing to fall back FROM — e.g. an agent that never
+// advertised a model catalog); otherwise returns whatever fallbackToAvailableModel
+// returns. Never blocks longer than constraintModelSwitchCallerBudget.
+func (c configManager) tryRuntimeFallbackToAvailableModel(d configDeps, parentCtx context.Context) error {
+	if d.cmIsClosed() {
+		return fmt.Errorf("session is closed")
+	}
+	opt, ok := d.cmFindByCategory(ConfigOptionCategoryModel)
+	if !ok || len(opt.Options) == 0 {
+		return nil
+	}
+	if parentCtx == nil {
+		parentCtx = d.cmSessionCtx()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, constraintModelSwitchCallerBudget)
+	defer cancel()
+	constraint := d.cmGetACPServerConstraint(ConfigOptionCategoryModel)
+	return c.fallbackToAvailableModel(d, ctx, opt, constraint)
+}
+
 func (c configManager) flushPendingConfig(d configDeps) {
 	if d.cmIsClosed() {
 		// mitto-9zy1 defect 2b: unlike setConfigOptionWithOpts, this deferred-flush

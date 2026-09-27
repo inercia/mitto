@@ -569,6 +569,38 @@ func IsUpstreamUnavailableError(err error) bool {
 	return strings.Contains(errMsgLower, `"apistatus":"unavailable"`)
 }
 
+// IsModelUnavailableAtRuntimeError reports whether err carries the Augment
+// upstream's "the selected model is not available for this session" signal —
+// JSON-RPC -32603 "Internal error" whose data carries httpStatus:404 and
+// apiStatus:"unimplemented" (from https://xlb.api.augmentcode.com/chat-stream).
+//
+// This is a DIFFERENT failure family from IsUpstreamUnavailableError
+// (apiStatus:"unavailable", provider outage) and from the startup-time model
+// drift covered by errModelPermanentlyUnavailable in internal/conversation
+// (mitto-uex/mitto-qst): the pinned model IS in the ACP catalog at startup
+// (so applyConfigConstraints succeeds), but the Augment upstream refuses it
+// at prompt-send time because the model was retired/renamed backend-side.
+// Without this classifier the loop's handleDeliveryFailure sees a generic
+// -32603 and grinds through backoff/retry until MaxLoopDeliveryFailures trips,
+// re-firing the same failure on every cadence (mitto-a7wm).
+//
+// Matches on the two structured markers (-32603 + apiStatus:"unimplemented"
+// + httpStatus:404) rather than the human-readable "selected model" detail
+// string, mirroring the mitto-bfu/gbf5/2efc convention of anchoring on
+// stable JSON envelope fields rather than localizable message text.
+func IsModelUnavailableAtRuntimeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "-32603") || !strings.Contains(errMsg, "Internal error") {
+		return false
+	}
+	errMsgLower := strings.ToLower(errMsg)
+	return strings.Contains(errMsgLower, `"apistatus":"unimplemented"`) &&
+		strings.Contains(errMsgLower, `"httpstatus":404`)
+}
+
 // IsAgentInternalError reports whether err is an agent-internal (not
 // Mitto-side) JavaScript runtime error surfaced through a JSON-RPC -32603
 // "Internal error" envelope — e.g. a minified TypeError such as "n.map is
@@ -664,6 +696,20 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 		return "The AI agent's upstream API is temporarily unavailable (provider " +
 			"outage). This is transient and Mitto will retry automatically — " +
 			"please try again in a moment."
+	}
+
+	// Pinned model was retired upstream (Augment /chat-stream returned
+	// httpStatus:404 + apiStatus:"unimplemented"): the model was in the ACP
+	// catalog at startup but the backend now refuses it (mitto-a7wm). Named
+	// distinctly from the generic upstream-unavailable / auth / rate-limit
+	// branches so the operator sees an actionable remediation. The prompt
+	// dispatcher path attempts an automatic swap to an available model
+	// before this message reaches the user; if the swap succeeded, callers
+	// override the notice with a "switched to X" line.
+	if IsModelUnavailableAtRuntimeError(err) {
+		return "The selected model is no longer available upstream. " +
+			"Mitto will switch this conversation to another available model automatically — " +
+			"please resend your message, or wait for the loop's next tick."
 	}
 
 	// Timeout errors from ACP server (tool execution took too long)

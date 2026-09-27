@@ -122,6 +122,19 @@ type BackgroundSession struct {
 	startupConstraintGen      int
 	startupConstraintGenSet   bool
 
+	// runtimeModelSwapSucceeded is armed by TryFallbackModelOnRuntimeUnavailable
+	// when a runtime model swap succeeds (mitto-a7wm — Augment /chat-stream
+	// returned httpStatus:404 + apiStatus:"unimplemented" for the pinned model
+	// mid-session). It is consumed exactly once by the loop runner's
+	// handleDeliveryFailure path so the delivery-failure counter can skip
+	// exactly one increment for the failure that TRIGGERED the swap — without
+	// defeating the auto-pause escape hatch when the swap keeps failing (no
+	// usable fallback model), which is the exact scenario mitto-a7wm was filed
+	// against. The marker is scoped to the immediately-following delivery
+	// failure only; any successful delivery would clear deliveryFailures
+	// anyway. See ConsumeRuntimeModelSwapSucceeded.
+	runtimeModelSwapSucceeded atomic.Bool
+
 	// activePromptName / activePromptArgs record the workspace-prompt name and
 	// argument map of the dispatch that is currently in flight (isPrompting ==
 	// true). Both fields are guarded by promptMu and set alongside isPrompting
