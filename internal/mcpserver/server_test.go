@@ -12659,3 +12659,80 @@ func TestMcpRequestLoggingMiddleware_RecordsInitEpisode(t *testing.T) {
 		t.Fatalf("a fast handshake must not log a stall, got:\n%s", out)
 	}
 }
+
+// TestMcpRequestLoggingMiddleware_RecordsFullInitEpisode extends the above:
+// it drives ALL FOUR handshake phases the mitto-e9b Plan named — `initialize`,
+// `notifications/initialized`, the first SSE `GET`, and `tools/list` — through
+// the real middleware, not just `initialize`+`tools/list`. The two
+// mid-sequence phases are recorded from the "before ServeHTTP" switch in
+// mcpRequestLoggingMiddleware (session id already known inbound), which the
+// narrower test above never exercises; a regression that dropped either case
+// from that switch would still pass the narrower test but must fail here.
+func TestMcpRequestLoggingMiddleware_RecordsFullInitEpisode(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	buf := &bytes.Buffer{}
+	srv.logger = slog.New(slog.NewTextHandler(buf, nil))
+	srv.initEpisodes = newMCPInitEpisodeTracker(srv.logger, srv.mcpInitStats, nil)
+
+	const sessionID = "test-full-init-episode-sess"
+
+	// 1. initialize: session-creating POST, id only known from the response.
+	initNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(mcpSessionIDHeader, sessionID)
+	})
+	initReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	srv.mcpRequestLoggingMiddleware(initNext).ServeHTTP(httptest.NewRecorder(), initReq)
+
+	// 2. notifications/initialized: id known inbound, no response body.
+	notifyNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	notifyReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	notifyReq.Header.Set(mcpSessionIDHeader, sessionID)
+	srv.mcpRequestLoggingMiddleware(notifyNext).ServeHTTP(httptest.NewRecorder(), notifyReq)
+
+	// 3. first SSE GET: id known inbound; handler returns immediately (a real
+	// SSE stream blocks for its lifetime, but that duration is irrelevant to
+	// phase timing, which is stamped before next.ServeHTTP is called).
+	getNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	getReq := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	getReq.Header.Set(mcpSessionIDHeader, sessionID)
+	srv.mcpRequestLoggingMiddleware(getNext).ServeHTTP(httptest.NewRecorder(), getReq)
+
+	// 4. tools/list: id known inbound, completes the episode.
+	listNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	listReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	listReq.Header.Set(mcpSessionIDHeader, sessionID)
+	srv.mcpRequestLoggingMiddleware(listNext).ServeHTTP(httptest.NewRecorder(), listReq)
+
+	out := buf.String()
+	if !strings.Contains(out, `msg="MCP init episode completed"`) {
+		t.Fatalf("expected a correlated completed episode log line, got:\n%s", out)
+	}
+	if strings.Contains(out, "stalled") {
+		t.Fatalf("a fast full handshake must not log a stall, got:\n%s", out)
+	}
+	// Every phase transition after the first must contribute a latency key —
+	// their presence proves each of the 4 real HTTP requests fed a distinct,
+	// correctly-ordered phase into the same episode.
+	for _, want := range []string{
+		"initialize_responded_latency_ms=",
+		"initialized_notification_latency_ms=",
+		"first_get_latency_ms=",
+		"tools_list_received_latency_ms=",
+		"tools_list_responded_latency_ms=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected completed log line to contain %q (full 4-phase breakdown), got:\n%s", want, out)
+		}
+	}
+}
