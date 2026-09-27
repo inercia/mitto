@@ -15,12 +15,23 @@ type memoryBlobBackend struct {
 	saves   int
 	loadErr error
 	saveErr error
+
+	// failLoadsRemaining, when > 0, makes Load return failErr and decrements
+	// the counter. Once it reaches 0, Load falls through to the normal
+	// loadErr/data/ErrNotFound behavior below -- simulating a backend that
+	// fails N times (e.g. a dismissed Keychain prompt) and then recovers.
+	failLoadsRemaining int
+	failErr            error
 }
 
 func (b *memoryBlobBackend) Load() ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.loads++
+	if b.failLoadsRemaining > 0 {
+		b.failLoadsRemaining--
+		return nil, b.failErr
+	}
 	if b.loadErr != nil {
 		return nil, b.loadErr
 	}
@@ -157,7 +168,13 @@ func TestManagerRejectsCorruptAndUnsupportedVaults(t *testing.T) {
 	}
 }
 
-func TestManagerCachesLoadFailure(t *testing.T) {
+// TestManagerRetriesPersistentLoadFailure documents the corrected contract for
+// mitto-m7t8: a backend that keeps failing is retried on every call (never
+// permanently cached), so each Resolve re-invokes backend.Load(). This
+// replaces the old TestManagerCachesLoadFailure, which pinned the buggy
+// permanent-cache behavior (backend.loads staying at 1 after repeated
+// failures).
+func TestManagerRetriesPersistentLoadFailure(t *testing.T) {
 	backend := &memoryBlobBackend{loadErr: errors.New("unavailable")}
 	manager := NewManager(backend)
 	for i := 0; i < 2; i++ {
@@ -165,8 +182,37 @@ func TestManagerCachesLoadFailure(t *testing.T) {
 			t.Fatal("Resolve() error = nil")
 		}
 	}
-	if backend.loads != 1 {
-		t.Fatalf("backend loads = %d, want 1", backend.loads)
+	if backend.loads != 2 {
+		t.Fatalf("backend loads = %d, want 2: a persistently-failing backend must be retried on every call, not cached after the first failure", backend.loads)
+	}
+}
+
+// TestManagerRetriesAfterTransientLoadFailure reproduces mitto-m7t8: a single
+// transient backend failure (e.g. a dismissed/timed-out Keychain prompt, a
+// locked Keychain at login, or a momentarily busy security daemon) must not
+// permanently disable the vault for the rest of the process lifetime. Once
+// the backend recovers, the next Resolve must retry and succeed instead of
+// replaying the first failure forever.
+func TestManagerRetriesAfterTransientLoadFailure(t *testing.T) {
+	backend := &memoryBlobBackend{
+		failLoadsRemaining: 1,
+		failErr:            errors.New("keychain: prompt dismissed"),
+	}
+	manager := NewManager(backend)
+
+	if _, err := manager.Resolve(GlobalCredential("token")); err == nil {
+		t.Fatal("Resolve() error = nil, want a transient backend error on the first call")
+	}
+
+	_, err := manager.Resolve(GlobalCredential("token"))
+	if err == nil {
+		t.Fatal("Resolve() error = nil, want ErrNotFound (empty vault) once the backend has recovered")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve() error = %v, want ErrNotFound: the manager must retry a transient load failure on the next call instead of caching it forever (mitto-m7t8)", err)
+	}
+	if backend.loads != 2 {
+		t.Fatalf("backend.loads = %d, want 2: the manager must re-invoke backend.Load() after a transient failure instead of serving the cached error", backend.loads)
 	}
 }
 

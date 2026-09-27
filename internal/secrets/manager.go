@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 )
 
@@ -195,24 +196,34 @@ func (m *Manager) claimLegacyCleanupCheck(ref CredentialRef) bool {
 	return true
 }
 
+// loadLocked lazily loads the vault, caching only *definitive* outcomes
+// (backend unsupported, empty vault, or a successfully-decoded/corrupt
+// vault) for the manager's lifetime. A transient backend.Load() error
+// (e.g. a dismissed Keychain prompt, a locked Keychain, or a momentarily
+// busy security daemon) is intentionally NOT cached, so the next call
+// retries instead of replaying the same failure forever (mitto-m7t8).
 func (m *Manager) loadLocked() error {
 	if m.loaded {
 		return m.loadErr
 	}
-	m.loaded = true
 	if !m.IsSupported() {
+		m.loaded = true
 		m.loadErr = ErrNotSupported
 		return m.loadErr
 	}
 	data, err := m.backend.Load()
 	if errors.Is(err, ErrNotFound) {
+		m.loaded = true
 		m.vault = newVault()
+		m.loadErr = nil
 		return nil
 	}
 	if err != nil {
-		m.loadErr = fmt.Errorf("load credential vault: %w", err)
-		return m.loadErr
+		// Transient: leave m.loaded false so the next call retries the backend.
+		slog.Warn("failed to load credential vault", "error", err)
+		return fmt.Errorf("load credential vault: %w", err)
 	}
+	m.loaded = true
 	m.vault, m.loadErr = decodeVault(data)
 	return m.loadErr
 }
