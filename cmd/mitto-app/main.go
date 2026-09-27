@@ -1403,12 +1403,23 @@ func run() error {
 		hookPort = actualExternalPort
 	}
 	var upHook *hooks.Process
-	if cfg != nil {
-		// Set up failure callback to broadcast to UI clients
-		onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
-			srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
-		})
-		upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
+	if cfg != nil && cfg.Web.Hooks.Up.Command != "" {
+		// Only run the up hook when an external listener is actually running:
+		// otherwise hookPort silently falls back to the local, auth-exempt
+		// loopback port, and any hook that templates ${PORT} into a tunnel
+		// ingress (e.g. cloudflared) would expose that unauthenticated port
+		// (mitto-qljn).
+		if actualExternalPort > 0 {
+			// Set up failure callback to broadcast to UI clients
+			onFailure := hooks.WithOnFailure(func(failure hooks.HookFailure) {
+				srv.BroadcastHookFailed(failure.Name, failure.ExitCode, failure.Error, failure.Output, failure.Transient)
+			})
+			upHook = hooks.StartUp(cfg.Web.Hooks.Up, hookPort, onFailure)
+		} else {
+			slog.Error("Skipping up hook: external listener is not running",
+				"command", cfg.Web.Hooks.Up.Command,
+			)
+		}
 	}
 
 	// Clear WKWebView cache before creating the webview
