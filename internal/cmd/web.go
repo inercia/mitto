@@ -277,7 +277,8 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// intentionally disabled (port -1 = disabled, 0 = random, >0 = specific port).
 	// Track the actual external port for the up hook.
 	var actualExternalPort int
-	if srv.IsAuthenticationEnabled() && externalPort >= 0 {
+	start, skipReason := web.DecideExternalListenerStartup(externalPort, srv.IsAuthenticationEnabled(), srv.AuthCredentialError())
+	if start {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(externalPort)
 		if err != nil {
@@ -291,6 +292,13 @@ func runWeb(cmd *cobra.Command, args []string) error {
 			fmt.Printf("   External URL: http://0.0.0.0:%d\n", actualExternalPort)
 		}
 	} else {
+		// mitto-688m: when external access was intended (port >= 0) but auth
+		// is not effectively enabled, skipReason explains why (e.g. incomplete
+		// simple-auth credentials) instead of skipping silently.
+		if skipReason != "" {
+			slog.Error("External listener not started: authentication is not effectively enabled", "reason", skipReason, "port", externalPort)
+			fmt.Fprintf(os.Stderr, "   ⚠️  External access is DOWN: %s\n", skipReason)
+		}
 		// Auth not configured, show what port would be used when enabled
 		// External port: -1 = disabled, 0 = random, >0 = specific port
 		switch {

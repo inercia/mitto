@@ -24,6 +24,19 @@ func (s *Server) IsAuthenticationEnabled() bool {
 	return s != nil && s.authManager != nil && s.authManager.IsEnabled()
 }
 
+// AuthCredentialError returns the reason authentication is not effectively
+// enabled (e.g. incomplete simple-auth credentials), or nil if it is. Safe to
+// call whether or not authentication is configured at all — used by startup
+// paths (cmd/mitto-app/main.go, internal/cmd/web.go) via
+// DecideExternalListenerStartup to explain why the external listener was not
+// started instead of skipping silently (mitto-688m).
+func (s *Server) AuthCredentialError() error {
+	if s == nil || s.authManager == nil {
+		return middleware.ErrNoCredentials
+	}
+	return s.authManager.CredentialError()
+}
+
 // ExternalConnectionMiddleware wraps requests to mark them as coming from the external listener.
 // This ensures authentication is required for ALL external connections, even from localhost.
 // Exported for use in integration tests.

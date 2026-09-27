@@ -1343,21 +1343,32 @@ func run() error {
 	// initNotifications() is called (which happens later in this function).
 	var externalStartErr error
 	var externalFailedPort int
-	if cfg != nil && srv.IsAuthenticationEnabled() && cfg.Web.ExternalPort >= 0 {
-		var err error
-		actualExternalPort, err = srv.StartExternalListener(cfg.Web.ExternalPort)
-		if err != nil {
-			slog.Error("Failed to start external listener", "error", err)
-			externalStartErr = err
-			externalFailedPort = cfg.Web.ExternalPort
-		} else {
-			// Acquire a power assertion so macOS does not suspend network
-			// activity when the screen locks (e.g. during Tailscale access).
-			if assertErr := startNetworkPowerAssertion(); assertErr != nil {
-				slog.Warn("Failed to acquire power assertion for external listener", "error", assertErr)
+	// Capture a silent-skip reason (mitto-688m: external access was intended
+	// but auth is not effectively enabled, e.g. incomplete credentials) so we
+	// can show a native notification after initNotifications() is called,
+	// just like externalStartErr.
+	var externalSkipReason string
+	if cfg != nil {
+		start, skipReason := web.DecideExternalListenerStartup(cfg.Web.ExternalPort, srv.IsAuthenticationEnabled(), srv.AuthCredentialError())
+		if start {
+			var err error
+			actualExternalPort, err = srv.StartExternalListener(cfg.Web.ExternalPort)
+			if err != nil {
+				slog.Error("Failed to start external listener", "error", err)
+				externalStartErr = err
+				externalFailedPort = cfg.Web.ExternalPort
+			} else {
+				// Acquire a power assertion so macOS does not suspend network
+				// activity when the screen locks (e.g. during Tailscale access).
+				if assertErr := startNetworkPowerAssertion(); assertErr != nil {
+					slog.Warn("Failed to acquire power assertion for external listener", "error", assertErr)
+				}
 			}
+			// Note: StartExternalListener already logs success
+		} else if skipReason != "" {
+			slog.Error("External listener not started: authentication is not effectively enabled", "reason", skipReason, "port", cfg.Web.ExternalPort)
+			externalSkipReason = skipReason
 		}
-		// Note: StartExternalListener already logs success
 	}
 
 	// Write instance.json (mitto-pscc.2) now that the real port(s) are known,
@@ -1492,6 +1503,18 @@ func run() error {
 		notifBody := fmt.Sprintf(
 			"The external listener failed to start on %s: %v. External access (Cloudflare/Tailscale tunnels) is unavailable.",
 			portStr, externalStartErr,
+		)
+		showNativeNotification("External access is DOWN", notifBody, "external-access", true)
+	}
+
+	// Surface a silent-skip reason (mitto-688m) the same way: external access
+	// was intended but auth is not effectively enabled (e.g. incomplete
+	// credentials), so the operator gets a sticky notification instead of no
+	// signal at all.
+	if externalSkipReason != "" {
+		notifBody := fmt.Sprintf(
+			"External access disabled: authentication incomplete (%s). Re-enter it in Settings > External Access.",
+			externalSkipReason,
 		)
 		showNativeNotification("External access is DOWN", notifBody, "external-access", true)
 	}
