@@ -8,6 +8,16 @@ APP_NAME=Mitto
 APP_BUNDLE=$(APP_NAME).app
 APP_BINARY=mitto-app
 
+# Code-signing identity for build-mac-app. Defaults to ad-hoc signing ("-"),
+# which is fine for a one-off build but has no stable identity across
+# rebuilds: macOS Keychain ACLs pin to the binary's cdhash, so an ad-hoc
+# signature changes on every rebuild and the user is re-prompted for their
+# login password each time (mitto-x3t2). Override with a stable identity
+# (e.g. a self-signed "Mitto Dev" certificate) to keep Keychain access
+# working across rebuilds:
+#   make build-mac-app CODESIGN_IDENTITY="Mitto Dev"
+CODESIGN_IDENTITY ?= -
+
 # Go parameters
 GOCMD=go
 GOBUILD=$(GOCMD) build
@@ -421,8 +431,13 @@ deps: deps-go deps-js
 #   - Distributed as a .dmg or .zip file
 #
 # Environment variables:
-#   MITTO_ACP_SERVER - Override the default ACP server
-#   MITTO_WORK_DIR   - Override the working directory for ACP sessions
+#   MITTO_ACP_SERVER   - Override the default ACP server
+#   MITTO_WORK_DIR     - Override the working directory for ACP sessions
+#   CODESIGN_IDENTITY  - Signing identity for the app bundle (default: "-",
+#                        ad-hoc). Override with a stable identity (e.g. a
+#                        self-signed "Mitto Dev" certificate) so macOS
+#                        Keychain ACLs survive rebuilds instead of
+#                        re-prompting for the login password every time.
 # =============================================================================
 
 build-mac-app: deps-go
@@ -443,9 +458,11 @@ build-mac-app: deps-go
 	@cp platform/mac/Info.plist "$(APP_BUNDLE)/Contents/"
 	@# Copy icon
 	@cp platform/mac/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/"
-	@# Ad-hoc sign the app with entitlements (required for notifications)
-	@echo "Signing app bundle..."
-	@codesign --force --deep --sign - --entitlements platform/mac/Entitlements.plist "$(APP_BUNDLE)"
+	@# Sign the app with entitlements (required for notifications). Uses
+	@# CODESIGN_IDENTITY (default: ad-hoc "-"); override with a stable
+	@# identity to avoid repeated Keychain password prompts across rebuilds.
+	@echo "Signing app bundle with identity: $(CODESIGN_IDENTITY)..."
+	@codesign --force --deep --sign "$(CODESIGN_IDENTITY)" --entitlements platform/mac/Entitlements.plist "$(APP_BUNDLE)"
 	@echo ""
 	@echo "✅ Built $(APP_BUNDLE)"
 	@echo "   - $(APP_BINARY) (macOS app)"
