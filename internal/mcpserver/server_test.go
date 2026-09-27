@@ -12602,3 +12602,60 @@ func TestStartProgressHeartbeat(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	})
 }
+
+// TestMcpRequestLoggingMiddleware_RecordsInitEpisode pins the mitto-e9b
+// instrumentation-pass-1 wiring: mcpRequestLoggingMiddleware must feed the
+// `initialize` and `tools/list` requests of one MCP protocol session into
+// Server.initEpisodes, producing a single correlated "MCP init episode
+// completed" log line — not just the pre-existing per-request "MCP request
+// received"/"completed" lines this test does not touch.
+func TestMcpRequestLoggingMiddleware_RecordsInitEpisode(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+
+	// Redirect the server's logger (and the episode tracker built from it in
+	// NewServer) to a buffer so the correlated log line can be inspected.
+	buf := &bytes.Buffer{}
+	srv.logger = slog.New(slog.NewTextHandler(buf, nil))
+	srv.initEpisodes = newMCPInitEpisodeTracker(srv.logger, srv.mcpInitStats, nil)
+
+	const sessionID = "test-init-episode-sess"
+
+	// Simulate the go-sdk assigning a fresh protocol session id on the
+	// `initialize` response (the inbound request carries none for a
+	// session-creating initialize).
+	initNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(mcpSessionIDHeader, sessionID)
+	})
+	initWrapped := srv.mcpRequestLoggingMiddleware(initNext)
+	initReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	initWrapped.ServeHTTP(httptest.NewRecorder(), initReq)
+
+	// tools/list carries the now-known session id inbound, completing the
+	// episode.
+	listNext := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	listWrapped := srv.mcpRequestLoggingMiddleware(listNext)
+	listReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	listReq.Header.Set(mcpSessionIDHeader, sessionID)
+	listWrapped.ServeHTTP(httptest.NewRecorder(), listReq)
+
+	out := buf.String()
+	if !strings.Contains(out, `msg="MCP init episode completed"`) {
+		t.Fatalf("expected a correlated completed episode log line, got:\n%s", out)
+	}
+	if !strings.Contains(out, "mcp_session_id="+sessionID) {
+		t.Fatalf("expected the completed log line to carry mcp_session_id=%s, got:\n%s", sessionID, out)
+	}
+	if strings.Contains(out, "stalled") {
+		t.Fatalf("a fast handshake must not log a stall, got:\n%s", out)
+	}
+}

@@ -97,6 +97,15 @@ type Server struct {
 	// HTTP mode; always 0 in STDIO mode.
 	openSSEStreams atomic.Int64
 
+	// initEpisodes correlates the MCP init handshake's phases (initialize ->
+	// notifications/initialized -> first SSE GET -> tools/list) into
+	// per-protocol-session episodes so a stalled/completed handshake produces
+	// one correlated log line instead of scattered per-request entries
+	// (mitto-e9b instrumentation pass 1). Always non-nil after NewServer;
+	// inert (never populated) in STDIO mode since mcpRequestLoggingMiddleware
+	// is HTTP-only.
+	initEpisodes *mcpInitEpisodeTracker
+
 	mu             sync.RWMutex
 	store          *session.Store
 	config         *config.Config
@@ -221,6 +230,12 @@ type Server struct {
 	// certain it has exited before returning (mirrors the graceful-shutdown
 	// discipline of the rest of Stop()).
 	reaperWG sync.WaitGroup
+	// lastReaperScanAt is the wall-clock time of the most recent
+	// reapIdleMCPSessions scan (start of scan). Consulted by mcpInitStats so
+	// a stalled MCP init episode's diagnostic snapshot can flag whether a
+	// reaper scan was concurrent with the stall (mitto-e9b, Plan hypothesis
+	// H2 — reaper synthetic DELETE contention).
+	lastReaperScanAt time.Time
 
 	// maxSingleWaitBlock caps how long a single mitto_conversation_wait HTTP
 	// call (handleConversationWait / handleBeadsIssuesReachedState) may
@@ -500,6 +515,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		mcpSessionLeases:      make(map[string]*mcpSessionLease),
 		childReportCollectors: make(map[string]*childReportCollector),
 	}
+	s.initEpisodes = newMCPInitEpisodeTracker(s.logger, s.mcpInitStats, nil)
 
 	// Create MCP server
 	mcpSrv := mcp.NewServer(&mcp.Implementation{
@@ -750,6 +766,27 @@ const maxMCPBodyPeek = 8 * 1024
 // every subsequent request.
 const mcpSessionIDHeader = "Mcp-Session-Id"
 
+// mcpInitStats implements mcpInitStatsFn for s.initEpisodes: a snapshot of
+// server state consulted only when logging a stalled MCP init episode
+// (mitto-e9b).
+func (s *Server) mcpInitStats() (openStreams int64, leaseCount int, reaperRecentScan bool) {
+	openStreams = s.openSSEStreams.Load()
+	s.reaperMu.Lock()
+	leaseCount = len(s.mcpSessionLeases)
+	reaperRecentScan = !s.lastReaperScanAt.IsZero() && time.Since(s.lastReaperScanAt) <= 2*time.Second
+	s.reaperMu.Unlock()
+	return openStreams, leaseCount, reaperRecentScan
+}
+
+// recordMCPInitPhase forwards to s.initEpisodes, a no-op when sessionID is
+// empty (e.g. a malformed request with no protocol session yet).
+func (s *Server) recordMCPInitPhase(sessionID string, phase mcpInitPhase, at time.Time) {
+	if s.initEpisodes == nil || sessionID == "" {
+		return
+	}
+	s.initEpisodes.RecordPhase(sessionID, phase, at)
+}
+
 // mcpRequestLoggingMiddleware logs each inbound MCP HTTP request so that an
 // agent's requests (initialize / tools/list / tools/call) can be correlated
 // with agent stderr and the rest of mitto.log. This is critical for diagnosing
@@ -855,6 +892,22 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 
 		rec := &mcpStatusRecorder{ResponseWriter: w}
 		start := time.Now()
+
+		// mitto-e9b: correlate the MCP init handshake phases into a single
+		// per-protocol-session episode. Phases whose session id is already
+		// known on the inbound request (everything except the very first
+		// session-creating `initialize`, whose session id the go-sdk only
+		// assigns on the response) are recorded here, before the
+		// (potentially long-blocking, e.g. an open SSE GET) downstream call.
+		switch {
+		case r.Method == http.MethodGet && mcpSessionID != "":
+			s.recordMCPInitPhase(mcpSessionID, mcpInitPhaseFirstGet, start)
+		case rpcMethod == "notifications/initialized" && mcpSessionID != "":
+			s.recordMCPInitPhase(mcpSessionID, mcpInitPhaseInitializedNotification, start)
+		case rpcMethod == "tools/list" && r.Method == http.MethodPost && mcpSessionID != "":
+			s.recordMCPInitPhase(mcpSessionID, mcpInitPhaseToolsListReceived, start)
+		}
+
 		next.ServeHTTP(rec, r)
 		if rec.status == 0 {
 			rec.status = http.StatusOK
@@ -877,6 +930,20 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 					"mitto_session_id", bindingOwner)
 			}
 		}
+
+		// mitto-e9b (continued): the `initialize` response phase, and the
+		// session-creating `initialize`'s own "received" phase, can only be
+		// recorded now that effSessionID is known. tools_list_responded is
+		// recorded here too (mcpSessionID is already known for it, but the
+		// response timestamp is only available post-call).
+		switch {
+		case rpcMethod == "initialize" && r.Method == http.MethodPost && effSessionID != "":
+			s.recordMCPInitPhase(effSessionID, mcpInitPhaseInitializeReceived, start)
+			s.recordMCPInitPhase(effSessionID, mcpInitPhaseInitializeResponded, time.Now())
+		case rpcMethod == "tools/list" && r.Method == http.MethodPost && mcpSessionID != "":
+			s.recordMCPInitPhase(mcpSessionID, mcpInitPhaseToolsListResponded, time.Now())
+		}
+
 		if postLease != nil {
 			s.reaperPOSTFinished(postLease)
 		}
@@ -1098,6 +1165,14 @@ func (s *Server) reapIdleMCPSessions() {
 	if now != nil {
 		nowT = now()
 	}
+
+	// mitto-e9b: record this scan's wall-clock time so a stalled MCP init
+	// episode's diagnostic snapshot can flag whether a reaper scan was
+	// concurrent with the stall (Plan hypothesis H2 — reaper synthetic
+	// DELETE contention). Recorded even when the scan finds nothing to reap.
+	s.reaperMu.Lock()
+	s.lastReaperScanAt = nowT
+	s.reaperMu.Unlock()
 
 	type candidate struct {
 		sessionID string
