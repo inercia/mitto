@@ -2399,6 +2399,58 @@ func TestPromptDispatcher_CreateFreshContextSession_RepeatedFlushFailures_NoCirc
 	}
 }
 
+// TestPromptDispatcher_CreateFreshContextSession_SharedProcess_BreakerOpen_DegradesGracefully
+// reproduces mitto-s7zq: a FreshContext loop running on a shared-process
+// session (pdHasACPConn()==false) has no recovery path once the flush
+// circuit breaker (mitto-k9hc, flushFailureTripThreshold=2) trips. Today,
+// createFreshContextSession's shared-process branch (prompt_dispatcher.go
+// ~L1209) unconditionally returns a hard error
+// ("failed to clear context: in-place context flush circuit breaker open
+// after N consecutive failures") on EVERY subsequent FreshContext loop
+// fire — producing one operator-visible red error card per fire (via
+// bgsession_prompt.go's recordPreparationFailure -> OnError) until the
+// loop's delivery-failure ceiling (MaxLoopDeliveryFailures=8,
+// loop_runner.go) auto-pauses it with StoppedReasonDeliveryFailures. The
+// breaker itself never resets on this path either, because
+// resetFlushFailures is only reached via a SUCCESSFUL in-place flush,
+// which can never happen once the RPC is being skipped.
+//
+// Desired (recovery strategy chosen on the bead, "Recovery strategy
+// chosen — implementation unblocked" comment, option 2): when the breaker
+// is open AND no new-ACP-session fallback is available (shared-process),
+// createFreshContextSession must degrade gracefully — skip the flush RPC
+// (preserving the existing mitto-k9hc behavior) and let the loop prompt
+// proceed on the EXISTING, un-cleared context by returning ("", nil)
+// instead of a hard error.
+//
+// FAILS today: createFreshContextSession returns a non-nil
+// "failed to clear context: ...circuit breaker open..." error instead of
+// ("", nil), hot-failing the whole run.
+func TestPromptDispatcher_CreateFreshContextSession_SharedProcess_BreakerOpen_DegradesGracefully(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.contextIsEmpty = false                     // non-virgin session: turns already dispatched
+	d.hasACPConn = false                         // shared-process: no new-ACP-session fallback exists
+	d.flushFailCount = flushFailureTripThreshold // breaker already open (>= threshold)
+
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+
+	if err != nil {
+		t.Fatalf("mitto-s7zq: expected createFreshContextSession to degrade gracefully "+
+			"(nil error, proceed on the existing context) when the flush circuit breaker "+
+			"is open on a shared-process session with no new-session fallback; got error: %v", err)
+	}
+	if id != "" {
+		t.Fatalf("expected empty id (continue on existing session), got %q", id)
+	}
+	// The flush RPC itself must still be skipped once the breaker is open —
+	// this is the pre-existing mitto-k9hc behavior and must be preserved.
+	if d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace NOT to be called once the breaker is open")
+	}
+}
+
 func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNoCmd(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()

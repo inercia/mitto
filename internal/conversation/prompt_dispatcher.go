@@ -1154,6 +1154,15 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	}
 
 	var flushErr error
+	// breakerOpen distinguishes "the flush RPC was skipped because the
+	// circuit breaker was already open" (mitto-k9hc) from "the flush RPC was
+	// just attempted and failed" (mitto-2efc). Only the former is eligible
+	// for the shared-process graceful-degrade fallback below (mitto-s7zq):
+	// a live failure just now still indicates a possibly-recoverable wedge
+	// worth surfacing, but a pre-tripped breaker with no new-session
+	// fallback available can never resolve itself and must not hot-fail
+	// forever.
+	var breakerOpen bool
 	cmd := d.pdContextFlushCommand()
 	switch {
 	case cmd != "" && d.pdFlushFailCount() < flushFailureTripThreshold:
@@ -1203,11 +1212,28 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 		// "nothing to clear" when the session is known-wedged and there is no
 		// new-session fallback available.
 		flushErr = fmt.Errorf("in-place context flush circuit breaker open after %d consecutive failures", d.pdFlushFailCount())
+		breakerOpen = true
 	}
 
 	// Fallback: create a new ACP session (direct-conn only).
 	if !d.pdHasACPConn() {
 		if flushErr != nil {
+			if breakerOpen {
+				// mitto-s7zq: a shared-process session has no new-ACP-session
+				// fallback, so a pre-tripped breaker can never self-heal via
+				// the paths below — hard-failing here would hot-fail this
+				// FreshContext loop every single fire until it hits the
+				// delivery-failure ceiling and auto-pauses. Degrade
+				// gracefully instead: skip the flush (already done above)
+				// and let the prompt proceed on the existing, un-cleared
+				// context rather than dead-ending the loop.
+				if l := d.pdLogger(); l != nil {
+					l.Warn("Flush circuit breaker open on shared-process session with no new-session fallback; continuing on existing context",
+						"consecutive_failures", d.pdFlushFailCount(),
+						"session_id", d.pdSessionID())
+				}
+				return "", nil
+			}
 			return "", fmt.Errorf("failed to clear context: %w", flushErr)
 		}
 		return "", nil
