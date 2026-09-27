@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"net"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
@@ -220,5 +221,93 @@ func TestHealthMonitor_SustainedUnreachability_FlapStatsTracksRestarts(t *testin
 	}
 	if inWindow == 0 {
 		t.Fatalf("expected at least one flap recorded in the window, got 0")
+	}
+}
+
+// TestHealthMonitor_LocalOriginDown_StillTriggersFutileRestart reproduces
+// mitto-qbcs: "Hook health monitor restarts tunnel when local origin is down,
+// then gives up silently". HealthMonitor.run() only probes the *external*
+// address (through the tunnel) via checkHealth(); it never checks whether the
+// *local* origin (m.cfg.Port, the port the up-hook's tunnel process points at)
+// is actually listening before calling restartHooks(). Restarting the tunnel
+// (pkill cloudflared + a fresh up-hook) cannot fix a missing local listener —
+// the tunnel comes back pointed at the same dead origin, so the very next
+// health check fails again, driving the futile restart-then-give-up cycle
+// described in the bead (14:53, 14:56 restarts, 15:01 breaker opens silently).
+//
+// This test points Address at a closed httptest server (external health check
+// always fails, simulating "unreachable") and Port at a TCP port with nothing
+// listening (simulating "the local external listener was never bound").
+//
+// EXPECTED (post-fix) behavior: when the local origin isn't listening, a
+// restart is known to be futile, so HealthMonitor must skip restartHooks()
+// entirely for that confirmed failure (OnRestart must never fire) and instead
+// report a distinct "local origin not listening" diagnosis.
+//
+// CURRENT (buggy) behavior: there is no local-origin preflight check, so
+// OnRestart fires anyway — this assertion is what the fix phase must make
+// pass by adding that check.
+func TestHealthMonitor_LocalOriginDown_StillTriggersFutileRestart(t *testing.T) {
+	// External health check target: closed httptest server, connections refused.
+	srv := httptest.NewServer(nil)
+	unreachableAddr := srv.URL
+	srv.Close()
+
+	// Local origin port: bind then immediately close a TCP listener so nothing
+	// is listening on this port — simulates "the local external listener was
+	// never bound" (the exact scenario in the bead's timeline).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate a local port for the test: %v", err)
+	}
+	localOriginPort := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("failed to close the probe listener: %v", err)
+	}
+
+	// Shrink all timing so the monitor's loop runs in milliseconds instead of
+	// minutes, mirroring TestHealthMonitor_SustainedUnreachability_RestartChurnIsUnbounded.
+	origInitial, origCheck, origPostRestart := monitorInitialDelay, monitorCheckInterval, monitorPostRestartDelay
+	origPreRestart, origReqTimeout, origMaxCheck := monitorPreRestartWait, monitorRequestTimeout, monitorMaxCheckInterval
+	origRetries, origRetryDelay := monitorFailureRetries, monitorRetryDelay
+	defer func() {
+		monitorInitialDelay, monitorCheckInterval, monitorPostRestartDelay = origInitial, origCheck, origPostRestart
+		monitorPreRestartWait, monitorRequestTimeout, monitorMaxCheckInterval = origPreRestart, origReqTimeout, origMaxCheck
+		monitorFailureRetries, monitorRetryDelay = origRetries, origRetryDelay
+	}()
+	monitorInitialDelay = 1 * time.Millisecond
+	monitorCheckInterval = 5 * time.Millisecond
+	monitorPostRestartDelay = 2 * time.Millisecond
+	monitorPreRestartWait = 1 * time.Millisecond
+	monitorRequestTimeout = 50 * time.Millisecond
+	monitorMaxCheckInterval = 20 * time.Millisecond
+	monitorFailureRetries = 2
+	monitorRetryDelay = 1 * time.Millisecond
+
+	var restartCount atomic.Int64
+	m := NewHealthMonitor(HealthMonitorConfig{
+		Address:   unreachableAddr,
+		APIPrefix: "",
+		// Hooks always "succeed" (exit 0), mirroring the bead's evidence that
+		// the up-hook reports success on every restart even though the local
+		// origin never comes back — restarting the tunnel is not what's broken.
+		UpHook:   config.WebHook{Command: "exit 0", Name: "up"},
+		DownHook: config.WebHook{Command: "exit 0", Name: "down"},
+		Port:     localOriginPort,
+		OnRestart: func(attempt int) {
+			restartCount.Add(1)
+		},
+	})
+
+	m.Start()
+	defer m.Stop()
+
+	// Give the monitor ample time (relative to the millisecond-scale timers
+	// above) to run at least one full confirm-then-restart cycle.
+	time.Sleep(300 * time.Millisecond)
+
+	if got := restartCount.Load(); got > 0 {
+		t.Fatalf("mitto-qbcs: health monitor restarted hooks (pkill cloudflared + up-hook) %d time(s) even though the local origin (port %d) was never listening — restarting the tunnel cannot fix a dead local origin; expected the monitor to skip the restart and report a distinct 'local origin not listening' diagnosis instead of blindly restarting",
+			got, localOriginPort)
 	}
 }

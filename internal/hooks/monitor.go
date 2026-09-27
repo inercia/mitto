@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -56,6 +57,10 @@ const (
 	// maxFlapHistoryEvents bounds the in-memory flap-event ring buffer so a
 	// long-running process with many flaps cannot grow this slice unbounded.
 	maxFlapHistoryEvents = 64
+	// localOriginDialTimeout bounds the TCP preflight dial in localOriginListening
+	// (mitto-qbcs). A closed local port refuses the connection immediately, so
+	// this only guards against an unresponsive (not refusing) local address.
+	localOriginDialTimeout = 2 * time.Second
 )
 
 // HealthMonitorConfig contains the configuration for a HealthMonitor.
@@ -206,6 +211,29 @@ func (m *HealthMonitor) run(ctx context.Context) {
 
 		// Failure confirmed after all retries.
 		consecutiveFailures++
+
+		// Local-origin preflight (mitto-qbcs): restarting the tunnel hooks
+		// (pkill cloudflared + a fresh up-hook) cannot restore reachability
+		// when the *local* origin the tunnel points at isn't listening —
+		// the tunnel just comes back pointed at the same dead origin, so the
+		// very next health check fails again, producing futile restarts
+		// followed by a silent circuit-breaker-open. Detect that case up
+		// front and skip the restart entirely, with a distinct diagnosis
+		// instead of blindly restarting. A Port of 0 means no local origin
+		// was configured for this monitor — skip the check (unchanged
+		// behavior) in that case.
+		if m.cfg.Port > 0 && !m.localOriginListening() {
+			logger.Warn("Local origin not listening; skipping restart (would be futile)",
+				"address", m.cfg.Address,
+				"port", m.cfg.Port,
+				"consecutive_failures", consecutiveFailures,
+			)
+			checkInterval *= 2
+			if checkInterval > monitorMaxCheckInterval {
+				checkInterval = monitorMaxCheckInterval
+			}
+			continue
+		}
 
 		// Circuit breaker: once too many restarts in a row have failed to restore
 		// reachability, stop restarting hooks for this outage (mitto-8n4). Restarting
@@ -398,6 +426,21 @@ func (m *HealthMonitor) checkHealth(ctx context.Context) bool {
 		)
 	}
 	return healthy
+}
+
+// localOriginListening reports whether something is currently listening on
+// the local origin port (m.cfg.Port) that the up-hook's tunnel is expected to
+// point at. It performs a short-lived TCP dial to 127.0.0.1:<port> rather
+// than an HTTP request, since the goal is only to detect "nothing bound to
+// this port" (mitto-qbcs) — not to validate the local service's health,
+// which is already covered indirectly by checkHealth() through the tunnel.
+func (m *HealthMonitor) localOriginListening() bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", m.cfg.Port), localOriginDialTimeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // buildHealthURL constructs the full health check URL from the base address and API prefix.
