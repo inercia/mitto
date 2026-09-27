@@ -5,6 +5,7 @@ package secrets
 import (
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"sync"
 )
 
@@ -42,6 +43,16 @@ var ErrVerificationFailed = errors.New("credential vault verification failed")
 
 // ErrUnsafeVaultPath is returned when Linux vault path hardening fails.
 var ErrUnsafeVaultPath = errors.New("unsafe credential vault path")
+
+// IsBenignLookupErr reports whether err represents an expected "not found" or
+// "not supported" outcome from a credential store operation, as opposed to a
+// real failure (locked/inaccessible store, corrupt vault, verification
+// failure, decode error, etc.) that callers must surface rather than
+// silently discard (mitto-g4s5). A nil err is not benign here -- callers are
+// expected to check err != nil before consulting this classifier.
+func IsBenignLookupErr(err error) bool {
+	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrNotSupported)
+}
 
 // SecretStore provides an interface for secure credential storage.
 // Implementations should be safe for concurrent use.
@@ -173,14 +184,17 @@ func getCompatibleCredential(ref CredentialRef, legacyAccount string) (string, e
 		if m.claimLegacyCleanupCheck(ref) {
 			legacy, err := Get(ServiceName, legacyAccount)
 			if err == nil && subtle.ConstantTimeCompare([]byte(legacy), []byte(value)) == 1 {
-				_ = Delete(ServiceName, legacyAccount)
+				if delErr := Delete(ServiceName, legacyAccount); delErr != nil && !IsBenignLookupErr(delErr) {
+					slog.Warn("Failed to remove legacy credential after successful migration",
+						"account", legacyAccount, "error", delErr)
+				}
 			}
 		}
 		return value, nil
 	}
 	legacy, legacyErr := Get(ServiceName, legacyAccount)
 	if legacyErr != nil {
-		if !errors.Is(vaultErr, ErrNotFound) && !errors.Is(vaultErr, ErrNotSupported) {
+		if !IsBenignLookupErr(vaultErr) {
 			return "", vaultErr
 		}
 		return "", legacyErr
@@ -189,8 +203,12 @@ func getCompatibleCredential(ref CredentialRef, legacyAccount string) (string, e
 	// Migration is best-effort: the verified legacy value remains authoritative
 	// for this call unless the new vault can store and read it back exactly. A
 	// migration error is intentionally not returned: availability of the legacy
-	// value is the compatibility contract, and no secret-aware logger belongs here.
-	_ = setCompatibleCredential(ref, legacyAccount, legacy)
+	// value is the compatibility contract -- but it is logged (never the
+	// secret value) so a persistently failing migration is not invisible.
+	if err := setCompatibleCredential(ref, legacyAccount, legacy); err != nil && !IsBenignLookupErr(err) {
+		slog.Warn("Failed to migrate legacy credential to secure vault",
+			"account", legacyAccount, "error", err)
+	}
 	return legacy, nil
 }
 

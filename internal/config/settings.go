@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -999,15 +1000,26 @@ func LoadSettings() (*Config, error) {
 			if cfg.Web.Auth.Simple.Password != "" {
 				// Password found in settings.json - migrate it to secure storage
 				if err := migratePasswordToKeychain(&settings, cfg); err != nil {
-					// Log warning but don't fail - password still works from settings
-					// The migration will be attempted again on next load
-					_ = err // Ignore migration error, password is still usable
+					// Don't fail - password still works from settings and the
+					// migration will be attempted again on next load. Still,
+					// a real (non-benign) failure must not vanish silently
+					// (mitto-g4s5): log it with the account name and error
+					// class, never the secret value.
+					if !secrets.IsBenignLookupErr(err) {
+						slog.Warn("Failed to migrate external access password to secure storage",
+							"account", secrets.AccountExternalAccess, "error", err)
+					}
 				}
 			} else {
 				// No password in settings.json - try secure storage
 				password, err := secrets.GetExternalAccessPassword()
 				if err == nil && password != "" {
 					cfg.Web.Auth.Simple.Password = password
+				} else if err != nil && !secrets.IsBenignLookupErr(err) {
+					// Real failure (locked/access-denied/corrupt-vault), not
+					// benign "not found" -- surface it (mitto-g4s5).
+					slog.Warn("Failed to load external access password from secure storage",
+						"account", secrets.AccountExternalAccess, "error", err)
 				}
 				// If password is not stored, leave it empty
 				// Validation should catch this case when external access is attempted
@@ -1047,9 +1059,13 @@ func resolveSharedToken(cfg *Config, settings *Settings) {
 	if cfg.Web.Auth.SharedToken != "" {
 		// Token found in settings.json - migrate it to secure storage
 		if err := migrateSharedTokenToKeychain(settings, cfg); err != nil {
-			// Log warning but don't fail - token still works from settings
-			// The migration will be attempted again on next load
-			_ = err // Ignore migration error, token is still usable
+			// Don't fail - token still works from settings and the migration
+			// will be attempted again on next load. A real (non-benign)
+			// failure must still be surfaced (mitto-g4s5).
+			if !secrets.IsBenignLookupErr(err) {
+				slog.Warn("Failed to migrate shared token to secure storage",
+					"account", secrets.AccountSharedToken, "error", err)
+			}
 		}
 		return
 	}
@@ -1058,6 +1074,10 @@ func resolveSharedToken(cfg *Config, settings *Settings) {
 	token, err := secrets.GetSharedToken()
 	if err == nil && token != "" {
 		cfg.Web.Auth.SharedToken = token
+	} else if err != nil && !secrets.IsBenignLookupErr(err) {
+		// Real failure, not benign "not found" -- surface it (mitto-g4s5).
+		slog.Warn("Failed to load shared token from secure storage",
+			"account", secrets.AccountSharedToken, "error", err)
 	}
 	// If token not found in Keychain either, leave it empty (feature off)
 }
@@ -1364,11 +1384,19 @@ func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 			secrets.IsSupported() && settingsCfg.Web.Auth.Simple.Password != "" {
 			// Match LoadSettings: migrate plaintext only after verified secure
 			// persistence. Failure is non-fatal and leaves the in-memory and on-disk
-			// password available for a later retry.
-			_ = migratePasswordToKeychain(&settings, settingsCfg)
+			// password available for a later retry, but a real failure must
+			// still be surfaced (mitto-g4s5).
+			if err := migratePasswordToKeychain(&settings, settingsCfg); err != nil && !secrets.IsBenignLookupErr(err) {
+				slog.Warn("Failed to migrate external access password to secure storage",
+					"account", secrets.AccountExternalAccess, "error", err)
+			}
 		} else if err := loadKeychainPassword(settingsCfg); err != nil {
-			// Non-fatal, just log and continue.
-			_ = err
+			// Non-fatal, just log and continue -- but a real (non-benign)
+			// failure must not vanish silently (mitto-g4s5).
+			if !secrets.IsBenignLookupErr(err) {
+				slog.Warn("Failed to load external access password from secure storage",
+					"account", secrets.AccountExternalAccess, "error", err)
+			}
 		}
 		// Resolve the shared bearer token (mitto-7gta.26) the same way as
 		// LoadSettings. This MUST happen here too -- LoadSettingsWithFallback
@@ -1449,9 +1477,11 @@ func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 	// Load keychain password for the merged config
 	// This loads the password from keychain if Auth is configured but password is empty
 	if withKeychain {
-		if err := loadKeychainPassword(mergedCfg); err != nil {
-			// Non-fatal, just log and continue
-			_ = err
+		if err := loadKeychainPassword(mergedCfg); err != nil && !secrets.IsBenignLookupErr(err) {
+			// Non-fatal, but a real (non-benign) failure must not vanish
+			// silently (mitto-g4s5).
+			slog.Warn("Failed to load external access password from secure storage",
+				"account", secrets.AccountExternalAccess, "error", err)
 		}
 	}
 

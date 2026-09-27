@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -500,6 +502,100 @@ acp:
 	}
 	if !foundRCServer {
 		t.Error("expected to find rc-server in merged config")
+	}
+}
+
+// failingSecretStoreG4s5 simulates a locked/inaccessible platform Keychain:
+// every Get returns a real failure (not secrets.ErrNotFound), exercising the
+// "access denied / locked / decode error" error class from mitto-g4s5 rather
+// than the benign "not found" class.
+type failingSecretStoreG4s5 struct{}
+
+var errSimulatedKeychainLockedG4s5 = errors.New("simulated keychain locked")
+
+func (failingSecretStoreG4s5) Get(service, account string) (string, error) {
+	return "", errSimulatedKeychainLockedG4s5
+}
+func (failingSecretStoreG4s5) Set(service, account, password string) error { return nil }
+func (failingSecretStoreG4s5) Delete(service, account string) error        { return secrets.ErrNotFound }
+func (failingSecretStoreG4s5) IsSupported() bool                           { return true }
+
+// TestLoadSettingsWithFallback_LogsKeychainFailure_mittoG4s5 reproduces
+// mitto-g4s5: when secrets.GetExternalAccessPassword returns a real failure
+// (Keychain locked / access-denied / corrupt-vault -- anything other than
+// ErrNotFound), loadSettingsWithFallback's
+//
+//	else if err := loadKeychainPassword(settingsCfg); err != nil {
+//	    _ = err // swallowed
+//	}
+//
+// (internal/config/settings.go ~L1369-1372) drops the error on the floor:
+// no log line, no field on LoadResult, nothing. This is exactly the outage
+// scenario from the bead description -- the password stays empty and
+// nobody is told why.
+//
+// This test currently FAILS because nothing is logged today; it must start
+// passing once the fix emits a WARN (or higher) log line naming the
+// account and the underlying error when a *real* keychain failure occurs.
+func TestLoadSettingsWithFallback_LogsKeychainFailure_mittoG4s5(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	t.Setenv("HOME", tmpDir) // no .mittorc here -> RCFilePath() == "" -> settings-only path
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+	t.Cleanup(secrets.SetStoreForTest(failingSecretStoreG4s5{}))
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	settingsWithEmptyPassword := `{
+  "acp_servers": [
+    {"name": "srv", "command": "cmd"}
+  ],
+  "web": {
+    "host": "0.0.0.0",
+    "auth": {
+      "simple": {
+        "username": "admin",
+        "password": ""
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(settingsWithEmptyPassword), 0644); err != nil {
+		t.Fatalf("failed to create settings.json: %v", err)
+	}
+
+	result, err := LoadSettingsWithFallback()
+	if err != nil {
+		t.Fatalf("LoadSettingsWithFallback() failed: %v", err)
+	}
+
+	// Sanity check: confirm we actually exercised the settings-only swallow
+	// site (no RC file merged in), not some other code path.
+	if result.Source != ConfigSourceSettingsJSON {
+		t.Fatalf("expected settings-only load path (Source=ConfigSourceSettingsJSON), got %v -- test setup does not exercise the intended swallow site", result.Source)
+	}
+
+	// The password correctly stays empty because the simulated Keychain
+	// lookup failed -- failing safe is not the bug. The bug is the silence.
+	if result.Config.Web.Auth == nil || result.Config.Web.Auth.Simple == nil || result.Config.Web.Auth.Simple.Password != "" {
+		t.Fatalf("expected password to remain empty after a failed keychain lookup, got %+v", result.Config.Web.Auth)
+	}
+
+	// The actual regression check: a real (non-ErrNotFound) Keychain failure
+	// MUST be logged with the account name and error class. Today it is
+	// discarded via `_ = err`, so these assertions fail -- reproducing
+	// mitto-g4s5.
+	logged := logBuf.String()
+	if !strings.Contains(logged, secrets.AccountExternalAccess) {
+		t.Errorf("expected a log entry naming account %q after a real keychain failure, got no matching log output\ncaptured logs:\n%s", secrets.AccountExternalAccess, logged)
+	}
+	if !strings.Contains(logged, errSimulatedKeychainLockedG4s5.Error()) {
+		t.Errorf("expected the log entry to include the underlying error class, got no matching log output\ncaptured logs:\n%s", logged)
 	}
 }
 
