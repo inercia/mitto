@@ -162,6 +162,10 @@ slice of the tree (composer keystrokes, per-session server updates), prefer a
 - `utils/draftStore.js` — per-session composer draft text. Keystrokes bypass
   `App`'s setState path entirely; only the mounted `ChatInput` for the
   affected session subscribes.
+- `utils/uiPromptDraftStore.js` — per-session MCP UI prompt input drafts
+  (options free text, textbox, form fields), tagged with the prompt's
+  `requestId` so they survive conversation switches but never leak into a new
+  prompt (mitto-osmb).
 - `stores/sessionsStore.js` — per-session, per-slice (`messages` / `summary`
   / `info` / `keepalive`) server state, kept live via a single
   `replaceAll(sessions)` call from `useWebSocket.js`. See

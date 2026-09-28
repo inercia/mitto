@@ -28,6 +28,14 @@ import {
   subscribe as subscribeDraft,
 } from "../utils/draftStore.js";
 import {
+  getUIPromptDraft,
+  setUIPromptDraftField,
+  clearUIPromptDraft,
+  resolveUIPromptValues,
+  collectFormValues,
+  applyFormValues,
+} from "../utils/uiPromptDraftStore.js";
+import {
   getPromptSortMode,
   getUIPromptPanelHeight,
   setUIPromptPanelHeight,
@@ -388,14 +396,47 @@ function ChatInputImpl({
   const [showSlashPicker, setShowSlashPicker] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
-  // UI prompt combo box selection state
-  const [comboSelectedId, setComboSelectedId] = useState("");
-
-  // UI prompt free text input state (for mitto_ui_options with allow_free_text)
-  const [freeTextInput, setFreeTextInput] = useState("");
-
-  // UI textbox state (for mitto_ui_textbox)
-  const [textboxValue, setTextboxValue] = useState("");
+  // UI prompt input drafts (mitto_ui_options free text, mitto_ui_textbox) live in
+  // uiPromptDraftStore keyed by session + requestId (mitto-osmb), so text
+  // typed into a pending prompt survives switching conversations. Values are
+  // read from the store on every render (no restore-effect lag); writes bump
+  // a local counter to re-render.
+  const uiPromptRequestId = activeUIPrompt?.requestId;
+  const [, setUIPromptDraftVersion] = useState(0);
+  const { freeText: freeTextInput, textbox: textboxValue } =
+    resolveUIPromptValues(sessionId, activeUIPrompt);
+  const writeUIPromptDraft = useCallback(
+    (field, value) => {
+      if (uiPromptRequestId == null) return;
+      setUIPromptDraftField(sessionId, uiPromptRequestId, field, value);
+      setUIPromptDraftVersion((v) => v + 1);
+    },
+    [sessionId, uiPromptRequestId],
+  );
+  const setFreeTextInput = useCallback(
+    (value) => writeUIPromptDraft("freeText", value),
+    [writeUIPromptDraft],
+  );
+  const setTextboxValue = useCallback(
+    (value) => writeUIPromptDraft("textbox", value),
+    [writeUIPromptDraft],
+  );
+  // mitto_ui_form field values stay DOM-owned; snapshot them into the store
+  // on every input/change so a remounted form can be repopulated.
+  const handleUIFormFieldChange = useCallback(
+    (e) => {
+      if (uiPromptRequestId == null) return;
+      const container =
+        e.currentTarget || e.target?.closest?.(".ui-form-content");
+      setUIPromptDraftField(
+        sessionId,
+        uiPromptRequestId,
+        "form",
+        collectFormValues(container),
+      );
+    },
+    [sessionId, uiPromptRequestId],
+  );
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
   const prevCollapsedBeforeUIRef = useRef(false);
@@ -546,17 +587,10 @@ function ChatInputImpl({
     setImproveError(null);
     setShowSlashPicker(false);
     setSlashSelectedIndex(0);
-    setComboSelectedId(""); // Reset combo box selection
     // Reset loop lock state when session changes
     loopConfigVersionRef.current += 1;
     resetLoopConfigState();
   }, [sessionId, resetLoopConfigState]);
-
-  // Reset combo box selection and free text input when UI prompt changes
-  useEffect(() => {
-    setComboSelectedId("");
-    setFreeTextInput("");
-  }, [activeUIPrompt?.requestId]);
 
   // Auto-hide chat input when MCP UI prompts (textbox, form, options) are active
   useEffect(() => {
@@ -566,9 +600,6 @@ function ChatInputImpl({
     const isMCPUI = promptType && promptType !== "permission";
 
     if (isMCPUI) {
-      if (promptType === "textbox") {
-        setTextboxValue(activeUIPrompt.text || "");
-      }
       // Save current collapsed state before auto-collapsing
       setIsPromptCollapsed((prev) => {
         prevCollapsedBeforeUIRef.current = prev;
@@ -759,7 +790,8 @@ function ChatInputImpl({
     }
   }, [text, textareaMinHeight, isTextareaDragging, textareaHardMax]);
 
-  // Auto-size the mitto_ui_textbox textarea to fit its content on activation.
+  // Auto-size the mitto_ui_textbox textarea to fit its content on activation
+  // (including switching back to a session whose restored draft differs).
   // The panel uses max-height, so short content stays compact; long content is
   // capped by the panel and scrolls within the container.
   useEffect(() => {
@@ -773,7 +805,7 @@ function ChatInputImpl({
     // stacked next to the wrapper's. See mitto_ui_textbox double-scrollbar fix.
     ta.style.height =
       ta.scrollHeight + (ta.offsetHeight - ta.clientHeight) + "px";
-  }, [activeUIPrompt?.requestId, activeUIPrompt?.promptType]);
+  }, [sessionId, activeUIPrompt?.requestId, activeUIPrompt?.promptType]);
 
   // Clean up toolbar hide timeout on unmount
   useEffect(() => {
@@ -1862,10 +1894,23 @@ function ChatInputImpl({
         });
         // Immediately expand the prompt area (don't wait for dismiss from backend)
         setIsPromptCollapsed(prevCollapsedBeforeUIRef.current);
-        onUIPromptAnswer(activeUIPrompt.requestId, optionId, label, freeText);
+        const sent = onUIPromptAnswer(
+          activeUIPrompt.requestId,
+          optionId,
+          label,
+          freeText,
+        );
+        // Keep the draft if the answer could not be sent, so nothing typed
+        // is lost while the prompt is still pending.
+        if (sent) {
+          clearUIPromptDraft(sessionId, activeUIPrompt.requestId);
+          setUIPromptDraftVersion((v) => v + 1);
+        }
+        return sent;
       }
+      return false;
     },
-    [activeUIPrompt, onUIPromptAnswer],
+    [activeUIPrompt, onUIPromptAnswer, sessionId],
   );
 
   // Stop the agent turn from within an active MCP UI prompt panel. Aborts the
@@ -2048,6 +2093,7 @@ function ChatInputImpl({
                           class="ui-textbox-textarea textarea textarea-sm w-full resize-none overflow-hidden"
                           style="min-height: 120px;"
                           maxlength=${16384}
+                          value=${textboxValue}
                           onInput=${(e) => {
                             setTextboxValue(e.target.value);
                             e.target.style.height = "auto";
@@ -2060,9 +2106,7 @@ function ChatInputImpl({
                               (e.target.offsetHeight - e.target.clientHeight) +
                               "px";
                           }}
-                        >
-${activeUIPrompt.text || ""}</textarea
-                        >
+                        ></textarea>
                       </div>
 
                       <!-- Counter + Buttons on same row -->
@@ -2109,6 +2153,7 @@ ${activeUIPrompt.text || ""}</textarea
                   ? html`
                       <!-- HTML Form for mitto_ui_form -->
                       <div
+                        key=${activeUIPrompt.requestId}
                         class="ui-prompt-panel rounded-lg border border-mitto-accent-500/50 shadow-lg overflow-hidden flex flex-col"
                         style="max-height: ${uiPromptHeight}px;"
                       >
@@ -2141,16 +2186,24 @@ ${activeUIPrompt.text || ""}</textarea
                         <div
                           class="ui-form-content px-4 pb-2 flex-1 min-h-0 overflow-y-auto"
                           ref=${(el) => {
+                            const requestId = String(activeUIPrompt.requestId);
                             if (
                               el &&
                               activeUIPrompt.formHTML &&
-                              !el.dataset.formInitialized
+                              el.dataset.formRequestId !== requestId
                             ) {
                               el.innerHTML = activeUIPrompt.formHTML;
-                              el.dataset.formInitialized = "true";
+                              el.dataset.formRequestId = requestId;
                               wireMittoFileMarkers(el);
+                              const saved = getUIPromptDraft(
+                                sessionId,
+                                activeUIPrompt.requestId,
+                              )?.form;
+                              if (saved) applyFormValues(el, saved);
                             }
                           }}
+                          onInput=${handleUIFormFieldChange}
+                          onChange=${handleUIFormFieldChange}
                         ></div>
 
                         <!-- Submit / Cancel / Toggle buttons -->
@@ -2175,28 +2228,10 @@ ${activeUIPrompt.text || ""}</textarea
                                   .closest(".ui-prompt-panel")
                                   ?.querySelector(".ui-form-content");
                                 if (!container) return;
-                                const values = {};
-                                container
-                                  .querySelectorAll(
-                                    "input[name], select[name], textarea[name]",
-                                  )
-                                  .forEach((el) => {
-                                    const name = el.name;
-                                    if (!name) return;
-                                    if (el.type === "checkbox") {
-                                      values[name] = el.checked
-                                        ? "true"
-                                        : "false";
-                                    } else if (el.type === "radio") {
-                                      if (el.checked) values[name] = el.value;
-                                    } else {
-                                      values[name] = el.value;
-                                    }
-                                  });
                                 handleUIPromptAnswer(
                                   "submit",
                                   "Submit",
-                                  JSON.stringify(values),
+                                  JSON.stringify(collectFormValues(container)),
                                 );
                               }}
                               class="btn btn-primary btn-sm"
@@ -2294,7 +2329,6 @@ ${activeUIPrompt.text || ""}</textarea
                                         freeTextInput.trim(),
                                         freeTextInput.trim(),
                                       );
-                                      setFreeTextInput("");
                                     }
                                   }
                                 }}
@@ -2311,7 +2345,6 @@ ${activeUIPrompt.text || ""}</textarea
                                       freeTextInput.trim(),
                                       freeTextInput.trim(),
                                     );
-                                    setFreeTextInput("");
                                   }
                                 }}
                                 disabled=${!freeTextInput.trim()}

@@ -39,6 +39,7 @@ import {
 } from "../utils/storage.js";
 
 import { playAgentCompletedSound } from "../utils/audio.js";
+import { clearUIPromptDraft } from "../utils/uiPromptDraftStore.js";
 
 import { perfMark } from "../utils/perfMarks.js";
 import * as sessionsStore from "../stores/sessionsStore.js";
@@ -1232,6 +1233,7 @@ export function useWebSocket({
           requestId: msg.data.request_id,
           reason: msg.data.reason,
         });
+        clearUIPromptDraft(sessionId, msg.data.request_id);
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -1267,6 +1269,7 @@ export function useWebSocket({
         // Update last known seq from max_seq (server's authoritative max).
         // Gap detection/fill is now owned internally by SessionStream (mitto-7gta.30).
         updateLastKnownSeq(sessionId, maxSeq || 0);
+        clearUIPromptDraft(sessionId);
 
         sessionUpdateSchedulerRef.current.applyImmediate(sessionId, (prev) => {
           const session = prev[sessionId];
@@ -1393,6 +1396,7 @@ export function useWebSocket({
           }
         }
 
+        clearUIPromptDraft(sessionId);
         sessionUpdateSchedulerRef.current.applyImmediate(sessionId, (prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -1468,6 +1472,7 @@ export function useWebSocket({
         console.log("Session forcefully reset:", sessionId);
         // The server also sends prompt_complete, so isStreaming will be reset
         // Add a system message to inform the user
+        clearUIPromptDraft(sessionId);
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -2295,6 +2300,7 @@ export function useWebSocket({
           "reason:",
           msg.data?.reason,
         );
+        clearUIPromptDraft(sessionId);
         setSessions((prev) => {
           const session = prev[sessionId];
           if (!session) return prev;
@@ -4526,6 +4532,7 @@ export function useWebSocket({
       });
 
       if (sent) {
+        clearUIPromptDraft(sessionId, requestId);
         // Clear the active UI prompt immediately on the frontend
         // The backend will also send a dismiss message, but this provides instant feedback
         setSessions((prev) => {
