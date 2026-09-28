@@ -29,7 +29,7 @@ version-agnostic, and their tags **union** across overlapping matches:
 | Gemini          | `Gemini`   | `Smart`, `LongContext`                                           |
 | GLM             | `GLM`      | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
 | DeepSeek        | `DeepSeek` | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
-| Auto            | `Auto`     | `Auto` (`matchMode: exact`)                                      |
+| Auto            | `Auto`     | `Auto`, `Smartest`, `Reasoning`, `Thinking`, `Deep` (`exact`)    |
 
 Because matching is additive, a name like `Claude Opus 4.x` resolves to the union of
 the vendor-level `Claude` profile and the `Claude Opus` profile
@@ -43,8 +43,11 @@ Mythos-branded model is available, falling back to Opus otherwise. The `OpenAI G
 entry is a vendor-level catch-all with only the `OpenAI` tag; it deliberately carries
 no capability tags so it never outranks `GPT-5` / `GPT-4` for `Coding` / `Smart`
 routing but still tags any future `GPT-*` variant (e.g. `GPT-5.6`, `GPT-6`) as
-`OpenAI`. `GLM` and `DeepSeek` seed tags for the common open-weight / self-hostable
-model families.
+`OpenAI`. The `Auto` entry matches agent-side automatic selection (e.g. GitHub
+Copilot's `Auto` model), which is assumed to pick a capable model when needed, so it
+carries the high-capability tags; it is listed last so `Claude Mythos` / `Claude Opus`
+still win those tags when available. `GLM` and `DeepSeek` seed tags for the common
+open-weight / self-hostable model families.
 
 ## YAML Configuration
 

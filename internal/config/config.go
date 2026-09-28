@@ -93,7 +93,7 @@ func DefaultModelProfiles() []ModelProfile {
 		{Name: "GLM", Criteria: contains("GLM"), Tags: []string{"Smart", "Coding", "OpenWeight", "SelfHostable"}},
 		{Name: "DeepSeek", Criteria: contains("DeepSeek"), Tags: []string{"Smart", "Coding", "OpenWeight", "SelfHostable"}},
 		// Agent-side automatic model selection (e.g. GitHub Copilot's "Auto").
-		{Name: "Auto", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "Auto"}, Tags: []string{"Auto"}},
+		{Name: "Auto", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "Auto"}, Tags: []string{"Auto", "Smartest", "Reasoning", "Thinking", "Deep"}},
 	}
 }
 

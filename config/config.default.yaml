@@ -118,12 +118,14 @@ models:
     tags: [Smart, Coding, OpenWeight, SelfHostable]
   # Agent-side automatic model selection (e.g. GitHub Copilot's "Auto" model).
   # `exact` is case-insensitive, so it matches "Auto"/"auto" but not names that
-  # merely contain the word.
+  # merely contain the word. The agent is assumed to pick a capable model when
+  # needed, so it carries the high-capability tags; listed last so explicit
+  # Mythos/Opus profiles still win those tags when available.
   - name: Auto
     criteria:
       matchMode: exact
       pattern: Auto
-    tags: [Auto]
+    tags: [Auto, Smartest, Reasoning, Thinking, Deep]
 
 # Global shortcut buttons
 # Quick-action buttons shown across the UI, keyed by the section they appear in:

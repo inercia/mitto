@@ -2937,7 +2937,7 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 		"Gemini":          {"Smart", "LongContext"},
 		"GLM":             {"Smart", "Coding", "OpenWeight", "SelfHostable"},
 		"DeepSeek":        {"Smart", "Coding", "OpenWeight", "SelfHostable"},
-		"Auto":            {"Auto"},
+		"Auto":            {"Auto", "Smartest", "Reasoning", "Thinking", "Deep"},
 	}
 	wantMatchMode := map[string]string{"Auto": "exact"}
 
@@ -2990,8 +2990,9 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	// GitHub Copilot's "Auto" model matches the exact (case-insensitive) Auto profile,
 	// while names that merely contain the word do not.
 	for _, name := range []string{"Auto", "auto"} {
-		if got := cfg.ResolveModelTags(name); len(got) != 1 || got[0] != "Auto" {
-			t.Errorf("ResolveModelTags(%q) = %v, want [Auto]", name, got)
+		want := "Auto,Smartest,Reasoning,Thinking,Deep"
+		if got := cfg.ResolveModelTags(name); strings.Join(got, ",") != want {
+			t.Errorf("ResolveModelTags(%q) = %v, want [%s]", name, got, want)
 		}
 	}
 	if got := cfg.ResolveModelTags("Automatic Router"); len(got) != 0 {
