@@ -58,6 +58,9 @@ var RouteCoverage = map[string]string{
 	"GET /api/sessions/{id}/loop/suggest-from-recent":         "SuggestLoopFromRecent",
 	"POST /api/sessions/{id}/loop/run-now":                    "RunLoopNow",
 
+	"GET /api/sessions/{id}/move-agent/preflight": "MoveAgentPreflight",
+	"POST /api/sessions/{id}/move-agent":          "MoveAgent",
+
 	// mitto-pscc.9/.10: `mitto auth status`/`rotate` are required (by the
 	// internal/cmd no-raw-net/http gate, mitto-pscc.10) to talk to the
 	// server through this SDK rather than net/http directly, even though

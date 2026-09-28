@@ -194,3 +194,22 @@ Per-session feature flags stored in metadata. See `16-web-backend-settings.md` f
 - All flags default to `false` (opt-in model)
 - Use `GetFlagValue()` to safely check nil maps
 - Flags stored in `metadata.json` as `advanced_settings` map
+
+## `Pending*` one-shot metadata handoff pattern (mitto-f7yo)
+
+Any new agent-specific `Metadata` field that must survive an async/after-restart resume before
+being applied — e.g. `PendingModelMappingFrom` (mitto-f7yo.4), `PendingAgentHandoffFrom`
+(mitto-f7yo.5) — follows the same shape: (1) set once, durably, in the *same* `UpdateMetadata`
+call that performs the triggering rewrite; (2) consumed **atomically** via a single
+read-and-clear `UpdateMetadata` call from inside the one code path that's guaranteed to run
+exactly once per resume (e.g. `setAgentModels` for model mapping, the `shouldInjectHistory` gate
+for context handoff) — never read and clear in two separate calls, or a concurrent resume/restart
+can double-apply or drop the pending value. When adding a *new* piece of agent-specific
+`Metadata` (anything whose meaning is tied to which ACP agent the conversation is bound to, like
+`ACPSessionID`/`CurrentModeID`/`ACPStartFailureCount`/`BaselineModel`), also decide explicitly
+whether `moveAgentStopAndRebind` (`internal/conversation/session_manager_move_agent.go`) needs to
+clear or rewrite it — that function is the single choke point every agent-migration path
+(`MoveSessionToAgent`, `IncludeChildren` descendants) goes through, so a field left out there will
+silently leak the old agent's state into the new one. See
+[docs/devel/session-management.md](../docs/devel/session-management.md)'s "Moving a Conversation
+to a Different Agent" section.

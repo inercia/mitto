@@ -487,6 +487,10 @@ It is the backend core that REST (`mitto-f7yo.2`) and MCP (`mitto-f7yo.3`) entry
 bead does not add either of those entry points or richer context handoff on the first post-move
 prompt (`mitto-f7yo.5`) — only clean seams for them. Model mapping (`mitto-f7yo.4`, described
 below) consumes the `PreviousBaselineModel`/`PendingModelMappingFrom` seam this bead leaves behind.
+The subsections below walk the whole feature end to end in the order a reader is most likely to
+need it — backend semantics first, then the two durable one-shot handoff mechanisms it enables
+(model mapping, context handoff), then the REST/MCP/UI entry points that call it, and finally the
+integration tests (`mitto-f7yo.7`) that exercise the full stack across two real ACP agents.
 
 ### Preflight
 
@@ -661,7 +665,6 @@ an additive sibling function next to it.
 
 ### REST endpoints (`mitto-f7yo.2`)
 
-
 Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/session_move_agent.go`:
 
 - **`GET /api/sessions/{id}/move-agent/preflight`** — read-only affordance check, backed by
@@ -814,3 +817,31 @@ ACP server without going through the UI.
   `recordMoveAgentEvent` appends (see the backend section above) renders in
   `web/static/components/Message.js`'s `sessionChangeText` as `"Moved from <previous_agent> to
   <new_agent>"`.
+
+### Integration tests (`mitto-f7yo.7`)
+
+`tests/integration/inprocess/move_agent_e2e_test.go` exercises the whole stack above against two
+real (mock) ACP agent processes — `setupTwoAgentServer` registers two `config.ACPServer` entries
+("mock-a"/"mock-b") both bound to workspaces for the same folder, the shape
+`moveAgentPreflight`/`GetWorkspaceByDirAndACP` require for a move to be considered valid:
+
+- **`TestMoveAgent_E2E`**: create → prompt on mock-a → preflight lists mock-b as a candidate →
+  a move attempted while a turn is streaming is rejected `409`/`turn_streaming` (using the
+  `slow-response.json` fixture to make the busy window deterministic) → once idle, the move to
+  mock-b succeeds (`metadata.acp_server`, a refreshed `acp_session_id`, and a
+  `session_change(kind=agent)` event all update) → the first prompt physically delivered to
+  mock-b carries both the mitto-f7yo.5 handoff preamble (naming mock-a) and the earlier turn's
+  text as injected history.
+- **`TestMoveAgent_IncludeChildren_E2E`**: a parent and a non-archived child both move together,
+  each recording its own `session_change(kind=agent)` event.
+- **`TestMoveAgent_LoopUnchangedAndFiresOnNewAgent_E2E`**: a loop's `loop.json` (prompt, trigger,
+  frequency, enabled) is unchanged by the move, and a subsequent `RunLoopNow` delivers on the new
+  agent.
+
+The literal wire text delivered to the mock ACP process is observed via its existing
+`MOCK_RPC_ORDER_FILE` RPC-order log (`tests/mocks/acp-server`), not a new echo capability — no
+mock-server changes were needed. Because the mitto-f7yo.5 handoff preamble and injected history
+can embed newlines, the tests reconstruct each multi-line `"prompt"` RPC entry from that log via a
+local `promptDeliveries` helper (pairing on the `"prompt"`/`"prompt_model"` RPCs that
+`handlePrompt` always records back to back) rather than the single-line
+`readRPCOrder`/`promptLineFor` helpers used by other, single-line-prompt tests in this package.

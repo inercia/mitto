@@ -408,7 +408,16 @@ tree (`SessionList` → `SessionItem`), replacing the former three tabs
 - **Category filter** (sidebar header dropdown): show/hide Regular, Loop,
   Archived, and Tasks. Persisted per-device in `sessionStorage`.
 - Each row exposes an always-visible **three-dot (ellipsis) menu** that opens the
-  shared `ContextMenu` (rename, pin, archive, delete, prompt groups…).
+  shared `ContextMenu` (rename, pin, archive, delete, prompt groups…), including a
+  **"Move to agent ›"** submenu (`mitto-f7yo`) listing every other ACP server with
+  a workspace for that conversation's folder. Selecting one opens a confirmation
+  dialog (context-loss and MCP/tools/prompts/model-drift warnings, an "Also move N
+  child conversations" checkbox when the conversation has children, and a disabled
+  Confirm button while the conversation is busy or archived) before rebinding the
+  conversation to the new agent in place — same conversation ID, history, and loop
+  config, just served by a different agent from the next prompt on. See
+  `docs/devel/session-management.md`'s "Moving a Conversation to a Different
+  Agent" section for the full backend/REST/MCP contract.
 - **Expansion state** is persisted in `localStorage`
   (`mitto_conversation_expanded_groups`) and synced to the server via UI
   preferences. Keys are unscoped: a folder's `working_dir`,
