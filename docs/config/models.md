@@ -12,7 +12,7 @@ populated from `config.ResolveModelTags`.
 
 New installs are seeded with a set of well-known profiles from the embedded
 `config/config.default.yaml` (written to `settings.json` on the first run; existing
-installs are left untouched). All use `matchMode: contains`, so they are
+installs are left untouched). All but `Auto` use `matchMode: contains`, so they are
 version-agnostic, and their tags **union** across overlapping matches:
 
 | Profile         | Pattern    | Tags                                                             |
@@ -29,6 +29,7 @@ version-agnostic, and their tags **union** across overlapping matches:
 | Gemini          | `Gemini`   | `Smart`, `LongContext`                                           |
 | GLM             | `GLM`      | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
 | DeepSeek        | `DeepSeek` | `Smart`, `Coding`, `OpenWeight`, `SelfHostable`                  |
+| Auto            | `Auto`     | `Auto` (`matchMode: exact`)                                      |
 
 Because matching is additive, a name like `Claude Opus 4.x` resolves to the union of
 the vendor-level `Claude` profile and the `Claude Opus` profile
@@ -154,7 +155,7 @@ preferredModels:
     `Claude Sonnet 4` in today's environments (also on `GPT-5`, `GPT-4`).
   - `Cheap` → `Claude Haiku`.
   - `Smart`, `Smartest`, `Reasoning`, `Fast`, `LongContext`, `Anthropic`,
-    `Expensive` are also available; see the shipped defaults table.
+    `Expensive`, `Auto` are also available; see the shipped defaults table.
 - Entries are **ordered, first-match-wins** (see [Priority](#priority-list-order--priority)).
   The backend tries each entry in order and stops at the first that resolves to a
   profile whose `criteria` match an available model on the session's ACP server.

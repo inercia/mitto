@@ -116,6 +116,14 @@ models:
       matchMode: contains
       pattern: DeepSeek
     tags: [Smart, Coding, OpenWeight, SelfHostable]
+  # Agent-side automatic model selection (e.g. GitHub Copilot's "Auto" model).
+  # `exact` is case-insensitive, so it matches "Auto"/"auto" but not names that
+  # merely contain the word.
+  - name: Auto
+    criteria:
+      matchMode: exact
+      pattern: Auto
+    tags: [Auto]
 
 # Global shortcut buttons
 # Quick-action buttons shown across the UI, keyed by the section they appear in:

@@ -2937,7 +2937,9 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 		"Gemini":          {"Smart", "LongContext"},
 		"GLM":             {"Smart", "Coding", "OpenWeight", "SelfHostable"},
 		"DeepSeek":        {"Smart", "Coding", "OpenWeight", "SelfHostable"},
+		"Auto":            {"Auto"},
 	}
+	wantMatchMode := map[string]string{"Auto": "exact"}
 
 	if len(cfg.Models) != len(wantProfiles) {
 		t.Fatalf("embedded default Models count = %d, want %d", len(cfg.Models), len(wantProfiles))
@@ -2949,8 +2951,12 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 			t.Errorf("embedded default missing profile %q", name)
 			continue
 		}
-		if p.Criteria == nil || p.Criteria.MatchMode != "contains" {
-			t.Errorf("profile %q criteria = %+v, want matchMode contains", name, p.Criteria)
+		mode := "contains"
+		if m, ok := wantMatchMode[name]; ok {
+			mode = m
+		}
+		if p.Criteria == nil || p.Criteria.MatchMode != mode {
+			t.Errorf("profile %q criteria = %+v, want matchMode %s", name, p.Criteria, mode)
 		}
 		if len(p.Tags) != len(wantTags) {
 			t.Errorf("profile %q tags = %v, want %v", name, p.Tags, wantTags)
@@ -2979,6 +2985,17 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	// A non-Anthropic model only picks up its own profile's tags.
 	if got := cfg.ResolveModelTags("Gemini 2.5 Pro"); len(got) != 2 || got[0] != "Smart" || got[1] != "LongContext" {
 		t.Errorf("ResolveModelTags(Gemini 2.5 Pro) = %v, want [Smart LongContext]", got)
+	}
+
+	// GitHub Copilot's "Auto" model matches the exact (case-insensitive) Auto profile,
+	// while names that merely contain the word do not.
+	for _, name := range []string{"Auto", "auto"} {
+		if got := cfg.ResolveModelTags(name); len(got) != 1 || got[0] != "Auto" {
+			t.Errorf("ResolveModelTags(%q) = %v, want [Auto]", name, got)
+		}
+	}
+	if got := cfg.ResolveModelTags("Automatic Router"); len(got) != 0 {
+		t.Errorf("ResolveModelTags(Automatic Router) = %v, want []", got)
 	}
 }
 
@@ -3087,7 +3104,7 @@ func TestDefaultModelProfiles_MatchesEmbeddedYAML(t *testing.T) {
 // TestCanonicalModelTags pins the canonical capability-tag set (sorted, de-duplicated)
 // derived from DefaultModelProfiles.
 func TestCanonicalModelTags(t *testing.T) {
-	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "OpenAI", "OpenWeight", "Reasoning", "SelfHostable", "Slow", "Smart", "Smartest", "Thinking"}
+	want := []string{"Anthropic", "Auto", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "OpenAI", "OpenWeight", "Reasoning", "SelfHostable", "Slow", "Smart", "Smartest", "Thinking"}
 	got := CanonicalModelTags()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("CanonicalModelTags() = %v, want %v", got, want)
