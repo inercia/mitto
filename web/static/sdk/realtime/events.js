@@ -101,6 +101,7 @@ export const EVENTS = Object.freeze({
   SESSION_DELETED: "session_deleted",
   SESSION_RENAMED: "session_renamed",
   SESSION_BEADS_ISSUE_UPDATED: "session_beads_issue_updated",
+  SESSION_AGENT_MOVED: "session_agent_moved",
   LOOP_UPDATED: "loop_updated",
   SESSION_WAITING: "session_waiting",
   SESSION_STREAMING: "session_streaming",
@@ -396,6 +397,16 @@ export function isCommandType(type) {
  * @typedef {Object} SessionBeadsIssueUpdatedPayload
  * @property {string} session_id - Affected session.
  * @property {string} beads_issue - Linked issue ID; empty string means unlinked.
+ */
+
+/**
+ * Payload of {@link EVENTS.SESSION_AGENT_MOVED} (`session_agent_moved`).
+ * Emitted by `SessionManager.MoveSessionToAgent` (mitto-f7yo.1/.2) once per
+ * moved conversation.
+ * @typedef {Object} SessionAgentMovedPayload
+ * @property {string} session_id - Affected session.
+ * @property {string} acp_server - New agent (ACP server) the session is now bound to.
+ * @property {string} previous_agent - Agent the session was bound to before the move.
  */
 
 /**

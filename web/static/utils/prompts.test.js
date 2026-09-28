@@ -1654,10 +1654,21 @@ describe("buildPromptGroupMenuItems", () => {
   let buildPromptGroupMenuItems;
 
   beforeAll(async () => {
-    window.preact = {
-      html: (strings, ...values) => ({ __htmlStub: true, strings, values }),
-      useState: (initial) => [initial, () => {}],
-    };
+    // Merge into (rather than replace) window.preact: bun runs every test
+    // file in one shared process, so clobbering the object here would wipe
+    // out keys (e.g. useEffect) other already-loaded modules depend on, and
+    // a non-lazy useState mock would silently break any module that passes
+    // a lazy initializer function (e.g. useToast.js's `useState(getToasts)`).
+    window.preact = window.preact || {};
+    window.preact.html =
+      window.preact.html ||
+      ((strings, ...values) => ({ __htmlStub: true, strings, values }));
+    window.preact.useState =
+      window.preact.useState ||
+      ((initial) => [
+        typeof initial === "function" ? initial() : initial,
+        () => {},
+      ]);
     ({ buildPromptGroupMenuItems } =
       await import("../components/ContextMenu.js"));
   });

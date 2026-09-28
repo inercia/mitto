@@ -429,6 +429,26 @@ the link was cleared.
 }
 ```
 
+#### `session_agent_moved` — Session rebound to a different ACP agent
+
+Broadcast when a conversation's ACP server binding changes via
+`SessionManager.MoveSessionToAgent` (mitto-f7yo.1/.2), once per moved
+conversation (the requested session and, when `include_children` was set,
+every moved descendant). No forced WS reconnect: the per-session WebSocket
+is keyed on `session_id`, not agent, so updating `acp_server` is enough for
+the header/sidebar badge to reflect the new agent.
+
+```json
+{
+  "type": "session_agent_moved",
+  "data": {
+    "session_id": "...",
+    "acp_server": "new-agent",
+    "previous_agent": "old-agent"
+  }
+}
+```
+
 #### `acp_stopped` — ACP connection stopped
 
 Sent when the ACP process is gracefully terminated (e.g., session archived).
@@ -1087,6 +1107,23 @@ beads issue. An empty `beads_issue` value indicates the link was cleared.
 {
   "type": "session_beads_issue_updated",
   "data": { "session_id": "...", "beads_issue": "mitto-abc" }
+}
+```
+
+#### `session_agent_moved`
+
+Mirrors the per-session event of the same name — broadcast globally so any
+connected client can update session-list badges/indicators that show the
+current agent.
+
+```json
+{
+  "type": "session_agent_moved",
+  "data": {
+    "session_id": "...",
+    "acp_server": "new-agent",
+    "previous_agent": "old-agent"
+  }
 }
 ```
 

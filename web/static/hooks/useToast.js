@@ -5,7 +5,13 @@
 // across renders -- passing them into a `useCallback` dep array never
 // forces a recreation -- and only `ToastContainer` (via `useToasts()`)
 // re-renders on a toast show/dismiss, not the caller of `useToast()`.
-const { useState, useEffect } = window.preact;
+//
+// `useState`/`useEffect` are read from window.preact lazily inside
+// useToasts() (not destructured at module top-level) so that under Bun's
+// shared-process test runner an unrelated test file that transiently
+// imports this module (e.g. via MoveAgentDialog.js) with a throwaway
+// window.preact stub can't permanently freeze this hook onto stale
+// mocks -- matches the convention documented in useBeadsIntegration.js.
 
 import {
   showToast,
@@ -26,7 +32,9 @@ export function useToast() {
 
 /** Subscribes to the live toast stack. Used by ToastContainer only. */
 export function useToasts() {
+  const { useState, useEffect } = window.preact;
   const [toasts, setToasts] = useState(getToasts);
   useEffect(() => subscribeToasts(setToasts), []);
   return toasts;
 }
+
