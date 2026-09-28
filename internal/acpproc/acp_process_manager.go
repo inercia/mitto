@@ -1210,6 +1210,12 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 // auxSessionCreateBudget (60s) hitting the agent's internal deadline.
 const auxSessionCreateBusyRPCThreshold = int32(1)
 
+// Title generation uses no MCP servers and shares one serialized session/new
+// per workspace. Allow it to use spare process capacity while other
+// conversations are active; otherwise a continuously active workspace can
+// leave every new conversation on its quick fallback title indefinitely.
+const titleSessionCreateBusyRPCThreshold = int32(3)
+
 // deferredAuxQuiescenceWindow gives queued foreground work a brief opportunity
 // to claim the process before deferred title-session creation is admitted.
 const deferredAuxQuiescenceWindow = 100 * time.Millisecond
@@ -1295,6 +1301,13 @@ func isProactiveBailPurpose(purpose string) bool {
 // share one definition and cannot drift apart.
 func processBusyByActiveRPCs(process *SharedACPProcess) bool {
 	return process.ActiveRPCs() >= auxSessionCreateBusyRPCThreshold
+}
+
+func auxSessionBusyThreshold(purpose string) int32 {
+	if purpose == auxiliary.PurposeTitleGen {
+		return titleSessionCreateBusyRPCThreshold
+	}
+	return auxSessionCreateBusyRPCThreshold
 }
 
 // processMCPInitGated reports whether process is currently gated on its MCP
@@ -1492,7 +1505,8 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// human is actively waiting (improve-prompt) are exempt — they are not
 	// background pre-warming and should not be sacrificed for load-shedding.
 	if isProactiveBailPurpose(purpose) {
-		if active := process.ActiveRPCs(); processBusyByActiveRPCs(process) {
+		threshold := auxSessionBusyThreshold(purpose)
+		if active := process.ActiveRPCs(); active >= threshold {
 			if m.logger != nil {
 				// mitto-13n.3: demoted from Info to Debug (61 occurrences observed
 				// on 2026-08-05) — deliberately NOT surfaced by the degraded-state
@@ -1502,7 +1516,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					"workspace_uuid", workspaceUUID,
 					"purpose", purpose,
 					"active_rpcs", active,
-					"threshold", auxSessionCreateBusyRPCThreshold,
+					"threshold", threshold,
 					"reason", "process_busy")
 			}
 			// Wrap ErrProcessBusy (mitto-13n.2: the specific proactive
@@ -1510,7 +1524,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			// ErrSharedProcessSaturated so caller-side retry loops
 			// (mitto-ammz.1) can still classify and abandon), while keeping
 			// the DeadlineExceeded chain for pre-existing callers.
-			return nil, fmt.Errorf("%w: shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", ErrProcessBusy, active, auxSessionCreateBusyRPCThreshold, purpose, context.DeadlineExceeded)
+			return nil, fmt.Errorf("%w: shared ACP process is busy (%d active RPCs >= threshold %d); skipping auxiliary session creation for purpose %q: %w", ErrProcessBusy, active, threshold, purpose, context.DeadlineExceeded)
 		}
 	}
 

@@ -2431,6 +2431,38 @@ func TestGetOrCreateAuxiliarySession_SingleForegroundPromptBails(t *testing.T) {
 	}
 }
 
+func TestTitleSessionCreateAdmitsModestForegroundLoad(t *testing.T) {
+	for _, tc := range []struct {
+		purpose string
+		active  int32
+		busy    bool
+	}{
+		{"follow-up", 1, true},
+		{"queue-title", 1, true},
+		{"title-gen", 1, false},
+		{"title-gen", 2, false},
+		{"title-gen", 3, true},
+		{"title-gen", 6, true},
+	} {
+		proc := newTestSharedProcess()
+		proc.activeRPCs.Store(tc.active)
+		got := proc.ActiveRPCs() >= auxSessionBusyThreshold(tc.purpose)
+		if got != tc.busy {
+			t.Errorf("purpose=%q active=%d: busy=%v, want %v", tc.purpose, tc.active, got, tc.busy)
+		}
+
+		m := NewACPProcessManager(context.Background(), nil)
+		m.mu.Lock()
+		m.processes["title-load-test"] = proc
+		m.mu.Unlock()
+		_, err := m.getOrCreateAuxiliarySession(context.Background(), "title-load-test", tc.purpose)
+		if shed := errors.Is(err, acperrors.ErrProcessBusy); shed != tc.busy {
+			t.Errorf("purpose=%q active=%d: shed=%v, want %v (error: %v)", tc.purpose, tc.active, shed, tc.busy, err)
+		}
+		m.Close()
+	}
+}
+
 // TestGetOrCreateAuxiliarySession_AgentInternalDeadlineShedBails is the
 // mitto-pic reproduction: a process that just wedged on the agent's OWN
 // internal deadline (a single occurrence, NOT yet 3 consecutive timeouts) must
