@@ -26,6 +26,10 @@ export function useWorkspacesData({
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
   const [modelProfiles, setModelProfiles] = useState([]);
+  // Canonical capability tags (config.model_tags → config.CanonicalModelTags),
+  // unioned in AutoChildrenEditor with modelProfiles' own tags so the tag
+  // dropdown stays populated even when the user has configured no profiles.
+  const [modelTags, setModelTags] = useState([]);
   const [supportedRunners, setSupportedRunners] = useState([]);
   const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
 
@@ -52,6 +56,7 @@ export function useWorkspacesData({
       const servers = config.acp_servers || [];
       setAcpServers(servers);
       setModelProfiles(Array.isArray(config.models) ? config.models : []);
+      setModelTags(Array.isArray(config.model_tags) ? config.model_tags : []);
       const serverNames = new Set(servers.map((s) => s.name));
       const rawWorkspaces = config.workspaces || [];
       const orphaned = [];
@@ -152,6 +157,7 @@ export function useWorkspacesData({
     acpServers,
     setAcpServers,
     modelProfiles,
+    modelTags,
     supportedRunners,
     orphanedWorkspaces,
     loadData,

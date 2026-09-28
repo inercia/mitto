@@ -64,7 +64,7 @@ import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
-import { ModelTagSelect } from "./ModelTagSelect.js";
+import { ModelTagSelect, collectModelTags } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
@@ -334,11 +334,12 @@ export function AutoChildrenEditor({
   onChange,
   getBasename,
   modelProfiles,
+  modelTags,
 }) {
   const addChild = () =>
     onChange([
       ...(children || []),
-      { title: "", target_workspace_uuid: "", model_profile: "" },
+      { title: "", target_workspace_uuid: "", model_tag: "" },
     ]);
   const removeChild = (idx) =>
     onChange((children || []).filter((_, i) => i !== idx));
@@ -393,9 +394,16 @@ export function AutoChildrenEditor({
     render: () => renderWorkspaceItem(ws),
   }));
 
-  const profileOptions = [
+  const tagOptions = [
     { value: "", label: "Default (agent criteria)" },
-    ...(modelProfiles || []).map((p) => ({ value: p.name, label: p.name })),
+    // Canonical/effective tags (config.model_tags, derived from
+    // EffectiveModelProfiles()) unioned with any tags on the user's own
+    // model profiles — so the list stays populated even when the user has
+    // configured no profiles of their own (DefaultModelProfiles fallback).
+    ...collectModelTags([
+      ...(modelProfiles || []),
+      { tags: modelTags || [] },
+    ]).map((t) => ({ value: t, label: t })),
   ];
 
   const maxChildren = 5;
@@ -444,10 +452,10 @@ export function AutoChildrenEditor({
                     <${RichSelect}
                       className="flex-1 min-w-0 join-item"
                       triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
-                      ariaLabel="Model profile"
-                      value=${child.model_profile || ""}
-                      options=${profileOptions}
-                      onChange=${(v) => updateChild(idx, "model_profile", v)}
+                      ariaLabel="Model tag"
+                      value=${child.model_tag || ""}
+                      options=${tagOptions}
+                      onChange=${(v) => updateChild(idx, "model_tag", v)}
                     />
                     <button
                       type="button"

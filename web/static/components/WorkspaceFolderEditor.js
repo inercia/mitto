@@ -65,6 +65,7 @@ function renderFolderEditor({
   newFolderKey,
   getWorkspaceKey,
   modelProfiles,
+  modelTags,
   // Folder header edit fields (grouped state/setters from useFolderGeneralEdits)
   edits,
   editSetters,
@@ -935,6 +936,7 @@ function renderFolderEditor({
                             onChange=${setEditAutoChildren}
                             getBasename=${getBasename}
                             modelProfiles=${modelProfiles}
+                            modelTags=${modelTags}
                           />
                         </div>
                       `

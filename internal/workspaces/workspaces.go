@@ -49,9 +49,14 @@ type AutoChild struct {
 	// TargetWorkspaceUUID is the UUID of the workspace to use for the child.
 	// If empty, uses the parent's workspace.
 	TargetWorkspaceUUID string `json:"target_workspace_uuid,omitempty" yaml:"target_workspace_uuid,omitempty"`
-	// ModelProfile is the name of a global Model profile (Config.Models) to apply as the
-	// child's initial/baseline model. Empty = use the ACP server's default model selection.
-	ModelProfile string `json:"model_profile,omitempty" yaml:"model_profile,omitempty"`
+	// ModelTag selects the child's initial/baseline model by capability tag (e.g.
+	// "Coding"). Resolved lazily, only once the child's agent reports its available
+	// models: the first effective Model profile (Config.EffectiveModelProfiles(), in
+	// list order) carrying this tag whose Criteria matches an available model wins
+	// (see conversation.SelectHighestPriorityModel). Empty means fall back to the
+	// target workspace's own initial-model preference, then the target ACP server's,
+	// then the agent's default model selection.
+	ModelTag string `json:"model_tag,omitempty" yaml:"model_tag,omitempty"`
 }
 
 // WorkspaceSettings is the JSON representation of a workspace.

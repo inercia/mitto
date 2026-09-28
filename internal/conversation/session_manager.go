@@ -621,19 +621,13 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 			continue
 		}
 
-		// Resolve the child's initial model profile (mitto-9x8), if any.
-		var childModelConstraint *config.ACPServerConstraint
-		if child.ModelProfile != "" && sm.mittoConfig != nil {
-			if profile := sm.mittoConfig.FindModelProfile(child.ModelProfile); profile != nil && profile.Criteria != nil {
-				childModelConstraint = profile.Criteria
-			} else if sm.logger != nil {
-				sm.logger.Warn("Auto-child model profile not found or has no criteria; using ACP default",
-					"parent_session_id", parentID, "child_title", child.Title, "model_profile", child.ModelProfile)
-			}
-		}
+		// Resolve the child's initial-model preference (mitto-b3qe). Concrete model
+		// resolution is deferred to cbInitBaselineModelIfEmpty, once the child's
+		// agent reports its available models.
+		initialModelPref := resolveAutoChildInitialModelPreference(child, targetWS, sm.mittoConfig)
 
 		// Resume the child session (start ACP process)
-		childBS, err := sm.ResumeSessionWithModelConstraint(childID, child.Title, parentWorkingDir, childModelConstraint)
+		childBS, err := sm.ResumeSessionWithInitialModelPreference(childID, child.Title, parentWorkingDir, initialModelPref)
 		if err != nil {
 			if sm.logger != nil {
 				sm.logger.Error("Failed to start auto-child ACP process",
@@ -654,10 +648,38 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 				"child_session_id", childID,
 				"child_title", child.Title,
 				"child_acp_server", targetWS.ACPServer,
-				"child_model_profile", child.ModelProfile,
+				"child_model_tag", child.ModelTag,
 				"child_is_running", childBS != nil)
 		}
 	}
+}
+
+// resolveAutoChildInitialModelPreference resolves an auto-child's initial-model
+// preference (mitto-b3qe), applied by cbInitBaselineModelIfEmpty via
+// SelectHighestPriorityModel once the child's agent reports its available
+// models:
+//  1. The child's own ModelTag, when set.
+//  2. Otherwise the target workspace's own initial-model preference
+//     (InitialModelProfile / InitialModelTag).
+//  3. Otherwise the target ACP server's initial-model preference — mirroring
+//     the fresh-create path's workspace → ACP-server fallback precedence (see
+//     CreateSessionWithWorkspaceAndOptions).
+//
+// Returns nil when none of these resolve, letting the child fall back to the
+// agent's own default model selection.
+func resolveAutoChildInitialModelPreference(child config.AutoChild, targetWS *config.WorkspaceSettings, cfg *config.Config) []config.PromptPreferredModel {
+	if child.ModelTag != "" {
+		return []config.PromptPreferredModel{{ModelTag: child.ModelTag}}
+	}
+	if pref := targetWS.GetInitialModelPreference(); pref != nil {
+		return pref
+	}
+	if cfg != nil && targetWS != nil {
+		if srv, err := cfg.GetServer(targetWS.ACPServer); err == nil {
+			return srv.GetInitialModelPreference()
+		}
+	}
+	return nil
 }
 
 // GetWorkspacesForFolder returns all workspace configurations for the given folder.
@@ -2398,11 +2420,12 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	availableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
 	// Resolve the per-workspace initial-model preference (InitialModelProfile /
-	// InitialModelTag) as an ordered PromptPreferredModel list. Only applied to
-	// fresh top-level sessions (this create path); auto-children go through
-	// ResumeSessionWithModelConstraint which leaves this nil. BackgroundSession
-	// seeds the baseline once; resumed sessions preserve their own current model
-	// rather than re-applying workspace or ACP-server defaults.
+	// InitialModelTag) as an ordered PromptPreferredModel list for this fresh
+	// top-level session. Auto-children resolve their own preference (per-child
+	// ModelTag, falling back to the target workspace's/ACP-server's) via
+	// ResumeSessionWithInitialModelPreference (see createAutoChildren); a plain
+	// ResumeSession leaves this nil so a resumed session's own current model is
+	// preserved rather than re-applying workspace/ACP-server defaults.
 	initialModelPref := effectiveWs.GetInitialModelPreference()
 
 	newBsStart := time.Now()
@@ -2733,12 +2756,14 @@ func (sm *SessionManager) ResumeSessionBackground(sessionID, sessionName, workin
 	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, false)
 }
 
-// ResumeSessionWithModelConstraint resumes an existing persisted session like ResumeSession,
-// but additionally applies modelConstraint as a per-session override of the "model"
-// auto-selection constraint (mitto-9x8). Used by auto-children to apply a per-child initial
-// model profile. Pass nil to preserve the default ACP-server-derived model selection.
-func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
-	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, modelConstraint, true)
+// ResumeSessionWithInitialModelPreference resumes an existing persisted session like
+// ResumeSession, but additionally seeds initialModelPref as the session's
+// initial-model preference (resolved by cbInitBaselineModelIfEmpty via
+// SelectHighestPriorityModel once the agent reports its models). Used by
+// auto-children to apply a per-child model tag. Pass nil to fall back to the
+// default ACP-server-derived model selection.
+func (sm *SessionManager) ResumeSessionWithInitialModelPreference(sessionID, sessionName, workingDir string, initialModelPref []config.PromptPreferredModel) (*BackgroundSession, error) {
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, initialModelPref, true)
 }
 
 // resumeSessionWithConstraint resumes an existing persisted session by creating a new ACP
@@ -2746,7 +2771,7 @@ func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionNam
 // loading and we have a stored ACP session ID, we attempt to resume the ACP session
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
-func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint, foreground bool) (*BackgroundSession, error) {
+func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, initialModelPref []config.PromptPreferredModel, foreground bool) (*BackgroundSession, error) {
 	// Clear GC-suspended flag — any explicit resume (ensure_resumed, loop runner,
 	// queue processing) should allow the session to run. This must happen before the
 	// "already running" check to avoid stale flags.
@@ -3060,7 +3085,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
 		MittoConfig:                    sm.mittoConfig,         // Pass config for default flags
-		ModelConstraintOverride:        modelConstraint,        // Per-child initial model profile override (mitto-9x8)
+		InitialModelPreference:         initialModelPref,       // Initial-model preference: workspace/ACP-server default or auto-child model_tag (mitto-b3qe)
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,

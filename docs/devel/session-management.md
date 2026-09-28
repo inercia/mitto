@@ -417,7 +417,14 @@ Both auto-children and MCP-created children have a `ParentSessionID`, but only a
 2. Generates a new `SessionID` for each child
 3. Creates `session.Metadata` with `IsAutoChild: true` and `ParentSessionID` set
 4. Calls `store.Create(childMeta)` to persist to disk
-5. Calls `ResumeSession()` to start the ACP subprocess
+5. Resolves an initial-model preference via `resolveAutoChildInitialModelPreference()`
+   — `child.ModelTag` if set, else the target workspace's own initial-model
+   preference, else the target ACP server's, else nil — and calls
+   `ResumeSessionWithInitialModelPreference()` to start the ACP subprocess.
+   The preference is only a **tag**; the concrete Model profile is resolved
+   later, once the child's agent reports its available models
+   (`cbInitBaselineModelIfEmpty`), and is then persisted as the child's
+   baseline model so it is never re-resolved on subsequent resumes.
 6. Broadcasts `session_created` to all WebSocket clients
 
 Children inherit the **parent's working directory**, not the target workspace's directory.

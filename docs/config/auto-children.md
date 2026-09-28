@@ -76,10 +76,39 @@ Auto-children are configured in `workspaces.json` (located in the Mitto data dir
 
 ### AutoChild Fields
 
-| Field                   | Required | Description                                                                         |
-| ----------------------- | -------- | ----------------------------------------------------------------------------------- |
-| `title`                 | Yes      | Name displayed for the child conversation                                           |
-| `target_workspace_uuid` | No       | UUID of the workspace to use for the child. Defaults to the parent's own workspace. |
+| Field                   | Required | Description                                                                                                                                                                                             |
+| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`                 | Yes      | Name displayed for the child conversation                                                                                                                                                              |
+| `target_workspace_uuid` | No       | UUID of the workspace to use for the child. Defaults to the parent's own workspace.                                                                                                                    |
+| `model_tag`             | No       | Capability tag (e.g. `"Coding"`, `"Fast"`) selecting the child's initial model. Resolved lazily, once the child's own agent reports its models — see [Model Selection](#model-selection). Empty falls back to the target workspace's/ACP server's own initial-model preference, then the agent's default. |
+
+### Model Selection
+
+Auto-children select their initial model **by capability tag**, not by a fixed
+Model profile name. This matters because different target workspaces run
+different agents, and an agent may not offer a model matching one specific
+profile — but a tag (e.g. `Coding`, `Fast`, `Smart`) can be satisfied by
+whichever profile the target agent actually supports.
+
+Resolution order for each child, evaluated once the child's own agent process
+reports its available models (not at configuration time):
+
+1. `model_tag` on the `AutoChild` entry itself, if set.
+2. Otherwise, the **target workspace's** own initial-model preference
+   (`initial_model_profile` / `initial_model_tag`).
+3. Otherwise, the **target ACP server's** initial-model preference.
+4. Otherwise, the agent's default model selection.
+
+Once one of these resolves, the first effective Model profile (in list order,
+across the user's own `models:` plus the built-in defaults) carrying the
+winning tag whose criteria matches an available model is used. If a
+`model_tag` is set but no profile carrying it matches anything the agent
+offers, Mitto logs a warning and falls back to the agent's default model — it
+never fails child creation.
+
+A concrete model, once resolved, is **persisted as the child's baseline** and
+is never re-resolved on later resumes — restarting Mitto or reconnecting to
+the child conversation keeps the model it started with.
 
 ### Constraints
 
@@ -95,7 +124,9 @@ You can configure auto-children through **Settings > Workspaces** without editin
 2. Select the **Workspaces** tab
 3. Click on a workspace to expand its settings
 4. Under **Auto-created children**, click **Add child**
-5. Set the child title and choose a target workspace from the dropdown
+5. Set the child title, choose a target workspace from the dropdown, and
+   optionally pick a **Model tag** (defaults to "Default (agent criteria)",
+   which falls back to the target workspace's/ACP server's own preference)
 6. Save — changes take effect immediately for new conversations
 
 ## Behavior

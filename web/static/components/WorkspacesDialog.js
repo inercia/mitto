@@ -210,6 +210,7 @@ export function WorkspacesDialog({
     setWorkspaces,
     acpServers,
     modelProfiles,
+    modelTags,
     supportedRunners,
     orphanedWorkspaces,
     loadData,
@@ -829,6 +830,7 @@ export function WorkspacesDialog({
                 newFolderKey=${newFolderKey}
                 getWorkspaceKey=${getWorkspaceKey}
                 modelProfiles=${modelProfiles}
+                modelTags=${modelTags}
                 edits=${edits}
                 editSetters=${editSetters}
                 folderGroupSuggestions=${folderGroupSuggestions}

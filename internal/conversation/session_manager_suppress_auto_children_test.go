@@ -16,7 +16,7 @@ import (
 // Direct verification uses createAutoChildren (same-package, unexported) as
 // the observable side-effect surface: it persists child metadata to
 // sm.store BEFORE attempting to start the child's ACP process (see
-// session_manager.go:459 — store.Create precedes ResumeSessionWithModelConstraint).
+// session_manager.go:459 — store.Create precedes ResumeSessionWithInitialModelPreference).
 // This lets tests observe children in the store even when the ACP start
 // downstream fails, which it always does in unit-test environments.
 

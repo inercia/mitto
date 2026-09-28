@@ -58,7 +58,8 @@ const IDX = {
   setWorkspaces: 2,
   setAcpServers: 3,
   setModelProfiles: 4,
-  setSupportedRunners: 5,
+  setModelTags: 5,
+  setSupportedRunners: 6,
 };
 
 const DEFAULT_FALLBACK_RUNNERS = [

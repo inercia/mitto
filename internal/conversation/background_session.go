@@ -527,18 +527,14 @@ type BackgroundSessionConfig struct {
 	// MittoConfig is the full Mitto configuration (used for default flags)
 	MittoConfig *config.Config
 
-	// ModelConstraintOverride, when non-nil with a non-empty Pattern, overrides the
-	// ACP-server-derived "model" auto-selection constraint for this session only.
-	// Used by auto-children to apply a per-child initial model profile.
-	ModelConstraintOverride *config.ACPServerConstraint
-
-	// InitialModelPreference is the per-workspace initial-model preference
-	// (WorkspaceSettings.InitialModelProfile / InitialModelTag) resolved as an
-	// ordered list ready for SelectPreferredModel. When non-empty and no
-	// ModelConstraintOverride is set, BackgroundSession applies it as the
-	// session's persistent baseline after the agent reports its available
-	// models. Only set for fresh top-level sessions by SessionManager;
-	// resumed sessions and auto-children leave this nil.
+	// InitialModelPreference is the initial-model preference (workspace or
+	// ACP-server InitialModelProfile/InitialModelTag, or an auto-child's
+	// ModelTag) resolved as an ordered list ready for SelectHighestPriorityModel.
+	// When non-empty, BackgroundSession applies it as the session's persistent
+	// baseline after the agent reports its available models (cbInitBaselineModelIfEmpty).
+	// Set by SessionManager for fresh top-level sessions, resumed sessions, and
+	// auto-children alike; a persisted BaselineModel on resume always wins over
+	// re-resolving this preference.
 	InitialModelPreference []config.PromptPreferredModel
 
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
@@ -910,10 +906,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	bs.acpContextTurns.Store(contextTurnsUnknown)
 
 	// Look up ACP server constraints from config
-	bs.acpServerConstraints = applyModelConstraintOverride(
-		lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer),
-		cfg.ModelConstraintOverride,
-	)
+	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
 	// Per-workspace initial-model preference (applied after agent reports models).
@@ -1176,12 +1169,13 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	bs.acpContextTurns.Store(contextTurnsUnknown)
 
 	// Look up ACP server constraints from config
-	bs.acpServerConstraints = applyModelConstraintOverride(
-		lookupACPServerConstraints(config.MittoConfig, config.ACPServer),
-		config.ModelConstraintOverride,
-	)
+	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = config.MittoConfig
+	// Initial-model preference (workspace/ACP-server InitialModelTag, or an
+	// auto-child's ModelTag): applied by cbInitBaselineModelIfEmpty after the
+	// agent reports its models, unless a persisted BaselineModel already wins.
+	bs.initialModelPreference = config.InitialModelPreference
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(config.MittoConfig, config.ACPServer)
 
