@@ -165,7 +165,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
 					return
 				}
-				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue)
 				return
 			}
 		}
@@ -177,15 +177,17 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// reuseTitle find-or-route: when the originating prompt declares
 	// target.reuseTitle (with a non-empty target.title, enforced at load
 	// time by ValidatePromptTarget), route dispatches to an existing
-	// non-archived conversation in the same working_dir whose Name matches
-	// the declared title. If no candidate exists, fall through to normal
-	// creation with req.Name defaulted to the target title so a subsequent
-	// scan matches it. Skip the singleton fallback on both hit and miss —
-	// title reuse is authoritative for this prompt. When the caller
-	// supplied a non-empty req.Name that differs from the target title,
-	// override it (with a debug log) since target.title is the canonical
-	// lookup key.
+	// non-archived conversation in the same working_dir whose canonical
+	// ReuseTitleKey matches the declared title. If no candidate exists, fall
+	// through to normal creation with req.Name defaulted to the target title
+	// (only when the caller supplied none) so a subsequent scan can still
+	// match it via ReuseTitleKey. Skip the singleton fallback on both hit and
+	// miss — title reuse is authoritative for this prompt. A caller-supplied
+	// req.Name now survives as the stored/displayed Name (mitto-9vng) instead
+	// of being clobbered to the target title — title is tracked separately as
+	// the ReuseTitleKey persisted below.
 	reuseTitleEvaluated := false
+	reuseTitleKey := ""
 	if !reuseIssueEvaluated && promptName != "" && targetResolved {
 		title, reuseTitle, terr := resolvedTarget.Title, resolvedTarget.ReuseTitle, resolvedTargetErr
 		if terr != nil {
@@ -194,11 +196,10 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if reuseTitle && title != "" {
 			reuseTitleEvaluated = true
-			if req.Name != "" && req.Name != title && h.deps.Logger != nil {
-				h.deps.Logger.Debug("overriding request name with target.title from prompt frontmatter",
-					"prompt", promptName, "request_name", req.Name, "target_title", title)
+			reuseTitleKey = title
+			if req.Name == "" {
+				req.Name = title
 			}
-			req.Name = title
 			key := req.WorkingDir + "\x00" + title
 			unlock := h.lockReuseTitle(key)
 			defer unlock()
@@ -209,7 +210,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 					if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
 						return
 					}
-					h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+					h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue)
 					return
 				}
 			}
@@ -246,7 +247,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 				if h.maybeCoalesce(w, existingID, promptName, req.WorkingDir, req.Arguments) {
 					return
 				}
-				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments, req.BeadsIssue)
 				return
 			}
 		}
@@ -331,6 +332,21 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 				meta.OriginPromptName = originPromptName
 			}); err != nil && h.deps.Logger != nil {
 				h.deps.Logger.Warn("Failed to set origin_prompt_name on new session", "error", err, "session_id", bs.GetSessionID())
+			}
+		}
+	}
+
+	// Persist the canonical reuseTitle lookup key (mitto-9vng), if this
+	// conversation originated from a target.reuse.title prompt. Kept
+	// separate from Name so a caller-supplied title survives as the
+	// displayed Name while FindConversationByTitle still matches on this
+	// field on a subsequent dispatch.
+	if reuseTitleKey != "" {
+		if store := h.deps.Store; store != nil {
+			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
+				meta.ReuseTitleKey = reuseTitleKey
+			}); err != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to set reuse_title_key on new session", "error", err, "session_id", bs.GetSessionID())
 			}
 		}
 	}
@@ -470,11 +486,26 @@ func (h *Handlers) maybeCoalesce(w http.ResponseWriter, existingID, promptName, 
 // enqueuing directly (without dispatch) when not. If busy, it is left
 // untouched (focus-only). Always responds 200 with
 // {"session_id": existingID, "reused": true}.
-func (h *Handlers) reuseSingletonSession(w http.ResponseWriter, existingID, promptName string, arguments map[string]string) {
+func (h *Handlers) reuseSingletonSession(w http.ResponseWriter, existingID, promptName string, arguments map[string]string, beadsIssue string) {
 	store := h.deps.Store
 	var bs *conversation.BackgroundSession
 	if h.deps.SessionManager != nil {
 		bs = h.deps.SessionManager.GetSession(existingID)
+	}
+
+	// mitto-9vng: refresh a stale BeadsIssue link on a reuse hit. Without
+	// this, a second reuse dispatch for a different bead silently keeps
+	// reporting under the FIRST bead's link, since a reuse hit otherwise
+	// never touches meta.BeadsIssue.
+	if beadsIssue != "" && store != nil {
+		if meta, merr := store.GetMetadata(existingID); merr == nil && meta.BeadsIssue != beadsIssue {
+			if uerr := store.UpdateMetadata(existingID, func(m *session.Metadata) {
+				m.BeadsIssue = beadsIssue
+			}); uerr != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to refresh beads_issue on reused conversation",
+					"error", uerr, "session_id", existingID, "beads_issue", beadsIssue)
+			}
+		}
 	}
 
 	if store != nil {

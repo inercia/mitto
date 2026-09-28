@@ -406,6 +406,15 @@ type Metadata struct {
 	BaselineModel    string `json:"baseline_model,omitempty"`     // User's intended model; never mutated by per-prompt overrides
 	BeadsIssue       string `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
 	OriginPromptName string `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	// ReuseTitleKey is the canonical target.title lookup key for a prompt
+	// declaring target.reuse.title (mitto-9vng). Set once at creation time
+	// (never mutated afterwards) and consulted by FindConversationByTitle
+	// instead of Name, so a caller-supplied conversation title (Name) can
+	// survive find-or-route matching intact rather than being clobbered to
+	// target.title. Empty for conversations not created via reuseTitle, and
+	// for conversations created before this field existed (FindConversationByTitle
+	// falls back to matching on Name in that case for backward compatibility).
+	ReuseTitleKey string `json:"reuse_title_key,omitempty"`
 	// BackgroundColor is a creation-time default color (hex, e.g. "#E1BEE7")
 	// applied from the originating prompt's target.backgroundColor
 	// (mitto-8sk), rendered by the sidebar as a left accent stripe. Also

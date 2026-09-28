@@ -53,7 +53,7 @@ func TestReuseSingletonSession_NotLoadedIdle_EnqueuesWithoutDispatch(t *testing.
 	h := New(Deps{Store: store})
 
 	w := httptest.NewRecorder()
-	h.reuseSingletonSession(w, sessionID, "my-prompt", map[string]string{"X": "y"})
+	h.reuseSingletonSession(w, sessionID, "my-prompt", map[string]string{"X": "y"}, "")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())

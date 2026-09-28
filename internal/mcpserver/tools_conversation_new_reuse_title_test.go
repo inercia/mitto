@@ -75,9 +75,16 @@ func TestConversationStart_ReuseTitle_RoutesToExisting(t *testing.T) {
 
 // TestConversationStart_ReuseTitle_LookupKeyIsTargetTitleNotCallerInput
 // verifies the mitto-kybw design decision that when target.reuseTitle is set,
-// the lookup key is the author-canonical target.title, not any caller-supplied
+// the *lookup key* is the author-canonical target.title, not any caller-supplied
 // input.Title. Two calls whose input.Title differs (or is absent) must still
 // funnel to the same existing conversation.
+//
+// Re-expressed for mitto-9vng: the lookup key now lives in the ReuseTitleKey
+// field (not Name) — the fix decouples the canonical lookup key from the
+// displayed/stored Name so a caller-supplied title (e.g. "Post-task: <id>")
+// survives instead of being clobbered to target.title. The mitto-kybw
+// invariant this test protects — funnel-by-canonical-title regardless of
+// caller input — still holds; only the storage location changed.
 func TestConversationStart_ReuseTitle_LookupKeyIsTargetTitleNotCallerInput(t *testing.T) {
 	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
 		{
@@ -99,14 +106,19 @@ func TestConversationStart_ReuseTitle_LookupKeyIsTargetTitleNotCallerInput(t *te
 		t.Fatalf("First call: unexpected error: %v", err)
 	}
 
-	// The created conversation's Name must be target.title, so a subsequent
-	// scan matches it — this is the invariant the reuseTitle miss path relies on.
+	// The created conversation's ReuseTitleKey must be target.title, so a
+	// subsequent scan matches it by canonical key — this is the invariant
+	// the reuseTitle miss path relies on. The caller's own title survives
+	// as Name (mitto-9vng) instead of being overridden.
 	meta, err := store.GetMetadata(first.SessionID)
 	if err != nil {
 		t.Fatalf("GetMetadata(%q) error: %v", first.SessionID, err)
 	}
-	if meta.Name != "Weekly triage" {
-		t.Errorf("Created conversation Name = %q, want %q (must be overridden to target.title)", meta.Name, "Weekly triage")
+	if meta.ReuseTitleKey != "Weekly triage" {
+		t.Errorf("Created conversation ReuseTitleKey = %q, want %q (canonical lookup key)", meta.ReuseTitleKey, "Weekly triage")
+	}
+	if meta.Name != "some caller-picked name" {
+		t.Errorf("Created conversation Name = %q, want %q (caller title must survive, mitto-9vng)", meta.Name, "some caller-picked name")
 	}
 
 	// Second caller omits Title entirely; must still land on the same session.

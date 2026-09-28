@@ -38,7 +38,7 @@ func TestReuseIssue_NotLoadedIdle_EnqueuesWithoutDispatch(t *testing.T) {
 
 	// Same helper used by the reuseIssue block in HandleCreateSession.
 	w := httptest.NewRecorder()
-	h.reuseSingletonSession(w, sessionID, "cleanup-issue", map[string]string{"A": "b"})
+	h.reuseSingletonSession(w, sessionID, "cleanup-issue", map[string]string{"A": "b"}, "")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
@@ -138,7 +138,7 @@ func TestReuseTitle_NotLoadedIdle_EnqueuesWithoutDispatch(t *testing.T) {
 	// The reuseTitle block in HandleCreateSession funnels through the same
 	// helper as reuseIssue and singleton.
 	w := httptest.NewRecorder()
-	h.reuseSingletonSession(w, sessionID, "weekly-triage", map[string]string{"A": "b"})
+	h.reuseSingletonSession(w, sessionID, "weekly-triage", map[string]string{"A": "b"}, "")
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("Status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())

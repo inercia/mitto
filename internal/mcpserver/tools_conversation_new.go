@@ -293,15 +293,19 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		if strings.TrimSpace(promptTargetBackgroundColor) == "" && prompts.IsValidHexColor(p.BackgroundColor) {
 			promptTargetBackgroundColor = p.BackgroundColor
 		}
-		// reuseTitle adopts target.title as the conversation's Name so a
-		// subsequent scan matches it. When the caller supplied a different
-		// Title, log the override (target.title is the canonical lookup key).
+		// reuseTitle (mitto-9vng): target.title is the canonical *lookup key*
+		// for find-or-route matching (see ReuseTitleKey below and
+		// FindConversationByTitle), but it no longer clobbers a caller-supplied
+		// Title. A caller's explicit title (e.g. "Post-task: <bead-id>") now
+		// survives as the stored/displayed Name — required by consumers like
+		// loop-processing.prompt.yaml's title-prefix concurrency gate — while
+		// the conversation remains discoverable by promptTargetTitle on the
+		// next dispatch via the ReuseTitleKey field. When the caller supplied
+		// no title, fall back to target.title as before.
 		if promptReuseTitle && promptTargetTitle != "" {
-			if input.Title != "" && input.Title != promptTargetTitle {
-				s.logger.Debug("overriding mitto_conversation_new title with target.title from prompt frontmatter",
-					"prompt", input.PromptName, "request_title", input.Title, "target_title", promptTargetTitle)
+			if input.Title == "" {
+				input.Title = promptTargetTitle
 			}
-			input.Title = promptTargetTitle
 		} else if !promptReuseTitle && promptTargetTitle != "" && input.Title == "" {
 			// Plain target.title (no reuseTitle): adopt as default Title
 			// only when the caller did not supply one. Caller override
@@ -506,7 +510,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 						"working_dir", targetWorkingDir)
 					return nil, out, nil
 				}
-				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments, input.BeadsIssue)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
 				}
@@ -550,7 +554,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 						"working_dir", targetWorkingDir)
 					return nil, out, nil
 				}
-				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments, input.BeadsIssue)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
 				}
@@ -585,7 +589,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 						"working_dir", targetWorkingDir)
 					return nil, out, nil
 				}
-				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments, input.BeadsIssue)
 				if rerr != nil {
 					return nil, ConversationStartOutput{}, rerr
 				}
@@ -621,6 +625,15 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// auto_children spawn never runs here today. If MCP ever grows a
 	// top-level create path, mirror the resolveSuppressAutoChildrenByPromptName
 	// wiring used by the REST handler (internal/web/handlers/session_create.go).
+	// reuseTitleKey (mitto-9vng): the canonical find-or-route lookup key,
+	// set only when this prompt declares reuseTitle. Kept separate from the
+	// stored/displayed Name (input.Title) so a caller-supplied title is not
+	// clobbered — see FindConversationByTitle, which matches on this field.
+	reuseTitleKey := ""
+	if promptReuseTitle {
+		reuseTitleKey = promptTargetTitle
+	}
+
 	newMeta := session.Metadata{
 		SessionID:        newSessionID,
 		Name:             input.Title,
@@ -631,6 +644,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		AdvancedSettings: childSettings,
 		BeadsIssue:       input.BeadsIssue,
 		OriginPromptName: originPromptName,            // Track originating prompt for singleton find-or-route
+		ReuseTitleKey:    reuseTitleKey,               // Canonical target.title lookup key (mitto-9vng)
 		BackgroundColor:  promptTargetBackgroundColor, // Creation-time default from target.backgroundColor (mitto-8sk)
 		NoArchive:        promptTargetNoArchive,       // Creation-time, immutable, from target.noArchive (mitto-yvel.2)
 	}
@@ -1021,10 +1035,25 @@ func argsDeepEqualMCP(a, b map[string]string) bool {
 	return true
 }
 
-func (s *Server) reuseSingletonConversation(store *session.Store, existingID, initialPromptText, clientID string, arguments map[string]string) (ConversationStartOutput, error) {
+func (s *Server) reuseSingletonConversation(store *session.Store, existingID, initialPromptText, clientID string, arguments map[string]string, beadsIssue string) (ConversationStartOutput, error) {
 	meta, err := store.GetMetadata(existingID)
 	if err != nil {
 		return ConversationStartOutput{}, fmt.Errorf("failed to load existing singleton conversation: %v", err)
+	}
+
+	// mitto-9vng: refresh a stale BeadsIssue link on a reuse hit. Without
+	// this, a second reuse dispatch for a different bead silently keeps
+	// reporting under the FIRST bead's link, since a reuse hit otherwise
+	// never touches meta.BeadsIssue.
+	if beadsIssue != "" && meta.BeadsIssue != beadsIssue {
+		if uerr := store.UpdateMetadata(existingID, func(m *session.Metadata) {
+			m.BeadsIssue = beadsIssue
+		}); uerr != nil {
+			s.logger.Warn("Failed to refresh beads_issue on reused conversation",
+				"error", uerr, "session_id", existingID, "beads_issue", beadsIssue)
+		} else {
+			meta.BeadsIssue = beadsIssue
+		}
 	}
 
 	output := ConversationStartOutput{
