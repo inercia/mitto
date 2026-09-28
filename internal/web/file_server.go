@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"github.com/inercia/mitto/internal/conversation"
 	"io"
+	iofs "io/fs"
 	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -49,6 +51,12 @@ func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if fs.isValidWorkspace(workspacePath) {
+		if resolvedPath, resolved := fs.resolveLeftTruncatedPath(workspacePath, relativePath); resolved {
+			relativePath = resolvedPath
+		}
+	}
+
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		fs.serveFile(w, r, workspacePath, relativePath)
@@ -57,6 +65,102 @@ func (fs *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+const maxTruncatedPathScanEntries = 100000
+
+// resolveLeftTruncatedPath recovers paths shortened by an agent for display,
+// such as "…Development/inercia/mitto/docs/config/models.md". It only accepts a
+// unique suffix match inside the selected workspace; ambiguous paths remain
+// unresolved and follow the normal not-found path.
+func (fs *FileServer) resolveLeftTruncatedPath(workspace, requestedPath string) (string, bool) {
+	suffix, truncated := leftTruncatedPathSuffix(requestedPath)
+	if !truncated {
+		return "", false
+	}
+
+	// Most truncated paths are either already workspace-relative or still
+	// contain the workspace directory name. Resolve those without a tree walk.
+	candidates := []string{suffix}
+	workspaceBase := filepath.Base(filepath.Clean(workspace))
+	parts := strings.Split(suffix, "/")
+	for i := len(parts) - 2; i >= 0; i-- {
+		if parts[i] == workspaceBase {
+			candidates = append(candidates, strings.Join(parts[i+1:], "/"))
+			break
+		}
+	}
+	for _, candidate := range candidates {
+		candidatePath := filepath.Join(workspace, filepath.FromSlash(candidate))
+		if info, err := os.Stat(candidatePath); err == nil && !info.IsDir() {
+			return filepath.Clean(filepath.FromSlash(candidate)), true
+		}
+	}
+
+	workspaceAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", false
+	}
+	workspaceAbs, err = filepath.EvalSymlinks(workspaceAbs)
+	if err != nil {
+		return "", false
+	}
+
+	slashSuffix := "/" + suffix
+	var match string
+	entries := 0
+	_ = filepath.WalkDir(workspaceAbs, func(candidatePath string, entry iofs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		entries++
+		if entries > maxTruncatedPathScanEntries {
+			match = ""
+			return iofs.SkipAll
+		}
+		if entry.IsDir() {
+			return nil
+		}
+
+		if !strings.HasSuffix(filepath.ToSlash(candidatePath), slashSuffix) {
+			return nil
+		}
+		relative, relErr := filepath.Rel(workspaceAbs, candidatePath)
+		if relErr != nil {
+			return nil
+		}
+		if match != "" {
+			match = ""
+			return iofs.SkipAll
+		}
+		match = relative
+		return nil
+	})
+	if match == "" {
+		return "", false
+	}
+
+	return filepath.Clean(match), true
+}
+
+func leftTruncatedPathSuffix(requestedPath string) (string, bool) {
+	value := strings.TrimSpace(requestedPath)
+	switch {
+	case strings.HasPrefix(value, "…"):
+		value = strings.TrimPrefix(value, "…")
+	case strings.HasPrefix(value, ".../"), strings.HasPrefix(value, `...\`):
+		value = value[3:]
+	default:
+		return "", false
+	}
+
+	value = strings.TrimLeft(value, `/\`)
+	value = strings.ReplaceAll(value, `\`, "/")
+	value = path.Clean(value)
+	if value == "." || value == ".." || strings.HasPrefix(value, "../") || !strings.Contains(value, "/") {
+		return "", false
+	}
+	return value, true
 }
 
 // resolveWorkspace extracts and validates the workspace path from the request.

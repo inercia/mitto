@@ -156,6 +156,87 @@ func TestFileServer_ServeFile(t *testing.T) {
 	}
 }
 
+func TestFileServer_ServeFile_LeftTruncatedPath(t *testing.T) {
+	workspace := t.TempDir()
+	targetDir := filepath.Join(workspace, "docs", "config")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "models.md"), []byte("model docs"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const workspaceUUID = "truncated-path-workspace"
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{{
+			UUID:       workspaceUUID,
+			WorkingDir: workspace,
+			ACPServer:  "test",
+		}},
+	})
+	fs := NewFileServer(sm, nil)
+
+	parentName := filepath.Base(filepath.Dir(workspace))
+	truncatedPath := "…" + filepath.ToSlash(filepath.Join(
+		parentName,
+		filepath.Base(workspace),
+		"docs",
+		"config",
+		"models.md",
+	))
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/files?ws="+workspaceUUID+"&path="+url.QueryEscape(truncatedPath),
+		nil,
+	)
+	w := httptest.NewRecorder()
+
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "model docs" {
+		t.Fatalf("body = %q, want %q", got, "model docs")
+	}
+}
+
+func TestFileServer_ServeFile_LeftTruncatedPathRequiresUniqueMatch(t *testing.T) {
+	workspace := t.TempDir()
+	for _, dir := range []string{"first", "second"} {
+		targetDir := filepath.Join(workspace, dir, "shared")
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(targetDir, "models.md"), []byte(dir), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const workspaceUUID = "ambiguous-truncated-path-workspace"
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{{
+			UUID:       workspaceUUID,
+			WorkingDir: workspace,
+			ACPServer:  "test",
+		}},
+	})
+	fs := NewFileServer(sm, nil)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/files?ws="+workspaceUUID+"&path="+url.QueryEscape("…shared/models.md"),
+		nil,
+	)
+	w := httptest.NewRecorder()
+
+	fs.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %q", w.Code, w.Body.String())
+	}
+}
+
 func TestFileServer_SymlinkSecurity(t *testing.T) {
 	// Create two temporary directories
 	workspaceDir := t.TempDir()
