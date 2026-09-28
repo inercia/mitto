@@ -996,9 +996,11 @@ func TestIsModelUnavailableAtRuntimeError(t *testing.T) {
 }
 
 // TestFormatACPError_ModelUnavailableAtRuntime_mitto_a7wm asserts the operator
-// wording for a retired-upstream-model failure: the message must NOT be shaped
-// as a provider outage ("unavailable"), a generic tool timeout, or an opaque
-// internal error; it must name the retired model + auto-swap remediation.
+// wording for a refused-model failure: the message must NOT be shaped as a
+// provider outage ("unavailable"), a generic tool timeout, or an opaque
+// internal error; it must name the refused-model failure (covering both a
+// genuine backend-side retire/rename AND an unconfirmed/corrupted id,
+// mitto-a7wm) + auto-swap remediation.
 func TestFormatACPError_ModelUnavailableAtRuntime_mitto_a7wm(t *testing.T) {
 	err := fmt.Errorf(`{"code":-32603,"message":"Internal error: Server responded with 404 Not Found on https://xlb.api.augmentcode.com/chat-stream: the selected model is not available for this session","data":{"httpStatus":404,"apiStatus":"unimplemented"}}`)
 
@@ -1014,8 +1016,8 @@ func TestFormatACPError_ModelUnavailableAtRuntime_mitto_a7wm(t *testing.T) {
 	if containsIgnoreCase(got, "tool operation") || containsIgnoreCase(got, "smaller steps") {
 		t.Errorf("FormatACPError(err) = %q; a retired-model failure must not be shaped as a generic tool timeout (mitto-a7wm)", got)
 	}
-	if !containsIgnoreCase(got, "no longer available") {
-		t.Errorf("FormatACPError(err) = %q; want a message naming the retired-model failure (mitto-a7wm)", got)
+	if !containsIgnoreCase(got, "not available for this session") {
+		t.Errorf("FormatACPError(err) = %q; want a message naming the refused-model failure (mitto-a7wm)", got)
 	}
 	if !containsIgnoreCase(got, "switch") {
 		t.Errorf("FormatACPError(err) = %q; want a message naming the auto-swap remediation (mitto-a7wm)", got)

@@ -408,10 +408,23 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 		}
 	}
 	if models := bs.AgentModels(); !fromPersisted && models != nil {
-		// Resolve the initial choice BEFORE persisting anything. A default written
-		// first would make a fresh conversation look resumed and mask its preference.
-		// ACP model settings are defaults, not constraints on later manual choices.
-		if selected := SelectPreferredModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models); selected != "" {
+		if models.Synthesized {
+			// mitto-a7wm: a synthesized catalog (see
+			// SynthesizeModelStateFromProfiles) is a Mitto-local UI aid built
+			// from profile display names, never confirmed by the agent or
+			// backend. Resolving the initial-model preference or an
+			// ACP-server constraint against it would seed (and persist,
+			// below) a fake id like "Claude Opus 5.5" as the baseline —
+			// exactly the mitto-a7wm corruption. Keep the agent's own
+			// default (empty for a synthesized catalog) instead.
+			if l := bs.logger; l != nil {
+				l.Warn("mitto-a7wm: skipping model-preference seeding from a synthesized model catalog",
+					"session_id", bs.persistedID, "default_model", defaultModel)
+			}
+		} else if selected := SelectPreferredModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models); selected != "" {
+			// Resolve the initial choice BEFORE persisting anything. A default written
+			// first would make a fresh conversation look resumed and mask its preference.
+			// ACP model settings are defaults, not constraints on later manual choices.
 			baseline = selected
 		} else if constraint := bs.cbACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
 			if selected := MatchConstraintOption(constraint, ModelsToConfigOptions(models)); selected != "" {

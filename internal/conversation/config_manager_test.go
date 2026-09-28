@@ -31,6 +31,11 @@ type fakeConfigDeps struct {
 	currentModelID string
 	baselineModel  string
 	overrideActive bool
+	// synthesizedCatalog backs cmModelCatalogSynthesized (mitto-a7wm): true
+	// simulates an agent that never advertised a real model catalog, whose
+	// configOptions model entries are therefore Mitto profile display names
+	// (see SynthesizeModelStateFromProfiles), not agent-confirmed ids.
+	synthesizedCatalog bool
 
 	configOptions []SessionConfigOption
 	constraint    map[string]*config.ACPServerConstraint
@@ -203,8 +208,9 @@ func (f *fakeConfigDeps) cmGetBaselineModel() string {
 	defer f.mu.Unlock()
 	return f.baselineModel
 }
-func (f *fakeConfigDeps) cmHasAgentModels() bool      { return f.hasAgentModels }
-func (f *fakeConfigDeps) cmGetCurrentModelID() string { return f.currentModelID }
+func (f *fakeConfigDeps) cmHasAgentModels() bool          { return f.hasAgentModels }
+func (f *fakeConfigDeps) cmGetCurrentModelID() string     { return f.currentModelID }
+func (f *fakeConfigDeps) cmModelCatalogSynthesized() bool { return f.synthesizedCatalog }
 func (f *fakeConfigDeps) cmSetCurrentModelID(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -904,18 +910,147 @@ func TestConfigManager_ApplyConfigConstraints_FallsBackOnPermanentlyGoneBaseline
 	}
 }
 
+// TestConfigManager_FallbackToAvailableModel_RefusesSynthesizedCatalog pins
+// mitto-a7wm work item 1(ii): fallbackToAvailableModel must not treat a
+// synthesized catalog's profile-name entries as legitimate fallback targets
+// — it must refuse outright, persisting nothing and recording no events.
+func TestConfigManager_FallbackToAvailableModel_RefusesSynthesizedCatalog(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.synthesizedCatalog = true
+	d.baselineModel = "claude-opus-4-8"
+	d.currentModelID = "claude-opus-4-8"
+	opt, _ := d.cmFindByCategory(ConfigOptionCategoryModel)
+
+	err := c.fallbackToAvailableModel(d, context.Background(), opt, nil)
+	if !errors.Is(err, errModelCatalogSynthesized) {
+		t.Fatalf("expected errModelCatalogSynthesized, got %v", err)
+	}
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("expected no model RPC, got %v", d.modelRPCCalls)
+	}
+	if len(d.sessionChanges) != 0 {
+		t.Fatalf("expected no session_change events, got %v", d.sessionChanges)
+	}
+	if d.baselineModel != "claude-opus-4-8" {
+		t.Fatalf("expected baseline untouched, got %q", d.baselineModel)
+	}
+}
+
+// TestConfigManager_ApplyConfigConstraints_SynthesizedCatalog_RestoresBaselineAsIs
+// pins mitto-a7wm work item 1(i): when the catalog is synthesized (built from
+// Mitto profile names, not agent-confirmed ids — see
+// SynthesizeModelStateFromProfiles), a real baseline id missing from
+// opt.Options must NOT be treated as permanently unavailable (the synthesized
+// catalog can't judge real ids). apply() must instead restore the real
+// baseline as-is via setActiveModelOnly, with no permanent-unavailable
+// fallback and no synthesized name ever sent to set_model / persisted.
+func TestConfigManager_ApplyConfigConstraints_SynthesizedCatalog_RestoresBaselineAsIs(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.synthesizedCatalog = true
+	// A real agent-confirmed id from a prior real catalog, now absent from
+	// the (unconfirmed) synthesized option values below.
+	d.baselineModel = "claude-opus-4-8"
+	d.currentModelID = ""
+	// Synthesized options carry profile display names as both Value and Name
+	// (see SynthesizeModelStateFromProfiles) — never the real baseline id.
+	d.configOptions[0].Options = []SessionConfigOptionValue{
+		{Value: "Claude Opus 5.5", Name: "Claude Opus 5.5"},
+		{Value: "Opus 4.8", Name: "Opus 4.8"},
+	}
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("expected no error (baseline restored as-is), got %v", err)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "claude-opus-4-8" {
+		t.Fatalf("expected the real baseline restored via set_model, got %v", d.modelRPCCalls)
+	}
+	if d.baselineModel != "claude-opus-4-8" {
+		t.Fatalf("expected baseline left untouched at the real id, got %q", d.baselineModel)
+	}
+	if len(d.persistedBaseline) != 0 {
+		t.Fatalf("expected no baseline persistence (nothing changed), got %v", d.persistedBaseline)
+	}
+	if len(d.sessionChanges) != 0 {
+		t.Fatalf("expected no session_change events, got %v", d.sessionChanges)
+	}
+}
+
+// TestConfigManager_ApplyConfigConstraints_SynthesizedCatalog_CorruptedBaselineKeepsAgentDefault
+// pins the compound mitto-a7wm case: the persisted baseline is already a
+// synthesized profile name AND the catalog is still synthesized. apply() must
+// neither send the fake id to set_model nor return an error (which would
+// strand queued prompts behind an unready startup constraint).
+func TestConfigManager_ApplyConfigConstraints_SynthesizedCatalog_CorruptedBaselineKeepsAgentDefault(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.synthesizedCatalog = true
+	d.baselineModel = "Claude Opus 5.5"
+	d.currentModelID = ""
+	d.configOptions[0].Options = []SessionConfigOptionValue{
+		{Value: "Claude Opus 5.5", Name: "Claude Opus 5.5"},
+		{Value: "Opus 4.8", Name: "Opus 4.8"},
+	}
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("expected nil (keep agent default), got %v", err)
+	}
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("expected no set_model RPC for a synthesized id, got %v", d.modelRPCCalls)
+	}
+	if len(d.persistedBaseline) != 0 || len(d.sessionChanges) != 0 {
+		t.Fatalf("expected nothing persisted/recorded, got baseline=%v changes=%v", d.persistedBaseline, d.sessionChanges)
+	}
+}
+
+// TestConfigManager_ApplyConfigConstraints_RemapsCorruptedBaselineNameAtStartup
+// pins mitto-a7wm work item 2's startup path: a REAL (non-synthesized)
+// catalog whose persisted baseline is a display Name rather than an id (the
+// exact corruption this bug produced) must be self-healed by remapping to the
+// matching option's Value, via a plain "model" session_change (not
+// "model_unavailable" — nothing was actually retired).
+func TestConfigManager_ApplyConfigConstraints_RemapsCorruptedBaselineNameAtStartup(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "Model 2" // corrupted: a display Name, not the real id "m-2"
+	// A freshly (re)started conversation hasn't synced a current model id yet
+	// (see cbInitBaselineModelIfEmpty / setAgentModels) — it only ever becomes
+	// non-empty once a set_model RPC round-trips successfully.
+	d.currentModelID = ""
+
+	if err := c.applyConfigConstraints(d, ConfigOptionCategoryModel); err != nil {
+		t.Fatalf("expected no error (name remapped), got %v", err)
+	}
+	if d.baselineModel != "m-2" {
+		t.Fatalf("expected baseline remapped to id 'm-2', got %q", d.baselineModel)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
+		t.Fatalf("expected a single set_model RPC for 'm-2', got %v", d.modelRPCCalls)
+	}
+	if len(d.sessionChanges) != 1 || d.sessionChanges[0][0] != ConfigOptionCategoryModel {
+		t.Fatalf("expected exactly 1 plain 'model' session_change (no model_unavailable notice), got %v", d.sessionChanges)
+	}
+}
+
 // TestConfigManager_TryRuntimeFallbackToAvailableModel_SwapsAndSelfHeals is
 // the mitto-a7wm runtime counterpart of the startup fallback path: given a
-// live conversation whose pinned baseline was refused mid-session (Augment
-// 404 unimplemented), tryRuntimeFallbackToAvailableModel must resolve the
-// current model option + constraint, swap the baseline to an available model,
-// and record the two persistent session_change events (model_unavailable +
+// live conversation whose pinned model was refused mid-session (Augment 404
+// unimplemented), tryRuntimeFallbackToAvailableModel must resolve the current
+// model option + constraint, swap the baseline to an available model, and
+// record the two persistent session_change events (model_unavailable +
 // model) that drive the timeline pill and stats retagging.
+//
+// current == baseline == the failing model here, mirroring the REAL runtime
+// shape (unlike the earlier version of this test, which set current != baseline
+// and so never exercised the bug: fallbackToAvailableModel's old "adopt the
+// current model" step would just re-pick the very model that was just
+// refused, always returning errModelPermanentlyUnavailable).
 func TestConfigManager_TryRuntimeFallbackToAvailableModel_SwapsAndSelfHeals(t *testing.T) {
 	c := configManager{}
 	d := newFakeConfigDeps()
-	d.baselineModel = "retired-model" // in-catalog at startup, retired upstream mid-session
-	d.currentModelID = "m-1"          // agent's default is still live
+	d.baselineModel = "retired-model"
+	d.currentModelID = "retired-model" // current == baseline == failing model
 
 	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err != nil {
 		t.Fatalf("expected runtime fallback to succeed, got %v", err)
@@ -933,6 +1068,108 @@ func TestConfigManager_TryRuntimeFallbackToAvailableModel_SwapsAndSelfHeals(t *t
 	}
 	if d.sessionChanges[1][0] != ConfigOptionCategoryModel || d.sessionChanges[1][1] != "m-1" || d.sessionChanges[1][2] != "retired-model" {
 		t.Errorf("expected second event {model, m-1, retired-model}, got %v", d.sessionChanges[1])
+	}
+}
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_NeverPicksFailedModel
+// pins the mitto-a7wm fix's core invariant: the swap target must never equal
+// the failed model, even when a constraint match happens to resolve to it —
+// the constraint match must be skipped in favor of another option in that case.
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_NeverPicksFailedModel(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.configOptions[0].Options = append(d.configOptions[0].Options, SessionConfigOptionValue{Value: "m-3", Name: "Model 3"})
+	d.baselineModel = "m-1"
+	d.currentModelID = "m-1" // current == baseline == failing model
+	d.constraint = map[string]*config.ACPServerConstraint{
+		// The constraint pattern matches the FAILING model itself — must be skipped.
+		ConfigOptionCategoryModel: {Pattern: "Model 1", MatchMode: "exact"},
+	}
+
+	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err != nil {
+		t.Fatalf("expected runtime fallback to succeed, got %v", err)
+	}
+	if d.baselineModel == "m-1" {
+		t.Fatalf("swap target must never be the failed model, got %q", d.baselineModel)
+	}
+	if d.baselineModel != "m-2" {
+		t.Fatalf("expected baseline self-healed to first non-failed option 'm-2', got %q", d.baselineModel)
+	}
+}
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_ConstraintMatchWins
+// verifies that a constraint match IS used when it differs from the failed model.
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_ConstraintMatchWins(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-1"
+	d.currentModelID = "m-1"
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+	}
+
+	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err != nil {
+		t.Fatalf("expected runtime fallback to succeed, got %v", err)
+	}
+	if d.baselineModel != "m-2" {
+		t.Fatalf("expected constraint match 'm-2' to win, got %q", d.baselineModel)
+	}
+}
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_RemapsCorruptedName
+// pins the mitto-a7wm name→id self-heal: when the failed value is actually a
+// display Name (the corruption pattern — a synthesized profile name
+// persisted as the baseline) rather than a real id, the runtime fallback must
+// remap it to the matching id, record a plain "model" session_change (no
+// "model_unavailable" notice — nothing was actually retired), and persist the
+// corrected baseline, WITHOUT falling through to the "avoid failed model"
+// swap-selection logic.
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_RemapsCorruptedName(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "Model 2" // a display Name, not the real id "m-2"
+	d.currentModelID = "Model 2"
+
+	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err != nil {
+		t.Fatalf("expected runtime fallback to succeed, got %v", err)
+	}
+	if d.baselineModel != "m-2" {
+		t.Fatalf("expected baseline remapped to id 'm-2', got %q", d.baselineModel)
+	}
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
+		t.Fatalf("expected a single set_model RPC for 'm-2', got %v", d.modelRPCCalls)
+	}
+	if len(d.sessionChanges) != 1 {
+		t.Fatalf("expected exactly 1 session_change (plain model, no model_unavailable notice), got %v", d.sessionChanges)
+	}
+	if d.sessionChanges[0][0] != ConfigOptionCategoryModel || d.sessionChanges[0][1] != "m-2" || d.sessionChanges[0][2] != "Model 2" {
+		t.Errorf("expected {model, m-2, \"Model 2\"}, got %v", d.sessionChanges[0])
+	}
+}
+
+// TestConfigManager_TryRuntimeFallbackToAvailableModel_RefusesSynthesizedCatalog
+// pins the mitto-a7wm synthesized-catalog guard: the runtime fallback must
+// refuse outright (persist nothing, record no events) rather than picking one
+// of the catalog's unconfirmed profile-name entries as a "fallback".
+func TestConfigManager_TryRuntimeFallbackToAvailableModel_RefusesSynthesizedCatalog(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.synthesizedCatalog = true
+	d.baselineModel = "Claude Opus 5.5"
+	d.currentModelID = "Claude Opus 5.5"
+
+	err := c.tryRuntimeFallbackToAvailableModel(d, context.Background())
+	if !errors.Is(err, errModelCatalogSynthesized) {
+		t.Fatalf("expected errModelCatalogSynthesized, got %v", err)
+	}
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("expected no model RPC, got %v", d.modelRPCCalls)
+	}
+	if len(d.sessionChanges) != 0 {
+		t.Fatalf("expected no session_change events, got %v", d.sessionChanges)
+	}
+	if d.baselineModel != "Claude Opus 5.5" {
+		t.Fatalf("expected baseline untouched, got %q", d.baselineModel)
 	}
 }
 

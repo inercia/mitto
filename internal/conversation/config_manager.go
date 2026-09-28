@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strings"
 	"time"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
@@ -32,6 +33,38 @@ var errModelPermanentlyUnavailable = errors.New("model permanently unavailable")
 // errModelPermanentlyUnavailable.
 func isModelPermanentlyUnavailableError(err error) bool {
 	return errors.Is(err, errModelPermanentlyUnavailable)
+}
+
+// errModelCatalogSynthesized marks a fallback attempt refused because the
+// current agent model catalog is Mitto-synthesized (see
+// SynthesizeModelStateFromProfiles / SessionModelState.Synthesized). A
+// synthesized catalog's ModelId values are Mitto profile display names, never
+// confirmed by the agent or backend — treating "baseline not found among
+// synthesized options" as proof of drift and picking one of those display
+// names as a replacement is exactly the mitto-a7wm corruption: a bogus id
+// (e.g. "Claude Opus 5.5") gets sent to session/set_model (accepted blindly
+// by some agents) and persisted as the new baseline, wedging every future
+// prompt behind a 404 "selected model is not available" that never self-heals.
+var errModelCatalogSynthesized = errors.New("refusing model fallback: catalog is synthesized")
+
+// findOptionValueByName looks up options for an entry whose display Name
+// matches needle case-insensitively (after trimming surrounding whitespace),
+// returning its Value. Used to self-heal a persisted baseline that holds a
+// display Name instead of a real model id (mitto-a7wm root cause: the
+// mitto-886 synthesized-catalog fallback used to seed/persist profile names
+// as if they were confirmed ids). Returns ("", false) when needle is empty or
+// no option's Name matches.
+func findOptionValueByName(options []SessionConfigOptionValue, needle string) (string, bool) {
+	trimmed := strings.TrimSpace(needle)
+	if trimmed == "" {
+		return "", false
+	}
+	for _, o := range options {
+		if strings.EqualFold(strings.TrimSpace(o.Name), trimmed) {
+			return o.Value, true
+		}
+	}
+	return "", false
 }
 
 // constraintModelSwitchChildStartupJitter bounds the randomized startup delay for child sessions.
@@ -142,6 +175,12 @@ type configDeps interface {
 	cmHasAgentModels() bool
 	cmGetCurrentModelID() string   // reads agentModels.CurrentModelId under agentModelsMu
 	cmSetCurrentModelID(id string) // writes agentModels.CurrentModelId under agentModelsMu; nil-safe
+	// cmModelCatalogSynthesized reports whether the current agent model
+	// catalog was built locally by SynthesizeModelStateFromProfiles rather
+	// than reported by the agent (reads agentModels.Synthesized under
+	// agentModelsMu; false when there is no catalog at all). See
+	// SessionModelState.Synthesized and errModelCatalogSynthesized (mitto-a7wm).
+	cmModelCatalogSynthesized() bool
 
 	// ACP server constraint lookup
 	cmGetACPServerConstraint(category string) *config.ACPServerConstraint
@@ -223,6 +262,15 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 	}
 	if !valid {
 		return fmt.Errorf("invalid value for %s: %s", configID, value)
+	}
+	if found.Category == ConfigOptionCategoryModel {
+		// mitto-a7wm: refuse BEFORE admitting the value into the pending
+		// store or persisting it as the baseline — the deferred-while-
+		// prompting branch below persists immediately at admission, ahead of
+		// any RPC, so this must run before either branch does any work.
+		if err := c.refuseSynthesizedModelID(d, value); err != nil {
+			return err
+		}
 	}
 
 	// Under promptMu: if prompting, defer to pending store; otherwise proceed immediately.
@@ -442,8 +490,44 @@ func (c configManager) applyConfigConstraintsWithParentCtx(d configDeps, categor
 			target := d.cmGetBaselineModel()
 			for _, option := range opt.Options {
 				if option.Value == target {
+					if d.cmModelCatalogSynthesized() {
+						// mitto-a7wm: the baseline is itself a synthesized
+						// profile name (a pre-fix corrupted baseline). Sending
+						// it would 404 every prompt, and failing here would
+						// strand queued prompts behind an unready startup
+						// constraint. Leave the agent on its own default; the
+						// name→id remap below heals the baseline once a real
+						// catalog is advertised.
+						if l := d.cmLogger(); l != nil {
+							l.Warn("mitto-a7wm: baseline is a synthesized model name; keeping agent default",
+								"session_id", d.cmSessionID(), "model", target)
+						}
+						return nil
+					}
 					return c.setActiveModelOnly(d, ctx, target)
 				}
+			}
+			if d.cmModelCatalogSynthesized() {
+				// mitto-a7wm: a synthesized catalog (see
+				// SynthesizeModelStateFromProfiles) is a Mitto-local UI aid
+				// built from profile display names — it cannot judge whether
+				// a REAL agent-confirmed baseline id is still valid, so
+				// "not found among these synthesized entries" is NOT proof
+				// of catalog drift. Restore the real baseline as-is instead
+				// of falling through to errModelPermanentlyUnavailable,
+				// which would otherwise route into fallbackToAvailableModel
+				// and pick one of the synthesized display names as a
+				// replacement — the mitto-a7wm corruption itself.
+				if l := d.cmLogger(); l != nil {
+					l.Warn("mitto-a7wm: restoring real baseline against a synthesized model catalog",
+						"session_id", d.cmSessionID(), "model", target)
+				}
+				return c.setActiveModelOnly(d, ctx, target)
+			}
+			if remapped, ok := findOptionValueByName(opt.Options, target); ok {
+				// mitto-a7wm: self-heal a persisted baseline that holds a
+				// display Name instead of a real model id.
+				return c.remapCorruptedBaselineName(d, ctx, target, remapped)
 			}
 			return fmt.Errorf("conversation model %q is no longer available: %w", target, errModelPermanentlyUnavailable)
 		}
@@ -505,6 +589,18 @@ func (c configManager) applyConfigConstraintsWithParentCtx(d configDeps, categor
 //     and present in opt.Options — "leave the default model".
 //  3. The first available option.
 func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Context, opt SessionConfigOption, constraint *config.ACPServerConstraint) error {
+	if d.cmModelCatalogSynthesized() {
+		// mitto-a7wm: a synthesized catalog's ModelId values are Mitto
+		// profile display names, never confirmed by the agent or backend —
+		// picking one as a "fallback" is exactly the corruption this fallback
+		// exists to prevent. Refuse outright: persist nothing, record no
+		// events.
+		if l := d.cmLogger(); l != nil {
+			l.Warn("mitto-a7wm: refusing startup model fallback against a synthesized catalog",
+				"session_id", d.cmSessionID())
+		}
+		return errModelCatalogSynthesized
+	}
 	unavailable := d.cmGetBaselineModel()
 
 	optionExists := func(value string) bool {
@@ -534,6 +630,17 @@ func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Contex
 		return errModelPermanentlyUnavailable
 	}
 
+	return c.applyModelFallbackTarget(d, ctx, unavailable, target)
+}
+
+// applyModelFallbackTarget is the shared tail of fallbackToAvailableModel and
+// tryRuntimeFallbackToAvailableModel's swap path: it switches the active
+// model to target (skipping the RPC when it is already active), self-heals
+// the persisted baseline so subsequent resumes/turns do not re-enter the
+// fallback path, and records the standard "model_unavailable" (naming the
+// refused model) + "model" (naming the swap target) session_change events
+// that drive the timeline pill and stats token-attribution retagging.
+func (c configManager) applyModelFallbackTarget(d configDeps, ctx context.Context, unavailable, target string) error {
 	// Apply the fallback to the agent only when it differs from the currently
 	// active model. When we are simply adopting the agent's own default
 	// (target == current) no RPC is needed, but the UI config-option value and
@@ -553,7 +660,7 @@ func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Contex
 	c.persistBaselineModel(d, target)
 
 	if l := d.cmLogger(); l != nil {
-		l.Warn("Pinned model unavailable on resume; fell back to an available model",
+		l.Warn("Pinned model unavailable; fell back to an available model",
 			"session_id", d.cmSessionID(), "unavailable_model", unavailable, "fallback_model", target)
 	}
 
@@ -567,18 +674,34 @@ func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Contex
 }
 
 // tryRuntimeFallbackToAvailableModel is the runtime counterpart of the
-// startup fallback path in applyConfigConstraintsWithParentCtx: it resolves
-// the current model config option + ACP server constraint and delegates to
-// fallbackToAvailableModel so the conversation auto-swaps to an available
-// model when the pinned baseline is refused mid-session (mitto-a7wm — Augment
-// /chat-stream returning httpStatus:404 + apiStatus:"unimplemented" for a
-// model that WAS in the ACP catalog at startup but was retired backend-side).
-// Success path is identical to the startup drift case: same "model_unavailable"
-// + "model" session_change events, same self-heal of the persisted baseline,
-// so timeline/stats/pill behavior matches. Returns nil when there is no model
-// option present (nothing to fall back FROM — e.g. an agent that never
-// advertised a model catalog); otherwise returns whatever fallbackToAvailableModel
-// returns. Never blocks longer than constraintModelSwitchCallerBudget.
+// startup fallback path in applyConfigConstraintsWithParentCtx: given a live
+// conversation whose pinned model was refused mid-session (mitto-a7wm —
+// Augment /chat-stream returning httpStatus:404 + apiStatus:"unimplemented"
+// for a model that WAS in the ACP catalog at startup but was retired or
+// renamed backend-side, OR whose persisted baseline was corrupted into a
+// display Name by the mitto-886 synthesized-catalog fallback), it self-heals
+// the conversation so it does not keep repeating the same failure on every
+// prompt or loop cadence.
+//
+// Unlike the startup fallback, the failed model here is the CURRENTLY ACTIVE
+// one (current == baseline in the common case, since both point at whatever
+// was last successfully applied) — so simply "adopting the current model"
+// (the startup fallback's step 2) would just re-select the very model that
+// was just refused. Selection order:
+//  1. Name→id remap: if the failed value is actually a display Name (the
+//     mitto-a7wm corruption pattern) rather than a real id, self-heal by
+//     switching to and persisting the matching id — no catalog drift assumed.
+//  2. ACP-server model constraint pattern match, when it resolves to
+//     something OTHER than the failed model.
+//  3. The first available option whose Value differs from BOTH the failed
+//     model and the persisted baseline (defensive: covers baseline/current
+//     disagreement) — i.e. never the failed model.
+//
+// Refuses outright (persists nothing, records no events) when the catalog is
+// synthesized — see fallbackToAvailableModel's identical guard. Returns nil
+// when there is no model option present (nothing to fall back FROM — e.g. an
+// agent that never advertised a model catalog). Never blocks longer than
+// constraintModelSwitchCallerBudget.
 func (c configManager) tryRuntimeFallbackToAvailableModel(d configDeps, parentCtx context.Context) error {
 	if d.cmIsClosed() {
 		return fmt.Errorf("session is closed")
@@ -587,13 +710,53 @@ func (c configManager) tryRuntimeFallbackToAvailableModel(d configDeps, parentCt
 	if !ok || len(opt.Options) == 0 {
 		return nil
 	}
+	if d.cmModelCatalogSynthesized() {
+		if l := d.cmLogger(); l != nil {
+			l.Warn("mitto-a7wm: refusing runtime model fallback against a synthesized catalog",
+				"session_id", d.cmSessionID())
+		}
+		return errModelCatalogSynthesized
+	}
 	if parentCtx == nil {
 		parentCtx = d.cmSessionCtx()
 	}
 	ctx, cancel := context.WithTimeout(parentCtx, constraintModelSwitchCallerBudget)
 	defer cancel()
+
+	baseline := d.cmGetBaselineModel()
+	failed := d.cmGetCurrentModelID()
+	if failed == "" {
+		failed = baseline
+	}
+
+	if remapped, ok := findOptionValueByName(opt.Options, failed); ok {
+		if err := c.remapCorruptedBaselineName(d, ctx, failed, remapped); err == nil {
+			return nil
+		} else if l := d.cmLogger(); l != nil {
+			l.Warn("mitto-a7wm: name->id remap failed during runtime fallback; falling back to model swap",
+				"session_id", d.cmSessionID(), "error", err)
+		}
+	}
+
 	constraint := d.cmGetACPServerConstraint(ConfigOptionCategoryModel)
-	return c.fallbackToAvailableModel(d, ctx, opt, constraint)
+	var target string
+	if constraint != nil && constraint.Pattern != "" {
+		if m := MatchConstraintOption(constraint, opt.Options); m != "" && m != failed {
+			target = m
+		}
+	}
+	if target == "" {
+		for _, o := range opt.Options {
+			if o.Value != failed && o.Value != baseline {
+				target = o.Value
+				break
+			}
+		}
+	}
+	if target == "" {
+		return errModelPermanentlyUnavailable
+	}
+	return c.applyModelFallbackTarget(d, ctx, failed, target)
 }
 
 func (c configManager) flushPendingConfig(d configDeps) {
@@ -635,7 +798,70 @@ func (c configManager) persistBaselineModel(d configDeps, value string) {
 	d.cmPersistBaselineModel(value)
 }
 
+// refuseSynthesizedModelID is the central guard (mitto-a7wm) preventing any
+// caller from sending a Mitto-synthesized profile-name placeholder to the
+// agent's set_model RPC or persisting it as the baseline. A synthesized
+// catalog (see SynthesizeModelStateFromProfiles) exists purely as a display
+// aid for agents that never advertise a real model catalog; its ModelId
+// values are Mitto profile display names (e.g. "Claude Opus 5.5"), never
+// confirmed by the agent or backend. Some agents (Auggie 0.36.0) accept an
+// arbitrary set_model string without validating it, so without this guard a
+// synthesized id can silently become the persisted baseline and every later
+// prompt then 404s with "the selected model is not available for this
+// session" — the mitto-a7wm root cause.
+//
+// Returns nil (no-op) when modelID is empty, the catalog is not synthesized,
+// or modelID does not match any of the catalog's synthesized entries (e.g. a
+// REAL agent-confirmed id being restored/remapped, which must always be
+// allowed through — see the synthesized-catalog restore branch in
+// applyConfigConstraintsWithParentCtx's apply()). Logs a WARN with a distinct
+// literal when refusing so the corruption path is diagnosable.
+func (c configManager) refuseSynthesizedModelID(d configDeps, modelID string) error {
+	if modelID == "" || !d.cmModelCatalogSynthesized() {
+		return nil
+	}
+	opt, ok := d.cmFindByCategory(ConfigOptionCategoryModel)
+	if !ok {
+		return nil
+	}
+	for _, o := range opt.Options {
+		if o.Value == modelID {
+			if l := d.cmLogger(); l != nil {
+				l.Warn("mitto-a7wm: refusing to apply synthesized model id",
+					"session_id", d.cmSessionID(), "model_id", modelID)
+			}
+			return fmt.Errorf("model id %q comes from a synthesized (unconfirmed) model catalog: %w",
+				modelID, errModelCatalogSynthesized)
+		}
+	}
+	return nil
+}
+
+// remapCorruptedBaselineName self-heals a persisted baseline that holds a
+// display Name instead of a real model id — the mitto-a7wm corruption
+// pattern, but this helper also covers any other way a Name could have ended
+// up in the baseline. Switches the active model to resolvedID, self-heals the
+// persisted baseline, and records a plain "model" session_change (no
+// "model_unavailable" notice: nothing was actually retired, only mis-tagged).
+// Logs INFO with a distinct literal on success.
+func (c configManager) remapCorruptedBaselineName(d configDeps, ctx context.Context, badName, resolvedID string) error {
+	if err := c.setActiveModelOnly(d, ctx, resolvedID); err != nil {
+		return err
+	}
+	d.cmSetBaselineAndClearOverride(resolvedID)
+	c.persistBaselineModel(d, resolvedID)
+	if l := d.cmLogger(); l != nil {
+		l.Info("mitto-a7wm: remapped corrupted baseline model name to id",
+			"session_id", d.cmSessionID(), "name", badName, "id", resolvedID)
+	}
+	_ = d.cmRecordSessionChange(ConfigOptionCategoryModel, resolvedID, badName)
+	return nil
+}
+
 func (c configManager) setActiveModelOnly(d configDeps, ctx context.Context, modelID string) error {
+	if err := c.refuseSynthesizedModelID(d, modelID); err != nil {
+		return err
+	}
 	if err := d.cmSetSessionModel(ctx, modelID); err != nil {
 		return fmt.Errorf("failed to set model: %w", err)
 	}

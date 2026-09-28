@@ -185,6 +185,11 @@ type fakePromptDeps struct {
 	// branch of handlePromptError; nil = swap succeeds.
 	runtimeFallbackErr   error
 	runtimeFallbackCalls int
+	// flushContextInPlaceErrs, when non-empty, is a FIFO queue of successive
+	// pdFlushContextInPlace results (mitto-a7wm flush-retry test): the first
+	// call pops errs[0], the retry after a successful runtime swap pops
+	// errs[1], etc. Once exhausted, falls back to flushContextInPlaceErr.
+	flushContextInPlaceErrs []error
 
 	// === New in mitto-6vs: durable auth-expiry guidance dedupe ===
 	authGuidanceSurfaced   bool
@@ -647,6 +652,11 @@ func (f *fakePromptDeps) pdFlushContextInPlace(_ context.Context) error {
 	defer f.mu.Unlock()
 	f.flushContextCalled = true
 	f.flushContextCallCount++
+	if len(f.flushContextInPlaceErrs) > 0 {
+		err := f.flushContextInPlaceErrs[0]
+		f.flushContextInPlaceErrs = f.flushContextInPlaceErrs[1:]
+		return err
+	}
 	return f.flushContextInPlaceErr
 }
 
@@ -2317,6 +2327,77 @@ func TestPromptDispatcher_CreateFreshContextSession_FlushError_FallsBackToNewSes
 	}
 	if sc := d.recordedSessionChanges[0]; sc.Kind != "context_cleared" || sc.Value != "new_session" {
 		t.Fatalf("unexpected pill: %+v", sc)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_ModelUnavailable_RetriesFlushAfterSwap
+// pins mitto-a7wm work item 4: when the in-place flush RPC itself fails
+// because the pinned model was refused upstream (the same failure family as
+// the prompt-send path), createFreshContextSession must invoke the runtime
+// model fallback and, on success, retry the flush once — succeeding without
+// ever counting a flush failure or falling back to a new ACP session.
+func TestPromptDispatcher_CreateFreshContextSession_ModelUnavailable_RetriesFlushAfterSwap(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.hasACPConn = true
+	d.acpNewSessionID = "should-not-be-used"
+	d.runtimeFallbackErr = nil // swap succeeds
+	d.flushContextInPlaceErrs = []error{runtimeModelUnavailableErr(), nil}
+
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error (flush retry succeeds after swap), got %v", err)
+	}
+	if id != "" {
+		t.Fatalf("expected empty id (in-place path, no new-session fallback), got %q", id)
+	}
+	if d.runtimeFallbackCalls != 1 {
+		t.Fatalf("expected exactly 1 runtime fallback call, got %d", d.runtimeFallbackCalls)
+	}
+	if d.flushContextCallCount != 2 {
+		t.Fatalf("expected 2 flush attempts (initial + retry), got %d", d.flushContextCallCount)
+	}
+	if d.acpNewSessionCalls != 0 {
+		t.Fatalf("acpNewSessionCalls = %d, want 0 (retry must succeed before any new-session fallback)", d.acpNewSessionCalls)
+	}
+	if d.flushFailCount != 0 {
+		t.Fatalf("expected the flush-failure circuit breaker to stay untripped, got %d", d.flushFailCount)
+	}
+	if len(d.recordedSessionChanges) != 1 || d.recordedSessionChanges[0].Value != "flush" {
+		t.Fatalf("expected 1 context_cleared/flush pill on the successful retry, got %v", d.recordedSessionChanges)
+	}
+}
+
+// TestPromptDispatcher_CreateFreshContextSession_ModelUnavailable_SwapFails_CountsFlushFailure
+// asserts the swap-failure branch: when the runtime fallback itself fails,
+// the flush must be treated as a normal flush failure (falls back to a new
+// ACP session, or counts toward the circuit breaker) rather than retried
+// forever.
+func TestPromptDispatcher_CreateFreshContextSession_ModelUnavailable_SwapFails_CountsFlushFailure(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.hasACPConn = true
+	d.acpNewSessionID = "fresh-after-model-swap-fail"
+	d.runtimeFallbackErr = errors.New("no usable fallback model")
+	d.flushContextInPlaceErrs = []error{runtimeModelUnavailableErr()}
+
+	id, err := p.createFreshContextSession(d, PromptMeta{FreshContext: true}, 0)
+	if err != nil {
+		t.Fatalf("expected nil error (falls back to new session), got %v", err)
+	}
+	if id != "fresh-after-model-swap-fail" {
+		t.Fatalf("expected new-session fallback id, got %q", id)
+	}
+	if d.runtimeFallbackCalls != 1 {
+		t.Fatalf("expected exactly 1 runtime fallback call, got %d", d.runtimeFallbackCalls)
+	}
+	if d.flushContextCallCount != 1 {
+		t.Fatalf("expected only the initial flush attempt (no retry on swap failure), got %d", d.flushContextCallCount)
+	}
+	if d.acpNewSessionCalls != 1 {
+		t.Fatalf("acpNewSessionCalls = %d, want 1 (fallback must be invoked)", d.acpNewSessionCalls)
 	}
 }
 

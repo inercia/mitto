@@ -1172,6 +1172,29 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 		flushCtx, flushCancel := context.WithTimeout(d.pdSessionCtx(), 30*time.Second)
 		err := d.pdFlushContextInPlace(flushCtx)
 		flushCancel()
+		if err != nil && mittoAcp.IsModelUnavailableAtRuntimeError(err) {
+			// mitto-a7wm: the flush RPC itself failed because the pinned
+			// model was refused upstream — same failure family as the
+			// prompt-send path. Swap to an available model and retry the
+			// flush once before counting this as a flush failure / advancing
+			// the circuit breaker, so a corrupted baseline self-heals
+			// instead of tripping the breaker on every FreshContext tick.
+			swapCtx, swapCancel := context.WithTimeout(d.pdSessionCtx(), constraintModelSwitchCallerBudget)
+			swapErr := d.pdTryFallbackModelOnRuntimeUnavailable(swapCtx)
+			swapCancel()
+			if swapErr == nil {
+				if l := d.pdLogger(); l != nil {
+					l.Info("mitto-a7wm: retrying in-place context flush after runtime model fallback",
+						"session_id", d.pdSessionID())
+				}
+				retryCtx, retryCancel := context.WithTimeout(d.pdSessionCtx(), 30*time.Second)
+				err = d.pdFlushContextInPlace(retryCtx)
+				retryCancel()
+			} else if l := d.pdLogger(); l != nil {
+				l.Warn("mitto-a7wm: runtime model fallback failed during context flush; treating as flush failure",
+					"session_id", d.pdSessionID(), "error", swapErr)
+			}
+		}
 		if err == nil {
 			d.pdResetFlushFailure()
 			if l := d.pdLogger(); l != nil {
@@ -1830,25 +1853,27 @@ func (p promptDispatcher) handlePromptError(
 		return false
 	}
 
-	// Pinned model refused upstream at prompt-send time (mitto-a7wm): the
-	// model was in the ACP catalog at startup but Augment's /chat-stream now
-	// returns httpStatus:404 + apiStatus:"unimplemented" for it (typically a
-	// backend-side retire/rename). Auto-swap to an available model rather
-	// than letting the loop grind through backoff/retry on every cadence
-	// until MaxLoopDeliveryFailures trips. The fallback path emits the same
-	// "model_unavailable" + "model" session_change events as the startup-drift
-	// recovery, so the timeline pill and stats retagging are consistent. On
-	// swap success we notify observers with an actionable "switched to X"
-	// message and end the turn (no queue-stop, no ACP restart); on failure we
-	// fall through to the generic transient block below so the operator still
-	// sees the raw upstream error.
+	// Pinned model refused upstream at prompt-send time (mitto-a7wm): the id
+	// was in the ACP catalog at startup but Augment's /chat-stream now
+	// returns httpStatus:404 + apiStatus:"unimplemented" for it — either a
+	// genuine backend-side retire/rename, or the id was never a real one to
+	// begin with (a corrupted/unconfirmed baseline). Auto-swap to an
+	// available model rather than letting the loop grind through
+	// backoff/retry on every cadence until MaxLoopDeliveryFailures trips. The
+	// fallback path emits the same "model_unavailable" + "model" session_change
+	// events as the startup-drift recovery, so the timeline pill and stats
+	// retagging are consistent. On swap success we notify observers with an
+	// actionable "switched to X" message and end the turn (no queue-stop, no
+	// ACP restart); on failure we fall through to the generic transient block
+	// below so the operator still sees the raw upstream error.
 	if mittoAcp.IsModelUnavailableAtRuntimeError(err) {
 		swapCtx, swapCancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
 		swapErr := d.pdTryFallbackModelOnRuntimeUnavailable(swapCtx)
 		swapCancel()
 		if swapErr == nil {
 			d.pdNotifyObservers(func(o SessionObserver) {
-				o.OnError("The selected model was retired upstream; switched this conversation to an available model. " +
+				o.OnError("The selected model was not available for this session (unknown or retired model ID); " +
+					"switched this conversation to an available model. " +
 					"Please resend your message, or wait for the loop's next tick.")
 			})
 			d.pdRestoreBaselineIfOverride() // mitto-1yo: turn is over

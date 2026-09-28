@@ -579,7 +579,11 @@ func IsUpstreamUnavailableError(err error) bool {
 // drift covered by errModelPermanentlyUnavailable in internal/conversation
 // (mitto-uex/mitto-qst): the pinned model IS in the ACP catalog at startup
 // (so applyConfigConstraints succeeds), but the Augment upstream refuses it
-// at prompt-send time because the model was retired/renamed backend-side.
+// at prompt-send time — either because the model was retired/renamed
+// backend-side, or because the id sent was never a real one to begin with
+// (e.g. a Mitto-synthesized profile display name that got persisted as the
+// baseline; see SessionModelState.Synthesized and configManager's
+// refuseSynthesizedModelID/remapCorruptedBaselineName, mitto-a7wm).
 // Without this classifier the loop's handleDeliveryFailure sees a generic
 // -32603 and grinds through backoff/retry until MaxLoopDeliveryFailures trips,
 // re-firing the same failure on every cadence (mitto-a7wm).
@@ -698,16 +702,18 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 			"please try again in a moment."
 	}
 
-	// Pinned model was retired upstream (Augment /chat-stream returned
-	// httpStatus:404 + apiStatus:"unimplemented"): the model was in the ACP
-	// catalog at startup but the backend now refuses it (mitto-a7wm). Named
-	// distinctly from the generic upstream-unavailable / auth / rate-limit
-	// branches so the operator sees an actionable remediation. The prompt
-	// dispatcher path attempts an automatic swap to an available model
-	// before this message reaches the user; if the swap succeeded, callers
-	// override the notice with a "switched to X" line.
+	// Pinned model refused upstream (Augment /chat-stream returned
+	// httpStatus:404 + apiStatus:"unimplemented"): the id was in the ACP
+	// catalog at startup but the backend now refuses it — either a genuine
+	// backend-side retire/rename, or the id was never a real one to begin
+	// with (a corrupted/unconfirmed baseline; mitto-a7wm). Named distinctly
+	// from the generic upstream-unavailable / auth / rate-limit branches so
+	// the operator sees an actionable remediation. The prompt dispatcher path
+	// attempts an automatic swap to an available model before this message
+	// reaches the user; if the swap succeeded, callers override the notice
+	// with a "switched to X" line.
 	if IsModelUnavailableAtRuntimeError(err) {
-		return "The selected model is no longer available upstream. " +
+		return "The selected model is not available for this session (unknown or retired model ID). " +
 			"Mitto will switch this conversation to another available model automatically — " +
 			"please resend your message, or wait for the loop's next tick."
 	}

@@ -15,6 +15,7 @@ package conversation
 import (
 	"testing"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -131,6 +132,63 @@ func TestCbInitBaselineModelIfEmpty_EmptyDefaultDoesNotPersist(t *testing.T) {
 	}
 	if meta.BaselineModel != "" {
 		t.Errorf("persisted BaselineModel = %q, want empty (empty default must not persist)",
+			meta.BaselineModel)
+	}
+}
+
+// TestCbInitBaselineModelIfEmpty_SynthesizedCatalog_SkipsPreferenceSeeding
+// pins mitto-a7wm work item 1(iii): when the agent never advertised a real
+// model catalog (SynthesizeModelStateFromProfiles built one from Mitto
+// profile display names, Synthesized: true), cbInitBaselineModelIfEmpty must
+// NOT resolve initialModelPreference/an ACP-server constraint against it —
+// doing so would seed (and persist) a fake id like "Claude Opus 5.5" as the
+// baseline, exactly the corruption this bead reports. It must fall back to
+// defaultModel (empty for a synthesized catalog) instead.
+func TestCbInitBaselineModelIfEmpty_SynthesizedCatalog_SkipsPreferenceSeeding(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	const sid = "test-session-synthesized-no-seed"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		Name:       "Test",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bs := &BackgroundSession{
+		persistedID: sid,
+		store:       store,
+		mittoConfig: &config.Config{},
+		// A preference that WOULD resolve against a real catalog carrying a
+		// profile named "Claude Opus 5.5" — must be ignored while synthesized.
+		initialModelPreference: []config.PromptPreferredModel{{ModelName: "Claude Opus 5.5"}},
+		agentModels: &SessionModelState{
+			Synthesized:    true,
+			CurrentModelId: "", // SynthesizeModelStateFromProfiles never sets this
+			AvailableModels: []ModelInfo{
+				{ModelId: "Claude Opus 5.5", Name: "Claude Opus 5.5"},
+			},
+		},
+	}
+
+	bs.cbInitBaselineModelIfEmpty("")
+
+	if got := bs.GetBaselineModel(); got != "" {
+		t.Errorf("in-memory baselineModel = %q, want empty (must not seed a synthesized profile name as baseline)", got)
+	}
+	meta, err := store.GetMetadata(sid)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if meta.BaselineModel != "" {
+		t.Errorf("persisted BaselineModel = %q, want empty (a synthesized display name must never be persisted as a baseline id)",
 			meta.BaselineModel)
 	}
 }

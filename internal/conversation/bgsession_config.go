@@ -343,6 +343,15 @@ func (bs *BackgroundSession) cmHasAgentModels() bool {
 	return bs.agentModels != nil
 }
 
+// cmModelCatalogSynthesized reports whether the current agent model catalog
+// was built locally by SynthesizeModelStateFromProfiles rather than reported
+// by the agent (mitto-a7wm). See SessionModelState.Synthesized.
+func (bs *BackgroundSession) cmModelCatalogSynthesized() bool {
+	bs.agentModelsMu.RLock()
+	defer bs.agentModelsMu.RUnlock()
+	return bs.agentModels != nil && bs.agentModels.Synthesized
+}
+
 func (bs *BackgroundSession) cmGetCurrentModelID() string {
 	bs.agentModelsMu.RLock()
 	defer bs.agentModelsMu.RUnlock()
