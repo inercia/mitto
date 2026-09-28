@@ -2177,6 +2177,16 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				// Fall back to the SDK-decoded top-level `models` field (Auggie
 				// ships its catalog there rather than in configOptions[]; mitto-i8n).
 				models = conversation.ModelStateFromACP(sessResp.Models)
+				if models == nil && conversation.IsDegradedEmptyACPModels(sessResp.Models) {
+					// mitto-tr8m: the agent's `models` field was present but empty —
+					// a degraded process (e.g. failed startup feature-flag fetch),
+					// not a spec-compliant agent that simply omits the field.
+					if p.logger != nil {
+						p.logger.Warn("Agent returned empty model catalog (degraded agent state)",
+							"acp_session_id", string(sessResp.SessionId),
+							"method", "new")
+					}
+				}
 			}
 			handle := &conversation.SessionHandle{
 				SessionID:     string(sessResp.SessionId),
@@ -2442,6 +2452,14 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
 	if loadModels == nil {
 		loadModels = conversation.ModelStateFromACP(loadResp.Models)
+		if loadModels == nil && conversation.IsDegradedEmptyACPModels(loadResp.Models) {
+			// mitto-tr8m: see the "new" branch above.
+			if p.logger != nil {
+				p.logger.Warn("Agent returned empty model catalog (degraded agent state)",
+					"acp_session_id", acpSessionID,
+					"method", "load")
+			}
+		}
 	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,
@@ -2524,6 +2542,14 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
 	if resumeModels == nil {
 		resumeModels = conversation.ModelStateFromACP(resumeResp.Models)
+		if resumeModels == nil && conversation.IsDegradedEmptyACPModels(resumeResp.Models) {
+			// mitto-tr8m: see the "new" branch above.
+			if p.logger != nil {
+				p.logger.Warn("Agent returned empty model catalog (degraded agent state)",
+					"acp_session_id", acpSessionID,
+					"method", "resume")
+			}
+		}
 	}
 	handle := &conversation.SessionHandle{
 		SessionID:     acpSessionID,

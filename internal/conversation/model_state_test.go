@@ -239,6 +239,52 @@ func TestDeriveAgentModels_NilWhenAllEmpty(t *testing.T) {
 	}
 }
 
+// TestDeriveAgentModels_DegradedEmptyACPModelsIndistinguishableFromAbsent_mittoTr8m
+// reproduces mitto-tr8m: a real Auggie process that suffered a failed startup
+// feature-flag fetch responds with a *present* top-level `models` object whose
+// AvailableModels is an empty slice (`models.availableModels: []`) — as
+// observed in the 2026-09-27 07:24 trace on the cgw-translation workspace. That
+// is semantically different from an agent that never advertises a `models`
+// field at all (respModels == nil): the former signals a degraded/unhealthy
+// agent process that could be recycled/retried, while the latter is a normal
+// spec-compliant agent relying solely on ConfigOptions (or no catalog support
+// at all). DeriveAgentModels today collapses both into the identical
+// (nil, "", "") result, so no caller (e.g. SharedACPProcess.NewSession /
+// LoadSession / ResumeSession) can tell them apart to WARN-log or remediate
+// the degraded process. This test fails until DeriveAgentModels reports a
+// distinct source for the "present but empty" case.
+func TestDeriveAgentModels_DegradedEmptyACPModelsIndistinguishableFromAbsent_mittoTr8m(t *testing.T) {
+	// Case A: agent never advertises a `models` field at all (absent).
+	absentModels, absentCfgID, absentSource := DeriveAgentModels(nil, nil, nil)
+
+	// Case B: agent responded with a *present* models object but zero
+	// available models (degraded process; failed feature-flag fetch upstream).
+	degraded := &acp.SessionModelState{
+		CurrentModelId:  acp.ModelId(""),
+		AvailableModels: []acp.ModelInfo{},
+	}
+	degradedModels, degradedCfgID, degradedSource := DeriveAgentModels(nil, degraded, nil)
+
+	if absentModels != nil || degradedModels != nil {
+		t.Fatalf("expected both branches to yield nil models, got absent=%+v degraded=%+v", absentModels, degradedModels)
+	}
+	if absentCfgID != degradedCfgID {
+		t.Fatalf("cfgId differs unexpectedly: absent=%q degraded=%q", absentCfgID, degradedCfgID)
+	}
+
+	// BUG (mitto-tr8m): today both sources are the empty string "" — there is
+	// no way for a caller to distinguish "agent never ships a catalog" from
+	// "agent's models field was present but empty" and react (WARN log +
+	// degraded-process signal / recycle). Once fixed, the degraded case must
+	// report a distinct, non-empty source tag.
+	if absentSource == degradedSource {
+		t.Fatalf("mitto-tr8m: absent and degraded model-catalog responses are indistinguishable (both source=%q); "+
+			"DeriveAgentModels must report a distinct source (e.g. an \"acp_models_empty_degraded\" tag) when the "+
+			"agent's `models` field is present but empty, so callers can WARN-log and remediate a degraded ACP process",
+			absentSource)
+	}
+}
+
 // TestDeriveAgentModels_ConfigOptionsWithNonModelCategory_FallsThrough
 // ensures ModelStateFromConfigOptions returning nil (because the only opts
 // present are mode/reasoning selectors) is properly detected as "branch 1

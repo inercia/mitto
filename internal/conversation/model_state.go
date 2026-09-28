@@ -184,6 +184,19 @@ func ModelStateFromACP(src *acp.SessionModelState) *SessionModelState {
 	return state
 }
 
+// IsDegradedEmptyACPModels reports whether src signals a degraded agent
+// process (mitto-tr8m): the top-level `models` field was *present* on the
+// session/new, session/load, or session/resume response but advertised zero
+// available models. This is distinct from src being nil (the agent simply
+// never ships a catalog here) and cannot be recovered from
+// ModelStateFromACP's return value alone, since that function returns nil for
+// both cases. Callers that only have access to ModelStateFromConfigOptions +
+// ModelStateFromACP (rather than DeriveAgentModels) should call this after a
+// nil ModelStateFromACP result to decide whether to WARN-log/remediate.
+func IsDegradedEmptyACPModels(src *acp.SessionModelState) bool {
+	return src != nil && len(src.AvailableModels) == 0
+}
+
 // SynthesizeModelStateFromProfiles builds a synthetic SessionModelState from the
 // caller's model profiles for agents that never advertise a model catalog via ACP
 // ConfigOptions (mitto-ishl). One ModelInfo per profile is emitted with both
@@ -221,6 +234,18 @@ const (
 	ModelCatalogSourceConfigOptions        = "config_options"
 	ModelCatalogSourceACPModels            = "acp_models"
 	ModelCatalogSourceLocalProfileFallback = "local_profile_fallback"
+	// ModelCatalogSourceACPModelsEmpty marks a *degraded* agent process: the
+	// top-level `models` field was present but advertised zero available
+	// models (as opposed to the field being entirely absent). This is
+	// distinct from ModelCatalogSourceLocalProfileFallback/"" because it
+	// signals the agent itself is unhealthy (e.g. a failed startup
+	// feature-flag fetch left an empty catalog for the process's whole
+	// lifetime; mitto-tr8m) rather than merely lacking catalog support.
+	// Callers (e.g. SharedACPProcess.NewSession/LoadSession/ResumeSession)
+	// should WARN-log and consider recycling the process on this source,
+	// even though DeriveAgentModels still falls through to synthesis (or
+	// nil) for the actual returned models/cfgId.
+	ModelCatalogSourceACPModelsEmpty = "acp_models_empty_degraded"
 )
 
 // DeriveAgentModels centralizes the three-tier model-catalog decode chain used
@@ -262,6 +287,15 @@ func DeriveAgentModels(
 	}
 	if models := ModelStateFromACP(respModels); models != nil {
 		return models, "", ModelCatalogSourceACPModels
+	}
+	// mitto-tr8m: a *present* but empty `models` field (as opposed to an
+	// entirely absent one) signals a degraded agent process rather than a
+	// spec-compliant agent that simply doesn't advertise a catalog here.
+	// Still fall through to synthesis (or nil) for the actual models/cfgId,
+	// but tag the source distinctly so callers can WARN-log/remediate.
+	if respModels != nil && len(respModels.AvailableModels) == 0 {
+		models := SynthesizeModelStateFromProfiles(profiles)
+		return models, "", ModelCatalogSourceACPModelsEmpty
 	}
 	if models := SynthesizeModelStateFromProfiles(profiles); models != nil {
 		return models, "", ModelCatalogSourceLocalProfileFallback
