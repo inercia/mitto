@@ -231,6 +231,12 @@ func TestSessionManager_MoveSessionToAgent_RewritesMetadataAndRecordsEvent(t *te
 	if m.BaselineModel != "" {
 		t.Errorf("BaselineModel = %q, want empty", m.BaselineModel)
 	}
+	if m.PendingModelMappingFrom != "gpt-old" {
+		t.Errorf("PendingModelMappingFrom = %q, want %q", m.PendingModelMappingFrom, "gpt-old")
+	}
+	if m.PendingAgentHandoffFrom != "agent-a" {
+		t.Errorf("PendingAgentHandoffFrom = %q, want %q", m.PendingAgentHandoffFrom, "agent-a")
+	}
 	// ACPStartFailureCount is cleared by the rewrite itself, but the
 	// subsequent ResumeSessionBackground attempt against the fake "echo
 	// test" agent is expected to fail and legitimately re-increment it via
@@ -442,6 +448,9 @@ func TestSessionManager_MoveSessionToAgent_IncludeChildren(t *testing.T) {
 	}
 	if m.ACPServer != "agent-b" {
 		t.Errorf("child-eligible ACPServer = %q, want %q", m.ACPServer, "agent-b")
+	}
+	if m.PendingAgentHandoffFrom != "agent-a" {
+		t.Errorf("child-eligible PendingAgentHandoffFrom = %q, want %q (IncludeChildren must set it too)", m.PendingAgentHandoffFrom, "agent-a")
 	}
 
 	// The skipped ones were left untouched.

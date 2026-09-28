@@ -73,17 +73,58 @@ func DecodeEventData(event Event) (interface{}, error) {
 // This is used to provide context when resuming a session with a new ACP process.
 // It extracts user prompts and agent messages, limiting to the most recent exchanges.
 func BuildConversationHistory(events []Event, maxTurns int) string {
-	if len(events) == 0 {
+	turns := extractConversationTurns(events)
+	if len(turns) == 0 {
 		return ""
 	}
 
-	// Extract conversation turns (user prompt + agent response pairs)
-	type turn struct {
-		userMessage  string
-		agentMessage string
+	// Limit to most recent turns
+	if maxTurns > 0 && len(turns) > maxTurns {
+		turns = turns[len(turns)-maxTurns:]
 	}
-	var turns []turn
-	var currentTurn turn
+
+	var sb strings.Builder
+	sb.WriteString(conversationHistoryHeader)
+	for i, t := range turns {
+		sb.WriteString(renderConversationTurn(i+1, t))
+	}
+	sb.WriteString(conversationHistoryFooter)
+	return sb.String()
+}
+
+// conversationHistoryHeader/Footer bracket the injected transcript in both
+// BuildConversationHistory and BuildConversationHistoryCapped.
+const (
+	conversationHistoryHeader = "[CONVERSATION HISTORY - This is a resumed session. Previous context:]\n\n"
+	conversationHistoryFooter = "[END OF HISTORY - Continue the conversation:]\n\n"
+	// conversationHistoryTruncationMarker prefixes a turn block whose text had
+	// to be cut from the beginning to fit a character budget (used only by
+	// BuildConversationHistoryCapped when even the single most recent turn
+	// overflows maxChars), so it's clear to both the reader and the agent that
+	// earlier content in that block was removed rather than simply absent.
+	conversationHistoryTruncationMarker = "[...earlier content truncated to fit context budget...]\n"
+)
+
+// conversationTurn is one user-prompt/agent-response exchange extracted from
+// a session's persisted events, as used by BuildConversationHistory and
+// BuildConversationHistoryCapped.
+type conversationTurn struct {
+	userMessage  string
+	agentMessage string
+}
+
+// extractConversationTurns walks events and pairs each user prompt with the
+// agent message text that followed it (concatenating multiple agent_message
+// events belonging to the same turn), stripping HTML along the way. Order is
+// preserved (oldest first). A trailing user prompt with no agent response yet
+// is still included as its own (agent-less) turn.
+func extractConversationTurns(events []Event) []conversationTurn {
+	if len(events) == 0 {
+		return nil
+	}
+
+	var turns []conversationTurn
+	var current conversationTurn
 
 	for _, event := range events {
 		data, err := DecodeEventData(event)
@@ -94,52 +135,124 @@ func BuildConversationHistory(events []Event, maxTurns int) string {
 		switch event.Type {
 		case EventTypeUserPrompt:
 			// Start a new turn
-			if currentTurn.userMessage != "" {
-				turns = append(turns, currentTurn)
+			if current.userMessage != "" {
+				turns = append(turns, current)
 			}
 			if d, ok := data.(UserPromptData); ok {
-				currentTurn = turn{userMessage: d.Message}
+				current = conversationTurn{userMessage: d.Message}
 			}
 		case EventTypeAgentMessage:
 			// Add to current turn (strip HTML — events store HTML, not markdown)
 			if d, ok := data.(AgentMessageData); ok {
-				currentTurn.agentMessage += stripHTML(d.Text)
+				current.agentMessage += stripHTML(d.Text)
 			}
 		}
 	}
 
 	// Don't forget the last turn
-	if currentTurn.userMessage != "" {
-		turns = append(turns, currentTurn)
+	if current.userMessage != "" {
+		turns = append(turns, current)
 	}
 
+	return turns
+}
+
+// renderConversationTurn renders a single turn block, numbered idx (1-based),
+// applying the standard per-message truncation used by both
+// BuildConversationHistory and BuildConversationHistoryCapped.
+func renderConversationTurn(idx int, t conversationTurn) string {
+	// Truncate very long messages
+	userMsg := truncateText(t.userMessage, 500)
+	agentMsg := truncateText(t.agentMessage, 1000)
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- Turn %d ---\n", idx)
+	fmt.Fprintf(&sb, "USER: %s\n\n", userMsg)
+	if agentMsg != "" {
+		fmt.Fprintf(&sb, "ASSISTANT: %s\n\n", agentMsg)
+	}
+	return sb.String()
+}
+
+// BuildConversationHistoryCapped is like BuildConversationHistory but additionally
+// bounds the total rendered size by maxChars (in addition to the maxTurns count),
+// trimming the OLDEST turns first so the most recently exchanged context is always
+// kept. This is used for the larger history budget injected on the first prompt
+// after an agent move (mitto-f7yo.5) — a plain maxTurns cap is not enough there
+// because the raised turn count (e.g. 20 vs the usual 5) could otherwise produce
+// an unbounded prompt size.
+//
+// maxTurns <= 0 means "no turn-count limit" (same convention as
+// BuildConversationHistory). maxChars <= 0 means "no character limit", in which
+// case this degenerates to exactly BuildConversationHistory(events, maxTurns).
+//
+// If even the single most recent turn alone (after per-message truncation)
+// exceeds maxChars, that turn is NOT dropped — its rendered text is truncated
+// from the beginning (keeping the tail, which is typically the most relevant
+// part of the exchange) and prefixed with conversationHistoryTruncationMarker,
+// so at least some context always survives rather than emitting nothing.
+func BuildConversationHistoryCapped(events []Event, maxTurns int, maxChars int) string {
+	turns := extractConversationTurns(events)
 	if len(turns) == 0 {
 		return ""
 	}
-
-	// Limit to most recent turns
 	if maxTurns > 0 && len(turns) > maxTurns {
 		turns = turns[len(turns)-maxTurns:]
 	}
+	if maxChars <= 0 {
+		var sb strings.Builder
+		sb.WriteString(conversationHistoryHeader)
+		for i, t := range turns {
+			sb.WriteString(renderConversationTurn(i+1, t))
+		}
+		sb.WriteString(conversationHistoryFooter)
+		return sb.String()
+	}
 
-	// Build the history text
-	var sb strings.Builder
-	sb.WriteString("[CONVERSATION HISTORY - This is a resumed session. Previous context:]\n\n")
+	budget := maxChars - len(conversationHistoryHeader) - len(conversationHistoryFooter)
+	if budget < 0 {
+		budget = 0
+	}
 
+	// Render each (already turn-count-capped) turn once, using its FINAL
+	// position for numbering so blocks don't need to be re-rendered after
+	// deciding how many oldest ones to drop below.
+	blocks := make([]string, len(turns))
 	for i, t := range turns {
-		// Truncate very long messages
-		userMsg := truncateText(t.userMessage, 500)
-		agentMsg := truncateText(t.agentMessage, 1000)
+		blocks[i] = renderConversationTurn(i+1, t)
+	}
 
-		fmt.Fprintf(&sb, "--- Turn %d ---\n", i+1)
-		fmt.Fprintf(&sb, "USER: %s\n\n", userMsg)
-		if agentMsg != "" {
-			fmt.Fprintf(&sb, "ASSISTANT: %s\n\n", agentMsg)
+	// Walk backwards from the most recent turn, including as many older
+	// turns as still fit the budget. Always keeps at least the most recent
+	// block, even if it alone exceeds budget (handled by the overflow
+	// truncation below) — the most recent context must never be dropped
+	// entirely in favor of older context.
+	keepFrom := len(blocks) - 1
+	total := len(blocks[keepFrom])
+	for keepFrom > 0 && total+len(blocks[keepFrom-1]) <= budget {
+		keepFrom--
+		total += len(blocks[keepFrom])
+	}
+
+	var sb strings.Builder
+	for _, b := range blocks[keepFrom:] {
+		sb.WriteString(b)
+	}
+	body := sb.String()
+
+	if len(body) > budget {
+		// Even the kept (most recent) turn(s) alone overflow the budget: cut
+		// from the beginning of the combined body rather than drop it, so the
+		// tail — typically the latest assistant reply — survives intact.
+		if budget > len(conversationHistoryTruncationMarker) {
+			cut := len(body) - (budget - len(conversationHistoryTruncationMarker))
+			body = conversationHistoryTruncationMarker + body[cut:]
+		} else {
+			body = conversationHistoryTruncationMarker
 		}
 	}
 
-	sb.WriteString("[END OF HISTORY - Continue the conversation:]\n\n")
-	return sb.String()
+	return conversationHistoryHeader + body + conversationHistoryFooter
 }
 
 // GetLastAgentMessage extracts the last agent message text from a list of events.

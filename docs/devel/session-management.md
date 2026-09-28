@@ -609,7 +609,58 @@ RPC response lands last simply wins the persisted baseline and timeline record �
 "tag wins" behavior the acceptance criteria call for, without touching the tag-selection logic
 itself.
 
+### Context handoff (`mitto-f7yo.5`)
+
+Normally, `buildPromptWithHistory` (`internal/conversation/bgsession_prompt.go`) prepends the last
+**5** turns (`session.BuildConversationHistory(events, 5)`) on the first prompt of a resumed
+session that got a fresh ACP session — for an agent migration that would be the *only* context the
+new agent ever receives, since the previous agent's tools/MCP servers/prompt behaviour may differ
+entirely.
+
+Like model mapping above, this is driven by a durable metadata flag set by
+`moveAgentStopAndRebind` in the *same* `UpdateMetadata` call: `Metadata.PendingAgentHandoffFrom`
+(`json:"pending_agent_handoff_from,omitempty"`) holds the previous agent's name, so it's set for a
+moved session and, via the same reused rebind function, for every descendant moved with
+`IncludeChildren` too.
+
+The flag is consumed inside `buildPromptWithHistory` itself
+(`internal/conversation/bgsession_agent_handoff.go`), which is only ever called when
+`shouldInjectHistory` is true — i.e. behind the *exact same*
+`bs.isResumed && !bs.historyInjected && !meta.FreshContext` gate that already exists for normal
+history injection. This single placement gives all of the required behaviour for free, with no new
+gating logic:
+
+- **FreshContext loops** compute `shouldInjectHistory=false` and so never call
+  `buildPromptWithHistory` at all — `PendingAgentHandoffFrom` is therefore left **untouched**
+  (not cleared) rather than silently dropped, so it still fires correctly on a later,
+  non-FreshContext prompt instead of being lost to a loop run the operator didn't initiate.
+- **Normal resumes** (nothing pending) are unaffected — same 5-turn call, no preamble, byte-for-byte
+  identical output to before this bead.
+- **The first real history-injecting prompt after a move** atomically reads-and-clears the flag
+  (`consumePendingAgentHandoff`, same read-and-clear-in-one-`UpdateMetadata` pattern
+  `cbApplyPendingModelMapping` uses for `PendingModelMappingFrom`) and, when it was set, uses:
+  1. A larger, **character-capped** history budget —
+     `session.BuildConversationHistoryCapped(events, agentHandoffMaxTurns, agentHandoffMaxChars)`
+     (`internal/session/player.go`), with `agentHandoffMaxTurns = 20` and
+     `agentHandoffMaxChars = 24000` as named constants in `bgsession_agent_handoff.go`. Unlike the
+     plain `BuildConversationHistory(events, maxTurns)` used elsewhere, this additionally trims the
+     **oldest** turns first to stay under the character budget regardless of how large the raised
+     turn count could otherwise make the prompt — the most recent context is always kept, and if
+     even the single most recent turn alone still overflows the budget, its text is truncated from
+     the beginning (keeping the tail) with a clear `[...earlier content truncated...]` marker
+     rather than being dropped to nothing.
+  2. A short preamble prepended ahead of that history, naming the previous agent (e.g. *"This
+     conversation was previously handled by agent "auggie" and has been moved to you. Tools, MCP
+     servers and prompts may differ from what the previous agent had. Below is the recent
+     transcript for context."*).
+
+Because the flag is consumed exactly once and only from within the existing history-injection
+gate, no new synchronization or generation-tracking was needed, and `BuildConversationHistory`'s
+own behaviour (used everywhere else) is completely unchanged — `BuildConversationHistoryCapped` is
+an additive sibling function next to it.
+
 ### REST endpoints (`mitto-f7yo.2`)
+
 
 Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/session_move_agent.go`:
 

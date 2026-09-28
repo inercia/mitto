@@ -447,6 +447,21 @@ type Metadata struct {
 	// so it never re-fires, and survives process restarts since the resume
 	// may happen asynchronously.
 	PendingModelMappingFrom string `json:"pending_model_mapping_from,omitempty"`
+	// PendingAgentHandoffFrom holds the previous agent's name (ACPServer
+	// value), set by MoveSessionToAgent in the same UpdateMetadata call as
+	// PendingModelMappingFrom (mitto-f7yo.5). Consumed exactly once, on the
+	// first prompt that actually performs history injection on the new
+	// agent (i.e. the same isResumed/!historyInjected/!FreshContext gate
+	// buildPromptWithHistory already uses) — see
+	// bgsession_agent_handoff.go. When present, that prompt uses a larger,
+	// char-capped history budget (BuildConversationHistoryCapped) plus an
+	// explanatory preamble naming the previous agent, instead of the normal
+	// 5-turn window. Left untouched (not cleared) when a FreshContext loop
+	// run suppresses injection entirely, so it correctly fires on a later
+	// non-FreshContext prompt instead of being silently lost. Durable so it
+	// survives an asynchronous resume or a restart between the move and the
+	// first prompt.
+	PendingAgentHandoffFrom string `json:"pending_agent_handoff_from,omitempty"`
 }
 
 // IsArchivable reports whether this conversation may be archived. It returns

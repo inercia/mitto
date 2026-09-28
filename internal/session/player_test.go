@@ -1,6 +1,8 @@
 package session
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -204,6 +206,104 @@ func TestBuildConversationHistory_HTMLStripping(t *testing.T) {
 	// HTML entities should be decoded
 	if contains(history, "&#") {
 		t.Error("History should not contain HTML entities")
+	}
+}
+
+func TestBuildConversationHistoryCapped_SameAsUncappedWhenBudgetGenerous(t *testing.T) {
+	events := []Event{
+		{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Hello, how are you?"}},
+		{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "I'm doing well, thank you!"}},
+		{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "Fix the bug"}},
+		{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: "I've fixed the bug."}},
+	}
+
+	uncapped := BuildConversationHistory(events, 10)
+	capped := BuildConversationHistoryCapped(events, 10, 24000)
+	if capped != uncapped {
+		t.Errorf("with a generous char budget, capped output should match uncapped:\ncapped=%q\nuncapped=%q", capped, uncapped)
+	}
+
+	// maxChars <= 0 must degenerate to exactly BuildConversationHistory.
+	if got := BuildConversationHistoryCapped(events, 10, 0); got != uncapped {
+		t.Errorf("maxChars<=0 should degenerate to BuildConversationHistory:\ngot=%q\nwant=%q", got, uncapped)
+	}
+}
+
+func TestBuildConversationHistoryCapped_DropsOldestTurnsFirst(t *testing.T) {
+	// Each turn's rendered block is a few hundred bytes; a tight char budget
+	// should drop the OLDEST turns, keeping the most recent ones intact.
+	var events []Event
+	for i := 0; i < 10; i++ {
+		events = append(events,
+			Event{Type: EventTypeUserPrompt, Data: UserPromptData{Message: fmt.Sprintf("question number %d", i)}},
+			Event{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: fmt.Sprintf("answer number %d", i)}},
+		)
+	}
+
+	history := BuildConversationHistoryCapped(events, 20, 300)
+
+	if !contains(history, "question number 9") || !contains(history, "answer number 9") {
+		t.Errorf("most recent turn must always be kept, got: %q", history)
+	}
+	if contains(history, "question number 0") {
+		t.Error("oldest turn should have been dropped for the char budget")
+	}
+	if len(history) > 300+len(conversationHistoryTruncationMarker) {
+		t.Errorf("history length %d exceeds requested budget 300 (+marker slack)", len(history))
+	}
+}
+
+func TestBuildConversationHistoryCapped_TurnCountCapAppliesFirst(t *testing.T) {
+	var events []Event
+	for i := 0; i < 10; i++ {
+		events = append(events,
+			Event{Type: EventTypeUserPrompt, Data: UserPromptData{Message: fmt.Sprintf("q%d", i)}},
+			Event{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: fmt.Sprintf("a%d", i)}},
+		)
+	}
+
+	// A generous char budget but a tight turn cap: only the last 3 turns
+	// should ever be considered, matching BuildConversationHistory's own
+	// maxTurns semantics.
+	history := BuildConversationHistoryCapped(events, 3, 24000)
+	if contains(history, "q6") {
+		t.Error("turn-count cap should have excluded turn 6 regardless of char budget")
+	}
+	if !contains(history, "q7") || !contains(history, "q9") {
+		t.Errorf("last 3 turns (7,8,9) should be present, got: %q", history)
+	}
+}
+
+func TestBuildConversationHistoryCapped_SingleTurnOverflowsBudget_TruncatedNotDropped(t *testing.T) {
+	// A single, very long most-recent turn that alone exceeds maxChars must be
+	// truncated (with a marker), never dropped down to an empty result. Keep
+	// each message under the per-message truncation thresholds (500/1000) so
+	// only the char-budget truncation (not the unrelated per-message one) is
+	// responsible for cutting the tail marker's surroundings.
+	events := []Event{
+		{Type: EventTypeUserPrompt, Data: UserPromptData{Message: "short question"}},
+		{Type: EventTypeAgentMessage, Data: AgentMessageData{Text: strings.Repeat("A", 300) + "TAIL-MARKER"}},
+	}
+
+	history := BuildConversationHistoryCapped(events, 20, 200)
+	if history == "" {
+		t.Fatal("single oversized turn must not be dropped to an empty result")
+	}
+	if !contains(history, conversationHistoryTruncationMarker) {
+		t.Errorf("expected truncation marker in output, got: %q", history)
+	}
+	// The tail (most recent content) must survive the truncation.
+	if !contains(history, "TAIL-MARKER") {
+		t.Error("truncation should cut from the beginning, keeping the tail (most recent content)")
+	}
+}
+
+func TestBuildConversationHistoryCapped_EmptyEvents(t *testing.T) {
+	if got := BuildConversationHistoryCapped(nil, 20, 24000); got != "" {
+		t.Errorf("nil events should return empty string, got %q", got)
+	}
+	if got := BuildConversationHistoryCapped([]Event{}, 20, 24000); got != "" {
+		t.Errorf("empty events should return empty string, got %q", got)
 	}
 }
 

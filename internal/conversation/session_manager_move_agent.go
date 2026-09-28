@@ -371,8 +371,11 @@ func (sm *SessionManager) moveAgentBusyReason(sessionID string) (bool, string) {
 // the pre-move BaselineModel into result.PreviousBaselineModel and, in the same
 // call, stashes it into PendingModelMappingFrom so a later hook (see
 // bgsession_model_mapping.go, mitto-f7yo.4) can pick the closest available
-// model on the target agent once its catalog is known — durable because the
-// resume may happen asynchronously or after a restart.
+// model on the target agent once its catalog is known, and stashes
+// previousAgent into PendingAgentHandoffFrom so the first history-injecting
+// prompt on the new agent can use a larger context budget plus an explanatory
+// preamble (see bgsession_agent_handoff.go, mitto-f7yo.5) — both durable
+// because the resume may happen asynchronously or after a restart.
 func (sm *SessionManager) moveAgentStopAndRebind(sessionID, previousAgent, targetAgent string, closeTimeout time.Duration, result *MoveAgentResult) error {
 	// Stop the live session first. CloseSessionGracefully waits (up to
 	// closeTimeout) for any in-flight response, then closes; on timeout it
@@ -395,6 +398,7 @@ func (sm *SessionManager) moveAgentStopAndRebind(sessionID, previousAgent, targe
 		m.ACPStartFailureCount = 0
 		m.PendingModelMappingFrom = m.BaselineModel
 		m.BaselineModel = ""
+		m.PendingAgentHandoffFrom = previousAgent
 	}); err != nil {
 		return err
 	}

@@ -117,6 +117,25 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 		return message
 	}
 
+	// mitto-f7yo.5: this is called only when history injection is actually
+	// happening (see the shouldInjectHistory gate in PromptWithMeta), so it's
+	// safe to consume the pending-handoff flag here — a moved session's first
+	// history-injecting prompt gets a larger, char-capped budget and an
+	// explanatory preamble instead of the normal 5-turn window. See
+	// bgsession_agent_handoff.go for the full ordering rationale (including
+	// why FreshContext leaves the flag untouched rather than clearing it).
+	if previousAgent, ok := bs.consumePendingAgentHandoff(); ok {
+		history := session.BuildConversationHistoryCapped(events, agentHandoffMaxTurns, agentHandoffMaxChars)
+		if history == "" {
+			return message
+		}
+		if bs.logger != nil {
+			bs.logger.Debug("Injecting agent-handoff conversation history into resumed session",
+				"history_length", len(history), "previous_agent", previousAgent)
+		}
+		return buildAgentHandoffPreamble(previousAgent) + history + message
+	}
+
 	// Build conversation history (limit to last 5 turns to avoid token limits)
 	history := session.BuildConversationHistory(events, 5)
 	if history == "" {
