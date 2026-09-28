@@ -536,6 +536,28 @@ export function LightningIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Swap/transfer icon (arrows-right-left) — used for "Move to agent".
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function SwapIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5M16.5 3L21 7.5m0 0L16.5 12M21 7.5H7.5"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Robot icon for MCP-spawned child conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */

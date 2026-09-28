@@ -3109,6 +3109,34 @@ export function useWebSocket({
         });
         break;
 
+      case "session_agent_moved":
+        // Emitted by MoveSessionToAgent (mitto-f7yo.1/.2) when a conversation
+        // is rebound to a different ACP agent. No forced WS reconnect here —
+        // the per-session WebSocket is keyed on session_id, not agent, and
+        // ResumeSessionBackground already transparently continues serving
+        // the same session under the new agent; updating acp_server (mirrors
+        // session_renamed above) is enough for the header/sidebar badge to
+        // reflect the new agent on next render.
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, acp_server: msg.data.acp_server }
+              : s,
+          ),
+        );
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              info: { ...session.info, acp_server: msg.data.acp_server },
+            },
+          };
+        });
+        break;
+
       case "session_pinned":
         // Update session pinned state in stored sessions
         setStoredSessions((prev) =>

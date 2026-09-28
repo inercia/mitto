@@ -28,6 +28,17 @@ export function createSessionsResource(config: import("../core/config.js").Resol
      *  @param {import("../core/transport.js").RequestOptions} [opts] -
      *   forwarded to request() (e.g. headers, signal) */
     prune: (id: any, keepLast?: number, opts?: import("../core/transport.js").RequestOptions) => Promise<any>;
+    /** @returns {Promise<object>} MoveAgentPreflight — {current_agent, candidates:
+     *   [{name, type, available, loop_prompt_available?}], busy, busy_reason?,
+     *   archived, is_loop, loop_prompt_name?, children_count, baseline_model?}
+     *   (mitto-f7yo.2). Read-only — never mutates the conversation. */
+    moveAgentPreflight: (id: any, opts: any) => Promise<object>;
+    /** Rebinds the conversation to a different ACP agent (mitto-f7yo.2).
+     *  @param {object} body - {target_agent, include_children?}
+     *  @returns {Promise<object>} MoveAgentResult — {moved: string[],
+     *   skipped: [{id, reason}], previous_agent, previous_baseline_model?,
+     *   resume_error?} */
+    moveAgent: (id: any, body: object, opts: any) => Promise<object>;
     getCallback: (id: any, opts: any) => Promise<any>;
     createCallback: (id: any, opts: any) => Promise<any>;
     revokeCallback: (id: any, opts: any) => Promise<any>;

@@ -415,3 +415,65 @@ describe("useConversationMenu — Auto-rename entry (mitto-yv2)", () => {
     expect(calls).toEqual([SESSION]);
   });
 });
+
+describe("useConversationMenu — Move to agent submenu (mitto-f7yo.6)", () => {
+  const CANDIDATES = [
+    { name: "agent-b", type: "agent-b" },
+    { name: "agent-c", type: "agent-c" },
+  ];
+
+  test("no onMoveToAgent → no 'Move to agent' entry, even with candidates", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      moveAgentCandidates: CANDIDATES,
+    });
+    expect(findItem(contextMenuItems, "Move to agent")).toBeUndefined();
+  });
+
+  test("onMoveToAgent present but no candidates → no 'Move to agent' entry", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      onMoveToAgent: () => {},
+    });
+    expect(findItem(contextMenuItems, "Move to agent")).toBeUndefined();
+  });
+
+  test("archived conversation → no 'Move to agent' entry, even with candidates", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      isArchived: true,
+      moveAgentCandidates: CANDIDATES,
+      onMoveToAgent: () => {},
+    });
+    expect(findItem(contextMenuItems, "Move to agent")).toBeUndefined();
+  });
+
+  test("onMoveToAgent + candidates present, not archived → 'Move to agent' entry with one row per candidate", () => {
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      moveAgentCandidates: CANDIDATES,
+      onMoveToAgent: () => {},
+    });
+    const moveToAgent = findItem(contextMenuItems, "Move to agent");
+    expect(moveToAgent).toBeDefined();
+    expect(moveToAgent.submenu.map((s) => s.label)).toEqual([
+      "agent-b",
+      "agent-c",
+    ]);
+  });
+
+  test("each candidate row's onClick calls onMoveToAgent with the session and that candidate's name", () => {
+    const calls = [];
+    const { contextMenuItems } = useConversationMenu({
+      session: SESSION,
+      moveAgentCandidates: CANDIDATES,
+      onMoveToAgent: (session, targetAgent) => calls.push([session, targetAgent]),
+    });
+    const moveToAgent = findItem(contextMenuItems, "Move to agent");
+    for (const c of CANDIDATES) {
+      findSub(moveToAgent, c.name).onClick();
+    }
+    expect(calls).toEqual(CANDIDATES.map((c) => [SESSION, c.name]));
+  });
+});
+

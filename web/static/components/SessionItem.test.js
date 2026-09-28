@@ -93,6 +93,42 @@ describe("SessionItem.js: protected-conversation archive suppression (mitto-yvel
   });
 });
 
+describe("SessionItem.js: 'Move to agent' candidates wiring (mitto-f7yo.6)", () => {
+  test("imports useWorkspaces from hooks/index.js", () => {
+    expect(sessionItemJs).toMatch(
+      /import \{[^}]*useWorkspaces[^}]*\} from "\.\.\/hooks\/index\.js";/s,
+    );
+  });
+
+  test("computes moveAgentCandidates via useMemo, filtering by working_dir and excluding the current acp_server, deduped", () => {
+    expect(sessionItemJs).toMatch(/const workspaces = useWorkspaces\(\);/);
+    expect(sessionItemJs).toMatch(
+      /const moveAgentCandidates = useMemo\(\(\) => \{/,
+    );
+    expect(sessionItemJs).toMatch(/ws\.working_dir !== workingDir/);
+    expect(sessionItemJs).toMatch(
+      /!ws\.acp_server \|\| ws\.acp_server === acpServer/,
+    );
+    expect(sessionItemJs).toMatch(/seen\.has\(ws\.acp_server\)/);
+  });
+
+  test("passes onMoveToAgent prop and moveAgentCandidates into useConversationMenu", () => {
+    // Must appear within the useConversationMenu({...}) call block, not just
+    // anywhere in the file (avoids a false-pass if the prop is declared but
+    // never wired through).
+    const callStart = sessionItemJs.indexOf("useConversationMenu({");
+    expect(callStart).toBeGreaterThan(-1);
+    const callEnd = sessionItemJs.indexOf("});", callStart);
+    const callBlock = sessionItemJs.slice(callStart, callEnd);
+    expect(callBlock).toMatch(/moveAgentCandidates,/);
+    expect(callBlock).toMatch(/onMoveToAgent,/);
+  });
+
+  test("declares onMoveToAgent in its prop list", () => {
+    expect(sessionItemJs).toMatch(/\bonMoveToAgent,\s*\/\/ Called with/);
+  });
+});
+
 describe("getConversationAccentStyles", () => {
   test("an unset background_color resolves to null (no accent at all)", () => {
     expect(getConversationAccentStyles(undefined, false)).toBeNull();

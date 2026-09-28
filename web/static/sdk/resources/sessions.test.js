@@ -134,6 +134,57 @@ describe("sessions resource", () => {
     });
   });
 
+  describe("move-agent (mitto-f7yo.2/.6)", () => {
+    test("moveAgentPreflight(id) calls GET .../move-agent/preflight and decodes the JSON body", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          body: {
+            current_agent: "agent-a",
+            candidates: [{ name: "agent-b", type: "agent-b", available: true }],
+            busy: false,
+            archived: false,
+            is_loop: false,
+            children_count: 0,
+          },
+        }),
+      );
+      const result = await sessions.moveAgentPreflight("s1");
+      expect(calls[0].url).toBe("/api/sessions/s1/move-agent/preflight");
+      expect(calls[0].init.method).toBe("GET");
+      expect(result.current_agent).toBe("agent-a");
+      expect(result.candidates).toEqual([
+        { name: "agent-b", type: "agent-b", available: true },
+      ]);
+    });
+
+    test("moveAgent(id, body) POSTs JSON to .../move-agent and decodes the result", async () => {
+      const { sessions, calls, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({
+          body: { moved: ["s1"], skipped: [], previous_agent: "agent-a" },
+        }),
+      );
+      const body = { target_agent: "agent-b", include_children: true };
+      const result = await sessions.moveAgent("s1", body);
+      expect(calls[0].url).toBe("/api/sessions/s1/move-agent");
+      expect(calls[0].init.method).toBe("POST");
+      expect(calls[0].init.body).toBe(JSON.stringify(body));
+      expect(calls[0].init.headers["Content-Type"]).toBe("application/json");
+      expect(result).toEqual({ moved: ["s1"], skipped: [], previous_agent: "agent-a" });
+    });
+
+    test("moveAgent(id) surfaces a non-2xx response as MittoApiError", async () => {
+      const { sessions, respondWith } = mk();
+      respondWith(() =>
+        fakeResponse({ status: 409, body: { error: "conversation is busy" } }),
+      );
+      await expect(
+        sessions.moveAgent("s1", { target_agent: "agent-b" }),
+      ).rejects.toBeInstanceOf(MittoApiError);
+    });
+  });
+
   describe("callback", () => {
     test("getCallback(id) calls GET .../callback", async () => {
       const { sessions, calls, respondWith } = mk();

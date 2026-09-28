@@ -255,6 +255,7 @@ function SessionListImpl({
   onSendPromptToConversation,
   onMakeLoop, // Called with (session) to convert a regular session to loop
   onMakeNonLoop, // Called with (session) to revert a loop session to regular
+  onMoveToAgent, // Called with (session, targetAgentName) to open the move-to-agent confirmation dialog (mitto-f7yo.6)
   isCreatingSession = false, // True while ANY new-conversation request is in-flight or retrying
   creatingWorkingDirs = new Set(), // Set of workingDirs with an in-flight create request
 }) {
@@ -1075,6 +1076,7 @@ function SessionListImpl({
         onSendPromptToConversation=${onSendPromptToConversation}
         onMakeLoop=${onMakeLoop}
         onMakeNonLoop=${onMakeNonLoop}
+        onMoveToAgent=${onMoveToAgent}
         isSpawned=${isSpawned}
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}

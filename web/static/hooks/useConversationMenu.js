@@ -22,6 +22,7 @@ import {
   PaletteIcon,
   CircleIcon,
   MagicWandIcon,
+  SwapIcon,
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
 import { CONVERSATION_COLORS } from "../constants.js";
@@ -53,6 +54,8 @@ export function useConversationMenu({
   onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
   onSetColor, // optional: (session, hexColor) => void — shows "Change color" submenu
   onAutoRename, // optional: (session) => void — shows "Auto-rename" item; forces title regeneration from extended context
+  moveAgentCandidates = [], // optional: [{name, type?}] other ACP servers with a workspace for this conversation's folder (mitto-f7yo.6); pass together with onMoveToAgent to show "Move to agent"
+  onMoveToAgent, // optional: (session, targetAgentName) => void — shows "Move to agent" submenu (one row per moveAgentCandidates entry)
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -162,6 +165,26 @@ export function useConversationMenu({
                   onClick: () => onSetColor(session, ""),
                 },
               ],
+            },
+          ]
+        : []),
+      // "Move to agent" — lists other ACP servers with a workspace for this
+      // conversation's folder (see moveAgentCandidates doc comment above).
+      // Hidden when there are no candidates or the conversation is archived
+      // (an archived conversation can't be moved — MoveSessionToAgent
+      // rejects it with ErrMoveAgentArchived). The actual move (preflight
+      // fetch, warnings, confirmation) happens in the dialog onMoveToAgent
+      // opens (mitto-f7yo.6, MoveAgentDialog.js) — this submenu only picks
+      // the target agent.
+      ...(onMoveToAgent && !isArchived && moveAgentCandidates.length > 0
+        ? [
+            {
+              label: "Move to agent",
+              icon: html`<${SwapIcon} />`,
+              submenu: moveAgentCandidates.map((c) => ({
+                label: c.name,
+                onClick: () => onMoveToAgent(session, c.name),
+              })),
             },
           ]
         : []),
@@ -316,6 +339,8 @@ export function useConversationMenu({
     onFlushContext,
     onSetColor,
     onAutoRename,
+    moveAgentCandidates,
+    onMoveToAgent,
   ]);
 
   return {

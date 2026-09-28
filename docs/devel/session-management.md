@@ -45,7 +45,10 @@ even when several conversations share one ACP process.
 At the first model-catalog advertisement, `cbInitBaselineModelIfEmpty` resolves:
 
 1. The existing in-memory or persisted conversation model, if present.
-2. The configured initial-model preference (workspace, then ACP-server setting).
+2. The configured initial-model preference (workspace, then ACP-server setting),
+   resolved by `SelectHighestPriorityModel`: the highest-priority `models:`
+   profile matching an available model wins, even if the agent default already
+   satisfies a lower-priority profile with the same tag.
 3. A matching legacy ACP-server model default/child initial-model constraint.
 4. The agent-reported default.
 
@@ -609,3 +612,42 @@ Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/sessi
   chain automatically (`internal/web/server.go`'s single `mux` wrap) — no extra per-route wiring
   needed. JS SDK entries: `endpoints.sessions.moveAgentPreflight(id)` /
   `endpoints.sessions.moveAgent(id)` (`web/static/sdk/core/endpoints.js`).
+
+### Frontend UI (`mitto-f7yo.6`)
+
+- **Entry point**: a **"Move to agent ›"** submenu in the shared per-conversation actions menu
+  (`web/static/hooks/useConversationMenu.js`), wired from both the sidebar row menu
+  (`SessionItem.js`, via `SessionList.js`) and the chat header menu (`app.js`). It lists every
+  other ACP server that has a workspace registered for the conversation's `working_dir` (derived
+  client-side from `stores/workspacesStore.js`, excluding the conversation's current
+  `acp_server`, deduped by `acp_server`), and is hidden entirely when there are no candidates or
+  the conversation is archived — a lightweight, purely client-side filter; the authoritative
+  busy/archived/candidate-availability check happens server-side in the confirmation dialog
+  below, not here.
+- **Confirmation dialog** (`web/static/components/MoveAgentDialog.js`, a daisyUI `Modal`):
+  selecting a candidate opens this dialog, which fetches
+  `GET /api/sessions/{id}/move-agent/preflight` via the SDK resource layer
+  (`getSdkClient().sessions.moveAgentPreflight(id)` — **not** `authFetch` +
+  `endpoints.sessions.*`, per the codebase-wide convention enforced by guard tests such as
+  `SessionList.test.js`/`SessionPanel.test.js`/`ConversationPropertiesPanel.test.js`) and renders:
+  context-loss and MCP/tools/prompts/model-drift warnings (always shown), the loop prompt name
+  when `is_loop` (plus a warning when the target candidate's `loop_prompt_available` is `false`),
+  a disabled Confirm button with `busy_reason` (or an archived-specific message) when
+  `busy`/`archived`, and an "Also move N child conversations" checkbox (→ `include_children`) when
+  `children_count > 0`. Confirming POSTs `{target_agent, include_children}` via
+  `getSdkClient().sessions.moveAgent(id, body)`; the server's own error messages
+  (`errorMessage(err, fallback)`) are surfaced directly in the error toast without client-side
+  status-code branching, since `HandleSessionMoveAgentExecute`'s error bodies are already
+  human-readable (see the error-mapping table above).
+- **Live update propagation**: the `session_agent_moved` broadcast (data
+  `{session_id, acp_server, previous_agent}`) is handled in `useWebSocket.js`'s
+  `handleGlobalEvent`, mirroring the `session_renamed`/`session_archived` pattern exactly — it
+  updates `acp_server` on both the matching `storedSessions` entry and the matching active
+  `sessions[id].info`, so the sidebar row and the chat header's agent badge both reflect the new
+  agent on next render. No forced WebSocket reconnect is triggered: the per-session WS connection
+  is keyed on `session_id`, not on the agent, and `ResumeSessionBackground` (bead `mitto-f7yo.1`)
+  already transparently continues serving the same session under the new agent.
+- **Timeline entry**: the `"session_change"` event with `kind: "agent"` that
+  `recordMoveAgentEvent` appends (see the backend section above) renders in
+  `web/static/components/Message.js`'s `sessionChangeText` as `"Moved from <previous_agent> to
+  <new_agent>"`.

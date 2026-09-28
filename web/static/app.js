@@ -151,6 +151,7 @@ import {
 import { WorkspacesDialog } from "./components/WorkspacesDialog.js";
 import { AddFolderDialog } from "./components/AddFolderDialog.js";
 import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
+import { MoveAgentDialog } from "./components/MoveAgentDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
   AgentPlanPanel,
@@ -493,6 +494,11 @@ function App() {
     session: null,
   });
   const [workspaceDialog, setWorkspaceDialog] = useState({ isOpen: false }); // Workspace selector for new session
+  // Move-to-agent confirmation dialog (mitto-f7yo.6): { session, targetAgent }
+  // when open, null when closed. Shared by both the sidebar row menu
+  // (SessionItem via SessionList) and the chat header menu — only one
+  // instance of MoveAgentDialog is rendered, at the bottom of the tree.
+  const [moveAgentDialog, setMoveAgentDialog] = useState(null);
   const [settingsDialog, setSettingsDialog] = useState({
     isOpen: false,
     forceOpen: false,
@@ -2763,6 +2769,22 @@ function App() {
   // next_scheduled_at + frequency; the per-session "connected" message does not).
   const headerAcpServer =
     sessionInfo?.acp_server || activeSession?.acp_server || "";
+  // "Move to agent" candidates for the header menu (mitto-f7yo.6): mirrors
+  // SessionItem.js's per-row computation (other ACP servers with a
+  // workspace for this folder, excluding the current agent, deduped).
+  const headerMoveAgentCandidates = useMemo(() => {
+    if (!headerWorkingDir) return [];
+    const seen = new Set();
+    const candidates = [];
+    for (const ws of workspaces) {
+      if (ws.working_dir !== headerWorkingDir) continue;
+      if (!ws.acp_server || ws.acp_server === headerAcpServer) continue;
+      if (seen.has(ws.acp_server)) continue;
+      seen.add(ws.acp_server);
+      candidates.push({ name: ws.acp_server, type: ws.acp_server });
+    }
+    return candidates;
+  }, [workspaces, headerWorkingDir, headerAcpServer]);
   const headerNextScheduledAt =
     (activeSession?.loop_configured && activeSession?.next_scheduled_at) ||
     null;
@@ -2983,6 +3005,16 @@ function App() {
     [activeSessionId, showToast],
   );
 
+  // Opens the move-to-agent confirmation dialog (mitto-f7yo.6). The actual
+  // preflight fetch + POST happen inside MoveAgentDialog; this only records
+  // which session/target agent the dialog is confirming. Stable identity
+  // (useCallback) so passing it to memo()'d SessionList/SessionItem rows
+  // doesn't defeat their shallow-prop-equal memo() (see the "mitto-b1k"
+  // comment above the SessionList export).
+  const handleMoveToAgent = useCallback((session, targetAgent) => {
+    setMoveAgentDialog({ session, targetAgent });
+  }, []);
+
   const {
     contextMenu: headerMenu,
     promptGroupItems: headerPromptGroupItems,
@@ -3017,6 +3049,8 @@ function App() {
     hasLastResponseMarkdown: !!headerLastAgentMarkdown,
     flushCommand: sessionInfo?.context_flush_command || "",
     onFlushContext: activeSessionId ? handleFlushContext : undefined,
+    moveAgentCandidates: headerMoveAgentCandidates,
+    onMoveToAgent: activeSessionId ? handleMoveToAgent : undefined,
   });
 
   // Conversation toolbar items (rendered as a portable Toolbar pill below the
@@ -3515,6 +3549,16 @@ function App() {
               console.error("[AgentDiscovery] Failed to refresh config:", err);
             }
           }}
+        />
+
+        <!-- Move Agent Dialog (mitto-f7yo.6): confirmation for the "Move to
+             agent" context-menu submenu, from either the header menu or a
+             sidebar row menu. Single shared instance driven by moveAgentDialog
+             state; renders nothing (Modal isOpen=false) when null. -->
+        <${MoveAgentDialog}
+          session=${moveAgentDialog?.session || null}
+          targetAgent=${moveAgentDialog?.targetAgent || ""}
+          onClose=${() => setMoveAgentDialog(null)}
         />
 
         <!-- Settings Dialog -->
@@ -4210,6 +4254,7 @@ function App() {
             onSendPromptToConversation=${handleSendPromptToConversation}
             onMakeLoop=${handleMakeLoop}
             onMakeNonLoop=${handleMakeNonLoop}
+            onMoveToAgent=${handleMoveToAgent}
             isCreatingSession=${isCreatingSession}
             creatingWorkingDirs=${creatingWorkingDirs}
           />

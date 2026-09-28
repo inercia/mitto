@@ -1063,6 +1063,8 @@ function sessionChangeText(m) {
   switch (m.kind) {
     case "model":
       return `Model changed to ${value}`;
+    case "agent":
+      return `Moved from ${previousValue} to ${value}`;
     case "model_override":
       return previousValue
         ? `⚡ Running this prompt on ${value} — conversation stays on ${previousValue}`
@@ -1153,6 +1155,16 @@ describe("sessionChangeText", () => {
     ).toBe(
       '⚠️ Model "claude-x" is no longer available — switched to an available model',
     );
+  });
+
+  test("agent kind renders 'Moved from X to Y' (mitto-f7yo.6)", () => {
+    expect(
+      sessionChangeText({
+        kind: "agent",
+        value: "agent-b",
+        previousValue: "agent-a",
+      }),
+    ).toBe("Moved from agent-a to agent-b");
   });
 });
 

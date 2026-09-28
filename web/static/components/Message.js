@@ -44,6 +44,8 @@ function sessionChangeText(m) {
   switch (m.kind) {
     case "model":
       return `Model changed to ${value}`;
+    case "agent":
+      return `Moved from ${previousValue} to ${value}`;
     case "model_override":
       return previousValue
         ? `⚡ Running this prompt on ${value} — conversation stays on ${previousValue}`

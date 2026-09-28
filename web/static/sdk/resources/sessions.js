@@ -76,6 +76,20 @@ export function createSessionsResource(config) {
         ...opts,
       }),
 
+    /** @returns {Promise<object>} MoveAgentPreflight — {current_agent, candidates:
+     *   [{name, type, available, loop_prompt_available?}], busy, busy_reason?,
+     *   archived, is_loop, loop_prompt_name?, children_count, baseline_model?}
+     *   (mitto-f7yo.2). Read-only — never mutates the conversation. */
+    moveAgentPreflight: (id, opts) =>
+      call("GET", `/api/sessions/${enc(id)}/move-agent/preflight`, opts),
+    /** Rebinds the conversation to a different ACP agent (mitto-f7yo.2).
+     *  @param {object} body - {target_agent, include_children?}
+     *  @returns {Promise<object>} MoveAgentResult — {moved: string[],
+     *   skipped: [{id, reason}], previous_agent, previous_baseline_model?,
+     *   resume_error?} */
+    moveAgent: (id, body, opts) =>
+      call("POST", `/api/sessions/${enc(id)}/move-agent`, { body, ...opts }),
+
     getCallback: (id, opts) => call("GET", `/api/sessions/${enc(id)}/callback`, opts),
     createCallback: (id, opts) => call("POST", `/api/sessions/${enc(id)}/callback`, opts),
     revokeCallback: (id, opts) => call("DELETE", `/api/sessions/${enc(id)}/callback`, opts),

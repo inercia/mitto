@@ -7,6 +7,7 @@ import {
   useSwipeToAction,
   useConversationMenu,
   useLinkedBeadPhase,
+  useWorkspaces,
 } from "../hooks/index.js";
 import {
   getArchiveReasonText,
@@ -154,6 +155,7 @@ export function SessionItem({
   onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
   onMakeLoop, // Called with (session) to convert a regular session to loop
   onMakeNonLoop, // Called with (session) to revert a loop session to regular
+  onMoveToAgent, // Called with (session, targetAgentName) to open the move-to-agent confirmation dialog (mitto-f7yo.6)
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -260,6 +262,28 @@ export function SessionItem({
     session.working_dir || getGlobalWorkingDir(session.session_id) || "";
   // Get acp_server from session
   const acpServer = session.acp_server || "";
+
+  // "Move to agent" candidates (mitto-f7yo.6): other ACP servers with a
+  // workspace registered for THIS conversation's folder, excluding the
+  // conversation's current agent, deduped by acp_server. Derived from the
+  // global workspaces store (no network round trip — the confirmation
+  // dialog fetches the authoritative preflight data once a target is
+  // picked). Memoized so a stable identity survives re-renders when neither
+  // the workspaces list nor this row's folder/agent changed.
+  const workspaces = useWorkspaces();
+  const moveAgentCandidates = useMemo(() => {
+    if (!workingDir) return [];
+    const seen = new Set();
+    const candidates = [];
+    for (const ws of workspaces) {
+      if (ws.working_dir !== workingDir) continue;
+      if (!ws.acp_server || ws.acp_server === acpServer) continue;
+      if (seen.has(ws.acp_server)) continue;
+      seen.add(ws.acp_server);
+      candidates.push({ name: ws.acp_server, type: ws.acp_server });
+    }
+    return candidates;
+  }, [workspaces, workingDir, acpServer]);
 
   // mitto-66r: resolve the plan→implement→test→review phase of the linked
   // bead (only for issue_type in {feature, bug}) so we can render a compact
@@ -419,6 +443,8 @@ export function SessionItem({
     onSendPromptToConversation,
     onSetColor,
     onAutoRename,
+    moveAgentCandidates,
+    onMoveToAgent,
   });
 
   // Handle click - only select if not swiping/revealed
