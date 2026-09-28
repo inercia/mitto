@@ -1662,6 +1662,10 @@ func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.
 func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManager) InvalidateWorkspaceRC(workingDir string)                  {}
 func (m *mockSessionManager) IsMCPInitTimeout(err error) bool                          { return false }
+func (m *mockSessionManager) BroadcastSessionAgentMoved(string, string, string)        {}
+func (m *mockSessionManager) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -4150,8 +4154,12 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceRCLastModified(workingDir 
 func (m *mockSessionManagerForWorkspaces) GetWorkspace(workingDir string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForWorkspaces) InvalidateWorkspaceRC(workingDir string) {}
-func (m *mockSessionManagerForWorkspaces) IsMCPInitTimeout(err error) bool         { return false }
+func (m *mockSessionManagerForWorkspaces) InvalidateWorkspaceRC(workingDir string)           {}
+func (m *mockSessionManagerForWorkspaces) IsMCPInitTimeout(err error) bool                   { return false }
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForWorkspaces) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -4508,7 +4516,11 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspace(string) *config.Work
 func (m *mockSessionManagerForWorkspaceUpdate) InvalidateWorkspaceRC(workingDir string) {
 	m.invalidateCalled = append(m.invalidateCalled, workingDir)
 }
-func (m *mockSessionManagerForWorkspaceUpdate) IsMCPInitTimeout(err error) bool { return false }
+func (m *mockSessionManagerForWorkspaceUpdate) IsMCPInitTimeout(err error) bool                   { return false }
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 // setupWorkspaceUpdateServer creates a server + store with a registered session for workspace-update tests.
 // Returns the server, store, session ID, and workspace dir.
@@ -4861,13 +4873,17 @@ func (m *mockSessionManagerForWait) BroadcastSessionBeadsIssueUpdated(string, st
 func (m *mockSessionManagerForWait) BroadcastLoopUpdated(string, *session.LoopPrompt)    {}
 func (m *mockSessionManagerForWait) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
 }
-func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt   { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string         { return nil }
-func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time     { return time.Time{} }
-func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings   { return nil }
-func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                    {}
-func (m *mockSessionManagerForWait) IsMCPInitTimeout(error) bool                     { return false }
+func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema   { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt     { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string           { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time       { return time.Time{} }
+func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings     { return nil }
+func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                      {}
+func (m *mockSessionManagerForWait) IsMCPInitTimeout(error) bool                       { return false }
+func (m *mockSessionManagerForWait) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForWait) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -5861,9 +5877,13 @@ func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string
 func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time {
 	return time.Time{}
 }
-func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings { return nil }
-func (m *mockSessionManagerForChildren) InvalidateWorkspaceRC(string)                  {}
-func (m *mockSessionManagerForChildren) IsMCPInitTimeout(error) bool                   { return false }
+func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings     { return nil }
+func (m *mockSessionManagerForChildren) InvalidateWorkspaceRC(string)                      {}
+func (m *mockSessionManagerForChildren) IsMCPInitTimeout(error) bool                       { return false }
+func (m *mockSessionManagerForChildren) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForChildren) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -6088,8 +6108,12 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceRCLastModified(string
 func (m *mockSessionManagerForChildrenMutable) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildrenMutable) InvalidateWorkspaceRC(string) {}
-func (m *mockSessionManagerForChildrenMutable) IsMCPInitTimeout(error) bool  { return false }
+func (m *mockSessionManagerForChildrenMutable) InvalidateWorkspaceRC(string)                      {}
+func (m *mockSessionManagerForChildrenMutable) IsMCPInitTimeout(error) bool                       { return false }
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForChildrenMutable) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -7117,6 +7141,10 @@ func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.Workspace
 func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
 func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(err error) bool {
 	return err != nil && m.resumeErrIsMCPInitTimeout
+}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForAutoResume) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
 }
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
@@ -8972,8 +9000,12 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceRCLastModified(string) ti
 func (m *mockSessionManagerCrossWorkspace) GetWorkspace(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerCrossWorkspace) InvalidateWorkspaceRC(string) {}
-func (m *mockSessionManagerCrossWorkspace) IsMCPInitTimeout(error) bool  { return false }
+func (m *mockSessionManagerCrossWorkspace) InvalidateWorkspaceRC(string)                      {}
+func (m *mockSessionManagerCrossWorkspace) IsMCPInitTimeout(error) bool                       { return false }
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerCrossWorkspace) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.

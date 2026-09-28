@@ -3333,6 +3333,19 @@ func (a *sessionManagerAdapter) IsMCPInitTimeout(err error) bool {
 	return mittoAcp.IsMCPInitTimeout(err)
 }
 
+// BroadcastSessionAgentMoved broadcasts a session_agent_moved event to all
+// connected clients when a conversation's ACP server binding changes via
+// MoveSessionToAgentForMCP (mitto_conversation_move_agent MCP tool, mitto-f7yo.3).
+func (a *sessionManagerAdapter) BroadcastSessionAgentMoved(sessionID, newAgent, previousAgent string) {
+	a.sm.BroadcastSessionAgentMoved(sessionID, newAgent, previousAgent)
+}
+
+// MoveSessionToAgentForMCP adapts conversation.SessionManager.MoveSessionToAgent
+// for the mitto_conversation_move_agent MCP tool (mitto-f7yo.3).
+func (a *sessionManagerAdapter) MoveSessionToAgentForMCP(sessionID, targetAgent string, opts mcpserver.MoveAgentOptions) (mcpserver.MoveAgentResult, error) {
+	return a.sm.MoveSessionToAgentForMCP(sessionID, targetAgent, opts)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================

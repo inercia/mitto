@@ -613,6 +613,56 @@ Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/sessi
   needed. JS SDK entries: `endpoints.sessions.moveAgentPreflight(id)` /
   `endpoints.sessions.moveAgent(id)` (`web/static/sdk/core/endpoints.js`).
 
+### MCP tool (`mitto-f7yo.3`)
+
+`mitto_conversation_move_agent` (`internal/mcpserver/tools_conversation_move_agent.go`) is the
+programmatic entry point, for agents/loops that want to hand a conversation off to a different
+ACP server without going through the UI.
+
+- **Params**: `self_id` (required, caller's own session ID for permission/context resolution —
+  same convention as every other `mitto_conversation_*` tool), `conversation_id` (required;
+  accepts the literal `"self"`, resolved the same way `mitto_conversation_update` resolves it),
+  target agent as **either** `agent` (fuzzy name/alias, resolved via the same
+  `resolveAgentOrACPServerName` helper `mitto_conversation_new` uses for its `agent` param —
+  mitto-lrt.13) **or** `acp_server` (exact configured server name); supplying both is only
+  accepted when they agree on the same canonical server, otherwise the tool errors. Also accepts
+  `include_children` (bool, default `false`), mapped straight to `MoveAgentOptions.IncludeChildren`.
+- **Import-cycle workaround**: `internal/conversation` already imports `internal/mcpserver` (for
+  session registration), so `internal/mcpserver` cannot import `internal/conversation` back
+  without a cycle. The tool therefore defines its own mirror types
+  (`MoveAgentOptions`/`MoveAgentResult`/`MoveAgentSkip` and the `ErrMoveAgent*` sentinels) and
+  calls a new adapter method, `(*conversation.SessionManager).MoveSessionToAgentForMCP`
+  (`internal/conversation/session_manager_move_agent_mcp.go`), which lives on the `conversation`
+  side (which *can* import `mcpserver`) and translates the real `MoveSessionToAgent`
+  result/sentinels to/from the mirrors via `errors.Is`. `mcpserver.SessionManager`'s interface
+  gained two entries for this: `MoveSessionToAgentForMCP` and `BroadcastSessionAgentMoved`
+  (documented inline with the same rationale). `internal/web`'s `sessionManagerAdapter` (the
+  concrete type wiring `conversation.SessionManager` into the `mcpserver.SessionManager`
+  interface) got matching one-line delegating methods, following the exact pattern already used
+  for every other `Broadcast*` method — `web.Server` and `conversation.SessionManager` each
+  broadcast independently through the *same* shared `GlobalEventsManager` instance rather than one
+  delegating to the other.
+- **Permission gating**: intentionally mirrors `mitto_conversation_update`'s *actual* behavior —
+  which, on inspection, has no extra permission flag/workspace-scope check for acting on another
+  conversation beyond "caller is a registered session" + "target conversation exists" (unlike
+  `mitto_conversation_get`'s `FlagCanInteractOtherWorkspaces` cross-workspace check, or
+  archive/delete's parent-only check for children). No additional gate was added here to stay
+  consistent. Moving `self` is allowed (same as update), but since `MoveSessionToAgent`'s own
+  preflight rejects any move while the conversation is prompting or waiting for children, a
+  self-move issued mid-turn always fails as busy — this is inherent to the caller's own turn
+  still being in flight, not a special case in the tool.
+- **Errors**: the same `ErrMoveAgent*` sentinels and `session.ErrSessionNotFound` used by the REST
+  handler map to clear tool-level error messages; busy specifically tells the caller to retry once
+  the conversation is idle (echoing `busy_reason` from the core preflight).
+- **Broadcast**: on success, emits the identical `session_agent_moved` global WS broadcast the
+  REST handler emits (`BroadcastSessionAgentMoved`, once per entry in `MoveAgentResult.Moved`) so
+  the UI updates the same way regardless of whether the move was triggered from the UI or an MCP
+  client.
+- **Scope**: no `dry_run`/preflight variant was added (the bead's acceptance criteria only require
+  alias resolution, busy rejection, and success; `MoveSessionToAgentPreflight` remains
+  REST/UI-only via mitto-f7yo.2/`.6`) — a future bead can add one if a caller needs a read-only
+  affordance check.
+
 ### Frontend UI (`mitto-f7yo.6`)
 
 - **Entry point**: a **"Move to agent ›"** submenu in the shared per-conversation actions menu

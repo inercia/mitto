@@ -321,6 +321,22 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleConversationUpdate)
 
+	// mitto_conversation_move_agent - Rebind a conversation to a different ACP agent
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_conversation_move_agent",
+		Description: "Rebind a conversation to a different ACP agent configured for the same folder, keeping it active and its history/loop config intact. " +
+			"To move YOUR OWN conversation, pass \"self\" (or your own conversation ID) as conversation_id — but note a self-move issued while your own turn is streaming always fails as busy, since the busy check considers this very call in flight; only works when idle. " +
+			"Specify the target via 'acp_server' (exact configured server name) or its alias 'agent' (also accepts a case-insensitive match of a configured server name; 'acp_server' and 'agent' must agree if both are given). " +
+			"The target agent must already have a workspace configured for this conversation's folder — this is a folder-local operation, it cannot move a conversation to a different directory. " +
+			"Set 'include_children' to true to also move every non-archived, non-busy descendant conversation still bound to the current agent (recursively); descendants that are archived, busy, or already bound to a different agent are left untouched and reported in the 'skipped' list with a reason. " +
+			"The conversation must be idle (no turn streaming, no loop run in flight) — a busy conversation returns an error; retry once it goes idle. " +
+			"WARNING: the target agent does NOT inherit the old agent's internal context — only recent turns are carried over as plain text history. " +
+			"MCP tools, prompts, and available model IDs may differ between agents, and the conversation's pinned model (if any) is cleared by the move (returned as 'previous_baseline_model' for reference). " +
+			"Returns 'moved' (conversation IDs actually rebound), 'skipped' (descendants declined to move, with why), 'previous_agent', 'new_agent', 'previous_baseline_model', and an optional 'resume_error' when the move succeeded but restarting on the new agent failed (the conversation still resumes normally on its next access). " +
+			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
+			selfIDNote,
+	}, s.handleConversationMoveAgent)
+
 	// mitto_conversation_wait - Wait until something happens in a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_wait",

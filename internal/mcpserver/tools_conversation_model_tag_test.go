@@ -152,9 +152,13 @@ func (m *mockSessionManagerForModelTag) GetWorkspacePromptsDirs(string) []string
 func (m *mockSessionManagerForModelTag) GetWorkspaceRCLastModified(string) time.Time {
 	return time.Time{}
 }
-func (m *mockSessionManagerForModelTag) GetWorkspace(string) *config.WorkspaceSettings { return nil }
-func (m *mockSessionManagerForModelTag) InvalidateWorkspaceRC(string)                  {}
-func (m *mockSessionManagerForModelTag) IsMCPInitTimeout(error) bool                   { return false }
+func (m *mockSessionManagerForModelTag) GetWorkspace(string) *config.WorkspaceSettings     { return nil }
+func (m *mockSessionManagerForModelTag) InvalidateWorkspaceRC(string)                      {}
+func (m *mockSessionManagerForModelTag) IsMCPInitTimeout(error) bool                       { return false }
+func (m *mockSessionManagerForModelTag) BroadcastSessionAgentMoved(string, string, string) {}
+func (m *mockSessionManagerForModelTag) MoveSessionToAgentForMCP(string, string, MoveAgentOptions) (MoveAgentResult, error) {
+	return MoveAgentResult{}, nil
+}
 
 // setupModelTagServer wires a Server with a session store + mockSessionManagerForModelTag,
 // registers a caller session with can_start_conversation enabled, and returns

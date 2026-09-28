@@ -362,6 +362,18 @@ type SessionManager interface {
 	// event to all connected clients when a conversation's linked beads issue
 	// ID changes via the mitto_conversation_update MCP tool.
 	BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string)
+	// BroadcastSessionAgentMoved broadcasts a session_agent_moved event to all
+	// connected clients when a conversation's ACP server binding changes via
+	// MoveSessionToAgentForMCP (REST mitto-f7yo.2, MCP mitto-f7yo.3).
+	BroadcastSessionAgentMoved(sessionID, newAgent, previousAgent string)
+	// MoveSessionToAgentForMCP rebinds sessionID to targetAgent, keeping it
+	// active. It is the mcpserver-facing adapter for
+	// conversation.SessionManager.MoveSessionToAgent (mitto-f7yo.1); see
+	// MoveAgentOptions/MoveAgentResult/ErrMoveAgent* (tools_conversation_move_agent.go)
+	// for why a mirror of conversation's own types is used here instead of
+	// importing internal/conversation directly (import cycle: conversation
+	// already imports mcpserver for session registration).
+	MoveSessionToAgentForMCP(sessionID, targetAgent string, opts MoveAgentOptions) (MoveAgentResult, error)
 	// BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
 	BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt)
 	// BroadcastWorkspaceUINotify broadcasts a workspace-scoped notification to

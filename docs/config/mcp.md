@@ -74,6 +74,7 @@ These tools require the **"Can Send Prompt"** flag or appropriate permissions:
 | `mitto_conversation_delete`  | Delete a child conversation (caller must be parent)                                                             |
 | `mitto_conversation_wait`    | Wait until an event occurs in a conversation (agent finishes responding, or beads issues reach a target status) |
 | `mitto_conversation_update`  | Update conversation properties: title, user-defined metadata, and loop prompt configuration.                    |
+| `mitto_conversation_move_agent` | Rebind a conversation (optionally with its children) to a different ACP agent in the same folder, keeping its history and loop config intact. The conversation must be idle; the new agent loses the old agent's internal context (only recent turns are carried as text) and may expose different MCP tools/prompts/model IDs. |
 
 ### Parent-Child Task Coordination Tools
 
