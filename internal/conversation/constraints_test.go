@@ -264,7 +264,7 @@ func TestSelectPreferredModel_PostSplitDefaultsFallthrough(t *testing.T) {
 // TestInitialModelPreference_HonoursProfileOrder locks the "list order =
 // priority" contract at the INITIAL-model consumer site (mitto-ex7.4):
 // cbInitBaselineModelIfEmpty in bgsession_callbacks.go routes through
-// SelectPreferredModel(initialModelPreference, EffectiveModelProfiles(),
+// SelectHighestPriorityModel(initialModelPreference, EffectiveModelProfiles(),
 // agentModels). This test drives that same call with the shape a workspace's
 // Initial Model preference produces (a single ModelTag entry), and asserts
 // that reordering the two same-tag profiles in Config.Models flips which
@@ -295,12 +295,49 @@ func TestInitialModelPreference_HonoursProfileOrder(t *testing.T) {
 	initialPref := []config.PromptPreferredModel{{ModelTag: "Smart"}}
 
 	// Sonnet 5 first → initial-model preference resolves to Sonnet 5.
-	if got := SelectPreferredModel(initialPref, []config.ModelProfile{sonnet5, sonnet4}, models); got != "claude-sonnet-5-0" {
+	if got := SelectHighestPriorityModel(initialPref, []config.ModelProfile{sonnet5, sonnet4}, models); got != "claude-sonnet-5-0" {
 		t.Errorf("initial-model preference with [Sonnet5, Sonnet4] profiles, modelTag=Smart resolved to %q, want %q", got, "claude-sonnet-5-0")
 	}
 	// Reverse the profile slice → initial-model preference now resolves to Sonnet 4.
-	if got := SelectPreferredModel(initialPref, []config.ModelProfile{sonnet4, sonnet5}, models); got != "claude-sonnet-4-6" {
+	if got := SelectHighestPriorityModel(initialPref, []config.ModelProfile{sonnet4, sonnet5}, models); got != "claude-sonnet-4-6" {
 		t.Errorf("initial-model preference with [Sonnet4, Sonnet5] profiles, modelTag=Smart resolved to %q, want %q", got, "claude-sonnet-4-6")
+	}
+}
+
+// TestSelectHighestPriorityModel_IgnoresCurrentModel pins the initial-model
+// contract: the agent's default must not shadow a higher-priority profile with
+// the same tag, even when the default satisfies a lower-priority profile.
+// SelectPreferredModel (prompt dispatch) keeps the current model instead.
+func TestSelectHighestPriorityModel_IgnoresCurrentModel(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "opus-4-7",
+		AvailableModels: []ModelInfo{
+			{ModelId: "opus-4-7", Name: "Opus 4.7"},
+			{ModelId: "opus-4-8", Name: "Opus 4.8"},
+			{ModelId: "claude-opus-5-5", Name: "Claude Opus 5.5"},
+			{ModelId: "sonnet-4-6", Name: "Sonnet 4.6"},
+		},
+	}
+	profiles := []config.ModelProfile{
+		{Name: "Claude Opus 5.5", Criteria: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Claude Opus 5.5"}, Tags: []string{"Smartest"}},
+		{Name: "Opus 4.8", Criteria: &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, Tags: []string{"Smartest"}},
+		{Name: "Opus", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Smartest"}},
+	}
+	prefs := []config.PromptPreferredModel{{ModelTag: "Smartest"}}
+
+	if got := SelectHighestPriorityModel(prefs, profiles, models); got != "claude-opus-5-5" {
+		t.Errorf("SelectHighestPriorityModel(modelTag=Smartest) = %q, want %q", got, "claude-opus-5-5")
+	}
+	if got := SelectPreferredModel(prefs, profiles, models); got != "opus-4-7" {
+		t.Errorf("SelectPreferredModel(modelTag=Smartest) = %q, want current %q kept", got, "opus-4-7")
+	}
+
+	byName := []config.PromptPreferredModel{{ModelName: "Opus"}}
+	if got := SelectHighestPriorityModel(byName, profiles, models); got != "claude-opus-5-5" {
+		t.Errorf("SelectHighestPriorityModel(modelName=Opus) = %q, want last contains-match %q", got, "claude-opus-5-5")
+	}
+	if got := SelectPreferredModel(byName, profiles, models); got != "opus-4-7" {
+		t.Errorf("SelectPreferredModel(modelName=Opus) = %q, want current %q kept", got, "opus-4-7")
 	}
 }
 

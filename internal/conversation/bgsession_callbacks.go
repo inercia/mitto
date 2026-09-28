@@ -421,7 +421,7 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 				l.Warn("mitto-a7wm: skipping model-preference seeding from a synthesized model catalog",
 					"session_id", bs.persistedID, "default_model", defaultModel)
 			}
-		} else if selected := SelectPreferredModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models); selected != "" {
+		} else if selected := SelectHighestPriorityModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models); selected != "" {
 			// Resolve the initial choice BEFORE persisting anything. A default written
 			// first would make a fresh conversation look resumed and mask its preference.
 			// ACP model settings are defaults, not constraints on later manual choices.

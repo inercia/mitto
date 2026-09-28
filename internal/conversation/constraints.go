@@ -93,13 +93,29 @@ func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *Sessi
 // available model are skipped, so resolution continues with the next preference.
 // Returns "" when nothing matches, signalling the caller to fall back to the baseline.
 func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState) string {
+	return selectPreferredModel(prefs, profiles, models, true)
+}
+
+// SelectHighestPriorityModel resolves prefs like SelectPreferredModel but never keeps
+// the current model just because it satisfies a preference: each entry resolves to the
+// highest-priority profile (profiles-slice order) that matches an available model. Used
+// for the initial model of a new conversation, where the agent's default must not
+// shadow a higher-priority profile carrying the requested tag.
+func SelectHighestPriorityModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState) string {
+	return selectPreferredModel(prefs, profiles, models, false)
+}
+
+func selectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, keepCurrent bool) string {
 	if len(prefs) == 0 || models == nil {
 		return ""
 	}
-	current := models.CurrentModelId
+	current := ""
+	if keepCurrent {
+		current = models.CurrentModelId
+	}
 	var currentName string
 	for _, m := range models.AvailableModels {
-		if m.ModelId == current {
+		if current != "" && m.ModelId == current {
 			currentName = m.Name
 			break
 		}
