@@ -69,6 +69,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/sessions/{id}/changes", handler: http.HandlerFunc(s.apiHandlers.HandleSessionChangesRoute)},
 		apiRoute{method: "POST", pattern: "/api/sessions/{id}/flush", handler: http.HandlerFunc(s.apiHandlers.HandleSessionFlushRoute)},
 		apiRoute{method: "POST", pattern: "/api/sessions/{id}/retitle", handler: http.HandlerFunc(s.apiHandlers.HandleSessionRetitleRoute)},
+		apiRoute{method: "GET", pattern: "/api/sessions/{id}/move-agent/preflight", handler: http.HandlerFunc(s.apiHandlers.HandleSessionMoveAgentPreflightRoute)},
+		apiRoute{method: "POST", pattern: "/api/sessions/{id}/move-agent", handler: http.HandlerFunc(s.apiHandlers.HandleSessionMoveAgentExecuteRoute)},
 		// Sub-resources with an optional trailing sub-ID; the same wrapper handles both.
 		apiRoute{pattern: "/api/sessions/{id}/images", handler: http.HandlerFunc(s.apiHandlers.HandleSessionImagesRoute)},
 		apiRoute{pattern: "/api/sessions/{id}/images/{imageId}", handler: http.HandlerFunc(s.apiHandlers.HandleSessionImagesRoute)},

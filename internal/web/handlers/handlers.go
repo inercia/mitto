@@ -230,6 +230,12 @@ type Deps struct {
 	// nil-guard.
 	BroadcastSessionArchived func(sessionID string, archived bool, reason ...session.ArchiveReason)
 
+	// BroadcastSessionAgentMoved mirrors Server.BroadcastSessionAgentMoved: it
+	// notifies all connected clients that a session's ACP server binding
+	// changed via SessionManager.MoveSessionToAgent (mitto-f7yo.1/.2). May be
+	// nil; callers must nil-guard.
+	BroadcastSessionAgentMoved func(sessionID, newAgent, previousAgent string)
+
 	// BroadcastSessionCreated mirrors Server.eventsManager.Broadcast for the
 	// WSMsgTypeSessionCreated message: it notifies all global events clients that
 	// a new session was created. May be nil; callers must nil-guard.

@@ -536,3 +536,69 @@ type MoveAgentResult struct {
     ResumeError            error           // set when metadata was rewritten but resume failed
 }
 ```
+
+### REST endpoints (`mitto-f7yo.2`)
+
+Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/session_move_agent.go`:
+
+- **`GET /api/sessions/{id}/move-agent/preflight`** — read-only affordance check, backed by
+  `SessionManager.MoveSessionToAgentPreflight(sessionID)`. Unlike the private preflight gate
+  `MoveSessionToAgent` itself uses, this call never errors on archived/busy — those are reported
+  as plain fields so a UI can render an informative state instead of a hard failure. It only
+  returns 404 (`session.ErrSessionNotFound`) when the session itself doesn't exist. Response body
+  (`conversation.MoveAgentPreflight`):
+
+  ```json
+  {
+    "current_agent": "agent-a",
+    "candidates": [
+      { "name": "agent-b", "type": "agent-b", "available": true, "loop_prompt_available": true }
+    ],
+    "busy": false,
+    "busy_reason": "",
+    "archived": false,
+    "is_loop": true,
+    "loop_prompt_name": "my-loop-prompt",
+    "children_count": 2,
+    "baseline_model": "gpt-x"
+  }
+  ```
+
+  `candidates` lists every other configured ACP server with a workspace for the conversation's
+  `working_dir`. `available` currently just means "configured and has a workspace for this
+  folder" — the richer four-state installed/configured/connected view from `mitto-lrt.9`
+  (`agents.ComposeAvailability`) is not wired into a cheap per-request lookup here; a future bead
+  can tighten the field's value without changing its meaning. `loop_prompt_available` is only
+  present when the conversation has a loop with a named prompt (`is_loop` and `loop_prompt_name`
+  set); it is resolved **by prompt name only**, against the same source-merge pipeline as
+  `resolvePromptByName` (global file prompts → settings prompts → ACP-server-specific prompts →
+  workspace directory prompts → workspace inline `.mittorc` prompts), **without** evaluating
+  `enabledWhen` CEL gates — see `Handlers.loopPromptAvailableForAgent`'s doc comment for the
+  documented limitation (a prompt hidden for the target agent by an `enabledWhen` gate would still
+  report `true`). `children_count` mirrors the recursive, same-folder, same-agent, non-archived
+  filter described above.
+
+- **`POST /api/sessions/{id}/move-agent`** — executes the move. Body:
+  `{"target_agent": "agent-b", "include_children": true}`. Calls
+  `SessionManager.MoveSessionToAgent` and returns its `MoveAgentResult` as JSON (`resume_error` is
+  included as a string when non-nil). On success, broadcasts
+  `WSMsgTypeSessionAgentMoved` (`"session_agent_moved"`, data
+  `{session_id, acp_server, previous_agent}`) on the **global events socket**
+  (`GlobalEventsManager.Broadcast`) once per entry in `MoveAgentResult.Moved` — the requested
+  session and every moved child. This is an additive wire-shape-only broadcast, mirroring
+  `session_beads_issue_updated`'s pattern; the frontend handler that refreshes a sidebar row's
+  `acp_server` on receipt is added by the UI bead (`mitto-f7yo.6`).
+
+  Error mapping (`errors.Is` against the sentinels above):
+
+  | Error | HTTP status |
+  |---|---|
+  | `session.ErrSessionNotFound` | 404 |
+  | `ErrMoveAgentArchived`, `ErrMoveAgentBusy` | 409 |
+  | `ErrMoveAgentSameAgent`, `ErrMoveAgentUnknownTarget`, `ErrMoveAgentNoWorkspace`, missing/invalid `target_agent` or body | 400 |
+
+  Both routes are registered in the same declarative `apiRoute` table as every other
+  `/api/sessions/{id}/...` mutation route, so they get the same auth/CSRF/rate-limit middleware
+  chain automatically (`internal/web/server.go`'s single `mux` wrap) — no extra per-route wiring
+  needed. JS SDK entries: `endpoints.sessions.moveAgentPreflight(id)` /
+  `endpoints.sessions.moveAgent(id)` (`web/static/sdk/core/endpoints.js`).

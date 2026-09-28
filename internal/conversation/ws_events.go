@@ -20,6 +20,17 @@ const (
 	// changes and does not carry per-session metadata).
 	WSMsgTypeSessionBeadsIssueUpdated = "session_beads_issue_updated"
 
+	// WSMsgTypeSessionAgentMoved notifies that a session's ACP server binding
+	// changed via SessionManager.MoveSessionToAgent (mitto-f7yo.1/.2). Fired
+	// once per moved conversation (the requested session and, when
+	// include_children was set, every moved descendant). Data:
+	// { "session_id": string, "acp_server": string (the new agent),
+	//   "previous_agent": string }. The frontend handling that refreshes a
+	// sidebar row's acp_server on receipt is added by mitto-f7yo.6 (UI bead);
+	// this is an additive wire-shape-only addition, mirroring
+	// WSMsgTypeSessionBeadsIssueUpdated's pattern.
+	WSMsgTypeSessionAgentMoved = "session_agent_moved"
+
 	// WSMsgTypeLoopUpdated notifies that a session's loop prompt state changed.
 	WSMsgTypeLoopUpdated = "loop_updated"
 

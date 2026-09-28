@@ -135,6 +135,21 @@ func (h *Handlers) HandleSessionRetitleRoute(w http.ResponseWriter, r *http.Requ
 	}
 }
 
+// HandleSessionMoveAgentPreflightRoute handles
+// GET /api/sessions/{id}/move-agent/preflight.
+func (h *Handlers) HandleSessionMoveAgentPreflightRoute(w http.ResponseWriter, r *http.Request) {
+	if id, ok := sessionIDFromPath(w, r); ok {
+		h.HandleSessionMoveAgentPreflight(w, r, id)
+	}
+}
+
+// HandleSessionMoveAgentExecuteRoute handles POST /api/sessions/{id}/move-agent.
+func (h *Handlers) HandleSessionMoveAgentExecuteRoute(w http.ResponseWriter, r *http.Request) {
+	if id, ok := sessionIDFromPath(w, r); ok {
+		h.HandleSessionMoveAgentExecute(w, r, id)
+	}
+}
+
 // HandleSessionUIPromptAcknowledgeRoute handles POST /api/sessions/{id}/ui-prompt/acknowledge.
 func (h *Handlers) HandleSessionUIPromptAcknowledgeRoute(w http.ResponseWriter, r *http.Request) {
 	if id, ok := sessionIDFromPath(w, r); ok {

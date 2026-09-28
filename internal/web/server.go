@@ -1729,6 +1729,7 @@ func NewServer(config Config) (*Server, error) {
 		BroadcastSessionBeadsIssueUpdated:     s.BroadcastSessionBeadsIssueUpdated,
 		BroadcastSessionPinned:                s.BroadcastSessionPinned,
 		BroadcastSessionArchived:              s.BroadcastSessionArchived,
+		BroadcastSessionAgentMoved:            s.BroadcastSessionAgentMoved,
 		BroadcastSessionCreated: func(data map[string]interface{}) {
 			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
 		},
@@ -2616,6 +2617,24 @@ func (s *Server) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string)
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session beads_issue updated",
 			"session_id", sessionID, "beads_issue", beadsIssue,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastSessionAgentMoved notifies all connected clients that a session's
+// ACP server binding changed via SessionManager.MoveSessionToAgent
+// (mitto-f7yo.1/.2). Called once per moved conversation (the requested
+// session and any moved descendants when include_children was set).
+func (s *Server) BroadcastSessionAgentMoved(sessionID, newAgent, previousAgent string) {
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionAgentMoved, map[string]string{
+		"session_id":     sessionID,
+		"acp_server":     newAgent,
+		"previous_agent": previousAgent,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session agent moved",
+			"session_id", sessionID, "acp_server", newAgent, "previous_agent", previousAgent,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

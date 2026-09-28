@@ -10,6 +10,11 @@ package conversation
 // (mitto-f7yo.4) or richer context handoff (mitto-f7yo.5) — those are
 // separate beads; this function only leaves clean seams for them
 // (MoveAgentResult.PreviousBaselineModel).
+//
+// MoveSessionToAgentPreflight (below) is the read-only counterpart used by
+// the REST GET .../move-agent/preflight endpoint (mitto-f7yo.2) to describe
+// move affordance (candidates, busy/archived state, loop info, children
+// count) without performing a move.
 
 import (
 	"errors"
@@ -70,6 +75,145 @@ type MoveAgentOptions struct {
 type MoveAgentSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+}
+
+// MoveAgentCandidate describes one alternative agent a conversation could be
+// moved to (returned by MoveSessionToAgentPreflight).
+type MoveAgentCandidate struct {
+	// Name is the ACP server name (config.ACPServer.Name / workspace ACPServer).
+	Name string `json:"name"`
+	// Type is the ACP server's type identifier (config.ACPServer.GetType():
+	// Type if set, else Name) — servers of the same type share prompts.
+	Type string `json:"type"`
+	// Available reports whether the candidate is currently usable. This bead
+	// only asserts "has a workspace for this folder and is present in
+	// config" (always true for entries in Candidates, since unconfigured/
+	// no-workspace agents are never added) — the richer four-state
+	// installed/configured/connected view from mitto-lrt.9
+	// (ComposeAvailability) is not yet wired into a cheap per-request lookup
+	// here; see docs/devel/agent-backend-architecture.md. A future bead can
+	// tighten this without changing the field's meaning (true = "safe to
+	// offer as a move target").
+	Available bool `json:"available"`
+	// LoopPromptAvailable is left nil here: MoveSessionToAgentPreflight has
+	// no access to the prompt-merge pipeline (internal/prompts,
+	// PromptsCache, per-workspace prompt dirs — all wired at the web/config
+	// layer, not the conversation layer). The REST handler
+	// (mitto-f7yo.2, internal/web/handlers/session_move_agent.go) fills this
+	// in by name-only resolution (no enabledWhen evaluation — see that
+	// file's doc comment for the documented limitation) when the
+	// conversation is a loop. Nil means "not applicable" (not a loop, or not
+	// computed); non-nil means the target agent does/doesn't have a
+	// same-named prompt available.
+	LoopPromptAvailable *bool `json:"loop_prompt_available,omitempty"`
+}
+
+// MoveAgentPreflight reports move-agent affordance for a conversation without
+// performing (or requiring) an actual move. It backs the REST
+// GET .../move-agent/preflight endpoint (mitto-f7yo.2). Unlike
+// moveAgentPreflight (the private validation gate MoveSessionToAgent itself
+// uses, which returns a sentinel error), this call only errors when the
+// session itself cannot be found — archived/busy/no-candidates are reported
+// as plain fields so a caller (typically a UI) can render an informative
+// state instead of a hard failure.
+type MoveAgentPreflight struct {
+	// CurrentAgent is the conversation's current ACP server.
+	CurrentAgent string `json:"current_agent"`
+	// WorkingDir is the conversation's working directory. Not serialized
+	// (json:"-"): it exists so the REST handler can resolve
+	// LoopPromptAvailable per candidate without a second store round trip;
+	// it is not part of the documented preflight response shape.
+	WorkingDir string `json:"-"`
+	// Candidates lists every other configured ACP server that has a
+	// workspace for CurrentAgent's WorkingDir (i.e. a valid move target).
+	Candidates []MoveAgentCandidate `json:"candidates"`
+	// Busy reports whether a turn is currently streaming or a loop run is in
+	// flight (see moveAgentBusyReason) — a move would be rejected right now.
+	Busy bool `json:"busy"`
+	// BusyReason is "turn_streaming" or "loop_run_in_flight" when Busy, empty otherwise.
+	BusyReason string `json:"busy_reason,omitempty"`
+	// Archived reports whether the conversation is archived — a move would
+	// be rejected right now (ErrMoveAgentArchived).
+	Archived bool `json:"archived"`
+	// IsLoop reports whether the conversation has a loop configured
+	// (loop.json present, regardless of Enabled).
+	IsLoop bool `json:"is_loop"`
+	// LoopPromptName is the loop's named prompt (session.LoopPrompt.PromptName),
+	// empty when the conversation has no loop or its loop uses a free-text
+	// prompt instead of a named one.
+	LoopPromptName string `json:"loop_prompt_name,omitempty"`
+	// ChildrenCount is the number of non-archived descendant conversations
+	// (recursive, via store.FindAllChildrenRecursive), in the same
+	// WorkingDir, still bound to CurrentAgent — i.e. how many conversations
+	// opts.IncludeChildren would attempt to move (some may still be skipped
+	// at execute time if they become busy in the interim).
+	ChildrenCount int `json:"children_count"`
+	// BaselineModel is the conversation's current baseline model, if any.
+	BaselineModel string `json:"baseline_model,omitempty"`
+}
+
+// MoveSessionToAgentPreflight computes MoveAgentPreflight for sessionID. See
+// the type doc comment: this never returns ErrMoveAgent* sentinels, only
+// session.ErrSessionNotFound (or a store-lookup error) when the session
+// itself cannot be resolved.
+func (sm *SessionManager) MoveSessionToAgentPreflight(sessionID string) (MoveAgentPreflight, error) {
+	var result MoveAgentPreflight
+
+	store := sm.store
+	if store == nil {
+		return result, session.ErrSessionNotFound
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		return result, err
+	}
+
+	result.CurrentAgent = meta.ACPServer
+	result.WorkingDir = meta.WorkingDir
+	result.Archived = meta.Archived
+	result.BaselineModel = meta.BaselineModel
+	result.Busy, result.BusyReason = sm.moveAgentBusyReason(sessionID)
+
+	if loop, loopErr := store.Loop(sessionID).Get(); loopErr == nil && loop != nil {
+		result.IsLoop = true
+		result.LoopPromptName = loop.PromptName
+	}
+
+	if descendantIDs, listErr := store.FindAllChildrenRecursive(sessionID); listErr == nil {
+		for _, childID := range descendantIDs {
+			childMeta, metaErr := store.GetMetadata(childID)
+			if metaErr != nil {
+				continue
+			}
+			if !childMeta.Archived && childMeta.ACPServer == meta.ACPServer && childMeta.WorkingDir == meta.WorkingDir {
+				result.ChildrenCount++
+			}
+		}
+	} else if sm.logger != nil {
+		sm.logger.Warn("MoveSessionToAgentPreflight: failed to list descendants for children_count",
+			"session_id", sessionID, "error", listErr)
+	}
+
+	_, mittoConfig := sm.GetGlobalRunnerInfo()
+	seen := map[string]bool{meta.ACPServer: true}
+	for _, ws := range sm.GetWorkspaces() {
+		if ws.WorkingDir != meta.WorkingDir || ws.ACPServer == "" || seen[ws.ACPServer] {
+			continue
+		}
+		seen[ws.ACPServer] = true
+
+		candidate := MoveAgentCandidate{Name: ws.ACPServer}
+		if mittoConfig != nil {
+			if srv, srvErr := mittoConfig.GetServer(ws.ACPServer); srvErr == nil && srv != nil {
+				candidate.Type = srv.GetType()
+				candidate.Available = true
+			}
+		}
+		result.Candidates = append(result.Candidates, candidate)
+	}
+
+	return result, nil
 }
 
 // MoveAgentResult reports the outcome of MoveSessionToAgent.
@@ -203,10 +347,22 @@ func (sm *SessionManager) moveAgentPreflight(meta session.Metadata, targetAgent 
 // moveAgentIsBusy reports whether sessionID has a turn currently streaming or
 // a loop run in flight, using the same signals as LoopRunner.isSessionBusy.
 func (sm *SessionManager) moveAgentIsBusy(sessionID string) bool {
+	busy, _ := sm.moveAgentBusyReason(sessionID)
+	return busy
+}
+
+// moveAgentBusyReason is the single source of truth behind moveAgentIsBusy
+// and MoveSessionToAgentPreflight's "busy"/"busy_reason" fields: it reports
+// whether sessionID has a turn currently streaming or a loop run in flight,
+// and — when busy — a short machine-readable reason distinguishing the two.
+func (sm *SessionManager) moveAgentBusyReason(sessionID string) (bool, string) {
 	if bs := sm.GetSession(sessionID); bs != nil && bs.IsPrompting() {
-		return true
+		return true, "turn_streaming"
 	}
-	return sm.IsWaitingForChildren(sessionID)
+	if sm.IsWaitingForChildren(sessionID) {
+		return true, "loop_run_in_flight"
+	}
+	return false, ""
 }
 
 // moveAgentStopAndRebind stops the live BackgroundSession for sessionID (bounded

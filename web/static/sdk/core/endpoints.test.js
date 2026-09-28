@@ -236,6 +236,14 @@ describe("endpoints registry", () => {
       expect(endpoints.sessions.images("s1")).toBe("/api/sessions/s1/images"));
     test("prune", () =>
       expect(endpoints.sessions.prune("s1")).toBe("/api/sessions/s1/prune"));
+    test("moveAgentPreflight", () =>
+      expect(endpoints.sessions.moveAgentPreflight("s1")).toBe(
+        "/api/sessions/s1/move-agent/preflight",
+      ));
+    test("moveAgent", () =>
+      expect(endpoints.sessions.moveAgent("s1")).toBe(
+        "/api/sessions/s1/move-agent",
+      ));
     test("image(id, imageId)", () =>
       expect(endpoints.sessions.image("s1", "img1")).toBe(
         "/api/sessions/s1/images/img1",

@@ -90,6 +90,9 @@ export function createEndpoints(config, options = {}) {
       uiPromptAcknowledge: (id) =>
         url(`/api/sessions/${enc(id)}/ui-prompt/acknowledge`),
       flush: (id) => url(`/api/sessions/${enc(id)}/flush`),
+      moveAgentPreflight: (id) =>
+        url(`/api/sessions/${enc(id)}/move-agent/preflight`),
+      moveAgent: (id) => url(`/api/sessions/${enc(id)}/move-agent`),
       callback: (id) => url(`/api/sessions/${enc(id)}/callback`),
       userData: (id) => url(`/api/sessions/${enc(id)}/user-data`),
       promptArgCache: (id, promptName) =>
