@@ -2305,26 +2305,64 @@ export function useWebSocket({
           const session = prev[sessionId];
           if (!session) return prev;
 
-          // Categorize the stop reason for appropriate UX:
-          // - archived/archived_timeout: neutral system message
-          // - gc_suspended: friendly info message (session will auto-resume)
-          // - anything else: error message
+          // Categorize the stop reason for appropriate UX (mitto-wko1). The
+          // backend reuses this single event for several distinct lifecycle
+          // families, so the raw reason string must never leak into
+          // user-facing text and each family gets its own severity/guidance:
+          // - archive family (REST/MCP/auto/parent/ancestor + timeout
+          //   variants, plus reassignment which archives the conversation):
+          //   neutral system message recommending unarchive.
+          // - transient/resumable lifecycle transitions (agent handoff, GC
+          //   idle/suspend, config reload, server restart): neutral system
+          //   message, no "unarchive" guidance (the conversation resumes on
+          //   its own).
+          // - anything else (genuinely unexpected/unknown reason): a safe
+          //   generic error message that never echoes the wire identifier.
           const reason = msg.data?.reason || "unknown reason";
-          const isArchived =
-            reason === "archived" || reason === "archived_timeout";
+          const ARCHIVE_STOP_REASONS = new Set([
+            "archived",
+            "archived_timeout",
+            "archived_via_mcp",
+            "archived_timeout_via_mcp",
+            "auto_archived",
+            "auto_archived_timeout",
+            "parent_archived",
+            "parent_archived_timeout",
+            "ancestor_archived",
+            "acp_server_reassigned",
+            "acp_server_reassigned_timeout",
+          ]);
+          const TRANSIENT_STOP_REASON_TEXT = {
+            agent_moved:
+              "Switching to a different agent. The conversation will resume automatically.",
+            agent_moved_timeout:
+              "Switching to a different agent. The conversation will resume automatically.",
+            acp_server_reconfigured:
+              "Agent configuration changed. The conversation will resume automatically.",
+            gc_idle:
+              "Session paused to save resources. It will resume when you need it.",
+            gc_suspended:
+              "Session suspended to save resources. It will resume when you need it.",
+            server_shutdown:
+              "Server restarting. The conversation will resume automatically.",
+          };
+          const isArchived = ARCHIVE_STOP_REASONS.has(reason);
           const isGCSuspended = reason === "gc_suspended";
+          const isTransientLifecycle = Object.prototype.hasOwnProperty.call(
+            TRANSIENT_STOP_REASON_TEXT,
+            reason,
+          );
 
           let messageRole, messageText;
           if (isArchived) {
             messageRole = "system";
             messageText = "Session archived. Unarchive to continue.";
-          } else if (isGCSuspended) {
+          } else if (isTransientLifecycle) {
             messageRole = "system";
-            messageText =
-              "Session suspended to save resources. It will resume when you need it.";
+            messageText = TRANSIENT_STOP_REASON_TEXT[reason];
           } else {
             messageRole = "error";
-            messageText = `Session stopped: ${reason}. Unarchive to continue.`;
+            messageText = "Session stopped unexpectedly.";
           }
 
           // Only append the stop message when the session was actually running.
@@ -2359,13 +2397,18 @@ export function useWebSocket({
               isStreaming: false,
               activeUIPrompt: null,
               info: nextInfo,
-              // Add a system/error message to inform the user
+              // Add a system/error message to inform the user. Never
+              // retryable: resending the last prompt is never the correct
+              // recovery action for an acp_stopped lifecycle transition
+              // (mitto-wko1) - excluded from MessageList's retry-target scan
+              // via buildRetryTargets' `retryable === false` check.
               messages: [
                 ...session.messages,
                 {
                   role: messageRole,
                   text: messageText,
                   timestamp: Date.now(),
+                  retryable: false,
                 },
               ],
             },

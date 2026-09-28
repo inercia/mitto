@@ -2261,7 +2261,10 @@ export async function copyToClipboard(text) {
  * Build a map from error-message index → retry payload
  * { text, images, promptName, argumentCount, arguments }.
  * Single forward pass: tracks the most recent user message that has truthy
- * `.text`; when an error message is encountered, records that payload.
+ * `.text`; when an error message is encountered, records that payload -
+ * unless the error message explicitly opts out via `retryable: false` (e.g.
+ * acp_stopped lifecycle messages, mitto-wko1), since resending the last
+ * prompt is never the correct recovery action for those.
  * promptName/argumentCount/arguments are carried through so a retry can
  * replay the original named prompt exactly (see MessageList.js retry handler).
  *
@@ -2284,7 +2287,11 @@ export function buildRetryTargets(displayMessages) {
       lastUserPromptName = msg.promptName;
       lastUserArgumentCount = msg.argumentCount;
       lastUserArguments = msg.arguments;
-    } else if (msg.role === ROLE_ERROR && lastUserText !== null) {
+    } else if (
+      msg.role === ROLE_ERROR &&
+      msg.retryable !== false &&
+      lastUserText !== null
+    ) {
       map.set(i, {
         text: lastUserText,
         images: lastUserImages,
