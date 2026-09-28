@@ -484,8 +484,9 @@ See **[Message Queue](message-queue.md)**.
 conversation to a different ACP agent configured for the same folder, while keeping the
 conversation active, its persisted history visible, and its loop config (`loop.json`) untouched.
 It is the backend core that REST (`mitto-f7yo.2`) and MCP (`mitto-f7yo.3`) entry points call; this
-bead does not add either of those entry points, model mapping (`mitto-f7yo.4`), or richer
-context handoff on the first post-move prompt (`mitto-f7yo.5`) — only clean seams for them.
+bead does not add either of those entry points or richer context handoff on the first post-move
+prompt (`mitto-f7yo.5`) — only clean seams for them. Model mapping (`mitto-f7yo.4`, described
+below) consumes the `PreviousBaselineModel`/`PendingModelMappingFrom` seam this bead leaves behind.
 
 ### Preflight
 
@@ -515,7 +516,9 @@ failure (callers such as the REST handler can map these with `errors.Is`):
 2. **Rewrite metadata** in one `store.UpdateMetadata` call: `ACPServer` is set to `targetAgent`;
    `ACPSessionID`, `CurrentModeID`, and `ACPStartFailureCount` (all agent-specific) are cleared;
    the previous `BaselineModel` is captured into `MoveAgentResult.PreviousBaselineModel` and
-   cleared (seam for `mitto-f7yo.4` to map it to the closest equivalent model on the target agent).
+   cleared, and the same value is stashed into `Metadata.PendingModelMappingFrom` so it survives
+   an asynchronous/after-restart resume (consumed once by the model-mapping hook, `mitto-f7yo.4`,
+   described below).
 3. **Record** a `session_change` event with `{kind: "agent", value: targetAgent, previous_value:
    previousAgent}` via a fresh `session.Recorder` bound to the persisted session (the live
    recorder was just stopped), so the timeline shows the move.
@@ -546,6 +549,65 @@ type MoveAgentResult struct {
     ResumeError            error           // set when metadata was rewritten but resume failed
 }
 ```
+
+### Model mapping (`mitto-f7yo.4`)
+
+Model IDs are agent-specific (an Auggie model ID has no relationship to a GitHub Copilot one), so
+step 2 above clears `BaselineModel` outright rather than carrying it over verbatim. Instead it
+persists the previous value into `session.Metadata.PendingModelMappingFrom`
+(`json:"pending_model_mapping_from,omitempty"`) — durable, since the resume that will need it may
+happen asynchronously or after a restart. `moveAgentStopAndRebind` sets it in the very same
+`UpdateMetadata` call, so it's also set for every descendant moved via `IncludeChildren` (each
+child goes through the same function).
+
+The pending value is consumed once the moved session's ACP session (re)starts on the new agent and
+its model catalog is known: `acp_callback_sink.go`'s `setAgentModels` — the existing hook that
+already seeds/reapplies the baseline model on first start (`cbInitBaselineModelIfEmpty`,
+`cbApplyConfigConstraintsAsync`) — additionally calls `cbApplyPendingModelMapping(models)`
+(`internal/conversation/bgsession_model_mapping.go`). That method:
+
+1. Atomically reads and clears `PendingModelMappingFrom` via a single `store.UpdateMetadata` call
+   (no-op, including the atomic read/clear, when nothing is pending) — this is what makes the
+   mapping attempt run-once regardless of how many times `setAgentModels` fires afterward (e.g. a
+   later resume), and what makes a manual model change made before the attempt fires stick instead
+   of being silently overwritten by a stale pending value.
+2. Resolves the closest available model via `resolveClosestModel`, in order: case-insensitive
+   exact model-ID match, exact display-name match, then a **normalized** `lookAlike` match against
+   the display name. Normalization maps `-`/`_`/`.`/`/` in the previous raw ID to spaces before
+   matching, because `config.ConstraintMatchesName`'s `lookAlike` mode tokenizes its pattern on
+   whitespace only (`strings.Fields`) — an un-normalized hyphen/dot-separated model ID would be
+   treated as one opaque token and never usefully match a differently-punctuated target name.
+   **Deliberate deviation from a literal reading of the bead**: this uses the raw-string matching
+   engine (`MatchConstraintOption`/`config.ConstraintMatchesName`, the same one
+   `ResolveAuxModelSwitch` already uses) rather than `SelectPreferredModel`/
+   `config.PromptPreferredModel`, because that mechanism resolves *named global `Models` profiles*
+   by exact profile name/tag — a previous agent's raw model ID has no relationship to any
+   configured profile's `Name`, so it is the wrong tool for matching one agent's raw ID against
+   another agent's raw catalog.
+3. If nothing matches, the agent's own default stands — no error, logged at info/debug.
+4. If the resolved model already equals the agent's current/default model, it is promoted straight
+   to the persisted baseline (`cmSetBaselineAndClearOverride` + `cmPersistBaselineModel`) without
+   an RPC or a timeline event — mirroring `ApplyModelTag`'s existing "already the active model"
+   short-circuit (mitto-1yo).
+5. Otherwise the match is applied via the same **persistent** path manual selection uses,
+   `bs.SetConfigOption(ctx, "model", resolved)` (→ `applyConfigOption` → `cmRecordSessionChange`),
+   so it lands as a `session_change` timeline event and reaches the frontend through the existing
+   `config_option_changed` broadcast — not the silent `setActiveModelOnly` per-prompt override
+   path. The RPC dispatch runs in an unmanaged goroutine, deliberately mirroring
+   `cbApplyConfigConstraintsAsync`'s own fire-and-forget pattern, so a slow/unreachable new agent
+   can't stall ACP callback processing.
+
+**Ordering versus `ApplyModelTag` (mitto-9eci — strict tag selection).** No new priority flag was
+introduced to arbitrate between the mapping attempt and an explicit `model_tag` pin. Instead, the
+existing causality already guarantees the tag wins when both apply to the same first-start:
+`ApplyModelTag` requires `bs.AgentModels() != nil`, which is set as literally the first line of
+`setAgentModels` — so an `ApplyModelTag` call (a separate MCP/REST request, always causally *after*
+the caller has observed the move/resume as complete) can only ever run at or after
+`cbApplyPendingModelMapping` has already been invoked (and, in virtually every real flow, already
+finished). Both funnel through the same `SetConfigOption` persistent path, so whichever request's
+RPC response lands last simply wins the persisted baseline and timeline record — exactly the
+"tag wins" behavior the acceptance criteria call for, without touching the tag-selection logic
+itself.
 
 ### REST endpoints (`mitto-f7yo.2`)
 

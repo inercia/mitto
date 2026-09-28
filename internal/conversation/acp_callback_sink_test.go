@@ -57,6 +57,7 @@ type fakeCallbackDeps struct {
 	storedAgentModels   []*SessionModelState
 	modelReplacements   []SessionConfigOption
 	asyncConstraintCats []string
+	pendingMappingCalls []*SessionModelState
 }
 
 type recordedPermission struct{ Title, OptionID, Outcome string }
@@ -178,6 +179,12 @@ func (f *fakeCallbackDeps) cbApplyConfigConstraintsAsync(category string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncConstraintCats = append(f.asyncConstraintCats, category)
+}
+
+func (f *fakeCallbackDeps) cbApplyPendingModelMapping(models *SessionModelState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pendingMappingCalls = append(f.pendingMappingCalls, models)
 }
 
 func (f *fakeCallbackDeps) cbStreamingSuppressed() bool {

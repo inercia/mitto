@@ -115,6 +115,11 @@ type acpCallbackDeps interface {
 	// cbApplyConfigConstraintsAsync kicks off the async constraint-application
 	// goroutine for a category (matches the legacy `go bs.applyConfigConstraints(...)`).
 	cbApplyConfigConstraintsAsync(category string)
+	// cbApplyPendingModelMapping consumes any pending post-agent-move model
+	// mapping (mitto-f7yo.4) exactly once, resolving the closest available
+	// model to the previous agent's baseline and applying it via the
+	// persistent SetConfigOption path. No-op when nothing is pending.
+	cbApplyPendingModelMapping(models *SessionModelState)
 
 	// cbStreamingSuppressed reports whether streaming callbacks are currently
 	// suppressed (e.g. during an in-place context flush). When true, each gated
@@ -662,6 +667,17 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelSta
 	d.cbReplaceModelConfigOption(modelOption)
 
 	d.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+
+	// mitto-f7yo.4: consume any pending post-move model mapping AFTER the
+	// startup constraint kick-off above. In the common case (no
+	// initial-model-preference / no ACP-server model constraint on the
+	// target agent) applyConfigConstraints is a no-op here because the
+	// baseline cbInitBaselineModelIfEmpty just seeded already equals the
+	// agent's own current model, so this hook's SetConfigOption RPC is the
+	// only one that actually fires. See cbApplyPendingModelMapping's doc
+	// comment (bgsession_model_mapping.go) for the ordering guarantee vs an
+	// explicit ApplyModelTag call.
+	d.cbApplyPendingModelMapping(models)
 }
 
 // recordEventWithSeqHelper is a small helper used by BackgroundSession's

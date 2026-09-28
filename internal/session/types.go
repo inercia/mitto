@@ -437,6 +437,16 @@ type Metadata struct {
 	// Persisted so the retry cadence survives restarts. Cleared on any
 	// successful (manual or auto) unarchive.
 	AutoUnarchiveLastAttemptAt time.Time `json:"auto_unarchive_last_attempt_at,omitempty"`
+	// PendingModelMappingFrom holds the pre-move BaselineModel value (a
+	// model ID from the PREVIOUS agent) set by MoveSessionToAgent at the
+	// same time it clears BaselineModel (mitto-f7yo.4). Consumed exactly
+	// once, the first time the moved session's model catalog becomes known
+	// on the new agent, to pick the closest available model (exact, then
+	// lookAlike match on ID/display name) and apply it via the persistent
+	// applyConfigOption path. Cleared after the attempt (match or no-match)
+	// so it never re-fires, and survives process restarts since the resume
+	// may happen asynchronously.
+	PendingModelMappingFrom string `json:"pending_model_mapping_from,omitempty"`
 }
 
 // IsArchivable reports whether this conversation may be archived. It returns
