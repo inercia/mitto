@@ -37,4 +37,3 @@ export function useToasts() {
   useEffect(() => subscribeToasts(setToasts), []);
   return toasts;
 }
-
