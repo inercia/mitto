@@ -430,6 +430,16 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 			if selected := MatchConstraintOption(constraint, ModelsToConfigOptions(models)); selected != "" {
 				baseline = selected
 			}
+		} else if len(bs.initialModelPreference) > 0 {
+			// mitto-b3qe: the requested initial-model preference (e.g. an
+			// auto-child's ModelTag) never resolved against this agent's
+			// available models — no profile carrying the tag matched. Fall
+			// through to the agent default, but surface this so it doesn't
+			// look like the tag was silently honored.
+			if l := bs.logger; l != nil {
+				l.Warn("Initial-model preference did not match any available model; using agent default",
+					"session_id", bs.persistedID, "preference", bs.initialModelPreference, "default_model", defaultModel)
+			}
 		}
 	}
 	bs.baselineModel = baseline

@@ -5,20 +5,6 @@ const { html } = window.preact;
 const HINT_VALUE = "__hint__";
 
 /**
- * ModelTagSelect — single dropdown for choosing a capability Tag (e.g. "Fast",
- * "Cheap") that any Model profile carrying that tag can satisfy.
- *
- * Mirrors ModelProfileSelect but for the tag axis. Used alongside
- * ModelProfileSelect as a mutually-exclusive way to pick an auxiliary model:
- * select a specific profile by name, or delegate to whichever profile matches
- * a requested tag.
- *
- * Props:
- *   value    {string}   — currently selected tag ("" = none)
- *   profiles {Array}    — model profiles from config.models: {name, criteria, tags}
- *   onChange {function} — called with the newly selected tag ("" = none)
- */
-/**
  * collectModelTags — deduplicated, case-insensitively unique, sorted union of
  * `tags` across a list of model profiles. Preserves the first-seen original
  * casing for each tag. Shared by ModelTagSelect and any other picker that
@@ -46,6 +32,20 @@ export function collectModelTags(profiles = []) {
   );
 }
 
+/**
+ * ModelTagSelect — single dropdown for choosing a capability Tag (e.g. "Fast",
+ * "Cheap") that any Model profile carrying that tag can satisfy.
+ *
+ * Mirrors ModelProfileSelect but for the tag axis. Used alongside
+ * ModelProfileSelect as a mutually-exclusive way to pick an auxiliary model:
+ * select a specific profile by name, or delegate to whichever profile matches
+ * a requested tag.
+ *
+ * Props:
+ *   value    {string}   — currently selected tag ("" = none)
+ *   profiles {Array}    — model profiles from config.models: {name, criteria, tags}
+ *   onChange {function} — called with the newly selected tag ("" = none)
+ */
 export function ModelTagSelect({
   value,
   profiles = [],

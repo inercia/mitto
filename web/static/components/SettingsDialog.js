@@ -396,10 +396,10 @@ export function AutoChildrenEditor({
 
   const tagOptions = [
     { value: "", label: "Default (agent criteria)" },
-    // Canonical/effective tags (config.model_tags, derived from
-    // EffectiveModelProfiles()) unioned with any tags on the user's own
-    // model profiles — so the list stays populated even when the user has
-    // configured no profiles of their own (DefaultModelProfiles fallback).
+    // Canonical tags (config.model_tags, from config.CanonicalModelTags())
+    // unioned with any tags on the user's own model profiles — mirrors the
+    // backend's EffectiveModelProfiles() so the list stays populated even when
+    // the user has configured no profiles of their own.
     ...collectModelTags([
       ...(modelProfiles || []),
       { tags: modelTags || [] },
