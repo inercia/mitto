@@ -49,18 +49,21 @@ prompt: |
   ## Step 1 — Ask what to discuss
 
   {{ if $target -}}
-  Open by asking the user what they want to discuss — do this **before** any investigation:
+  Start **immediately** — your very first output must be this question, before running any
+  tool, command, or investigation:
 
-  > **What would you like to discuss about `{{ $target }}`?**
+  > **What do you want to discuss about `{{ $target }}`?**
 
-  Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, offering
-  a few likely angles as options — e.g. "Refine the description / acceptance criteria",
-  "Re-evaluate priority or scope", "Should it be closed or reopened?", "Break it into
-  sub-issues" — plus free text so they can steer. Wait for their answer before going further.
+  Ask it as a **plain-text question** in your reply. Do **NOT** use any Mitto UI MCP tool
+  (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, …) for it, and do **NOT** propose
+  options, suggested angles, or examples — just the question. Then **stop and wait** for the
+  user's answer before going further.
   {{- else -}}
-  Ask the user which bead they want to discuss and what about it, via
-  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`. Once they name a
-  bead, load it (Step 2) and continue.
+  Start **immediately** — your very first output must be a plain-text question asking which
+  bead the user wants to discuss and what about it, before running any tool or command.
+  Do **NOT** use any Mitto UI MCP tool (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, …)
+  for it, and do **NOT** propose options — just the question. Then **stop and wait** for the
+  answer. Once they name a bead, load it (Step 2) and continue.
   {{- end }}
 
   {{ if $target -}}
