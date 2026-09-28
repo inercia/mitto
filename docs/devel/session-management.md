@@ -466,3 +466,73 @@ For detailed documentation on the queue system, including:
 - Thread safety and storage
 
 See **[Message Queue](message-queue.md)**.
+
+## Moving a Conversation to a Different Agent
+
+`SessionManager.MoveSessionToAgent(sessionID, targetAgent string, opts MoveAgentOptions) (MoveAgentResult, error)`
+(`internal/conversation/session_manager_move_agent.go`, bead `mitto-f7yo.1`) rebinds an existing
+conversation to a different ACP agent configured for the same folder, while keeping the
+conversation active, its persisted history visible, and its loop config (`loop.json`) untouched.
+It is the backend core that REST (`mitto-f7yo.2`) and MCP (`mitto-f7yo.3`) entry points call; this
+bead does not add either of those entry points, model mapping (`mitto-f7yo.4`), or richer
+context handoff on the first post-move prompt (`mitto-f7yo.5`) — only clean seams for them.
+
+### Preflight
+
+Before touching anything, the request is validated and a typed sentinel error is returned on
+failure (callers such as the REST handler can map these with `errors.Is`):
+
+| Condition | Error |
+|---|---|
+| Session does not exist | `session.ErrSessionNotFound` |
+| Conversation is archived | `ErrMoveAgentArchived` |
+| `targetAgent == meta.ACPServer` | `ErrMoveAgentSameAgent` |
+| `targetAgent` not configured | `ErrMoveAgentUnknownTarget` |
+| No workspace for `(meta.WorkingDir, targetAgent)` | `ErrMoveAgentNoWorkspace` |
+| A turn is streaming (`BackgroundSession.IsPrompting()`) or a loop run is in flight (`SessionManager.IsWaitingForChildren`) | `ErrMoveAgentBusy` |
+
+### Move steps
+
+1. **Stop.** The live `BackgroundSession` (if any) is stopped via `CloseSessionGracefully(id,
+   "agent_moved", timeout)`, falling back to `CloseSession(id, "agent_moved_timeout")` if the
+   timeout expires. This bounds the whole stop step even when the old agent's process is
+   wedged/unreachable — `timeout` defaults to `DefaultMoveAgentCloseTimeout` (30s) and is
+   configurable via `MoveAgentOptions.CloseTimeout` (tests shorten it). Both close paths already
+   broadcast "ACP stopped" to observers via `BackgroundSession.Close`'s existing
+   `notifyObservers(OnACPStopped)` call — no separate broadcast step is needed. The `"agent_moved"`
+   reason is treated the same as `"acp_server_reconfigured"`: `Close` calls `recorder.Suspend()`
+   instead of recording a `session_end` event, since the conversation is resumed immediately after.
+2. **Rewrite metadata** in one `store.UpdateMetadata` call: `ACPServer` is set to `targetAgent`;
+   `ACPSessionID`, `CurrentModeID`, and `ACPStartFailureCount` (all agent-specific) are cleared;
+   the previous `BaselineModel` is captured into `MoveAgentResult.PreviousBaselineModel` and
+   cleared (seam for `mitto-f7yo.4` to map it to the closest equivalent model on the target agent).
+3. **Record** a `session_change` event with `{kind: "agent", value: targetAgent, previous_value:
+   previousAgent}` via a fresh `session.Recorder` bound to the persisted session (the live
+   recorder was just stopped), so the timeline shows the move.
+4. **Resume** on the new agent via `ResumeSessionBackground`, so the next prompt goes to the new
+   agent through the existing resumed-session history injection (`buildPromptWithHistory`). A
+   resume failure does **not** roll back the metadata rewrite — the move already stands, and
+   rolling back would silently rebind the conversation back to a (possibly still-unreachable) old
+   agent behind the caller's back. Instead the error is reported via `MoveAgentResult.ResumeError`,
+   and the conversation is left idle/persisted on the new agent: it resumes normally on the next
+   access, like any other idle conversation whose ACP process isn't currently running.
+
+### `IncludeChildren`
+
+When `MoveAgentOptions.IncludeChildren` is set, every descendant of `sessionID`
+(`store.FindAllChildrenRecursive`, so grandchildren are covered too) that is still non-archived,
+idle, and bound to the *old* agent is moved through the same stop/rewrite/record/resume steps.
+Descendants that are archived, busy, or already bound to a different agent are left untouched and
+reported in `MoveAgentResult.Skipped` (`{ID, Reason}`).
+
+### Result
+
+```go
+type MoveAgentResult struct {
+    Moved                 []string        // sessionID first, then any moved descendants
+    Skipped               []MoveAgentSkip // descendants IncludeChildren declined to move, with why
+    PreviousAgent          string
+    PreviousBaselineModel  string          // seam for mitto-f7yo.4
+    ResumeError            error           // set when metadata was rewritten but resume failed
+}
+```

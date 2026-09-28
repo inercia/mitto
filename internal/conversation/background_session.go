@@ -2097,8 +2097,11 @@ func (bs *BackgroundSession) Close(reason string) {
 		// For server_shutdown, use Suspend() instead of End() to avoid
 		// recording multiple session_end events when the session is resumed
 		// after server restart. The session can be resumed later, so we
-		// don't want to mark it as permanently ended.
-		if reason == "server_shutdown" || reason == "acp_server_reconfigured" {
+		// don't want to mark it as permanently ended. "agent_moved"
+		// (SessionManager.MoveSessionToAgent, mitto-f7yo.1) follows the same
+		// rationale as "acp_server_reconfigured": the conversation is
+		// immediately resumed on the new agent, so it isn't really ending.
+		if reason == "server_shutdown" || reason == "acp_server_reconfigured" || reason == "agent_moved" {
 			bs.recorder.Suspend()
 		} else {
 			// Build session end data with context about the session state
