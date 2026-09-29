@@ -1027,6 +1027,127 @@ func TestConfigToSettings_RoundTripWithModels(t *testing.T) {
 	}
 }
 
+// TestConfigToSettings_RoundTripWithPermissions verifies that permission-mode
+// settings survive a round-trip through Settings at all three scopes: global
+// (Config.Permissions), per-ACP-server (ACPServer.Permissions/AutoApprove),
+// and the deprecated per-ACP-server AutoApprove bool.
+func TestConfigToSettings_RoundTripWithPermissions(t *testing.T) {
+	original := &Config{
+		Permissions: &PermissionsConfig{
+			Mode: PermissionModeSystemOne,
+			SystemOne: &SystemOneConfig{
+				Endpoint:        "https://example.com/check",
+				PayloadTemplate: `{"prompt": "{{.Prompt}}"}`,
+				ResultField:     "result.allow",
+				Threshold:       0.75,
+				Timeout:         5 * time.Second,
+				OnDeny:          SystemOneFallbackReject,
+				OnError:         SystemOneFallbackAsk,
+			},
+		},
+		ACPServers: []ACPServer{
+			{
+				Name:        "server1",
+				Command:     "cmd1",
+				AutoApprove: true,
+				Permissions: &PermissionSettings{
+					Mode: PermissionModeAllow,
+				},
+			},
+			{Name: "server2", Command: "cmd2"}, // no permission settings at all
+		},
+	}
+
+	settings := ConfigToSettings(original)
+
+	// Verify global Permissions survived into the Settings intermediate.
+	if settings.Permissions == nil {
+		t.Fatal("settings.Permissions is nil")
+	}
+	if settings.Permissions.Mode != PermissionModeSystemOne {
+		t.Errorf("settings.Permissions.Mode = %q, want %q", settings.Permissions.Mode, PermissionModeSystemOne)
+	}
+	if settings.Permissions.SystemOne == nil {
+		t.Fatal("settings.Permissions.SystemOne is nil")
+	}
+	if settings.Permissions.SystemOne.Endpoint != "https://example.com/check" {
+		t.Errorf("settings.Permissions.SystemOne.Endpoint = %q, want %q", settings.Permissions.SystemOne.Endpoint, "https://example.com/check")
+	}
+	if settings.Permissions.SystemOne.Threshold != 0.75 {
+		t.Errorf("settings.Permissions.SystemOne.Threshold = %v, want 0.75", settings.Permissions.SystemOne.Threshold)
+	}
+	if settings.Permissions.SystemOne.OnDeny != SystemOneFallbackReject {
+		t.Errorf("settings.Permissions.SystemOne.OnDeny = %q, want %q", settings.Permissions.SystemOne.OnDeny, SystemOneFallbackReject)
+	}
+
+	// Verify per-ACP-server permissions/AutoApprove survived into Settings.
+	if !settings.ACPServers[0].AutoApprove {
+		t.Error("settings.ACPServers[0].AutoApprove = false, want true")
+	}
+	if settings.ACPServers[0].Permissions == nil {
+		t.Fatal("settings.ACPServers[0].Permissions is nil")
+	}
+	if settings.ACPServers[0].Permissions.Mode != PermissionModeAllow {
+		t.Errorf("settings.ACPServers[0].Permissions.Mode = %q, want %q", settings.ACPServers[0].Permissions.Mode, PermissionModeAllow)
+	}
+	if settings.ACPServers[1].AutoApprove {
+		t.Error("settings.ACPServers[1].AutoApprove = true, want false")
+	}
+	if settings.ACPServers[1].Permissions != nil {
+		t.Errorf("settings.ACPServers[1].Permissions = %+v, want nil", settings.ACPServers[1].Permissions)
+	}
+
+	// Round-trip through actual JSON (settings.json format) to catch any
+	// missing/incorrect json tags, then back to Config.
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("json.Marshal(settings) failed: %v", err)
+	}
+	var reloaded Settings
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatalf("json.Unmarshal(settings) failed: %v", err)
+	}
+	result := reloaded.ToConfig()
+
+	if result.Permissions == nil {
+		t.Fatal("round-trip result.Permissions is nil")
+	}
+	if result.Permissions.Mode != PermissionModeSystemOne {
+		t.Errorf("round-trip result.Permissions.Mode = %q, want %q", result.Permissions.Mode, PermissionModeSystemOne)
+	}
+	if result.Permissions.SystemOne == nil {
+		t.Fatal("round-trip result.Permissions.SystemOne is nil")
+	}
+	if result.Permissions.SystemOne.ResultField != "result.allow" {
+		t.Errorf("round-trip result.Permissions.SystemOne.ResultField = %q, want %q", result.Permissions.SystemOne.ResultField, "result.allow")
+	}
+	if result.Permissions.SystemOne.Timeout != 5*time.Second {
+		t.Errorf("round-trip result.Permissions.SystemOne.Timeout = %v, want 5s", result.Permissions.SystemOne.Timeout)
+	}
+	if result.Permissions.SystemOne.OnError != SystemOneFallbackAsk {
+		t.Errorf("round-trip result.Permissions.SystemOne.OnError = %q, want %q", result.Permissions.SystemOne.OnError, SystemOneFallbackAsk)
+	}
+
+	if len(result.ACPServers) != 2 {
+		t.Fatalf("round-trip ACPServers count = %d, want 2", len(result.ACPServers))
+	}
+	if !result.ACPServers[0].AutoApprove {
+		t.Error("round-trip result.ACPServers[0].AutoApprove = false, want true")
+	}
+	if result.ACPServers[0].Permissions == nil {
+		t.Fatal("round-trip result.ACPServers[0].Permissions is nil")
+	}
+	if result.ACPServers[0].Permissions.Mode != PermissionModeAllow {
+		t.Errorf("round-trip result.ACPServers[0].Permissions.Mode = %q, want %q", result.ACPServers[0].Permissions.Mode, PermissionModeAllow)
+	}
+	if result.ACPServers[1].AutoApprove {
+		t.Error("round-trip result.ACPServers[1].AutoApprove = true, want false")
+	}
+	if result.ACPServers[1].Permissions != nil {
+		t.Errorf("round-trip result.ACPServers[1].Permissions = %+v, want nil", result.ACPServers[1].Permissions)
+	}
+}
+
 // TestMigrateSettingsPeriodicKeys_MovesOldToNew verifies that legacy periodic_*
 // keys nested under "session" and "conversations" are moved to their loop_*
 // equivalents in-place, and that the change is reported.

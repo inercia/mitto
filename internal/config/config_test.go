@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -2571,6 +2572,37 @@ func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
 				t.Errorf("IsAutoApprove() = %v, want %v", result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestPermissionsConfig_NoSecretFields is an audit test (acceptance criterion:
+// permission-mode config schema must never carry credential/secret material).
+// It walks the exported fields of PermissionsConfig via reflection and fails if
+// any field name looks like it stores a secret. Mirrors
+// TestPermissionSettings_NoSecretFields in internal/workspaces/permissions_test.go
+// for the global-scope config.PermissionsConfig struct (its SystemOne field is a
+// pointer to the already-audited workspaces.SystemOneConfig, so this test only
+// needs to check PermissionsConfig's own fields).
+func TestPermissionsConfig_NoSecretFields(t *testing.T) {
+	denylist := []string{
+		"token", "secret", "credential", "password", "passwd", "apikey", "api_key",
+	}
+
+	typ := reflect.TypeOf(PermissionsConfig{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		lowerName := strings.ToLower(field.Name)
+		for _, bad := range denylist {
+			if strings.Contains(lowerName, bad) {
+				t.Errorf("%s.%s: field name matches secret denylist entry %q — credentials must be stored via internal/secrets, not inline config fields", typ.Name(), field.Name, bad)
+			}
+		}
+		if strings.Contains(lowerName, "key") {
+			t.Errorf("%s.%s: field name contains %q — verify this is not a credential (e.g. an API key) and should not be stored via internal/secrets", typ.Name(), field.Name, "key")
+		}
+		if strings.Contains(lowerName, "auth") {
+			t.Errorf("%s.%s: field name contains %q — verify this is not an auth token/credential", typ.Name(), field.Name, "auth")
+		}
 	}
 }
 

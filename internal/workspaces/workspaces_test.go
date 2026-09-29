@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/prompts"
@@ -60,6 +61,89 @@ func TestWorkspaceSettings_AuxiliaryModelSelection_JSONOmitempty(t *testing.T) {
 	// Also confirm old field is gone
 	if _, ok := raw["auxiliary_acp_server"]; ok {
 		t.Error("auxiliary_acp_server should not appear in serialized workspace JSON")
+	}
+}
+
+// ---- WorkspaceSettings Permissions/AutoApprove tests ----
+
+func TestWorkspaceSettings_Permissions_JSONRoundTrip(t *testing.T) {
+	autoApprove := true
+	w := WorkspaceSettings{
+		ACPServer:   "auggie",
+		WorkingDir:  "/proj",
+		AutoApprove: &autoApprove,
+		Permissions: &PermissionSettings{
+			Mode: PermissionModeSystemOne,
+			SystemOne: &SystemOneConfig{
+				Endpoint:        "https://system-one.example.com/eval",
+				PayloadTemplate: `{"tool":"{{.ToolName}}"}`,
+				ResultField:     "decision",
+				Threshold:       0.5,
+				Timeout:         3 * time.Second,
+				OnDeny:          SystemOneFallbackReject,
+				OnError:         SystemOneFallbackAsk,
+			},
+		},
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got WorkspaceSettings
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.AutoApprove == nil || !*got.AutoApprove {
+		t.Errorf("AutoApprove = %v, want true", got.AutoApprove)
+	}
+	if got.Permissions == nil {
+		t.Fatal("Permissions should not be nil after round-trip")
+	}
+	if got.Permissions.Mode != PermissionModeSystemOne {
+		t.Errorf("Permissions.Mode = %q, want %q", got.Permissions.Mode, PermissionModeSystemOne)
+	}
+	if got.Permissions.SystemOne == nil {
+		t.Fatal("Permissions.SystemOne should not be nil after round-trip")
+	}
+	if got.Permissions.SystemOne.Endpoint != "https://system-one.example.com/eval" {
+		t.Errorf("SystemOne.Endpoint = %q, want %q", got.Permissions.SystemOne.Endpoint, "https://system-one.example.com/eval")
+	}
+	if got.Permissions.SystemOne.ResultField != "decision" {
+		t.Errorf("SystemOne.ResultField = %q, want %q", got.Permissions.SystemOne.ResultField, "decision")
+	}
+	if got.Permissions.SystemOne.Threshold != 0.5 {
+		t.Errorf("SystemOne.Threshold = %v, want %v", got.Permissions.SystemOne.Threshold, 0.5)
+	}
+	if got.Permissions.SystemOne.Timeout != 3*time.Second {
+		t.Errorf("SystemOne.Timeout = %v, want %v", got.Permissions.SystemOne.Timeout, 3*time.Second)
+	}
+	if got.Permissions.SystemOne.OnDeny != SystemOneFallbackReject {
+		t.Errorf("SystemOne.OnDeny = %q, want %q", got.Permissions.SystemOne.OnDeny, SystemOneFallbackReject)
+	}
+	if got.Permissions.SystemOne.OnError != SystemOneFallbackAsk {
+		t.Errorf("SystemOne.OnError = %q, want %q", got.Permissions.SystemOne.OnError, SystemOneFallbackAsk)
+	}
+}
+
+func TestWorkspaceSettings_Permissions_JSONOmitempty(t *testing.T) {
+	// When AutoApprove and Permissions are nil, they should be omitted from JSON.
+	w := WorkspaceSettings{
+		ACPServer:  "auggie",
+		WorkingDir: "/proj",
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := raw["auto_approve"]; ok {
+		t.Error("auto_approve should be omitted from JSON when nil")
+	}
+	if _, ok := raw["permissions"]; ok {
+		t.Error("permissions should be omitted from JSON when nil")
 	}
 }
 

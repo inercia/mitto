@@ -1,6 +1,8 @@
 package workspaces
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -160,4 +162,48 @@ func TestPermissionSettings_EffectiveMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPermissionSettings_NoSecretFields is an audit test (acceptance criterion:
+// permission-mode config schema must never carry credential/secret material).
+// It walks the exported fields of SystemOneConfig and PermissionSettings via
+// reflection and fails if any field name looks like it stores a secret. This
+// guards against a future field addition (e.g. an API key for the System One
+// endpoint) accidentally landing in a struct that gets marshaled into
+// settings.json / workspace .mittorc / MCP tool output without going through
+// internal/secrets.
+func TestPermissionSettings_NoSecretFields(t *testing.T) {
+	denylist := []string{
+		"token", "secret", "credential", "password", "passwd", "apikey", "api_key",
+	}
+
+	assertNoSecretFields := func(t *testing.T, typ reflect.Type) {
+		t.Helper()
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			lowerName := strings.ToLower(field.Name)
+			for _, bad := range denylist {
+				if strings.Contains(lowerName, bad) {
+					t.Errorf("%s.%s: field name matches secret denylist entry %q — credentials must be stored via internal/secrets, not inline config fields", typ.Name(), field.Name, bad)
+				}
+			}
+			// "key" and "auth" are checked separately with narrower matching:
+			// legitimate fields like "ResultField" contain neither, but a bare
+			// substring match on "key" would be fine here too since no field
+			// currently collides — kept explicit for clarity and future-proofing.
+			if strings.Contains(lowerName, "key") && field.Name != "ResultField" {
+				t.Errorf("%s.%s: field name contains %q — verify this is not a credential (e.g. an API key) and should not be stored via internal/secrets", typ.Name(), field.Name, "key")
+			}
+			if strings.Contains(lowerName, "auth") {
+				t.Errorf("%s.%s: field name contains %q — verify this is not an auth token/credential", typ.Name(), field.Name, "auth")
+			}
+		}
+	}
+
+	t.Run("SystemOneConfig", func(t *testing.T) {
+		assertNoSecretFields(t, reflect.TypeOf(SystemOneConfig{}))
+	})
+	t.Run("PermissionSettings", func(t *testing.T) {
+		assertNoSecretFields(t, reflect.TypeOf(PermissionSettings{}))
+	})
 }
