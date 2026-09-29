@@ -161,6 +161,32 @@ func validateSuggestions(suggestions []FollowUpSuggestion) []FollowUpSuggestion 
 	return valid
 }
 
+// upstreamQuotaExceededMarker is a stable substring of the upstream
+// usage-quota-exhaustion notice (mitto-rqi1). Some providers (e.g. GitHub
+// Copilot) deliver this notice as ordinary successfully-streamed assistant
+// text on an end_turn response rather than as an error, so it reaches the
+// auxiliary response parsers looking like malformed JSON. Matching on this
+// substring lets callers distinguish "upstream quota exhausted" from a
+// genuine parse failure instead of reporting a misleading
+// "invalid JSON response" diagnostic.
+const upstreamQuotaExceededMarker = "exceeded your usage quota"
+
+// IsUpstreamQuotaExceeded reports whether response text is an upstream
+// usage-quota-exhaustion notice rather than a normal (JSON) agent response.
+// See mitto-rqi1: this predicate is the fix seam that lets
+// parseMCPToolsList, parseMCPAvailabilityResult, and parseToolPatternsCheck
+// (and, transitively, workspace_manager.go's callers) report an actionable
+// "upstream quota exceeded" outcome instead of a misleading
+// "invalid JSON response" one.
+func IsUpstreamQuotaExceeded(response string) bool {
+	return strings.Contains(strings.ToLower(response), upstreamQuotaExceededMarker)
+}
+
+// ErrUpstreamQuotaExceeded is returned by the auxiliary response parsers
+// when the response text is an upstream usage-quota-exhaustion notice
+// (see IsUpstreamQuotaExceeded) instead of the expected JSON payload.
+var ErrUpstreamQuotaExceeded = fmt.Errorf("upstream usage quota exceeded")
+
 // mcpToolsResponse represents the JSON object returned by the MCP tools fetch prompt.
 // The agent returns either {"tools": [...]} or {"error": "..."}.
 type mcpToolsResponse struct {
@@ -178,6 +204,10 @@ func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
 	response = strings.TrimSpace(response)
 	response = stripMarkdownFences(response)
 	response = strings.TrimSpace(response)
+
+	if IsUpstreamQuotaExceeded(response) {
+		return nil, "", ErrUpstreamQuotaExceeded
+	}
 
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(response), &raw); err != nil {
@@ -201,6 +231,10 @@ func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
 func parseMCPAvailabilityResult(response string) (*MCPAvailabilityResult, error) {
 	response = strings.TrimSpace(response)
 	response = stripMarkdownFences(response)
+
+	if IsUpstreamQuotaExceeded(response) {
+		return nil, ErrUpstreamQuotaExceeded
+	}
 
 	// Try direct parsing first
 	var result MCPAvailabilityResult
@@ -232,6 +266,10 @@ type requiredToolsCheckResponse struct {
 func parseToolPatternsCheck(response string) (map[string]bool, error) {
 	response = strings.TrimSpace(response)
 	response = stripMarkdownFences(response)
+
+	if IsUpstreamQuotaExceeded(response) {
+		return nil, ErrUpstreamQuotaExceeded
+	}
 
 	// Try direct parsing first
 	var result requiredToolsCheckResponse
