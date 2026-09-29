@@ -3023,6 +3023,11 @@ export function SettingsDialog({
           tags: Array.isArray(p.tags)
             ? p.tags.filter((t) => t && t.trim())
             : [],
+          // Only persist a valid 1-5 shortcut; "Unassigned" (0) and any
+          // out-of-range value are omitted so the backend's omitempty drops them.
+          ...(p.shortcut_number >= 1 && p.shortcut_number <= 5
+            ? { shortcut_number: p.shortcut_number }
+            : {}),
         }))
         .filter((p) => p.name !== "" || p.criteria || p.tags.length > 0);
 
@@ -3526,6 +3531,8 @@ export function SettingsDialog({
         name: `${(src.name || "").trim()} (Copy)`.trim(),
         criteria: src.criteria ? { ...src.criteria } : null,
         tags: Array.isArray(src.tags) ? [...src.tags] : [],
+        // Shortcut numbers are unique per profile — never carry over to a duplicate.
+        shortcut_number: 0,
       };
       const next = [...prev];
       next.splice(i + 1, 0, copy);
@@ -3556,6 +3563,36 @@ export function SettingsDialog({
       updateProfile(i, { tags: [...new Set([...existing, ...tokens])] });
     }
     setTagDrafts((prev) => ({ ...prev, [i]: "" }));
+  };
+
+  // Shortcut numbers (1-5) must be unique across profiles; assigning one to
+  // profile `i` steals it from whichever other profile currently holds it
+  // ("last selection wins"), surfacing a warning toast on collision.
+  const setProfileShortcut = (i, value) => {
+    const shortcut = Number(value) || 0;
+    setModelProfiles((prev) => {
+      if (i < 0 || i >= prev.length) return prev;
+      let stolenFrom = null;
+      const next = prev.map((p, idx) => {
+        if (idx === i) {
+          return { ...p, shortcut_number: shortcut };
+        }
+        if (shortcut > 0 && (p.shortcut_number || 0) === shortcut) {
+          stolenFrom = p.name || `Profile ${idx + 1}`;
+          return { ...p, shortcut_number: 0 };
+        }
+        return p;
+      });
+      if (stolenFrom) {
+        showToast?.({
+          style: "warning",
+          title: "Shortcut reassigned",
+          message: `Shortcut ${shortcut} moved from "${stolenFrom}" to this profile.`,
+          duration: 4000,
+        });
+      }
+      return next;
+    });
   };
 
   if (!isOpen) return null;
@@ -6471,6 +6508,32 @@ export function SettingsDialog({
                                     )}
                                   </div>
                                 `}
+                              </div>
+
+                              <!-- Shortcut number -->
+                              <div class="space-y-1">
+                                <label
+                                  class="text-xs font-medium text-mitto-text-secondary"
+                                >
+                                  Shortcut
+                                </label>
+                                <select
+                                  class="select select-sm w-full"
+                                  data-testid="model-profile-shortcut-${i}"
+                                  value=${p.shortcut_number || 0}
+                                  onChange=${(e) =>
+                                    setProfileShortcut(
+                                      i,
+                                      parseInt(e.target.value, 10) || 0,
+                                    )}
+                                >
+                                  <option value="0">Unassigned</option>
+                                  ${[1, 2, 3, 4, 5].map(
+                                    (n) => html`
+                                      <option value=${n}>${n}</option>
+                                    `,
+                                  )}
+                                </select>
                               </div>
                             </div>
                           `}

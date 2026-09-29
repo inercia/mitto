@@ -58,6 +58,10 @@ type ModelProfile struct {
 	Criteria *ACPServerConstraint `json:"criteria,omitempty"`
 	// Tags is the list of capability tags carried by matching models (e.g. "Smart", "Cheap").
 	Tags []string `json:"tags,omitempty"`
+	// ShortcutNumber optionally binds this profile to a quick-switch shortcut (1-5).
+	// 0 means unassigned. At most one profile may hold a given number; the UI
+	// enforces "last selection wins" uniqueness when editing.
+	ShortcutNumber int `json:"shortcut_number,omitempty"`
 }
 
 // DefaultModelProfiles returns the canonical, hardcoded set of model profiles.
@@ -1413,9 +1417,10 @@ type rawModelCriteria struct {
 
 // rawModelProfile is used for YAML unmarshaling of model profile entries.
 type rawModelProfile struct {
-	Name     string            `yaml:"name"`
-	Criteria *rawModelCriteria `yaml:"criteria"`
-	Tags     []string          `yaml:"tags"`
+	Name           string            `yaml:"name"`
+	Criteria       *rawModelCriteria `yaml:"criteria"`
+	Tags           []string          `yaml:"tags"`
+	ShortcutNumber int               `yaml:"shortcutNumber"`
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -1745,8 +1750,9 @@ func Parse(data []byte) (*Config, error) {
 			continue
 		}
 		mp := ModelProfile{
-			Name: m.Name,
-			Tags: m.Tags,
+			Name:           m.Name,
+			Tags:           m.Tags,
+			ShortcutNumber: m.ShortcutNumber,
 		}
 		if m.Criteria != nil {
 			mp.Criteria = &ACPServerConstraint{

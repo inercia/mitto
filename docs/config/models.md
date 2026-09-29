@@ -77,6 +77,7 @@ models:
 | `criteria.matchMode` | Yes (if criteria set) | string         | One of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`.                              |
 | `criteria.pattern`   | Yes (if criteria set) | string         | The pattern compared against the model's display name.                                       |
 | `tags`               | No                    | list of string | Capability tags associated with this profile.                                                |
+| `shortcutNumber`     | No                    | int            | Optional keyboard-shortcut slot (`1`-`5`) shown next to the profile in the Models settings tab, letting the composer's model selector switch to it with a single keystroke. `0` (default) means unassigned. Each value is unique across profiles — assigning it to a second profile clears it from whichever profile held it before.                                                |
 
 ### Match Modes
 
@@ -164,6 +165,10 @@ preferredModels:
   profile whose `criteria` match an available model on the session's ACP server.
 - If the current model **already satisfies** the resolved profile, it is kept — no
   needless model switch. Otherwise the preference is applied.
+- The **Initial Model** of a new conversation (workspace or ACP-server setting) is
+  different: it always resolves to the highest-priority matching profile, even when
+  the agent's default model already satisfies a lower-priority profile with the same
+  tag.
 
 ### Bare-string shorthand
 

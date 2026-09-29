@@ -2871,6 +2871,52 @@ models:
 	if len(sonnet.Tags) != 2 || sonnet.Tags[0] != "Smart" || sonnet.Tags[1] != "Cheap" {
 		t.Errorf("Models[1].Tags = %v, want [Smart Cheap]", sonnet.Tags)
 	}
+
+	// Neither profile declared shortcutNumber; must default to 0 (unassigned).
+	if opus.ShortcutNumber != 0 {
+		t.Errorf("Models[0].ShortcutNumber = %d, want 0 (unset)", opus.ShortcutNumber)
+	}
+	if sonnet.ShortcutNumber != 0 {
+		t.Errorf("Models[1].ShortcutNumber = %d, want 0 (unset)", sonnet.ShortcutNumber)
+	}
+}
+
+// TestParse_ModelsShortcutNumber pins YAML parsing of the shortcutNumber field
+// (mitto-qmqq.1): present values pass through verbatim, absent defaults to 0.
+func TestParse_ModelsShortcutNumber(t *testing.T) {
+	yaml := `
+models:
+  - name: Opus
+    shortcutNumber: 1
+    criteria:
+      matchMode: contains
+      pattern: Opus
+  - name: Sonnet
+    criteria:
+      matchMode: contains
+      pattern: Sonnet
+  - name: Haiku
+    shortcutNumber: 0
+    criteria:
+      matchMode: contains
+      pattern: Haiku
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(cfg.Models) != 3 {
+		t.Fatalf("Models count = %d, want 3", len(cfg.Models))
+	}
+	if cfg.Models[0].ShortcutNumber != 1 {
+		t.Errorf("Models[0] (Opus).ShortcutNumber = %d, want 1", cfg.Models[0].ShortcutNumber)
+	}
+	if cfg.Models[1].ShortcutNumber != 0 {
+		t.Errorf("Models[1] (Sonnet).ShortcutNumber = %d, want 0 (field omitted in YAML)", cfg.Models[1].ShortcutNumber)
+	}
+	if cfg.Models[2].ShortcutNumber != 0 {
+		t.Errorf("Models[2] (Haiku).ShortcutNumber = %d, want 0 (explicit zero)", cfg.Models[2].ShortcutNumber)
+	}
 }
 
 func TestParse_ModelsEmptyAndNameless(t *testing.T) {

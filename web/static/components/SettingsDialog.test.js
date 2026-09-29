@@ -44,7 +44,9 @@ const commitTagTokens = (raw, existingTags = []) => {
 
 /**
  * Duplicated from SettingsDialog.js (modelProfilesToSave, ~lines 1919-1933).
- * Normalizes a model profile object for the save payload.
+ * Normalizes a model profile object for the save payload. Only a valid 1-5
+ * shortcut_number is persisted; "Unassigned" (0) and any out-of-range value
+ * are omitted entirely so the backend's `omitempty` drops the JSON key.
  */
 const normalizeModelProfile = (p) => ({
   name: (p.name || "").trim(),
@@ -53,7 +55,44 @@ const normalizeModelProfile = (p) => ({
       ? { matchMode: p.criteria.matchMode, pattern: p.criteria.pattern || "" }
       : null,
   tags: Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [],
+  ...(p.shortcut_number >= 1 && p.shortcut_number <= 5
+    ? { shortcut_number: p.shortcut_number }
+    : {}),
 });
+
+/**
+ * Duplicated from SettingsDialog.js (duplicateProfile, ~lines 2280-2295).
+ * Shortcut numbers are never carried over to a duplicated profile — they
+ * always reset to 0 (Unassigned) on the copy.
+ */
+const duplicateModelProfileCopy = (src) => ({
+  ...src,
+  shortcut_number: 0,
+});
+
+/**
+ * Duplicated from SettingsDialog.js (setProfileShortcut, ~lines 2322-2345).
+ * Assigns `shortcut` (0 = Unassigned, 1-5 = valid) to the profile at index
+ * `i`, atomically clearing that same shortcut from any OTHER profile that
+ * currently holds it (last-selection-wins uniqueness). Returns
+ * `{ profiles, stolenFrom }` where `stolenFrom` is the name (or fallback
+ * label) of the profile that lost its shortcut, or null if no collision.
+ */
+const applyProfileShortcut = (profiles, i, shortcut) => {
+  if (i < 0 || i >= profiles.length) return { profiles, stolenFrom: null };
+  let stolenFrom = null;
+  const next = profiles.map((p, idx) => {
+    if (idx === i) {
+      return { ...p, shortcut_number: shortcut };
+    }
+    if (shortcut > 0 && (p.shortcut_number || 0) === shortcut) {
+      stolenFrom = p.name || `Profile ${idx + 1}`;
+      return { ...p, shortcut_number: 0 };
+    }
+    return p;
+  });
+  return { profiles: next, stolenFrom };
+};
 
 /**
  * Duplicated from SettingsDialog.js (modelProfilesToSave filter, ~line 1933).
@@ -189,6 +228,114 @@ describe("normalizeModelProfile", () => {
       criteria: { matchMode: "contains", pattern: "Opus" },
       tags: ["Smartest", "Expensive"],
     });
+  });
+
+  test("shortcut_number is omitted when 0 (unassigned)", () => {
+    const result = normalizeModelProfile({ name: "Opus", shortcut_number: 0 });
+    expect(result).not.toHaveProperty("shortcut_number");
+  });
+
+  test("shortcut_number is omitted when absent", () => {
+    const result = normalizeModelProfile({ name: "Opus" });
+    expect(result).not.toHaveProperty("shortcut_number");
+  });
+
+  test("shortcut_number is included for valid boundary value 1", () => {
+    expect(
+      normalizeModelProfile({ name: "Opus", shortcut_number: 1 }).shortcut_number,
+    ).toBe(1);
+  });
+
+  test("shortcut_number is included for valid boundary value 5", () => {
+    expect(
+      normalizeModelProfile({ name: "Opus", shortcut_number: 5 }).shortcut_number,
+    ).toBe(5);
+  });
+
+  test("shortcut_number is omitted when out of range (6)", () => {
+    const result = normalizeModelProfile({ name: "Opus", shortcut_number: 6 });
+    expect(result).not.toHaveProperty("shortcut_number");
+  });
+
+  test("shortcut_number is omitted when out of range (-1)", () => {
+    const result = normalizeModelProfile({ name: "Opus", shortcut_number: -1 });
+    expect(result).not.toHaveProperty("shortcut_number");
+  });
+});
+
+describe("duplicateModelProfileCopy", () => {
+  test("resets shortcut_number to 0 when the source had a valid shortcut", () => {
+    const src = { name: "Opus", tags: ["Smart"], shortcut_number: 3 };
+    expect(duplicateModelProfileCopy(src).shortcut_number).toBe(0);
+  });
+
+  test("resets shortcut_number to 0 when the source had none", () => {
+    const src = { name: "Opus", tags: [] };
+    expect(duplicateModelProfileCopy(src).shortcut_number).toBe(0);
+  });
+
+  test("preserves other fields (name, criteria, tags) unchanged", () => {
+    const src = {
+      name: "Opus",
+      criteria: { matchMode: "contains", pattern: "Opus" },
+      tags: ["Smart", "Expensive"],
+      shortcut_number: 2,
+    };
+    const copy = duplicateModelProfileCopy(src);
+    expect(copy.name).toBe("Opus");
+    expect(copy.criteria).toEqual({ matchMode: "contains", pattern: "Opus" });
+    expect(copy.tags).toEqual(["Smart", "Expensive"]);
+  });
+});
+
+describe("applyProfileShortcut", () => {
+  test("assigns a valid shortcut with no prior collision", () => {
+    const profiles = [
+      { name: "Opus", shortcut_number: 0 },
+      { name: "Sonnet", shortcut_number: 0 },
+    ];
+    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 0, 1);
+    expect(next[0].shortcut_number).toBe(1);
+    expect(next[1].shortcut_number).toBe(0);
+    expect(stolenFrom).toBeNull();
+  });
+
+  test("stealing an already-assigned shortcut clears it from the other profile", () => {
+    const profiles = [
+      { name: "Opus", shortcut_number: 1 },
+      { name: "Sonnet", shortcut_number: 0 },
+    ];
+    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 1, 1);
+    expect(next[1].shortcut_number).toBe(1);
+    expect(next[0].shortcut_number).toBe(0);
+    expect(stolenFrom).toBe("Opus");
+  });
+
+  test("stealing from an unnamed profile falls back to a positional label", () => {
+    const profiles = [
+      { name: "", shortcut_number: 4 },
+      { name: "Sonnet", shortcut_number: 0 },
+    ];
+    const { stolenFrom } = applyProfileShortcut(profiles, 1, 4);
+    expect(stolenFrom).toBe("Profile 1");
+  });
+
+  test("assigning 0 (Unassigned) clears without stealing from anyone", () => {
+    const profiles = [
+      { name: "Opus", shortcut_number: 2 },
+      { name: "Sonnet", shortcut_number: 0 },
+    ];
+    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 1, 0);
+    expect(next[1].shortcut_number).toBe(0);
+    expect(next[0].shortcut_number).toBe(2);
+    expect(stolenFrom).toBeNull();
+  });
+
+  test("out-of-bounds index returns profiles unchanged with stolenFrom null", () => {
+    const profiles = [{ name: "Opus", shortcut_number: 1 }];
+    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 5, 2);
+    expect(next).toBe(profiles);
+    expect(stolenFrom).toBeNull();
   });
 });
 
