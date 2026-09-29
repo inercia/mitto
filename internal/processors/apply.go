@@ -3505,9 +3505,10 @@ func (m *Manager) runDispatchRetryLoopTracked(ctx context.Context, workspaceUUID
 // runs; the next entry waits and retries within its configured timeout so one
 // flush opportunity can drain several entries sequentially (mitto-e3ut.1).
 // Entries that fail again are written back with an incremented Attempts, and
-// any entry whose Attempts exceeds pendingDispatchMaxAttempts is dropped instead
-// of blocking the rest of the spool. When one or more entries are delivered,
-// lateDeliveryFunc (if set) is invoked once with all delivered names.
+// any entry whose Attempts exceeds pendingDispatchMaxAttempts is moved to the
+// dead-letter spool instead of blocking the rest of the pending spool. When
+// one or more entries are delivered, lateDeliveryFunc (if set) is invoked once
+// with all delivered names.
 func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID string) {
 	if m == nil || m.pendingDispatchStore == nil || !m.hasPromptExecutor() || workspaceUUID == "" {
 		return
@@ -3628,14 +3629,10 @@ flushEntries:
 				m.notifyFunc(workspaceUUID, entry.Name, fmt.Errorf("pending-dispatch batch dropped after %d attempts: %s", entry.Attempts, reason))
 			}
 			// mitto-6ys1: dead-letter instead of permanently discarding so the
-			// batch is not silently lost — Acknowledge alone deletes it forever.
+			// batch is not silently lost.
 			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, "exceeded max attempts"); dlErr != nil && m.logger != nil {
-				m.logger.Error("pending-dispatch flush: failed to dead-letter dropped entry",
+				m.logger.Error("pending-dispatch flush: failed to dead-letter dropped entry; retaining pending copy",
 					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", dlErr)
-			}
-			if ackErr := m.pendingDispatchStore.Acknowledge(workspaceUUID, []string{entry.ID}); ackErr != nil && m.logger != nil {
-				m.logger.Error("pending-dispatch flush: failed to acknowledge dropped entry",
-					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", ackErr)
 			}
 			continue
 		}
@@ -3767,14 +3764,10 @@ flushEntries:
 				m.notifyFunc(workspaceUUID, entry.Name, lastErr)
 			}
 			// mitto-6ys1: dead-letter instead of permanently discarding so the
-			// batch is not silently lost — Acknowledge alone deletes it forever.
+			// batch is not silently lost.
 			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, lastErr.Error()); dlErr != nil && m.logger != nil {
-				m.logger.Error("pending-dispatch flush: failed to dead-letter terminally failed entry",
+				m.logger.Error("pending-dispatch flush: failed to dead-letter terminally failed entry; retaining pending copy",
 					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", dlErr)
-			}
-			if ackErr := m.pendingDispatchStore.Acknowledge(workspaceUUID, []string{entry.ID}); ackErr != nil && m.logger != nil {
-				m.logger.Error("pending-dispatch flush: failed to acknowledge terminally failed entry",
-					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", ackErr)
 			}
 			continue
 		}

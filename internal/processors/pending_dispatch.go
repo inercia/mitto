@@ -104,6 +104,10 @@ type PendingDispatchEntry struct {
 	// ClaimedAt records when execution started for diagnostics and stale-claim
 	// recovery within a long-running process.
 	ClaimedAt time.Time `json:"claimed_at,omitempty"`
+	// ReplayCount counts how many times this batch has been restored from the
+	// dead-letter spool. It travels with the pending entry so a failed replay
+	// that is dead-lettered again cannot reset the lifetime replay cap.
+	ReplayCount int `json:"replay_count,omitempty"`
 }
 
 // PendingDispatchAppendResult reports the persisted entry (including its ID),
@@ -658,9 +662,6 @@ type DeadLetterEntry struct {
 	Reason string `json:"reason,omitempty"`
 	// DeadLetteredAt is when this entry was moved out of the pending spool.
 	DeadLetteredAt time.Time `json:"dead_lettered_at"`
-	// ReplayCount counts how many times this entry has been moved back into
-	// the pending spool via ReplayDeadLetters. Capped at deadLetterReplayCap.
-	ReplayCount int `json:"replay_count,omitempty"`
 }
 
 func (s *FilePendingDispatchStore) deadLetterSpoolPath(workspaceUUID string) (string, error) {
@@ -704,11 +705,10 @@ func (s *FilePendingDispatchStore) writeDeadLetterLocked(path string, entries []
 	return nil
 }
 
-// DeadLetter implements PendingDispatchStore. It removes the given entries
-// from the main pending spool (mirroring Acknowledge's filter-and-rewrite)
-// and appends them to a separate per-workspace dead-letter spool file, so a
-// batch that exhausts its retry budget (or is evicted at capacity) remains
-// inspectable/replayable rather than being silently discarded (mitto-6ys1).
+// DeadLetter implements PendingDispatchStore. It first persists the given
+// entries to a separate per-workspace dead-letter spool, then removes them
+// from the main pending spool. Persisting first can leave a duplicate after a
+// partial failure, but never silently loses the only durable copy.
 func (s *FilePendingDispatchStore) DeadLetter(workspaceUUID string, entries []PendingDispatchEntry, reason string) error {
 	if workspaceUUID == "" {
 		return fmt.Errorf("pending dispatch dead-letter missing workspace UUID")
@@ -717,7 +717,33 @@ func (s *FilePendingDispatchStore) DeadLetter(workspaceUUID string, entries []Pe
 		return nil
 	}
 
-	// Step 1: remove the entries from the main pending spool.
+	dlPath, err := s.deadLetterSpoolPath(workspaceUUID)
+	if err != nil {
+		return err
+	}
+	mu := pendingDispatchLockFor(dlPath)
+	mu.Lock()
+	current, readErr := s.readDeadLetterLocked(dlPath)
+	if readErr != nil {
+		mu.Unlock()
+		return readErr
+	}
+	now := time.Now()
+	updates := make([]DeadLetterEntry, 0, len(entries))
+	for _, entry := range entries {
+		updates = append(updates, DeadLetterEntry{
+			PendingDispatchEntry: entry,
+			Reason:               reason,
+			DeadLetteredAt:       now,
+		})
+	}
+	current = upsertDeadLetterEntries(current, updates)
+	if err := s.writeDeadLetterLocked(dlPath, current); err != nil {
+		mu.Unlock()
+		return err
+	}
+	mu.Unlock()
+
 	path, err := s.spoolPath(workspaceUUID)
 	if err != nil {
 		return err
@@ -726,48 +752,45 @@ func (s *FilePendingDispatchStore) DeadLetter(workspaceUUID string, entries []Pe
 	for _, entry := range entries {
 		ids[entry.ID] = struct{}{}
 	}
-	func() {
-		mu := pendingDispatchLockFor(path)
-		mu.Lock()
-		defer mu.Unlock()
-
-		current, _, readErr := s.readLocked(path)
-		if readErr != nil {
-			// Best-effort: still dead-letter the entries below even if the
-			// main spool couldn't be read (e.g. already removed elsewhere).
-			return
-		}
-		kept := current[:0]
-		for _, entry := range current {
-			if _, ok := ids[entry.ID]; !ok {
-				kept = append(kept, entry)
-			}
-		}
-		_ = s.writeLocked(path, kept)
-	}()
-
-	// Step 2: append the entries to the dead-letter spool.
-	dlPath, err := s.deadLetterSpoolPath(workspaceUUID)
-	if err != nil {
-		return err
-	}
-	mu := pendingDispatchLockFor(dlPath)
+	mu = pendingDispatchLockFor(path)
 	mu.Lock()
 	defer mu.Unlock()
 
-	current, readErr := s.readDeadLetterLocked(dlPath)
+	pending, _, readErr := s.readLocked(path)
 	if readErr != nil {
 		return readErr
 	}
-	now := time.Now()
-	for _, entry := range entries {
-		current = append(current, DeadLetterEntry{
-			PendingDispatchEntry: entry,
-			Reason:               reason,
-			DeadLetteredAt:       now,
-		})
+	kept := pending[:0]
+	for _, entry := range pending {
+		if _, ok := ids[entry.ID]; !ok {
+			kept = append(kept, entry)
+		}
 	}
-	return s.writeDeadLetterLocked(dlPath, current)
+	return s.writeLocked(path, kept)
+}
+
+func upsertDeadLetterEntries(current, updates []DeadLetterEntry) []DeadLetterEntry {
+	merged := make([]DeadLetterEntry, 0, len(current)+len(updates))
+	seen := make(map[string]struct{}, len(current)+len(updates))
+	existing := make(map[string]DeadLetterEntry, len(current))
+	for _, entry := range current {
+		existing[entry.ID] = entry
+	}
+	for _, entry := range updates {
+		if previous, ok := existing[entry.ID]; ok && previous.ReplayCount > entry.ReplayCount {
+			entry.ReplayCount = previous.ReplayCount
+		}
+		merged = append(merged, entry)
+		seen[entry.ID] = struct{}{}
+	}
+	for _, entry := range current {
+		if _, ok := seen[entry.ID]; ok {
+			continue
+		}
+		merged = append(merged, entry)
+		seen[entry.ID] = struct{}{}
+	}
+	return merged
 }
 
 // ReplayDeadLetters implements PendingDispatchStore. It moves dead-lettered
@@ -787,39 +810,41 @@ func (s *FilePendingDispatchStore) ReplayDeadLetters(workspaceUUID string, coold
 		return nil, err
 	}
 
+	dlMu := pendingDispatchLockFor(dlPath)
+	dlMu.Lock()
+	defer dlMu.Unlock()
+
+	current, readErr := s.readDeadLetterLocked(dlPath)
+	if readErr != nil || len(current) == 0 {
+		return nil, readErr
+	}
+	now := time.Now()
 	var replayed []PendingDispatchEntry
-	func() {
-		mu := pendingDispatchLockFor(dlPath)
-		mu.Lock()
-		defer mu.Unlock()
-
-		current, readErr := s.readDeadLetterLocked(dlPath)
-		if readErr != nil || len(current) == 0 {
-			return
+	replayedIDs := make(map[string]struct{})
+	for i := range current {
+		entry := &current[i]
+		if entry.ReplayCount >= deadLetterReplayCap || now.Sub(entry.DeadLetteredAt) < cooldown {
+			continue
 		}
-		now := time.Now()
-		remaining := current[:0]
-		for _, entry := range current {
-			if entry.ReplayCount < deadLetterReplayCap && now.Sub(entry.DeadLetteredAt) >= cooldown {
-				pe := entry.PendingDispatchEntry
-				pe.Attempts = 0
-				pe.ClaimedBy = ""
-				pe.ClaimedAt = time.Time{}
-				replayed = append(replayed, pe)
-				continue
-			}
-			remaining = append(remaining, entry)
-		}
-		if len(replayed) > 0 {
-			_ = s.writeDeadLetterLocked(dlPath, remaining)
-		}
-	}()
-
+		entry.ReplayCount++
+		pe := entry.PendingDispatchEntry
+		pe.Attempts = 0
+		pe.ClaimedBy = ""
+		pe.ClaimedAt = time.Time{}
+		replayed = append(replayed, pe)
+		replayedIDs[entry.ID] = struct{}{}
+	}
 	if len(replayed) == 0 {
 		return nil, nil
 	}
 
-	// Move the eligible entries back into the main pending spool.
+	// Persist the replay reservation before adding entries to the main spool.
+	// A crash or write failure after this point leaves a capped, inspectable
+	// dead letter rather than deleting the only durable copy.
+	if err := s.writeDeadLetterLocked(dlPath, current); err != nil {
+		return nil, err
+	}
+
 	path, err := s.spoolPath(workspaceUUID)
 	if err != nil {
 		return nil, err
@@ -828,12 +853,22 @@ func (s *FilePendingDispatchStore) ReplayDeadLetters(workspaceUUID string, coold
 	mu.Lock()
 	defer mu.Unlock()
 
-	current, _, readErr := s.readLocked(path)
+	pending, _, readErr := s.readLocked(path)
 	if readErr != nil {
 		return nil, readErr
 	}
-	merged := upsertPendingDispatchEntries(current, replayed)
+	merged := upsertPendingDispatchEntries(pending, replayed)
 	if err := s.writeLocked(path, merged); err != nil {
+		return nil, err
+	}
+
+	remaining := current[:0]
+	for _, entry := range current {
+		if _, ok := replayedIDs[entry.ID]; !ok {
+			remaining = append(remaining, entry)
+		}
+	}
+	if err := s.writeDeadLetterLocked(dlPath, remaining); err != nil {
 		return nil, err
 	}
 	return replayed, nil

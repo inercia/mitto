@@ -1,6 +1,7 @@
 package processors
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -124,5 +125,88 @@ func TestReplayDeadLetters_RespectsCooldown(t *testing.T) {
 	deadLetterPath := filepath.Join(spoolDir, wsUUID+".deadletter.json")
 	if _, statErr := os.Stat(deadLetterPath); statErr != nil {
 		t.Fatalf("expected dead-letter file to still exist while cooldown pending, stat err = %v", statErr)
+	}
+}
+
+func TestReplayDeadLetters_ReDeadLetteredEntryStaysAtLifetimeCap(t *testing.T) {
+	spoolDir := t.TempDir()
+	wsUUID := "ws-deadletter-lifetime-cap"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entry := PendingDispatchEntry{
+		ID:            "batch-replayed-once",
+		WorkspaceUUID: wsUUID,
+		Name:          "persistent-poison-batch",
+		Prompt:        "do the thing",
+		SavedAt:       time.Now().Add(-2 * time.Hour),
+		Attempts:      pendingDispatchMaxAttempts,
+	}
+
+	if err := store.DeadLetter(wsUUID, []PendingDispatchEntry{entry}, "first failure"); err != nil {
+		t.Fatalf("first DeadLetter failed: %v", err)
+	}
+	replayed, err := store.ReplayDeadLetters(wsUUID, 0)
+	if err != nil {
+		t.Fatalf("first ReplayDeadLetters failed: %v", err)
+	}
+	if len(replayed) != 1 || replayed[0].ReplayCount != 1 {
+		t.Fatalf("first replay = %+v, want one entry with ReplayCount=1", replayed)
+	}
+
+	replayed[0].Attempts = pendingDispatchMaxAttempts
+	if err := store.DeadLetter(wsUUID, replayed, "failed after replay"); err != nil {
+		t.Fatalf("second DeadLetter failed: %v", err)
+	}
+	replayedAgain, err := store.ReplayDeadLetters(wsUUID, 0)
+	if err != nil {
+		t.Fatalf("second ReplayDeadLetters failed: %v", err)
+	}
+	if len(replayedAgain) != 0 {
+		t.Fatalf("second replay = %+v, want none after lifetime replay cap", replayedAgain)
+	}
+
+	deadLetterPath := filepath.Join(spoolDir, wsUUID+".deadletter.json")
+	deadLetterBytes, err := os.ReadFile(deadLetterPath)
+	if err != nil {
+		t.Fatalf("read capped dead-letter spool: %v", err)
+	}
+	var deadLetters []DeadLetterEntry
+	if err := json.Unmarshal(deadLetterBytes, &deadLetters); err != nil {
+		t.Fatalf("decode capped dead-letter spool: %v", err)
+	}
+	if len(deadLetters) != 1 || deadLetters[0].ReplayCount != deadLetterReplayCap {
+		t.Fatalf("capped dead letters = %+v, want one entry at replay cap %d", deadLetters, deadLetterReplayCap)
+	}
+}
+
+func TestDeadLetter_WriteFailureRetainsPendingEntry(t *testing.T) {
+	spoolDir := t.TempDir()
+	wsUUID := "ws-deadletter-write-failure"
+	store := &FilePendingDispatchStore{BaseDir: spoolDir}
+	entry := PendingDispatchEntry{
+		ID:            "batch-must-survive",
+		WorkspaceUUID: wsUUID,
+		Name:          "retained-batch",
+		Prompt:        "do not lose me",
+		SavedAt:       time.Now(),
+		Attempts:      pendingDispatchMaxAttempts,
+	}
+	if err := store.Replace(wsUUID, []PendingDispatchEntry{entry}); err != nil {
+		t.Fatalf("Replace failed: %v", err)
+	}
+
+	deadLetterPath := filepath.Join(spoolDir, wsUUID+".deadletter.json")
+	if err := os.Mkdir(deadLetterPath, 0700); err != nil {
+		t.Fatalf("create blocking dead-letter directory: %v", err)
+	}
+	if err := store.DeadLetter(wsUUID, []PendingDispatchEntry{entry}, "terminal failure"); err == nil {
+		t.Fatal("DeadLetter error = nil, want dead-letter persistence failure")
+	}
+
+	pending, err := store.Load(wsUUID)
+	if err != nil {
+		t.Fatalf("Load after failed DeadLetter: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != entry.ID {
+		t.Fatalf("pending after failed DeadLetter = %+v, want original entry retained", pending)
 	}
 }

@@ -693,6 +693,23 @@ The single-processor path (`prompt-mode processor dispatched (single)`)
 gained a matching `estimated_tokens` field for parity plus the same
 `shared_snapshot_bytes` field.
 
+### Pending Dispatch Recovery and Dead Letters
+
+Prompt-mode batches are persisted in the workspace pending-dispatch spool
+before execution when they may outlive the originating conversation. A batch
+that exhausts its bounded retry budget, expires, or is evicted under capacity
+pressure is moved to a separate `0600` dead-letter spool rather than deleted.
+The move persists the dead-letter copy before removing the pending copy, so a
+partial write failure may leave a duplicate but cannot remove the only durable
+copy.
+
+After a one-hour cooldown, each dead-lettered batch receives at most one
+automatic replay. Its lifetime `replay_count` travels with the batch through
+dead-letter → pending → dead-letter transitions; a batch that fails after its
+replay remains inspectable in the dead-letter spool and is not automatically
+replayed again. Operators are notified when work is dead-lettered, and replay
+or persistence failures are logged with the workspace and dispatch identity.
+
 **Shared-snapshot telemetry attribution (mitto-353).** When the envelope
 attaches a shared snapshot block, `ApplyOnClose` records one synthetic
 `ProcessorRun` named `__close_history_snapshot__` (Phase `close`, Mode
