@@ -934,7 +934,6 @@ function renderFolderEditor({
                             workspaces=${workspaces}
                             currentWorkspaceUUID=${firstWs?.uuid}
                             onChange=${setEditAutoChildren}
-                            getBasename=${getBasename}
                             modelProfiles=${modelProfiles}
                             modelTags=${modelTags}
                           />

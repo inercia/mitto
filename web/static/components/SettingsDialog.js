@@ -82,6 +82,7 @@ import {
   agentDeleteSelectValue,
   hasAgentDeleteChoice,
 } from "../utils/agentDeleteChoice.js";
+import { buildAutoChildAgentOptions } from "../utils/autoChildAgentOptions.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
 // by the folder-level editor and the render-time toolbars; each maps to the
@@ -323,68 +324,6 @@ export function FolderListEditor({
 }
 
 /**
- * buildAutoChildAgentOptions — pure helper computing the Agent selector
- * options for one auto-child row (mitto-hyup).
- *
- * The first option is always "Current agent" (empty target — the child
- * inherits whatever agent the parent conversation uses). Alternatives are
- * other workspaces sharing the same working_dir, deduped by agent identity
- * (acp_server), excluding the current workspace's own agent. If the child
- * already has a saved target that isn't among the computed alternatives
- * (e.g. a stale UUID, or a UUID that lost the agent-identity dedup race),
- * it is appended so the saved value stays visible/editable.
- *
- * Returns { options, hasAlternatives } — hasAlternatives is false when no
- * other agent is configured for this folder, so callers can disable the
- * selector (unless the child already has a non-empty target to reset).
- */
-export function buildAutoChildAgentOptions(
-  workspaces,
-  currentWorkspaceUUID,
-  currentTarget,
-) {
-  const list = workspaces || [];
-  const currentWs = list.find((ws) => ws.uuid === currentWorkspaceUUID);
-  const sameDir = list.filter(
-    (ws) =>
-      ws.uuid !== currentWorkspaceUUID &&
-      currentWs &&
-      ws.working_dir === currentWs.working_dir,
-  );
-  const currentAgent = currentWs?.acp_server;
-
-  const options = [{ value: "", label: "Current agent", workspace: null }];
-  const seenAgents = new Set();
-  let hasAlternatives = false;
-
-  for (const ws of sameDir) {
-    const agent = ws.acp_server;
-    if (agent && agent === currentAgent) continue;
-    if (agent && seenAgents.has(agent)) continue;
-    if (agent) seenAgents.add(agent);
-    options.push({
-      value: ws.uuid,
-      label: ws.name || ws.acp_server || "",
-      workspace: ws,
-    });
-    hasAlternatives = true;
-  }
-
-  if (currentTarget && !options.some((o) => o.value === currentTarget)) {
-    const targetWs = list.find((ws) => ws.uuid === currentTarget);
-    options.push({
-      value: currentTarget,
-      label: targetWs
-        ? targetWs.name || targetWs.acp_server || ""
-        : `Unknown agent (${currentTarget})`,
-      workspace: targetWs || null,
-    });
-  }
-
-  return { options, hasAlternatives };
-}
-
-/**
  * AutoChildrenEditor — edit list of auto-created child conversations.
  * When a new top-level conversation is created in this workspace,
  * these child conversations will be auto-created with it.
@@ -394,7 +333,6 @@ export function AutoChildrenEditor({
   workspaces,
   currentWorkspaceUUID,
   onChange,
-  getBasename,
   modelProfiles,
   modelTags,
 }) {
@@ -411,7 +349,7 @@ export function AutoChildrenEditor({
     onChange(updated);
   };
 
-  // Small inline workspace badge + label used in the rich workspace dropdown
+  // Small inline workspace badge + agent label used in the rich agent dropdown
   // (both menu rows and the trigger). Inline styles avoid depending on
   // tailwind utility classes that may be absent from the precompiled snapshot.
   const renderWorkspaceItem = (ws) => {
@@ -434,9 +372,7 @@ export function AutoChildrenEditor({
           }}
           >${info.abbreviation}</span
         >
-        <span class="truncate min-w-0"
-          >${ws.name || ws.acp_server} (${getBasename(ws.working_dir)})</span
-        >
+        <span class="truncate min-w-0">${ws.acp_server || ws.name}</span>
       </span>
     `;
   };

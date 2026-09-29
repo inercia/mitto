@@ -11,6 +11,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { buildAutoChildAgentOptions } from "../utils/autoChildAgentOptions.js";
 
 /**
  * Duplicated from SettingsDialog.js (Tags onInput handler, ~lines 4745-4775).
@@ -1348,62 +1349,15 @@ describe("SettingsDialog Slack tab wiring (mitto-37nx.6)", () => {
   });
 });
 
-/**
- * Duplicated from SettingsDialog.js (buildAutoChildAgentOptions, ~line 341).
- * Pure helper — builds the Agent selector options for an auto-child row: a
- * leading "Current agent" sentinel, deduped same-working_dir alternatives
- * (excluding the current workspace's own agent), and a fallback entry for a
- * stale/unknown currentTarget UUID not otherwise present.
- */
-function buildAutoChildAgentOptions(workspaces, currentWorkspaceUUID, currentTarget) {
-  const list = workspaces || [];
-  const currentWs = list.find((ws) => ws.uuid === currentWorkspaceUUID);
-  const sameDir = list.filter(
-    (ws) =>
-      ws.uuid !== currentWorkspaceUUID &&
-      currentWs &&
-      ws.working_dir === currentWs.working_dir,
-  );
-  const currentAgent = currentWs?.acp_server;
-
-  const options = [{ value: "", label: "Current agent", workspace: null }];
-  const seenAgents = new Set();
-  let hasAlternatives = false;
-
-  for (const ws of sameDir) {
-    const agent = ws.acp_server;
-    if (agent && agent === currentAgent) continue;
-    if (agent && seenAgents.has(agent)) continue;
-    if (agent) seenAgents.add(agent);
-    options.push({
-      value: ws.uuid,
-      label: ws.name || ws.acp_server || "",
-      workspace: ws,
-    });
-    hasAlternatives = true;
-  }
-
-  if (currentTarget && !options.some((o) => o.value === currentTarget)) {
-    const targetWs = list.find((ws) => ws.uuid === currentTarget);
-    options.push({
-      value: currentTarget,
-      label: targetWs
-        ? targetWs.name || targetWs.acp_server || ""
-        : `Unknown agent (${currentTarget})`,
-      workspace: targetWs || null,
-    });
-  }
-
-  return { options, hasAlternatives };
-}
-
 describe("mitto-hyup: buildAutoChildAgentOptions", () => {
-  test("source wiring: SettingsDialog.js exports the helper and gates the Agent RichSelect on hasAlternatives", () => {
+  test("source wiring: SettingsDialog.js uses the helper and gates the Agent RichSelect on hasAlternatives", () => {
     const source = readFileSync(
       new URL("./SettingsDialog.js", import.meta.url),
       "utf8",
     );
-    expect(source).toContain("export function buildAutoChildAgentOptions(");
+    expect(source).toContain(
+      'import { buildAutoChildAgentOptions } from "../utils/autoChildAgentOptions.js"',
+    );
     expect(source).toContain("hasAlternatives");
     expect(source).toContain("agentSelectorDisabled");
   });
@@ -1435,7 +1389,7 @@ describe("mitto-hyup: buildAutoChildAgentOptions", () => {
     expect(hasAlternatives).toBe(true);
     expect(options).toEqual([
       { value: "", label: "Current agent", workspace: null },
-      { value: "ws-2", label: "Auggie", workspace: workspaces[1] },
+      { value: "ws-2", label: "auggie", workspace: workspaces[1] },
     ]);
   });
 
@@ -1491,8 +1445,8 @@ describe("mitto-hyup: buildAutoChildAgentOptions", () => {
     const { options } = buildAutoChildAgentOptions(workspaces, "ws-1", "ws-3");
     expect(options).toEqual([
       { value: "", label: "Current agent", workspace: null },
-      { value: "ws-2", label: "Auggie A", workspace: workspaces[1] },
-      { value: "ws-3", label: "Auggie B (deduped)", workspace: workspaces[2] },
+      { value: "ws-2", label: "auggie", workspace: workspaces[1] },
+      { value: "ws-3", label: "auggie", workspace: workspaces[2] },
     ]);
   });
 
