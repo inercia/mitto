@@ -8152,6 +8152,25 @@ func TestFlushPendingDispatches_DropsEntryAtMaxAttempts(t *testing.T) {
 	if _, statErr := os.Stat(spoolPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected spool file to be removed (poison entry dropped, good entry delivered), stat err = %v", statErr)
 	}
+
+	// AC2 regression (mitto-6ys1): a poison entry dropped at the max-attempts
+	// cap must be dead-lettered, not silently discarded — otherwise the batch
+	// is lost forever with no operator-visible trace.
+	deadLetterPath := filepath.Join(spoolDir, wsUUID+".deadletter.json")
+	dlBytes, dlErr := os.ReadFile(deadLetterPath)
+	if dlErr != nil {
+		t.Fatalf("expected dead-letter file at %s, read error = %v", deadLetterPath, dlErr)
+	}
+	var dlEntries []DeadLetterEntry
+	if err := json.Unmarshal(dlBytes, &dlEntries); err != nil {
+		t.Fatalf("failed to unmarshal dead-letter file: %v", err)
+	}
+	if len(dlEntries) != 1 || dlEntries[0].Name != "poison-batch" {
+		t.Fatalf("dead-letter entries = %+v, want exactly one entry for poison-batch", dlEntries)
+	}
+	if dlEntries[0].Reason == "" {
+		t.Errorf("dead-letter entry Reason is empty, want a non-empty explanation of why the batch was dead-lettered")
+	}
 }
 
 // TestFlushPendingDispatches_ErrProcessBusyConsumesPoisonBudget reproduces
