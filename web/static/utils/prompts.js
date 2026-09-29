@@ -793,7 +793,7 @@ function constraintMatchesName(criteria, name) {
  * criteria — so when models are ordered by version, the latest wins. Returns
  * null when profile/criteria is missing or nothing matches.
  */
-function resolveProfileModel(profile, modelOption) {
+export function resolveProfileModel(profile, modelOption) {
   if (
     !profile ||
     !profile.criteria ||

@@ -56,6 +56,7 @@ import {
   fetchCachedParamNames,
   promptResolveAsLoop,
 } from "../utils/prompts.js";
+import { resolveModelShortcut } from "../utils/modelShortcuts.js";
 
 /**
  * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
@@ -213,6 +214,9 @@ function ChatInputImpl({
   // Global model profiles (config.models) — needed by PromptsMenu to resolve
   // structured preferredModels ({modelName}/{modelTag}) into an override chip.
   modelProfiles = [],
+  // Optional toast callback (from useToast's showToast) used to surface
+  // feedback for the Cmd/Ctrl+Shift+digit model-shortcut keybinding.
+  onShowToast,
   contextUsage = null,
   tokenUsage = null,
   onOpenPromptParamDialog,
@@ -1037,6 +1041,52 @@ function ChatInputImpl({
       if (e.key === "Escape") {
         e.preventDefault();
         setShowSlashPicker(false);
+        return;
+      }
+    }
+
+    // Handle Cmd/Ctrl+Shift+<digit> model-switch shortcuts. Use e.code (not
+    // e.key) since Shift changes e.key (e.g. "1" -> "!" on US keyboards).
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+      const digitMatch = /^Digit([1-5])$/.exec(e.code);
+      if (digitMatch) {
+        e.preventDefault();
+        const digit = Number(digitMatch[1]);
+        const result = resolveModelShortcut(digit, modelProfiles, modelOption);
+        switch (result.status) {
+          case "apply":
+            onSetConfigOption?.(modelOption.id, result.value);
+            onShowToast?.({
+              message: `Switched model to ${result.name}`,
+              style: "success",
+            });
+            break;
+          case "already_active":
+            onShowToast?.({
+              message: `Model is already ${result.name}`,
+              style: "info",
+            });
+            break;
+          case "no_match":
+            onShowToast?.({
+              message: `No available model matches shortcut ${digit} (${result.profile?.name || "profile"})`,
+              style: "warning",
+            });
+            break;
+          case "unassigned":
+            onShowToast?.({
+              message: `No model is assigned to shortcut ${digit}`,
+              style: "info",
+            });
+            break;
+          case "no_model_option":
+          default:
+            onShowToast?.({
+              message: "Model selection is not available for this conversation",
+              style: "info",
+            });
+            break;
+        }
         return;
       }
     }

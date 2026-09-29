@@ -77,7 +77,7 @@ models:
 | `criteria.matchMode` | Yes (if criteria set) | string         | One of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`.                              |
 | `criteria.pattern`   | Yes (if criteria set) | string         | The pattern compared against the model's display name.                                       |
 | `tags`               | No                    | list of string | Capability tags associated with this profile.                                                |
-| `shortcutNumber`     | No                    | int            | Optional keyboard-shortcut slot (`1`-`5`) shown next to the profile in the Models settings tab, letting the composer's model selector switch to it with a single keystroke. `0` (default) means unassigned. Each value is unique across profiles — assigning it to a second profile clears it from whichever profile held it before.                                                |
+| `shortcutNumber`     | No                    | int            | Optional keyboard-shortcut slot (`1`-`5`) shown next to the profile in the Models settings tab. Pressing `Cmd/Ctrl+Shift+<1-5>` in the composer switches the active conversation model to the profile assigned to that slot (matched against the session's available models the same way `preferredModels` resolves a profile). `0` (default) means unassigned. Each value is unique across profiles — assigning it to a second profile clears it from whichever profile held it before.                                                |
 
 ### Match Modes
 

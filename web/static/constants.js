@@ -228,4 +228,10 @@ export const KEYBOARD_SHORTCUTS = [
     section: "Input",
     hint: "Use Ctrl+/ on Windows/Linux",
   },
+  {
+    keys: "⌘⇧1-5",
+    description: "Switch to model 1-5",
+    section: "Input",
+    hint: "Per Settings shortcut assignment; use Ctrl+Shift+1-5 on Windows/Linux",
+  },
 ];

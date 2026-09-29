@@ -4118,6 +4118,7 @@ function App() {
                       onFlushContext=${activeSessionId
                         ? handleComposerFlushContext
                         : undefined}
+                      onShowToast=${showToast}
                     />
                   </div>
                 </div>
