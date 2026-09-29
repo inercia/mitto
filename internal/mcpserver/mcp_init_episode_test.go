@@ -223,6 +223,79 @@ func TestMCPInitEpisodeTracker_MaxEntriesEviction(t *testing.T) {
 	}
 }
 
+// TestMCPInitEpisodeTracker_KeepaliveGetAfterCompletion_MustNotFalselyStall
+// reproduces mitto-1ngs: SSE keepalive GET requests recycle roughly every 5
+// minutes for the lifetime of an MCP session, long after its init handshake
+// has already completed. RecordPhase's lazy episode-creation on any unknown
+// sessionID means a keepalive-recycle GET (mcpInitPhaseFirstGet) arriving
+// after completion re-creates a "phantom" episode for that already-completed
+// session. Because no further tools/list is ever issued on that session, the
+// phantom episode ages past mcpInitEpisodeMaxAge and the tracker emits a
+// spurious "MCP init episode stalled" WARN for a session whose handshake in
+// fact completed cleanly minutes earlier — a false positive, not a real
+// stall. This test asserts the CORRECT (bug-free) behavior — no stall log
+// for a session that already completed its handshake — which the current
+// implementation violates.
+func TestMCPInitEpisodeTracker_KeepaliveGetAfterCompletion_MustNotFalselyStall(t *testing.T) {
+	buf := &bytes.Buffer{}
+	clock := &fakeEpisodeClock{now: time.Now()}
+	tr := newTestEpisodeTracker(buf, clock, nil)
+	base := clock.Now()
+
+	const sid = "sess-keepalive-recycle"
+
+	// Full clean handshake: episode completes and is deleted from the
+	// tracker (mirrors mcpInitPhaseToolsListResponded handling).
+	tr.RecordPhase(sid, mcpInitPhaseInitializeReceived, base)
+	tr.RecordPhase(sid, mcpInitPhaseInitializeResponded, base.Add(10*time.Millisecond))
+	tr.RecordPhase(sid, mcpInitPhaseInitializedNotification, base.Add(20*time.Millisecond))
+	tr.RecordPhase(sid, mcpInitPhaseFirstGet, base.Add(30*time.Millisecond))
+	tr.RecordPhase(sid, mcpInitPhaseToolsListReceived, base.Add(40*time.Millisecond))
+	tr.RecordPhase(sid, mcpInitPhaseToolsListResponded, base.Add(50*time.Millisecond))
+
+	buf.Reset()
+	if !strings.Contains(func() string {
+		tr.mu.Lock()
+		defer tr.mu.Unlock()
+		_, tracked := tr.episodes[sid]
+		if tracked {
+			return "still-tracked"
+		}
+		return "evicted"
+	}(), "evicted") {
+		t.Fatal("expected completed episode to be evicted from the tracker")
+	}
+
+	// Simulate the SSE keepalive GET stream recycling ~5 minutes later
+	// (server.go records mcpInitPhaseFirstGet on every GET carrying an
+	// Mcp-Session-Id, not only the handshake's first GET). This re-creates a
+	// phantom episode for the already-completed session.
+	//
+	// The fake clock (t.now()) must be advanced in lockstep with the `at`
+	// timestamp passed to RecordPhase: in production both derive from the
+	// same time.Now() call, so they can never diverge. Advancing only one
+	// of them (as an earlier version of this test mistakenly did, computing
+	// `firstRecycle`/`secondRecycle` via base.Add(...) without moving the
+	// clock) desyncs `nowTS` from `ep.insertedAt` by minutes, permanently
+	// yielding a negative (never-aging) duration and masking the bug.
+	clock.Advance(5 * time.Minute)
+	firstRecycle := clock.Now()
+	tr.RecordPhase(sid, mcpInitPhaseFirstGet, firstRecycle)
+
+	// Advance the clock past mcpInitEpisodeMaxAge and simulate the next
+	// keepalive recycle. The phantom episode is now "aging" purely because
+	// no tools/list will ever be reissued on an already-initialized session.
+	clock.Advance(mcpInitEpisodeMaxAge + time.Second)
+	secondRecycle := clock.Now()
+	tr.RecordPhase(sid, mcpInitPhaseFirstGet, secondRecycle)
+
+	out := buf.String()
+	if strings.Contains(out, `msg="MCP init episode stalled"`) {
+		t.Fatalf("mitto-1ngs: keepalive GET recycle on an already-completed "+
+			"session must not emit a false-positive stall WARN, got:\n%s", out)
+	}
+}
+
 func TestMCPInitEpisodeTracker_StatsFnPlumbedIntoStalledLog(t *testing.T) {
 	buf := &bytes.Buffer{}
 	clock := &fakeEpisodeClock{now: time.Now()}

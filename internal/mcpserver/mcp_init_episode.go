@@ -91,6 +91,19 @@ type mcpInitEpisodeTracker struct {
 	// short-lived and monotonic, so oldest-by-insertion is an adequate
 	// approximation of least-relevant when the tracker overflows.
 	order []string
+	// completed tombstones sessionIDs whose handshake already reached
+	// tools_list_responded, keyed to the time completion was recorded.
+	// SSE keepalive GET streams reissue mcpInitPhaseFirstGet on an
+	// already-completed session for the lifetime of that session
+	// (recycling roughly every 5 minutes); without this tombstone,
+	// RecordPhase's lazy episode-creation would re-create a "phantom"
+	// episode for that sessionID, which then ages past
+	// mcpInitEpisodeMaxAge and emits a false-positive "stalled" WARN
+	// (mitto-1ngs). Bounded by completedOrder the same way episodes are.
+	completed map[string]time.Time
+	// completedOrder tracks insertion order of `completed` for
+	// bounded-size and TTL eviction, mirroring `order`/`episodes`.
+	completedOrder []string
 }
 
 // newMCPInitEpisodeTracker creates a tracker. now defaults to time.Now when
@@ -101,10 +114,11 @@ func newMCPInitEpisodeTracker(logger *slog.Logger, statsFn mcpInitStatsFn, now f
 		now = time.Now
 	}
 	return &mcpInitEpisodeTracker{
-		logger:   logger,
-		statsFn:  statsFn,
-		now:      now,
-		episodes: make(map[string]*mcpInitEpisode),
+		logger:    logger,
+		statsFn:   statsFn,
+		now:       now,
+		episodes:  make(map[string]*mcpInitEpisode),
+		completed: make(map[string]time.Time),
 	}
 }
 
@@ -124,6 +138,15 @@ func (t *mcpInitEpisodeTracker) RecordPhase(sessionID string, phase mcpInitPhase
 
 	t.mu.Lock()
 	t.evictExpiredLocked()
+	t.evictExpiredCompletedLocked()
+
+	if _, tombstoned := t.completed[sessionID]; tombstoned {
+		// Handshake for this sessionID already completed; a recycled SSE
+		// keepalive GET (or any other late phase signal) must not
+		// resurrect a phantom episode (mitto-1ngs).
+		t.mu.Unlock()
+		return
+	}
 
 	ep, ok := t.episodes[sessionID]
 	if !ok {
@@ -171,6 +194,14 @@ func (t *mcpInitEpisodeTracker) RecordPhase(sessionID string, phase mcpInitPhase
 		ep.completed = true
 		delete(t.episodes, sessionID)
 		t.removeFromOrderLocked(sessionID)
+		// Tombstone the sessionID so a later SSE keepalive GET recycle
+		// (which reuses the same Mcp-Session-Id) cannot recreate a phantom
+		// episode for an already-completed handshake (mitto-1ngs).
+		if _, already := t.completed[sessionID]; !already {
+			t.completedOrder = append(t.completedOrder, sessionID)
+		}
+		t.completed[sessionID] = nowTS
+		t.evictOverflowCompletedLocked()
 	}
 	t.mu.Unlock()
 
@@ -277,6 +308,39 @@ func (t *mcpInitEpisodeTracker) evictOverflowLocked() {
 		oldest := t.order[0]
 		t.order = t.order[1:]
 		delete(t.episodes, oldest)
+	}
+}
+
+// evictExpiredCompletedLocked drops tombstone entries older than
+// mcpInitEpisodeTTL. The caller must hold t.mu.
+func (t *mcpInitEpisodeTracker) evictExpiredCompletedLocked() {
+	if len(t.completedOrder) == 0 {
+		return
+	}
+	now := t.now()
+	kept := make([]string, 0, len(t.completedOrder))
+	for _, sid := range t.completedOrder {
+		insertedAt, ok := t.completed[sid]
+		if !ok {
+			continue // already removed
+		}
+		if now.Sub(insertedAt) > mcpInitEpisodeTTL {
+			delete(t.completed, sid)
+			continue
+		}
+		kept = append(kept, sid)
+	}
+	t.completedOrder = kept
+}
+
+// evictOverflowCompletedLocked drops the oldest-inserted tombstone entries
+// once the tracker exceeds mcpInitEpisodeMaxEntries. The caller must hold
+// t.mu.
+func (t *mcpInitEpisodeTracker) evictOverflowCompletedLocked() {
+	for len(t.completedOrder) > mcpInitEpisodeMaxEntries {
+		oldest := t.completedOrder[0]
+		t.completedOrder = t.completedOrder[1:]
+		delete(t.completed, oldest)
 	}
 }
 
