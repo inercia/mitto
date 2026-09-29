@@ -103,6 +103,14 @@ export function WorkspacesDialog({
   // false so a subsequent re-open still honors initialWorkingDir/initialTab.
   const hasAutoSelectedRef = useRef(false);
 
+  // Guards the initialWorkingDir-driven expansion focus (below) so it forces
+  // its "expand the target, collapse the rest" outcome only once per dialog
+  // "open session" — not on every groupedWorkspaces identity change (e.g. Save
+  // rebuilding the workspaces array) — so a user's manual expand/collapse
+  // clicks later in the same session aren't clobbered. Reset when isOpen goes
+  // false, mirroring hasAutoSelectedRef. See mitto-m6fu.
+  const hasFocusedExpansionRef = useRef(false);
+
   // Tracks previously-selected workspace key so useWorkspaceEdits can flush
   // transient edit fields back into the workspaces array on selection change.
   // Owned by the shell (not useWorkspaceEdits) to break the circular dep
@@ -380,7 +388,10 @@ export function WorkspacesDialog({
   // Initialize folder expansion state from localStorage when the dialog opens
   // or when the set of folders changes.
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      hasFocusedExpansionRef.current = false;
+      return;
+    }
     // With many folders the tree gets long, so default to collapsed; a folder
     // the user has explicitly toggled (stored in localStorage) keeps its state.
     const defaultExpanded =
@@ -392,8 +403,30 @@ export function WorkspacesDialog({
         defaultExpanded,
       );
     });
+    // When opened targeting a specific folder (e.g. via "Configure workspace"),
+    // force-expand that folder and collapse the rest so the user immediately
+    // sees the relevant tree node (mitto-m6fu). This is a one-shot focus for
+    // the open session — it must not persist to localStorage (that would
+    // permanently clobber the user's saved tree state) and must not re-fire
+    // on later groupedWorkspaces identity changes (e.g. after Save) while the
+    // dialog stays open.
+    if (
+      initialWorkingDir &&
+      !hasFocusedExpansionRef.current &&
+      groupedWorkspaces.length > 0
+    ) {
+      const matchingGroup = groupedWorkspaces.find((g) =>
+        g.workspaces.some((ws) => ws.working_dir === initialWorkingDir),
+      );
+      if (matchingGroup) {
+        groupedWorkspaces.forEach(({ displayName }) => {
+          initial[displayName] = displayName === matchingGroup.displayName;
+        });
+        hasFocusedExpansionRef.current = true;
+      }
+    }
     setExpandedFolders(initial);
-  }, [isOpen, groupedWorkspaces]);
+  }, [isOpen, groupedWorkspaces, initialWorkingDir]);
 
   const toggleFolder = useCallback((displayName) => {
     setExpandedFolders((prev) => {

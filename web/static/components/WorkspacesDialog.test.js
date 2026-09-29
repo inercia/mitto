@@ -625,6 +625,14 @@ describe("effective-runner-config load effect (loadEffectiveRunnerConfig)", () =
 
 const autoSelectChildRun =
   process.env.MITTO_WORKSPACES_DIALOG_AUTOSELECT_TEST_CHILD === "1";
+// Guards against nested-spawn contamination: if we're already running as an
+// isolated child for a *different* gate (e.g. the mitto-m6fu block below),
+// this block must neither re-run its own child-mode logic (its own gate is
+// unset) nor spawn a further nested child from its wrapper branch -- that
+// nested child would inherit BOTH gate env vars and execute both blocks in
+// child mode, cascading an unrelated failure into this wrapper test.
+const anyOtherIsolatedChildGateSet =
+  process.env.MITTO_WORKSPACES_DIALOG_EXPAND_TEST_CHILD === "1";
 
 if (autoSelectChildRun) {
   const preact = await import("../vendor/preact.js");
@@ -757,7 +765,7 @@ if (autoSelectChildRun) {
   });
 
   window.preact = previousPreact;
-} else {
+} else if (!anyOtherIsolatedChildGateSet) {
   describe("WorkspacesDialog auto-select-initial-folder effect (mitto-m3e)", () => {
     test("passes mounted reproduction in an isolated process", () => {
       const result = spawnSync(
@@ -775,6 +783,275 @@ if (autoSelectChildRun) {
       if (result.status !== 0) {
         throw new Error(
           `Isolated auto-select-effect test failed:\n${result.stdout}\n${result.stderr}`,
+        );
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// mitto-m6fu reproduction: "Configure workspace" should expand the selected
+// folder and collapse the others, instead of leaving the count-based/
+// persisted default expansion untouched.
+//
+// Two effects in WorkspacesDialog.js run independently and never coordinate:
+//
+//   1. The expansion-init effect (lines ~379-394) seeds `expandedFolders`
+//      purely from the folder count (`WORKSPACES_EDITOR_COLLAPSE_THRESHOLD`,
+//      line 57) and any persisted per-folder localStorage choice
+//      (`getEditorFolderExpansion`, lines ~60-68). It never looks at
+//      `initialWorkingDir`.
+//   2. The auto-select effect (lines ~554-582) selects the folder matching
+//      `initialWorkingDir` (`setSelectedFolder`) but never calls
+//      `expandFolder`/`setExpandedFolders` -- it only touches
+//      selectedFolder/selectedWorkspaceKey/activeTab.
+//
+// With more than WORKSPACES_EDITOR_COLLAPSE_THRESHOLD (5) folders and no
+// prior persisted per-folder choice, `defaultExpanded` computes to `false`,
+// so EVERY folder -- including the one matching `initialWorkingDir` that the
+// auto-select effect just selected -- starts collapsed. The expected/desired
+// behavior is that the folder containing `initialWorkingDir` should render
+// expanded (and, ideally, the others collapsed) when the dialog is opened
+// with a workspace pre-selected via "Configure workspace".
+//
+// Must be a *mounted* preact-hooks test (like the mitto-m3e harness above)
+// because the bug is about effect coordination across `expandedFolders` and
+// `selectedFolder` state, which a plain function cannot reproduce. Runs in
+// the same isolated child-process pattern to avoid leaking window.preact
+// mocks into other test files.
+// ---------------------------------------------------------------------------
+
+const expandSelectedChildRun =
+  process.env.MITTO_WORKSPACES_DIALOG_EXPAND_TEST_CHILD === "1";
+// Guard against nested-spawn contamination: a child spawned by the sibling
+// mitto-m3e wrapper (which sets only its own gate var) would otherwise still
+// hit this block's `else` branch below and spawn a further nested child that
+// inherits BOTH gate vars (via `...process.env`), running both blocks in
+// real assertion mode and producing a false failure in the m3e wrapper.
+const anyOtherIsolatedChildGateSetForExpand =
+  process.env.MITTO_WORKSPACES_DIALOG_AUTOSELECT_TEST_CHILD === "1";
+
+if (expandSelectedChildRun) {
+  const preact = await import("../vendor/preact.js");
+  const hooks = await import("../vendor/preact-hooks.js");
+  const previousPreact = window.preact;
+  window.preact = { ...preact, ...hooks };
+
+  const WORKSPACES_EDITOR_COLLAPSE_THRESHOLD = 5;
+
+  // Duplicated (not imported -- see rationale above) from
+  // WorkspacesDialog.js: getEditorFolderExpansion (lines ~60-68), the
+  // groupedWorkspaces useMemo (line ~224), the expansion-init effect (lines
+  // ~379-394), and the auto-select effect (lines ~554-582). Keep in sync
+  // with the implementation. Uses an in-memory map instead of real
+  // localStorage since no prior persisted per-folder choice exists in this
+  // scenario.
+  function getEditorFolderExpansion(persisted, folderName, defaultExpanded) {
+    if (!(folderName in persisted)) return defaultExpanded;
+    return persisted[folderName];
+  }
+
+  function ExpandSelectedFolderHarness({
+    initialWorkspaces,
+    isOpen,
+    initialWorkingDir,
+    initialTab,
+    persistedExpansion,
+    onState,
+  }) {
+    const [workspaces] = hooks.useState(initialWorkspaces);
+    const [selectedFolder, setSelectedFolder] = hooks.useState(null);
+    const [selectedWorkspaceKey, setSelectedWorkspaceKey] =
+      hooks.useState(null);
+    const [activeTab, setActiveTab] = hooks.useState("general");
+    const [expandedFolders, setExpandedFolders] = hooks.useState({});
+    const hasAutoSelectedRef = hooks.useRef(false);
+    const pendingInitialTabRef = hooks.useRef(null);
+    // Mirrors WorkspacesDialog.js's hasFocusedExpansionRef (mitto-m6fu fix):
+    // one-shot guard so the initialWorkingDir-driven expand/collapse only
+    // fires once per dialog-open session, not on every groupedWorkspaces
+    // identity change.
+    const hasFocusedExpansionRef = hooks.useRef(false);
+
+    const groupedWorkspaces = hooks.useMemo(() => {
+      const groups = new Map();
+      workspaces.forEach((ws) => {
+        const displayName = ws.name || ws.working_dir;
+        if (!groups.has(displayName)) {
+          groups.set(displayName, { displayName, workspaces: [] });
+        }
+        groups.get(displayName).workspaces.push(ws);
+      });
+      return Array.from(groups.values());
+    }, [workspaces]);
+
+    // Expansion-init effect (WorkspacesDialog.js lines ~379-404).
+    hooks.useEffect(() => {
+      if (!isOpen) {
+        hasFocusedExpansionRef.current = false;
+        return;
+      }
+      const defaultExpanded =
+        groupedWorkspaces.length <= WORKSPACES_EDITOR_COLLAPSE_THRESHOLD;
+      const initial = {};
+      groupedWorkspaces.forEach(({ displayName }) => {
+        initial[displayName] = getEditorFolderExpansion(
+          persistedExpansion || {},
+          displayName,
+          defaultExpanded,
+        );
+      });
+      // When opened targeting a specific folder (e.g. via "Configure
+      // workspace"), force-expand that folder and collapse the rest
+      // (mitto-m6fu). One-shot per open session; must not re-fire on later
+      // groupedWorkspaces identity changes while the dialog stays open.
+      if (
+        initialWorkingDir &&
+        !hasFocusedExpansionRef.current &&
+        groupedWorkspaces.length > 0
+      ) {
+        const matchingGroup = groupedWorkspaces.find((g) =>
+          g.workspaces.some((ws) => ws.working_dir === initialWorkingDir),
+        );
+        if (matchingGroup) {
+          groupedWorkspaces.forEach(({ displayName }) => {
+            initial[displayName] = displayName === matchingGroup.displayName;
+          });
+          hasFocusedExpansionRef.current = true;
+        }
+      }
+      setExpandedFolders(initial);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, groupedWorkspaces, initialWorkingDir]);
+
+    // Auto-select effect (WorkspacesDialog.js lines ~554-582).
+    hooks.useEffect(() => {
+      if (!isOpen) {
+        hasAutoSelectedRef.current = false;
+        return;
+      }
+      if (hasAutoSelectedRef.current) return;
+      if (initialWorkingDir && groupedWorkspaces.length > 0) {
+        const matchingGroup = groupedWorkspaces.find((g) =>
+          g.workspaces.some((ws) => ws.working_dir === initialWorkingDir),
+        );
+        if (matchingGroup) {
+          hasAutoSelectedRef.current = true;
+          pendingInitialTabRef.current = initialTab || null;
+          setSelectedFolder(matchingGroup.displayName);
+          setSelectedWorkspaceKey(null);
+          setActiveTab(initialTab || "general");
+        }
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, initialWorkingDir, initialTab, groupedWorkspaces]);
+
+    onState({
+      activeTab,
+      selectedFolder,
+      selectedWorkspaceKey,
+      expandedFolders,
+    });
+    return preact.h("div", { "data-testid": "expand-selected-harness" });
+  }
+
+  function mount(props) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    let latest = null;
+    preact.render(
+      preact.h(ExpandSelectedFolderHarness, {
+        ...props,
+        onState: (s) => {
+          latest = s;
+        },
+      }),
+      container,
+    );
+    return { container, getState: () => latest };
+  }
+
+  function unmount(container) {
+    preact.render(null, container);
+    container.remove();
+  }
+
+  async function waitFor(predicate, message) {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      if (predicate()) return;
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    throw new Error(`Timed out waiting for ${message}`);
+  }
+
+  describe("WorkspacesDialog expand-selected-folder-on-open (mitto-m6fu)", () => {
+    test("opening via 'Configure workspace' must expand the matching folder and collapse the rest", async () => {
+      // 7 folders: exceeds WORKSPACES_EDITOR_COLLAPSE_THRESHOLD (5), so the
+      // expansion-init effect's defaultExpanded computes to `false` and
+      // every folder starts collapsed absent a persisted per-folder choice.
+      const workspaces = [
+        { name: "Alpha", working_dir: "/repo/alpha" },
+        { name: "Beta", working_dir: "/repo/beta" },
+        { name: "Gamma", working_dir: "/repo/gamma" },
+        { name: "Delta", working_dir: "/repo/delta" },
+        { name: "Epsilon", working_dir: "/repo/epsilon" },
+        { name: "Zeta", working_dir: "/repo/zeta" },
+        { name: "Eta", working_dir: "/repo/eta" },
+      ];
+      const { container, getState } = mount({
+        initialWorkspaces: workspaces,
+        isOpen: true,
+        initialWorkingDir: "/repo/gamma",
+        initialTab: null,
+        persistedExpansion: {},
+      });
+      try {
+        // Auto-select ran on open: folder = Gamma (the one containing
+        // initialWorkingDir).
+        await waitFor(
+          () => getState().selectedFolder === "Gamma",
+          "auto-select on open",
+        );
+        // Give the expansion-init effect a chance to settle too.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        // BUG (mitto-m6fu): the folder containing the pre-selected
+        // workspace should render expanded when "Configure workspace" opens
+        // the dialog, even though the tree exceeds the collapse threshold.
+        // Today it stays collapsed like every other folder, because the
+        // auto-select effect never calls expandFolder/setExpandedFolders.
+        expect(getState().expandedFolders.Gamma).toBe(true);
+
+        // The other folders should remain collapsed (unaffected by
+        // auto-select) -- this part already passes today.
+        expect(getState().expandedFolders.Alpha).not.toBe(true);
+        expect(getState().expandedFolders.Beta).not.toBe(true);
+      } finally {
+        unmount(container);
+      }
+    });
+  });
+
+  window.preact = previousPreact;
+} else if (!anyOtherIsolatedChildGateSetForExpand) {
+  describe("WorkspacesDialog expand-selected-folder-on-open (mitto-m6fu)", () => {
+    test("passes mounted reproduction in an isolated process", () => {
+      const result = spawnSync(
+        process.execPath,
+        ["test", fileURLToPath(import.meta.url)],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            MITTO_WORKSPACES_DIALOG_EXPAND_TEST_CHILD: "1",
+          },
+          timeout: 30_000,
+        },
+      );
+      if (result.status !== 0) {
+        throw new Error(
+          `Isolated expand-selected-folder-effect test failed:\n${result.stdout}\n${result.stderr}`,
         );
       }
     });
