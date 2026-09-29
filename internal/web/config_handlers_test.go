@@ -758,9 +758,10 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 func twoProfileFixture() []config.ModelProfile {
 	return []config.ModelProfile{
 		{
-			Name:     "Opus",
-			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
-			Tags:     []string{"Smartest", "Expensive"},
+			Name:           "Opus",
+			Criteria:       &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+			Tags:           []string{"Smartest", "Expensive"},
+			ShortcutNumber: 1,
 		},
 		{
 			Name:     "Sonnet",
@@ -827,10 +828,16 @@ func TestHandleGetConfig_ModelProfiles(t *testing.T) {
 	if len(tags0) != 2 || tags0[0] != "Smartest" || tags0[1] != "Expensive" {
 		t.Errorf("models[0].tags = %v, want [Smartest Expensive]", tags0)
 	}
+	if models[0]["shortcut_number"] != float64(1) {
+		t.Errorf("models[0].shortcut_number = %v, want 1", models[0]["shortcut_number"])
+	}
 
 	// Check second profile (Sonnet)
 	if models[1]["name"] != "Sonnet" {
 		t.Errorf("models[1].name = %v, want Sonnet", models[1]["name"])
+	}
+	if _, ok := models[1]["shortcut_number"]; ok {
+		t.Errorf("models[1].shortcut_number = %v, want omitted", models[1]["shortcut_number"])
 	}
 }
 
@@ -860,6 +867,9 @@ func TestBuildNewSettings_ModelsPresent(t *testing.T) {
 	}
 	if settings.Models[1].Name != "Sonnet" {
 		t.Errorf("settings.Models[1].Name = %q, want Sonnet", settings.Models[1].Name)
+	}
+	if settings.Models[0].ShortcutNumber != 1 {
+		t.Errorf("settings.Models[0].ShortcutNumber = %d, want 1", settings.Models[0].ShortcutNumber)
 	}
 }
 

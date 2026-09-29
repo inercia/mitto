@@ -339,6 +339,27 @@ describe("applyProfileShortcut", () => {
   });
 });
 
+describe("model profile shortcut source wiring (mitto-qmqq.1)", () => {
+  const source = readFileSync(
+    new URL("./SettingsDialog.js", import.meta.url),
+    "utf8",
+  );
+  const shortcutSelect = source.match(
+    /data-testid="model-profile-shortcut-\$\{i\}"[\s\S]*?<\/select>/,
+  )?.[0];
+
+  test("renders exactly Unassigned and shortcut numbers 1-5", () => {
+    expect(shortcutSelect).toBeDefined();
+    expect(shortcutSelect).toContain('<option value="0">Unassigned</option>');
+    expect(shortcutSelect).toContain("${[1, 2, 3, 4, 5].map(");
+  });
+
+  test("binds the selected value and uniqueness handler", () => {
+    expect(shortcutSelect).toContain("value=${p.shortcut_number || 0}");
+    expect(shortcutSelect).toContain("setProfileShortcut(");
+  });
+});
+
 describe("isEmptyNormalizedProfile", () => {
   test("a profile with no name, criteria or tags is empty", () => {
     expect(isEmptyNormalizedProfile(normalizeModelProfile({}))).toBe(true);
