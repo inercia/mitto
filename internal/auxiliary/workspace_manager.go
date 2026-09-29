@@ -3,6 +3,7 @@ package auxiliary
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1433,6 +1434,18 @@ func (m *WorkspaceAuxiliaryManager) PromptProcessorAsync(ctx context.Context, wo
 
 const processorCompletionMarker = "MITTO_PROCESSOR_COMPLETION "
 
+// ErrProcessorCompletionAckMissing is the sentinel wrapped into every failure
+// path of parseProcessorCompletion (missing marker, invalid JSON, dispatch ID
+// mismatch, missing/negative save count). Callers classify failures uniformly
+// via errors.Is(err, ErrProcessorCompletionAckMissing) instead of matching on
+// error strings (mitto-6ys1).
+var ErrProcessorCompletionAckMissing = errors.New("processor completion acknowledgement missing")
+
+// maxAckDiagnosticTail bounds the truncated response tail included in
+// diagnostic errors — large enough to be useful, small enough to never leak a
+// sensitive full response into logs/comments.
+const maxAckDiagnosticTail = 200
+
 type processorCompletionEnvelope struct {
 	DispatchID string `json:"dispatch_id"`
 	SaveCount  *int   `json:"save_count"`
@@ -1452,9 +1465,9 @@ func (m *WorkspaceAuxiliaryManager) PromptProcessorTracked(ctx context.Context, 
 
 This background dispatch may be retried after a crash. Before creating a durable record, check whether the requested fact/change already exists; update it by its stable logical key where possible instead of creating a duplicate. The dispatch ID is %q.
 
-After completing all requested work, your final non-empty response line MUST be exactly:
+After completing all requested work, your final non-empty response line MUST be exactly the following, as PLAIN TEXT:
 MITTO_PROCESSOR_COMPLETION {"dispatch_id":%q,"save_count":N}
-Replace N with the number of durable memories/files/records you successfully saved (0 is valid). Do not claim a save that failed.`, prompt, dispatchID, dispatchID)
+Do NOT wrap it in a code fence or backticks. Do NOT put any words before or after it on that line. Do NOT add any further lines, sentences, or punctuation (e.g. "Done.") after it — it must be the very last thing you output. Replace N with the number of durable memories/files/records you successfully saved (0 is valid). Do not claim a save that failed.`, prompt, dispatchID, dispatchID)
 
 	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, purpose, trackedPrompt)
 	if err != nil {
@@ -1463,28 +1476,121 @@ Replace N with the number of durable memories/files/records you successfully sav
 	return parseProcessorCompletion(response, dispatchID)
 }
 
+// stripAckLineDecorations strips whitespace and common LLM-formatting
+// decorations from a single line before it is checked against
+// processorCompletionMarker: wrapping single backticks, leading list/quote
+// markers ("- ", "* ", "> "), and leading/trailing bold markers ("**").
+// Decorations are stripped repeatedly (outermost-first) so combinations like
+// "- **MITTO_PROCESSOR_COMPLETION ...**" are still recognized.
+func stripAckLineDecorations(line string) string {
+	s := strings.TrimSpace(line)
+	for {
+		trimmed := s
+		if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "`") && strings.HasSuffix(trimmed, "`") {
+			trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "- "):
+			trimmed = strings.TrimSpace(trimmed[2:])
+		case strings.HasPrefix(trimmed, "* "):
+			trimmed = strings.TrimSpace(trimmed[2:])
+		case strings.HasPrefix(trimmed, "> "):
+			trimmed = strings.TrimSpace(trimmed[2:])
+		}
+		if strings.HasPrefix(trimmed, "**") {
+			trimmed = strings.TrimSpace(trimmed[2:])
+		}
+		if strings.HasSuffix(trimmed, "**") {
+			trimmed = strings.TrimSpace(trimmed[:len(trimmed)-2])
+		}
+		if trimmed == s {
+			return s
+		}
+		s = trimmed
+	}
+}
+
+// isBareFenceDelimiterLine reports whether line is (after trimming
+// whitespace) a bare Markdown code-fence delimiter such as "```" or
+// "```json" — i.e. it opens or closes a fenced code block but carries no
+// other content. Used to drop the fence lines that commonly wrap the
+// completion marker (e.g. "```\nMITTO_PROCESSOR_COMPLETION {...}\n```")
+// from the extracted message, since they are formatting, not content.
+func isBareFenceDelimiterLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "```")
+}
+
+// truncatedAckTail returns the last maxAckDiagnosticTail runes of response,
+// prefixed with an ellipsis marker when truncation occurred. Never returns
+// the full response — only a bounded tail is safe to surface in diagnostics
+// (comments, logs) since the response may contain sensitive content.
+func truncatedAckTail(response string) string {
+	runes := []rune(response)
+	if len(runes) <= maxAckDiagnosticTail {
+		return response
+	}
+	return "…" + string(runes[len(runes)-maxAckDiagnosticTail:])
+}
+
+// parseProcessorCompletion scans response from the end for a line carrying
+// processorCompletionMarker (after stripping common formatting decorations
+// such as code fences, backticks, list/quote markers, and bold markup), and
+// decodes the trailing JSON envelope. Scanning backward and taking the first
+// match gives "last occurrence wins" semantics when the marker appears more
+// than once. The JSON is decoded with a streaming decoder rather than
+// json.Unmarshal so trailing text on the same line after the closing brace
+// (e.g. a stray "Done.") does not cause a parse failure. Every failure path
+// wraps ErrProcessorCompletionAckMissing so callers can classify uniformly
+// via errors.Is, with bounded diagnostics (never the full response).
 func parseProcessorCompletion(response, expectedDispatchID string) (int, string, error) {
-	lines := strings.Split(strings.TrimSpace(response), "\n")
-	if len(lines) == 0 {
-		return 0, "", fmt.Errorf("processor completion acknowledgement missing")
+	trimmed := strings.TrimSpace(response)
+	lines := strings.Split(trimmed, "\n")
+
+	markerIdx := -1
+	var rest string
+	for i := len(lines) - 1; i >= 0; i-- {
+		stripped := stripAckLineDecorations(lines[i])
+		if strings.HasPrefix(stripped, processorCompletionMarker) {
+			markerIdx = i
+			rest = strings.TrimSpace(strings.TrimPrefix(stripped, processorCompletionMarker))
+			break
+		}
 	}
-	lastLine := strings.TrimSpace(lines[len(lines)-1])
-	if !strings.HasPrefix(lastLine, processorCompletionMarker) {
-		return 0, "", fmt.Errorf("processor completion acknowledgement missing")
+
+	if markerIdx == -1 {
+		return 0, "", fmt.Errorf("%w: marker_found=false response_len=%d tail=%q",
+			ErrProcessorCompletionAckMissing, len(response), truncatedAckTail(response))
 	}
-	message := strings.TrimSpace(strings.Join(lines[:len(lines)-1], "\n"))
+
+	before := lines[:markerIdx]
+	if len(before) > 0 && isBareFenceDelimiterLine(before[len(before)-1]) {
+		before = before[:len(before)-1]
+	}
+	after := lines[markerIdx+1:]
+	if len(after) > 0 && isBareFenceDelimiterLine(after[0]) {
+		after = after[1:]
+	}
+	remaining := make([]string, 0, len(before)+len(after))
+	remaining = append(remaining, before...)
+	remaining = append(remaining, after...)
+	message := strings.TrimSpace(strings.Join(remaining, "\n"))
+
 	var completion processorCompletionEnvelope
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(lastLine, processorCompletionMarker)), &completion); err != nil {
-		return 0, message, fmt.Errorf("invalid processor completion acknowledgement: %w", err)
+	if err := json.NewDecoder(strings.NewReader(rest)).Decode(&completion); err != nil {
+		return 0, message, fmt.Errorf("%w: invalid acknowledgement JSON: %v marker_found=true response_len=%d tail=%q",
+			ErrProcessorCompletionAckMissing, err, len(response), truncatedAckTail(response))
 	}
 	if completion.DispatchID != expectedDispatchID {
-		return 0, message, fmt.Errorf("processor completion dispatch ID mismatch: got %q", completion.DispatchID)
+		return 0, message, fmt.Errorf("%w: dispatch ID mismatch found_dispatch_id=%q response_len=%d tail=%q",
+			ErrProcessorCompletionAckMissing, completion.DispatchID, len(response), truncatedAckTail(response))
 	}
 	if completion.SaveCount == nil {
-		return 0, message, fmt.Errorf("processor completion save count missing")
+		return 0, message, fmt.Errorf("%w: save count missing found_dispatch_id=%q response_len=%d tail=%q",
+			ErrProcessorCompletionAckMissing, completion.DispatchID, len(response), truncatedAckTail(response))
 	}
 	if *completion.SaveCount < 0 {
-		return 0, message, fmt.Errorf("processor completion save count must be non-negative")
+		return 0, message, fmt.Errorf("%w: save count negative found_dispatch_id=%q response_len=%d tail=%q",
+			ErrProcessorCompletionAckMissing, completion.DispatchID, len(response), truncatedAckTail(response))
 	}
 	return *completion.SaveCount, message, nil
 }

@@ -3293,13 +3293,27 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 }
 
 func (m *Manager) logPendingDispatchDrops(workspaceUUID string, dropped []PendingDispatchEntry) {
-	if m.logger == nil {
+	if len(dropped) == 0 {
 		return
 	}
 	for _, entry := range dropped {
-		m.logger.Error("pending-dispatch spool: dropping oldest entry at capacity",
-			"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID,
-			"name", entry.Name, "max_entries", pendingDispatchMaxEntries)
+		if m.logger != nil {
+			m.logger.Error("pending-dispatch spool: dropping oldest entry at capacity",
+				"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID,
+				"name", entry.Name, "max_entries", pendingDispatchMaxEntries)
+		}
+		if m.notifyFunc != nil {
+			m.notifyFunc(workspaceUUID, entry.Name, fmt.Errorf("pending-dispatch batch dropped: spool at capacity (max %d entries)", pendingDispatchMaxEntries))
+		}
+	}
+	// Dead-letter instead of permanently discarding — mitto-6ys1: capacity
+	// eviction must not silently destroy operator-visible work. Best-effort:
+	// a dead-letter write failure only logs, it never re-blocks eviction.
+	if m.pendingDispatchStore != nil {
+		if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, dropped, "dropped at capacity"); dlErr != nil && m.logger != nil {
+			m.logger.Error("pending-dispatch spool: failed to dead-letter capacity-evicted entries",
+				"workspace_uuid", workspaceUUID, "error", dlErr)
+		}
 	}
 }
 
@@ -3499,6 +3513,24 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 		return
 	}
 
+	// mitto-6ys1: give dead-lettered batches one bounded chance to retry once
+	// they've cooled down. ReplayDeadLetters merges eligible entries directly
+	// back into the main spool, so Claim() below picks them up alongside any
+	// freshly-appended entries in the same flush pass.
+	if replayed, replayErr := m.pendingDispatchStore.ReplayDeadLetters(workspaceUUID, deadLetterReplayCooldown); replayErr != nil {
+		if m.logger != nil {
+			m.logger.Warn("pending-dispatch flush: failed to replay dead letters",
+				"workspace_uuid", workspaceUUID, "error", replayErr)
+		}
+	} else if len(replayed) > 0 && m.logger != nil {
+		names := make([]string, 0, len(replayed))
+		for _, e := range replayed {
+			names = append(names, e.Name)
+		}
+		m.logger.Info("pending-dispatch flush: replayed dead-lettered entries",
+			"workspace_uuid", workspaceUUID, "count", len(replayed), "names", names)
+	}
+
 	claim, err := m.pendingDispatchStore.Claim(workspaceUUID)
 	if err != nil {
 		if m.logger != nil {
@@ -3516,6 +3548,22 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 				"saved_at", expired.SavedAt,
 				"max_age", pendingDispatchMaxAge,
 			)
+		}
+	}
+	if len(claim.Expired) > 0 {
+		if m.notifyFunc != nil {
+			for _, expired := range claim.Expired {
+				m.notifyFunc(workspaceUUID, expired.Name, fmt.Errorf("pending-dispatch batch dropped: expired after %s (max age)", pendingDispatchMaxAge))
+			}
+		}
+		// mitto-6ys1: dead-letter instead of permanently discarding so an
+		// expired batch does not silently destroy operator-visible work.
+		// Claim() already wrote back only the fresh entries, so claim.Expired
+		// is no longer present in the live spool — this is additive, not a
+		// double-removal.
+		if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, claim.Expired, "expired (max age exceeded)"); dlErr != nil && m.logger != nil {
+			m.logger.Warn("pending-dispatch flush: failed to dead-letter expired entries",
+				"workspace_uuid", workspaceUUID, "error", dlErr)
 		}
 	}
 	entries := claim.Entries
@@ -3571,6 +3619,19 @@ flushEntries:
 					"name", entry.Name,
 					"attempts", entry.Attempts,
 				)
+			}
+			if m.notifyFunc != nil {
+				reason := entry.LastError
+				if reason == "" {
+					reason = "unknown"
+				}
+				m.notifyFunc(workspaceUUID, entry.Name, fmt.Errorf("pending-dispatch batch dropped after %d attempts: %s", entry.Attempts, reason))
+			}
+			// mitto-6ys1: dead-letter instead of permanently discarding so the
+			// batch is not silently lost — Acknowledge alone deletes it forever.
+			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, "exceeded max attempts"); dlErr != nil && m.logger != nil {
+				m.logger.Error("pending-dispatch flush: failed to dead-letter dropped entry",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", dlErr)
 			}
 			if ackErr := m.pendingDispatchStore.Acknowledge(workspaceUUID, []string{entry.ID}); ackErr != nil && m.logger != nil {
 				m.logger.Error("pending-dispatch flush: failed to acknowledge dropped entry",
@@ -3705,6 +3766,12 @@ flushEntries:
 			if m.notifyFunc != nil {
 				m.notifyFunc(workspaceUUID, entry.Name, lastErr)
 			}
+			// mitto-6ys1: dead-letter instead of permanently discarding so the
+			// batch is not silently lost — Acknowledge alone deletes it forever.
+			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, []PendingDispatchEntry{entry}, lastErr.Error()); dlErr != nil && m.logger != nil {
+				m.logger.Error("pending-dispatch flush: failed to dead-letter terminally failed entry",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", dlErr)
+			}
 			if ackErr := m.pendingDispatchStore.Acknowledge(workspaceUUID, []string{entry.ID}); ackErr != nil && m.logger != nil {
 				m.logger.Error("pending-dispatch flush: failed to acknowledge terminally failed entry",
 					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "error", ackErr)
@@ -3741,6 +3808,19 @@ flushEntries:
 					"name", entry.Name,
 					"max_entries", pendingDispatchMaxEntries,
 				)
+			}
+		}
+		if len(dropped) > 0 {
+			if m.notifyFunc != nil {
+				for _, entry := range dropped {
+					m.notifyFunc(workspaceUUID, entry.Name, fmt.Errorf("pending-dispatch batch dropped: spool at capacity (max %d entries)", pendingDispatchMaxEntries))
+				}
+			}
+			// mitto-6ys1: dead-letter instead of permanently discarding so
+			// capacity eviction does not silently destroy operator-visible work.
+			if dlErr := m.pendingDispatchStore.DeadLetter(workspaceUUID, dropped, "dropped at capacity"); dlErr != nil && m.logger != nil {
+				m.logger.Error("pending-dispatch flush: failed to dead-letter capacity-evicted entries",
+					"workspace_uuid", workspaceUUID, "error", dlErr)
 			}
 		}
 	}

@@ -141,6 +141,16 @@ type PendingDispatchStore interface {
 	Requeue(workspaceUUID string, entries []PendingDispatchEntry) ([]PendingDispatchEntry, error)
 	// Acknowledge removes terminal entries only after execution completes.
 	Acknowledge(workspaceUUID string, dispatchIDs []string) error
+	// DeadLetter moves entries out of the pending spool and into a separate
+	// dead-letter spool instead of discarding them outright, so a batch that
+	// exhausts its retry budget (or is evicted at capacity) remains
+	// inspectable/replayable rather than being silently lost (mitto-6ys1).
+	DeadLetter(workspaceUUID string, entries []PendingDispatchEntry, reason string) error
+	// ReplayDeadLetters moves dead-lettered entries whose DeadLetteredAt is
+	// older than cooldown, and whose ReplayCount is below the replay cap,
+	// back into the pending spool with Attempts reset to 0. Each eligible
+	// entry is replayed at most once (mitto-6ys1).
+	ReplayDeadLetters(workspaceUUID string, cooldown time.Duration) ([]PendingDispatchEntry, error)
 }
 
 // FilePendingDispatchStore persists entries under
@@ -622,6 +632,211 @@ func (s *FilePendingDispatchStore) writeLocked(path string, entries []PendingDis
 		return fmt.Errorf("failed to restrict pending dispatch spool permissions: %w", err)
 	}
 	return nil
+}
+
+// deadLetterReplayCap bounds how many times a single dead-lettered batch may
+// be moved back into the pending spool for another attempt. A batch that
+// exhausts this budget stays dead-lettered forever — inspectable via the
+// dead-letter spool file, but never auto-retried again (mitto-6ys1).
+const deadLetterReplayCap = 1
+
+// deadLetterReplayCooldown is the minimum time a batch must remain
+// dead-lettered before ReplayDeadLetters is willing to give it another
+// chance. This avoids immediately re-flapping a batch back into the same
+// failure it was just dead-lettered for (mitto-6ys1).
+const deadLetterReplayCooldown = 1 * time.Hour
+
+// DeadLetterEntry wraps a PendingDispatchEntry that permanently failed (or
+// was evicted at capacity) together with the reason it was dead-lettered and
+// bookkeeping for the bounded replay path, so a batch that exhausts its
+// retry budget remains inspectable/replayable instead of being silently
+// deleted (mitto-6ys1).
+type DeadLetterEntry struct {
+	PendingDispatchEntry
+	// Reason is a short human-readable explanation of why this entry was
+	// dead-lettered (e.g. the last dispatch error, or "capacity eviction").
+	Reason string `json:"reason,omitempty"`
+	// DeadLetteredAt is when this entry was moved out of the pending spool.
+	DeadLetteredAt time.Time `json:"dead_lettered_at"`
+	// ReplayCount counts how many times this entry has been moved back into
+	// the pending spool via ReplayDeadLetters. Capped at deadLetterReplayCap.
+	ReplayCount int `json:"replay_count,omitempty"`
+}
+
+func (s *FilePendingDispatchStore) deadLetterSpoolPath(workspaceUUID string) (string, error) {
+	dir, err := s.baseDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve pending dispatch directory: %w", err)
+	}
+	return filepath.Join(dir, workspaceUUID+".deadletter.json"), nil
+}
+
+// readDeadLetterLocked mirrors readLocked but is typed on []DeadLetterEntry.
+// Callers must hold pendingDispatchLockFor(path) for the dead-letter path.
+func (s *FilePendingDispatchStore) readDeadLetterLocked(path string) ([]DeadLetterEntry, error) {
+	var entries []DeadLetterEntry
+	if err := fileutil.ReadJSON(path, &entries); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read dead-letter spool: %w", err)
+	}
+	return entries, nil
+}
+
+// writeDeadLetterLocked mirrors writeLocked but is typed on []DeadLetterEntry.
+// Callers must hold pendingDispatchLockFor(path) for the dead-letter path.
+func (s *FilePendingDispatchStore) writeDeadLetterLocked(path string, entries []DeadLetterEntry) error {
+	if len(entries) == 0 {
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			return fmt.Errorf("failed to remove dead-letter spool: %w", rmErr)
+		}
+		return nil
+	}
+	if err := fileutil.WriteJSONAtomic(path, &entries, 0600); err != nil {
+		return err
+	}
+	// Belt-and-braces for pre-existing spools and permissive umasks: these
+	// entries may contain an inline conversation history snapshot.
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to restrict dead-letter spool permissions: %w", err)
+	}
+	return nil
+}
+
+// DeadLetter implements PendingDispatchStore. It removes the given entries
+// from the main pending spool (mirroring Acknowledge's filter-and-rewrite)
+// and appends them to a separate per-workspace dead-letter spool file, so a
+// batch that exhausts its retry budget (or is evicted at capacity) remains
+// inspectable/replayable rather than being silently discarded (mitto-6ys1).
+func (s *FilePendingDispatchStore) DeadLetter(workspaceUUID string, entries []PendingDispatchEntry, reason string) error {
+	if workspaceUUID == "" {
+		return fmt.Errorf("pending dispatch dead-letter missing workspace UUID")
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// Step 1: remove the entries from the main pending spool.
+	path, err := s.spoolPath(workspaceUUID)
+	if err != nil {
+		return err
+	}
+	ids := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		ids[entry.ID] = struct{}{}
+	}
+	func() {
+		mu := pendingDispatchLockFor(path)
+		mu.Lock()
+		defer mu.Unlock()
+
+		current, _, readErr := s.readLocked(path)
+		if readErr != nil {
+			// Best-effort: still dead-letter the entries below even if the
+			// main spool couldn't be read (e.g. already removed elsewhere).
+			return
+		}
+		kept := current[:0]
+		for _, entry := range current {
+			if _, ok := ids[entry.ID]; !ok {
+				kept = append(kept, entry)
+			}
+		}
+		_ = s.writeLocked(path, kept)
+	}()
+
+	// Step 2: append the entries to the dead-letter spool.
+	dlPath, err := s.deadLetterSpoolPath(workspaceUUID)
+	if err != nil {
+		return err
+	}
+	mu := pendingDispatchLockFor(dlPath)
+	mu.Lock()
+	defer mu.Unlock()
+
+	current, readErr := s.readDeadLetterLocked(dlPath)
+	if readErr != nil {
+		return readErr
+	}
+	now := time.Now()
+	for _, entry := range entries {
+		current = append(current, DeadLetterEntry{
+			PendingDispatchEntry: entry,
+			Reason:               reason,
+			DeadLetteredAt:       now,
+		})
+	}
+	return s.writeDeadLetterLocked(dlPath, current)
+}
+
+// ReplayDeadLetters implements PendingDispatchStore. It moves dead-lettered
+// entries whose DeadLetteredAt is older than cooldown, and whose ReplayCount
+// is below deadLetterReplayCap, back into the pending spool with Attempts
+// reset to 0, so a transient failure that exhausted its original retry
+// budget gets one more chance once conditions may have changed
+// (mitto-6ys1). Entries that have already been replayed once (or are not
+// yet past cooldown) are left in the dead-letter spool untouched.
+func (s *FilePendingDispatchStore) ReplayDeadLetters(workspaceUUID string, cooldown time.Duration) ([]PendingDispatchEntry, error) {
+	if workspaceUUID == "" {
+		return nil, fmt.Errorf("pending dispatch replay missing workspace UUID")
+	}
+
+	dlPath, err := s.deadLetterSpoolPath(workspaceUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	var replayed []PendingDispatchEntry
+	func() {
+		mu := pendingDispatchLockFor(dlPath)
+		mu.Lock()
+		defer mu.Unlock()
+
+		current, readErr := s.readDeadLetterLocked(dlPath)
+		if readErr != nil || len(current) == 0 {
+			return
+		}
+		now := time.Now()
+		remaining := current[:0]
+		for _, entry := range current {
+			if entry.ReplayCount < deadLetterReplayCap && now.Sub(entry.DeadLetteredAt) >= cooldown {
+				pe := entry.PendingDispatchEntry
+				pe.Attempts = 0
+				pe.ClaimedBy = ""
+				pe.ClaimedAt = time.Time{}
+				replayed = append(replayed, pe)
+				continue
+			}
+			remaining = append(remaining, entry)
+		}
+		if len(replayed) > 0 {
+			_ = s.writeDeadLetterLocked(dlPath, remaining)
+		}
+	}()
+
+	if len(replayed) == 0 {
+		return nil, nil
+	}
+
+	// Move the eligible entries back into the main pending spool.
+	path, err := s.spoolPath(workspaceUUID)
+	if err != nil {
+		return nil, err
+	}
+	mu := pendingDispatchLockFor(path)
+	mu.Lock()
+	defer mu.Unlock()
+
+	current, _, readErr := s.readLocked(path)
+	if readErr != nil {
+		return nil, readErr
+	}
+	merged := upsertPendingDispatchEntries(current, replayed)
+	if err := s.writeLocked(path, merged); err != nil {
+		return nil, err
+	}
+	return replayed, nil
 }
 
 // SweepPendingDispatchDir discovers every workspace's pending-dispatch spool

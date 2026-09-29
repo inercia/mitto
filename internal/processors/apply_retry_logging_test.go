@@ -190,6 +190,14 @@ func (failingPendingDispatchStore) Requeue(string, []PendingDispatchEntry) ([]Pe
 
 func (failingPendingDispatchStore) Acknowledge(string, []string) error { return nil }
 
+func (failingPendingDispatchStore) DeadLetter(string, []PendingDispatchEntry, string) error {
+	return nil
+}
+
+func (failingPendingDispatchStore) ReplayDeadLetters(string, time.Duration) ([]PendingDispatchEntry, error) {
+	return nil, nil
+}
+
 func TestDispatchWithRetry_SpoolAppendFailureStillLogsError(t *testing.T) {
 	origDelay := dispatchPromptRetryBaseDelay
 	dispatchPromptRetryBaseDelay = time.Millisecond
