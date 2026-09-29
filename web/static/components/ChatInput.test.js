@@ -1416,4 +1416,297 @@ describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus
       expect(setText).not.toHaveBeenCalled();
     });
   });
+
+  // ===========================================================================
+  // Cmd/Ctrl+Shift+<digit> model-switch shortcuts (mitto-qmqq.2)
+  // Duplicated from ChatInput.js's handleKeyDown — keep in sync with the
+  // source block at ChatInput.js:1046-1084.
+  // ===========================================================================
+
+  function dispatchModelShortcut({
+    e,
+    resolveModelShortcut,
+    modelProfiles,
+    modelOption,
+    onSetConfigOption,
+    onShowToast,
+  }) {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+      const digitMatch = /^Digit([1-5])$/.exec(e.code);
+      if (digitMatch) {
+        e.preventDefault();
+        const digit = Number(digitMatch[1]);
+        const result = resolveModelShortcut(digit, modelProfiles, modelOption);
+        switch (result.status) {
+          case "apply":
+            onSetConfigOption?.(modelOption.id, result.value);
+            onShowToast?.({
+              message: `Switched model to ${result.name}`,
+              style: "success",
+            });
+            break;
+          case "already_active":
+            onShowToast?.({
+              message: `Model is already ${result.name}`,
+              style: "info",
+            });
+            break;
+          case "no_match":
+            onShowToast?.({
+              message: `No available model matches shortcut ${digit} (${result.profile?.name || "profile"})`,
+              style: "warning",
+            });
+            break;
+          case "unassigned":
+            onShowToast?.({
+              message: `No model is assigned to shortcut ${digit}`,
+              style: "info",
+            });
+            break;
+          case "no_model_option":
+          default:
+            onShowToast?.({
+              message: "Model selection is not available for this conversation",
+              style: "info",
+            });
+            break;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function makeKeyEvent({ code, metaKey = false, ctrlKey = false, shiftKey = false }) {
+    return {
+      code,
+      metaKey,
+      ctrlKey,
+      shiftKey,
+      preventDefault: jest.fn(),
+    };
+  }
+
+  describe("ChatInput model shortcuts (mitto-qmqq.2)", () => {
+    const modelOption = { id: "model", current_value: "current-model" };
+    const modelProfiles = [{ name: "Fast", shortcut_number: 2 }];
+
+    test("applies the resolved model and shows a success toast on 'apply'", () => {
+      const resolveModelShortcut = jest.fn(() => ({
+        status: "apply",
+        value: "new-value",
+        name: "New Model",
+      }));
+      const onSetConfigOption = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: true });
+
+      const handled = dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption,
+        onShowToast,
+      });
+
+      expect(handled).toBe(true);
+      expect(e.preventDefault).toHaveBeenCalledTimes(1);
+      expect(resolveModelShortcut).toHaveBeenCalledWith(2, modelProfiles, modelOption);
+      expect(onSetConfigOption).toHaveBeenCalledWith("model", "new-value");
+      expect(onShowToast).toHaveBeenCalledWith({
+        message: "Switched model to New Model",
+        style: "success",
+      });
+    });
+
+    test("works identically with Ctrl+Shift instead of Cmd+Shift", () => {
+      const resolveModelShortcut = jest.fn(() => ({
+        status: "apply",
+        value: "new-value",
+        name: "New Model",
+      }));
+      const onSetConfigOption = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit2", ctrlKey: true, shiftKey: true });
+
+      dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption,
+        onShowToast,
+      });
+
+      expect(onSetConfigOption).toHaveBeenCalledWith("model", "new-value");
+    });
+
+    test("'already_active' shows an info toast and never calls onSetConfigOption", () => {
+      const resolveModelShortcut = jest.fn(() => ({
+        status: "already_active",
+        name: "Current Model",
+      }));
+      const onSetConfigOption = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: true });
+
+      dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption,
+        onShowToast,
+      });
+
+      expect(onSetConfigOption).not.toHaveBeenCalled();
+      expect(onShowToast).toHaveBeenCalledWith({
+        message: "Model is already Current Model",
+        style: "info",
+      });
+    });
+
+    test("'no_match' shows a warning toast naming the profile", () => {
+      const resolveModelShortcut = jest.fn(() => ({
+        status: "no_match",
+        profile: { name: "Fast" },
+      }));
+      const onSetConfigOption = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: true });
+
+      dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption,
+        onShowToast,
+      });
+
+      expect(onSetConfigOption).not.toHaveBeenCalled();
+      expect(onShowToast).toHaveBeenCalledWith({
+        message: "No available model matches shortcut 2 (Fast)",
+        style: "warning",
+      });
+    });
+
+    test("'unassigned' shows an info toast naming the digit", () => {
+      const resolveModelShortcut = jest.fn(() => ({ status: "unassigned" }));
+      const onSetConfigOption = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit3", metaKey: true, shiftKey: true });
+
+      dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption,
+        onShowToast,
+      });
+
+      expect(onSetConfigOption).not.toHaveBeenCalled();
+      expect(onShowToast).toHaveBeenCalledWith({
+        message: "No model is assigned to shortcut 3",
+        style: "info",
+      });
+    });
+
+    test("'no_model_option' shows a generic unavailable-selection toast", () => {
+      const resolveModelShortcut = jest.fn(() => ({ status: "no_model_option" }));
+      const onSetConfigOption = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit1", metaKey: true, shiftKey: true });
+
+      dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption,
+        onShowToast,
+      });
+
+      expect(onSetConfigOption).not.toHaveBeenCalled();
+      expect(onShowToast).toHaveBeenCalledWith({
+        message: "Model selection is not available for this conversation",
+        style: "info",
+      });
+    });
+
+    test("does not intercept when Shift is not held", () => {
+      const resolveModelShortcut = jest.fn();
+      const onShowToast = jest.fn();
+      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: false });
+
+      const handled = dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption: jest.fn(),
+        onShowToast,
+      });
+
+      expect(handled).toBe(false);
+      expect(e.preventDefault).not.toHaveBeenCalled();
+      expect(resolveModelShortcut).not.toHaveBeenCalled();
+      expect(onShowToast).not.toHaveBeenCalled();
+    });
+
+    test("does not intercept when neither Cmd nor Ctrl is held", () => {
+      const resolveModelShortcut = jest.fn();
+      const e = makeKeyEvent({ code: "Digit2", shiftKey: true });
+
+      const handled = dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption: jest.fn(),
+        onShowToast: jest.fn(),
+      });
+
+      expect(handled).toBe(false);
+      expect(e.preventDefault).not.toHaveBeenCalled();
+      expect(resolveModelShortcut).not.toHaveBeenCalled();
+    });
+
+    test("does not intercept digits outside 1-5 (e.g. Digit6, Digit0)", () => {
+      const resolveModelShortcut = jest.fn();
+      for (const code of ["Digit6", "Digit0", "Digit9"]) {
+        const e = makeKeyEvent({ code, metaKey: true, shiftKey: true });
+        const handled = dispatchModelShortcut({
+          e,
+          resolveModelShortcut,
+          modelProfiles,
+          modelOption,
+          onSetConfigOption: jest.fn(),
+          onShowToast: jest.fn(),
+        });
+        expect(handled).toBe(false);
+        expect(e.preventDefault).not.toHaveBeenCalled();
+      }
+      expect(resolveModelShortcut).not.toHaveBeenCalled();
+    });
+
+    test("does not intercept non-digit keys even with the full modifier combo", () => {
+      const resolveModelShortcut = jest.fn();
+      const e = makeKeyEvent({ code: "KeyA", metaKey: true, shiftKey: true });
+
+      const handled = dispatchModelShortcut({
+        e,
+        resolveModelShortcut,
+        modelProfiles,
+        modelOption,
+        onSetConfigOption: jest.fn(),
+        onShowToast: jest.fn(),
+      });
+
+      expect(handled).toBe(false);
+      expect(e.preventDefault).not.toHaveBeenCalled();
+    });
+  });
 });
