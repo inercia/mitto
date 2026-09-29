@@ -87,6 +87,12 @@ const (
 	// writeBeadsError in internal/web/handlers/beads.go.
 	errCodeBeadsOpenChildren = "beads_open_children"
 
+	// errCodeBeadsAssigneeActorMismatch identifies bd's business-rule
+	// refusal to perform an action on an issue when the acting user does
+	// not match the issue's assignee (mitto-zsmd). See writeBeadsError in
+	// internal/web/handlers/beads.go.
+	errCodeBeadsAssigneeActorMismatch = "beads_assignee_actor_mismatch"
+
 	// errCodeClientCanceled identifies a beads command whose context was
 	// canceled by the client disconnecting or navigating away mid-fetch
 	// (mitto-rwj), distinct from a genuine bd/dolt failure. See

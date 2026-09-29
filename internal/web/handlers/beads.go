@@ -191,6 +191,22 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 		return
 	}
 
+	if beads.IsAssigneeActorMismatch(err) {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("beads command failed: assignee/actor mismatch", "stderr", beads.StderrOf(err), "path", r.URL.Path)
+		}
+		var details map[string]any
+		if s := beads.StderrOf(err); s != "" {
+			details = map[string]any{"stderr": s}
+		}
+		msg := "Cannot perform this action: the issue's assignee does not match the current actor."
+		if s := beads.StderrOf(err); s != "" {
+			msg = s
+		}
+		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsAssigneeActorMismatch, Message: msg, Details: details}})
+		return
+	}
+
 	if h.deps.Logger != nil {
 		h.deps.Logger.Error("beads command failed", "error", err, "stderr", beads.StderrOf(err), "exit_code", beads.ExitCodeOf(err), "path", r.URL.Path)
 	}

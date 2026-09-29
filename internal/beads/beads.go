@@ -112,6 +112,19 @@ func IsOpenChildrenRejection(err error) bool {
 	return strings.Contains(strings.ToLower(StderrOf(err)), "open child issue")
 }
 
+// IsAssigneeActorMismatch reports whether err represents bd's business-rule
+// refusal to close/update an issue when the acting user does not match the
+// issue's assignee (e.g. "cannot close <id>: assignee is alice, actor is
+// bob") (mitto-zsmd). This is a recoverable, actionable rejection distinct
+// from a genuine internal error, so callers map it to an HTTP 409 with the
+// reason instead of a bare 500.
+func IsAssigneeActorMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(StderrOf(err)), "assignee is")
+}
+
 // IsPublishFailure reports whether err is a MigrateRemote failure at the
 // publish stage ("bd dolt push") rather than the local schema-migration
 // stage ("bd migrate schema"). When true, the local migration already

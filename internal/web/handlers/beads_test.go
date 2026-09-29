@@ -161,6 +161,20 @@ func (c *epicOpenChildrenClient) SetStatus(_ context.Context, _, _, _ string) er
 	}
 }
 
+// assigneeActorMismatchClient simulates bd's business-rule refusal to close
+// an issue when the actor performing the action is not the issue's assignee
+// (mitto-zsmd). Like epicOpenChildrenClient, it is a known, recoverable
+// rejection — not a genuine internal error.
+type assigneeActorMismatchClient struct{ stubBeadsClient }
+
+func (c *assigneeActorMismatchClient) SetStatus(_ context.Context, _, _, _ string) error {
+	return &beads.CmdError{
+		Err:      errors.New("bd exited with non-zero status: exit status 1"),
+		Stderr:   `cannot close mitto-zsmd: assignee is alice, actor is bob`,
+		ExitCode: 1,
+	}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
@@ -1914,6 +1928,39 @@ func TestHandleBeadsStatus_EpicWithOpenChildren_ReturnsActionable4xx(t *testing.
 	}
 	if !strings.Contains(env.Error.Message, "open child issue") {
 		t.Errorf("error.message = %q, want it to mention the open-children reason", env.Error.Message)
+	}
+}
+
+// TestHandleBeadsStatus_AssigneeActorMismatch_ReturnsActionable4xx reproduces
+// mitto-zsmd: closing an issue with an assignee/actor mismatch is a known,
+// recoverable bd business-rule rejection, not a genuine internal error. It
+// must surface as a 4xx (not 500) carrying the actionable reason, mirroring
+// the existing open-children classification precedent in writeBeadsError.
+func TestHandleBeadsStatus_AssigneeActorMismatch_ReturnsActionable4xx(t *testing.T) {
+	s := newBeadsTestServerWithClient(&assigneeActorMismatchClient{})
+	req := httptest.NewRequest(http.MethodPost, "/api/issues/mitto-zsmd/status?working_dir=/test/workspace",
+		strings.NewReader(`{"action":"close"}`))
+	req.RemoteAddr = "127.0.0.1:1"
+	req.SetPathValue("id", "mitto-zsmd")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleBeadsStatus(w, req)
+
+	if w.Code < 400 || w.Code >= 500 {
+		t.Fatalf("status = %d, want a 4xx (not 500); body=%s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if !strings.Contains(env.Error.Message, "assignee") {
+		t.Errorf("error.message = %q, want it to mention the assignee/actor mismatch reason", env.Error.Message)
 	}
 }
 
