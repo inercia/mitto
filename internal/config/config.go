@@ -173,7 +173,15 @@ type ACPServer struct {
 	Source ConfigItemSource
 	// AutoApprove enables automatic approval of permission requests for this ACP server.
 	// This is a per-server override; the global AutoApprove flag takes precedence if set.
+	//
+	// Deprecated: use Permissions.Mode instead. AutoApprove is migrated to a
+	// PermissionMode via workspaces.MigrateLegacyAutoApprove when Permissions
+	// is unset. Retained for backward compatibility with existing settings.json.
 	AutoApprove bool
+	// Permissions configures the permission-mode system for this ACP server
+	// (per-server override of the global Config.Permissions setting). Nil
+	// means fall back to the global setting (or AutoApprove, if neither is set).
+	Permissions *PermissionSettings
 	// Tags is an optional list of categorization tags for this ACP server.
 	// Tags are single words or hyphenated-words (e.g., "coding", "fast-model").
 	Tags []string
@@ -1273,16 +1281,45 @@ type PermissionsConfig struct {
 	// showing a dialog to the user.
 	// Default: true (until the permission UI is fully implemented)
 	// TODO: Change default to false once permission dialog is implemented.
+	//
+	// Deprecated: use Mode instead. AutoApprove is still read as a fallback
+	// (via MigrateLegacyAutoApprove) when Mode is unset.
 	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
+
+	// Mode selects the global default permission-handling mode ("ask",
+	// "allow", or "system_one"). Empty means "unset" - the effective mode is
+	// derived from the legacy AutoApprove field (see EffectiveMode).
+	Mode PermissionMode `json:"mode,omitempty" yaml:"mode,omitempty"`
+
+	// SystemOne configures the external decision endpoint used when Mode is
+	// "system_one". Optional; only required when Mode == PermissionModeSystemOne.
+	SystemOne *SystemOneConfig `json:"system_one,omitempty" yaml:"system_one,omitempty"`
 }
 
 // IsAutoApprove returns whether permission requests should be auto-approved.
 // Safe to call on nil receiver - returns true (the current default) if not configured.
+//
+// Deprecated: use EffectiveMode instead. Retained for legacy call sites that
+// have not yet migrated to the permission-mode schema.
 func (p *PermissionsConfig) IsAutoApprove() bool {
 	if p == nil || p.AutoApprove == nil {
 		return true // Default: auto-approve until UI is ready
 	}
 	return *p.AutoApprove
+}
+
+// EffectiveMode returns the effective global permission mode, falling back to
+// the legacy AutoApprove field (migrated with isGlobal=true) when Mode is
+// unset or invalid. Safe to call on a nil receiver.
+func (p *PermissionsConfig) EffectiveMode() PermissionMode {
+	if p != nil && p.Mode != PermissionModeUnset && IsValidPermissionMode(p.Mode) {
+		return p.Mode
+	}
+	var autoApprove *bool
+	if p != nil {
+		autoApprove = p.AutoApprove
+	}
+	return MigrateLegacyAutoApprove(autoApprove, true)
 }
 
 // MCPConfig contains configuration for the MCP (Model Context Protocol) server.
@@ -1564,7 +1601,9 @@ type rawConfig struct {
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 	// Permissions is the global permission handling configuration
 	Permissions *struct {
-		AutoApprove *bool `yaml:"auto_approve"`
+		AutoApprove *bool            `yaml:"auto_approve"`
+		Mode        *string          `yaml:"mode"`
+		SystemOne   *SystemOneConfig `yaml:"system_one"`
 	} `yaml:"permissions"`
 	// Session is the session storage/startup configuration
 	Session *struct {
@@ -1987,6 +2026,14 @@ func Parse(data []byte) (*Config, error) {
 	if raw.Permissions != nil {
 		cfg.Permissions = &PermissionsConfig{
 			AutoApprove: raw.Permissions.AutoApprove,
+			SystemOne:   raw.Permissions.SystemOne,
+		}
+		if raw.Permissions.Mode != nil {
+			cfg.Permissions.Mode = PermissionMode(*raw.Permissions.Mode)
+			if raw.Permissions.AutoApprove != nil {
+				slog.Warn("both permissions.mode and the deprecated permissions.auto_approve are set; " +
+					"mode takes precedence and auto_approve is ignored")
+			}
 		}
 	}
 

@@ -94,7 +94,16 @@ type WorkspaceSettings struct {
 	// AutoApprove enables automatic approval of permission requests for sessions in this workspace.
 	// When true, all permission requests (file writes, command execution, etc.) are auto-approved.
 	// When false or nil, the global auto_approve setting or per-conversation settings apply.
+	//
+	// Deprecated: superseded by Permissions (PermissionSettings.Mode). Still read
+	// and migrated via MigrateLegacyAutoApprove for backward compatibility; new
+	// writes should populate Permissions instead. Not removed in this bead.
 	AutoApprove *bool `json:"auto_approve,omitempty" yaml:"auto_approve,omitempty"`
+	// Permissions configures the new permission-mode system (ask/allow/system_one)
+	// for sessions in this workspace. When Mode is PermissionModeUnset (the zero
+	// value), the global permissions setting or per-conversation settings apply,
+	// mirroring AutoApprove's inheritance semantics. See permissions.go.
+	Permissions *PermissionSettings `json:"permissions,omitempty" yaml:"permissions,omitempty"`
 	// RestrictedRunnerConfig holds per-workspace runner restriction overrides.
 	// Applied as level 3 in the config hierarchy (global → agent → workspace).
 	// Only used when RestrictedRunner is not "exec".

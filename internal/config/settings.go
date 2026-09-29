@@ -776,7 +776,15 @@ type ACPServerSettings struct {
 	// Used for config layering: servers from RC file are read-only in the UI.
 	Source ConfigItemSource `json:"source,omitempty"`
 	// AutoApprove enables automatic approval of permission requests for this ACP server.
+	//
+	// Deprecated: use Permissions.Mode instead. AutoApprove is migrated to a
+	// PermissionMode via workspaces.MigrateLegacyAutoApprove when Permissions
+	// is unset. Retained for backward compatibility with existing settings.json.
 	AutoApprove bool `json:"auto_approve,omitempty"`
+	// Permissions configures the permission-mode system for this ACP server
+	// (per-server override of the global Config.Permissions setting). Nil
+	// means fall back to the global setting (or AutoApprove, if neither is set).
+	Permissions *PermissionSettings `json:"permissions,omitempty"`
 	// Tags is an optional list of categorization tags for this ACP server.
 	Tags []string `json:"tags,omitempty"`
 	// InitialModelProfile is the name of a Model profile (Config.Models) applied

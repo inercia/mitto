@@ -13,6 +13,7 @@ import (
 	"time"
 
 	defaultConfig "github.com/inercia/mitto/config"
+	"github.com/inercia/mitto/internal/workspaces"
 )
 
 func TestParse_ValidConfig(t *testing.T) {
@@ -2414,6 +2415,123 @@ acp:
 	}
 }
 
+func TestParse_PermissionsConfigMode(t *testing.T) {
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+permissions:
+  mode: system_one
+  system_one:
+    endpoint: https://example.com/v1/systemone
+    threshold: 0.7
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Permissions == nil {
+		t.Fatal("Permissions should not be nil")
+	}
+	if cfg.Permissions.Mode != workspaces.PermissionModeSystemOne {
+		t.Errorf("Permissions.Mode = %q, want %q", cfg.Permissions.Mode, workspaces.PermissionModeSystemOne)
+	}
+	if cfg.Permissions.AutoApprove != nil {
+		t.Error("Permissions.AutoApprove should be nil when only mode is set")
+	}
+	if cfg.Permissions.SystemOne == nil {
+		t.Fatal("Permissions.SystemOne should not be nil")
+	}
+	if cfg.Permissions.SystemOne.Endpoint != "https://example.com/v1/systemone" {
+		t.Errorf("SystemOne.Endpoint = %q, want %q", cfg.Permissions.SystemOne.Endpoint, "https://example.com/v1/systemone")
+	}
+	if cfg.Permissions.SystemOne.Threshold != 0.7 {
+		t.Errorf("SystemOne.Threshold = %v, want 0.7", cfg.Permissions.SystemOne.Threshold)
+	}
+
+	// Mode is set and valid, so EffectiveMode() should return it directly.
+	if got := cfg.Permissions.EffectiveMode(); got != workspaces.PermissionModeSystemOne {
+		t.Errorf("EffectiveMode() = %q, want %q", got, workspaces.PermissionModeSystemOne)
+	}
+}
+
+func TestParse_PermissionsConfigModeAndAutoApproveBothSet(t *testing.T) {
+	// When both `mode` and the deprecated `auto_approve` are set, Mode must win
+	// (a WARN is logged, but behavior — not the log — is what this test pins).
+	yamlData := `
+acp:
+  - test:
+      command: echo test
+permissions:
+  mode: ask
+  auto_approve: true
+`
+	cfg, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.Permissions == nil {
+		t.Fatal("Permissions should not be nil")
+	}
+	if cfg.Permissions.Mode != workspaces.PermissionModeAsk {
+		t.Errorf("Permissions.Mode = %q, want %q", cfg.Permissions.Mode, workspaces.PermissionModeAsk)
+	}
+	if cfg.Permissions.AutoApprove == nil || *cfg.Permissions.AutoApprove != true {
+		t.Error("Permissions.AutoApprove should still be parsed as true even though Mode takes precedence")
+	}
+
+	// Mode wins over the legacy AutoApprove=true, even though that would
+	// otherwise imply PermissionModeAllow via MigrateLegacyAutoApprove.
+	if got := cfg.Permissions.EffectiveMode(); got != workspaces.PermissionModeAsk {
+		t.Errorf("EffectiveMode() = %q, want %q (mode must win over legacy auto_approve)", got, workspaces.PermissionModeAsk)
+	}
+}
+
+func TestPermissionsConfig_EffectiveMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *PermissionsConfig
+		expected workspaces.PermissionMode
+	}{
+		{
+			name:     "nil config falls back to legacy migration (global => allow)",
+			config:   nil,
+			expected: workspaces.PermissionModeAllow,
+		},
+		{
+			name:     "empty config falls back to legacy migration (global, nil AutoApprove => allow)",
+			config:   &PermissionsConfig{},
+			expected: workspaces.PermissionModeAllow,
+		},
+		{
+			name: "valid mode wins regardless of AutoApprove",
+			config: &PermissionsConfig{
+				Mode:        workspaces.PermissionModeAsk,
+				AutoApprove: func() *bool { b := true; return &b }(),
+			},
+			expected: workspaces.PermissionModeAsk,
+		},
+		{
+			name: "unset mode falls back to legacy migration (AutoApprove=false => ask)",
+			config: &PermissionsConfig{
+				AutoApprove: func() *bool { b := false; return &b }(),
+			},
+			expected: workspaces.PermissionModeAsk,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.EffectiveMode()
+			if result != tt.expected {
+				t.Errorf("EffectiveMode() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -2924,20 +3042,21 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	}
 
 	wantProfiles := map[string][]string{
-		"Claude":          {"Anthropic"},
-		"Claude Mythos":   {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
-		"Claude Opus":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
-		"Claude Sonnet 5": {"Smart", "Coding"},
-		"Claude Sonnet 4": {"Smart", "Coding"},
-		"Sonnet":          {"Smart", "Coding"},
-		"Claude Haiku":    {"Fast", "Cheap"},
-		"GPT-5":           {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
-		"GPT-4":           {"Smart", "Coding"},
-		"OpenAI GPT":      {"OpenAI"},
-		"Gemini":          {"Smart", "LongContext"},
-		"GLM":             {"Smart", "Coding", "OpenWeight", "SelfHostable"},
-		"DeepSeek":        {"Smart", "Coding", "OpenWeight", "SelfHostable"},
-		"Auto":            {"Auto", "Smartest", "Reasoning", "Thinking", "Deep"},
+		"Claude":            {"Anthropic"},
+		"Claude Mythos":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
+		"Claude Opus":       {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
+		"Claude Sonnet 5.5": {"Smart", "Coding"},
+		"Claude Sonnet 5":   {"Smart", "Coding"},
+		"Claude Sonnet 4":   {"Smart", "Coding"},
+		"Sonnet":            {"Smart", "Coding"},
+		"Claude Haiku":      {"Fast", "Cheap"},
+		"GPT-5":             {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
+		"GPT-4":             {"Smart", "Coding"},
+		"OpenAI GPT":        {"OpenAI"},
+		"Gemini":            {"Smart", "LongContext"},
+		"GLM":               {"Smart", "Coding", "OpenWeight", "SelfHostable"},
+		"DeepSeek":          {"Smart", "Coding", "OpenWeight", "SelfHostable"},
+		"Auto":              {"Auto", "Smartest", "Reasoning", "Thinking", "Deep"},
 	}
 	wantMatchMode := map[string]string{"Auto": "exact"}
 

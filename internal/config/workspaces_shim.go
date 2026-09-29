@@ -32,15 +32,31 @@ type RunnerRestrictions = workspaces.RunnerRestrictions
 type DockerRestrictions = workspaces.DockerRestrictions
 type WorkspaceRunnerConfig = workspaces.WorkspaceRunnerConfig
 
+// --- Types (permissions.go) ---
+type PermissionMode = workspaces.PermissionMode
+type PermissionSettings = workspaces.PermissionSettings
+type SystemOneConfig = workspaces.SystemOneConfig
+type SystemOneFallback = workspaces.SystemOneFallback
+
 // --- Constants ---
 const (
 	MaxAutoChildren         = workspaces.MaxAutoChildren
 	BeadsDatabaseModeLocal  = workspaces.BeadsDatabaseModeLocal
 	BeadsDatabaseModeShared = workspaces.BeadsDatabaseModeShared
+
+	PermissionModeUnset     = workspaces.PermissionModeUnset
+	PermissionModeAsk       = workspaces.PermissionModeAsk
+	PermissionModeAllow     = workspaces.PermissionModeAllow
+	PermissionModeSystemOne = workspaces.PermissionModeSystemOne
+
+	SystemOneFallbackAsk    = workspaces.SystemOneFallbackAsk
+	SystemOneFallbackReject = workspaces.SystemOneFallbackReject
 )
 
 // --- Vars ---
 var ValidRunnerTypes = workspaces.ValidRunnerTypes
+var ValidPermissionModes = workspaces.ValidPermissionModes
+var ValidSystemOneFallbacks = workspaces.ValidSystemOneFallbacks
 
 // --- Functions as var-delegates ---
 var (
@@ -48,6 +64,12 @@ var (
 	LoadWorkspaces             = workspaces.LoadWorkspaces
 	LoadWorkspacesFromFile     = workspaces.LoadWorkspacesFromFile
 	SaveWorkspaces             = workspaces.SaveWorkspaces
+
+	IsValidPermissionMode      = workspaces.IsValidPermissionMode
+	DefaultSystemOneConfig     = workspaces.DefaultSystemOneConfig
+	ValidateSystemOneConfig    = workspaces.ValidateSystemOneConfig
+	ValidatePermissionSettings = workspaces.ValidatePermissionSettings
+	MigrateLegacyAutoApprove   = workspaces.MigrateLegacyAutoApprove
 
 	LoadFolders                       = workspaces.LoadFolders
 	LoadFoldersFromFile               = workspaces.LoadFoldersFromFile
