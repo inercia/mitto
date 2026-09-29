@@ -1347,3 +1347,163 @@ describe("SettingsDialog Slack tab wiring (mitto-37nx.6)", () => {
     expect(source).toContain("<${SlackSettingsTab} showToast=${showToast} />");
   });
 });
+
+/**
+ * Duplicated from SettingsDialog.js (buildAutoChildAgentOptions, ~line 341).
+ * Pure helper — builds the Agent selector options for an auto-child row: a
+ * leading "Current agent" sentinel, deduped same-working_dir alternatives
+ * (excluding the current workspace's own agent), and a fallback entry for a
+ * stale/unknown currentTarget UUID not otherwise present.
+ */
+function buildAutoChildAgentOptions(workspaces, currentWorkspaceUUID, currentTarget) {
+  const list = workspaces || [];
+  const currentWs = list.find((ws) => ws.uuid === currentWorkspaceUUID);
+  const sameDir = list.filter(
+    (ws) =>
+      ws.uuid !== currentWorkspaceUUID &&
+      currentWs &&
+      ws.working_dir === currentWs.working_dir,
+  );
+  const currentAgent = currentWs?.acp_server;
+
+  const options = [{ value: "", label: "Current agent", workspace: null }];
+  const seenAgents = new Set();
+  let hasAlternatives = false;
+
+  for (const ws of sameDir) {
+    const agent = ws.acp_server;
+    if (agent && agent === currentAgent) continue;
+    if (agent && seenAgents.has(agent)) continue;
+    if (agent) seenAgents.add(agent);
+    options.push({
+      value: ws.uuid,
+      label: ws.name || ws.acp_server || "",
+      workspace: ws,
+    });
+    hasAlternatives = true;
+  }
+
+  if (currentTarget && !options.some((o) => o.value === currentTarget)) {
+    const targetWs = list.find((ws) => ws.uuid === currentTarget);
+    options.push({
+      value: currentTarget,
+      label: targetWs
+        ? targetWs.name || targetWs.acp_server || ""
+        : `Unknown agent (${currentTarget})`,
+      workspace: targetWs || null,
+    });
+  }
+
+  return { options, hasAlternatives };
+}
+
+describe("mitto-hyup: buildAutoChildAgentOptions", () => {
+  test("source wiring: SettingsDialog.js exports the helper and gates the Agent RichSelect on hasAlternatives", () => {
+    const source = readFileSync(
+      new URL("./SettingsDialog.js", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("export function buildAutoChildAgentOptions(");
+    expect(source).toContain("hasAlternatives");
+    expect(source).toContain("agentSelectorDisabled");
+  });
+
+  test("single workspace: only the 'Current agent' option, hasAlternatives is false", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+    ];
+    const { options, hasAlternatives } = buildAutoChildAgentOptions(
+      workspaces,
+      "ws-1",
+      "",
+    );
+    expect(options).toEqual([{ value: "", label: "Current agent", workspace: null }]);
+    expect(hasAlternatives).toBe(false);
+  });
+
+  test("multiple workspaces sharing working_dir: distinct agents become alternatives", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+      { uuid: "ws-2", working_dir: "/repo", acp_server: "auggie", name: "Auggie" },
+      { uuid: "ws-3", working_dir: "/other", acp_server: "auggie", name: "Other dir" },
+    ];
+    const { options, hasAlternatives } = buildAutoChildAgentOptions(
+      workspaces,
+      "ws-1",
+      "",
+    );
+    expect(hasAlternatives).toBe(true);
+    expect(options).toEqual([
+      { value: "", label: "Current agent", workspace: null },
+      { value: "ws-2", label: "Auggie", workspace: workspaces[1] },
+    ]);
+  });
+
+  test("duplicate acp_server among alternatives is deduped, keeping only the first", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+      { uuid: "ws-2", working_dir: "/repo", acp_server: "auggie", name: "Auggie A" },
+      { uuid: "ws-3", working_dir: "/repo", acp_server: "auggie", name: "Auggie B" },
+    ];
+    const { options } = buildAutoChildAgentOptions(workspaces, "ws-1", "");
+    const alternativeValues = options.filter((o) => o.value !== "").map((o) => o.value);
+    expect(alternativeValues).toEqual(["ws-2"]);
+  });
+
+  test("a workspace matching the current workspace's own agent is excluded", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+      { uuid: "ws-2", working_dir: "/repo", acp_server: "claude-code", name: "Claude (dup)" },
+    ];
+    const { options, hasAlternatives } = buildAutoChildAgentOptions(
+      workspaces,
+      "ws-1",
+      "",
+    );
+    expect(options).toEqual([{ value: "", label: "Current agent", workspace: null }]);
+    expect(hasAlternatives).toBe(false);
+  });
+
+  test("falls back to acp_server when name is absent", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+      { uuid: "ws-2", working_dir: "/repo", acp_server: "auggie" },
+    ];
+    const { options } = buildAutoChildAgentOptions(workspaces, "ws-1", "");
+    expect(options[1]).toEqual({ value: "ws-2", label: "auggie", workspace: workspaces[1] });
+  });
+
+  test("a currentTarget already present in the computed list is not duplicated", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+      { uuid: "ws-2", working_dir: "/repo", acp_server: "auggie", name: "Auggie" },
+    ];
+    const { options } = buildAutoChildAgentOptions(workspaces, "ws-1", "ws-2");
+    expect(options).toHaveLength(2);
+  });
+
+  test("a stale currentTarget UUID present in workspaces (deduped-away) is appended using its own name", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+      { uuid: "ws-2", working_dir: "/repo", acp_server: "auggie", name: "Auggie A" },
+      { uuid: "ws-3", working_dir: "/repo", acp_server: "auggie", name: "Auggie B (deduped)" },
+    ];
+    const { options } = buildAutoChildAgentOptions(workspaces, "ws-1", "ws-3");
+    expect(options).toEqual([
+      { value: "", label: "Current agent", workspace: null },
+      { value: "ws-2", label: "Auggie A", workspace: workspaces[1] },
+      { value: "ws-3", label: "Auggie B (deduped)", workspace: workspaces[2] },
+    ]);
+  });
+
+  test("a currentTarget UUID absent from workspaces entirely falls back to 'Unknown agent (<uuid>)'", () => {
+    const workspaces = [
+      { uuid: "ws-1", working_dir: "/repo", acp_server: "claude-code", name: "Claude" },
+    ];
+    const { options } = buildAutoChildAgentOptions(workspaces, "ws-1", "ws-missing");
+    expect(options).toEqual([
+      { value: "", label: "Current agent", workspace: null },
+      { value: "ws-missing", label: "Unknown agent (ws-missing)", workspace: null },
+    ]);
+  });
+});

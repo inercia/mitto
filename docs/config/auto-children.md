@@ -124,10 +124,19 @@ You can configure auto-children through **Settings > Workspaces** without editin
 2. Select the **Workspaces** tab
 3. Click on a workspace to expand its settings
 4. Under **Auto-created children**, click **Add child**
-5. Set the child title, choose a target workspace from the dropdown, and
-   optionally pick a **Model tag** (defaults to "Default (agent criteria)",
-   which falls back to the target workspace's/ACP server's own preference)
+5. Set the child title, choose an **Agent** from the dropdown (this selects the
+   `target_workspace_uuid` — i.e. which workspace, and therefore which ACP
+   server, the child runs on), and optionally pick a **Model tag** (defaults to
+   "Default (agent criteria)", which falls back to the target workspace's/ACP
+   server's own preference)
 6. Save — changes take effect immediately for new conversations
+
+The **Agent** dropdown defaults to **Current agent**, meaning the child uses
+the parent's own workspace (an empty `target_workspace_uuid`). If no other
+workspace is configured for the same folder, the Agent selector is disabled
+and shows a hint explaining there are no alternative agents to choose from —
+add another workspace for this folder first if you want the child to run on a
+different agent.
 
 ## Behavior
 

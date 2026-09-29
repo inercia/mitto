@@ -323,6 +323,68 @@ export function FolderListEditor({
 }
 
 /**
+ * buildAutoChildAgentOptions — pure helper computing the Agent selector
+ * options for one auto-child row (mitto-hyup).
+ *
+ * The first option is always "Current agent" (empty target — the child
+ * inherits whatever agent the parent conversation uses). Alternatives are
+ * other workspaces sharing the same working_dir, deduped by agent identity
+ * (acp_server), excluding the current workspace's own agent. If the child
+ * already has a saved target that isn't among the computed alternatives
+ * (e.g. a stale UUID, or a UUID that lost the agent-identity dedup race),
+ * it is appended so the saved value stays visible/editable.
+ *
+ * Returns { options, hasAlternatives } — hasAlternatives is false when no
+ * other agent is configured for this folder, so callers can disable the
+ * selector (unless the child already has a non-empty target to reset).
+ */
+export function buildAutoChildAgentOptions(
+  workspaces,
+  currentWorkspaceUUID,
+  currentTarget,
+) {
+  const list = workspaces || [];
+  const currentWs = list.find((ws) => ws.uuid === currentWorkspaceUUID);
+  const sameDir = list.filter(
+    (ws) =>
+      ws.uuid !== currentWorkspaceUUID &&
+      currentWs &&
+      ws.working_dir === currentWs.working_dir,
+  );
+  const currentAgent = currentWs?.acp_server;
+
+  const options = [{ value: "", label: "Current agent", workspace: null }];
+  const seenAgents = new Set();
+  let hasAlternatives = false;
+
+  for (const ws of sameDir) {
+    const agent = ws.acp_server;
+    if (agent && agent === currentAgent) continue;
+    if (agent && seenAgents.has(agent)) continue;
+    if (agent) seenAgents.add(agent);
+    options.push({
+      value: ws.uuid,
+      label: ws.name || ws.acp_server || "",
+      workspace: ws,
+    });
+    hasAlternatives = true;
+  }
+
+  if (currentTarget && !options.some((o) => o.value === currentTarget)) {
+    const targetWs = list.find((ws) => ws.uuid === currentTarget);
+    options.push({
+      value: currentTarget,
+      label: targetWs
+        ? targetWs.name || targetWs.acp_server || ""
+        : `Unknown agent (${currentTarget})`,
+      workspace: targetWs || null,
+    });
+  }
+
+  return { options, hasAlternatives };
+}
+
+/**
  * AutoChildrenEditor — edit list of auto-created child conversations.
  * When a new top-level conversation is created in this workspace,
  * these child conversations will be auto-created with it.
@@ -348,15 +410,6 @@ export function AutoChildrenEditor({
     updated[idx] = { ...updated[idx], [field]: value };
     onChange(updated);
   };
-
-  // Filter out current workspace (can't be its own child) and show only workspaces with same working_dir
-  const currentWs = workspaces.find((ws) => ws.uuid === currentWorkspaceUUID);
-  const targetOptions = workspaces.filter(
-    (ws) =>
-      ws.uuid !== currentWorkspaceUUID &&
-      currentWs &&
-      ws.working_dir === currentWs.working_dir,
-  );
 
   // Small inline workspace badge + label used in the rich workspace dropdown
   // (both menu rows and the trigger). Inline styles avoid depending on
@@ -388,12 +441,6 @@ export function AutoChildrenEditor({
     `;
   };
 
-  const workspaceOptions = targetOptions.map((ws) => ({
-    value: ws.uuid,
-    label: `${ws.name || ws.acp_server} (${getBasename(ws.working_dir)})`,
-    render: () => renderWorkspaceItem(ws),
-  }));
-
   const tagOptions = [
     { value: "", label: "Default (agent criteria)" },
     // Canonical tags (config.model_tags, from config.CanonicalModelTags())
@@ -424,51 +471,75 @@ export function AutoChildrenEditor({
           `
         : html`
             <div class="space-y-2">
-              ${(children || []).map(
-                (child, idx) => html`
-                  <div key=${idx} class="join w-full">
-                    <input
-                      type="text"
-                      value=${child.title || ""}
-                      placeholder="Child title"
-                      onInput=${(e) =>
-                        updateChild(idx, "title", e.target.value)}
-                      class="input input-sm join-item flex-1 min-w-0"
-                    />
-                    <${RichSelect}
-                      className="flex-1 min-w-0 join-item"
-                      triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
-                      ariaLabel="Target workspace"
-                      value=${child.target_workspace_uuid || ""}
-                      options=${workspaceOptions}
-                      placeholder="Select workspace"
-                      renderTrigger=${(sel) =>
-                        sel
-                          ? sel.render()
-                          : html`<span>Select workspace</span>`}
-                      onChange=${(v) =>
-                        updateChild(idx, "target_workspace_uuid", v)}
-                    />
-                    <${RichSelect}
-                      className="flex-1 min-w-0 join-item"
-                      triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
-                      ariaLabel="Model tag"
-                      value=${child.model_tag || ""}
-                      options=${tagOptions}
-                      onChange=${(v) => updateChild(idx, "model_tag", v)}
-                    />
-                    <button
-                      type="button"
-                      onClick=${() => removeChild(idx)}
-                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom shrink-0"
-                      data-tip="Remove child"
-                      aria-label="Remove child"
+              ${(children || []).map((child, idx) => {
+                const { options: agentOptionsRaw, hasAlternatives } =
+                  buildAutoChildAgentOptions(
+                    workspaces,
+                    currentWorkspaceUUID,
+                    child.target_workspace_uuid,
+                  );
+                const agentOptions = agentOptionsRaw.map((opt) =>
+                  opt.workspace
+                    ? { ...opt, render: () => renderWorkspaceItem(opt.workspace) }
+                    : opt,
+                );
+                const agentSelectorDisabled =
+                  !hasAlternatives && !child.target_workspace_uuid;
+                return html`
+                  <div key=${idx}>
+                    <div class="join w-full">
+                      <input
+                        type="text"
+                        value=${child.title || ""}
+                        placeholder="Child title"
+                        onInput=${(e) =>
+                          updateChild(idx, "title", e.target.value)}
+                        class="input input-sm join-item flex-1 min-w-0"
+                      />
+                      <${RichSelect}
+                        className="flex-1 min-w-0 join-item"
+                        triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
+                        ariaLabel="Agent"
+                        value=${child.target_workspace_uuid || ""}
+                        options=${agentOptions}
+                        disabled=${agentSelectorDisabled}
+                        placeholder="Current agent"
+                        renderTrigger=${(sel) =>
+                          sel
+                            ? sel.render
+                              ? sel.render()
+                              : html`<span>${sel.label}</span>`
+                            : html`<span>Current agent</span>`}
+                        onChange=${(v) =>
+                          updateChild(idx, "target_workspace_uuid", v)}
+                      />
+                      <${RichSelect}
+                        className="flex-1 min-w-0 join-item"
+                        triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
+                        ariaLabel="Model tag"
+                        value=${child.model_tag || ""}
+                        options=${tagOptions}
+                        onChange=${(v) => updateChild(idx, "model_tag", v)}
+                      />
+                      <button
+                        type="button"
+                        onClick=${() => removeChild(idx)}
+                        class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom shrink-0"
+                        data-tip="Remove child"
+                        aria-label="Remove child"
+                      >
+                        <${TrashIcon} className="w-4 h-4" />
+                      </button>
+                    </div>
+                    ${agentSelectorDisabled &&
+                    html`<p
+                      class="text-xs text-mitto-text-muted italic mt-1"
                     >
-                      <${TrashIcon} className="w-4 h-4" />
-                    </button>
+                      Only one agent is configured for this folder.
+                    </p>`}
                   </div>
-                `,
-              )}
+                `;
+              })}
             </div>
           `}
       <div class="mt-3 flex items-center gap-2">

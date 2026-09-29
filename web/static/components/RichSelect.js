@@ -27,6 +27,9 @@ import { ChevronDownIcon, CheckIcon } from "./Icons.js";
  *                                                     "input input-sm rounded-none …" (square middle-item box; corner
  *                                                     rounding is handled by the join on the first/last items).
  *                                                     Defaults to a standalone bordered box.
+ *   disabled      {boolean?}                         when true, the dropdown cannot be opened (click/keyboard are
+ *                                                     no-ops), the menu is not rendered, and the trigger gets
+ *                                                     aria-disabled + a dimmed, non-interactive look. Default false.
  */
 export function RichSelect({
   value,
@@ -37,6 +40,7 @@ export function RichSelect({
   ariaLabel,
   className = "",
   triggerClass,
+  disabled = false,
 }) {
   const [open, setOpen] = useState(false);
   const detailsRef = useRef(null);
@@ -72,21 +76,42 @@ export function RichSelect({
   const detailsClass = ["dropdown config-dropdown-block", className]
     .filter(Boolean)
     .join(" ");
-  const summaryClass =
+  const summaryClass = [
     triggerClass ||
-    "flex w-full items-center justify-between gap-2 rounded-lg border border-mitto-border-2 bg-mitto-surface-3 px-3 py-2 text-sm list-none cursor-pointer transition-colors hover:bg-mitto-surface-hover";
+      "flex w-full items-center justify-between gap-2 rounded-lg border border-mitto-border-2 bg-mitto-surface-3 px-3 py-2 text-sm list-none cursor-pointer transition-colors hover:bg-mitto-surface-hover",
+    disabled ? "opacity-50 cursor-not-allowed pointer-events-none" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return html`
     <details
       ref=${detailsRef}
       class=${detailsClass}
-      open=${open}
+      open=${!disabled && open}
       onToggle=${(e) => {
+        if (disabled) {
+          if (e.currentTarget.open) e.currentTarget.open = false;
+          return;
+        }
         const isOpen = e.currentTarget.open;
         if (isOpen !== open) setOpen(isOpen);
       }}
     >
-      <summary class=${summaryClass} aria-label=${ariaLabel}>
+      <summary
+        class=${summaryClass}
+        aria-label=${ariaLabel}
+        aria-disabled=${disabled ? "true" : undefined}
+        tabindex=${disabled ? "-1" : undefined}
+        onClick=${(e) => {
+          if (disabled) e.preventDefault();
+        }}
+        onKeyDown=${(e) => {
+          if (disabled && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+          }
+        }}
+      >
         <span class="min-w-0 flex-1 flex items-center gap-2 truncate">
           ${renderTrigger
             ? renderTrigger(selected)
@@ -96,28 +121,31 @@ export function RichSelect({
         </span>
         <${ChevronDownIcon} className="w-4 h-4 opacity-60 shrink-0" />
       </summary>
-      <ul
-        class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box p-2 shadow border border-mitto-border-1 max-h-64 overflow-y-auto flex-nowrap w-full z-50"
-      >
-        ${options.map(
-          (opt) => html`
-            <li key=${opt.value}>
-              <button
-                type="button"
-                class=${opt.value === value ? "menu-active" : ""}
-                onClick=${() => handleSelect(opt.value)}
-              >
-                ${opt.value === value
-                  ? html`<${CheckIcon} className="w-4 h-4 shrink-0" />`
-                  : html`<span class="inline-block w-4 h-4 shrink-0"></span>`}
-                <span class="min-w-0 flex-1">
-                  ${opt.render ? opt.render() : opt.label}
-                </span>
-              </button>
-            </li>
-          `,
-        )}
-      </ul>
+      ${!disabled &&
+      html`
+        <ul
+          class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box p-2 shadow border border-mitto-border-1 max-h-64 overflow-y-auto flex-nowrap w-full z-50"
+        >
+          ${options.map(
+            (opt) => html`
+              <li key=${opt.value}>
+                <button
+                  type="button"
+                  class=${opt.value === value ? "menu-active" : ""}
+                  onClick=${() => handleSelect(opt.value)}
+                >
+                  ${opt.value === value
+                    ? html`<${CheckIcon} className="w-4 h-4 shrink-0" />`
+                    : html`<span class="inline-block w-4 h-4 shrink-0"></span>`}
+                  <span class="min-w-0 flex-1">
+                    ${opt.render ? opt.render() : opt.label}
+                  </span>
+                </button>
+              </li>
+            `,
+          )}
+        </ul>
+      `}
     </details>
   `;
 }
