@@ -122,6 +122,14 @@ type MockACPServer struct {
 	// pending session/new. Used to prove the client aborts promptly rather than
 	// waiting the full RPC deadline (mitto-8ul.1). 0 disables.
 	mcpInitTimeoutAfterMs int
+
+	// rejectConfigOption: when set (env var MOCK_REJECT_CONFIG_OPTION, format
+	// "<configID>=<value>"), a session/set_config_option request matching that
+	// exact id+value pair is rejected with a JSON-RPC error instead of being
+	// applied. Used to exercise Mitto's setter-rejection handling for generic
+	// (non-model) select options such as thought_level (mitto-3wd). The
+	// unchanged snapshot is re-broadcast by the caller on rejection.
+	rejectConfigOption string
 }
 
 // Default modes provided by the mock server
@@ -162,6 +170,84 @@ func buildModelConfigOption(currentValue string) SessionConfigOption {
 }
 
 func strPtr(s string) *string { return &s }
+
+// thoughtLevelID and thoughtLevelCategory are deliberately DIFFERENT from any
+// real agent's reasoning-effort option id/category (e.g. GitHub Copilot's
+// "reasoning_effort"). This proves Mitto's generic select-config-option
+// support does not hardcode any specific agent's id — only the "thought_level"
+// category string from the ACP spec is a known value, and even that is only
+// used by the mock for its own bookkeeping (Mitto itself must not special-case
+// it either).
+const (
+	thoughtLevelID       = "deliberation_depth"
+	thoughtLevelCategory = "thought_level"
+)
+
+// thoughtLevelOptionsForModel returns the allowed select options and default
+// current value for the "deliberation_depth" config option, varying by model
+// to exercise full-snapshot add/remove/changed-values semantics:
+//   - claude-haiku-4-5: no options at all (nil) -- mimics a real agent (e.g.
+//     Claude Haiku under Copilot) dropping the reasoning-effort option
+//     entirely for a smaller/faster model.
+//   - claude-opus-4-6: a REDUCED 2-value list (no "shallow") with a different
+//     default -- exercises the "allowed values changed" snapshot case.
+//   - everything else (default/sonnet): the full 3-value list.
+func thoughtLevelOptionsForModel(modelId string) ([]SessionConfigSelectOption, string) {
+	switch modelId {
+	case "claude-haiku-4-5":
+		return nil, ""
+	case "claude-opus-4-6":
+		return []SessionConfigSelectOption{
+			{Value: "standard", Name: "Standard", Description: strPtr("Default deliberation depth")},
+			{Value: "deep", Name: "Deep", Description: strPtr("Maximum deliberation depth")},
+		}, "standard"
+	default:
+		return []SessionConfigSelectOption{
+			{Value: "shallow", Name: "Shallow", Description: strPtr("Minimal deliberation depth")},
+			{Value: "standard", Name: "Standard", Description: strPtr("Default deliberation depth")},
+			{Value: "deep", Name: "Deep", Description: strPtr("Maximum deliberation depth")},
+		}, "standard"
+	}
+}
+
+// buildThoughtLevelConfigOption returns the Select-variant ConfigOption for
+// "deliberation_depth" given the current model and a preferred current value
+// (typically carried over from a prior snapshot). Returns nil when the model
+// has no deliberation_depth option at all (e.g. claude-haiku-4-5), so callers
+// must omit the option from the snapshot entirely in that case.
+func buildThoughtLevelConfigOption(modelId string, preferredValue string) *SessionConfigOption {
+	options, defaultValue := thoughtLevelOptionsForModel(modelId)
+	if options == nil {
+		return nil
+	}
+
+	value := defaultValue
+	for _, opt := range options {
+		if opt.Value == preferredValue {
+			value = preferredValue
+			break
+		}
+	}
+
+	return &SessionConfigOption{
+		Type:         "select",
+		ID:           thoughtLevelID,
+		Name:         "Deliberation depth",
+		Description:  "How much the agent deliberates before responding",
+		Category:     thoughtLevelCategory,
+		CurrentValue: value,
+		Options:      options,
+	}
+}
+
+// isThoughtLevelOption reports whether opt is the deliberation-depth config
+// option, matching on EITHER id or category so that any future rename of the
+// mock's id (while keeping the same "thought_level" category) is still
+// recognized -- mirroring how a real agent swap could happen without Mitto
+// code changes.
+func isThoughtLevelOption(opt SessionConfigOption) bool {
+	return opt.ID == thoughtLevelID || opt.Category == thoughtLevelCategory
+}
 
 // NewMockACPServer creates a new mock ACP server
 func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bool) *MockACPServer {
@@ -233,6 +319,13 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 			server.mcpInitTimeoutAfterMs = n
 		}
 	}
+
+	// MOCK_REJECT_CONFIG_OPTION: reject a specific session/set_config_option
+	// request with a JSON-RPC error, in the format "<configID>=<value>"
+	// (e.g. "deliberation_depth=deep"). Used to exercise Mitto's handling of a
+	// setter rejection: the unchanged config_options snapshot must still be
+	// re-broadcast alongside the error.
+	server.rejectConfigOption = os.Getenv("MOCK_REJECT_CONFIG_OPTION")
 
 	server.loadScenarios()
 	return server

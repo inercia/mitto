@@ -144,7 +144,7 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 		CurrentModeID:  s.currentMode,
 		AvailableModes: defaultModes.AvailableModes,
 	}
-	configOptions := []SessionConfigOption{buildModelConfigOption(s.currentModel)}
+	configOptions := freshConfigOptionsWithModel(nil, s.currentModel)
 
 	// Store session state for resume support
 	s.mu.Lock()
@@ -210,10 +210,21 @@ func (s *MockACPServer) handleResumeSession(req JSONRPCRequest) error {
 // freshConfigOptionsWithModel returns a copy of opts with the model entry's
 // currentValue replaced by the given model id (or the entry appended if
 // missing). It never mutates the input slice.
+// freshConfigOptionsWithModel rebuilds the config options snapshot for modelId,
+// starting from opts (which may be nil for a brand-new session). It preserves
+// any non-model, non-thought-level entries verbatim, updates (or appends) the
+// model entry, and rebuilds the thought-level entry from scratch so it reflects
+// the current model's supported values — carrying forward the previously
+// selected value when it's still valid for the new model.
 func freshConfigOptionsWithModel(opts []SessionConfigOption, modelId string) []SessionConfigOption {
-	out := make([]SessionConfigOption, 0, len(opts)+1)
+	out := make([]SessionConfigOption, 0, len(opts)+2)
 	foundModel := false
+	preferredThoughtLevel := ""
 	for _, opt := range opts {
+		if isThoughtLevelOption(opt) {
+			preferredThoughtLevel = opt.CurrentValue
+			continue
+		}
 		if opt.Category == "model" || opt.ID == "model" {
 			opt.CurrentValue = modelId
 			foundModel = true
@@ -223,7 +234,25 @@ func freshConfigOptionsWithModel(opts []SessionConfigOption, modelId string) []S
 	if !foundModel {
 		out = append(out, buildModelConfigOption(modelId))
 	}
+	if thoughtLevelOpt := buildThoughtLevelConfigOption(modelId, preferredThoughtLevel); thoughtLevelOpt != nil {
+		out = append(out, *thoughtLevelOpt)
+	}
 	return out
+}
+
+// sessionConfigOptions returns the current, authoritative config options
+// snapshot for sessionID as stored in session state. It must be used instead
+// of rebuilding from nil whenever the per-session state has already been
+// updated (e.g. after applyModelChange or applyThoughtLevelChange), so the
+// response/notification reflects every config option, not just the one that
+// was just changed.
+func (s *MockACPServer) sessionConfigOptions(sessionID string) []SessionConfigOption {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; ok {
+		return sess.ConfigOptions
+	}
+	return nil
 }
 
 // Model state belongs to the addressed ACP session, not the last-created one.
@@ -323,8 +352,11 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 
 	// Emit the config_option_update notification so downstream state
 	// (Mitto's AgentModels tracking) still transitions — mirrors the
-	// legacy-path emission below.
-	updated := freshConfigOptionsWithModel(nil, s.sessionModel(params.SessionID))
+	// legacy-path emission below. Read back the authoritative per-session
+	// ConfigOptions (already updated by applyModelChange above) rather than
+	// rebuilding from nothing, so non-model options (e.g. the thought-level
+	// select) survive a model switch instead of being silently dropped.
+	updated := s.sessionConfigOptions(params.SessionID)
 	notification := SessionNotification{JSONRPC: "2.0", Method: "session/update"}
 	notification.Params.SessionID = params.SessionID
 	notification.Params.Update = SessionUpdate{
@@ -383,6 +415,61 @@ func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, r
 	return nil
 }
 
+// applyThoughtLevelChange handles session/set_config_option for the mock's
+// generic thought_level select (configID == thoughtLevelID). Mirrors
+// applyModelChange's shape: optional rejection injection via
+// MOCK_REJECT_CONFIG_OPTION ("<configID>=<value>"), validation against the
+// model-specific allowed values, per-session state mutation under s.mu, and
+// RPC-order recording. Returns a non-nil error only when an error response
+// has already been sent.
+func (s *MockACPServer) applyThoughtLevelChange(req JSONRPCRequest, sessionID, value string) error {
+	// Rejection injection: MOCK_REJECT_CONFIG_OPTION="deliberation_depth=deep"
+	// rejects exactly that (configID, value) pair; any other combination is
+	// unaffected.
+	if s.rejectConfigOption == thoughtLevelID+"="+value {
+		s.log("Injecting set_config_option(%s) rejection for value %s", thoughtLevelID, value)
+		return s.sendError(req.ID, -32602, fmt.Sprintf("Rejected value: %s", value), nil)
+	}
+
+	// Validate the value against the options advertised for the current model.
+	validOptions, _ := thoughtLevelOptionsForModel(s.sessionModel(sessionID))
+	validValue := false
+	for _, opt := range validOptions {
+		if opt.Value == value {
+			validValue = true
+			break
+		}
+	}
+	if !validValue {
+		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid %s: %s", thoughtLevelID, value), nil)
+	}
+
+	s.mu.Lock()
+	if sess := s.sessions[sessionID]; sess != nil {
+		sess.ConfigOptions = setThoughtLevelValue(sess.ConfigOptions, value)
+	}
+	s.mu.Unlock()
+
+	s.recordRPCOrder("set_config_option", thoughtLevelID+"="+value)
+	s.log("Session %s changed: %s -> %s", thoughtLevelID, sessionID, value)
+	return nil
+}
+
+// setThoughtLevelValue returns a copy of opts with the thought-level entry's
+// CurrentValue updated to value. If no thought-level entry is present, opts
+// is returned unchanged (should not normally happen since
+// freshConfigOptionsWithModel always seeds one when the model supports it).
+func setThoughtLevelValue(opts []SessionConfigOption, value string) []SessionConfigOption {
+	updated := make([]SessionConfigOption, len(opts))
+	copy(updated, opts)
+	for i := range updated {
+		if isThoughtLevelOption(updated[i]) {
+			updated[i].CurrentValue = value
+		}
+	}
+	return updated
+}
+
 // handleSetSessionConfigOption handles v0.13.5 `session/set_config_option`
 // requests. Only the ValueId (Select) variant is supported; the boolean variant
 // is rejected. For the "model" category the mock retains the pre-0.13.5
@@ -400,23 +487,37 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 	}
 
 	isModel := params.ConfigID == "model"
+	isThoughtLevel := params.ConfigID == thoughtLevelID
 
-	if isModel {
+	switch {
+	case isModel:
 		// Shared model-change path: MOCK_SET_MODEL_DELAY_MS / _FAIL_FIRST
 		// knobs, model-id validation, currentModel update, RPC-order log.
 		// Emits its own error response on failure/rejection.
 		if err := s.applyModelChange(req, params.SessionID, params.Value, "set_config_option"); err != nil {
 			return err
 		}
-	} else {
-		// Non-model config options: just record the arrival and echo back.
+	case isThoughtLevel:
+		// Generic thought_level select: rejection injection, value
+		// validation, per-session state mutation, RPC-order log. Emits its
+		// own error response on failure/rejection.
+		if err := s.applyThoughtLevelChange(req, params.SessionID, params.Value); err != nil {
+			return err
+		}
+	default:
+		// Non-model, non-thought-level config options: just record the
+		// arrival and echo back.
 		s.recordRPCOrder("set_config_option", params.Value)
 		s.log("Session config option changed: %s (%s -> %s)", s.sessionID, params.ConfigID, params.Value)
 	}
 
-	// Build the updated ConfigOptions snapshot to include in both the response
-	// and the config_option_update notification.
-	updated := freshConfigOptionsWithModel(nil, s.sessionModel(params.SessionID))
+	// Build the updated ConfigOptions snapshot to include in both the
+	// response and the config_option_update notification. Read back the
+	// authoritative per-session state (rather than rebuilding from nothing)
+	// so that any option applyModelChange/applyThoughtLevelChange did NOT
+	// touch (e.g. the thought-level entry during a model-only change, or
+	// vice versa) is preserved instead of silently dropped.
+	updated := s.sessionConfigOptions(params.SessionID)
 
 	// Send success response (SDK's SetSessionConfigOptionResponse carries the
 	// full configOptions snapshot).
