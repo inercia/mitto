@@ -33,9 +33,12 @@ backgroundColor: '#E1BEE7'
 preferredModels:
   - modelTag: Cheap
 loop:
-  trigger: [onCompletion]
+  trigger: [onTasks, onCompletion]
   onCompletion:
     delay: 30
+  onTasks:
+    settleWindow: 30
+    cooldown: 600
   maxIterations: 8
   maxDuration: "1h"
   # Per-mention phase state is authoritative on the bead (labels + phase
@@ -49,6 +52,17 @@ target:
     coalesce: true
 prompt: |
   {{ template "_shared/session-context" . }}
+
+  {{ with .Trigger }}
+  {{ if eq .Kind "onTasks" }}
+  Wake-up source: a beads change, which may be unrelated to this target or mention.
+  Reload the target's live labels and comments, and match the exact mention before
+  deciding what to do.
+  {{ else if eq .Kind "onCompletion" }}
+  Wake-up source: the previous router or phase turn completed. Reload the target's
+  live labels and comments; do not rely on prior chat context for progress.
+  {{ end }}
+  {{ end }}
 
   # Mention — Router / Driver
 

@@ -26,9 +26,12 @@ enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && 
 preferredModels:
   - modelTag: Cheap
 loop:
-  trigger: [onCompletion]
+  trigger: [onTasks, onCompletion]
   onCompletion:
     delay: 30
+  onTasks:
+    settleWindow: 30
+    cooldown: 600
   mode: always
   maxIterations: 30
   maxDuration: "8h"
@@ -45,6 +48,16 @@ prompt: |
   {{ template "_shared/session-context" . }}
   Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
   Existing children: `{{ Default "(none)" .Children.MCPText }}`
+
+  {{ with .Trigger }}
+  {{ if eq .Kind "onTasks" }}
+  Wake-up source: a beads change, which may be unrelated to this target. Reload this
+  target's live labels and comments before deciding what to do.
+  {{ else if eq .Kind "onCompletion" }}
+  Wake-up source: the previous driver or phase turn completed. Reload this target's
+  live labels and comments; do not rely on prior chat context for progress.
+  {{ end }}
+  {{ end }}
 
   # Beads: Iterate Implementing Feature
 

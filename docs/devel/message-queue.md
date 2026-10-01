@@ -602,6 +602,15 @@ loop:
 
 Two builtin prompts adopt this (mitto-f9q): `config/prompts/builtin/beads/refine-implementation.prompt.yaml` and `config/prompts/builtin/beads-issues/loop-processing.prompt.yaml`. Both also render a `## Triggered by these beads changes` preamble in the prompt body using `{{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}` so the agent sees which specific beads drove the fire without re-invoking `bd`.
 
+The per-bead bug, feature, and mention drivers also arm `[onTasks, onCompletion]`.
+Their `onTasks` trigger uses a 30-second settle window and 600-second cooldown to
+collapse unrelated or bursty Beads updates, while `freshContext: true` prevents
+phase transcripts from accumulating. Each run reloads the target's live labels
+and comments; those labels encode the phase cursor and comments retain the work
+report, so progress does not depend on prior chat context. Because the drivers
+have multiple triggers, their prompts distinguish `onTasks` wake-ups from
+`onCompletion` re-arms via `.Trigger.Kind`.
+
 ### Testing
 
 `internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).

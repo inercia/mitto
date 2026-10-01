@@ -70,6 +70,95 @@ func TestBuiltinCheapOuterLoopModelPreferences(t *testing.T) {
 	}
 }
 
+func TestBuiltinBeadsDriversUseFreshDurableTaskTriggers(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	cases := []struct {
+		file   string
+		states []string
+	}{
+		{
+			file: "beads-issues/loop-fixing-bug.prompt.yaml",
+			states: []string{
+				"researched", "reproduced", "fixed",
+				"Investigation:", "Reproduction:", "Fix:",
+			},
+		},
+		{
+			file: "beads-issues/loop-implementing-feature.prompt.yaml",
+			states: []string{
+				"planned", "implemented", "tested", "verified",
+				"Plan:", "Implementation:", "Testing:", "Review:",
+			},
+		},
+		{
+			file: "beads-issues/mention-driver.prompt.yaml",
+			states: []string{
+				"mention-investigated", "mention-planned", "mention-implemented",
+				"mention-answered", "[addressed-comment: {{ $ts }}]",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", tc.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := ParsePromptFile(tc.file, data, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prompt.Loop == nil {
+				t.Fatal("loop is nil")
+			}
+			if prompt.Loop.FreshContext == nil || !*prompt.Loop.FreshContext {
+				t.Error("freshContext must be true")
+			}
+			if len(prompt.Loop.Trigger) != 2 {
+				t.Errorf("triggers = %v, want onTasks and onCompletion", prompt.Loop.Trigger)
+			}
+			hasTrigger := func(want string) bool {
+				for _, got := range prompt.Loop.Trigger {
+					if got == want {
+						return true
+					}
+				}
+				return false
+			}
+			for _, want := range []string{"onTasks", "onCompletion"} {
+				if !hasTrigger(want) {
+					t.Errorf("triggers = %v, missing %q", prompt.Loop.Trigger, want)
+				}
+			}
+			if prompt.Loop.OnTasks == nil {
+				t.Fatal("onTasks settings are missing")
+			}
+			if prompt.Loop.OnTasks.SettleWindow != 30 || prompt.Loop.OnTasks.Cooldown != 600 {
+				t.Errorf("onTasks settings = %+v, want settleWindow 30s and cooldown 600s", prompt.Loop.OnTasks)
+			}
+			if prompt.Loop.OnCompletion == nil || prompt.Loop.OnCompletion.Delay != 30 {
+				t.Errorf("onCompletion = %+v, want delay 30s", prompt.Loop.OnCompletion)
+			}
+
+			for _, marker := range []string{
+				"bd show {{ $target }} --json --include-comments",
+				`eq .Kind "onTasks"`,
+				`eq .Kind "onCompletion"`,
+			} {
+				if !strings.Contains(prompt.Content, marker) {
+					t.Errorf("prompt content is missing %q", marker)
+				}
+			}
+			for _, state := range tc.states {
+				if !strings.Contains(prompt.Content, state) {
+					t.Errorf("prompt content is missing durable state marker %q", state)
+				}
+			}
+		})
+	}
+}
+
 func TestSupportPhaseModelPreferences(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	cases := []struct {
