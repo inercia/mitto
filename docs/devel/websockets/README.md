@@ -118,7 +118,7 @@ graph TB
 | `ui_prompt` / `ui_prompt_dismiss` | Interactive prompts (MCP, permissions)      |
 | `action_buttons`                  | AI-generated follow-up suggestions          |
 | `available_commands_updated`      | Agent's available slash commands            |
-| `config_option_changed`           | Session config option changed               |
+| `config_option_changed`           | Config option changed (full `config_options` snapshot) |
 | `error`                           | Error notification                          |
 | `session_gone`                    | Terminal: session no longer exists          |
 | `session_reset`                   | Session was forcefully reset                |

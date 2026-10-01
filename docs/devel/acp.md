@@ -303,6 +303,34 @@ agent's metadata cannot block startup. `make check-stderr-patterns`
 (`TestBuiltinAgents_StderrPatternsCompile` in `internal/agents/`) catches
 those typos at CI time instead of runtime.
 
+### Agent-Advertised Config Selects (reasoning effort)
+
+Agents advertise session config options as `select`s. A select with category
+`thought_level` is the reasoning-effort control (Copilot: id
+`reasoning_effort`, values `low`/`medium`/`high`/`xhigh`/`max`; the mock agent:
+`deliberation_depth`, `shallow`/`standard`/`deep`). Ids, values and labels are
+opaque — Mitto never hardcodes them; the shared `ConfigOptionSelect` renders any
+advertised select next to the model selector.
+
+- **Replacement snapshots**: full `session/set_config_option` responses and
+  `config_option_update` notifications carry the complete option list. Mitto
+  replaces its list (never patches): options can disappear (Haiku drops reasoning
+  effort) and allowed values can change when the model changes. The WS
+  `config_option_changed` event relays the full `config_options` snapshot;
+  `connected`/`acp_started` snapshots remain authoritative.
+- **Ordering**: an idle change is acked via `session/set_config_option` *before*
+  the next `session/prompt`. During streaming the change is deferred, does not
+  affect the running turn, and is flushed before the next prompt (last write
+  wins; model before dependent selects).
+- **Rejection**: if the agent rejects the setter, Mitto sends an `error` and
+  re-broadcasts the unchanged snapshot so the UI rolls back.
+- **Neutral seam**: the optional config capability lives in
+  `internal/agentbackend` (`capabilities.go`/`contracts.go`) and is implemented
+  for ACP in `internal/acpbackend/session_ops.go`.
+- **Testing**: the mock agent (`MOCK_RPC_ORDER_FILE`,
+  `MOCK_REJECT_CONFIG_OPTION=<id>=<value>`) records request ordering; see
+  `tests/integration/inprocess/thought_level_config_test.go`.
+
 ## Content Blocks
 
 The ACP SDK uses a discriminated union (pointer fields) for content blocks:

@@ -173,6 +173,14 @@ Sent when the user responds to a `ui_prompt` (MCP questions, permissions, follow
 }
 ```
 
+Works for **any** select option the agent advertises (model, mode, or a
+`thought_level` effort select such as `reasoning_effort` or
+`deliberation_depth`) — ids and values are opaque and never hardcoded. An idle
+change is acknowledged via `session/set_config_option` before the next
+`session/prompt`; during streaming it is deferred (the running turn is
+unaffected) and flushed before the next prompt. If the agent rejects it, the
+server sends `error` plus a re-broadcast of the unchanged snapshot.
+
 ### `run_mcp_install_command` — Execute MCP installation
 
 Sent from frontend when user confirms running a suggested MCP installation command.
@@ -882,9 +890,24 @@ or reload. Restoration does not create a separate timeline entry.
 ```json
 {
   "type": "config_option_changed",
-  "data": { "session_id": "...", "config_id": "mode", "value": "plan" }
+  "data": {
+    "session_id": "...",
+    "config_id": "mode",
+    "value": "plan",
+    "config_options": [
+      { "id": "reasoning_effort", "category": "thought_level", "current": "high", "values": ["low", "high"] }
+    ]
+  }
 }
 ```
+
+`config_options` is the **full replacement snapshot** (same shape as in
+`connected`), not a delta: clients replace their list rather than patch it.
+Options may disappear (e.g. switching to a model without reasoning effort) and
+the allowed `values` of a surviving option may change. `config_id`/`value`
+identify what triggered the event. When the agent rejects a requested change,
+the server sends an `error` followed by a re-broadcast of the unchanged snapshot
+so the UI rolls back.
 
 #### `error` — Error notification
 

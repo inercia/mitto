@@ -235,6 +235,14 @@ The old glob-pattern form (`- "*sonnet*"`) has been removed. See
 [.augment/rules/07-prompts.md § preferredModels Field](../../.augment/rules/07-prompts.md)
 for the internal implementation notes.
 
+## Reasoning effort
+
+Reasoning effort is **not** configured in model profiles. It is advertised by
+the agent as a `thought_level` select config option (opaque id/values, e.g.
+Copilot's `reasoning_effort`) and shown beside the model selector. Switching
+models may add, remove or change its allowed values; see
+[ACP § Agent-Advertised Config Selects](../devel/acp.md#agent-advertised-config-selects-reasoning-effort).
+
 ## See also
 
 - [ACP Servers / Model Selection Constraints](acp.md) — shares the same match engine
