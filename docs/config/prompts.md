@@ -1345,6 +1345,17 @@ baseline model is not changed, no `session_change` event is recorded, and the
 baseline is restored after the prompt completes. Manual model selection in the
 UI, by contrast, updates the baseline persistently.
 
+**Exception — new conversations created for a named prompt.** When a genuinely
+new conversation is created specifically to run a named prompt (REST
+`initial_prompt_name` / `origin_prompt_name`, or MCP `mitto_conversation_new`
+with a named initial or loop prompt), the prompt's `preferredModels` seed the
+conversation's *initial model* instead, so the preferred model becomes the
+persistent baseline and the first turn needs no temporary override. Precedence:
+prompt `preferredModels` → workspace / ACP-server initial-model preference →
+agent default. If no `preferredModels` entry matches an available model, the
+workspace / ACP preference applies. Resumed and reused (singleton) conversations
+keep their persisted baseline unchanged.
+
 For recurring monitoring and routing prompts, prefer a task-appropriate tier
 such as `Coding` over inheriting a potentially expensive conversation baseline.
 Keep phase-specific preferences on the actual work prompts: a driver using

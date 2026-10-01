@@ -7,12 +7,21 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/session"
 )
 
 // setupInitialModelServer builds a server wired to a mockSessionManager so tests
 // can observe which prompt name the genuine-new-child resume step received.
 func setupInitialModelServer(t *testing.T) (*Server, *mockSessionManager, string) {
+	t.Helper()
+	return setupInitialModelServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Start work", Prompt: "do the work"},
+		{Name: "Loop body", Prompt: "iterate"},
+	})
+}
+
+func setupInitialModelServerWithPrompts(t *testing.T, webPrompts []config.WebPrompt) (*Server, *mockSessionManager, string) {
 	t.Helper()
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -41,10 +50,7 @@ func setupInitialModelServer(t *testing.T) (*Server, *mockSessionManager, string
 	srv, err := NewServer(Config{Port: 0}, Dependencies{
 		Store:          store,
 		SessionManager: mockSM,
-		Config: &config.Config{Prompts: []config.WebPrompt{
-			{Name: "Start work", Prompt: "do the work"},
-			{Name: "Loop body", Prompt: "iterate"},
-		}},
+		Config:         &config.Config{Prompts: webPrompts},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -115,5 +121,36 @@ func TestConversationNew_FreeTextPrompt_PassesNoPromptNameForInitialModel(t *tes
 	}
 	if len(mockSM.resumePromptNames) != 1 || mockSM.resumePromptNames[0] != "" {
 		t.Fatalf("resumePromptNames = %v, want [\"\"]", mockSM.resumePromptNames)
+	}
+}
+
+// A reuse hit routes to an existing conversation: it must not run the
+// genuine-new resume step, so no prompt preference is resolved for it.
+func TestConversationNew_ReuseHit_DoesNotResolveInitialModelPreference(t *testing.T) {
+	srv, mockSM, parentID := setupInitialModelServerWithPrompts(t, []config.WebPrompt{{
+		Name:   "Work on issue",
+		Prompt: "do work",
+		Target: &prompts.PromptTarget{Reuse: &prompts.PromptTargetReuse{Issue: true}},
+	}})
+	ctx := context.Background()
+	in := ConversationStartInput{SelfID: parentID, PromptName: "Work on issue", BeadsIssue: "mitto-abc"}
+
+	_, first, err := srv.handleConversationStart(ctx, nil, in)
+	if err != nil || first.SessionID == "" {
+		t.Fatalf("first call: err=%v out=%+v", err, first)
+	}
+	if len(mockSM.resumePromptNames) != 1 {
+		t.Fatalf("after create resumePromptNames = %v, want 1 entry", mockSM.resumePromptNames)
+	}
+
+	_, second, err := srv.handleConversationStart(ctx, nil, in)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if !second.Reused || second.SessionID != first.SessionID {
+		t.Fatalf("expected reuse of %q, got %+v", first.SessionID, second)
+	}
+	if len(mockSM.resumePromptNames) != 1 {
+		t.Errorf("reuse hit resolved a prompt model preference: resumePromptNames = %v", mockSM.resumePromptNames)
 	}
 }
