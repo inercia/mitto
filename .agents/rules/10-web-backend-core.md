@@ -1,0 +1,232 @@
+---
+description: Web server core patterns, HTTP handlers, routing, and server lifecycle
+globs:
+  - "internal/web/server.go"
+  - "internal/web/server_*.go"
+  - "internal/web/routes.go"
+  - "internal/web/http_*.go"
+  - "internal/web/session_manager.go"
+  - "internal/web/background_session.go"
+  - "internal/web/client.go"
+  - "internal/web/*_handlers.go"
+  - "internal/web/markdown.go"
+  - "internal/web/file_server.go"
+keywords:
+  - HTTP handler
+  - routing
+  - web server
+  - httptest
+  - writeJSON
+---
+
+# Web Backend Core Patterns
+
+**Architecture docs**: See [docs/devel/web-interface.md](../../docs/devel/web-interface.md) and [docs/devel/websockets/](../../docs/devel/websockets/).
+
+## Key Components
+
+| Component           | File                    | Purpose                                              |
+| ------------------- | ----------------------- | ---------------------------------------------------- |
+| `Server`            | `server.go`             | HTTP server, routing, lifecycle                      |
+| `SessionWSClient`   | `session_ws.go`         | Per-session WebSocket (implements `SessionObserver`) |
+| `WSConn`            | `ws_conn.go`            | WebSocket wrapper with backpressure send, WritePump  |
+| `BackgroundSession` | `background_session.go` | Long-lived ACP session with observer pattern         |
+| `SessionManager`    | `session_manager.go`    | Session registry + workspace management              |
+| `QueueTitleWorker`  | `queue_title.go`        | Auto-generates titles for queued messages            |
+| `WebClient`         | `client.go`             | ACP client for web (implements `acp.Client`)         |
+| `MarkdownBuffer`    | `markdown.go`           | Streaming markdown to HTML with smart flushing       |
+
+## HTTP Response Helpers
+
+```go
+writeJSONOK(w, data)                              // 200
+writeJSONCreated(w, data)                         // 201
+writeErrorJSON(w, status, errorCode, message)     // Error with code
+```
+
+## Caching
+
+**Development mode**: No caching for static assets (HTML has injected values).
+
+```go
+w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+```
+
+## External Access
+
+Dual listener architecture:
+
+1. **Localhost** (`127.0.0.1`): No auth required
+2. **External** (`0.0.0.0`): Optional, requires authentication
+
+See architecture docs for auth flow and Tailscale funnel debugging.
+
+## File Server: Recovering Left-Truncated Paths (mitto-tda2, commit 4440fbb2)
+
+Tool-call activity titles display long file paths left-ellipsized (`…Development/inercia/mitto/docs/config/models.md`) to fit the UI, so the auto-generated file link the user clicks no longer matches a real path and 404s. `FileServer.resolveLeftTruncatedPath` (`internal/web/file_server.go`) detects a `…`/`.../` prefix, then resolves the suffix against the **selected workspace only**: first cheap workspace-relative reconstructions (no scan), then a bounded `filepath.WalkDir` (capped at `maxTruncatedPathScanEntries = 100000`). It opens the file **only if exactly one** real file matches that suffix — ambiguous or unmatched paths fall through to the normal 404/security path unchanged. Any new "recover a display-shortened path" feature should follow this same unique-suffix-match-or-refuse pattern rather than guessing.
+
+## Testing the Web Server
+
+### Handler() Method for httptest.Server
+
+The `Server` exposes a `Handler()` method for use with `httptest.Server`:
+
+```go
+srv, err := web.NewServer(config)
+if err != nil {
+    t.Fatalf("NewServer failed: %v", err)
+}
+
+// Use httptest.Server for in-process testing
+httpServer := httptest.NewServer(srv.Handler())
+defer httpServer.Close()
+
+// Create client pointing to test server
+client := api.New(httpServer.URL)
+```
+
+### Testing Auth Changes
+
+When testing authentication configuration changes, set `externalPort: -1`:
+
+```go
+server := &Server{
+    config: Config{
+        MittoConfig: &config.Config{
+            Web: config.WebConfig{
+                ExternalPort: -1, // Disabled
+            },
+        },
+    },
+    externalPort: -1,
+}
+server.applyAuthChanges(false, true, authConfig)
+```
+
+### Testing Image Upload Security
+
+The `handleUploadImageFromPath` endpoint only allows localhost access:
+
+```go
+func TestHandleUploadImageFromPath_NonLocalhost(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/api/sessions/id/images/from-path", nil)
+    req.RemoteAddr = "192.168.1.100:12345" // Non-localhost
+    w := httptest.NewRecorder()
+
+    server.handleUploadImageFromPath(w, req, store, sessionID)
+
+    if w.Code != http.StatusForbidden {
+        t.Errorf("Status = %d, want %d", w.Code, http.StatusForbidden)
+    }
+}
+```
+
+## BackgroundSession (`background_session.go`)
+
+This is the most complex file (~3500 lines). Key patterns:
+
+### Observer Pattern
+
+- `SessionObserver` interface in `observer.go`; register via `AddObserver()` (requires `LoadEvents` first)
+- `bs.notifyObservers(func(o SessionObserver) { o.OnXxx(...) })`
+- `OnAgentMessage(seq, html)` requires seq number and persists to `events.jsonl`
+- `OnError(message)` is for user-facing warnings (no seq needed)
+
+### PromptWithMeta Flow
+
+1. Validate capabilities → 2. Load images from disk, base64 encode → 3. Run command processors → 4. Build `finalBlocks` array → 5. Launch goroutine to send to ACP → 6. Stream response
+
+### Adding New Features
+
+1. Add private field + public getter on `BackgroundSession`
+2. Set during ACP initialization (in `doStartACPProcess`)
+3. Check in `PromptWithMeta` with appropriate guards
+4. Expose via `sendSessionConnected()` in `session_ws.go`
+
+## Structured Logging
+
+```go
+// Session-scoped (auto-includes session_id, working_dir, acp_server)
+bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acpServer)
+
+// Client-scoped (auto-includes client_id, session_id)
+clientLogger := logging.WithClient(s.logger, clientID, sessionID)
+```
+
+## Session API Routing: Method+Pattern (Complete)
+
+✅ **COMPLETE**: Replaced hand-rolled path-splitting dispatch with Go 1.22+ `http.ServeMux` method+pattern routing.
+
+### Pattern: Dynamic Route Params with `r.PathValue()`
+
+Instead of `strings.Split` on `r.URL.Path`:
+
+```go
+// OLD (eliminated):
+parts := strings.Split(r.URL.Path, "/")
+sessionID := parts[4]  // Fragile, magic indices
+
+// NEW (Go 1.22+):
+if id, ok := s.sessionIDFromPath(w, r); ok {
+    s.apiHandlers.HandleGetSession(w, r, id)
+}
+
+// Helper:
+func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+    id := r.PathValue("id")
+    if !session.IsValidSessionID(id) {
+        writeErrorJSON(w, http.StatusBadRequest, "invalid_session_id", "")
+        return "", false
+    }
+    return id, true
+}
+```
+
+### Route Table Pattern (`routes.go`)
+
+Use declarative method+pattern table instead of subtree fallback:
+
+```go
+apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
+apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
+apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
+apiRoute{http.MethodGet, "/api/sessions/{id}/events", s.handleSessionEvents},
+apiRoute{http.MethodGet, "/api/sessions/{id}/ws", s.handleSessionWS},
+```
+
+**Benefit**: No `strings.Split` ambiguity; Go's mux ensures specificity via pattern precedence.
+
+### Thin Wrapper Pattern
+
+Session handlers are thin wrappers that:
+
+1. Extract IDs from path using `r.PathValue()`
+2. Validate session ID (call IsValidSessionID)
+3. Delegate to handler in `handlers` sub-package
+
+Example:
+
+```go
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+    if id, ok := s.sessionIDFromPath(w, r); ok {
+        s.apiHandlers.HandleGetSession(w, r, id, false)
+    }
+}
+```
+
+## Handler Migration to Sub-packages (Complete)
+
+✅ All 16 REST handlers extracted into `internal/web/handlers/` sub-package.
+
+### Deps Facade
+
+```go
+handlers.New(handlers.Deps{
+    Store:             store,
+    SessionManager:    sessionMgr,
+    Logger:            logger,
+    // Add conservatively; only fields needed for current handler(s)
+})
+```
+
+**Key constraint**: `handlers` pkg must NOT import `internal/web` (no circular deps). Dependency direction: `web → handlers` only. All dependencies injected via `Deps` struct.

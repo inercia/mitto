@@ -1,0 +1,186 @@
+---
+description: Playwright UI tests, mock ACP scenarios, browser-specific testing, test fixtures, and selectors
+globs:
+  - "tests/ui/**/*"
+  - "tests/fixtures/responses/**/*"
+keywords:
+  - playwright
+  - e2e
+  - ui test
+  - browser test
+  - mock acp
+  - test scenario
+---
+
+# Playwright UI Testing
+
+## MANDATORY: Test Configuration Requirements
+
+**ALL Playwright tests MUST use a test configuration with these properties:**
+
+| Property        | Required Value    | Reason                                       |
+| --------------- | ----------------- | -------------------------------------------- |
+| `external_port` | `-1`              | Disables external access, no 0.0.0.0 binding |
+| `host`          | `127.0.0.1`       | Localhost only                               |
+| `web.auth`      | **OMIT ENTIRELY** | Prevents keychain access on macOS            |
+| ACP server      | `mock-acp`        | Deterministic testing                        |
+
+```yaml
+# CORRECT test configuration
+web:
+  host: 127.0.0.1
+  port: 8089
+  external_port: -1
+  theme: v2
+  # NO auth section!
+```
+
+## Running UI Tests
+
+```bash
+make test-ui           # Headless
+make test-ui-headed    # Visible browser
+make test-ui-debug     # Debug mode with inspector
+```
+
+## Test Conventions
+
+```typescript
+import { test, expect } from "../fixtures/test-fixtures";
+
+test.describe("Feature Name", () => {
+  test.beforeEach(async ({ page, helpers }) => {
+    await helpers.navigateAndWait(page);
+  });
+
+  test("should do something", async ({ page, selectors, timeouts }) => {
+    const element = page.locator(selectors.chatInput);
+    await expect(element).toBeVisible({ timeout: timeouts.appReady });
+  });
+});
+```
+
+**Centralized selectors** in `tests/ui/utils/selectors.ts`.
+
+## Manual Testing with Playwright MCP
+
+**Use Playwright MCP tools** (`browser_navigate_playwright`, `browser_snapshot_playwright`, `browser_click_playwright`, `browser_type_playwright`, `browser_take_screenshot_playwright`).
+
+```bash
+make build-mock-acp
+TEST_DIR=/tmp/mitto-test-$$; mkdir -p "$TEST_DIR/workspace"
+# Write .mittorc with host:127.0.0.1, external_port:-1, theme:v2, mock-acp server
+mitto web --config $TEST_DIR/.mittorc --dir $TEST_DIR/workspace --debug &
+```
+
+## Environment Variables
+
+| Variable                | Description                                           |
+| ----------------------- | ----------------------------------------------------- |
+| `MITTO_TEST_URL`        | Base URL for tests (default: `http://127.0.0.1:8089`) |
+| `MITTO_DIR`             | Data directory for test (default: `/tmp/mitto-test`)  |
+| `MITTO_TEST_MODE`       | Set to `1` when running Playwright tests              |
+| `MITTO_EXTERNAL_SERVER` | Set to `1` for Docker/CI runs — enables test skips    |
+
+## Docker/CI Skip Annotations
+
+Tests that fail in Docker/CI (timing-sensitive, host-path-dependent, multi-tab) must use:
+
+```typescript
+test.skip(
+  !!process.env.MITTO_EXTERNAL_SERVER,
+  "Reason why this fails in Docker",
+);
+```
+
+- **Local runs**: 0 skips — full suite runs
+- **Docker/CI** (`MITTO_EXTERNAL_SERVER=1`): known-flaky tests skipped
+- `make smoke-test` sets `MITTO_EXTERNAL_SERVER=1` automatically
+
+## Mock ACP Server Scenarios
+
+Scenarios in `tests/fixtures/responses/*.json`:
+
+| Scenario File                 | Trigger Pattern     | Description                   |
+| ----------------------------- | ------------------- | ----------------------------- |
+| `simple-greeting.json`        | Default             | Basic agent response          |
+| `mermaid-diagram.json`        | `(?i)show.*mermaid` | Mermaid flowchart             |
+| `markdown-code-block.json`    | `(?i)code.*block`   | Code with syntax highlighting |
+| `error-response.json`         | `(?i)error`         | Error message                 |
+| `tool-calls-interleaved.json` | `(?i)tool`          | Tool usage simulation         |
+
+New scenarios: add JSON files to `tests/fixtures/responses/` with `trigger.pattern` (regex) and `actions` array.
+
+## Test Fixture Patterns
+
+### Auto-Cleanup (session accumulation prevention)
+
+`test-fixtures.ts` includes an `autoCleanup` fixture with `{ auto: true }` — runs before **every** test automatically when session count exceeds `MAX_SESSIONS_THRESHOLD` (10). No manual call needed. Don't remove the explicit `cleanupSessions` fixture — tests that need manual control can still use it.
+
+### `createFreshSession` Race Condition
+
+In Docker, ACP connections take ~1.1s. After clicking new-session, **wait for `mitto_last_session_id` localStorage to update to a new non-empty value** before checking WebSocket readiness — otherwise `waitForWebSocketReady` may attach to the old session's textarea.
+
+```typescript
+// After clicking new session button, poll localStorage until ID changes:
+await page.waitForFunction(
+  () => !!localStorage.getItem("mitto_last_session_id"),
+);
+```
+
+## Testing Native-App-Gated UI
+
+For features gated on `isNativeApp()` (`web/static/utils/native.js`), stub the sentinel `window.mittoPickFolder` **before navigation** with `page.addInitScript` — Playwright runs in a plain browser, so `isNativeApp()` returns `false` by default.
+
+```typescript
+async function stubNativeApp(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "mittoPickFolder", {
+      configurable: true,
+      get: () => () => {},
+      set: () => {},
+    });
+  });
+}
+```
+
+**Apply per-test, NOT in `beforeEach`** — move `helpers.navigateAndWait(page)` into each test so a negative test can navigate un-stubbed to assert the gated UI is absent. Cover both positive (stubbed → visible) and negative (un-stubbed → hidden) paths in the same spec. Reference: `tests/ui/specs/open-in-context-menu.spec.ts`.
+
+Same rule applies when patching backend config the frontend reads once via `fetchConfig()` on mount (e.g. `ui.mac.open_in` targets): PATCH it in `beforeEach` **before** the first `navigateAndWait`, otherwise the mount reads stale defaults.
+
+## On-Demand Performance Profiling
+
+When triaging a "UI feels sluggish / device gets hot" report, prefer a small Playwright `page.evaluate()` sweep over a full DevTools performance capture — it produces reproducible numeric evidence in seconds:
+
+```javascript
+const stats = await page.evaluate(() => ({
+  activeAnimations: document.getAnimations().length,
+  infiniteAnimations: document.getAnimations().filter((a) => {
+    const t = a.effect && a.effect.getTiming();
+    return t && (t.iterations === Infinity || t.iterations > 1e6);
+  }).length,
+  longTasks: performance.getEntriesByType("longtask").length,
+}));
+```
+
+`document.getAnimations()` (Web Animations API) enumerates BOTH CSS-declared animations/transitions AND JS-driven ones — including transitions mid-flight. Filter by `iterations === Infinity || iterations > 1e6` to isolate the ones that keep the compositor pinned. On a healthy view this is `0` or a small constant (spinner, cursor blink).
+
+**What this rules IN**: infinite CSS animations firing per frame, backdrop-filter spam, runaway timers.
+
+**What this does NOT measure**: network-driven amplification (WebSocket reconnects triggering full event replays on a large session). Those look small on loopback and only surface at scale over a slow link — see `.augment/rules/23-web-frontend-mobile.md` § Reconnect Replay Amplification and beads memory `mobile-safari-tunnel-replay-amplification`.
+
+Keep such scripts as **on-demand diagnostics** (`tests/tools/` or `/tmp`); do NOT wire them into the CI suite as assertions — the numbers depend on system load. See beads memory `playwright-getanimations-ondemand-profiling` for the full pattern.
+
+## Perf Assertions: Poll the Effect, Not the Optimistic Label
+
+When a perf spec measures whether a WS round trip caused a specific subtree to re-render, do NOT synchronize on a UI element whose value can be updated optimistically (e.g. `ConfigOptionSelect`'s trigger label flips the moment the option is clicked, before the `set_config_option` → RPC → `config_option_changed` broadcast completes). Reading render counts after the label check produces a false green because the counts are captured before the intended re-render lands. Assert the optimistic label as a click-landed sanity check, then `expect.poll` the target component's render-count itself before reading final counts — see `tests/ui/specs/perf/render-isolation.perf.spec.ts:420` (`set_config_option` scenario) and beads memory `playwright-perf-poll-render-count-not-optimistic-label`. Bounded-tolerance corollary: scenarios that mutate ACTIVE-session state ripple through pre-existing App-level `sessionInfo`/`activeSessions` useMemos, so allow a small (≤2) bump on `MessageList`/`SessionList` rather than asserting 0 until those derivations are themselves migrated to per-slice subscriptions.
+
+## Browser-Specific Issues
+
+| Issue                 | Browser             | Cause                                                                                                                                                                                                                                                                                                               |
+| --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CDN resources blocked | Firefox, Safari     | Tracking Prevention blocks `cdn.jsdelivr.net`                                                                                                                                                                                                                                                                       |
+| Mermaid not rendering | Firefox             | Tracking Prevention blocks Mermaid.js CDN                                                                                                                                                                                                                                                                           |
+| iOS perf attribution  | Playwright `webkit` | Desktop-WebKit host, NOT Mobile Safari. `devices['iPhone 15']` only overrides viewport/touch/UA — paint/scroll/compositor/JIT are still desktop. Use iOS Simulator + Safari Web Inspector (no native Playwright driver) for authentic iOS timing. See memory `playwright-webkit-vs-mobile-safari-perf-attribution`. |
+
+**Workaround**: Use Chromium for reliable testing, or disable tracking protection.

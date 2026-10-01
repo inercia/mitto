@@ -2,9 +2,9 @@ metadata:
     description: A modern interface for AI coding agents with CLI, Web UI, and native macOS app. Communicates with agents via the Agent Client Protocol (ACP).
     url: https://github.com/inercia/mitto
 processors:
-    - enabled: true
+    - enabled: false
       name: auggie-manage-rules
-    - enabled: true
+    - enabled: false
       name: claude-manage-memory
     - arguments:
         PreferencesFile: .augment/rules/99-local.md
@@ -12,5 +12,9 @@ processors:
       name: memorize-preferences
     - enabled: true
       name: identify-user-data
+    - enabled: false
+      name: auggie-update-rules
+    - enabled: false
+      name: claude-update-memory
 prompts_dirs:
     - .mitto/prompts

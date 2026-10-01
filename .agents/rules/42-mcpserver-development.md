@@ -1,0 +1,171 @@
+---
+description: MCP server development patterns and tool implementation
+globs:
+  - "internal/mcpserver/**/*"
+keywords:
+  - MCP server
+  - MCP tool
+  - AddTool
+  - mcp-go
+  - Streamable HTTP
+  - STDIO mode
+  - session registration
+  - session_id parameter
+---
+
+# MCP Server Development
+
+The Mitto MCP server (`internal/mcpserver/`) provides a **single global server** with two types of tools:
+
+1. **Global tools** - Always available (list conversations, get config, runtime info)
+2. **Session-scoped tools** - Require `session_id` parameter (UI prompts, send prompt, get current session)
+
+## Architecture
+
+Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
+
+- **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
+- **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), loop control (`mitto_conversation_set_loop`, `mitto_conversation_run_loop_now`)
+
+## Cold-Start MCP Wedge (mitto-54k / mitto-6hr) — Mitto-side SSE stall, FIXED
+
+Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MCP `initialize`) was **wrong**, corrected 2026-07-08 after the same wedge reproduced in **both** auggie and Claude Code, isolated to workspaces with **concurrent MCP sessions** (e.g. multiple workspace UUIDs + an active loop sharing one `working_dir`).
+
+**Root cause**: `startSSE()` (`server.go:347`) builds the Streamable HTTP handler with `nil` options → stateful mode, where a POST's response can ride the client's per-session **GET SSE stream** instead of the POST body. Under concurrency that stream stalls (observed: ~97s gap between GET completions, an SSE GET held open, never completes) — `initialize` times out even though Mitto's `/mcp` handler already returned 200 in 0ms (`duration_ms=0` in the access log is a red herring — check GET-stream completions, not POST latency).
+
+**Fix (`mitto-6hr`, P1, epic `mitto-54k`, APPLIED)**: `startSSE()` now passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` to `NewStreamableHTTPHandler` so POST responses resolve inline, independent of the SSE GET. **Not** `Stateless: true` — rejects server→client _requests_, breaking `UIPrompter` (mitto_ui_options/form). Still-valid secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm), `mitto-cgc` (stagger aux-session creation).
+
+## MCP protocol-session lifecycle (mitto-6cz6 / mitto-txse / mitto-wat)
+
+`mcpStreamableHTTPOptions()` deliberately sets `SessionTimeout: 0`. The SDK timeout is POST-only and previously deleted live sessions whose standalone SSE GET was healthy, producing rejected keepalives and real `tools/call` 404s (mitto-txse). Mitto's own reaper treats every request as activity and never idle-reaps a protocol session while its registered conversation owner remains active, even when no GET is open.
+
+HTTP-capable ACP sessions receive a random, memory-only binding header in their `session/new` / `session/load` MCP entry. The HTTP middleware binds the resulting MCP protocol session immutably to that registered conversation before tool dispatch. Never log or persist the binding value. This is the primary identity path and makes concurrent `self_id=init` calls independent of arrival order. Legacy ACP-observed correlation accepts only `requestID == sessionID`; never restore a shared `init` FIFO, because an HTTP-layer failure can leave a stale entry that cross-wires the next conversation (mitto-apvg).
+
+Mitto-wat adds ownership-aware teardown: `UnregisterSession` removes the owner and marks the transport retireable when its final owner leaves. The reaper serializes synthetic DELETE against application POSTs with a per-lease RWMutex, revalidates after acquiring the exclusive gate, and never holds `reaperMu` while serving the SDK handler. Do not synchronously DELETE from `UnregisterSession` — self-archive may still be returning its current tool response.
+
+Expected ratio: approximately **one open SSE stream per MCP protocol session**, not per ACP process. The ~5-minute reopen is client keepalive recycling. Auggie never calls `terminateSession()` (augmentcode/auggie#162), so one ACP process may retain many protocol sessions. Never-correlated live-client transports remain exempt: localhost HTTP supplies no stable process identity, and forcibly capping them can revive Auggie #149 (no reliable 404 re-initialize). Same-language control: `internal/mcpdiscovery` does send `DELETE` on `Close()`.
+
+**Log-grep gotcha**: MCP session IDs are **uppercase base32** (`YCYYTHDLWGR7QDFI2XFEAS5766`), not hex/UUID. `mcp_session_id=[a-f0-9-]+` matches nothing (once produced a fake ~16× undercount). Use `[A-Z0-9]+` with length ≥20.
+
+**Concurrent self_id resolution — singleflight required (mitto-b9q, commit 77bd2513)**: the legacy ACP-observed correlation path in `resolveSelfIDWithMCP` (Phase-2 `WaitForPendingRequest`) is entered concurrently when N `mitto_*` tool calls share one MCP protocol session (Auggie today: no HTTP binding → all requests take this path). Without a barrier, N callers pile onto the same 5s `pendingRequestTimeout`, only one wins the single registered pending-request entry, and the other N-1 fail with `Pending request not found within timeout`. `Server.resolveSelfIDSF` (`singleflight.Group`, keyed by `mcpSessionID+"|"+inputSessionID`) collapses them — correctness rests on `associateMCPSessionID`'s one-owner-per-protocol-session invariant, so followers legitimately share the leader's result. Any new correlation-style resolver keyed on `mcpSessionID` MUST collapse via singleflight or an equivalent barrier. HTTP-round-trip tests do NOT reproduce this race (JSON-RPC dispatch overhead staggers arrivals) — regression pinned by `TestParallelSelfIDResolution_ThunderingHerdOnSingleMCPSession_mitto_b9q` in `server_selfid_race_test.go`, which fires goroutines directly at `resolveSelfIDWithMCP` via a `sync.WaitGroup` gate.
+
+**Operator-facing hygiene** (residual first-token gate under Auggie, epic `mitto-ammz`, bead `mitto-agt`): see [`docs/config/mcp.md` → Cold-Start Hygiene](../../docs/config/mcp.md#cold-start-hygiene) for the operator recipe (trim unused MCP servers, `uv tool install` for `uvx`-launched servers, avoid concurrent workspace UUIDs sharing one `working_dir`, verify `working_dir` matches the git root). The upstream Auggie feature-request draft (lazy / bounded MCP init) lives at [`docs/devel/upstream/auggie-lazy-mcp-init.md`](../../docs/devel/upstream/auggie-lazy-mcp-init.md).
+
+## Adding New Tools
+
+Handler signature (3-arg form — SDK unmarshals input automatically):
+
+```go
+func (s *Server) handleFoo(ctx context.Context, req *mcp.CallToolRequest, input FooInput) (*mcp.CallToolResult, FooOutput, error) {
+    // 1. Resolve self_id (always use resolveSelfIDWithMCP in MCP handlers)
+    realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+    if realSessionID == "" {
+        return nil, FooOutput{Error: fmt.Sprintf("session not found: self_id '%s' could not be resolved", input.SelfID)}, nil
+    }
+    // 2. Do work ...
+    return nil, FooOutput{Success: true}, nil
+}
+```
+
+**Session ID resolution:** Use `resolveSelfIDWithMCP(selfID, req)` in all MCP handlers. It accepts only an established MCP protocol-session mapping or ACP-observed correlation; a caller-supplied registered conversation ID is not authentication. A nil request is reserved for trusted in-process invocations and tests. Use `resolveSelfID(selfID)` only when no `*mcp.CallToolRequest` is available (rare).
+
+Register with `mcp.AddTool(mcpSrv, &mcp.Tool{Name: "mitto_foo", Description: "..." + selfIDNote}, s.handleFoo)`.
+
+**Rules:**
+
+- Output must be a **struct** (not slice/primitive) — MCP SDK requirement
+- Initialize slice fields as `[]T{}` not nil — Go encodes nil as JSON `null`, ACP rejects that
+- `selfIDNote` constant defined in `server.go` — append it to Description
+- Store access: `s.mu.RLock(); store := s.store; s.mu.RUnlock()`. Decode: `session.DecodeEventData(event)`.
+
+## Session Registration
+
+`BackgroundSession` registers/unregisters with the global MCP server:
+
+```go
+bs.globalMcpServer.RegisterSession(bs.persistedID, bs, bs.logger)   // on start/unarchive
+bs.globalMcpServer.UnregisterSession(bs.persistedID)                 // on archive/delete
+```
+
+Session-scoped tool pattern: accept `session_id` param → `s.getSession(id)` → `s.checkSessionFlag(id, flag)` → use `reg.uiPrompter`.
+
+New flags: define `const FlagXxx` in `internal/session/flags.go`, add to `AvailableFlags`, check with `checkSessionFlag()`.
+
+**Key rules:**
+
+- No per-session MCP servers — all tools on the global server
+- All session-scoped tools require `session_id` parameter
+- `SessionManager` interface (in `server.go`) has ~20 methods including workspace/prompt helpers (`GetWorkspacePrompts`, `GetWorkspacePromptsDirs`, `GetWorkspace`, etc.). When extending: add stub methods to **all 7 mock types** in `server_test.go`. Stubs returning nil/zero are acceptable for non-tested methods.
+
+## Cross-Workspace Operations
+
+Any tool that operates on a target conversation in a different workspace than the caller MUST:
+
+1. Check `FlagCanInteractOtherWorkspaces` flag
+2. Call `confirmCrossWorkspaceOperation` (blocking UI confirmation — always required, no bypass)
+
+```go
+if callerMeta.WorkingDir != targetWS.WorkingDir {
+    if !s.checkSessionFlag(realSessionID, session.FlagCanInteractOtherWorkspaces) {
+        return nil, Out{Error: "cross-workspace ops require 'can_interact_other_workspaces' flag"}, nil
+    }
+    if err := s.confirmCrossWorkspaceOperation(ctx, realSessionID, "description", targetWS); err != nil {
+        return nil, Out{Error: err.Error()}, nil
+    }
+}
+```
+
+**SessionManager workspace methods:**
+
+- `sm.GetWorkspaces()` — all configured workspaces
+- `sm.GetWorkspacesForFolder(folder)` — workspaces for a specific directory
+- `sm.GetWorkspaceByUUID(uuid)` — lookup by workspace UUID
+
+**Workspace lookup:** build two maps from `sm.GetWorkspaces()`: exact key `workingDir+"|"+acpServer` and dir-only fallback. Try exact first, fall back to dir-only.
+
+## Optional Late-Bound Dependencies
+
+Some dependencies (e.g. `LoopRunner`) are wired in via setter methods (`s.mcpServer.SetLoopRunner(s.loopRunner)` in `internal/web/server.go`, after `s.loopRunner.Start()`) rather than through `Dependencies`, since they must exist before `NewServer()` completes but start later. The `LoopRunner` interface (in `mcpserver/server.go`) is satisfied by `*web.LoopRunner`.
+
+## Processor Auxiliary Session MCP Access
+
+Processor auxiliary sessions (purpose prefix `"processor:"`) get a Mitto MCP entry in their `session/new` `McpServers` list so the agent can call Mitto tools. Configured in `internal/acpproc/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Transport is capability-gated by `buildAuxProcessorMCPServers` (`internal/acpproc/aux_mcp_transport.go`, mitto-8ip): if `process.Capabilities().McpCapabilities.Http` is true, a native `McpServerHttpInline` targets the same URL user sessions already use (no subprocess, no stdio hop); otherwise the stdio `mitto mcp --proxy-to <url>` bridge is emitted as the ACP-spec mandatory-transport fallback. Never delete `--proxy-to` / `runMCPProxy` / `runMCPProxyIO` — still required for agents without `mcp_capabilities.http`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
+
+## Input Validation in Tools
+
+Reject invalid inputs with errors that guide AI retry behavior — **never silently truncate or fix**:
+
+```go
+if len([]rune(question)) > maxQuestionLen {
+    return nil, Out{}, fmt.Errorf("question too long (%d chars, max %d); print context as a message first, then call with a concise question", len([]rune(question)), maxQuestionLen)
+}
+```
+
+Also document limits in tool descriptions upfront so AI agents know constraints before calling.
+
+## Agents Package (`internal/agents`)
+
+Agents defined in `agents/builtin/<dir>/` with `metadata.yaml`. **Key gotcha:** ACP type ≠ directory name (e.g. `"auggie"` → `"augment"`). Always use `GetAgentByACPId(acpType)`.
+
+```go
+mgr := agents.NewManager(agentsDir, logger)
+agent, err := mgr.GetAgentByACPId(acpType)  // e.g. "auggie", "claude-code"
+if agent.HasCommand(agents.CommandMCPList) {
+    output, err := mgr.ListMCPServers(ctx, agent.DirName, &agents.MCPListInput{Path: workingDir})
+    // output.Servers: []MCPServer{Name, Command, Args, URL}
+}
+```
+
+API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`).
+
+**`cmds/*.sh` audit (mitto-sys.11, generalized by mitto-o8k + mitto-rj95)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty OR reports only a subset of what the agent actually loads. Audit the FULL script set per agent (`status.sh`, `install.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`) — a fix that only touches `mcp-list.sh` leaves `mcp-install/remove.sh` silently writing to a path nothing reads (mitto-o8k anti-pattern). MCP-writing scripts must also include any mandatory schema discriminator (e.g. Copilot's `"type": "local"|"http"`), else the CLI's validator silently ignores the entry. **For LISTING specifically (mitto-rj95): when the target CLI exposes an authoritative dump command (`copilot mcp list --json`, `claude mcp list --json`, etc.), PREFER delegating to it from the workspace directory over parsing config files directly** — the CLI applies its own source loading (user + project + git-root + built-in + plugin) and precedence rules; file-scan will miss built-in servers, workspace/git-root `.mcp.json` / `.github/mcp.json`, and per-scope enable state. Writing scripts still need a concrete file path since they mutate user-scope config; only the listing side can safely delegate. Verify against actual docs/source when adding or fixing one:
+
+| Agent          | Status                                  | Notes                                                                                                                                                                                                                                                                            |
+| -------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cursor, goose  | OK                                      | `~/.cursor/mcp.json`/`mcpServers`; `~/.config/goose/config.yaml`/`extensions`                                                                                                                                                                                                    |
+| opencode       | BROKEN (mitto-sys.13)                   | wrong path/key (`mcp` not `mcpServers`), command-as-array, `environment` not `env`                                                                                                                                                                                               |
+| github-copilot | OK (mitto-8ux + mitto-o8k + mitto-rj95) | `~/.copilot/mcp-config.json` (user); install/remove scripts fixed + `type` discriminator required; `mcp-list.sh` delegates to `copilot mcp list --json` from the workspace dir so built-in (`github-mcp-server`) + workspace `.mcp.json`/`.github/mcp.json` sources are included |
+| qwen-code      | BROKEN (mitto-sys.15)                   | wrong path: real is `~/.qwen`                                                                                                                                                                                                                                                    |
+| junie          | stub (mitto-sys.10)                     | always returns `{"servers": []}`                                                                                                                                                                                                                                                 |
+
+**Auggie git-root divergence** (not a script bug): `auggie mcp list` resolves `<workspace>` to the **git toplevel**, not the target `workingDir` — so when `workingDir` is a git subdirectory, `mcp-list.sh` (which reads `<workingDir>/.augment/settings.local.json` literally) can report servers (e.g. `slack`) that auggie itself never loads (it reads `<git-root>/.augment/settings.local.json` instead). Verify workspace vs. git-root config before trusting the MCP tab for auggie workspaces nested in a larger repo.
