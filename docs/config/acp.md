@@ -236,6 +236,14 @@ acp:
 
 For more information, see the [GitHub Copilot ACP documentation](https://docs.github.com/en/copilot/acp).
 
+### Copilot (Ollama)
+
+The builtin `copilot-ollama` agent runs the Copilot CLI against a local [Ollama](https://ollama.com) server using the `COPILOT_PROVIDER_*` environment variables. It is offered by agent discovery only when both `copilot` and `ollama` are on the `PATH`; `status.sh` also reports `ollama_running`.
+
+Defaults (override in the server's `env`): `COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1`, `COPILOT_PROVIDER_WIRE_API=responses`, `COPILOT_MODEL=qwen3:4b-thinking-2507-q4_K_M`, `COPILOT_OFFLINE=true`.
+
+The model must support tool calling **and** thinking (Copilot sends a thinking parameter; models without it fail with `does not support thinking`). Set `OLLAMA_CONTEXT_LENGTH` to at least 64k on the Ollama server.
+
 ---
 
 ### Gemini CLI
