@@ -2274,9 +2274,13 @@ export function useWebSocket({
                   msg.data.processor_last_names ??
                   session.info?.processor_last_names ??
                   null,
-                // Update config options if provided
+                // Update config options if provided. An explicit empty array
+                // is a valid replacement (remove all selectors); only an
+                // absent field preserves the existing value.
                 config_options:
-                  msg.data.config_options || session.info?.config_options || [],
+                  msg.data.config_options !== undefined
+                    ? msg.data.config_options
+                    : (session.info?.config_options ?? []),
                 // Context-flush command, resolved once the ACP server is known
                 // (not available in "connected" when the session was not yet
                 // attached).
@@ -2613,33 +2617,44 @@ export function useWebSocket({
         break;
       }
 
-      case "config_option_changed":
-        // Config option changed (by user or agent)
-        // Update the current_value for the specified config option in session info
-        // Use !== undefined to allow falsy values like empty strings
-        if (msg.data?.config_id && msg.data?.value !== undefined) {
-          console.log(
-            `Config option changed: ${msg.data.config_id} = ${msg.data.value}`,
-          );
-          setSessions((prev) => {
-            const session = prev[sessionId];
-            if (!session) return prev;
-            const updatedOptions = (session.info?.config_options || []).map(
-              (opt) =>
+      case "config_option_changed": {
+        // Config option changed (by user, agent, or a server-side rejection
+        // re-broadcast). Two payload shapes are supported:
+        //   1. Full-snapshot replacement: msg.data.config_options is a
+        //      (possibly empty) array that REPLACES session.info.config_options
+        //      wholesale — options may have been added/removed, or their
+        //      allowed values changed. An empty array means "no selectors";
+        //      this is distinct from the field being absent (undefined),
+        //      which means "no snapshot in this payload, fall back".
+        //   2. Legacy single-option patch: msg.data.config_id/value patch
+        //      just that option's current_value, preserving everything else.
+        const hasSnapshot = msg.data?.config_options !== undefined;
+        const hasPatch =
+          msg.data?.config_id && msg.data?.value !== undefined;
+        if (!hasSnapshot && !hasPatch) break;
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          // Ignore events for sessions we don't know about (stale/other
+          // session) — also naturally covers cross-session isolation since
+          // handleSessionMessage is always invoked with a resolved sessionId.
+          if (!session) return prev;
+          const updatedOptions = hasSnapshot
+            ? msg.data.config_options
+            : (session.info?.config_options ?? []).map((opt) =>
                 opt.id === msg.data.config_id
                   ? { ...opt, current_value: msg.data.value }
                   : opt,
-            );
-            return {
-              ...prev,
-              [sessionId]: {
-                ...session,
-                info: { ...session.info, config_options: updatedOptions },
-              },
-            };
-          });
-        }
+              );
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              info: { ...session.info, config_options: updatedOptions },
+            },
+          };
+        });
         break;
+      }
     }
   }, []);
 

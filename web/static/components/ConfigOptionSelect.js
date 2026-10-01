@@ -21,6 +21,8 @@ import { ChevronDownIcon, CheckIcon } from "./Icons.js";
  * @param {"top"|"bottom"} [props.placement]       - menu open direction. Default "bottom".
  * @param {boolean}  [props.showDescription]       - render the selected option's description below. Default false.
  * @param {boolean}  [props.disableWhileStreaming] - disable the control while streaming. Default false.
+ * @param {Function} [props.onShowToast]           - ({message, style}) => void, used to surface an optimistic-
+ *                                                    update rollback (the server rejected the change).
  */
 export function ConfigOptionSelect({
   configOption,
@@ -30,15 +32,60 @@ export function ConfigOptionSelect({
   placement = "bottom",
   showDescription = false,
   disableWhileStreaming = false,
+  onShowToast,
 }) {
   const [localValue, setLocalValue] = useState(configOption.current_value);
   const [open, setOpen] = useState(false);
   const detailsRef = useRef(null);
+  // Tracks an in-flight optimistic selection: { sentValue, previousValue }.
+  // Cleared once the corresponding server update (accept or reject) lands.
+  const pendingRef = useRef(null);
+  // Skips the sync effect's body on the component's very first (mount)
+  // firing — see comment below.
+  const isFirstEffectRunRef = useRef(true);
 
-  // Sync local value when the server confirms the change
+  // Sync local value with the server's view of this option. Depends on the
+  // WHOLE `configOption` object (not just `current_value`) because a
+  // rejected optimistic change is re-broadcast with the value UNCHANGED —
+  // if this effect only depended on `current_value`, that case would never
+  // re-fire and `localValue` would stay stuck at the rejected optimistic
+  // value. Every genuine server-originated update (full-snapshot replace or
+  // single-option patch) produces a new `configOption` object reference, so
+  // depending on the object itself reliably detects a same-value rejection.
+  //
+  // This effect always fires once on mount (standard hook semantics), even
+  // though `localValue`'s initial state already equals
+  // `configOption.current_value` — that mount firing is a no-op by
+  // definition. Crucially, a user can click an option (synchronously
+  // setting `pendingRef.current`) before this mount effect actually runs
+  // (effects are deferred relative to the synchronous event handler), which
+  // would otherwise make the mount firing misread the fresh optimistic
+  // selection as a server response and immediately revert it. Skip the body
+  // entirely on that first run to avoid this race.
   useEffect(() => {
+    if (isFirstEffectRunRef.current) {
+      isFirstEffectRunRef.current = false;
+      return;
+    }
+    const pending = pendingRef.current;
+    if (!pending) {
+      setLocalValue(configOption.current_value);
+      return;
+    }
+    pendingRef.current = null;
+    if (configOption.current_value === pending.sentValue) {
+      // Server confirmed the optimistic change.
+      setLocalValue(configOption.current_value);
+      return;
+    }
+    // Server rejected (or otherwise overrode) the optimistic change —
+    // revert to the authoritative value and surface the failure.
     setLocalValue(configOption.current_value);
-  }, [configOption.current_value]);
+    onShowToast?.({
+      message: `Could not change ${configOption.name} — reverted to the current value.`,
+      style: "error",
+    });
+  }, [configOption]);
 
   // Close on outside click / Escape while open (native <details> does not)
   useEffect(() => {
@@ -61,11 +108,15 @@ export function ConfigOptionSelect({
 
   const handleSelect = useCallback(
     (newValue) => {
+      pendingRef.current = {
+        sentValue: newValue,
+        previousValue: configOption.current_value,
+      };
       setLocalValue(newValue); // optimistic
       onSetConfigOption?.(configOption.id, newValue);
       setOpen(false);
     },
-    [configOption.id, onSetConfigOption],
+    [configOption.id, configOption.current_value, onSetConfigOption],
   );
 
   const disabled = disableWhileStreaming && isStreaming;

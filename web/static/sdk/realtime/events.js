@@ -470,8 +470,15 @@ export function isCommandType(type) {
  * Payload of {@link EVENTS.CONFIG_OPTION_CHANGED} (`config_option_changed`).
  * @typedef {Object} ConfigOptionChangedPayload
  * @property {string} session_id - Affected session.
- * @property {string} config_id - Option identifier.
- * @property {string} value - New option value.
+ * @property {string} [config_id] - Option identifier (legacy single-option patch).
+ * @property {string} [value] - New option value (legacy single-option patch).
+ * @property {Object[]} [config_options] - Full replacement snapshot of the
+ *   session's config options, when present. Options may have been added or
+ *   removed, and allowed values may have changed. An empty array means all
+ *   selectors were removed; an absent field means callers should fall back
+ *   to the legacy `config_id`/`value` single-option patch above. Sent on
+ *   rejection too, with the unchanged snapshot, so clients can detect and
+ *   roll back an optimistic update.
  */
 
 /**

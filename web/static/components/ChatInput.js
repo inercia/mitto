@@ -22,6 +22,7 @@ import { useRenderCounter } from "../hooks/useRenderCounter.js";
 import { useSessionInfo } from "../hooks/useSessionsStore.js";
 import { useQueueLength, useQueueConfig } from "../hooks/useQueue.js";
 import { useConfigOptions } from "../hooks/useWorkspacesStore.js";
+import { placeThoughtLevelNearModel } from "../utils/configOptions.js";
 import {
   getDraft as getStoredDraft,
   setDraft as setStoredDraft,
@@ -286,13 +287,17 @@ function ChatInputImpl({
     getPromptSortMode(),
   );
 
-  // Find all "select" type config options with options (e.g. "Mode", "Model")
+  // Find all "select" type config options with options (e.g. "Mode", "Model").
+  // Agent-advertised options carrying category:"thought_level" (e.g. a
+  // reasoning-effort selector) are reordered to sit immediately after the
+  // model selector, as a placement hint only — ids/values are never
+  // hardcoded.
   const selectConfigOptions = useMemo(() => {
-    return (
+    const filtered =
       configOptions?.filter(
         (o) => o.type === "select" && o.options?.length > 0,
-      ) || []
-    );
+      ) || [];
+    return placeThoughtLevelNearModel(filtered);
   }, [configOptions]);
 
   // The "model" config option, used to surface a per-prompt model-override chip
@@ -3069,6 +3074,7 @@ function ChatInputImpl({
                         key=${configOpt.id}
                         configOption=${configOpt}
                         onSetConfigOption=${onSetConfigOption}
+                        onShowToast=${onShowToast}
                         isStreaming=${isStreaming}
                         variant="toolbar"
                         placement="top"
