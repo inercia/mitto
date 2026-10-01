@@ -25,9 +25,11 @@ parameters:
     required: false
     multiLine: true
     description: 'Optional additional instructions applied on top of the steps below and forwarded verbatim to every phase prompt this router dispatches. Propagated from the "Loop processing tasks" supervisor. Used for this run only; nothing is persisted.'
-description: Internal router driver for a single @mitto mention. Classifies the mention (question / fix / feature / directive), dispatches per-phase prompts on their tier, and finally writes the `[addressed-comment]` back-reference (and optional commit + close). Invoked by name from the beadsList orchestrator; no preferredModels (per-phase tiering).
+description: Internal router driver for a single @mitto mention. Classifies the mention (question / fix / feature / directive), dispatches per-phase prompts on their tier, and finally writes the `[addressed-comment]` back-reference (and optional commit + close). Invoked by name from the beadsList orchestrator; the driver uses Coding while each phase selects its own tier.
 group: Tasks
 backgroundColor: '#E1BEE7'
+preferredModels:
+  - modelTag: Coding
 loop:
   trigger: [onCompletion]
   onCompletion:

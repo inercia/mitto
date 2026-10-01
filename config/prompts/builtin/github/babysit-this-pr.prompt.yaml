@@ -13,6 +13,8 @@ tags:
 - loop
 - github
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Permissions.CanStartConversation'
+preferredModels:
+  - modelTag: Coding
 loop:
   trigger: [onCompletion]
   onCompletion:

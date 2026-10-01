@@ -32,6 +32,8 @@ parameters:
     required: false
     description: 'After how many days of no activity a tracked ticket is auto-closed as stale (default 10). Applies regardless of state:* — an unposted draft untouched this long is treated as abandoned.'
 enabledWhen: '!Session.IsChild && CommandExists("bd") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
+preferredModels:
+  - modelTag: Coding
 loop:
   trigger: [schedule]
   schedule:

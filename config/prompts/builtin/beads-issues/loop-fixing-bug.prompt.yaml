@@ -21,6 +21,8 @@ description: Auto-loop — drive a bug bead through investigate → reproduce �
 backgroundColor: '#FFCDD2'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "bug" && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Coding
 loop:
   trigger: [onCompletion]
   onCompletion:

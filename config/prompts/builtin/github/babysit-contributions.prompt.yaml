@@ -13,6 +13,8 @@ tags:
 - loop
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+preferredModels:
+  - modelTag: Coding
 loop:
   trigger: [onCompletion]
   onCompletion:

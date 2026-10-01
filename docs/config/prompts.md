@@ -1345,6 +1345,13 @@ baseline model is not changed, no `session_change` event is recorded, and the
 baseline is restored after the prompt completes. Manual model selection in the
 UI, by contrast, updates the baseline persistently.
 
+For recurring monitoring and routing prompts, prefer a task-appropriate tier
+such as `Coding` over inheriting a potentially expensive conversation baseline.
+Keep phase-specific preferences on the actual work prompts: a driver using
+`Coding` can dispatch an investigation or review prompt using `Reasoning`.
+Tags describe capabilities, not credit prices; check the selected model and
+retry rate before treating a tag change as a cost saving.
+
 A bare string is also accepted as shorthand for `{modelTag: <value>}`, either for
 the whole field or for individual list entries (`preferredModels: Reasoning`,
 `preferredModels: [Reasoning, Coding]`); mixed lists of shorthand and structured
