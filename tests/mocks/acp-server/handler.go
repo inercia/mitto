@@ -144,7 +144,7 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 		CurrentModeID:  s.currentMode,
 		AvailableModes: defaultModes.AvailableModes,
 	}
-	configOptions := freshConfigOptionsWithModel(nil, s.currentModel)
+	configOptions := s.freshConfigOptionsWithModel(nil, s.currentModel)
 
 	// Store session state for resume support
 	s.mu.Lock()
@@ -194,7 +194,7 @@ func (s *MockACPServer) handleResumeSession(req JSONRPCRequest) error {
 	// Refresh the model config option with the currently-selected model id so
 	// clients see the up-to-date state after a set_config_option round-trip.
 	s.currentModel = s.sessionModel(s.sessionID)
-	configOptions := freshConfigOptionsWithModel(sess.ConfigOptions, s.currentModel)
+	configOptions := s.freshConfigOptionsWithModel(sess.ConfigOptions, s.currentModel)
 	s.log("Resumed session: %s (mode: %s, model: %s)", s.sessionID, s.currentMode, s.currentModel)
 
 	// Return session state without replaying history. `models` (legacy field) is
@@ -207,37 +207,74 @@ func (s *MockACPServer) handleResumeSession(req JSONRPCRequest) error {
 	return s.sendResponse(req.ID, result)
 }
 
-// freshConfigOptionsWithModel returns a copy of opts with the model entry's
-// currentValue replaced by the given model id (or the entry appended if
-// missing). It never mutates the input slice.
-// freshConfigOptionsWithModel rebuilds the config options snapshot for modelId,
-// starting from opts (which may be nil for a brand-new session). It preserves
-// any non-model, non-thought-level entries verbatim, updates (or appends) the
-// model entry, and rebuilds the thought-level entry from scratch so it reflects
-// the current model's supported values — carrying forward the previously
-// selected value when it's still valid for the new model.
-func freshConfigOptionsWithModel(opts []SessionConfigOption, modelId string) []SessionConfigOption {
+// freshConfigOptionsWithModel rebuilds the model-dependent config snapshot.
+func (s *MockACPServer) freshConfigOptionsWithModel(opts []SessionConfigOption, modelID string) []SessionConfigOption {
+	if s.noConfigOptions {
+		return []SessionConfigOption{}
+	}
 	out := make([]SessionConfigOption, 0, len(opts)+2)
 	foundModel := false
-	preferredThoughtLevel := ""
+	preferredEffort := ""
 	for _, opt := range opts {
-		if isThoughtLevelOption(opt) {
-			preferredThoughtLevel = opt.CurrentValue
+		if s.isEffortOption(opt) {
+			preferredEffort = opt.CurrentValue
 			continue
 		}
 		if opt.Category == "model" || opt.ID == "model" {
-			opt.CurrentValue = modelId
+			opt.CurrentValue = modelID
 			foundModel = true
 		}
 		out = append(out, opt)
 	}
 	if !foundModel {
-		out = append(out, buildModelConfigOption(modelId))
+		out = append(out, buildModelConfigOption(modelID))
 	}
-	if thoughtLevelOpt := buildThoughtLevelConfigOption(modelId, preferredThoughtLevel); thoughtLevelOpt != nil {
-		out = append(out, *thoughtLevelOpt)
+	if effortOpt := s.buildEffortConfigOption(modelID, preferredEffort); effortOpt != nil {
+		out = append(out, *effortOpt)
 	}
 	return out
+}
+
+func (s *MockACPServer) sendConfigOptionsUpdate(sessionID string, options []SessionConfigOption, modelTransition bool) error {
+	send := func(snapshot []SessionConfigOption) error {
+		notification := SessionNotification{JSONRPC: "2.0", Method: "session/update"}
+		notification.Params.SessionID = sessionID
+		notification.Params.Update = SessionUpdate{
+			ConfigOptionUpdate: &SessionConfigOptionUpdate{
+				SessionUpdate: "config_option_update",
+				ConfigOptions: snapshot,
+			},
+		}
+		return s.sendNotification(notification)
+	}
+
+	if modelTransition && s.configUpdateEmptyFirst {
+		if err := send([]SessionConfigOption{}); err != nil {
+			return err
+		}
+	}
+	sendFull := func() error {
+		duplicates := 0
+		if modelTransition {
+			duplicates = s.configUpdateDuplicates
+		}
+		for i := 0; i <= duplicates; i++ {
+			if err := send(options); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if modelTransition && s.configUpdateDelayMs > 0 {
+		go func() {
+			time.Sleep(time.Duration(s.configUpdateDelayMs) * time.Millisecond)
+			if err := sendFull(); err != nil {
+				s.log("Failed to send delayed config snapshot: %v", err)
+			}
+		}()
+		return nil
+	}
+	return sendFull()
 }
 
 // sessionConfigOptions returns the current, authoritative config options
@@ -357,15 +394,7 @@ func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
 	// rebuilding from nothing, so non-model options (e.g. the thought-level
 	// select) survive a model switch instead of being silently dropped.
 	updated := s.sessionConfigOptions(params.SessionID)
-	notification := SessionNotification{JSONRPC: "2.0", Method: "session/update"}
-	notification.Params.SessionID = params.SessionID
-	notification.Params.Update = SessionUpdate{
-		ConfigOptionUpdate: &SessionConfigOptionUpdate{
-			SessionUpdate: "config_option_update",
-			ConfigOptions: updated,
-		},
-	}
-	return s.sendNotification(notification)
+	return s.sendConfigOptionsUpdate(params.SessionID, updated, true)
 }
 
 // applyModelChange runs the shared MOCK_SET_MODEL_FAIL_FIRST / _DELAY_MS
@@ -406,7 +435,7 @@ func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, r
 	s.currentModel = value
 	s.mu.Lock()
 	if sess := s.sessions[sessionID]; sess != nil {
-		sess.ConfigOptions = freshConfigOptionsWithModel(sess.ConfigOptions, value)
+		sess.ConfigOptions = s.freshConfigOptionsWithModel(sess.ConfigOptions, value)
 	}
 	s.mu.Unlock()
 
@@ -416,23 +445,23 @@ func (s *MockACPServer) applyModelChange(req JSONRPCRequest, sessionID, value, r
 }
 
 // applyThoughtLevelChange handles session/set_config_option for the mock's
-// generic thought_level select (configID == thoughtLevelID). Mirrors
+// generic effort select. Mirrors
 // applyModelChange's shape: optional rejection injection via
 // MOCK_REJECT_CONFIG_OPTION ("<configID>=<value>"), validation against the
 // model-specific allowed values, per-session state mutation under s.mu, and
 // RPC-order recording. Returns a non-nil error only when an error response
 // has already been sent.
 func (s *MockACPServer) applyThoughtLevelChange(req JSONRPCRequest, sessionID, value string) error {
-	// Rejection injection: MOCK_REJECT_CONFIG_OPTION="deliberation_depth=deep"
+	// Rejection injection: MOCK_REJECT_CONFIG_OPTION="<configID>=<value>"
 	// rejects exactly that (configID, value) pair; any other combination is
 	// unaffected.
-	if s.rejectConfigOption == thoughtLevelID+"="+value {
-		s.log("Injecting set_config_option(%s) rejection for value %s", thoughtLevelID, value)
+	if s.rejectConfigOption == s.effortConfigID+"="+value {
+		s.log("Injecting set_config_option(%s) rejection for value %s", s.effortConfigID, value)
 		return s.sendError(req.ID, -32602, fmt.Sprintf("Rejected value: %s", value), nil)
 	}
 
 	// Validate the value against the options advertised for the current model.
-	validOptions, _ := thoughtLevelOptionsForModel(s.sessionModel(sessionID))
+	validOptions, _ := s.effortOptionsForModel(s.sessionModel(sessionID))
 	validValue := false
 	for _, opt := range validOptions {
 		if opt.Value == value {
@@ -441,17 +470,17 @@ func (s *MockACPServer) applyThoughtLevelChange(req JSONRPCRequest, sessionID, v
 		}
 	}
 	if !validValue {
-		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid %s: %s", thoughtLevelID, value), nil)
+		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid %s: %s", s.effortConfigID, value), nil)
 	}
 
 	s.mu.Lock()
 	if sess := s.sessions[sessionID]; sess != nil {
-		sess.ConfigOptions = setThoughtLevelValue(sess.ConfigOptions, value)
+		sess.ConfigOptions = s.setEffortValue(sess.ConfigOptions, value)
 	}
 	s.mu.Unlock()
 
-	s.recordRPCOrder("set_config_option", thoughtLevelID+"="+value)
-	s.log("Session %s changed: %s -> %s", thoughtLevelID, sessionID, value)
+	s.recordRPCOrder("set_config_option", s.effortConfigID+"="+value)
+	s.log("Session %s changed: %s -> %s", s.effortConfigID, sessionID, value)
 	return nil
 }
 
@@ -459,11 +488,11 @@ func (s *MockACPServer) applyThoughtLevelChange(req JSONRPCRequest, sessionID, v
 // CurrentValue updated to value. If no thought-level entry is present, opts
 // is returned unchanged (should not normally happen since
 // freshConfigOptionsWithModel always seeds one when the model supports it).
-func setThoughtLevelValue(opts []SessionConfigOption, value string) []SessionConfigOption {
+func (s *MockACPServer) setEffortValue(opts []SessionConfigOption, value string) []SessionConfigOption {
 	updated := make([]SessionConfigOption, len(opts))
 	copy(updated, opts)
 	for i := range updated {
-		if isThoughtLevelOption(updated[i]) {
+		if s.isEffortOption(updated[i]) {
 			updated[i].CurrentValue = value
 		}
 	}
@@ -487,7 +516,7 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 	}
 
 	isModel := params.ConfigID == "model"
-	isThoughtLevel := params.ConfigID == thoughtLevelID
+	isThoughtLevel := params.ConfigID == s.effortConfigID
 
 	switch {
 	case isModel:
@@ -526,18 +555,7 @@ func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
 	}
 
 	// Send the config_option_update notification (v0.13.5 SessionUpdate variant).
-	notification := SessionNotification{
-		JSONRPC: "2.0",
-		Method:  "session/update",
-	}
-	notification.Params.SessionID = params.SessionID
-	notification.Params.Update = SessionUpdate{
-		ConfigOptionUpdate: &SessionConfigOptionUpdate{
-			SessionUpdate: "config_option_update",
-			ConfigOptions: updated,
-		},
-	}
-	return s.sendNotification(notification)
+	return s.sendConfigOptionsUpdate(params.SessionID, updated, isModel)
 }
 
 func (s *MockACPServer) handlePrompt(req JSONRPCRequest) error {

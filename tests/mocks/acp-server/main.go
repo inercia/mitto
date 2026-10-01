@@ -130,6 +130,15 @@ type MockACPServer struct {
 	// (non-model) select options such as thought_level (mitto-3wd). The
 	// unchanged snapshot is re-broadcast by the caller on rejection.
 	rejectConfigOption string
+
+	effortConfigID       string
+	effortConfigCategory string
+	effortConfigName     string
+
+	configUpdateDelayMs    int
+	configUpdateDuplicates int
+	configUpdateEmptyFirst bool
+	noConfigOptions        bool
 }
 
 // Default modes provided by the mock server
@@ -171,56 +180,44 @@ func buildModelConfigOption(currentValue string) SessionConfigOption {
 
 func strPtr(s string) *string { return &s }
 
-// thoughtLevelID and thoughtLevelCategory are deliberately DIFFERENT from any
-// real agent's reasoning-effort option id/category (e.g. GitHub Copilot's
-// "reasoning_effort"). This proves Mitto's generic select-config-option
-// support does not hardcode any specific agent's id — only the "thought_level"
-// category string from the ACP spec is a known value, and even that is only
-// used by the mock for its own bookkeeping (Mitto itself must not special-case
-// it either).
-const (
-	thoughtLevelID       = "deliberation_depth"
-	thoughtLevelCategory = "thought_level"
-)
-
-// thoughtLevelOptionsForModel returns the allowed select options and default
-// current value for the "deliberation_depth" config option, varying by model
-// to exercise full-snapshot add/remove/changed-values semantics:
-//   - claude-haiku-4-5: no options at all (nil) -- mimics a real agent (e.g.
-//     Claude Haiku under Copilot) dropping the reasoning-effort option
-//     entirely for a smaller/faster model.
-//   - claude-opus-4-6: a REDUCED 2-value list (no "shallow") with a different
-//     default -- exercises the "allowed values changed" snapshot case.
-//   - everything else (default/sonnet): the full 3-value list.
-func thoughtLevelOptionsForModel(modelId string) ([]SessionConfigSelectOption, string) {
-	switch modelId {
-	case "claude-haiku-4-5":
+// effortOptionsForModel returns the generic effort select's allowed values and
+// agent-selected current value. Haiku omits the option and Opus narrows it.
+func (s *MockACPServer) effortOptionsForModel(modelID string) ([]SessionConfigSelectOption, string) {
+	if modelID == "claude-haiku-4-5" {
 		return nil, ""
-	case "claude-opus-4-6":
+	}
+	if s.effortConfigID == "reasoning_effort" {
+		if modelID == "claude-opus-4-6" {
+			return []SessionConfigSelectOption{
+				{Value: "medium", Name: "Medium", Description: strPtr("Default reasoning effort")},
+				{Value: "high", Name: "High", Description: strPtr("High reasoning effort")},
+			}, "medium"
+		}
 		return []SessionConfigSelectOption{
-			{Value: "standard", Name: "Standard", Description: strPtr("Default deliberation depth")},
-			{Value: "deep", Name: "Deep", Description: strPtr("Maximum deliberation depth")},
-		}, "standard"
-	default:
+			{Value: "low", Name: "Low", Description: strPtr("Low reasoning effort")},
+			{Value: "medium", Name: "Medium", Description: strPtr("Default reasoning effort")},
+			{Value: "high", Name: "High", Description: strPtr("High reasoning effort")},
+			{Value: "xhigh", Name: "Extra high", Description: strPtr("Maximum reasoning effort")},
+		}, "medium"
+	}
+	if modelID == "claude-opus-4-6" {
 		return []SessionConfigSelectOption{
-			{Value: "shallow", Name: "Shallow", Description: strPtr("Minimal deliberation depth")},
 			{Value: "standard", Name: "Standard", Description: strPtr("Default deliberation depth")},
 			{Value: "deep", Name: "Deep", Description: strPtr("Maximum deliberation depth")},
 		}, "standard"
 	}
+	return []SessionConfigSelectOption{
+		{Value: "shallow", Name: "Shallow", Description: strPtr("Minimal deliberation depth")},
+		{Value: "standard", Name: "Standard", Description: strPtr("Default deliberation depth")},
+		{Value: "deep", Name: "Deep", Description: strPtr("Maximum deliberation depth")},
+	}, "standard"
 }
 
-// buildThoughtLevelConfigOption returns the Select-variant ConfigOption for
-// "deliberation_depth" given the current model and a preferred current value
-// (typically carried over from a prior snapshot). Returns nil when the model
-// has no deliberation_depth option at all (e.g. claude-haiku-4-5), so callers
-// must omit the option from the snapshot entirely in that case.
-func buildThoughtLevelConfigOption(modelId string, preferredValue string) *SessionConfigOption {
-	options, defaultValue := thoughtLevelOptionsForModel(modelId)
+func (s *MockACPServer) buildEffortConfigOption(modelID, preferredValue string) *SessionConfigOption {
+	options, defaultValue := s.effortOptionsForModel(modelID)
 	if options == nil {
 		return nil
 	}
-
 	value := defaultValue
 	for _, opt := range options {
 		if opt.Value == preferredValue {
@@ -228,39 +225,52 @@ func buildThoughtLevelConfigOption(modelId string, preferredValue string) *Sessi
 			break
 		}
 	}
-
 	return &SessionConfigOption{
 		Type:         "select",
-		ID:           thoughtLevelID,
-		Name:         "Deliberation depth",
+		ID:           s.effortConfigID,
+		Name:         s.effortConfigName,
 		Description:  "How much the agent deliberates before responding",
-		Category:     thoughtLevelCategory,
+		Category:     s.effortConfigCategory,
 		CurrentValue: value,
 		Options:      options,
 	}
 }
 
-// isThoughtLevelOption reports whether opt is the deliberation-depth config
-// option, matching on EITHER id or category so that any future rename of the
-// mock's id (while keeping the same "thought_level" category) is still
-// recognized -- mirroring how a real agent swap could happen without Mitto
-// code changes.
-func isThoughtLevelOption(opt SessionConfigOption) bool {
-	return opt.ID == thoughtLevelID || opt.Category == thoughtLevelCategory
+func (s *MockACPServer) isEffortOption(opt SessionConfigOption) bool {
+	return opt.ID == s.effortConfigID || opt.Category == s.effortConfigCategory
 }
 
 // NewMockACPServer creates a new mock ACP server
 func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bool) *MockACPServer {
 	server := &MockACPServer{
-		sessions:     make(map[string]*SessionState),
-		scenarios:    make(map[string]*Scenario),
-		scenarioDir:  scenarioDir,
-		defaultDelay: defaultDelay,
-		verbose:      verbose,
-		currentMode:  defaultModes.CurrentModeID, // Initialize with default mode
-		currentModel: defaultModelId,             // Initialize with default model
-		reader:       bufio.NewReader(os.Stdin),
-		writer:       os.Stdout,
+		sessions:             make(map[string]*SessionState),
+		scenarios:            make(map[string]*Scenario),
+		scenarioDir:          scenarioDir,
+		defaultDelay:         defaultDelay,
+		verbose:              verbose,
+		currentMode:          defaultModes.CurrentModeID, // Initialize with default mode
+		currentModel:         defaultModelId,             // Initialize with default model
+		effortConfigID:       "deliberation_depth",
+		effortConfigCategory: "thought_level",
+		effortConfigName:     "Deliberation depth",
+		reader:               bufio.NewReader(os.Stdin),
+		writer:               os.Stdout,
+	}
+	if strings.EqualFold(os.Getenv("MOCK_EFFORT_VARIANT"), "copilot") {
+		server.effortConfigID = "reasoning_effort"
+		server.effortConfigName = "Reasoning effort"
+	}
+	server.noConfigOptions = mockEnvEnabled("MOCK_NO_CONFIG_OPTIONS")
+	server.configUpdateEmptyFirst = mockEnvEnabled("MOCK_CONFIG_UPDATE_EMPTY_FIRST")
+	if v := os.Getenv("MOCK_CONFIG_UPDATE_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.configUpdateDelayMs = n
+		}
+	}
+	if v := os.Getenv("MOCK_CONFIG_UPDATE_DUPLICATES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.configUpdateDuplicates = n
+		}
 	}
 
 	// MOCK_SET_MODEL_FAIL_FIRST: inject failures for the first N
@@ -329,6 +339,15 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 
 	server.loadScenarios()
 	return server
+}
+
+func mockEnvEnabled(name string) bool {
+	switch strings.ToLower(os.Getenv(name)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *MockACPServer) log(format string, args ...interface{}) {

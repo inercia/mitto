@@ -88,7 +88,15 @@ func (e *effortSession) option(id string) *conversation.SessionConfigOption {
 	return nil
 }
 
-func (e *effortSession) effort() *conversation.SessionConfigOption { return e.option(mockEffortID) }
+func (e *effortSession) effort() *conversation.SessionConfigOption {
+	for _, option := range e.bs.ConfigOptions() {
+		if option.Category == "thought_level" {
+			option := option
+			return &option
+		}
+	}
+	return nil
+}
 
 func (e *effortSession) effortValues() []string {
 	o := e.effort()
