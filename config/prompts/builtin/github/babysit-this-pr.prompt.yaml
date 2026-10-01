@@ -14,7 +14,7 @@ tags:
 - github
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Permissions.CanStartConversation'
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Cheap
 loop:
   trigger: [onCompletion]
   onCompletion:

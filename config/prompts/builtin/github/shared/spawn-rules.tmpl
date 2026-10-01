@@ -47,3 +47,7 @@ and re-prompt an idle matching child for unprocessed new/edited comments.
 conversations are one-off and **must never be loops** — do not call
 `mitto_conversation_set_loop` on them and never pass `loop_prompt` /
 `loop_frequency_*` when creating them.
+
+The spawn templates pass `model_tag: "Coding"` so the child does the heavy work on a
+capable model while this loop stays cheap. If the spawn fails because no model matches
+that tag, retry once without `model_tag`.

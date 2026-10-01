@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,9 +15,6 @@ func TestBuiltinCostAwareModelPreferences(t *testing.T) {
 		"beads-issues/loop-implementing-feature.prompt.yaml",
 		"beads-issues/loop-until-complete.prompt.yaml",
 		"beads-issues/mention-driver.prompt.yaml",
-		"github/babysit-contributions.prompt.yaml",
-		"github/babysit-my-prs.prompt.yaml",
-		"github/babysit-this-pr.prompt.yaml",
 		"github/check-pr-comments.prompt.yaml",
 		"skills/add-doc.prompt.yaml",
 		"skills/update-references.prompt.yaml",
@@ -36,6 +34,39 @@ func TestBuiltinCostAwareModelPreferences(t *testing.T) {
 				t.Errorf("preferred models = %+v, want only Coding", prompt.PreferredModels)
 			}
 		})
+	}
+}
+
+func TestBuiltinCheapOuterLoopModelPreferences(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	files := []string{
+		"github/babysit-contributions.prompt.yaml",
+		"github/babysit-my-prs.prompt.yaml",
+		"github/babysit-this-pr.prompt.yaml",
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(prompt.PreferredModels) != 1 || prompt.PreferredModels[0].ModelTag != "Cheap" {
+				t.Errorf("preferred models = %+v, want only Cheap", prompt.PreferredModels)
+			}
+		})
+	}
+	for _, frag := range []string{"pr-comments", "pr-fix-ci", "pr-rebase-if-behind"} {
+		data, err := os.ReadFile(filepath.Join("../../config/prompts/builtin/github/shared", frag+".tmpl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `model_tag: "Coding"`) {
+			t.Errorf("%s spawn must pin model_tag Coding", frag)
+		}
 	}
 }
 
