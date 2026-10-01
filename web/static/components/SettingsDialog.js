@@ -83,6 +83,7 @@ import {
   hasAgentDeleteChoice,
 } from "../utils/agentDeleteChoice.js";
 import { buildAutoChildAgentOptions } from "../utils/autoChildAgentOptions.js";
+import { buildAuxiliaryModelTagOptions } from "../utils/auxiliaryModelTagOptions.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
 // by the folder-level editor and the render-time toolbars; each maps to the
@@ -2191,6 +2192,9 @@ export function SettingsDialog({
   // Max loop iterations setting - default 100
   const [maxLoopIterations, setMaxLoopIterations] = useState(100);
 
+  // Auxiliary conversations model tag - empty string = default agent model
+  const [auxiliaryModelTag, setAuxiliaryModelTag] = useState("");
+
   const [loopBehaviorExpanded, setLoopBehaviorExpanded] = useState(false);
 
   // Default flags for new conversations
@@ -2673,6 +2677,9 @@ export function SettingsDialog({
       // Load max loop iterations setting - default to 100
       setMaxLoopIterations(config.conversations?.max_loop_iterations ?? 100);
 
+      // Load auxiliary conversations model tag - default to "" (agent default model)
+      setAuxiliaryModelTag(config.conversations?.auxiliary_model_tag || "");
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -2948,6 +2955,7 @@ export function SettingsDialog({
         },
         max_child_conversations: maxChildConversations,
         max_loop_iterations: maxLoopIterations,
+        auxiliary_model_tag: auxiliaryModelTag,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -4963,6 +4971,41 @@ export function SettingsDialog({
                               )}
                             class="input input-sm w-20 text-center"
                           />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Auxiliary Conversations Model Tag -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Auxiliary Conversations
+                      </h4>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div class="font-medium text-sm">
+                            Auxiliary conversations
+                          </div>
+                          <select
+                            value=${auxiliaryModelTag}
+                            onChange=${(e) =>
+                              setAuxiliaryModelTag(e.target.value)}
+                            class="select select-sm"
+                          >
+                            ${buildAuxiliaryModelTagOptions(
+                              modelTags,
+                              auxiliaryModelTag,
+                            ).map(
+                              (opt) =>
+                                html`<option key=${opt.value} value=${opt.value}>
+                                  ${opt.label}
+                                </option>`,
+                            )}
+                          </select>
+                        </div>
+                        <div class="text-xs text-mitto-text-muted mt-2">
+                          Model tag used for title generation, follow-up
+                          suggestions and background processors. Per-workspace
+                          settings override this.
                         </div>
                       </div>
                     </div>
