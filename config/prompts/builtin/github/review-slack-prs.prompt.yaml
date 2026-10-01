@@ -166,8 +166,12 @@ prompt: |
       "Pr":      "https://github.com/<owner>/<repo>/pull/<number>",
       "RepoDir": "<REPO_DIR from Step 2>"
     },
-    acp_server: <prefer a "coding" or "reasoning" tagged server>)
+    model_tag: "Coding")
   ```
+
+  The spawn passes `model_tag: "Coding"` so the child does the heavy reading/review/worktree work on
+  a capable model while this loop stays cheap. If the spawn fails because no model matches that tag,
+  retry once without `model_tag`.
 
   Notes:
   - **Do not pass `title:`.** The review prompt declares

@@ -295,8 +295,12 @@ prompt: |-
       beads_issue: "<id>",
       prompt_name: "Support: investigate",
       arguments: { "IssueID": "<id>" },
-      acp_server: <prefer a "coding" or "fast" tagged server>)
+      model_tag: "Reasoning")
     ```
+    The spawn passes `model_tag: "Reasoning"` since investigation is research/triage work (the
+    "Support: investigate" prompt itself declares a `Reasoning` model preference), not coding — this
+    keeps the heavy research on a capable model while this housekeeping sweep stays cheap. If the
+    spawn fails because no model matches that tag, retry once without `model_tag`.
     The child runs "Support: investigate" end-to-end on that bead (gather → record `[CONTEXT]` →
     save an `[OUTBOUND]` DRAFT → `state:drafting`). **Do not wait** for the children — they report
     on their own beads and via their own notifications. Note which tickets you spawned for the
