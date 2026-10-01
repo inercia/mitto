@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -274,9 +275,11 @@ type auxSessionKey struct {
 // auxiliarySessionState tracks an auxiliary session's state.
 type auxiliarySessionState struct {
 	mu        sync.Mutex // Serializes requests to this session
+	modelMu   sync.RWMutex
 	sessionID string
 	client    *auxiliaryClient // Collects responses
 	lastUsed  time.Time
+	modelID   string
 }
 
 type processQuiescenceWait struct {
@@ -1022,6 +1025,15 @@ func (m *ACPProcessManager) ColdProcessCount() int {
 // The session is created on-demand if it doesn't exist and reused for subsequent requests.
 // This implements the auxiliary.ProcessProvider interface.
 func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+	trace := newAuxPromptTrace(workspaceUUID, purpose, message)
+	response, err := m.promptAuxiliary(ctx, workspaceUUID, purpose, message, trace)
+	m.logAuxPromptOutcome(ctx, trace, err)
+	return response, err
+}
+
+// promptAuxiliary is the PromptAuxiliary implementation; it records telemetry
+// (never prompt or response content) into trace.
+func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string, trace *auxPromptTrace) (string, error) {
 	if m.DisableAuxiliary {
 		return "", fmt.Errorf("auxiliary sessions disabled")
 	}
@@ -1056,7 +1068,18 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 	auxState.client.reset()
 
 	// Send prompt to the auxiliary session
+	if m.logger != nil {
+		modelID, modelReported := auxState.modelForLog()
+		m.logger.Info("Prompting auxiliary session",
+			"workspace_uuid", workspaceUUID,
+			"purpose", purpose,
+			"session_id", auxState.sessionID,
+			"model_id", modelID,
+			"model_reported", modelReported)
+	}
+	trace.beginAttempt(auxState, false)
 	_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+	trace.recordResponse(auxState.client)
 	if err != nil {
 		if ctx.Err() != nil {
 			m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
@@ -1106,7 +1129,19 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 		}
 
 		auxState.client.reset()
+		if m.logger != nil {
+			modelID, modelReported := auxState.modelForLog()
+			m.logger.Info("Prompting auxiliary session",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"session_id", auxState.sessionID,
+				"model_id", modelID,
+				"model_reported", modelReported,
+				"retry", true)
+		}
+		trace.beginAttempt(auxState, true)
 		_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		trace.recordResponse(auxState.client)
 		if err != nil {
 			if ctx.Err() != nil {
 				m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
@@ -1126,6 +1161,7 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 
 	// Get the collected response (lock is still held here)
 	response := auxState.client.getResponse()
+	trace.recordResponse(auxState.client)
 	auxState.mu.Unlock()
 	return response, nil
 }
@@ -1135,7 +1171,15 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 // The prompt is dispatched and the method returns immediately — the agent processes in the background.
 // The session mutex is held until the agent finishes, ensuring subsequent prompts are serialized.
 // This implements the auxiliary.ProcessProvider interface.
-func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceUUID, purpose, message string) error {
+func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceUUID, purpose, message string) (err error) {
+	trace := newAuxPromptTrace(workspaceUUID, purpose, message)
+	trace.async = true
+	defer func() {
+		if err != nil {
+			m.logAuxPromptOutcome(ctx, trace, err)
+		}
+	}()
+
 	if m.DisableAuxiliary {
 		return fmt.Errorf("auxiliary sessions disabled")
 	}
@@ -1181,7 +1225,10 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 		m.logger.Info("Dispatching async auxiliary prompt",
 			"workspace_uuid", workspaceUUID,
 			"purpose", purpose,
-			"prompt_length", len(message))
+			"prompt_length", len(message),
+			"prompt_chars", utf8.RuneCountInString(message),
+			"prompt_bytes", len(message),
+			"prompt_messages", 1)
 	}
 
 	// Fire-and-forget: send the prompt and release the lock in the background when the agent finishes.
@@ -1191,7 +1238,10 @@ func (m *ACPProcessManager) PromptAuxiliaryAsync(ctx context.Context, workspaceU
 		defer auxState.mu.Unlock()
 		waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		_, _ = process.Prompt(waitCtx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		trace.beginAttempt(auxState, false)
+		_, promptErr := process.Prompt(waitCtx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		trace.recordResponse(auxState.client)
+		m.logAuxPromptOutcome(waitCtx, trace, promptErr)
 	}()
 
 	return nil
@@ -1640,6 +1690,17 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			"new_session_ms", newSessionLatency.Milliseconds())
 	}
 
+	initialModelID := ""
+	if sessionHandle.Models != nil {
+		initialModelID = sessionHandle.Models.CurrentModelId
+	}
+	state := &auxiliarySessionState{
+		sessionID: sessionHandle.SessionID,
+		client:    newAuxiliaryClient(),
+		lastUsed:  time.Now(),
+		modelID:   initialModelID,
+	}
+
 	// Apply auxiliary model selection if configured for this workspace.
 	// Precedence: AuxiliaryModelProfile > AuxiliaryModelTag > AuxiliaryModelSelection
 	// (mitto-hke, mitto-9vz). If AuxiliaryModelProfile is set, it takes precedence and
@@ -1692,6 +1753,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					capturedProcess := process
 					capturedSessionID := sessionHandle.SessionID
 					capturedLogger := m.logger
+					capturedState := state
 					go func() {
 						// De-stagger concurrent prewarmed aux model-set goroutines (mitto-xicp).
 						// All 4 purposes fire at nearly the same instant during prewarmAuxiliarySessions;
@@ -1724,10 +1786,13 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 									"error", setErr)
 							}
 						} else if capturedLogger != nil {
+							capturedState.setModelID(capturedMatched)
 							capturedLogger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
 								"workspace_uuid", capturedWorkspaceUUID,
 								"purpose", capturedPurpose,
 								"model_id", capturedMatched)
+						} else {
+							capturedState.setModelID(capturedMatched)
 						}
 					}()
 				case matched != "":
@@ -1735,7 +1800,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					// set_model RPC is needless — skip it to avoid the per-process serialisation
 					// contention that drives the 8s deadline cascade at server wakeup (mitto-ykb).
 					if m.logger != nil {
-						m.logger.Debug("Auxiliary session: model already matches AuxiliaryModelSelection, skipping set_model",
+						m.logger.Info("Auxiliary session: model already matches AuxiliaryModelSelection, skipping set_model",
 							"workspace_uuid", workspaceUUID,
 							"purpose", purpose,
 							"model_id", matched)
@@ -1753,22 +1818,19 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		}
 	}
 
-	// Create auxiliary client to collect responses
-	client := newAuxiliaryClient()
-
 	// Register the session with the multiplexer
 	callbacks := &conversation.SessionCallbacks{
 		OnSessionUpdate: func(ctx context.Context, params acp.SessionNotification) error {
-			return client.OnSessionUpdate(ctx, params)
+			return state.client.OnSessionUpdate(ctx, params)
 		},
 		OnRequestPermission: func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-			return client.OnRequestPermission(ctx, params)
+			return state.client.OnRequestPermission(ctx, params)
 		},
 		OnReadTextFile: func(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-			return client.OnReadTextFile(ctx, params)
+			return state.client.OnReadTextFile(ctx, params)
 		},
 		OnWriteTextFile: func(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-			return client.OnWriteTextFile(ctx, params)
+			return state.client.OnWriteTextFile(ctx, params)
 		},
 		OnCreateTerminal: func(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
 			return auxTerminalStub.CreateTerminal(ctx, params)
@@ -1791,11 +1853,6 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// Store the result under a brief auxMu lock.
 	// Defensive double-check: if an entry somehow already exists (shouldn't happen
 	// given createMu, but be safe), return the existing one to avoid duplicates.
-	state := &auxiliarySessionState{
-		sessionID: sessionHandle.SessionID,
-		client:    client,
-		lastUsed:  time.Now(),
-	}
 	m.auxMu.Lock()
 	if existing, ok := m.auxSessions[key]; ok {
 		m.auxMu.Unlock()
@@ -1805,15 +1862,38 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	m.auxMu.Unlock()
 
 	if m.logger != nil {
+		modelID, modelReported := state.modelForLog()
 		m.logger.Info("Created auxiliary session",
 			"workspace_uuid", workspaceUUID,
 			"purpose", purpose,
 			"session_id", sessionHandle.SessionID,
+			"model_id", modelID,
+			"model_reported", modelReported,
 			"new_session_ms", newSessionLatency.Milliseconds(),
 			"total_ms", time.Since(createStart).Milliseconds())
 	}
 
 	return state, nil
+}
+
+func (s *auxiliarySessionState) setModelID(modelID string) {
+	s.modelMu.Lock()
+	s.modelID = modelID
+	s.modelMu.Unlock()
+}
+
+func (s *auxiliarySessionState) modelForLog() (string, bool) {
+	s.modelMu.RLock()
+	modelID := s.modelID
+	s.modelMu.RUnlock()
+	return auxiliaryModelForLog(modelID)
+}
+
+func auxiliaryModelForLog(modelID string) (string, bool) {
+	if modelID == "" {
+		return "unknown", false
+	}
+	return modelID, true
 }
 
 // resolveAuxTagConstraint walks the given tag-filtered profiles in slice order

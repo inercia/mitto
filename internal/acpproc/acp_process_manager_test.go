@@ -2303,6 +2303,28 @@ func TestAuxiliaryModelTag_HonoursProfileOrder(t *testing.T) {
 	}
 }
 
+func TestAuxiliaryModelForLog(t *testing.T) {
+	tests := []struct {
+		name         string
+		modelID      string
+		wantID       string
+		wantReported bool
+	}{
+		{name: "reported", modelID: "claude-haiku-4.5", wantID: "claude-haiku-4.5", wantReported: true},
+		{name: "not reported", wantID: "unknown", wantReported: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotID, gotReported := auxiliaryModelForLog(tt.modelID)
+			if gotID != tt.wantID || gotReported != tt.wantReported {
+				t.Fatalf("auxiliaryModelForLog(%q) = (%q, %t), want (%q, %t)",
+					tt.modelID, gotID, gotReported, tt.wantID, tt.wantReported)
+			}
+		})
+	}
+}
+
 // TestGetOrCreateAuxiliarySession_HighActiveRPCsBails is the mitto-9gt
 // reproduction: during a parallel fan-out on a not-yet-saturated shared ACP
 // process, non-essential auxiliary purposes (follow-up, keepalive, mcp-check,

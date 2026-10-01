@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -15,6 +16,7 @@ import (
 type auxiliaryClient struct {
 	mu       sync.Mutex
 	response strings.Builder
+	chunks   int // agent message text chunks received since the last reset
 	retired  bool
 }
 
@@ -28,6 +30,17 @@ func (c *auxiliaryClient) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.response.Reset()
+	c.chunks = 0
+}
+
+// responseStats returns size metrics of the collected response without
+// exposing its content: rune count, byte count (both of the trimmed text,
+// matching getResponse) and the number of agent message chunks received.
+func (c *auxiliaryClient) responseStats() (runes, bytes, chunks int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	text := strings.TrimSpace(c.response.String())
+	return utf8.RuneCountInString(text), len(text), c.chunks
 }
 
 // retire permanently stops this client from collecting late chunks from a
@@ -56,6 +69,7 @@ func (c *auxiliaryClient) OnSessionUpdate(ctx context.Context, params acp.Sessio
 			c.mu.Lock()
 			if !c.retired {
 				c.response.WriteString(content.Text.Text)
+				c.chunks++
 			}
 			c.mu.Unlock()
 		}

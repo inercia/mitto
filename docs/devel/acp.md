@@ -346,6 +346,19 @@ Auxiliary sessions use the **same shared process** for non-critical background w
 Auxiliary sessions are pre-warmed on process creation to avoid cold-start delays.
 Auxiliary sessions run concurrently with user sessions — they do not block on or wait for user prompts.
 
+### Auxiliary Prompt Telemetry
+
+`ACPProcessManager` logs one structured outcome for every auxiliary prompt,
+including setup/dispatch failures and asynchronous completion. Records include
+workspace, purpose, session and model identifiers; prompt character/byte counts;
+response character/byte and text-chunk counts after an attempt; attempt/retry
+and success status; and elapsed time. Failures use a bounded error class
+(`cancelled`, `timeout`, `connection`, `rpc`, or `other`) and optional JSON-RPC
+code.
+These logs never include prompt text, response text, or raw error messages.
+`prompt_messages` counts the logical prompt (one); `attempts` separately
+records retries. Async duration covers dispatch setup through completion.
+
 ### Concurrency Guard
 
 Follow-up analysis has a `followUpInProgress atomic.Bool` guard to prevent duplicate
