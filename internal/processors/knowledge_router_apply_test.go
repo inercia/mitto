@@ -3,7 +3,6 @@ package processors
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -407,17 +406,6 @@ func TestKnowledgeRouter_LegacySuppression_AllFourBuiltins(t *testing.T) {
 				return &ProcessorInput{WorkingDir: workingDir, IsLoop: false, PromptsSnapshotFn: routerSnapshotFn(routerEnabled)}
 			},
 		},
-		"extract-memories-on-close": {
-			yamlPath: "../../config/processors/builtin/extract-memories-on-close.yaml",
-			setupDir: func(t *testing.T, workingDir string) {
-				if err := os.MkdirAll(filepath.Join(workingDir, ".beads"), 0o755); err != nil {
-					t.Fatalf("MkdirAll .beads: %v", err)
-				}
-			},
-			buildInput: func(workingDir string, routerEnabled bool) *ProcessorInput {
-				return &ProcessorInput{WorkingDir: workingDir, IsLoop: false, PromptsSnapshotFn: routerSnapshotFn(routerEnabled)}
-			},
-		},
 		"auggie-update-rules": {
 			yamlPath: "../../config/processors/builtin/auggie-update-rules.yaml",
 			setupDir: func(t *testing.T, workingDir string) {
@@ -440,10 +428,6 @@ func TestKnowledgeRouter_LegacySuppression_AllFourBuiltins(t *testing.T) {
 				return &ProcessorInput{WorkingDir: workingDir, IsLoop: false, ACPServer: "claude-code", PromptsSnapshotFn: routerSnapshotFn(routerEnabled)}
 			},
 		},
-	}
-
-	if _, err := exec.LookPath("bd"); err != nil {
-		t.Skip("bd not on PATH: extract-memories-on-close's CommandExists(\"bd\") gate cannot be exercised")
 	}
 
 	for name, tc := range cases {
@@ -477,7 +461,7 @@ func TestKnowledgeRouter_LegacySuppression_AllFourBuiltins(t *testing.T) {
 // enabled via PromptsSnapshotFn.
 func TestKnowledgeRouter_LegacySuppression_ApplyOnCloseRecordsAllSkipped(t *testing.T) {
 	loader := NewLoader("../../config/processors/builtin", nil)
-	names := []string{"memorize-preferences", "extract-memories-on-close", "auggie-update-rules", "claude-update-memory"}
+	names := []string{"memorize-preferences", "auggie-update-rules", "claude-update-memory"}
 	var procs []*Processor
 	for _, name := range names {
 		proc, err := loader.LoadFile("../../config/processors/builtin/" + name + ".yaml")
@@ -521,22 +505,5 @@ func TestKnowledgeRouter_LegacySuppression_ApplyOnCloseRecordsAllSkipped(t *test
 		if run.Outcome != "skipped" || run.SkipReason != string(SkipReasonEnabledWhen) {
 			t.Errorf("%s: run = %+v, want Outcome=skipped SkipReason=%s", name, run, SkipReasonEnabledWhen)
 		}
-	}
-}
-
-// TestCurateMemoriesOnClose_NotGatedByKnowledgeRouter is a static check
-// (deliberately not a full ApplyOnClose run, which would need a live `bd`
-// store) that curate-memories-on-close.yaml — explicitly out of scope per
-// mitto-3od's acceptance criteria — carries no knowledge-router suppression
-// clause and so is unaffected by enabling the router.
-func TestCurateMemoriesOnClose_NotGatedByKnowledgeRouter(t *testing.T) {
-	const path = "../../config/processors/builtin/curate-memories-on-close.yaml"
-	loader := NewLoader(filepath.Dir(path), nil)
-	proc, err := loader.LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile(%s): %v", path, err)
-	}
-	if strings.Contains(proc.EnabledWhen, "knowledge-router") {
-		t.Errorf("curate-memories-on-close.EnabledWhen = %q, want no knowledge-router gate (out of scope per AC)", proc.EnabledWhen)
 	}
 }

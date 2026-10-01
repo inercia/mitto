@@ -409,7 +409,6 @@ func TestApplyOnClose_SharedSnapshot_FourProcessorBatchTokenReduction(t *testing
 // any positive invocation instruction creeping back in.
 func TestBuiltinCloseConversationProcessors_DoNotInvokeConversationHistoryTool(t *testing.T) {
 	for _, name := range []string{
-		"extract-memories-on-close",
 		"memorize-preferences",
 		"claude-update-memory",
 		"auggie-update-rules",

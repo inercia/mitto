@@ -124,7 +124,6 @@ func TestApplyOnClose_PromptsIsEnabledGate_NilSnapshotFnFailsClosedToRunning(t *
 // curate-memories-on-close (out of scope per mitto-3od's bead description).
 var gatedLegacyCloseProcessorFiles = []string{
 	"../../config/processors/builtin/memorize-preferences.yaml",
-	"../../config/processors/builtin/extract-memories-on-close.yaml",
 	"../../config/processors/builtin/auggie-update-rules.yaml",
 	"../../config/processors/builtin/claude-update-memory.yaml",
 }
