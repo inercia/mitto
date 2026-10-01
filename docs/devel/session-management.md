@@ -502,19 +502,19 @@ integration tests (`mitto-f7yo.7`) that exercise the full stack across two real 
 Before touching anything, the request is validated and a typed sentinel error is returned on
 failure (callers such as the REST handler can map these with `errors.Is`):
 
-| Condition | Error |
-|---|---|
-| Session does not exist | `session.ErrSessionNotFound` |
-| Conversation is archived | `ErrMoveAgentArchived` |
-| `targetAgent == meta.ACPServer` | `ErrMoveAgentSameAgent` |
-| `targetAgent` not configured | `ErrMoveAgentUnknownTarget` |
-| No workspace for `(meta.WorkingDir, targetAgent)` | `ErrMoveAgentNoWorkspace` |
-| A turn is streaming (`BackgroundSession.IsPrompting()`) or a loop run is in flight (`SessionManager.IsWaitingForChildren`) | `ErrMoveAgentBusy` |
+| Condition                                                                                                                  | Error                        |
+| -------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| Session does not exist                                                                                                     | `session.ErrSessionNotFound` |
+| Conversation is archived                                                                                                   | `ErrMoveAgentArchived`       |
+| `targetAgent == meta.ACPServer`                                                                                            | `ErrMoveAgentSameAgent`      |
+| `targetAgent` not configured                                                                                               | `ErrMoveAgentUnknownTarget`  |
+| No workspace for `(meta.WorkingDir, targetAgent)`                                                                          | `ErrMoveAgentNoWorkspace`    |
+| A turn is streaming (`BackgroundSession.IsPrompting()`) or a loop run is in flight (`SessionManager.IsWaitingForChildren`) | `ErrMoveAgentBusy`           |
 
 ### Move steps
 
 1. **Stop.** The live `BackgroundSession` (if any) is stopped via `CloseSessionGracefully(id,
-   "agent_moved", timeout)`, falling back to `CloseSession(id, "agent_moved_timeout")` if the
+"agent_moved", timeout)`, falling back to `CloseSession(id, "agent_moved_timeout")` if the
    timeout expires. This bounds the whole stop step even when the old agent's process is
    wedged/unreachable — `timeout` defaults to `DefaultMoveAgentCloseTimeout` (30s) and is
    configurable via `MoveAgentOptions.CloseTimeout` (tests shorten it). Both close paths already
@@ -529,7 +529,7 @@ failure (callers such as the REST handler can map these with `errors.Is`):
    an asynchronous/after-restart resume (consumed once by the model-mapping hook, `mitto-f7yo.4`,
    described below).
 3. **Record** a `session_change` event with `{kind: "agent", value: targetAgent, previous_value:
-   previousAgent}` via a fresh `session.Recorder` bound to the persisted session (the live
+previousAgent}` via a fresh `session.Recorder` bound to the persisted session (the live
    recorder was just stopped), so the timeline shows the move.
 4. **Resume** on the new agent via `ResumeSessionBackground`, so the next prompt goes to the new
    agent through the existing resumed-session history injection (`buildPromptWithHistory`). A
@@ -543,7 +543,7 @@ failure (callers such as the REST handler can map these with `errors.Is`):
 
 When `MoveAgentOptions.IncludeChildren` is set, every descendant of `sessionID`
 (`store.FindAllChildrenRecursive`, so grandchildren are covered too) that is still non-archived,
-idle, and bound to the *old* agent is moved through the same stop/rewrite/record/resume steps.
+idle, and bound to the _old_ agent is moved through the same stop/rewrite/record/resume steps.
 Descendants that are archived, busy, or already bound to a different agent are left untouched and
 reported in `MoveAgentResult.Skipped` (`{ID, Reason}`).
 
@@ -589,7 +589,7 @@ already seeds/reapplies the baseline model on first start (`cbInitBaselineModelI
    **Deliberate deviation from a literal reading of the bead**: this uses the raw-string matching
    engine (`MatchConstraintOption`/`config.ConstraintMatchesName`, the same one
    `ResolveAuxModelSwitch` already uses) rather than `SelectPreferredModel`/
-   `config.PromptPreferredModel`, because that mechanism resolves *named global `Models` profiles*
+   `config.PromptPreferredModel`, because that mechanism resolves _named global `Models` profiles_
    by exact profile name/tag — a previous agent's raw model ID has no relationship to any
    configured profile's `Name`, so it is the wrong tool for matching one agent's raw ID against
    another agent's raw catalog.
@@ -610,7 +610,7 @@ already seeds/reapplies the baseline model on first start (`cbInitBaselineModelI
 introduced to arbitrate between the mapping attempt and an explicit `model_tag` pin. Instead, the
 existing causality already guarantees the tag wins when both apply to the same first-start:
 `ApplyModelTag` requires `bs.AgentModels() != nil`, which is set as literally the first line of
-`setAgentModels` — so an `ApplyModelTag` call (a separate MCP/REST request, always causally *after*
+`setAgentModels` — so an `ApplyModelTag` call (a separate MCP/REST request, always causally _after_
 the caller has observed the move/resume as complete) can only ever run at or after
 `cbApplyPendingModelMapping` has already been invoked (and, in virtually every real flow, already
 finished). Both funnel through the same `SetConfigOption` persistent path, so whichever request's
@@ -621,20 +621,26 @@ itself.
 ### Context handoff (`mitto-f7yo.5`)
 
 Normally, `buildPromptWithHistory` (`internal/conversation/bgsession_prompt.go`) prepends the last
-**5** turns (`session.BuildConversationHistory(events, 5)`) on the first prompt of a resumed
-session that got a fresh ACP session — for an agent migration that would be the *only* context the
-new agent ever receives, since the previous agent's tools/MCP servers/prompt behaviour may differ
-entirely.
+**2** turns, capped at **8,000 characters**, on the first prompt of a resumed session that got a
+fresh ACP session. The history builder includes only user prompts and agent messages (not tool-call
+input/output) and truncates individual messages. When `session/resume` succeeds or `session/load`
+replays history, the upstream ACP context is already retained; Mitto skips transcript injection
+instead of duplicating it. The 30-minute loop-suspend threshold is unchanged: a loop whose next
+delivery is within that window is not eligible for suspension, and the 10-minute post-activity
+grace further protects recently active loops.
+
+For an agent migration, the transcript is the _only_ context the new agent ever receives, since
+the previous agent's tools/MCP servers/prompt behaviour may differ entirely.
 
 Like model mapping above, this is driven by a durable metadata flag set by
-`moveAgentStopAndRebind` in the *same* `UpdateMetadata` call: `Metadata.PendingAgentHandoffFrom`
+`moveAgentStopAndRebind` in the _same_ `UpdateMetadata` call: `Metadata.PendingAgentHandoffFrom`
 (`json:"pending_agent_handoff_from,omitempty"`) holds the previous agent's name, so it's set for a
 moved session and, via the same reused rebind function, for every descendant moved with
 `IncludeChildren` too.
 
 The flag is consumed inside `buildPromptWithHistory` itself
 (`internal/conversation/bgsession_agent_handoff.go`), which is only ever called when
-`shouldInjectHistory` is true — i.e. behind the *exact same*
+`shouldInjectHistory` is true — i.e. behind the _exact same_
 `bs.isResumed && !bs.historyInjected && !meta.FreshContext` gate that already exists for normal
 history injection. This single placement gives all of the required behaviour for free, with no new
 gating logic:
@@ -643,8 +649,9 @@ gating logic:
   `buildPromptWithHistory` at all — `PendingAgentHandoffFrom` is therefore left **untouched**
   (not cleared) rather than silently dropped, so it still fires correctly on a later,
   non-FreshContext prompt instead of being lost to a loop run the operator didn't initiate.
-- **Normal resumes** (nothing pending) are unaffected — same 5-turn call, no preamble, byte-for-byte
-  identical output to before this bead.
+- **Normal resumes** (nothing pending) use the bounded two-turn/8,000-character transcript when
+  Mitto had to create a fresh ACP session; a successful upstream resume/load needs no duplicate
+  transcript and has no preamble.
 - **The first real history-injecting prompt after a move** atomically reads-and-clears the flag
   (`consumePendingAgentHandoff`, same read-and-clear-in-one-`UpdateMetadata` pattern
   `cbApplyPendingModelMapping` uses for `PendingModelMappingFrom`) and, when it was set, uses:
@@ -658,10 +665,10 @@ gating logic:
      even the single most recent turn alone still overflows the budget, its text is truncated from
      the beginning (keeping the tail) with a clear `[...earlier content truncated...]` marker
      rather than being dropped to nothing.
-  2. A short preamble prepended ahead of that history, naming the previous agent (e.g. *"This
+  2. A short preamble prepended ahead of that history, naming the previous agent (e.g. _"This
      conversation was previously handled by agent "auggie" and has been moved to you. Tools, MCP
      servers and prompts may differ from what the previous agent had. Below is the recent
-     transcript for context."*).
+     transcript for context."_).
 
 Because the flag is consumed exactly once and only from within the existing history-injection
 gate, no new synchronization or generation-tracking was needed, and `BuildConversationHistory`'s
@@ -683,7 +690,12 @@ Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/sessi
   {
     "current_agent": "agent-a",
     "candidates": [
-      { "name": "agent-b", "type": "agent-b", "available": true, "loop_prompt_available": true }
+      {
+        "name": "agent-b",
+        "type": "agent-b",
+        "available": true,
+        "loop_prompt_available": true
+      }
     ],
     "busy": false,
     "busy_reason": "",
@@ -722,11 +734,11 @@ Two routes in `internal/web/routes.go`, handlers in `internal/web/handlers/sessi
 
   Error mapping (`errors.Is` against the sentinels above):
 
-  | Error | HTTP status |
-  |---|---|
-  | `session.ErrSessionNotFound` | 404 |
-  | `ErrMoveAgentArchived`, `ErrMoveAgentBusy` | 409 |
-  | `ErrMoveAgentSameAgent`, `ErrMoveAgentUnknownTarget`, `ErrMoveAgentNoWorkspace`, missing/invalid `target_agent` or body | 400 |
+  | Error                                                                                                                   | HTTP status |
+  | ----------------------------------------------------------------------------------------------------------------------- | ----------- |
+  | `session.ErrSessionNotFound`                                                                                            | 404         |
+  | `ErrMoveAgentArchived`, `ErrMoveAgentBusy`                                                                              | 409         |
+  | `ErrMoveAgentSameAgent`, `ErrMoveAgentUnknownTarget`, `ErrMoveAgentNoWorkspace`, missing/invalid `target_agent` or body | 400         |
 
   Both routes are registered in the same declarative `apiRoute` table as every other
   `/api/sessions/{id}/...` mutation route, so they get the same auth/CSRF/rate-limit middleware
@@ -754,16 +766,16 @@ ACP server without going through the UI.
   (`MoveAgentOptions`/`MoveAgentResult`/`MoveAgentSkip` and the `ErrMoveAgent*` sentinels) and
   calls a new adapter method, `(*conversation.SessionManager).MoveSessionToAgentForMCP`
   (`internal/conversation/session_manager_move_agent_mcp.go`), which lives on the `conversation`
-  side (which *can* import `mcpserver`) and translates the real `MoveSessionToAgent`
+  side (which _can_ import `mcpserver`) and translates the real `MoveSessionToAgent`
   result/sentinels to/from the mirrors via `errors.Is`. `mcpserver.SessionManager`'s interface
   gained two entries for this: `MoveSessionToAgentForMCP` and `BroadcastSessionAgentMoved`
   (documented inline with the same rationale). `internal/web`'s `sessionManagerAdapter` (the
   concrete type wiring `conversation.SessionManager` into the `mcpserver.SessionManager`
   interface) got matching one-line delegating methods, following the exact pattern already used
   for every other `Broadcast*` method — `web.Server` and `conversation.SessionManager` each
-  broadcast independently through the *same* shared `GlobalEventsManager` instance rather than one
+  broadcast independently through the _same_ shared `GlobalEventsManager` instance rather than one
   delegating to the other.
-- **Permission gating**: intentionally mirrors `mitto_conversation_update`'s *actual* behavior —
+- **Permission gating**: intentionally mirrors `mitto_conversation_update`'s _actual_ behavior —
   which, on inspection, has no extra permission flag/workspace-scope check for acting on another
   conversation beyond "caller is a registered session" + "target conversation exists" (unlike
   `mitto_conversation_get`'s `FlagCanInteractOtherWorkspaces` cross-workspace check, or
@@ -821,7 +833,7 @@ ACP server without going through the UI.
 - **Timeline entry**: the `"session_change"` event with `kind: "agent"` that
   `recordMoveAgentEvent` appends (see the backend section above) renders in
   `web/static/components/Message.js`'s `sessionChangeText` as `"Moved from <previous_agent> to
-  <new_agent>"`.
+<new_agent>"`.
 
 ### Integration tests (`mitto-f7yo.7`)
 

@@ -88,10 +88,10 @@ func TestConsumePendingAgentHandoff_RunsOnlyOnce(t *testing.T) {
 // TestBuildPromptWithHistory_AgentHandoff_UsesLargerBudgetAndPreamble pins the
 // mitto-f7yo.5 acceptance criterion: the first history-injecting prompt after
 // a move uses the larger agentHandoffMaxTurns/agentHandoffMaxChars budget and
-// names the previous agent in a preamble, instead of the normal 5-turn/no
-// preamble path.
+// names the previous agent in a preamble, instead of the normal bounded
+// history path.
 func TestBuildPromptWithHistory_AgentHandoff_UsesLargerBudgetAndPreamble(t *testing.T) {
-	// 8 turns: more than the normal 5-turn cap, well under agentHandoffMaxTurns (20).
+	// 8 turns: more than the normal two-turn cap, well under agentHandoffMaxTurns (20).
 	bs, store := newAgentHandoffTestSession(t, "agent-a", 8)
 
 	result := bs.buildPromptWithHistory("new message")
@@ -99,7 +99,7 @@ func TestBuildPromptWithHistory_AgentHandoff_UsesLargerBudgetAndPreamble(t *test
 	if !strings.Contains(result, "previously handled by agent \"agent-a\"") {
 		t.Errorf("expected handoff preamble naming agent-a, got: %q", result)
 	}
-	// Turn 0 ("question-a") would be excluded by the normal 5-turn cap but
+	// Turn 0 ("question-a") would be excluded by the normal two-turn cap but
 	// must survive under the larger 20-turn handoff budget.
 	if !strings.Contains(result, "question-a") {
 		t.Errorf("expected the larger budget to retain the oldest of 8 turns, got: %q", result)
@@ -117,11 +117,9 @@ func TestBuildPromptWithHistory_AgentHandoff_UsesLargerBudgetAndPreamble(t *test
 	}
 }
 
-// TestBuildPromptWithHistory_NormalResume_Unchanged pins acceptance criterion
-// #5: a normal resume (nothing pending) must be byte-identical to
-// session.BuildConversationHistory(events, 5) + message -- no preamble, no
-// larger budget.
-func TestBuildPromptWithHistory_NormalResume_Unchanged(t *testing.T) {
+// TestBuildPromptWithHistory_NormalResume_UsesBoundedHistory pins the normal
+// fallback transcript to the most recent two turns and its character budget.
+func TestBuildPromptWithHistory_NormalResume_UsesBoundedHistory(t *testing.T) {
 	bs, _ := newAgentHandoffTestSession(t, "", 8)
 
 	got := bs.buildPromptWithHistory("new message")
@@ -130,12 +128,60 @@ func TestBuildPromptWithHistory_NormalResume_Unchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadEvents failed: %v", err)
 	}
-	want := session.BuildConversationHistory(events, 5) + "new message"
+	want := session.BuildConversationHistoryCapped(events, resumedHistoryMaxTurns, resumedHistoryMaxChars) + "new message"
 	if got != want {
 		t.Errorf("normal resume changed:\ngot=  %q\nwant= %q", got, want)
 	}
+	if strings.Contains(got, "question-a") || !strings.Contains(got, "question-g") || !strings.Contains(got, "question-h") {
+		t.Errorf("normal resume should contain only the last two turns, got: %q", got)
+	}
 	if strings.Contains(got, "previously handled by agent") {
 		t.Error("normal resume must not include the handoff preamble")
+	}
+}
+
+func TestBuildPromptWithHistory_BoundsLargeTranscriptAndOmitsToolOutput(t *testing.T) {
+	bs, store := newAgentHandoffTestSession(t, "", 2)
+	const toolOutput = "tool-output-must-not-be-injected"
+	if err := store.AppendEvent(bs.persistedID, session.Event{
+		Type: session.EventTypeToolCall,
+		Data: session.ToolCallData{Title: toolOutput, RawOutput: strings.Repeat("x", resumedHistoryMaxChars*2)},
+	}); err != nil {
+		t.Fatalf("AppendEvent(tool call) failed: %v", err)
+	}
+	if err := store.AppendEvent(bs.persistedID, session.Event{
+		Type: session.EventTypeAgentMessage,
+		Data: session.AgentMessageData{
+			Text:     strings.Repeat("agent html ", resumedHistoryMaxChars),
+			Markdown: strings.Repeat("agent markdown ", resumedHistoryMaxChars),
+		},
+	}); err != nil {
+		t.Fatalf("AppendEvent(large agent message) failed: %v", err)
+	}
+
+	got := bs.buildPromptWithHistory("new message")
+	history := strings.TrimSuffix(got, "new message")
+	if chars := len([]rune(history)); chars > resumedHistoryMaxChars {
+		t.Errorf("injected history has %d characters, want <= %d", chars, resumedHistoryMaxChars)
+	}
+	if strings.Contains(got, toolOutput) || strings.Contains(got, "agent markdown") {
+		t.Error("injected history should exclude tool output and raw markdown")
+	}
+}
+
+func TestBuildPromptWithHistory_SkipsRetainedUpstreamContext(t *testing.T) {
+	bs, store := newAgentHandoffTestSession(t, "agent-a", 2)
+	bs.resumeMethod = "load"
+
+	if got := bs.buildPromptWithHistory("new message"); got != "new message" {
+		t.Errorf("buildPromptWithHistory() = %q, want original message only", got)
+	}
+	meta, err := store.GetMetadata(bs.persistedID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if meta.PendingAgentHandoffFrom != "agent-a" {
+		t.Errorf("PendingAgentHandoffFrom = %q, want preserved while upstream context is retained", meta.PendingAgentHandoffFrom)
 	}
 }
 

@@ -22,15 +22,15 @@ package conversation
 //     PendingModelMappingFrom), so a second prompt never repeats the
 //     preamble/larger budget even across process restarts.
 //   - Normal resumes that were never moved never have this field set, so
-//     their behaviour (session.BuildConversationHistory(events, 5), no
-//     preamble) is completely unchanged.
+//     they use the bounded two-turn history path without a preamble unless
+//     the upstream ACP session retained or replayed its own context.
 
 import "github.com/inercia/mitto/internal/session"
 
 const (
 	// agentHandoffMaxTurns bounds the number of turns considered for the
 	// larger history budget injected on the first prompt after an agent
-	// move — well above the normal 5-turn window, since the new agent has
+	// move — well above the normal two-turn window, since the new agent has
 	// no other context about the conversation at all.
 	agentHandoffMaxTurns = 20
 	// agentHandoffMaxChars bounds the total rendered size of that history,

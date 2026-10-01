@@ -25,6 +25,11 @@ import (
 // Values longer than this are truncated and suffixed with "…".
 const maxArgValueLen = 80
 
+const (
+	resumedHistoryMaxTurns = 2
+	resumedHistoryMaxChars = 8000
+)
+
 // sensitiveArgNamePatterns contains lowercase substrings that flag an argument name as sensitive.
 var sensitiveArgNamePatterns = []string{
 	"secret", "password", "passwd", "token", "api_key", "apikey",
@@ -104,6 +109,10 @@ func buildArgumentMetadata(args map[string]string) (names []string, arguments []
 
 // buildPromptWithHistory prepends stored conversation history to the prompt for resumed sessions.
 func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
+	if bs.upstreamContextRetained() {
+		return message
+	}
+
 	if bs.store == nil {
 		return message
 	}
@@ -121,7 +130,7 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 	// happening (see the shouldInjectHistory gate in PromptWithMeta), so it's
 	// safe to consume the pending-handoff flag here — a moved session's first
 	// history-injecting prompt gets a larger, char-capped budget and an
-	// explanatory preamble instead of the normal 5-turn window. See
+	// explanatory preamble instead of the normal two-turn window. See
 	// bgsession_agent_handoff.go for the full ordering rationale (including
 	// why FreshContext leaves the flag untouched rather than clearing it).
 	if previousAgent, ok := bs.consumePendingAgentHandoff(); ok {
@@ -136,8 +145,8 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 		return buildAgentHandoffPreamble(previousAgent) + history + message
 	}
 
-	// Build conversation history (limit to last 5 turns to avoid token limits)
-	history := session.BuildConversationHistory(events, 5)
+	// Keep fallback history small when the upstream ACP context was lost.
+	history := session.BuildConversationHistoryCapped(events, resumedHistoryMaxTurns, resumedHistoryMaxChars)
 	if history == "" {
 		return message
 	}
@@ -822,9 +831,10 @@ retryAfterRestart:
 	bs.promptMu.Lock()
 	bs.promptCount++
 
-	// Check if we need to inject conversation history (first prompt of resumed session).
-	// FreshContext suppresses history injection so each loop run starts clean.
-	shouldInjectHistory := bs.isResumed && !bs.historyInjected && !meta.FreshContext
+	// Inject a bounded transcript only when the resumed ACP session did not
+	// retain its own context. FreshContext suppresses history injection so each
+	// loop run starts clean.
+	shouldInjectHistory := bs.isResumed && !bs.historyInjected && !meta.FreshContext && !bs.upstreamContextRetained()
 	if shouldInjectHistory {
 		bs.historyInjected = true
 	}
