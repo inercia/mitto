@@ -48,6 +48,11 @@ import * as queueStore from "../stores/queueStore.js";
 import { getApiPrefix } from "../utils/api.js";
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus, errorMessage } from "../utils/sdkErrors.js";
+import { showToast } from "../stores/notificationsStore.js";
+import {
+  describeConfigAdjustment,
+  configAdjustmentDedupKey,
+} from "../utils/configOptions.js";
 
 // Import WebSocket utilities (M1, M2 implementations)
 // Reconnect backoff/debounce, keepalive tuning, and the raw stale/behind-seq
@@ -152,8 +157,7 @@ export function useWebSocket({
   // workspaces/acpServers data lives in stores/workspacesStore.js
   // (mitto-sus.11); consumers read it via hooks/useWorkspacesStore.js
   // instead of receiving it prop-drilled through this hook's return value.
-  const { fetchWorkspaces, addWorkspace, removeWorkspace } =
-    useWSWorkspaces();
+  const { fetchWorkspaces, addWorkspace, removeWorkspace } = useWSWorkspaces();
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
@@ -171,8 +175,12 @@ export function useWebSocket({
   // Queue REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5). The
   // queue data itself (messages/length/config) lives in stores/queueStore.js
   // (mitto-sus.11); only the callbacks are needed here.
-  const { fetchQueueMessages, deleteQueueMessage, addToQueue, moveQueueMessage } =
-    useWSQueue(activeSessionId);
+  const {
+    fetchQueueMessages,
+    deleteQueueMessage,
+    addToQueue,
+    moveQueueMessage,
+  } = useWSQueue(activeSessionId);
 
   // Available slash commands for the active session (from ACP agent)
   // Array of { name: string, description: string, input_hint?: string }
@@ -204,6 +212,11 @@ export function useWebSocket({
   // Used to verify delivery after zombie WebSocket timeout/reconnect
   // { sessionId: { promptId: string, seq: number } }
   const lastConfirmedPromptRef = useRef({});
+  // Dedup keys for config-adjustment toast notices already shown (mitto-bnk).
+  // Survives across reconnects/re-renders for the life of this hook instance;
+  // unbounded but keyed on (sessionId, config_id, reason, values) so it stays
+  // small in practice (one entry per distinct adjustment ever surfaced).
+  const configAdjustmentNoticeKeysRef = useRef(new Set());
 
   const { isSeqDuplicate, markSeqSeen, clearSeenSeqs } = useWSSeqSync();
 
@@ -2629,8 +2642,7 @@ export function useWebSocket({
         //   2. Legacy single-option patch: msg.data.config_id/value patch
         //      just that option's current_value, preserving everything else.
         const hasSnapshot = msg.data?.config_options !== undefined;
-        const hasPatch =
-          msg.data?.config_id && msg.data?.value !== undefined;
+        const hasPatch = msg.data?.config_id && msg.data?.value !== undefined;
         if (!hasSnapshot && !hasPatch) break;
         setSessions((prev) => {
           const session = prev[sessionId];
@@ -2653,6 +2665,25 @@ export function useWebSocket({
             },
           };
         });
+        // Surface a visible, non-error notice when the backend reconciled
+        // dependent config options against the new model's snapshot (e.g.
+        // reasoning effort cleared/changed after a model switch, mitto-bnk).
+        // Only for the active session; dedupe so a given adjustment is
+        // never shown twice for the life of this hook instance.
+        if (
+          hasSnapshot &&
+          msg.data?.adjustments?.length > 0 &&
+          sessionId === activeSessionIdRef.current
+        ) {
+          for (const adjustment of msg.data.adjustments) {
+            const dedupKey = configAdjustmentDedupKey(sessionId, adjustment);
+            if (configAdjustmentNoticeKeysRef.current.has(dedupKey)) continue;
+            configAdjustmentNoticeKeysRef.current.add(dedupKey);
+            showToast(
+              describeConfigAdjustment(adjustment, msg.data.config_options),
+            );
+          }
+        }
         break;
       }
     }
