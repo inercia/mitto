@@ -400,12 +400,16 @@ type Metadata struct {
 	// mitto_conversation_update do not accept it. Enforcement at archive
 	// entry points is done by downstream work (mitto-yvel.3).
 	NoArchive        bool   `json:"no_archive,omitempty"`
-	RunnerType       string `json:"runner_type,omitempty"`        // Type of runner used (exec, sandbox-exec, firejail, docker)
-	RunnerRestricted bool   `json:"runner_restricted,omitempty"`  // Whether the runner has restrictions enabled
-	CurrentModeID    string `json:"current_mode_id,omitempty"`    // Current session mode ID (e.g., "ask", "code", "architect")
-	BaselineModel    string `json:"baseline_model,omitempty"`     // User's intended model; never mutated by per-prompt overrides
-	BeadsIssue       string `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
-	OriginPromptName string `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
+	RunnerType       string `json:"runner_type,omitempty"`       // Type of runner used (exec, sandbox-exec, firejail, docker)
+	RunnerRestricted bool   `json:"runner_restricted,omitempty"` // Whether the runner has restrictions enabled
+	CurrentModeID    string `json:"current_mode_id,omitempty"`   // Current session mode ID (e.g., "ask", "code", "architect")
+	BaselineModel    string `json:"baseline_model,omitempty"`    // User's intended model; never mutated by per-prompt overrides
+	// ConfigOptionOverrides holds explicit operator selections of agent-advertised
+	// generic config options (e.g. reasoning effort), keyed by
+	// ConfigOverrideKey(provider, optionID). Agent defaults are never stored here.
+	ConfigOptionOverrides map[string]string `json:"config_option_overrides,omitempty"`
+	BeadsIssue            string            `json:"beads_issue,omitempty"`        // Linked beads issue ID (e.g. "mitto-123"), empty if none
+	OriginPromptName      string            `json:"origin_prompt_name,omitempty"` // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
 	// ReuseTitleKey is the canonical target.title lookup key for a prompt
 	// declaring target.reuse.title (mitto-9vng). Set once at creation time
 	// (never mutated afterwards) and consulted by FindConversationByTitle
@@ -587,4 +591,10 @@ func (l *LockInfo) StealabilityReason(staleTimeout time.Duration) string {
 	default:
 		return fmt.Sprintf("Session has unknown status: %s", l.Status)
 	}
+}
+
+// ConfigOverrideKey scopes an operator config selection to the ACP provider and
+// the agent's opaque option ID.
+func ConfigOverrideKey(provider, optionID string) string {
+	return provider + "\x00" + optionID
 }

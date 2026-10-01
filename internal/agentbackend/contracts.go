@@ -62,6 +62,19 @@ type SessionOps interface {
 	SetMode(ctx context.Context, ref SessionRef, modeID string) error
 }
 
+// ConfigSetter is an OPTIONAL capability a Connection may implement in addition
+// to SessionOps: it sets an agent-advertised, opaque select option (for example
+// a reasoning-effort level) on a session. Callers discover it with a type
+// assertion; backends that do not advertise generic config options simply do
+// not implement it.
+//
+// The returned slice is the agent's FULL post-change option state (a
+// replacement snapshot, not a delta). Returns an *UnsupportedError wrapping
+// FeatureConfigSelection if the backend/session cannot set config options.
+type ConfigSetter interface {
+	SetConfigOption(ctx context.Context, ref SessionRef, optionID, value string) ([]ConfigOption, error)
+}
+
 // Subscription represents one active event subscription. Close must
 // deterministically halt further delivery to the associated callback, with
 // no leaked goroutines or channels.

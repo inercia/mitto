@@ -28,22 +28,23 @@ import (
 // hsBuildWebClientConfig() so the collaborator can call it through the deps seam.
 func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	cfg := WebClientConfig{
-		AutoApprove:          bs.autoApprove,
-		SeqProvider:          bs,
-		Logger:               bs.logger,
-		OnAgentMessage:       bs.onAgentMessage,
-		OnAgentThought:       bs.onAgentThought,
-		OnToolCall:           bs.onToolCall,
-		OnToolUpdate:         bs.onToolUpdate,
-		OnPlan:               bs.onPlan,
-		OnFileWrite:          bs.onFileWrite,
-		OnFileRead:           bs.onFileRead,
-		OnPermission:         bs.onPermission,
-		OnAvailableCommands:  bs.onAvailableCommands,
-		OnCurrentModeChanged: bs.onCurrentModeChanged,
-		OnMittoToolCall:      bs.onMittoToolCall,
-		OnContextUsageUpdate: bs.onContextUsageUpdate,
-		OnActivity:           bs.signalAgentActivity,
+		AutoApprove:           bs.autoApprove,
+		SeqProvider:           bs,
+		Logger:                bs.logger,
+		OnAgentMessage:        bs.onAgentMessage,
+		OnAgentThought:        bs.onAgentThought,
+		OnToolCall:            bs.onToolCall,
+		OnToolUpdate:          bs.onToolUpdate,
+		OnPlan:                bs.onPlan,
+		OnFileWrite:           bs.onFileWrite,
+		OnFileRead:            bs.onFileRead,
+		OnPermission:          bs.onPermission,
+		OnAvailableCommands:   bs.onAvailableCommands,
+		OnCurrentModeChanged:  bs.onCurrentModeChanged,
+		OnConfigOptionsUpdate: bs.onConfigOptionsUpdate,
+		OnMittoToolCall:       bs.onMittoToolCall,
+		OnContextUsageUpdate:  bs.onContextUsageUpdate,
+		OnActivity:            bs.signalAgentActivity,
 		// Wire the eventprojection seam (mitto-mx9.2) as a transparent
 		// pass-through for the ACP integration. ProviderSession may be empty
 		// here (bs.acpID is set later by the deferred handshake) — safe
@@ -189,6 +190,16 @@ func (bs *BackgroundSession) hsGetPendingSharedModelConfigId() string {
 }
 func (bs *BackgroundSession) hsSetPendingSharedModelConfigId(id string) {
 	bs.pendingSharedModelCfgId = id
+}
+
+func (bs *BackgroundSession) hsGetPendingSharedConfigOptions() []SessionConfigOption {
+	return bs.pendingSharedConfigOptions
+}
+func (bs *BackgroundSession) hsSetPendingSharedConfigOptions(opts []SessionConfigOption) {
+	bs.pendingSharedConfigOptions = opts
+}
+func (bs *BackgroundSession) hsApplyConfigOptions(opts []SessionConfigOption) {
+	bs.setConfigOptionsSnapshot(opts)
 }
 
 func (bs *BackgroundSession) hsHandshakeLock()   { bs.handshakeMu.Lock() }

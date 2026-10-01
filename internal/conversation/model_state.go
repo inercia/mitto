@@ -302,3 +302,82 @@ func DeriveAgentModels(
 	}
 	return nil, "", ""
 }
+
+// ConfigOptionsFromACP converts the agent-advertised ACP config options into
+// Mitto's opaque, agent-ordered SessionConfigOption snapshot. Select options
+// keep their ids, labels, descriptions and (flattened, group-annotated) values;
+// boolean options become toggles whose values are "true"/"false". Unknown
+// variants and unknown categories are tolerated (the former are skipped, the
+// latter are passed through as opaque strings). A nil/empty input yields a
+// nil slice; callers that must tell "empty" from "absent" use the input
+// slice's nil-ness themselves.
+func ConfigOptionsFromACP(opts []acp.SessionConfigOption) []SessionConfigOption {
+	if len(opts) == 0 {
+		return nil
+	}
+	out := make([]SessionConfigOption, 0, len(opts))
+	for _, opt := range opts {
+		switch {
+		case opt.Select != nil:
+			sel := opt.Select
+			o := SessionConfigOption{
+				ID:           string(sel.Id),
+				Name:         sel.Name,
+				Type:         ConfigOptionTypeSelect,
+				CurrentValue: string(sel.CurrentValue),
+				Options:      []SessionConfigOptionValue{},
+			}
+			if sel.Description != nil {
+				o.Description = *sel.Description
+			}
+			if sel.Category != nil {
+				o.Category = string(*sel.Category)
+			}
+			switch {
+			case sel.Options.Ungrouped != nil:
+				for _, v := range *sel.Options.Ungrouped {
+					o.Options = append(o.Options, configValueFromACP(v, "", ""))
+				}
+			case sel.Options.Grouped != nil:
+				for _, g := range *sel.Options.Grouped {
+					for _, v := range g.Options {
+						o.Options = append(o.Options, configValueFromACP(v, string(g.Group), g.Name))
+					}
+				}
+			}
+			out = append(out, o)
+		case opt.Boolean != nil:
+			b := opt.Boolean
+			cur := "false"
+			if b.CurrentValue {
+				cur = "true"
+			}
+			o := SessionConfigOption{
+				ID:           string(b.Id),
+				Name:         b.Name,
+				Type:         ConfigOptionTypeToggle,
+				CurrentValue: cur,
+				Options: []SessionConfigOptionValue{
+					{Value: "true", Name: "On"},
+					{Value: "false", Name: "Off"},
+				},
+			}
+			if b.Description != nil {
+				o.Description = *b.Description
+			}
+			if b.Category != nil {
+				o.Category = string(*b.Category)
+			}
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+func configValueFromACP(v acp.SessionConfigSelectOption, group, groupName string) SessionConfigOptionValue {
+	val := SessionConfigOptionValue{Value: string(v.Value), Name: v.Name, Group: group, GroupName: groupName}
+	if v.Description != nil {
+		val.Description = *v.Description
+	}
+	return val
+}

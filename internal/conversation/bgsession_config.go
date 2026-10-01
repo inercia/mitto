@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -220,6 +221,118 @@ func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID stri
 		return err
 	}
 	return fmt.Errorf("no ACP connection")
+}
+
+// cmSetSessionConfigOption sends session/set_config_option for an agent-advertised
+// select and returns the agent's full replacement snapshot.
+func (bs *BackgroundSession) cmSetSessionConfigOption(ctx context.Context, id, value string) ([]SessionConfigOption, error) {
+	if bs.sharedProcess != nil {
+		setter, ok := bs.sharedProcess.(ConfigOptionSetter)
+		if !ok {
+			return nil, fmt.Errorf("agent connection does not support setting config options")
+		}
+		return setter.SetSessionConfigOption(ctx, bs.acpID, id, value)
+	}
+	if bs.acpConn != nil {
+		resp, err := bs.acpConn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+			ValueId: &acp.SetSessionConfigOptionValueId{
+				SessionId: acp.SessionId(bs.acpID),
+				ConfigId:  acp.SessionConfigId(id),
+				Value:     acp.SessionConfigValueId(value),
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return ConfigOptionsFromACP(resp.ConfigOptions), nil
+	}
+	return nil, fmt.Errorf("no ACP connection")
+}
+
+func (bs *BackgroundSession) cmReplaceGenericConfigOptions(opts []SessionConfigOption) {
+	bs.cbReplaceGenericConfigOptions(opts)
+}
+
+func (bs *BackgroundSession) cmLockConfigRPC()   { bs.configRPCMu.Lock() }
+func (bs *BackgroundSession) cmUnlockConfigRPC() { bs.configRPCMu.Unlock() }
+
+// cmPersistConfigOverride records an explicit operator selection, scoped to the
+// ACP provider and the agent's opaque option ID. Agent defaults never go here.
+func (bs *BackgroundSession) cmPersistConfigOverride(configID, value string) {
+	if bs.store == nil || bs.persistedID == "" {
+		return
+	}
+	key := session.ConfigOverrideKey(bs.acpServer, configID)
+	if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+		if m.ConfigOptionOverrides == nil {
+			m.ConfigOptionOverrides = map[string]string{}
+		}
+		m.ConfigOptionOverrides[key] = value
+	}); err != nil && bs.logger != nil {
+		bs.logger.Warn("Failed to persist config option override", "config_id", configID, "error", err)
+	}
+}
+
+// cmReapplyConfigOverrides re-applies persisted operator selections after a
+// resume/new session, only for options still advertised with a valid value that
+// differs from the agent's current one. Stale entries are dropped.
+func (bs *BackgroundSession) reapplyConfigOverrides(ctx context.Context) {
+	if bs.store == nil || bs.persistedID == "" || bs.IsClosed() {
+		return
+	}
+	meta, err := bs.store.GetMetadata(bs.persistedID)
+	if err != nil || len(meta.ConfigOptionOverrides) == 0 {
+		return
+	}
+	prefix := session.ConfigOverrideKey(bs.acpServer, "")
+	var stale []string
+	for key, value := range meta.ConfigOptionOverrides {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		id := strings.TrimPrefix(key, prefix)
+		opt, ok := bs.cmFindByID(id)
+		if !ok {
+			// Not advertised right now (e.g. the active model lacks it): keep the
+			// override but do not apply it.
+			continue
+		}
+		if !isGenericConfigOption(opt) || !configOptionHasValue(opt, value) {
+			stale = append(stale, key)
+			continue
+		}
+		if opt.CurrentValue == value {
+			continue
+		}
+		bs.configRPCMu.Lock()
+		snap, err := bs.cmSetSessionConfigOption(ctx, id, value)
+		bs.configRPCMu.Unlock()
+		if err != nil {
+			if bs.logger != nil {
+				bs.logger.Warn("Failed to re-apply config option override", "config_id", id, "error", err)
+			}
+			continue
+		}
+		if len(snap) > 0 {
+			bs.cmReplaceGenericConfigOptions(snap)
+		}
+	}
+	if len(stale) > 0 {
+		_ = bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+			for _, k := range stale {
+				delete(m.ConfigOptionOverrides, k)
+			}
+		})
+	}
+}
+
+func configOptionHasValue(opt SessionConfigOption, value string) bool {
+	for _, v := range opt.Options {
+		if v.Value == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (bs *BackgroundSession) cmGetConfigOptions() []SessionConfigOption {

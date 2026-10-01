@@ -309,6 +309,12 @@ type BackgroundSession struct {
 	pendingConfigMu sync.Mutex
 	pendingConfig   map[string]string
 
+	// configRPCMu is held for the duration of an idle generic-select
+	// session/set_config_option RPC. A prompt turn waits on it (never while
+	// holding promptMu) so the change is acked before the prompt is admitted
+	// to the agent. Lock order: promptMu → configRPCMu.
+	configRPCMu sync.Mutex
+
 	// Global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	globalMcpServer *mcpserver.Server
@@ -368,13 +374,14 @@ type BackgroundSession struct {
 	// When pendingShared is true, session/new has not yet been called;
 	// it is deferred to the first prompt to avoid blocking the create path
 	// when the shared agent process is busy.
-	pendingShared           bool
-	pendingSharedMu         sync.Mutex                         // Guards the lazy handshake (idempotency)
-	pendingSharedWorkingDir string                             // Stored for deferred session/new RPC
-	pendingSharedMcpServers []agentbackend.MCPServerDescriptor // Must be empty slice, not nil — ACP validates this
-	pendingSharedModes      *agentbackend.ModeState            // Modes from NewSession, applied by applyPendingSharedModes
-	pendingSharedModels     *SessionModelState                 // Models from NewSession, applied by applyPendingSharedModes
-	pendingSharedModelCfgId string                             // Opaque wire id for the model option, applied alongside models
+	pendingShared              bool
+	pendingSharedMu            sync.Mutex                         // Guards the lazy handshake (idempotency)
+	pendingSharedWorkingDir    string                             // Stored for deferred session/new RPC
+	pendingSharedMcpServers    []agentbackend.MCPServerDescriptor // Must be empty slice, not nil — ACP validates this
+	pendingSharedModes         *agentbackend.ModeState            // Modes from NewSession, applied by applyPendingSharedModes
+	pendingSharedModels        *SessionModelState                 // Models from NewSession, applied by applyPendingSharedModes
+	pendingSharedConfigOptions []SessionConfigOption              // Generic agent-advertised selects stashed by the deferred handshake
+	pendingSharedModelCfgId    string                             // Opaque wire id for the model option, applied alongside models
 
 	// handshakeMu serialises the full deferred-handshake completion (session/new
 	// RPC + store writes + mode/model application + acp_started notification) so the

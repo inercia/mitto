@@ -2515,15 +2515,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
-		OnConfigOptionChanged: func(sessionID string, configID, value string) {
-			if sm.eventsManager != nil {
-				sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
-					"session_id": sessionID,
-					"config_id":  configID,
-					"value":      value,
-				})
-			}
-		},
+		OnConfigOptionChanged:   sm.broadcastConfigOptionChanged,
 		OnAgentAuthStateChanged: sm.broadcastAgentAuthState,
 		OnTitleGenerated: func(sessionID, title string) {
 			if sm.eventsManager != nil {
@@ -2664,6 +2656,27 @@ func (sm *SessionManager) PromptingSessionCount() int {
 		}
 	}
 	return count
+}
+
+// broadcastConfigOptionChanged broadcasts a config change together with the
+// authoritative full config snapshot (always an array) so clients can replace
+// their copy, including options that disappeared or whose values changed.
+func (sm *SessionManager) broadcastConfigOptionChanged(sessionID, configID, value string) {
+	if sm.eventsManager == nil {
+		return
+	}
+	options := []SessionConfigOption{}
+	if bs := sm.GetSession(sessionID); bs != nil {
+		if snapshot := bs.ConfigOptions(); snapshot != nil {
+			options = snapshot
+		}
+	}
+	sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+		"session_id":     sessionID,
+		"config_id":      configID,
+		"value":          value,
+		"config_options": options,
+	})
 }
 
 // GetSession returns a running session by ID, or nil if not found.
@@ -3198,15 +3211,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		OnPlanStateChanged: func(sessionID string, entries []PlanEntry) {
 			sm.SetCachedPlanState(sessionID, entries)
 		},
-		OnConfigOptionChanged: func(sessionID string, configID, value string) {
-			if sm.eventsManager != nil {
-				sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
-					"session_id": sessionID,
-					"config_id":  configID,
-					"value":      value,
-				})
-			}
-		},
+		OnConfigOptionChanged:   sm.broadcastConfigOptionChanged,
 		OnAgentAuthStateChanged: sm.broadcastAgentAuthState,
 		OnTitleGenerated: func(sessionID, title string) {
 			if sm.eventsManager != nil {

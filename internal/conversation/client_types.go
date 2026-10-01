@@ -39,6 +39,11 @@ type SessionConfigOptionValue struct {
 	Name string `json:"name"`
 	// Description explains what this value does.
 	Description string `json:"description,omitempty"`
+	// Group is the opaque id of the agent-declared group this value belongs to
+	// (empty for ungrouped options). Agent ordering is preserved.
+	Group string `json:"group,omitempty"`
+	// GroupName is the human-readable label of Group.
+	GroupName string `json:"group_name,omitempty"`
 }
 
 // ConfigOptionCategory constants for well-known categories.

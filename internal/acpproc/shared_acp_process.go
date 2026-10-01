@@ -2195,6 +2195,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				Modes:         conversation.ModeStateFromACP(sessResp.Modes),
 				Models:        models,
 				ModelConfigId: string(modelCfgId),
+				ConfigOptions: conversation.ConfigOptionsFromACP(sessResp.ConfigOptions),
 			}
 			if p.logger != nil {
 				p.logger.Info("Created new ACP session on shared process",
@@ -2467,6 +2468,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		Modes:         conversation.ModeStateFromACP(loadResp.Modes),
 		Models:        loadModels,
 		ModelConfigId: string(loadModelCfgId),
+		ConfigOptions: conversation.ConfigOptionsFromACP(loadResp.ConfigOptions),
 		Process:       p,
 	}
 
@@ -2557,6 +2559,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 		Modes:         conversation.ModeStateFromACP(resumeResp.Modes),
 		Models:        resumeModels,
 		ModelConfigId: string(resumeModelCfgId),
+		ConfigOptions: conversation.ConfigOptionsFromACP(resumeResp.ConfigOptions),
 		Process:       p,
 	}
 
@@ -3063,24 +3066,35 @@ func isRetryableCreateError(err error) bool {
 		strings.Contains(msg, "timed out")
 }
 
-// SetSessionConfigOption sets a config option for a specific session.
-// TODO: Implement when SDK supports SetSessionConfigOption
-func (p *SharedACPProcess) SetSessionConfigOption(ctx context.Context, sessionID acp.SessionId, configID, value string) error {
-	// p.mu.RLock()
-	// conn := p.conn
-	// p.mu.RUnlock()
-
-	// if conn == nil {
-	// 	return fmt.Errorf("shared ACP process is not running")
-	// }
-
-	// _, err := conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
-	// 	SessionId: sessionID,
-	// 	ConfigId:  acp.SessionConfigId(configID),
-	// 	Value:     acp.SessionConfigValueId(value),
-	// })
-	// return err
-	return fmt.Errorf("SetSessionConfigOption not yet implemented in SDK")
+// SetSessionConfigOption sets an agent-advertised select option for a session
+// via session/set_config_option. The ACP response carries the agent's COMPLETE
+// config state (dependent options may have changed or disappeared), so the full
+// replacement snapshot is returned. It is a single attempt: the caller owns
+// retry/ack policy and deliberately never replays a change into a later turn.
+func (p *SharedACPProcess) SetSessionConfigOption(ctx context.Context, sessionID string, configID, value string) ([]conversation.SessionConfigOption, error) {
+	p.mu.RLock()
+	conn := p.conn
+	p.mu.RUnlock()
+	if conn == nil {
+		return nil, fmt.Errorf("shared ACP process is not running")
+	}
+	resp, err := conn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+		ValueId: &acp.SetSessionConfigOptionValueId{
+			SessionId: acp.SessionId(sessionID),
+			ConfigId:  acp.SessionConfigId(configID),
+			Value:     acp.SessionConfigValueId(value),
+		},
+	})
+	if err != nil {
+		if isAgentInternalDeadlineErr(err) || errors.Is(err, context.DeadlineExceeded) {
+			p.recordRPCTimeout()
+		} else if isAgentQueryClosedErr(err) {
+			p.recordRPCWedgeFailure()
+		}
+		return nil, err
+	}
+	p.recordRPCSuccess()
+	return conversation.ConfigOptionsFromACP(resp.ConfigOptions), nil
 }
 
 // Done returns a channel that is closed when the ACP process exits.

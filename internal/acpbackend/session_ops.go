@@ -165,4 +165,24 @@ func (c *Connection) SetMode(ctx context.Context, ref agentbackend.SessionRef, m
 	return nil
 }
 
+// SetConfigOption implements the optional agentbackend.ConfigSetter. Success is
+// reported only after the agent acknowledges the change; the returned slice is
+// the agent's full replacement option state.
+func (c *Connection) SetConfigOption(ctx context.Context, ref agentbackend.SessionRef, optionID, value string) ([]agentbackend.ConfigOption, error) {
+	sess, err := c.lookupSession(ref)
+	if err != nil {
+		return nil, err
+	}
+	setter, ok := c.process.(conversation.ConfigOptionSetter)
+	if !ok {
+		return nil, &agentbackend.UnsupportedError{Feature: agentbackend.FeatureConfigSelection}
+	}
+	opts, err := setter.SetSessionConfigOption(ctx, sess.handle.SessionID, optionID, value)
+	if err != nil {
+		return nil, translateError(err, agentbackend.FeatureConfigSelection)
+	}
+	return ToNeutralConfigOptions(opts), nil
+}
+
 var _ agentbackend.SessionOps = (*Connection)(nil)
+var _ agentbackend.ConfigSetter = (*Connection)(nil)

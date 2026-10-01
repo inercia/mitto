@@ -34,11 +34,12 @@ type WebClient struct {
 	isLoadingSession atomic.Bool
 
 	// Callbacks for file operations (not buffered)
-	onFileWrite          func(seq int64, path string, size int)
-	onFileRead           func(seq int64, path string, size int)
-	onPermission         func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
-	onAvailableCommands  func(commands []AvailableCommand)
-	onCurrentModeChanged func(modeID string)
+	onFileWrite           func(seq int64, path string, size int)
+	onFileRead            func(seq int64, path string, size int)
+	onPermission          func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
+	onAvailableCommands   func(commands []AvailableCommand)
+	onCurrentModeChanged  func(modeID string)
+	onConfigOptionsUpdate func(options []SessionConfigOption)
 	// onMittoToolCall is called when any mitto_* tool call is detected.
 	onMittoToolCall func(selfID string)
 	// onContextUsageUpdate is called when the agent sends a context window usage update.
@@ -83,6 +84,9 @@ type WebClientConfig struct {
 	OnPermission         func(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error)
 	OnAvailableCommands  func(commands []AvailableCommand)
 	OnCurrentModeChanged func(modeID string)
+	// OnConfigOptionsUpdate receives a REPLACEMENT snapshot of the agent's full
+	// config option set (options may disappear; allowed values may change).
+	OnConfigOptionsUpdate func(options []SessionConfigOption)
 	// OnMittoToolCall is called when any mitto_* tool call is detected.
 	// This allows registering the self_id for correlation with MCP requests.
 	// The callback receives the self_id extracted from the tool call arguments.
@@ -111,17 +115,18 @@ type WebClientConfig struct {
 // NewWebClient creates a new web-based ACP client.
 func NewWebClient(config WebClientConfig) *WebClient {
 	c := &WebClient{
-		autoApprove:          config.AutoApprove,
-		seqProvider:          config.SeqProvider,
-		logger:               config.Logger,
-		onFileWrite:          config.OnFileWrite,
-		onFileRead:           config.OnFileRead,
-		onPermission:         config.OnPermission,
-		onAvailableCommands:  config.OnAvailableCommands,
-		onCurrentModeChanged: config.OnCurrentModeChanged,
-		onMittoToolCall:      config.OnMittoToolCall,
-		onContextUsageUpdate: config.OnContextUsageUpdate,
-		onActivity:           config.OnActivity,
+		autoApprove:           config.AutoApprove,
+		seqProvider:           config.SeqProvider,
+		logger:                config.Logger,
+		onFileWrite:           config.OnFileWrite,
+		onFileRead:            config.OnFileRead,
+		onPermission:          config.OnPermission,
+		onAvailableCommands:   config.OnAvailableCommands,
+		onCurrentModeChanged:  config.OnCurrentModeChanged,
+		onConfigOptionsUpdate: config.OnConfigOptionsUpdate,
+		onMittoToolCall:       config.OnMittoToolCall,
+		onContextUsageUpdate:  config.OnContextUsageUpdate,
+		onActivity:            config.OnActivity,
 	}
 
 	// Create stream buffer that handles all streaming events.
@@ -216,6 +221,8 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		eventType = "available_commands"
 	case u.CurrentModeUpdate != nil:
 		eventType = "current_mode"
+	case u.ConfigOptionUpdate != nil:
+		eventType = "config_option_update"
 	case u.UsageUpdate != nil:
 		eventType = "usage_update"
 	default:
@@ -328,6 +335,12 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		// Current mode changed; notify immediately.
 		if c.onCurrentModeChanged != nil {
 			c.onCurrentModeChanged(string(u.CurrentModeUpdate.CurrentModeId))
+		}
+
+	case u.ConfigOptionUpdate != nil:
+		// Full replacement snapshot; notify immediately (not seq-dependent).
+		if c.onConfigOptionsUpdate != nil {
+			c.onConfigOptionsUpdate(ConfigOptionsFromACP(u.ConfigOptionUpdate.ConfigOptions))
 		}
 
 	case u.UsageUpdate != nil:

@@ -343,6 +343,11 @@ func (d promptTurnDeps) waitForStartupModel() error {
 	if !d.startupConfigConstraintsReady() {
 		return &sessionError{"the conversation model is still initializing; please retry"}
 	}
+	// An idle generic-option change (e.g. reasoning effort) holds configRPCMu
+	// until session/set_config_option is acked; join it so the next prompt
+	// never overtakes the selection. Never taken while holding promptMu here.
+	d.configRPCMu.Lock()
+	d.configRPCMu.Unlock() //nolint:staticcheck // barrier only
 	return nil
 }
 
@@ -1627,6 +1632,7 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	models, configID, _ := DeriveAgentModels(freshSess.ConfigOptions, freshSess.Models, bs.mittoConfig.EffectiveModelProfiles())
 	bs.modelConfigId = configID // Clear an old ID when the new catalog uses the fallback.
 	bs.callbackSink.setAgentModels(freshSessionModelDeps{bs}, models)
+	bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(freshSess.ConfigOptions))
 	baseline := bs.pdReadBaselineModel()
 	if baseline != "" && models != nil && !models.Synthesized && models.CurrentModelId != baseline {
 		bs.pdWriteOverrideActive(true) // Failed initialization must retain restoration intent.

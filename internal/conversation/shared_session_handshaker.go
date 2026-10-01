@@ -135,12 +135,15 @@ type handshakeDeps interface {
 	hsSetPendingSharedWorkingDir(dir string)
 	hsGetPendingSharedMcpServers() []agentbackend.MCPServerDescriptor
 	hsSetPendingSharedMcpServers(servers []agentbackend.MCPServerDescriptor)
-	hsGetPendingSharedModes() *agentbackend.ModeState  // caller manages pendingSharedMu
-	hsSetPendingSharedModes(m *agentbackend.ModeState) // caller manages pendingSharedMu
-	hsGetPendingSharedModels() *SessionModelState      // caller manages pendingSharedMu
-	hsSetPendingSharedModels(m *SessionModelState)     // caller manages pendingSharedMu
-	hsGetPendingSharedModelConfigId() string           // caller manages pendingSharedMu
-	hsSetPendingSharedModelConfigId(id string)         // caller manages pendingSharedMu
+	hsGetPendingSharedModes() *agentbackend.ModeState           // caller manages pendingSharedMu
+	hsSetPendingSharedModes(m *agentbackend.ModeState)          // caller manages pendingSharedMu
+	hsGetPendingSharedModels() *SessionModelState               // caller manages pendingSharedMu
+	hsSetPendingSharedModels(m *SessionModelState)              // caller manages pendingSharedMu
+	hsGetPendingSharedModelConfigId() string                    // caller manages pendingSharedMu
+	hsSetPendingSharedModelConfigId(id string)                  // caller manages pendingSharedMu
+	hsGetPendingSharedConfigOptions() []SessionConfigOption     // caller manages pendingSharedMu
+	hsSetPendingSharedConfigOptions(opts []SessionConfigOption) // caller manages pendingSharedMu
+	hsApplyConfigOptions(opts []SessionConfigOption)
 
 	// Handshake serialization mutex
 	hsHandshakeLock()
@@ -342,6 +345,7 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 	d.hsSetPendingSharedModes(handle.Modes)
 	d.hsSetPendingSharedModels(handle.Models)
 	d.hsSetPendingSharedModelConfigId(handle.ModelConfigId)
+	d.hsSetPendingSharedConfigOptions(handle.ConfigOptions)
 	d.hsSetPendingShared(false)
 
 	if l := d.hsLogger(); l != nil {
@@ -361,6 +365,8 @@ func (c sharedSessionHandshaker) applyPendingSharedModes(d handshakeDeps) {
 	modes := d.hsGetPendingSharedModes()
 	models := d.hsGetPendingSharedModels()
 	modelCfgId := d.hsGetPendingSharedModelConfigId()
+	cfgOpts := d.hsGetPendingSharedConfigOptions()
+	d.hsSetPendingSharedConfigOptions(nil)
 	d.hsSetPendingSharedModes(nil)
 	d.hsSetPendingSharedModels(nil)
 	d.hsSetPendingSharedModelConfigId("")
@@ -379,6 +385,9 @@ func (c sharedSessionHandshaker) applyPendingSharedModes(d handshakeDeps) {
 	if modelCfgId != "" {
 		d.hsApplyAgentModelConfigId(modelCfgId)
 	}
+	// Generic agent-advertised selects (e.g. reasoning effort) are applied last
+	// so the mode/model entries synthesized above are preserved.
+	d.hsApplyConfigOptions(cfgOpts)
 }
 
 // completeDeferredHandshake performs the deferred handshake, persists the ACP session ID,
@@ -697,6 +706,7 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	if handle.ModelConfigId != "" {
 		d.hsApplyAgentModelConfigId(handle.ModelConfigId)
 	}
+	d.hsApplyConfigOptions(handle.ConfigOptions)
 	d.hsInitACPProcessDone(sharedProcess.ProcessDone())
 
 	if l := d.hsLogger(); l != nil {

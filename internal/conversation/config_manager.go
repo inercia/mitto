@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -181,6 +182,16 @@ type configDeps interface {
 	// Returns the recorder's persistence error (if any) so callers can avoid
 	// logging/broadcasting success when the timeline write failed (mitto-9zy1).
 	cmRecordSessionChange(kind, value, previousValue string) error
+
+	// Generic agent-advertised select support (mitto-3wd). cmSetSessionConfigOption
+	// sends session/set_config_option and returns the agent's full replacement
+	// snapshot. cmLockConfigRPC/cmUnlockConfigRPC serialise generic RPCs with the
+	// next prompt turn (lock order: promptMu -> configRPCMu).
+	cmSetSessionConfigOption(ctx context.Context, id, value string) ([]SessionConfigOption, error)
+	cmReplaceGenericConfigOptions(options []SessionConfigOption)
+	cmLockConfigRPC()
+	cmUnlockConfigRPC()
+	cmPersistConfigOverride(configID, value string)
 }
 
 // configManager is a stateless collaborator owning session-config + model-baseline logic.
@@ -291,6 +302,16 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 	d.cmLockPendingConfig()
 	d.cmDeletePendingEntry(configID)
 	d.cmUnlockPendingConfig()
+	if isGenericConfigOption(found) {
+		// Generic selects must be acked before the next composer prompt is
+		// admitted: take the RPC guard while still holding promptMu so a prompt
+		// turn reserved right after we release it waits for the ack
+		// (waitForStartupModel).
+		d.cmLockConfigRPC()
+		d.cmUnlockPromptMu()
+		defer d.cmUnlockConfigRPC()
+		return c.applyConfigOptionWithOpts(d, ctx, configID, value, recordTimeline)
+	}
 	d.cmUnlockPromptMu()
 
 	return c.applyConfigOptionWithOpts(d, ctx, configID, value, recordTimeline)
@@ -349,6 +370,8 @@ func (c configManager) applyConfigOptionWithBaseline(d configDeps, ctx context.C
 		if recordTimeline {
 			recordErr = d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
 		}
+	} else if isGenericConfigOption(opt) {
+		return c.applyGenericConfigOption(d, ctx, opt, value)
 	} else {
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
 	}
@@ -365,6 +388,40 @@ func (c configManager) applyConfigOptionWithBaseline(d configDeps, ctx context.C
 		return fmt.Errorf("failed to record session change for %s: %w", configID, recordErr)
 	}
 
+	if l := d.cmLogger(); l != nil {
+		l.Info("Config option changed", "config_id", configID, "value", value)
+	}
+	d.cmNotifyConfigChanged(configID, value)
+	return nil
+}
+
+// applyGenericConfigOption sends an agent-advertised select to the agent and
+// installs the agent's full replacement snapshot (the change may add, remove or
+// re-value dependent options). The caller holds the config RPC guard. On
+// rejection the unchanged snapshot is re-broadcast so the UI can roll back.
+func (c configManager) applyGenericConfigOption(d configDeps, ctx context.Context, opt SessionConfigOption, value string) error {
+	configID := opt.ID
+	if opt.Type == ConfigOptionTypeToggle {
+		return fmt.Errorf("config option %s is a toggle, which is not settable", configID)
+	}
+	if !configOptionHasValue(opt, value) {
+		return fmt.Errorf("invalid value for %s: %s", configID, value)
+	}
+	snapshot, err := d.cmSetSessionConfigOption(ctx, configID, value)
+	if err != nil {
+		if l := d.cmLogger(); l != nil {
+			l.Warn("Failed to set config option", "config_id", configID, "value", value, "error", err)
+		}
+		// Authoritative re-broadcast of the unchanged snapshot (UI rollback).
+		d.cmNotifyConfigChanged("", "")
+		return fmt.Errorf("failed to set %s: %w", configID, err)
+	}
+	if len(snapshot) > 0 {
+		d.cmReplaceGenericConfigOptions(snapshot)
+	} else {
+		d.cmUpdateConfigOptionValue(configID, value)
+	}
+	d.cmPersistConfigOverride(configID, value)
 	if l := d.cmLogger(); l != nil {
 		l.Info("Config option changed", "config_id", configID, "value", value)
 	}
@@ -765,13 +822,70 @@ func (c configManager) flushPendingConfig(d configDeps) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for configID, value := range pending {
-		if err := c.applyConfigOptionWithBaseline(d, ctx, configID, value, true, false); err != nil {
+	for _, configID := range orderPendingConfigIDs(pending, d.cmGetConfigOptions()) {
+		value := pending[configID]
+		// Re-validate against the fresh snapshot: a model change may have
+		// removed or reshaped a dependent option since it was queued.
+		var current *SessionConfigOption
+		for _, o := range d.cmGetConfigOptions() {
+			if o.ID == configID {
+				o := o
+				current = &o
+				break
+			}
+		}
+		generic := current != nil && isGenericConfigOption(*current)
+		if generic && !configOptionHasValue(*current, value) {
+			if l := d.cmLogger(); l != nil {
+				l.Warn("Dropping deferred config option no longer valid", "config_id", configID, "value", value)
+			}
+			d.cmNotifyConfigChanged("", "")
+			continue
+		}
+		if generic {
+			d.cmLockConfigRPC()
+		}
+		err := c.applyConfigOptionWithBaseline(d, ctx, configID, value, true, false)
+		if generic {
+			d.cmUnlockConfigRPC()
+		}
+		if err != nil {
 			if l := d.cmLogger(); l != nil {
 				l.Error("Failed to flush deferred config option", "config_id", configID, "value", value, "error", err)
 			}
 		}
 	}
+}
+
+// orderPendingConfigIDs returns pending IDs deterministically: the model
+// first (dependent options are validated against its fresh snapshot), then the
+// rest in agent snapshot order, then any unknown IDs sorted.
+func orderPendingConfigIDs(pending map[string]string, snapshot []SessionConfigOption) []string {
+	ordered := make([]string, 0, len(pending))
+	seen := make(map[string]bool, len(pending))
+	add := func(id string) {
+		if _, ok := pending[id]; ok && !seen[id] {
+			seen[id] = true
+			ordered = append(ordered, id)
+		}
+	}
+	for _, o := range snapshot {
+		if o.Category == ConfigOptionCategoryModel || o.ID == ConfigOptionCategoryModel {
+			add(o.ID)
+		}
+	}
+	add(ConfigOptionCategoryModel)
+	for _, o := range snapshot {
+		add(o.ID)
+	}
+	var rest []string
+	for id := range pending {
+		if !seen[id] {
+			rest = append(rest, id)
+		}
+	}
+	sort.Strings(rest)
+	return append(ordered, rest...)
 }
 
 func (c configManager) persistConfigValue(d configDeps, configID, value string) {

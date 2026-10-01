@@ -123,6 +123,14 @@ type ProcessManager interface {
 	HasLiveProcess(workspaceUUID string) bool
 }
 
+// ConfigOptionSetter is an OPTIONAL capability of a SharedProcess: it sets an
+// agent-advertised select option (opaque id/value) on a session and returns the
+// agent's FULL post-change option state. It is deliberately not part of
+// SharedProcess so existing implementations and fakes need not change.
+type ConfigOptionSetter interface {
+	SetSessionConfigOption(ctx context.Context, sessionID, configID, value string) ([]SessionConfigOption, error)
+}
+
 // EventsBroadcaster abstracts the global events manager (web.GlobalEventsManager)
 // for broadcasting WebSocket events to connected clients.
 type EventsBroadcaster interface {

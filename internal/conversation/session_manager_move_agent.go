@@ -399,6 +399,8 @@ func (sm *SessionManager) moveAgentStopAndRebind(sessionID, previousAgent, targe
 		m.PendingModelMappingFrom = m.BaselineModel
 		m.BaselineModel = ""
 		m.PendingAgentHandoffFrom = previousAgent
+		// Option IDs/values are opaque and provider-specific; do not carry them over.
+		m.ConfigOptionOverrides = nil
 	}); err != nil {
 		return err
 	}

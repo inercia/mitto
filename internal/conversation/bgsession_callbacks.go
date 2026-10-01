@@ -97,6 +97,16 @@ func (bs *BackgroundSession) setSessionModes(modes *acp.SessionModeState) {
 	bs.callbackSink.setSessionModes(bs, modes)
 }
 
+// setConfigOptionsSnapshot installs the agent-advertised generic config options.
+func (bs *BackgroundSession) setConfigOptionsSnapshot(options []SessionConfigOption) {
+	bs.callbackSink.setConfigOptionsSnapshot(bs, options)
+}
+
+// onConfigOptionsUpdate handles an agent config_option_update (replacement snapshot).
+func (bs *BackgroundSession) onConfigOptionsUpdate(options []SessionConfigOption) {
+	bs.callbackSink.onConfigOptionsUpdate(bs, options)
+}
+
 // setAgentModels converts agent model state to a "model" config option.
 // This allows model switching to reuse the config option infrastructure.
 func (bs *BackgroundSession) setAgentModels(models *SessionModelState) {
@@ -390,6 +400,42 @@ func (bs *BackgroundSession) cbReplaceModelConfigOption(modelOption SessionConfi
 	bs.configMu.Unlock()
 }
 
+// isGenericConfigOption reports whether an advertised option is neither the
+// mode nor the model option (those keep their synthesized form).
+func isGenericConfigOption(opt SessionConfigOption) bool {
+	return opt.Category != ConfigOptionCategoryMode &&
+		opt.Category != ConfigOptionCategoryModel &&
+		opt.Category != ConfigOptionCategoryModelOverride
+}
+
+// cbReplaceGenericConfigOptions replaces all generic (non-mode, non-model)
+// options with the supplied snapshot, preserving the existing mode/model
+// entries and the agent's order for the generic ones.
+func (bs *BackgroundSession) cbReplaceGenericConfigOptions(options []SessionConfigOption) {
+	bs.configMu.Lock()
+	next := make([]SessionConfigOption, 0, len(bs.configOptions)+len(options))
+	for _, opt := range bs.configOptions {
+		if !isGenericConfigOption(opt) {
+			next = append(next, opt)
+		}
+	}
+	for _, opt := range options {
+		if !isGenericConfigOption(opt) {
+			continue
+		}
+		next = append(next, cloneConfigOption(opt))
+	}
+	bs.configOptions = next
+	bs.configMu.Unlock()
+}
+
+// cloneConfigOption deep-copies an option so callers cannot alias the stored
+// snapshot.
+func cloneConfigOption(opt SessionConfigOption) SessionConfigOption {
+	opt.Options = append([]SessionConfigOptionValue(nil), opt.Options...)
+	return opt
+}
+
 // cbInitBaselineModelIfEmpty seeds the conversation model once, preferring
 // persisted metadata, then initial-model settings, then the agent default.
 // Persist the resolved choice before startup RPCs so resume and retry agree.
@@ -466,6 +512,10 @@ func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
 		bs.finishStartupConstraintAttempt(generation, generationAware, err)
 		if err != nil {
 			bs.beginStartupConstraintRecovery(category, generation, generationAware)
+		} else if category == ConfigOptionCategoryModel {
+			// The model may change which options are advertised, so restore the
+			// operator's persisted selections only now.
+			bs.reapplyConfigOverrides(bs.ctx)
 		}
 		bs.startupConstraintPending.Add(-1)
 		bs.signalResponseStateChanged()

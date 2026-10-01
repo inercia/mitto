@@ -35,6 +35,9 @@ const (
 	FeaturePermissions    Feature = "permissions"
 	FeatureModelSelection Feature = "model_selection"
 	FeatureModeSelection  Feature = "mode_selection"
+	// FeatureConfigSelection reports whether generic agent-advertised config
+	// options (select values such as reasoning effort) can be set.
+	FeatureConfigSelection Feature = "config_selection"
 	// FeatureMCPHttp reports whether the agent advertised support for the MCP
 	// HTTP transport (ACP's AgentCapabilities.McpCapabilities.Http), used to
 	// choose between a native HTTP MCP server entry and the stdio proxy

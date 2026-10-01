@@ -1960,11 +1960,42 @@ func (c *SessionWSClient) handleSetConfigOption(configID, value string) {
 				"error", err)
 		}
 		c.sendError("Failed to set config: " + err.Error())
+		c.broadcastConfigSnapshot(configID)
 		return
 	}
 
 	// The config change will be broadcast to all clients via the onConfigChanged callback
 	// which is set up in SessionManager
+}
+
+// broadcastConfigSnapshot re-broadcasts the authoritative (unchanged) config
+// snapshot after a rejected change so clients can roll back optimistic state.
+func (c *SessionWSClient) broadcastConfigSnapshot(configID string) {
+	if c.bgSession == nil {
+		return
+	}
+	options := c.bgSession.ConfigOptions()
+	if options == nil {
+		options = []conversation.SessionConfigOption{}
+	}
+	value := ""
+	for _, o := range options {
+		if o.ID == configID {
+			value = o.CurrentValue
+			break
+		}
+	}
+	data := map[string]interface{}{
+		"session_id":     c.sessionID,
+		"config_id":      configID,
+		"value":          value,
+		"config_options": options,
+	}
+	if c.server != nil && c.server.eventsManager != nil {
+		c.server.eventsManager.Broadcast(conversation.WSMsgTypeConfigOptionChanged, data)
+		return
+	}
+	c.sendMessage(conversation.WSMsgTypeConfigOptionChanged, data)
 }
 
 // getServerMaxSeq returns the highest sequence number for this session.
@@ -3129,10 +3160,17 @@ func (c *SessionWSClient) OnAvailableCommandsUpdated(commands []conversation.Ava
 // OnConfigOptionChanged is called when a session config option changes.
 // This is used to notify clients of mode changes and other config option updates.
 func (c *SessionWSClient) OnConfigOptionChanged(configID, value string) {
+	options := []conversation.SessionConfigOption{}
+	if c.bgSession != nil {
+		if snapshot := c.bgSession.ConfigOptions(); snapshot != nil {
+			options = snapshot
+		}
+	}
 	c.sendMessage(conversation.WSMsgTypeConfigOptionChanged, map[string]interface{}{
-		"session_id": c.sessionID,
-		"config_id":  configID,
-		"value":      value,
+		"session_id":     c.sessionID,
+		"config_id":      configID,
+		"value":          value,
+		"config_options": options,
 	})
 }
 

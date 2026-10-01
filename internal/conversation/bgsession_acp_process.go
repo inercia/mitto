@@ -1114,6 +1114,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				}
 				bs.logSessionConfigOptions("resume", resumeResp.ConfigOptions, fallbackTag)
 				bs.setAgentModels(models)
+				bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(resumeResp.ConfigOptions))
 				if cfgId != "" {
 					bs.modelConfigId = cfgId
 				}
@@ -1179,6 +1180,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				}
 				bs.logSessionConfigOptions("load", loadResp.ConfigOptions, fallbackTag)
 				bs.setAgentModels(models)
+				bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(loadResp.ConfigOptions))
 				if cfgId != "" {
 					bs.modelConfigId = cfgId
 				}
@@ -1259,6 +1261,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	}
 	bs.logSessionConfigOptions("new", sessResp.ConfigOptions, fallbackTag)
 	bs.setAgentModels(models)
+	bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(sessResp.ConfigOptions))
 	if cfgId != "" {
 		bs.modelConfigId = cfgId
 	}

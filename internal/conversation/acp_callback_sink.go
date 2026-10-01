@@ -106,6 +106,11 @@ type acpCallbackDeps interface {
 	// cbReplaceModelConfigOption removes any existing model config option
 	// and appends the new one, under the proper mutex.
 	cbReplaceModelConfigOption(modelOption SessionConfigOption)
+	// cbReplaceGenericConfigOptions replaces every agent-advertised config
+	// option that is neither the mode nor the model option (e.g. a
+	// reasoning-effort select) with the supplied replacement snapshot, in
+	// agent order, under the proper mutex.
+	cbReplaceGenericConfigOptions(options []SessionConfigOption)
 	// cbInitBaselineModelIfEmpty initialises baselineModel under modelMu if it
 	// is still empty, preferring persisted metadata over the supplied default.
 	cbInitBaselineModelIfEmpty(defaultModel string)
@@ -620,6 +625,30 @@ func (acpCallbackSink) setSessionModes(d acpCallbackDeps, modes *acp.SessionMode
 
 	d.cbSetLegacyModes(modeOption)
 	d.cbPersistConfigValue(ConfigOptionCategoryMode, string(modes.CurrentModeId))
+}
+
+// setConfigOptionsSnapshot installs the agent-advertised generic config
+// options (everything except the mode and model options, which keep their
+// synthesized form) as a REPLACEMENT snapshot: options absent from the new
+// list are removed and allowed values are taken from the new list. A nil or
+// empty list explicitly removes every generic option. Must run after
+// setSessionModes and setAgentModels so the generic options follow them.
+func (acpCallbackSink) setConfigOptionsSnapshot(d acpCallbackDeps, options []SessionConfigOption) {
+	d.cbReplaceGenericConfigOptions(options)
+}
+
+// onConfigOptionsUpdate handles an agent-originated config_option_update. The
+// notification carries the full config state, so it replaces the generic
+// options wholesale and broadcasts the authoritative snapshot.
+func (acpCallbackSink) onConfigOptionsUpdate(d acpCallbackDeps, options []SessionConfigOption) {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
+		return
+	}
+	d.cbReplaceGenericConfigOptions(options)
+	if lg := d.cbLogger(); lg != nil {
+		lg.Debug("Config options replaced (via agent)", "option_count", len(options))
+	}
+	d.cbNotifyConfigChanged("", "")
 }
 
 // setAgentModels converts agent model state to a "model" config option, enabling
