@@ -3647,8 +3647,14 @@ flushEntries:
 		var busyDeadline time.Time
 		for {
 			if !busyDeadline.IsZero() && !time.Now().Before(busyDeadline) {
-				requeue = append(requeue, entries[i:]...)
-				break flushEntries
+				// mitto-pa1q.1: requeue only THIS entry (not the remaining
+				// tail) and continue draining the rest of the batch. A single
+				// persistently-busy head entry must not head-of-line block
+				// independently-deliverable entries later in the same flush
+				// pass — they get their own fair shot this pass instead of
+				// waiting for the next scheduled flush.
+				requeue = append(requeue, entry)
+				continue flushEntries
 			}
 
 			completion, _, _, lastErr = m.runDispatchRetryLoopTracked(
