@@ -281,16 +281,10 @@ func (m *WorkspaceAuxiliaryManager) ImprovePrompt(ctx context.Context, workspace
 // The userPrompt parameter provides context about what the user asked.
 // Returns an empty slice if no follow-up questions are found.
 func (m *WorkspaceAuxiliaryManager) AnalyzeFollowUpQuestions(ctx context.Context, workspaceUUID, userPrompt, agentMessage string) ([]FollowUpSuggestion, error) {
-	// Truncate very long messages to avoid overwhelming the prompt
-	const maxLen = 4000
-	truncatedUserPrompt := userPrompt
-	if len(truncatedUserPrompt) > maxLen {
-		truncatedUserPrompt = truncatedUserPrompt[:maxLen-3] + "..."
-	}
-	truncatedAgentMsg := agentMessage
-	if len(truncatedAgentMsg) > maxLen {
-		truncatedAgentMsg = truncatedAgentMsg[:maxLen-3] + "..."
-	}
+	// Cap the input so the analyzer prompt stays small regardless of response
+	// size; this is idempotent with any caller-side sanitization.
+	truncatedUserPrompt := TruncateTailBiased(userPrompt, FollowUpMaxUserPromptChars)
+	truncatedAgentMsg := TruncateTailBiased(agentMessage, FollowUpMaxAgentChars)
 
 	prompt := fmt.Sprintf(AnalyzeFollowUpQuestionsPromptTemplate, truncatedUserPrompt, truncatedAgentMsg)
 

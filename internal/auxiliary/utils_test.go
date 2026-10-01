@@ -2,8 +2,59 @@ package auxiliary
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func TestTruncateTailBiased(t *testing.T) {
+	t.Run("short unchanged", func(t *testing.T) {
+		if got := TruncateTailBiased("hello", 100); got != "hello" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("non-positive max unchanged", func(t *testing.T) {
+		if got := TruncateTailBiased("hello", 0); got != "hello" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("long keeps head and tail within cap", func(t *testing.T) {
+		in := "First paragraph.\n\n" + strings.Repeat("x", 10000) + "END?"
+		got := TruncateTailBiased(in, 500)
+		if n := utf8.RuneCountInString(got); n > 500 {
+			t.Errorf("len = %d, want <= 500", n)
+		}
+		if !strings.HasPrefix(got, "First paragraph.") {
+			t.Errorf("lost first paragraph: %q", got[:30])
+		}
+		if !strings.HasSuffix(got, "END?") {
+			t.Errorf("lost tail")
+		}
+	})
+	t.Run("multibyte is rune safe", func(t *testing.T) {
+		in := strings.Repeat("héllo wörld 世界 ", 1000)
+		got := TruncateTailBiased(in, 200)
+		if !utf8.ValidString(got) {
+			t.Error("invalid UTF-8 output")
+		}
+		if n := utf8.RuneCountInString(got); n > 200 {
+			t.Errorf("len = %d, want <= 200", n)
+		}
+	})
+	t.Run("idempotent", func(t *testing.T) {
+		in := "Intro.\n\n" + strings.Repeat("y", 5000) + "tail"
+		once := TruncateTailBiased(in, 300)
+		if twice := TruncateTailBiased(once, 300); twice != once {
+			t.Errorf("not idempotent")
+		}
+	})
+	t.Run("tiny max returns tail", func(t *testing.T) {
+		got := TruncateTailBiased("abcdefghijklmnop", 3)
+		if got != "nop" {
+			t.Errorf("got %q", got)
+		}
+	})
+}
 
 func TestStripMarkdownFences(t *testing.T) {
 	tests := []struct {

@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -43,6 +46,8 @@ type fakeFollowUpDeps struct {
 	// injected returns
 	analyzeResult     []ActionButton
 	analyzeErr        error
+	analyzeUserPrompt string
+	analyzeAgentMsg   string
 	readEventsResult  []session.Event
 	readEventsErr     error
 	getUserDataResult *session.UserData
@@ -98,7 +103,11 @@ func (f *fakeFollowUpDeps) fuGetActionButtonsStore() *session.ActionButtonsStore
 func (f *fakeFollowUpDeps) fuGetEventCount() int                                 { return f.eventCount }
 
 func (f *fakeFollowUpDeps) fuHasAuxiliaryManager() bool { return f.auxAvailable }
-func (f *fakeFollowUpDeps) fuAnalyzeFollowUpQuestions(_ context.Context, _, _, _ string) ([]ActionButton, error) {
+func (f *fakeFollowUpDeps) fuAnalyzeFollowUpQuestions(_ context.Context, _, userPrompt, agentMessage string) ([]ActionButton, error) {
+	f.mu.Lock()
+	f.analyzeUserPrompt = userPrompt
+	f.analyzeAgentMsg = agentMessage
+	f.mu.Unlock()
 	return f.analyzeResult, f.analyzeErr
 }
 
@@ -453,3 +462,47 @@ func TestFollowUpCoordinator_ApplyAfterProcessors_UserDataPatch(t *testing.T) {
 }
 
 func tNow() time.Time { return time.Now() }
+
+func TestFollowUpCoordinator_AnalyzeCapsLargeInput(t *testing.T) {
+	c := followUpCoordinator{}
+	d := newFakeFollowUpDeps()
+	d.auxAvailable = true
+
+	opening := "Opening summary paragraph."
+	closing := "Would you like me to run the tests?"
+	agentMsg := opening + "\n\n" + strings.Repeat("filler line\n", 5000) + closing
+	userPrompt := strings.Repeat("u", 10000)
+
+	c.analyzeFollowUpQuestions(d, userPrompt, agentMsg)
+
+	d.mu.Lock()
+	gotUser, gotAgent := d.analyzeUserPrompt, d.analyzeAgentMsg
+	d.mu.Unlock()
+
+	if n := utf8.RuneCountInString(gotAgent); n > auxiliary.FollowUpMaxAgentChars {
+		t.Errorf("agent message = %d runes, want <= %d", n, auxiliary.FollowUpMaxAgentChars)
+	}
+	if n := utf8.RuneCountInString(gotUser); n > auxiliary.FollowUpMaxUserPromptChars {
+		t.Errorf("user prompt = %d runes, want <= %d", n, auxiliary.FollowUpMaxUserPromptChars)
+	}
+	if !strings.HasPrefix(gotAgent, opening) {
+		t.Errorf("agent message lost its first paragraph: %q", gotAgent[:40])
+	}
+	if !strings.HasSuffix(gotAgent, closing) {
+		t.Errorf("agent message lost its tail")
+	}
+}
+
+func TestFollowUpCoordinator_AnalyzeLeavesSmallInputUntouched(t *testing.T) {
+	c := followUpCoordinator{}
+	d := newFakeFollowUpDeps()
+	d.auxAvailable = true
+
+	c.analyzeFollowUpQuestions(d, "short prompt", "short answer?")
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.analyzeUserPrompt != "short prompt" || d.analyzeAgentMsg != "short answer?" {
+		t.Errorf("small input modified: %q / %q", d.analyzeUserPrompt, d.analyzeAgentMsg)
+	}
+}

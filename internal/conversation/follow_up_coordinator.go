@@ -9,6 +9,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -84,6 +85,14 @@ func (c followUpCoordinator) sendCachedActionButtonsTo(d followUpDeps, observer 
 	observer.OnActionButtons(buttons)
 }
 
+// sanitizeFollowUpInput bounds the text sent to the follow-up analyzer: the
+// agent message keeps its first paragraph and tail (follow-up questions are at
+// the end), and the user prompt is capped smaller.
+func sanitizeFollowUpInput(userPrompt, agentMessage string) (string, string) {
+	return auxiliary.TruncateTailBiased(userPrompt, auxiliary.FollowUpMaxUserPromptChars),
+		auxiliary.TruncateTailBiased(agentMessage, auxiliary.FollowUpMaxAgentChars)
+}
+
 // analyzeFollowUpQuestions asynchronously analyzes an agent message for follow-up questions.
 // It guards against concurrent analysis using the followUpInProgress atomic flag (CAS).
 func (c followUpCoordinator) analyzeFollowUpQuestions(d followUpDeps, userPrompt, agentMessage string) {
@@ -102,6 +111,7 @@ func (c followUpCoordinator) analyzeFollowUpQuestions(d followUpDeps, userPrompt
 		d.fuLogger().Debug("follow-up analysis skipped: session closed")
 		return
 	}
+	userPrompt, agentMessage = sanitizeFollowUpInput(userPrompt, agentMessage)
 	d.fuLogger().Debug("follow-up analysis: starting",
 		"user_prompt_length", len(userPrompt),
 		"agent_message_length", len(agentMessage),

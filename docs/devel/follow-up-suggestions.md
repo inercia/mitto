@@ -137,6 +137,37 @@ The analysis looks for:
 - Implicit decision points ("Would you like me to...")
 - Common follow-up actions based on context
 
+### Input Capping (cost control)
+
+The analyzer only needs the *question* the agent ended with, so its input is
+bounded regardless of response size. `auxiliary.TruncateTailBiased` (in
+`internal/auxiliary/utils.go`) is applied to both inputs:
+
+| Input              | Cap constant                          | Default   |
+| ------------------ | ------------------------------------- | --------- |
+| Agent message      | `auxiliary.FollowUpMaxAgentChars`     | 2000 runes |
+| User prompt        | `auxiliary.FollowUpMaxUserPromptChars`| 800 runes |
+
+Strategy: keep the **first paragraph** (capped at ¼ of the budget), an
+elision marker (`[...]`), then as much of the **tail** as fits. Truncation is
+rune-safe and idempotent. It runs in
+`FollowUpCoordinator.sanitizeFollowUpInput` and again (as a no-op) in
+`WorkspaceAuxiliaryManager.AnalyzeFollowUpQuestions`. Thoughts and tool calls
+are never included (`session.GetLastAgentMessage` only reads agent messages).
+
+Note: the fixed prompt template
+(`internal/auxiliary/prompts/analyze_followup_questions.txt`, ~3k chars) is
+added on top of the capped content, so the total prompt is ~6k chars at the caps.
+
+### Model Selection
+
+Auxiliary sessions use a workspace-level model preference
+(`AuxiliaryModelProfile` > `AuxiliaryModelTag` > `AuxiliaryModelSelection`,
+resolved in `internal/acpproc/acp_process_manager.go`). Setting the workspace
+`AuxiliaryModelTag` to `Cheap` (e.g. the `Claude Haiku` profile) routes
+follow-up analysis to a cheap model. Per-purpose routing (only
+`PurposeFollowUp`) is not yet supported.
+
 ## Client Connection Flow
 
 When a new client connects, it receives cached suggestions immediately:

@@ -12,6 +12,52 @@ type FollowUpSuggestion struct {
 	Value string `json:"value"` // Full response to send when clicked
 }
 
+const (
+	// FollowUpMaxAgentChars caps the agent response (in runes) sent to the
+	// follow-up analyzer. Follow-up questions live at the end of a response.
+	FollowUpMaxAgentChars = 2000
+	// FollowUpMaxUserPromptChars caps the user prompt (in runes) sent to the
+	// follow-up analyzer. Together with the agent cap this keeps the analyzer
+	// input at roughly 3k characters.
+	FollowUpMaxUserPromptChars = 800
+
+	elisionMarker = "\n[...]\n"
+)
+
+// TruncateTailBiased shortens s to at most maxRunes runes, keeping the first
+// paragraph (up to a quarter of the budget) and the tail, joined by an elision
+// marker. It is rune-safe and idempotent: input within the budget is returned
+// unchanged, and the output of a previous call is never shortened again.
+func TruncateTailBiased(s string, maxRunes int) string {
+	runes := []rune(s)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return s
+	}
+	marker := []rune(elisionMarker)
+	if maxRunes <= len(marker) {
+		return string(runes[len(runes)-maxRunes:])
+	}
+
+	headBudget := maxRunes / 4
+	headEnd := len(runes)
+	if idx := strings.Index(s, "\n\n"); idx >= 0 {
+		headEnd = len([]rune(s[:idx]))
+	}
+	if headEnd > headBudget {
+		headEnd = headBudget
+	}
+	head := runes[:headEnd]
+
+	tailBudget := maxRunes - len(head) - len(marker)
+	tail := runes[len(runes)-tailBudget:]
+
+	var b strings.Builder
+	b.WriteString(string(head))
+	b.WriteString(elisionMarker)
+	b.WriteString(string(tail))
+	return b.String()
+}
+
 // trimQuotes removes surrounding quotes from a string.
 func trimQuotes(s string) string {
 	s = strings.TrimSpace(s)

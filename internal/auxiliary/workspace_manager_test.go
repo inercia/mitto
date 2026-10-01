@@ -238,6 +238,35 @@ func TestWorkspaceAuxiliaryManager_ImprovePrompt(t *testing.T) {
 	}
 }
 
+func TestWorkspaceAuxiliaryManager_AnalyzeFollowUpQuestions_PromptSizeBounded(t *testing.T) {
+	var got []string
+	mock := &mockProcessProvider{
+		promptFunc: func(_ context.Context, _, _, message string) (string, error) {
+			got = append(got, message)
+			return `[]`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+	if _, err := mgr.AnalyzeFollowUpQuestions(context.Background(), "ws", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.AnalyzeFollowUpQuestions(context.Background(), "ws",
+		strings.Repeat("u", 50000), strings.Repeat("a", 200000)); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d prompts, want 2", len(got))
+	}
+
+	// The template is fixed overhead; only the variable content is capped.
+	variable := len([]rune(got[1])) - len([]rune(got[0]))
+	maxVariable := FollowUpMaxAgentChars + FollowUpMaxUserPromptChars
+	if variable > maxVariable {
+		t.Errorf("variable content = %d runes, want <= %d", variable, maxVariable)
+	}
+}
+
 func TestWorkspaceAuxiliaryManager_AnalyzeFollowUpQuestions(t *testing.T) {
 	tests := []struct {
 		name         string
