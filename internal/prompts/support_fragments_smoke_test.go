@@ -84,6 +84,7 @@ func TestNoTextUIFragmentRenders(t *testing.T) {
 		"Support: gather more information",
 		"Support: housekeeping",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 	}
 	for _, name := range consumers {
@@ -113,6 +114,7 @@ func TestBeadMarkdownConventionFragmentRenders(t *testing.T) {
 		"Support: gather more information",
 		"Support: housekeeping",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 	}
 	for _, name := range consumers {
@@ -145,7 +147,7 @@ func TestReplyFenceConventionFragmentRenders(t *testing.T) {
 	}{
 		{"Support: reply to user", "reply"},
 		{"Support: gather more information", "clarifying message"},
-		{"Support: investigate", "reply"},
+		{"Support: compose draft", "reply"},
 		{"Support: continue conversation", "reply"},
 	}
 	for _, tc := range cases {
@@ -183,6 +185,7 @@ func TestPriorityRubricFragmentRenders(t *testing.T) {
 		"Support: continue conversation",
 		"Support: gather more information",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 	}
 	for _, name := range consumers {
@@ -205,6 +208,7 @@ func TestTargetBeadPickerFragmentRenders(t *testing.T) {
 		"Support: check status",
 		"Support: gather more information",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 	}
 	// Linked-bead branch.
@@ -253,6 +257,7 @@ func TestChannelFragmentReadRenders(t *testing.T) {
 		"Support: check status",
 		"Support: gather more information",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 		"Support: watch channel",
 	}
@@ -316,6 +321,7 @@ func TestChannelToneDefaultFallback(t *testing.T) {
 		"Support: continue conversation",
 		"Support: gather more information",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 		"Support: watch channel",
 	}
@@ -701,6 +707,7 @@ func TestSlackToolsFragmentRenders(t *testing.T) {
 		"Support: gather more information",
 		"Support: housekeeping",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: reply to user",
 		"Support: watch channel",
 	}
@@ -715,6 +722,7 @@ func TestSlackToolsFragmentRenders(t *testing.T) {
 		"Support: check status",
 		"Support: housekeeping",
 		"Support: investigate",
+		"Support: compose draft",
 		"Support: watch channel",
 	}
 	for _, name := range readOnly {

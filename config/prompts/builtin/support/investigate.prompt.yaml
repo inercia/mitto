@@ -1,10 +1,12 @@
 name: 'Support: investigate'
-description: 'Investigate a tracked support question internally using the channel playbook fragments (.mitto/support/<channel-id>/{investigation,resources,escalation}.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
+description: 'Research a tracked support question internally using the channel playbook fragments (.mitto/support/<channel-id>/{investigation,resources,escalation}.md) and record the findings on the bead. Research only — drafting the reply is handed off to "Support: compose draft". Never posts to Slack.'
 group: Support
 backgroundColor: '#D1C4E9'
 icon: search
 menus: beadsIssues, conversation
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
+preferredModels:
+  - modelTag: Reasoning
 tags:
 - support
 target:
@@ -28,26 +30,38 @@ prompt: |-
 
   ## Description
 
-  Investigate a tracked support question **on our side** — do the work needed to actually answer it.
-  Use this when we have enough of the customer's context but still need to **find the answer**: follow
-  the channel's playbook fragments (`.mitto/support/<channel-id>/{investigation,resources,escalation,
-  scope,tone,redirects}.md` — one topic per file), correlate with what is on the bead, record what
-  you learn, and — if you reach a confident answer — leave a **draft reply** ready for review.
+  Investigate a tracked support question **on our side** — do the research needed to actually answer
+  it. Use this when we have enough of the customer's context but still need to **find the answer**:
+  follow the channel's playbook fragments (`.mitto/support/<channel-id>/{investigation,resources,
+  escalation,scope,tone,redirects}.md` — one topic per file), correlate with what is on the bead, and
+  record what you learn as `[CONTEXT]` findings.
+
+  > ⚠️ **This prompt is research-only — it never writes the customer-facing draft.** When the research
+  > lands a confident conclusion, it hands off to **"Support: compose draft"**, which writes the
+  > `[OUTBOUND]` DRAFT under a drafting-tuned model. This split is deliberate: deep research and
+  > customer-facing writing want different model tiers, and a model preference only takes effect at the
+  > start of a turn — so the draft must be a **separate turn**.
 
   > **Applicable state:** any open tracked bead. Typically `state:triaged`, `awaiting-us`, or
-  > `gathering-info`. This prompt sets `state:gathering-info` while it works.
+  > `gathering-info`. This prompt sets `state:gathering-info` while it works and leaves it there;
+  > `state:drafting` is set by **"Support: compose draft"**.
 
   ## CRITICAL: User Interaction Rules
 
   {{ template "_shared/no-text-ui" . }}
   >
-  > ⚠️ **This prompt NEVER posts to Slack.** It only investigates and records a draft. Posting is
-  > done — with your approval — by **"Support: reply to user"**.
+  > ⚠️ **This prompt NEVER posts to Slack, and never writes a draft.** It only investigates and
+  > records findings. The draft is written by **"Support: compose draft"**; posting is done — with
+  > your approval — by **"Support: reply to user"**.
+  >
+  > ⚠️ **If this conversation is an unattended spawned child** (`.Session.IsChild` is true, e.g. you
+  > were dispatched by **"Support: watch channel"**), there is nobody watching the chat: use
+  > `mitto_ui_notify` only, and **never** call a blocking tool (`mitto_ui_options`, `mitto_ui_form`,
+  > `mitto_ui_textbox`) — it would hang the child forever.
 
   ## Bead writing conventions (descriptions & comments)
 
   {{ template "beads-issues/shared/markdown-convention" . }}
-  {{ template "_shared/reply-fence-convention" "reply" }}
 
   {{ template "support/shared/message-comment-key" . }}
 
@@ -65,12 +79,19 @@ prompt: |-
     Note the current `state:*` label and the stored `slack_thread_ts` / `slack_channel` / `slack_url`.
   - **Guard — already `state:drafting`?** If the bead is in `state:drafting`, a draft reply already
     exists and is waiting for your review — re-investigating would discard that work. Do **not** swap
-    the state automatically. Instead use `mitto_ui_options` (timeout 300):
-    - **Question**: "This bead already has a draft (`state:drafting`). Investigate again anyway?"
-    - **Options**: `[{label: "Open reply-to-user instead"}, {label: "Re-investigate anyway"}, {label: "Cancel"}]`.
-    - On **"Open reply-to-user instead"** or **"Cancel"** (or timeout): `mitto_ui_notify` (info)
-      suggesting **"Support: reply to user"**, and stop without changing state.
-    - Only on **"Re-investigate anyway"** proceed with the rest of this step.
+    the state automatically.
+  {{- if .Session.IsChild }}
+    - This run is an **unattended child**, so do not ask: `mitto_ui_notify` (info) that the bead
+      already has a draft awaiting review with **"Support: reply to user"**, and **stop** without
+      changing state or re-investigating. Never call a blocking UI tool here.
+  {{- else }}
+    - Use `mitto_ui_options` (timeout 300):
+      - **Question**: "This bead already has a draft (`state:drafting`). Investigate again anyway?"
+      - **Options**: `[{label: "Open reply-to-user instead"}, {label: "Re-investigate anyway"}, {label: "Cancel"}]`.
+      - On **"Open reply-to-user instead"** or **"Cancel"** (or timeout): `mitto_ui_notify` (info)
+        suggesting **"Support: reply to user"**, and stop without changing state.
+      - Only on **"Re-investigate anyway"** proceed with the rest of this step.
+  {{- end }}
   - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts`, and add a
     markdown comment for **each new** message (`[INBOUND]` customer / `[CONTEXT]` others) — "new"
     meaning its Slack `ts` is not already in `bd comments <id>` (see the `ts:` dedup rule). This keeps
@@ -107,7 +128,7 @@ prompt: |-
   ### 3.5 `scope.md` and `tone.md` (readers)
 
   - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "scope" "Purpose" "confirm the question is in scope for this channel before investigating" "Owner" "Support: watch channel" "OwnerAsk" false) }}
-  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "shape the tone/reply guidance when drafting the reply" "Owner" "Support: reply to user" "OwnerAsk" false) }}
+  - {{ template "support/shared/channel-fragment-read" (dict "Channel" $channel "Fragment" "tone" "Purpose" "understand the channel's reply conventions so your findings note the right framing (the draft itself is written later by \"Support: compose draft\")" "Owner" "Support: reply to user" "OwnerAsk" false) }}
 
   ### 3.6 Record reusable findings without editing the playbook
 
@@ -118,9 +139,10 @@ prompt: |-
 
   - **Scope check first.** Using `scope.md` (Step 3.5), confirm the question is something this
     channel is responsible for. If it is clearly **out of scope**, do not fabricate a generic
-    answer — record a `[CONTEXT]` note that it is out of scope (and where it should go, per
-    `redirects.md` if present), and draft a brief redirect instead of a solution. If scope is
-    unclear, treat it as in-scope but lower your confidence.
+    answer — record a `[CONTEXT]` note that it is out of scope **and** where it should go (per
+    `redirects.md` if present), and treat "redirect the customer" as the conclusion to hand off
+    (the redirect wording itself is written by **"Support: compose draft"**). If scope is unclear,
+    treat it as in-scope but lower your confidence.
   - Follow `investigation.md` and `resources.md` to actually find the answer. Pull in whatever they
     point to: the Q&A / knowledge tool, docs links, repos, related tickets, prior resolved beads on
     the same topic, and — where safe and useful — **run simple read-only commands locally** (e.g.
@@ -137,66 +159,99 @@ prompt: |-
     ```
     Header: `**[CONTEXT investigation · YYYY-MM-DD HH:MM UTC]**`. Include: what you checked, the key
     finding(s), any commands + results, documentation links, and a confidence note.
+  - End the comment with an explicit **`Conclusion:`** line that is what the drafting phase will build
+    on — one of: a confident **answer** (with the supporting links), the specific **clarifying
+    question** we must ask the customer, an out-of-scope **redirect** target, or **inconclusive** plus
+    what is blocking. Do **not** write customer-facing prose here; this is an internal finding.
 
-  ## Step 6: Decide the outcome
+  ## Step 6: Decide the outcome (research verdict — no draft here)
 
-  - **Confident answer found** → record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment
-    clearly marked **"DRAFT — not yet posted"** (this is the same draft **"Support: reply to user"**
-    reuses). Header `**[OUTBOUND us · DRAFT — not yet posted · YYYY-MM-DD HH:MM UTC]**`, then the reply
-    itself **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead writing
-    conventions**) so the exact customer-facing text is unambiguous. Then set `state:drafting`
-    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and hand off per
-    Step 7.
-  - **Still missing customer detail** → we need to **ask the customer**, but we must not mark the bead
-    as `need-info` yet: `need-info` means *we have already posted the question and are waiting on the
-    customer*. Until we actually post, the clarifying question is **our** pending action, exactly like an
-    answer draft. So treat the clarifying **question as a draft**: record it as an `[OUTBOUND]`-style
-    *draft* comment clearly marked **"DRAFT — not yet posted"** (header
-    `**[OUTBOUND us · DRAFT (request for info) — not yet posted · YYYY-MM-DD HH:MM UTC]**`), with the
-    question itself **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead
-    writing conventions**). Then set `state:drafting`
-    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`), note what is
-    missing, and hand off per Step 7 — **"Support: reply to user"** reviews and posts it (a clarifying
-    question posts through the same review/approve/post path as any answer). Do **not** set `need-info`
-    here.
-  - **Inconclusive** → leave `state:gathering-info`, record what is blocking, and `mitto_ui_notify`
-    (info) with the suggested next step. Then stop.
+  You reach exactly one of two verdicts. **In neither case do you write customer-facing text.**
 
-  ## Step 7: Hand off the draft (do NOT dump it as chat text, do NOT ask for approval here)
+  - **Findings ready** → the `Conclusion:` from Step 5 is actionable: a confident answer, a specific
+    clarifying question we must ask, or an out-of-scope redirect. Leave the bead at
+    `state:gathering-info` (the drafting phase moves it to `state:drafting`) and hand off per Step 7.
+  - **Inconclusive** → leave `state:gathering-info`, record an explicit `[CONTEXT]` note naming what is
+    blocking and what would unblock it, **do not hand off**, **do not write a draft**, and
+    `mitto_ui_notify` (info) with the suggested next step. Then stop.
 
-  Once a draft is saved and the bead is `state:drafting`, your job is done. **Posting — with an
-  editable review and explicit approval — is the job of "Support: reply to user", not this prompt.**
+  Never set `need-info` here: `need-info` is a *post-ask* state (we already posted the clarifying
+  question and are waiting on the customer), reached only after **"Support: reply to user"** posts.
 
-  - ❌ **NEVER** paste the full draft into the chat as plain text.
-  - ❌ **NEVER** ask a free-text "approve / hold / post?" question. This prompt does not post, so it
-    must not offer to post.
-  - ✅ **Persist first** — the draft is already saved as an `[OUTBOUND]` DRAFT comment on the bead
-    (Step 6); that bead comment is the single source of truth for the reply. Do not rely on the chat
-    transcript to carry the draft.
-  - ✅ Send a short **`mitto_ui_notify`** (success): a draft is ready and **saved on the bead**, review
-    and post it with **"Support: reply to user"**. Include the bead ID. Do not include the full draft
-    body in the notification — just confirm it is saved and where to review it.
-  - ✅ End with a brief one-line chat summary (state is now `drafting`; draft saved on the bead;
-    next step is **"Support: reply to user"**). Do not reproduce the draft.
+  ## Step 7: Hand off to the drafting phase
+
+  The customer-facing draft is written by a **separate prompt, in a separate turn**, so it runs under a
+  drafting-tuned model. Only do this when Step 6 returned **findings ready**.
+
+  {{- if .Permissions.CanSendPrompt }}
+
+  Queue the drafting phase **onto this same conversation** (not a new child — the research context you
+  just built is here, and re-spawning would lose it):
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
+    prompt_name: "Support: compose draft",
+    arguments: { "IssueID": "<bead id>" }
+  )
+  ```
+
+  - `self_id` and `conversation_id` are **both** this conversation's ID — this is a deliberate
+    self-enqueue. It lands as the **next turn** of this conversation, which is exactly what makes the
+    drafting model preference take effect.
+  - Call it **once**, and **only** when the findings are ready. Never call it from the inconclusive
+    branch, and never call it twice for the same bead in one run.
+  - ✅ After a successful enqueue: `mitto_ui_notify` (info) that research is recorded on the bead and
+    the drafting turn is queued. End with a one-line chat summary. **Do not** write a draft yourself,
+    and do not keep working — end the turn so the queued drafting turn can start.
+  - ❌ If the enqueue **fails** (error, tool unavailable, rejected): do **not** fall back to drafting
+    here. Record a `[CONTEXT]` NEXT note on the bead —
+    `**[STATE · <time>]** NEXT: findings ready, drafting turn could not be queued (<reason>) — run
+    "Support: compose draft" on this bead` — then `mitto_ui_notify` (warning) naming the bead and the
+    failure. **Leave the Step 5 findings comment on the bead untouched** — the research must survive the
+    failed handoff so the drafting run can pick it up. Leave `state:gathering-info`.
+  {{- else }}
+
+  ⚠️ **This conversation cannot queue prompts** (no send-prompt permission), so the drafting phase
+  cannot be handed off automatically. **Do not draft here as a fallback** — drafting deliberately runs
+  under a different model.
+
+  - Record a `[CONTEXT]` NEXT note on the bead:
+    `**[STATE · <time>]** NEXT: findings ready — run "Support: compose draft" on this bead (this
+    conversation has no send-prompt permission)`.
+  - `mitto_ui_notify` (warning) naming the bead and that **"Support: compose draft"** must be run
+    manually. **Leave the Step 5 findings comment on the bead untouched** — the research must survive so
+    a later drafting run can pick it up. Leave `state:gathering-info`. Then stop.
+  {{- end }}
+
+  - ❌ **NEVER** write an `[OUTBOUND]` comment, a reply fence (the `BEGIN`/`END REPLY` markers), or
+    any customer-facing prose in this prompt — in **either** branch.
+  - ❌ **NEVER** set `state:drafting` here.
+  - ❌ **NEVER** archive or close this conversation after queueing: archiving between the research turn
+    and the queued drafting turn destroys the handoff.
 
   ## Set priority by intervention urgency (final step)
 
-  Whatever outcome you reached in Step 6, finish by setting the bead's priority to match how urgently
-  *you* (the human) must act. This prompt produces one of two outcomes and prices them accordingly: a
-  saved draft — whether it is an **answer** or a **clarifying question** — makes it **P1**
-  (`state:drafting`, pending *your* approval to post), while still-investigating (`gathering-info`)
-  makes it **P2**. Note we never set `need-info` here: `need-info` is a *post-ask* state (we already
-  posted the clarifying question and are waiting on the customer), reached only after
-  **"Support: reply to user"** posts the draft. In general:
+  Finish by setting the bead's priority to match how urgently *you* (the human) must act. This prompt
+  is research-only, so it never produces the P1 "draft awaiting your approval" state: findings ready
+  with the drafting turn queued, and inconclusive, both leave the bead at `state:gathering-info` and
+  therefore **P2** — nothing is waiting on you yet. **P1** arrives later, when
+  **"Support: compose draft"** saves the draft and sets `state:drafting`. In general:
 
   {{ template "support/shared/priority-rubric" . }}
 
   ## Notes
 
   - Load the bead (`bd show` + `bd comments`) **before** investigating — it is the source of truth.
-  - This prompt is **investigate-and-record** — it never posts a reply to the Slack channel, and it
-    never presents the draft for approval. It saves the draft on the bead and hands off.
-  - Keep the bead the single source of truth: log findings as `[CONTEXT]`, the draft as a marked
-    `[OUTBOUND]` DRAFT, and every state change as `[STATE]`. The chat transcript is **not** a store —
-    the draft must live on the bead, never only in chat.
-  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "investigate" "When" "the investigation is complete (Steps 5–7)" "ChannelStep" " (Step 2)") }}
+  - This prompt is **research-and-record only** — it never posts a reply to the Slack channel, never
+    writes a draft, and never presents anything for approval. It records findings and hands off to
+    **"Support: compose draft"**, which hands off to **"Support: reply to user"**.
+  - Keep the bead the single source of truth: log findings as `[CONTEXT]` and every state change as
+    `[STATE]`. The chat transcript is **not** a store — the findings must live on the bead, never only
+    in chat.
+  - This prompt is usable **manually** (from the Beads issue menu or a conversation) exactly as it is
+    from a dispatched child. The only difference is the `state:drafting` guard in Step 2 (blocking
+    question when attended, notify-and-stop when unattended) and the handoff in Step 7 (self-enqueue
+    when permitted, explicit NEXT note + warning notification when not).
+  {{- template "support/shared/channel-post-phase" (dict "Channel" $channel "Phase" "investigate" "When" "the research is complete (Steps 5–7)" "ChannelStep" " (Step 2)") }}

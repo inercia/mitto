@@ -1349,8 +1349,22 @@ For recurring monitoring and routing prompts, prefer a task-appropriate tier
 such as `Coding` over inheriting a potentially expensive conversation baseline.
 Keep phase-specific preferences on the actual work prompts: a driver using
 `Coding` can dispatch an investigation or review prompt using `Reasoning`.
-Tags describe capabilities, not credit prices; check the selected model and
-retry rate before treating a tag change as a cost saving.
+For example, the built-in `Support: watch channel` uses `Cheap` with `Coding`
+as an availability fallback to discover and reconcile tickets. It delegates
+one-off ticket research to `Support: investigate` (`Reasoning`), which queues
+`Support: compose draft` (`Coding`) as a separate turn when findings are ready.
+The watcher needs **Can start conversation** and **Can Send Prompt** enabled:
+the latter is inherited by its children and is required for the research
+child to queue its own composition turn. If either permission is unavailable,
+the watcher must leave an actionable next step instead of silently treating
+the ticket as handled.
+The draft stays on the bead for explicit human review via `Support: reply to
+user`; no unattended phase posts to Slack. This avoids repeated per-ticket
+loop runs while waiting for a customer or an approval. `Cheap → Coding` is
+**not** automatic escalation when a cheap model gives a poor answer: it only
+falls back when the first preference is unavailable. Tags describe
+capabilities, not credit prices; check the selected model and retry rate
+before treating a tag change as a cost saving.
 
 A bare string is also accepted as shorthand for `{modelTag: <value>}`, either for
 the whole field or for individual list entries (`preferredModels: Reasoning`,
