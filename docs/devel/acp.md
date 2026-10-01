@@ -331,6 +331,120 @@ advertised select next to the model selector.
   `MOCK_REJECT_CONFIG_OPTION=<id>=<value>`) records request ordering; see
   `tests/integration/inprocess/thought_level_config_test.go`.
 
+### Reconciling Dependent Config After a Model Change (mitto-bnk)
+
+A model switch can silently invalidate a previously-selected dependent option
+(e.g. the `thought_level`/`reasoning_effort` select): the new model may not
+advertise the option at all, or may advertise it with a different, narrower
+set of allowed values. `internal/conversation/config_manager.go`
+(`setModelAndReconcile` / `reconcileDependentConfigAfterModelChange` /
+`applyPreferencesToSnapshot`) reconciles this deterministically instead of
+leaving a stale operator preference silently dangling:
+
+- **Model RPC first, dependent options second**: `setModelAndReconcile` issues
+  the model-change RPC, then reconciles every previously-set dependent config
+  override (local overrides merged with any options carried over from the same
+  batch) against the **new** snapshot. Ordering is always model-before-dependents,
+  never the reverse.
+- **`session/set_model` vs `session/set_config_option`**: `SharedACPProcess.SetSessionModel`
+  (`internal/acpproc/shared_acp_process.go`) calls the dedicated ACP 0.13+
+  `session/set_model` RPC first; if the agent replies with JSON-RPC `-32601
+  Method not found`, Mitto falls back to the legacy generic
+  `session/set_config_option` RPC using `conversation.ModelConfigId`. Both paths
+  converge on the same reconciliation logic below — the mock ACP server
+  (`tests/mocks/acp-server/types.go`) implements both for test coverage (see
+  bead `mitto-vd5` for the original RPC split).
+- **`snapshot_unconfirmed` 5s wait**: after the model RPC returns, Mitto waits
+  up to `configSnapshotWaitTimeout = 5s` for a fresh config snapshot (keyed by
+  snapshot generation and the new model id) to arrive via
+  `config_option_update`/`session/set_config_option`'s own response. If no
+  snapshot lands in time, every dependent override that was present before the
+  switch gets exactly one `ConfigAdjustment` with reason
+  `snapshot_unconfirmed` instead of being silently dropped — the agent's
+  real state is unknown, so Mitto neither reapplies nor discards the override.
+- **`option_removed` / `value_not_advertised`**: once a snapshot does arrive,
+  each dependent override is checked against it. If the option id is gone
+  entirely (or is no longer a `select`), the override is dropped and reported
+  with reason `option_removed`. If the id is still present but the
+  previously-chosen value is not among the new allowed values, Mitto does
+  **not** invent a substitute: the override is dropped (when `durable`) and
+  reported with reason `value_not_advertised`, `AppliedValue` set to whatever
+  the agent's snapshot reports as the current value for that option (never a
+  value Mitto picked). A value that is still advertised is silently reapplied
+  with no adjustment entry — only actual gaps are reported.
+- **Durable vs non-durable**: a baseline/manual model switch is `durable=true`
+  — dependent overrides that no longer apply are dropped from Mitto's local
+  state so they don't keep reappearing. A transient per-prompt model override
+  (e.g. a prompt's `preferredModels:` frontmatter) is `durable=false` — Mitto
+  revalidates the override against the temporary model's snapshot for that one
+  turn but never discards the operator's persisted preference, so it comes
+  back unchanged once the transient override ends.
+- **Startup/resume (`revalidateOverrides`, `keepUnadvertised`)**: when a
+  session is resumed or restarts, Mitto does not know yet whether an
+  unadvertised override reflects a real agent-side change or just a
+  not-yet-warm snapshot. `revalidateOverrides(..., keepUnadvertised=true)`
+  silently drops unfindable ids from the **in-memory** working set only — the
+  persisted override is left on disk untouched and no `ConfigAdjustment`/UI
+  notification fires. Only an explicit model change afterwards
+  (`keepUnadvertised=false`) performs the normal durable drop-and-notify.
+- **No universal reset token**: ACP has no standard "unset this option" RPC,
+  and Mitto does not synthesize one (no empty-string/`null`/`"none"` sentinel
+  value is sent to agents). "Clearing" an option always means *not resending
+  it* — the agent's own default for the new model applies. Never add a fake
+  reset value to work around a specific agent's quirks; use capability
+  detection in the adapter seam instead (see below).
+- **`adjustments` on `config_option_changed`**: every drop/mismatch above is
+  surfaced to the frontend as a `ConfigAdjustment{ConfigID, RequestedValue?,
+  AppliedValue?, Reason}` entry (`internal/conversation/bgsession_callbacks.go`)
+  appended to the WebSocket `config_option_changed` broadcast's `adjustments`
+  array (only present when non-empty) — see
+  [WebSocket protocol spec § config_option_changed](websockets/protocol-spec.md#config_option_changed)
+  for the wire format. Secondary broadcast paths that predate this field
+  (`internal/web/session_ws.go`'s direct `OnConfigOptionChanged` observer path)
+  intentionally omit `adjustments` — they are not awaited by the UI for this
+  purpose and are not currently the critical path for this notice.
+
+#### Investigation: Copilot CLI retained-effort behavior (mitto-bnk)
+
+Bead `mitto-bnk` originated from a user report that switching Copilot's active
+model to `claude-haiku-4.5` after setting `reasoning_effort=high` on a
+reasoning-capable model could fail inference. Evidence gathered against
+Copilot CLI 1.0.90 (dependency bead `mitto-3wd`, closed) established that:
+Sonnet 5 advertises `thought_level` with values
+`low`/`medium`/`high`/`xhigh`/`max`; switching to Haiku removes the option
+from the snapshot entirely; setting `reasoning_effort=high` while on Haiku
+still returns a success response with no `thought_level` option present in
+the snapshot; and switching back to Sonnet reports `high` again, i.e. the
+**provider** (not just Mitto) retains the preference across the model that
+dropped it. `session/set_model` itself returns an empty `{}` result and emits
+its own `config_option_update` notification.
+
+**What this investigation adds**: the retained-effort behavior above was
+confirmed, but the actual Haiku *inference failure* was not. An isolated,
+sandboxed harness was built (separate `COPILOT_HOME`, no real credentials,
+run entirely outside the repository) to drive `copilot --acp` directly and
+attempt to reproduce the failure end-to-end (set effort on a reasoning model
+→ switch to Haiku → send a prompt → observe whether the outgoing provider
+request is normalized or errors). The harness correctly drove the real
+`copilot --acp` 1.0.90 binary: an unauthenticated `initialize` succeeds and
+advertises `authMethods: [{id: "copilot-login", ...}]`; an unauthenticated
+`session/new` correctly and deterministically fails with a structured
+JSON-RPC error (`code: -32603`, `message: "403 ... not authorized to use
+this Copilot feature"`, `data.category: "permission_denied"`). Proceeding to
+the model-switch/inference step would require completing the interactive
+`copilot login` device-flow with real credentials, which was deliberately
+**not attempted** to avoid any risk to a real account or entitlement.
+
+**Conclusion**: the harness and methodology are sound and reusable, but the
+reported Haiku inference failure remains **unreproduced/unproven** — this
+should not be read as either confirming or refuting the original report. If
+the symptom recurs with real credentials in hand, the recommended next step
+is a narrow, capability-gated adapter shim scoped to the Copilot adapter (not
+a generic ACP-wide change) — or, if the retention is purely provider-side and
+outside Mitto's control, an upstream bug report against the Copilot CLI/agent
+with the evidence above. Neither is implemented here; this section documents
+findings only.
+
 ## Content Blocks
 
 The ACP SDK uses a discriminated union (pointer fields) for content blocks:

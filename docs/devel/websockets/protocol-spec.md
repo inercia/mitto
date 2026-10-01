@@ -909,6 +909,64 @@ identify what triggered the event. When the agent rejects a requested change,
 the server sends an `error` followed by a re-broadcast of the unchanged snapshot
 so the UI rolls back.
 
+**`adjustments` (mitto-bnk)**: optional array, present only when non-empty —
+emitted when a **model change** (`config_id` for the model category) forces
+Mitto to drop or rewrite one or more *other* pending/persisted config
+preferences because they no longer apply to the new model's snapshot. Omitted
+entirely (not an empty array) when no dependent option needed adjusting; clients
+must not assume the key is always present. Each entry:
+
+```json
+{
+  "config_id": "reasoning_effort",
+  "requested_value": "high",
+  "applied_value": "medium",
+  "reason": "value_not_advertised"
+}
+```
+
+| Field             | Presence              | Meaning                                                              |
+| ----------------- | ---------------------- | --------------------------------------------------------------------- |
+| `config_id`       | always                  | The dependent option that was adjusted (not the option that changed) |
+| `requested_value` | omitted if empty        | The value the user/operator had selected or persisted                |
+| `applied_value`   | omitted if empty        | The value Mitto actually applied or fell back to, if any              |
+| `reason`          | always                  | One of the three reasons below                                       |
+
+| Reason                  | Meaning                                                                                      |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| `option_removed`         | The new model's snapshot no longer advertises this option at all; the preference was dropped |
+| `value_not_advertised`   | The option still exists, but the requested value isn't in its new `values` list; Mitto fell back to the model's current value instead |
+| `snapshot_unconfirmed`   | The agent didn't deliver (or confirm) a fresh config snapshot within 5 seconds of the model change, so Mitto could not safely re-apply the preference and dropped it for this change |
+
+Example with `adjustments` present (switching from a reasoning model to one
+without `reasoning_effort`):
+
+```json
+{
+  "type": "config_option_changed",
+  "data": {
+    "session_id": "...",
+    "config_id": "model",
+    "value": "claude-haiku-4.5",
+    "config_options": [
+      { "id": "model", "category": "model", "current": "claude-haiku-4.5", "values": ["claude-haiku-4.5", "claude-sonnet-5"] }
+    ],
+    "adjustments": [
+      { "config_id": "reasoning_effort", "requested_value": "high", "reason": "option_removed" }
+    ]
+  }
+}
+```
+
+There is no universal "unset"/"reset" token in ACP — an option that no longer
+applies is simply absent from `config_options` and reported via `adjustments`
+instead of being set to some sentinel value. See
+[`docs/devel/acp.md` — Reconciling Dependent Config After a Model Change](../acp.md#reconciling-dependent-config-after-a-model-change-mitto-bnk)
+for the full server-side policy (ordering, the 5s snapshot wait, and
+startup/resume behavior). `adjustments` is carried only on this broadcast path;
+the per-session WebSocket's legacy `OnConfigOptionChanged` mirror and the
+internal REST config-update path do not include it.
+
 #### `error` — Error notification
 
 ```json

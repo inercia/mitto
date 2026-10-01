@@ -267,6 +267,22 @@ Copilot's `reasoning_effort`) and shown beside the model selector. Switching
 models may add, remove or change its allowed values; see
 [ACP § Agent-Advertised Config Selects](../devel/acp.md#agent-advertised-config-selects-reasoning-effort).
 
+**Reconciliation on model change (mitto-bnk):** when a model switch removes or
+narrows a dependent option like `reasoning_effort`, Mitto reconciles the
+operator's preference against the agent's *new* post-switch snapshot rather
+than blindly resending the old value — an option the new model no longer
+advertises is dropped (not silently resent), a value the new model doesn't
+offer is dropped with a one-line explanation, and there is **no** universal
+"reset to default" token (ACP has no such RPC). Some agents (observed with
+Copilot CLI 1.0.90) retain the previously-set provider-side effort internally
+even after it disappears from the advertised snapshot, which can resurface if
+you switch back to a model that offers it again — this was **not** confirmed
+to cause an inference failure in our testing (requires authenticated access we
+deliberately did not exercise; see the investigation note below). See
+[ACP § Reconciling Dependent Config After a Model Change](../devel/acp.md#reconciling-dependent-config-after-a-model-change-mitto-bnk)
+for the full policy, the `adjustments` notice schema, and the Copilot
+investigation findings.
+
 ## See also
 
 - [ACP Servers / Model Selection Constraints](acp.md) — shares the same match engine
