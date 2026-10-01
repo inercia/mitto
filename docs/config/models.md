@@ -20,6 +20,7 @@ version-agnostic, and their tags **union** across overlapping matches:
 | Claude          | `Claude`   | `Anthropic`                                                      |
 | Claude Mythos   | `Mythos`   | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
 | Claude Opus     | `Opus`     | `Smartest`, `Reasoning`, `Thinking`, `Deep`, `Slow`, `Expensive` |
+| Claude Sonnet 5.5 | `Sonnet 5.5` | `Smart`, `Coding`                                                |
 | Claude Sonnet 5 | `Sonnet 5` | `Smart`, `Coding`                                                |
 | Claude Sonnet 4 | `Sonnet 4` | `Smart`, `Coding`                                                |
 | Claude Haiku    | `Haiku`    | `Fast`, `Cheap`                                                  |
