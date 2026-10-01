@@ -275,7 +275,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// blocks on a busy agent. r.Context() is still passed for the create call.
 	bs, err := h.deps.SessionManager.CreateSessionWithWorkspaceAndOptions(
 		r.Context(), req.Name, req.WorkingDir, workspace,
-		conversation.CreateSessionOptions{SuppressAutoChildren: suppressAutoChildren},
+		conversation.CreateSessionOptions{SuppressAutoChildren: suppressAutoChildren, InitialPromptName: promptName},
 	)
 	if err != nil {
 		if err == conversation.ErrTooManySessions {

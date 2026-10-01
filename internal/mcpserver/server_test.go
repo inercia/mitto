@@ -1586,6 +1586,7 @@ type mockSessionManager struct {
 	broadcastCalls       []broadcastCall
 	broadcastBeadsIssues []broadcastBeadsIssueCall
 	workspacesForFolder  []config.WorkspaceSettings
+	resumePromptNames    []string
 }
 
 type broadcastCall struct {
@@ -1615,6 +1616,11 @@ func (m *mockSessionManager) CloseSessionGracefully(sessionID, reason string, ti
 }
 
 func (m *mockSessionManager) CloseSession(sessionID, reason string) {
+}
+
+func (m *mockSessionManager) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	m.resumePromptNames = append(m.resumePromptNames, promptName)
+	return m.ResumeSession(sessionID, sessionName, workingDir)
 }
 
 func (m *mockSessionManager) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
@@ -4109,6 +4115,10 @@ func (m *mockSessionManagerForWorkspaces) CloseSessionGracefully(sessionID, reas
 	return true
 }
 func (m *mockSessionManagerForWorkspaces) CloseSession(sessionID, reason string) {}
+func (m *mockSessionManagerForWorkspaces) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForWorkspaces) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
 	return nil, nil
 }
@@ -4469,6 +4479,10 @@ func (m *mockSessionManagerForWorkspaceUpdate) CloseSessionGracefully(string, st
 	return true
 }
 func (m *mockSessionManagerForWorkspaceUpdate) CloseSession(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForWorkspaceUpdate) ResumeSession(string, string, string) (BackgroundSession, error) {
 	return nil, nil
 }
@@ -4852,6 +4866,10 @@ func (m *mockSessionManagerForWait) CloseSessionGracefully(string, string, time.
 	return true
 }
 func (m *mockSessionManagerForWait) CloseSession(string, string) {}
+func (m *mockSessionManagerForWait) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForWait) ResumeSession(string, string, string) (BackgroundSession, error) {
 	return nil, nil
 }
@@ -5848,6 +5866,10 @@ func (m *mockSessionManagerForChildren) CloseSessionGracefully(string, string, t
 	return true
 }
 func (m *mockSessionManagerForChildren) CloseSession(string, string) {}
+func (m *mockSessionManagerForChildren) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForChildren) ResumeSession(string, string, string) (BackgroundSession, error) {
 	return nil, nil
 }
@@ -6060,6 +6082,10 @@ func (m *mockSessionManagerForChildrenMutable) CloseSessionGracefully(string, st
 	return true
 }
 func (m *mockSessionManagerForChildrenMutable) CloseSession(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForChildrenMutable) ResumeSession(sessionID, _, _ string) (BackgroundSession, error) {
 	m.mu.Lock()
 	m.resumeCalls = append(m.resumeCalls, sessionID)
@@ -7072,6 +7098,10 @@ func (m *mockSessionManagerForAutoResume) CloseSessionGracefully(string, string,
 	return true
 }
 func (m *mockSessionManagerForAutoResume) CloseSession(string, string) {}
+
+func (m *mockSessionManagerForAutoResume) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
 
 func (m *mockSessionManagerForAutoResume) ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error) {
 	m.mu.Lock()
@@ -8934,6 +8964,10 @@ func (m *mockSessionManagerCrossWorkspace) CloseSessionGracefully(string, string
 	return true
 }
 func (m *mockSessionManagerCrossWorkspace) CloseSession(string, string) {}
+func (m *mockSessionManagerCrossWorkspace) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerCrossWorkspace) ResumeSession(string, string, string) (BackgroundSession, error) {
 	return nil, nil
 }

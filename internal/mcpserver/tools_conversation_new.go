@@ -675,7 +675,14 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var resumeTransient bool
 	if s.sessionManager != nil {
 		var resumeErr error
-		bs, resumeErr = s.sessionManager.ResumeSession(newSessionID, input.Title, targetWorkingDir)
+		// A genuinely new child created to run a named prompt (initial or
+		// loop) seeds its initial model from that prompt's preferredModels,
+		// so the preference becomes the baseline instead of a per-turn override.
+		modelPromptName := originPromptName
+		if modelPromptName == "" {
+			modelPromptName = loopPromptName
+		}
+		bs, resumeErr = s.sessionManager.ResumeSessionWithInitialPrompt(newSessionID, input.Title, targetWorkingDir, modelPromptName)
 		if resumeErr != nil {
 			// mitto-nf6: a cold-start MCP-init timeout or shared-process
 			// saturation is transient (session_manager.go's ResumeSession

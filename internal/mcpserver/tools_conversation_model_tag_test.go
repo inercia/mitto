@@ -108,6 +108,10 @@ func (m *mockSessionManagerForModelTag) CloseSessionGracefully(string, string, t
 	return true
 }
 func (m *mockSessionManagerForModelTag) CloseSession(string, string) {}
+func (m *mockSessionManagerForModelTag) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForModelTag) ResumeSession(sessionID, _, _ string) (BackgroundSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

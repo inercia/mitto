@@ -329,6 +329,10 @@ type SessionManager interface {
 	CloseSession(sessionID, reason string)
 	// ResumeSession resumes an archived session by starting a new ACP connection.
 	ResumeSession(sessionID, sessionName, workingDir string) (BackgroundSession, error)
+	// ResumeSessionWithInitialPrompt is ResumeSession for a brand-new conversation
+	// created to run the named prompt: the prompt's preferredModels seed the
+	// initial model preference. An empty promptName behaves like ResumeSession.
+	ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error)
 	// GetWorkspacesForFolder returns all workspace configurations for the given folder.
 	// Multiple workspaces may share the same folder with different ACP servers.
 	GetWorkspacesForFolder(folder string) []config.WorkspaceSettings

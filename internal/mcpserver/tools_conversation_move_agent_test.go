@@ -62,6 +62,10 @@ func (m *mockSessionManagerForMoveAgent) CloseSessionGracefully(string, string, 
 	return true
 }
 func (m *mockSessionManagerForMoveAgent) CloseSession(string, string) {}
+func (m *mockSessionManagerForMoveAgent) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (BackgroundSession, error) {
+	return m.ResumeSession(sessionID, sessionName, workingDir)
+}
+
 func (m *mockSessionManagerForMoveAgent) ResumeSession(string, string, string) (BackgroundSession, error) {
 	return nil, nil
 }

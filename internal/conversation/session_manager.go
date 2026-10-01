@@ -2218,6 +2218,14 @@ type CreateSessionOptions struct {
 	// prompt's target.suppressAutoChildren frontmatter by the REST create
 	// handler; defaults to false everywhere else.
 	SuppressAutoChildren bool
+
+	// InitialPromptName names the prompt this genuinely new conversation is
+	// being created to run. When set, the prompt's preferredModels are resolved
+	// and seeded as the creation-time initial-model preference (ahead of the
+	// workspace/ACP-server preference, which remains as fallback), so the
+	// prompt's model becomes the persistent baseline instead of a transient
+	// first-turn override. Must never be set for reuse paths.
+	InitialPromptName string
 }
 
 // CreateSessionWithWorkspace creates a new session using the specified workspace configuration.
@@ -2426,7 +2434,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	// ResumeSessionWithInitialModelPreference (see createAutoChildren); a plain
 	// ResumeSession leaves this nil so a resumed session's own current model is
 	// preserved rather than re-applying workspace/ACP-server defaults.
-	initialModelPref := effectiveWs.GetInitialModelPreference()
+	initialModelPref := sm.resolveInitialModelPreference(opts.InitialPromptName, workingDir, effectiveWs.GetInitialModelPreference())
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
@@ -2765,6 +2773,43 @@ func (sm *SessionManager) ResumeSessionBackground(sessionID, sessionName, workin
 func (sm *SessionManager) ResumeSessionWithInitialModelPreference(sessionID, sessionName, workingDir string, initialModelPref []config.PromptPreferredModel) (*BackgroundSession, error) {
 	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, initialModelPref, true)
 }
+// resolveInitialModelPreference returns the initial-model preference for a
+// genuinely new conversation created to run promptName: the prompt's
+// preferredModels first, followed by fallback (workspace/ACP-server
+// preference) so an unmatched prompt preference still degrades to it.
+// With an empty promptName, no resolver, or no prompt preference, fallback is
+// returned unchanged.
+func (sm *SessionManager) resolveInitialModelPreference(promptName, workingDir string, fallback []config.PromptPreferredModel) []config.PromptPreferredModel {
+	if promptName == "" {
+		return fallback
+	}
+	sm.mu.RLock()
+	resolver := sm.preferredModelsResolver
+	sm.mu.RUnlock()
+	if resolver == nil {
+		return fallback
+	}
+	prefs := resolver(promptName, workingDir)
+	if len(prefs) == 0 {
+		return fallback
+	}
+	merged := make([]config.PromptPreferredModel, 0, len(prefs)+len(fallback))
+	merged = append(merged, prefs...)
+	merged = append(merged, fallback...)
+	return merged
+}
+
+// ResumeSessionWithInitialPrompt starts the ACP session of a freshly persisted
+// conversation that was created to run promptName, seeding the prompt's
+// preferredModels as the initial-model preference. Only for genuinely new
+// conversations: an existing persisted BaselineModel always wins on resume, and
+// an already-running session is returned unchanged. With an empty promptName it
+// behaves like ResumeSession.
+func (sm *SessionManager) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (*BackgroundSession, error) {
+	pref := sm.resolveInitialModelPreference(promptName, workingDir, nil)
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, pref, true)
+}
+
 
 // resumeSessionWithConstraint resumes an existing persisted session by creating a new ACP
 // process. This is used when switching to an old conversation. If the agent supports session

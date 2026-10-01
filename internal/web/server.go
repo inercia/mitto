@@ -3226,6 +3226,16 @@ func (a *sessionManagerAdapter) ResumeSession(sessionID, sessionName, workingDir
 	return bs, nil
 }
 
+// ResumeSessionWithInitialPrompt resumes a newly created session, seeding its
+// initial model preference from the named prompt's preferredModels.
+func (a *sessionManagerAdapter) ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName string) (mcpserver.BackgroundSession, error) {
+	bs, err := a.sm.ResumeSessionWithInitialPrompt(sessionID, sessionName, workingDir, promptName)
+	if err != nil {
+		return nil, err
+	}
+	return bs, nil
+}
+
 // GetWorkspacesForFolder returns all workspace configurations for the given folder.
 func (a *sessionManagerAdapter) GetWorkspacesForFolder(folder string) []configPkg.WorkspaceSettings {
 	return a.sm.GetWorkspacesForFolder(folder)
