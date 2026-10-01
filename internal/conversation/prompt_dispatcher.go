@@ -57,6 +57,7 @@ type promptDeps interface {
 	pdGetMetadataForID(id string) (session.Metadata, error)
 	pdListChildSessions() ([]session.Metadata, error)
 	pdIsChildPrompting(childSessionID string) bool
+	pdChildModelName(childSessionID string) string // empty when unknown
 	// pdChildQueueLength returns the number of pending queued prompts on the
 	// given child (or peer) session. Returns 0 when the store is unavailable
 	// or the length cannot be read — errors are swallowed, mirroring the
@@ -248,6 +249,8 @@ type promptDeps interface {
 	// FreshContext loop iteration. Returns false (fail safe) for resumed/loaded
 	// sessions, where virginity cannot be asserted.
 	pdContextIsEmpty() bool
+	// pdResetContextUsage zeroes the cached context usage and notifies observers.
+	pdResetContextUsage()
 
 	// === New in mitto-k9hc: per-session circuit breaker on repeated flush failures ===
 
@@ -707,6 +710,11 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		if children, err := d.pdListChildSessions(); err == nil {
 			for _, child := range children {
 				isPrompting := d.pdIsChildPrompting(child.SessionID)
+				childModel := d.pdChildModelName(child.SessionID)
+				var childModelTags []string
+				if childModel != "" {
+					childModelTags = d.pdResolveModelTags(childModel)
+				}
 				childSessions = append(childSessions, processors.ChildSession{
 					ID:          child.SessionID,
 					Name:        child.Name,
@@ -716,6 +724,8 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 					IsPrompting: isPrompting,
 					BeadsIssue:  child.BeadsIssue,
 					QueuedCount: d.pdChildQueueLength(child.SessionID),
+					ModelName:   childModel,
+					ModelTags:   childModelTags,
 				})
 			}
 		}
@@ -1146,6 +1156,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	}
 
 	recordPill := func(value string) {
+		d.pdResetContextUsage()
 		if pillSeq > 0 {
 			d.pdRecordSessionChangeWithSeq(pillSeq, "context_cleared", value, "")
 			return

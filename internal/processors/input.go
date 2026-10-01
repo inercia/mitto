@@ -234,6 +234,10 @@ type ChildSession struct {
 	// session. Excluded from the external-processor JSON payload (json:"-") —
 	// consumed only by in-process template rendering and CEL context building.
 	QueuedCount int `json:"-"`
+	// ModelName / ModelTags are the child's current model and its resolved
+	// capability tags. Excluded from the external-processor JSON payload.
+	ModelName string   `json:"-"`
+	ModelTags []string `json:"-"`
 }
 
 // PeerSession describes a non-archived conversation sharing the current

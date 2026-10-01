@@ -1389,6 +1389,13 @@ func (bs *BackgroundSession) pdIsChildPrompting(childSessionID string) bool {
 	return bs.isChildPrompting(childSessionID)
 }
 
+func (bs *BackgroundSession) pdChildModelName(childSessionID string) string {
+	if bs.childModelName == nil {
+		return ""
+	}
+	return bs.childModelName(childSessionID)
+}
+
 // pdChildQueueLength returns the number of pending queued prompts on the
 // given child session, or 0 when the store is unavailable or the length
 // cannot be read. Errors are swallowed to match the best-effort semantics
@@ -1947,4 +1954,11 @@ func (bs *BackgroundSession) ResetLoopContinuation() {
 	bs.loopContinuationMu.Lock()
 	bs.lastTurnScheduledLoop = false
 	bs.loopContinuationMu.Unlock()
+}
+
+// pdResetContextUsage clears cached context usage after a fresh-context clear
+// and notifies observers directly (bypassing streaming suppression).
+func (bs *BackgroundSession) pdResetContextUsage() {
+	bs.cbSetContextUsage(0, 0)
+	bs.notifyObservers(func(o SessionObserver) { o.OnContextUsageUpdate(0, 0) })
 }

@@ -442,6 +442,11 @@ type ChildInfo struct {
 	// session. Lets orchestrator/cleanup prompts identify children with
 	// pending work without a per-child mitto_conversation_get fan-out.
 	QueuedCount int
+	// ModelName is the child's current model name (empty when unknown).
+	ModelName string
+	// ModelTags are the capability tags of the child's current model, resolved
+	// from the configured models: profiles (e.g. "Coding"). Empty when unknown.
+	ModelTags []string
 }
 
 // ChildrenContext holds children sessions context for CEL evaluation.
@@ -471,6 +476,11 @@ type ChildrenContext struct {
 // AllText renders all child sessions as a human-readable comma-separated
 // string (see FormatChildren). Empty when none.
 func (c ChildrenContext) AllText() string { return FormatChildren(c.All) }
+
+// AllTextWithModels is AllText plus each child's current model and tags
+// (see FormatChildrenWithModels), so prompts can pick a child by model
+// without a per-child mitto_conversation_get round-trip.
+func (c ChildrenContext) AllTextWithModels() string { return FormatChildrenWithModels(c.All) }
 
 // MCPText renders MCP-origin child sessions only, comma-separated. Empty when none.
 func (c ChildrenContext) MCPText() string { return FormatChildren(c.MCP) }

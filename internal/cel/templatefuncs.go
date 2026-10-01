@@ -538,8 +538,8 @@ type standingBeadsGuidanceCacheEntry struct {
 // hasStandingBeadsGuidance reports whether folder already has, at its root, a
 // canonical agent-instructions file (see standingBeadsGuidanceFiles) that
 // carries standing Beads workflow guidance -- ALL of standingBeadsGuidanceMarkers,
-// matched case-insensitively. Used to shrink/suppress the beads-track-tasks
-// and beads-ready-tasks builtin processors when their guidance would just
+// matched case-insensitively. Used to shrink the beads-track-tasks
+// builtin processor when their guidance would just
 // repeat what the workspace already committed to in a standing instructions
 // file (mitto-2kw).
 //
@@ -1301,6 +1301,31 @@ func FormatACPServers(servers []ACPServerInfo) string {
 	return strings.Join(parts, ", ")
 }
 
+// FormatChildrenWithModels is FormatChildren with a trailing
+// " <model: NAME; tags: A, B>" suffix per child. Each part of the suffix is
+// omitted when empty, and the suffix is omitted entirely when both are empty.
+func FormatChildrenWithModels(children []ChildInfo) string {
+	if len(children) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(children))
+	for _, child := range children {
+		s := FormatChildren([]ChildInfo{child})
+		var meta []string
+		if child.ModelName != "" {
+			meta = append(meta, "model: "+child.ModelName)
+		}
+		if len(child.ModelTags) > 0 {
+			meta = append(meta, "tags: "+strings.Join(child.ModelTags, ", "))
+		}
+		if len(meta) > 0 {
+			s += " <" + strings.Join(meta, "; ") + ">"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // FormatChildren renders a child-session list as a human-readable
 // comma-separated string, producing output byte-identical to the legacy
 // @mitto:children (and @mitto:mcp_children) substitution when no child has a
@@ -1575,8 +1600,8 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// HasStandingBeadsGuidance() — true iff a canonical agent-instructions
 		// file (AGENTS.md, AGENT.md, CLAUDE.md, CLAUDE.local.md, CONVENTIONS.md,
 		// GEMINI.md) at the workspace root already carries the standing Beads
-		// workflow guidance markers. Lets builtin processors (beads-track-tasks,
-		// beads-ready-tasks) shrink/suppress their own reminder instead of
+		// workflow guidance markers. Lets builtin processors (beads-track-tasks)
+		// shrinks its own reminder instead of
 		// duplicating it (mitto-2kw). Fail-open (false) on any I/O anomaly.
 		"HasStandingBeadsGuidance": func() bool { return hasStandingBeadsGuidance(folder) },
 		// BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL

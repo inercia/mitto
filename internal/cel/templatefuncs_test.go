@@ -1232,6 +1232,27 @@ func TestFormatChildren(t *testing.T) {
 	}
 }
 
+func TestFormatChildrenWithModels(t *testing.T) {
+	cases := []struct {
+		name     string
+		children []ChildInfo
+		want     string
+	}{
+		{"nil", nil, ""},
+		{"no model info matches FormatChildren", []ChildInfo{{ID: "s1", Name: "A", ACPServer: "x"}}, "s1 (A) [x]"},
+		{"model and tags", []ChildInfo{{ID: "s1", Name: "Coder", ACPServer: "x", ModelName: "Opus", ModelTags: []string{"Coding", "Smart"}}}, "s1 (Coder) [x] <model: Opus; tags: Coding, Smart>"},
+		{"model only", []ChildInfo{{ID: "s1", ModelName: "Opus"}}, "s1 <model: Opus>"},
+		{"multi", []ChildInfo{{ID: "s1", ModelName: "Opus", ModelTags: []string{"Coding"}}, {ID: "s2"}}, "s1 <model: Opus; tags: Coding>, s2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatChildrenWithModels(tc.children); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // ACP.AvailableText / Children.AllText / Children.MCPText template accessor tests
 // =============================================================================

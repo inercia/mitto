@@ -257,6 +257,9 @@ type BackgroundSession struct {
 	// Set by SessionManager to enable children.promptingCount CEL context.
 	isChildPrompting func(childSessionID string) bool
 
+	// childModelName returns a child session's current model name (empty when unknown).
+	childModelName func(childSessionID string) string
+
 	// Available slash commands from the agent
 	availableCommandsMu sync.RWMutex
 	availableCommands   []AvailableCommand
@@ -650,6 +653,10 @@ type BackgroundSessionConfig struct {
 	// Used to populate children.promptingCount in the CEL context for enabledWhen.
 	IsChildPrompting func(childSessionID string) bool
 
+	// ChildModelName returns a child session's current model name (empty when
+	// unknown). Used to show each child's model in processor/template context.
+	ChildModelName func(childSessionID string) string
+
 	// CreationCtx is the context for the initial ACP session creation RPC (NewSession).
 	// If nil or missing a deadline, a default sessionCreationRPCTimeout is applied.
 	// This context is NOT used for the session's lifetime — only for the blocking
@@ -899,6 +906,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		promptParametersResolver:       cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
 		promptsCache:                   cfg.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		isChildPrompting:               cfg.IsChildPrompting,         // Callback to check if a child session is prompting
+		childModelName:                 cfg.ChildModelName,           // Callback to resolve a child's current model name
 		creationCtx:                    cfg.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
 	// Fail-safe default: virginity is unknown until a handshake site proves the
@@ -1162,6 +1170,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		promptParametersResolver:       config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
 		promptsCache:                   config.PromptsCache,             // Workspace prompt registry for {{ .Prompts.* }} snapshot (mitto-s1w)
 		isChildPrompting:               config.IsChildPrompting,         // Callback to check if a child session is prompting
+		childModelName:                 config.ChildModelName,           // Callback to resolve a child's current model name
 		creationCtx:                    config.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
 	// Fail-safe default: virginity is unknown until a handshake site proves the

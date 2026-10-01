@@ -24,6 +24,8 @@ import (
 var _ promptDeps = (*fakePromptDeps)(nil)
 
 type fakePromptDeps struct {
+	resetContextUsageCalls int
+
 	mu sync.Mutex
 
 	resolver          PromptResolver
@@ -57,6 +59,7 @@ type fakePromptDeps struct {
 	workspacePeersErr              error
 	childPrompting                 map[string]bool
 	childQueueLength               map[string]int
+	childModel                     map[string]string
 	mcpToolNames                   []string
 	promptsSnapshotFn              func() *config.PromptsSnapshot
 	userData                       *session.UserData
@@ -213,6 +216,7 @@ func newFakePromptDeps() *fakePromptDeps {
 		metaByID:         make(map[string]session.Metadata),
 		childPrompting:   make(map[string]bool),
 		childQueueLength: make(map[string]int),
+		childModel:       make(map[string]string),
 		sessionCtx:       context.Background(),
 		argCache:         newPromptArgCache(),
 	}
@@ -276,6 +280,7 @@ func (f *fakePromptDeps) pdListWorkspacePeers() ([]session.Metadata, error) {
 }
 func (f *fakePromptDeps) pdIsChildPrompting(id string) bool { return f.childPrompting[id] }
 func (f *fakePromptDeps) pdChildQueueLength(id string) int  { return f.childQueueLength[id] }
+func (f *fakePromptDeps) pdChildModelName(id string) string { return f.childModel[id] }
 func (f *fakePromptDeps) pdCachedMCPToolNames() []string    { return f.mcpToolNames }
 func (f *fakePromptDeps) pdPromptsSnapshot() func() *config.PromptsSnapshot {
 	return f.promptsSnapshotFn
@@ -1411,6 +1416,35 @@ func TestPromptDispatcher_BuildProcessorInput_ChildQueuedCount(t *testing.T) {
 	}
 }
 
+// TestPromptDispatcher_BuildProcessorInput_ChildModel verifies that a child's
+// model name and resolved tags propagate to ProcessorInput.ChildSessions.
+func TestPromptDispatcher_BuildProcessorInput_ChildModel(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.sessionID = "sess-cm"
+	d.sessionMeta = session.Metadata{Name: "Parent", ACPServer: "auggie"}
+	d.childSessions = []session.Metadata{
+		{SessionID: "child-a", Name: "Child A", ACPServer: "auggie"},
+		{SessionID: "child-b", Name: "Child B", ACPServer: "auggie"},
+	}
+	d.childModel["child-a"] = "Claude Opus 4"
+	d.modelTagsByName = map[string][]string{"Claude Opus 4": {"Coding"}}
+
+	input := p.buildProcessorInput(d, "test", false, false, PromptMeta{})
+
+	byID := map[string]processors.ChildSession{}
+	for _, c := range input.ChildSessions {
+		byID[c.ID] = c
+	}
+	a := byID["child-a"]
+	if a.ModelName != "Claude Opus 4" || len(a.ModelTags) != 1 || a.ModelTags[0] != "Coding" {
+		t.Errorf("child-a model mismatch: %+v", a)
+	}
+	if b := byID["child-b"]; b.ModelName != "" || len(b.ModelTags) != 0 {
+		t.Errorf("child-b should have no model: %+v", b)
+	}
+}
+
 // TestPromptDispatcher_BuildProcessorInput_WorkspacePeers verifies that
 // pdListWorkspacePeers results propagate to ProcessorInput.WorkspacePeers
 // with the correct field mapping and IsPrompting resolved via
@@ -2186,6 +2220,9 @@ func TestPromptDispatcher_CreateFreshContextSession_NoACPConn_ReturnsEmpty(t *te
 	if len(d.recordedSessionChanges) != 0 {
 		t.Fatalf("expected no session change when no ACP conn, got %v", d.recordedSessionChanges)
 	}
+	if d.resetContextUsageCalls != 0 {
+		t.Fatalf("expected no context usage reset when nothing cleared, got %d", d.resetContextUsageCalls)
+	}
 }
 
 func TestPromptDispatcher_CreateFreshContextSession_Success_ReturnsID(t *testing.T) {
@@ -2208,6 +2245,9 @@ func TestPromptDispatcher_CreateFreshContextSession_Success_ReturnsID(t *testing
 	sc := d.recordedSessionChanges[0]
 	if sc.Kind != "context_cleared" || sc.Value != "new_session" || sc.PreviousValue != "" {
 		t.Fatalf("unexpected pill: %+v", sc)
+	}
+	if d.resetContextUsageCalls != 1 {
+		t.Fatalf("expected context usage reset once after clear, got %d", d.resetContextUsageCalls)
 	}
 }
 
@@ -4592,3 +4632,5 @@ func TestPromptDispatcher_HandlePromptError_UnrelatedError_DoesNotInvokeRuntimeF
 		t.Fatalf("expected no runtime fallback call for unrelated error, got %d", d.runtimeFallbackCalls)
 	}
 }
+
+func (f *fakePromptDeps) pdResetContextUsage() { f.resetContextUsageCalls++ }

@@ -138,7 +138,15 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 					queuedCount = n
 				}
 			}
+			childModel, childModelTags := "", []string(nil)
+			if childBS := s.sessionManager.GetSession(child.SessionID); childBS != nil {
+				if childModel = childBS.CurrentModelName(); childModel != "" && s.config.MittoConfig != nil {
+					childModelTags = s.config.MittoConfig.ResolveModelTags(childModel)
+				}
+			}
 			childInfo := config.ChildInfo{
+				ModelName:   childModel,
+				ModelTags:   childModelTags,
 				ID:          child.SessionID,
 				Name:        child.Name,
 				ACPServer:   child.ACPServer,

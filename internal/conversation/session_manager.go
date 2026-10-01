@@ -2542,6 +2542,15 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 			}
 			return false
 		},
+		ChildModelName: func(childSessionID string) string {
+			sm.mu.RLock()
+			childBS := sm.sessions[childSessionID]
+			sm.mu.RUnlock()
+			if childBS != nil {
+				return childBS.CurrentModelName()
+			}
+			return ""
+		},
 		OnSelfDestruct: func(sessionID string) {
 			sm.deleteSessionAndChildren(sessionID, "self_destructed")
 		},
@@ -2764,15 +2773,6 @@ func (sm *SessionManager) ResumeSessionBackground(sessionID, sessionName, workin
 	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, false)
 }
 
-// ResumeSessionWithInitialModelPreference resumes an existing persisted session like
-// ResumeSession, but additionally seeds initialModelPref as the session's
-// initial-model preference (resolved by cbInitBaselineModelIfEmpty via
-// SelectHighestPriorityModel once the agent reports its models). Used by
-// auto-children to apply a per-child model tag. Pass nil to fall back to the
-// default ACP-server-derived model selection.
-func (sm *SessionManager) ResumeSessionWithInitialModelPreference(sessionID, sessionName, workingDir string, initialModelPref []config.PromptPreferredModel) (*BackgroundSession, error) {
-	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, initialModelPref, true)
-}
 // resolveInitialModelPreference returns the initial-model preference for a
 // genuinely new conversation created to run promptName: the prompt's
 // preferredModels first, followed by fallback (workspace/ACP-server
@@ -2810,6 +2810,15 @@ func (sm *SessionManager) ResumeSessionWithInitialPrompt(sessionID, sessionName,
 	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, pref, true)
 }
 
+// ResumeSessionWithInitialModelPreference resumes an existing persisted session like
+// ResumeSession, but additionally seeds initialModelPref as the session's
+// initial-model preference (resolved by cbInitBaselineModelIfEmpty via
+// SelectHighestPriorityModel once the agent reports its models). Used by
+// auto-children to apply a per-child model tag. Pass nil to fall back to the
+// default ACP-server-derived model selection.
+func (sm *SessionManager) ResumeSessionWithInitialModelPreference(sessionID, sessionName, workingDir string, initialModelPref []config.PromptPreferredModel) (*BackgroundSession, error) {
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, initialModelPref, true)
+}
 
 // resumeSessionWithConstraint resumes an existing persisted session by creating a new ACP
 // process. This is used when switching to an old conversation. If the agent supports session
@@ -3215,6 +3224,15 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 				return childBS.IsPrompting()
 			}
 			return false
+		},
+		ChildModelName: func(childSessionID string) string {
+			sm.mu.RLock()
+			childBS := sm.sessions[childSessionID]
+			sm.mu.RUnlock()
+			if childBS != nil {
+				return childBS.CurrentModelName()
+			}
+			return ""
 		},
 		OnSelfDestruct: func(sessionID string) {
 			sm.deleteSessionAndChildren(sessionID, "self_destructed")
