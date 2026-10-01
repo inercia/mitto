@@ -5523,7 +5523,7 @@ func TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty(t *testing.T) {
 // TestMemorizePreferences_ResolveTargetFile verifies the auto-detection resolution
 // logic in the real builtin memorize-preferences.yaml template: an explicit
 // PreferencesFile wins; otherwise the rules directory is auto-detected; and when
-// nothing resolves the template renders to empty (which the dispatch guard skips).
+// nothing resolves it falls back to the local-only .agents/rules/90-local.md.
 func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 	srcPath := rootconfig.BuiltinProcessorsDir + "/memorize-preferences.yaml"
 	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
@@ -5554,10 +5554,10 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 		return out
 	}
 
-	t.Run("no target resolves to empty", func(t *testing.T) {
+	t.Run("no target falls back to .agents/rules", func(t *testing.T) {
 		out := render(t.TempDir(), nil)
-		if strings.TrimSpace(out) != "" {
-			t.Errorf("expected empty render when no file resolves, got %q", out)
+		if !strings.Contains(out, ".agents/rules/90-local.md") {
+			t.Errorf("expected .agents/rules/90-local.md fallback when nothing resolves, got:\n%s", out)
 		}
 	})
 
@@ -5583,14 +5583,14 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 		}
 	})
 
-	t.Run("auto-detect CLAUDE.md fallback", func(t *testing.T) {
+	t.Run("CLAUDE.md is ignored; local fallback used", func(t *testing.T) {
 		ws := t.TempDir()
 		if err := os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n"), 0644); err != nil {
 			t.Fatalf("WriteFile CLAUDE.md: %v", err)
 		}
 		out := render(ws, nil)
-		if !strings.Contains(out, "CLAUDE.md") {
-			t.Errorf("expected auto-detected CLAUDE.md fallback in output, got:\n%s", out)
+		if !strings.Contains(out, ".agents/rules/90-local.md") {
+			t.Errorf("expected .agents/rules/90-local.md fallback in output, got:\n%s", out)
 		}
 	})
 

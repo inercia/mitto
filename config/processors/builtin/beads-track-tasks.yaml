@@ -2,8 +2,9 @@
 # Builtin processor: reminds the agent that this project uses beads (bd) for issue tracking.
 #
 # When the `bd` command is available on the system PATH, this processor appends a
-# reminder instructing the agent to track tasks, work items, and persistent knowledge
-# in beads instead of ad-hoc markdown TODO lists.
+# reminder instructing the agent to track tasks and work items in beads instead of
+# ad-hoc markdown TODO lists, and to check ready tasks before starting new work.
+# (This processor also subsumes the former beads-ready-tasks processor.)
 #
 # Activation conditions:
 #   - The `bd` command exists on PATH (CommandExists CEL gate)
@@ -22,14 +23,13 @@
 # ground, because it also carries the one thing no static file can supply --
 # the runtime-resolved `.Workspace.BeadsDatabaseMode` value. When
 # HasStandingBeadsGuidance() is true the static bullet list is dropped and
-# only the title + database-mode block are emitted; see beads-ready-tasks.yaml
-# for the sibling processor that is fully suppressed instead (no dynamic
-# content to preserve).
+# only the title, database-mode block, and the always-on issue-writing
+# guidance (not covered by standing files) are emitted.
 #
 # Uses text-mode (no external command).
 ##########################################################################################
 name: beads-track-tasks
-description: "Reminds the agent to track tasks and knowledge in beads (bd)"
+description: "Reminds the agent to track tasks in beads (bd) and review ready tasks"
 enabled: true
 enabledWhen: 'CommandExists("bd")'
 when:
@@ -61,14 +61,23 @@ text: |
     publish/synchronize the Beads database. This restriction applies only to
     Beads data — normal source-code Git operations remain unaffected.
   {{ end -}}
+  - **Writing beads.** When creating or updating issues, write descriptions in
+    plain, unambiguous language as one coherent message: context → problem →
+    desired outcome.
+  - Format issue bodies AND comments as Markdown: headings, bullet lists, code
+    fences for commands/paths/identifiers, **bold** for key terms, short
+    paragraphs.
+  - Keep tone consistent across title, description, and comments so the issue
+    reads as one thread, not disjointed notes.
 
   {{ if not HasStandingBeadsGuidance -}}
-  - Run `bd ready --exclude-label in-flight` to find available work (the
-    `in-flight` label is written by automated drivers on beads they are
-    actively holding, so excluding it avoids colliding with an active
-    driver), then `bd show <id>` to view an issue.
-  - Use `bd update <id> --claim` to claim work and `bd close <id>` when done.
+  - Before starting new work, run `bd ready --exclude-label in-flight` to find
+    unblocked tasks, then `bd show <id>`. The `in-flight` label marks beads held by
+    automated drivers; excluding it avoids colliding with an active driver.
+  - If a ready task matches the user's request, claim it with
+    `bd update <id> --claim` and `bd close <id>` when done. If your work relates
+    to an existing issue, update it rather than duplicating it; surface relevant
+    ready tasks to the user.
   - File new issues with `bd` for any follow-up work you discover.
-  - Use `bd remember` for persistent knowledge — do NOT create MEMORY.md files.
   - Run `bd prime` if you need the full workflow and command reference.
   {{ end -}}

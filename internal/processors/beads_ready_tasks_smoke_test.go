@@ -6,67 +6,13 @@ import (
 	"testing"
 )
 
-// TestBeadsReadyTasksProcessor_ExcludeInFlightLabel is a smoke test for the
-// builtin `beads-ready-tasks` processor (mitto-kvq): it loads the YAML file
-// directly, verifies it parses into a valid processor definition, and pins
-// that the injected reminder text (a) instructs agents to run
-// `bd ready --exclude-label in-flight` instead of a bare `bd ready`, and (b)
-// explains why the filter matters (in-flight is an automated-driver claim,
-// omitting the filter risks a collision). A regression that reverts the
-// reminder to the bare `bd ready` form is caught here.
-func TestBeadsReadyTasksProcessor_ExcludeInFlightLabel(t *testing.T) {
-	const path = "../../config/processors/builtin/beads-ready-tasks.yaml"
-
-	loader := NewLoader("../../config/processors/builtin", nil)
-	proc, err := loader.LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile(%q): %v", path, err)
-	}
-	if proc == nil {
-		t.Fatalf("LoadFile(%q): nil processor (file may be empty)", path)
-	}
-
-	if proc.Name != "beads-ready-tasks" {
-		t.Errorf("processor name = %q, want %q", proc.Name, "beads-ready-tasks")
-	}
-	if !proc.IsTextMode() {
-		t.Errorf("processor must be text-mode (Text set, no Command/Prompt); got Text=%q Command=%q Prompt=%q",
-			proc.Text, proc.Command, proc.Prompt)
-	}
-
-	// Hallmarks the reminder text MUST contain (mitto-kvq companion to mitto-ial):
-	// the explicit filtered command, the explanation of what the label means,
-	// and the collision-risk warning so an operator understands the "why".
-	hallmarks := []string{
-		"bd ready --exclude-label in-flight",
-		"in-flight",
-		"automated drivers",
-		"colliding with an active driver",
-	}
-	for _, h := range hallmarks {
-		if !strings.Contains(proc.Text, h) {
-			t.Errorf("beads-ready-tasks reminder text missing hallmark %q\n---\ntext:\n%s\n---", h, proc.Text)
-		}
-	}
-
-	// Anti-regression: the bare `bd ready` recommendation (no --exclude-label
-	// flag) must NOT appear in the reminder body — that was the pre-mitto-kvq
-	// form and reintroducing it silently routes a human straight into a
-	// driver-held bead. We look for the substring "run `bd ready`" (backtick-
-	// fenced, matching the prose voice) followed immediately by whitespace or
-	// end-of-line rather than the ` --exclude-label` continuation.
-	if strings.Contains(proc.Text, "run `bd ready` ") || strings.Contains(proc.Text, "run `bd ready`\n") {
-		t.Errorf("beads-ready-tasks reminder still contains the pre-mitto-kvq bare \"run `bd ready`\" form; the --exclude-label in-flight filter must be included in the recommended command\n---\ntext:\n%s\n---", proc.Text)
-	}
-}
-
 // TestBeadsTrackTasksProcessor_ExcludeInFlightLabel pins the peer
 // `beads-track-tasks` processor: it also injects a system-notes reminder
 // recommending `bd ready`, so the mitto-kvq contract (human-facing bd
 // reminders must show `--exclude-label in-flight`) applies here too.
-// Without this pin, a future edit could silently regress this processor
-// back to the bare `bd ready` form while leaving `beads-ready-tasks`
-// correct.
+// This processor also subsumes the former `beads-ready-tasks` processor, so it
+// pins the explanation of why the filter matters (in-flight is an
+// automated-driver claim; omitting the filter risks a collision).
 func TestBeadsTrackTasksProcessor_ExcludeInFlightLabel(t *testing.T) {
 	const path = "../../config/processors/builtin/beads-track-tasks.yaml"
 
@@ -87,8 +33,15 @@ func TestBeadsTrackTasksProcessor_ExcludeInFlightLabel(t *testing.T) {
 			proc.Text, proc.Command, proc.Prompt)
 	}
 
-	if !strings.Contains(proc.Text, "bd ready --exclude-label in-flight") {
-		t.Errorf("beads-track-tasks reminder missing `bd ready --exclude-label in-flight` (mitto-kvq)\n---\ntext:\n%s\n---", proc.Text)
+	for _, h := range []string{
+		"bd ready --exclude-label in-flight",
+		"in-flight",
+		"automated drivers",
+		"colliding with an active driver",
+	} {
+		if !strings.Contains(proc.Text, h) {
+			t.Errorf("beads-track-tasks reminder missing hallmark %q (mitto-kvq)\n---\ntext:\n%s\n---", h, proc.Text)
+		}
 	}
 
 	// Anti-regression: bare `bd ready` recommendation must not reappear in

@@ -2,7 +2,6 @@ package processors
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,8 +28,7 @@ func writeAgentsMD(t *testing.T, dir, content string) {
 // asserting (mitto-2kw acceptance criteria):
 //   - the runtime-resolved BeadsDatabaseMode block is present in BOTH renders
 //     (the one thing no static file can supply must never be dropped);
-//   - the multi-bullet reminder (bd ready / bd update --claim / bd remember /
-//     bd prime) is dropped ONLY when the standing file is present;
+//   - the multi-bullet reminder (bd ready / bd update --claim / bd prime) is dropped ONLY when the standing file is present;
 //   - the shrunk render is measurably smaller than the full render (the
 //     "measured first-message token cost is reduced" acceptance criterion).
 func TestBeadsTrackTasksProcessor_ShrinksWhenStandingGuidancePresent(t *testing.T) {
@@ -64,13 +62,15 @@ func TestBeadsTrackTasksProcessor_ShrinksWhenStandingGuidancePresent(t *testing.
 		if !strings.Contains(text, "Database mode: shared.") {
 			t.Errorf("render missing unconditional BeadsDatabaseMode block:\n%s", text)
 		}
+		if !strings.Contains(text, "**Writing beads.**") {
+			t.Errorf("render missing unconditional issue-writing guidance:\n%s", text)
+		}
 	}
 
 	// Bullet reminder must be present in the fallback (no standing file) render.
 	fallbackHallmarks := []string{
 		"bd ready --exclude-label in-flight",
 		"bd update <id> --claim",
-		"bd remember",
 		"bd prime",
 	}
 	for _, h := range fallbackHallmarks {
@@ -105,54 +105,4 @@ func TestBeadsTrackTasksProcessor_ShrinksWhenStandingGuidancePresent(t *testing.
 		t.Errorf("shrunk render is only %.0f%% smaller than full render (shrunk=%d full=%d bytes), want a bigger reduction",
 			(1-ratio)*100, len(shrunk), len(full))
 	}
-}
-
-// TestBeadsReadyTasksProcessor_SuppressedWhenStandingGuidancePresent verifies
-// the beads-ready-tasks.yaml enabledWhen gate (mitto-2kw): the processor is
-// fully suppressed when a standing AGENTS.md already carries the guidance,
-// still fires in a workspace without one (pre-existing DirExists/CommandExists
-// gates unaffected), and stays suppressed when .beads/ is absent regardless of
-// standing-guidance state.
-func TestBeadsReadyTasksProcessor_SuppressedWhenStandingGuidancePresent(t *testing.T) {
-	if _, err := exec.LookPath("bd"); err != nil {
-		t.Skip("bd not installed on PATH")
-	}
-
-	const path = "../../config/processors/builtin/beads-ready-tasks.yaml"
-	loader := NewLoader("../../config/processors/builtin", nil)
-	proc, err := loader.LoadFile(path)
-	if err != nil {
-		t.Fatalf("LoadFile(%q): %v", path, err)
-	}
-
-	newBeadsDir := func(t *testing.T) string {
-		t.Helper()
-		dir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(dir, ".beads"), 0755); err != nil {
-			t.Fatal(err)
-		}
-		return dir
-	}
-
-	t.Run("suppressed when standing guidance present", func(t *testing.T) {
-		dir := newBeadsDir(t)
-		writeAgentsMD(t, dir, beadsGuidanceStandingFile)
-		if got := evaluateEnabledWhen(proc, &ProcessorInput{WorkingDir: dir}, nil); got {
-			t.Errorf("evaluateEnabledWhen = true, want false (standing guidance present)")
-		}
-	})
-
-	t.Run("fires when no standing guidance", func(t *testing.T) {
-		dir := newBeadsDir(t)
-		if got := evaluateEnabledWhen(proc, &ProcessorInput{WorkingDir: dir}, nil); !got {
-			t.Errorf("evaluateEnabledWhen = false, want true (no standing guidance)")
-		}
-	})
-
-	t.Run("still suppressed without .beads dir even absent standing guidance", func(t *testing.T) {
-		dir := t.TempDir() // no .beads, no AGENTS.md
-		if got := evaluateEnabledWhen(proc, &ProcessorInput{WorkingDir: dir}, nil); got {
-			t.Errorf("evaluateEnabledWhen = true, want false (.beads dir absent)")
-		}
-	})
 }
