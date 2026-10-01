@@ -182,14 +182,12 @@ func TestKnowledgeRouter_ScopedRule_ClaudeCodeLayout(t *testing.T) {
 	}
 }
 
-// TestKnowledgeRouter_ClaudeMdFallback_PreferencesOnly exercises the
-// CLAUDE.md fallback branch: a workspace with none of the four rules
-// directories but a root CLAUDE.md file must resolve $prefsFile to
-// "CLAUDE.md" for the preferences destination, while rules findings still
-// hit the existing "no rules directory found" skip path (CLAUDE.md is a
-// single file, not a rules directory) — per the mitto-3od.5 plan.
-func TestKnowledgeRouter_ClaudeMdFallback_PreferencesOnly(t *testing.T) {
-	const sessionID = "sess-ac4-claudemd-fallback"
+// TestKnowledgeRouter_LocalFallback_PreferencesOnly exercises the fallback
+// branch: a workspace with none of the four rules directories resolves
+// $prefsFile to the local-only ".agents/rules/90-local.md" (never CLAUDE.md or
+// AGENTS.md), while rules findings hit the "no rules directory found" skip path.
+func TestKnowledgeRouter_LocalFallback_PreferencesOnly(t *testing.T) {
+	const sessionID = "sess-ac4-local-fallback"
 	store := newCloseRouterApplyTestStore(t, sessionID)
 
 	workingDir := t.TempDir()
@@ -198,53 +196,45 @@ func TestKnowledgeRouter_ClaudeMdFallback_PreferencesOnly(t *testing.T) {
 	}
 
 	prompt := dispatchKnowledgeRouter(t, store, sessionID, workingDir, `{"events":[{"text":"prefers squash commits"}]}`, func(string) (PromptCompletion, error) {
-		return PromptCompletion{FinalMessage: `{"findings":[{"text":"prefers squash commits","destination":"preferences","written":true,"target_path":"CLAUDE.md"}]}`}, nil
+		return PromptCompletion{FinalMessage: `{"findings":[{"text":"prefers squash commits","destination":"preferences","written":true,"target_path":".agents/rules/90-local.md"}]}`}, nil
 	})
 
-	if !strings.Contains(prompt, "`CLAUDE.md`") {
-		t.Errorf("dispatched prompt does not reference the auto-detected CLAUDE.md fallback; prompt=%s", prompt)
+	if !strings.Contains(prompt, "`.agents/rules/90-local.md`") {
+		t.Errorf("dispatched prompt does not reference the local fallback file; prompt=%s", prompt)
+	}
+	if strings.Contains(prompt, "CLAUDE.md") {
+		t.Errorf("dispatched prompt must never reference CLAUDE.md; prompt=%s", prompt)
 	}
 	if strings.Contains(prompt, ".augment/rules") || strings.Contains(prompt, ".cursor/rules") || strings.Contains(prompt, ".codex/rules") || strings.Contains(prompt, ".claude/rules") {
 		t.Errorf("dispatched prompt leaked a non-matching agent layout; prompt=%s", prompt)
 	}
 	if !strings.Contains(prompt, "none found — skip rules findings") {
-		t.Errorf("dispatched prompt should fall back to the no-rules-directory skip message when only CLAUDE.md exists; prompt=%s", prompt)
+		t.Errorf("dispatched prompt should use the no-rules-directory skip message; prompt=%s", prompt)
 	}
 
 	state := waitForCloseRouterState(t, store, sessionID, func(s session.CloseRouterState) bool {
 		return len(s.Runs) == 1 && !s.Runs[0].CompletedAt.IsZero()
 	})
 	findings := state.Runs[0].Findings
-	if len(findings) != 1 || findings[0].Destination != "preferences" || findings[0].TargetPath != "CLAUDE.md" {
-		t.Fatalf("Findings = %+v, want one preferences finding targeting CLAUDE.md", findings)
+	if len(findings) != 1 || findings[0].Destination != "preferences" || findings[0].TargetPath != ".agents/rules/90-local.md" {
+		t.Fatalf("Findings = %+v, want one preferences finding targeting .agents/rules/90-local.md", findings)
 	}
 }
 
-// --- AC#5: beads-memory-only (prompt-contract lint) -----------------------------------
+// --- AC#5: no beads memories (prompt-contract lint) ----------------------------------
 
-// TestKnowledgeRouter_BeadsMemory_PromptContract pins the router's memory
-// destination instructions at the source: the router's Go code has no path
-// that shells out to `bd` directly (it dispatches an LLM prompt, and the LLM
-// runs `bd` itself as a tool call), so the contract "never bd memories
-// --json, always a targeted bd memories <keyword>, refine via bd remember
-// --key on a hit" can only be verified by asserting the literals are present
-// in the real prompt template.
-func TestKnowledgeRouter_BeadsMemory_PromptContract(t *testing.T) {
+// TestKnowledgeRouter_NoBeadsMemory_PromptContract pins that the router never
+// instructs the agent to use beads memories.
+func TestKnowledgeRouter_NoBeadsMemory_PromptContract(t *testing.T) {
 	data, err := os.ReadFile(knowledgeRouterYAMLPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", knowledgeRouterYAMLPath, err)
 	}
 	body := string(data)
 
-	mustContain := []string{
-		`bd memories "<keyword>"`,
-		`bd remember --key <existing-key>`,
-		`never`,
-		`bd memories --json`,
-	}
-	for _, want := range mustContain {
-		if !strings.Contains(body, want) {
-			t.Errorf("knowledge-router.yaml missing expected literal %q", want)
+	for _, banned := range []string{"bd memories", "bd remember", "**memory**"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("knowledge-router.yaml must not contain %q", banned)
 		}
 	}
 }
@@ -258,7 +248,6 @@ func TestKnowledgeRouter_MixedInput_OnePerDestination(t *testing.T) {
 	const mockMsg = `{"findings":[
 		{"text":"prefers rebase over merge","destination":"preferences","written":true,"target_path":"p.md"},
 		{"text":"all new endpoints need integration tests","destination":"rules","written":true,"target_path":"r.md"},
-		{"text":"the retry backoff is capped at 30s by design","destination":"memory","written":true},
 		{"text":"add pagination to the list endpoint","destination":"issue","written":true},
 		{"text":"just restated the task, no new info","destination":"none","written":false}
 	]}`
@@ -270,12 +259,12 @@ func TestKnowledgeRouter_MixedInput_OnePerDestination(t *testing.T) {
 		return len(s.Runs) == 1 && !s.Runs[0].CompletedAt.IsZero()
 	})
 	findings := state.Runs[0].Findings
-	if len(findings) != 5 {
-		t.Fatalf("Findings = %+v, want 5 (one per destination)", findings)
+	if len(findings) != 4 {
+		t.Fatalf("Findings = %+v, want 4 (one per destination)", findings)
 	}
 
-	wantDestinations := []string{"preferences", "rules", "memory", "issue", "none"}
-	seenKeys := make(map[string]bool, 5)
+	wantDestinations := []string{"preferences", "rules", "issue", "none"}
+	seenKeys := make(map[string]bool, 4)
 	for i, f := range findings {
 		if f.Destination != wantDestinations[i] {
 			t.Errorf("findings[%d].Destination = %q, want %q", i, f.Destination, wantDestinations[i])
@@ -285,8 +274,8 @@ func TestKnowledgeRouter_MixedInput_OnePerDestination(t *testing.T) {
 		}
 		seenKeys[f.LogicalKey] = true
 	}
-	if findings[4].Written {
-		t.Errorf("the 'none' destination finding must be Written=false, got %+v", findings[4])
+	if findings[3].Written {
+		t.Errorf("the 'none' destination finding must be Written=false, got %+v", findings[3])
 	}
 }
 

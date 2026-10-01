@@ -1,25 +1,16 @@
 ##########################################################################################
 # Builtin processor: single close-phase pass that routes durable findings from an
-# archived conversation into EXACTLY ONE destination: preferences, rules, memory,
-# issue, or none (mitto-3od.2).
+# archived conversation into EXACTLY ONE destination: preferences, rules, issue, or
+# none (mitto-3od.2). Beads memories are deliberately not a destination.
 #
-# Runs BEFORE the legacy single-purpose close processors (priority: 100, vs. their
-# priority: 200) so it gets first look at the conversation. It is dispatched
-# standalone (never batched with other prompt-mode close processors) so its terminal
-# response can be parsed as one strict JSON object by internal/processors/apply.go,
-# which persists the classification into a per-session close-router.json sidecar
-# (idempotency ledger — see internal/session/close_router_sidecar.go) so a retry
-# against the same immutable history snapshot never re-classifies or double-writes
-# an already-persisted finding.
-#
-# NOTE: the legacy processors (memorize-preferences, extract-memories-on-close,
-# auggie-update-rules, claude-update-memory) each carry their own
-# `!Prompts.IsEnabled("knowledge-router")` enabledWhen clause (mitto-3od.3), so
-# enabling this router automatically suppresses them — findings are classified/
-# persisted by exactly one of them, never both.
+# Runs BEFORE the legacy close processors (priority 100 vs. their 200) and is
+# dispatched standalone so internal/processors/apply.go can parse its strict JSON
+# reply into the close-router.json idempotency sidecar. The legacy processors carry
+# `!Prompts.IsEnabled("knowledge-router")` (mitto-3od.3), so enabling this router
+# suppresses them.
 ##########################################################################################
 name: knowledge-router
-description: "Single close-phase pass that classifies durable findings from an archived conversation into exactly one destination: preferences, rules, memory, issue, or none"
+description: "Single close-phase pass that classifies durable findings from an archived conversation into exactly one destination: preferences, rules, issue, or none"
 enabled: true
 when:
   on: conversationClosed
@@ -28,8 +19,7 @@ priority: 100
 timeout: 300s
 onError: skip
 
-# Skip loop conversations (they archive/unarchive frequently and would repeatedly
-# re-scan the same history).
+# Skip loop conversations (they archive/unarchive frequently).
 enabledWhen: '!Session.IsLoop'
 
 parameters:
@@ -37,12 +27,12 @@ parameters:
     type: text
     required: false
     default: ""
-    description: "File where personal-preference findings are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, .codex/rules/, .claude/rules/, or CLAUDE.md)."
+    description: "Local-only file for personal-preference findings (relative to workspace root). Leave empty to auto-detect 90-local.md in .augment/.cursor/.codex/.claude rules/, else .agents/rules/90-local.md."
   - name: RulesDir
     type: text
     required: false
     default: ""
-    description: "Directory where project-rule findings are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, .codex/rules/, or .claude/rules/)."
+    description: "Directory for project-rule findings (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, .codex/rules/, or .claude/rules/)."
 
 prompt: |
   {{- $prefsFile := Trim .Args.PreferencesFile -}}
@@ -51,7 +41,7 @@ prompt: |
   {{- else if DirExists ".cursor/rules" -}}{{- $prefsFile = ".cursor/rules/90-local.md" -}}
   {{- else if DirExists ".codex/rules" -}}{{- $prefsFile = ".codex/rules/90-local.md" -}}
   {{- else if DirExists ".claude/rules" -}}{{- $prefsFile = ".claude/rules/90-local.md" -}}
-  {{- else if FileExists "CLAUDE.md" -}}{{- $prefsFile = "CLAUDE.md" -}}
+  {{- else -}}{{- $prefsFile = ".agents/rules/90-local.md" -}}
   {{- end -}}
   {{- end -}}
   {{- $rulesDir := Trim .Args.RulesDir -}}
@@ -62,86 +52,60 @@ prompt: |
   {{- else if DirExists ".claude/rules" -}}{{- $rulesDir = ".claude/rules" -}}
   {{- end -}}
   {{- end -}}
-  You are the knowledge router for a Mitto conversation that has just been archived.
-  Your ONLY job this run is to classify durable findings from the conversation into
-  AT MOST ONE destination each, then report the classification as strict JSON. You do
-  NOT decide whether to write memories/rules/preferences yourself beyond what this
-  prompt directs — follow the per-destination instructions below exactly.
+  You are the knowledge router for an archived Mitto conversation. Classify its durable
+  findings into AT MOST ONE destination each, persist them as directed below, and report
+  the result as strict JSON.
 
   Working directory: {{ .Workspace.Folder }}
   Archived session ID: {{ .Session.ID }}
 
-  The full archived conversation is provided below as an immutable JSON snapshot (the
-  original session may already be deleted — do not call `mitto_conversation_history`).
+  The full conversation is provided below as an immutable JSON snapshot (the session may
+  already be deleted — do not call `mitto_conversation_history`).
 
-  ## 1. Identify candidates
+  ## 1. Identify and classify
 
-  Read the conversation snapshot and identify durable findings worth persisting —
-  facts, decisions, or requests that would still matter to a future session. Ignore
-  one-off task narration, questions, and anything already obvious from the code.
+  Find facts, decisions or requests that would still matter to a future session. Ignore
+  one-off narration, questions, and anything obvious from the code. Give each candidate
+  exactly ONE destination (best single fit; never persist twice):
 
-  ## 2. Classify EACH candidate into exactly one destination
+  - **preferences** — a PERSONAL preference of this user (commit style, review habits,
+    tone) that need not apply to others.
+  - **rules** — a project-wide convention or policy (naming, architecture, testing, tooling).
+  - **issue** — actionable follow-up work identified but not completed.
+  - **none** — does not durably matter (still report it).
 
-  - **preferences** — a PERSONAL, user-specific preference (how THIS user likes to
-    work: commit style, review habits, communication tone) that would not
-    necessarily apply to other people working on the project.
-  - **rules** — a project-wide convention, standard, or policy that applies to
-    anyone working on the project (naming, architecture, testing style, tooling).
-  - **memory** — a durable, project-level fact that is neither a personal preference
-    nor a project rule (architectural decision rationale, a gotcha, a discovered
-    invariant).
-  - **issue** — actionable follow-up work that was identified but not completed in
-    this conversation.
-  - **none** — anything that does not durably matter (drop it, but still report it
-    with `"destination": "none"`).
+  ## 2. Persist
 
-  Each candidate gets EXACTLY ONE destination. When a finding could plausibly fit two
-  categories, pick the single best fit — never persist the same finding twice.
-
-  ## 3. Persist each classified finding
-
-  - **preferences**: append/update the personal-preferences section of
-    {{ if $prefsFile }}`{{ $prefsFile }}`{{ else }}the workspace's rules file (no rules directory found — skip preferences findings and report them as `"written": false`){{ end }}
-    using this format (create the section if missing, only touch content between the
-    markers):
+  - **preferences**: append/update the section below in `{{ $prefsFile }}`, touching only
+    content between the markers. This file is LOCAL ONLY: never commit or `git add` it,
+    and if `git check-ignore -q {{ $prefsFile }}` fails, append its path to
+    `.git/info/exclude`. Never write preferences into the project's agent-instructions files.
     ```
     <!-- BEGIN USER PREFERENCES (auto-managed by knowledge-router processor) -->
     ## User Preferences
 
-    - **preference category**: description of preference
+    - **category**: description
     <!-- END USER PREFERENCES -->
     ```
-  - **rules**: write/update the smallest-diff file under
+  - **rules**: edit the smallest-diff existing file under
     {{ if $rulesDir }}`{{ $rulesDir }}/`{{ else }}the workspace's rules directory (none found — skip rules findings and report them as `"written": false`){{ end }}
-    that already covers this topic, or create a new one if none does.
-  - **memory**: run a TARGETED search first — `bd memories "<keyword>"` — never
-    `bd memories --json` (that dumps the entire store into context). If the finding
-    refines an existing memory, update it in place with
-    `bd remember --key <existing-key> "<full merged content>"`; otherwise
-    `bd remember "<concise, self-contained finding>"`.
-  - **issue**: run a TARGETED search first — `bd list --title-contains "<keyword>" --json`
-    — to check for an existing duplicate. If none exists, `bd create "<title>"` with a
-    concise description; if one exists, skip (do not create a duplicate).
-  - **none**: do not persist anything.
+    covering the topic, or create a new one.
+  - **issue**: check `bd list --title-contains "<keyword>" --json` for a duplicate; if none,
+    `bd create "<title>"` with a concise description.
+  - **none**: persist nothing.
 
-  Set `"written": true` only when you actually persisted the finding this run (a
-  skipped duplicate, or "none", is `"written": false`).
+  `"written": true` only if you persisted the finding this run (skipped duplicates and
+  "none" are `false`).
 
-  ## 4. Skip already-written findings
+  ## 3. Skip already-written findings
 
-  If a `<mitto_close_router_state>` block is present below, it lists findings already
-  persisted by an earlier run against this EXACT history snapshot (identified by the
-  SHA-256 hex hash of their normalized text). Do not re-classify or re-persist any
-  candidate whose normalized (trimmed) text matches a listed `logical_key` — treat it
-  as already handled.
+  If a `<mitto_close_router_state>` block is present below, skip any candidate whose
+  normalized (trimmed) text matches a listed `logical_key` (SHA-256 hex of that text).
 
-  ## 5. Output contract (STRICT)
+  ## 4. Output (STRICT)
 
-  Your final message MUST be exactly one JSON object, no prose, no fenced code block,
-  no preamble, no trailing narration:
+  Your final message MUST be exactly one JSON object — no prose, no code fence:
 
-  ```
-  {"findings":[{"text":"<candidate text>","destination":"preferences|rules|memory|issue|none","written":true|false,"target_path":"<file path, or empty>"}]}
-  ```
+  {"findings":[{"text":"<candidate text>","destination":"preferences|rules|issue|none","written":true|false,"target_path":"<file path, or empty>"}]}
 
-  If there are no candidates at all, return `{"findings":[]}`.
+  With no candidates, return `{"findings":[]}`.

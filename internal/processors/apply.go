@@ -2579,10 +2579,14 @@ func parseCloseRouterFindings(finalMessage string) ([]session.CloseRouterFinding
 // Findings) so a future retry against the SAME history snapshot hash still
 // sees "no work classified yet" rather than a false completion.
 //
-// On parse/validation failure, CompletedAt is still recorded (the turn DID
-// complete) but Findings is left empty and a warning is logged — this is the
-// "retry does not double-write" fallback: a subsequent run against the same
-// snapshot hash finds no written keys to skip and simply reclassifies.
+// On parse/validation failure, CompletedAt is likewise left zero (mitto-88q):
+// a malformed or invalid-destination reply means no findings were durably
+// classified, so treating the run as completed-with-empty-findings would be
+// indistinguishable from a genuine "nothing to report" result and would
+// silently discard the real router response forever. Leaving the run
+// in-flight mirrors the dispatchErr branch above — a subsequent retry
+// against the same history snapshot hash finds no written keys to skip and
+// simply reclassifies from scratch.
 func (m *Manager) applyCloseRouterCompletion(store *session.Store, sessionID, runID string, completion PromptCompletion, dispatchErr error) {
 	if store == nil || runID == "" {
 		return
@@ -2624,8 +2628,8 @@ func (m *Manager) applyCloseRouterCompletion(store *session.Store, sessionID, ru
 		if state.Runs[i].RunID != runID {
 			continue
 		}
-		state.Runs[i].CompletedAt = time.Now()
 		if parseErr == nil {
+			state.Runs[i].CompletedAt = time.Now()
 			state.Runs[i].Findings = findings
 		}
 		found = true

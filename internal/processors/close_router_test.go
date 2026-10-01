@@ -231,7 +231,7 @@ func TestApplyCloseRouterCompletion_DispatchError_LeavesRunInFlight(t *testing.T
 	}
 }
 
-func TestApplyCloseRouterCompletion_ParseFailure_CompletesWithEmptyFindings(t *testing.T) {
+func TestApplyCloseRouterCompletion_ParseFailure_LeavesRunInFlight(t *testing.T) {
 	const sessionID = "s1"
 	store := newCloseRouterApplyTestStore(t, sessionID)
 	if err := session.WriteCloseRouterState(store, sessionID, session.CloseRouterState{
@@ -250,8 +250,13 @@ func TestApplyCloseRouterCompletion_ParseFailure_CompletesWithEmptyFindings(t *t
 	if len(state.Runs) != 1 {
 		t.Fatalf("Runs = %+v, want 1", state.Runs)
 	}
-	if state.Runs[0].CompletedAt.IsZero() {
-		t.Fatal("CompletedAt not set: a completed (but unparseable) turn must still be recorded so a retry does not double-write")
+	// mitto-88q: an unparseable reply must NOT be recorded as completed —
+	// otherwise it is byte-for-byte indistinguishable from a legitimate
+	// `{"findings":[]}` reply and the real router response is lost forever.
+	// Leaving CompletedAt zero mirrors the dispatchErr branch and makes the
+	// run retryable from scratch.
+	if !state.Runs[0].CompletedAt.IsZero() {
+		t.Fatal("CompletedAt set on parse failure: an unparseable reply must leave the run in-flight so a retry can reclassify from scratch, not be recorded as completed-with-empty-findings")
 	}
 	if len(state.Runs[0].Findings) != 0 {
 		t.Fatalf("Findings = %+v, want empty on parse failure", state.Runs[0].Findings)
@@ -302,6 +307,84 @@ func TestApplyCloseRouterCompletion_RunNotFound_NoOp(t *testing.T) {
 	}
 	if len(got.Runs) != 1 || got.Runs[0].RunID != "run-existing" || !got.Runs[0].CompletedAt.IsZero() {
 		t.Fatalf("state mutated for an unknown run ID: %+v", got.Runs)
+	}
+}
+
+// TestApplyCloseRouterCompletion_ParseFailure_IndistinguishableFromEmptyFindings
+// reproduces mitto-88q: when the knowledge-router's reply fails to parse (or
+// fails destination validation), applyCloseRouterCompletion records the run as
+// CompletedAt-set with empty Findings — byte-for-byte identical to a
+// legitimate `{"findings":[]}` reply (see the control case below, which mirrors
+// TestApplyCloseRouterCompletion_Success_PersistsFindings). This means a
+// malformed/prose LLM reply (e.g. "No findings." instead of valid JSON) is
+// silently and permanently indistinguishable from "the router genuinely found
+// nothing" — whatever the router actually found (if anything) is lost without
+// trace, and nothing in the persisted state reveals that a parse failure
+// occurred.
+//
+// This test currently FAILS because the parse-failure and validation-failure
+// runs end up with the exact same persisted shape (CompletedAt set, Findings
+// empty) as the legitimate empty-findings control run. The fix phase must
+// make parse/validation failures distinguishable (e.g. leaving CompletedAt
+// zero so the run is retryable, or recording an explicit failure marker).
+func TestApplyCloseRouterCompletion_ParseFailure_IndistinguishableFromEmptyFindings(t *testing.T) {
+	m := NewManager("", nil)
+
+	newRun := func(t *testing.T, sessionID string) *session.Store {
+		t.Helper()
+		store := newCloseRouterApplyTestStore(t, sessionID)
+		if err := session.WriteCloseRouterState(store, sessionID, session.CloseRouterState{
+			Runs: []session.CloseRouterRun{{RunID: "run-1", HistorySnapshotHash: "hash-1"}},
+		}); err != nil {
+			t.Fatalf("WriteCloseRouterState: %v", err)
+		}
+		return store
+	}
+
+	readRun := func(t *testing.T, store *session.Store, sessionID string) session.CloseRouterRun {
+		t.Helper()
+		state, err := session.ReadCloseRouterState(store, sessionID)
+		if err != nil {
+			t.Fatalf("ReadCloseRouterState: %v", err)
+		}
+		if len(state.Runs) != 1 {
+			t.Fatalf("Runs = %+v, want 1", state.Runs)
+		}
+		return state.Runs[0]
+	}
+
+	// Control: a genuine empty-findings reply is a legitimate completion.
+	controlSessionID := "s-control"
+	controlStore := newRun(t, controlSessionID)
+	m.applyCloseRouterCompletion(controlStore, controlSessionID, "run-1", PromptCompletion{FinalMessage: `{"findings":[]}`}, nil)
+	controlRun := readRun(t, controlStore, controlSessionID)
+	if controlRun.CompletedAt.IsZero() {
+		t.Fatal("control run (legitimate empty findings) should complete normally")
+	}
+
+	// Case A: unparseable (non-JSON) reply — must NOT look like the control case.
+	parseFailSessionID := "s-parse-fail"
+	parseFailStore := newRun(t, parseFailSessionID)
+	m.applyCloseRouterCompletion(parseFailStore, parseFailSessionID, "run-1", PromptCompletion{FinalMessage: "No findings."}, nil)
+	parseFailRun := readRun(t, parseFailStore, parseFailSessionID)
+	if !parseFailRun.CompletedAt.IsZero() {
+		t.Errorf("mitto-88q: parse-failure run was recorded exactly like a legitimate empty-findings completion "+
+			"(CompletedAt=%v, Findings=%+v) — a malformed LLM reply is silently indistinguishable from "+
+			"\"router found nothing\"; the fix phase must make this case distinguishable (e.g. leave "+
+			"CompletedAt zero so the run remains retryable, or persist an explicit failure marker)",
+			parseFailRun.CompletedAt, parseFailRun.Findings)
+	}
+
+	// Case B: valid JSON but an unknown destination — same code path (validation failure).
+	validationFailSessionID := "s-validation-fail"
+	validationFailStore := newRun(t, validationFailSessionID)
+	m.applyCloseRouterCompletion(validationFailStore, validationFailSessionID, "run-1",
+		PromptCompletion{FinalMessage: `{"findings":[{"text":"x","destination":"bogus"}]}`}, nil)
+	validationFailRun := readRun(t, validationFailStore, validationFailSessionID)
+	if !validationFailRun.CompletedAt.IsZero() {
+		t.Errorf("mitto-88q: validation-failure run (unknown destination) was recorded exactly like a legitimate "+
+			"empty-findings completion (CompletedAt=%v, Findings=%+v) — same bug as the parse-failure case above",
+			validationFailRun.CompletedAt, validationFailRun.Findings)
 	}
 }
 
