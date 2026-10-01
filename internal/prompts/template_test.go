@@ -3987,14 +3987,18 @@ func TestIssueLoopProcessing_RecoversOrphanedInProgress(t *testing.T) {
 		t.Errorf("Step 2Q must return stale orphaned beads to open, never close them from staleness alone")
 	}
 
-	raw := string(data)
+	recoveryData, err := os.ReadFile(filepath.Join("../../config/prompts/builtin/beads-issues/shared", "loop-processing-recovery.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(recoveryData)
 	rawStart := strings.Index(raw, "## Step 2Q — Recover orphaned legacy `in_progress` beads")
 	if rawStart < 0 {
-		t.Fatalf("could not find raw Step 2Q recovery block")
+		t.Fatalf("could not find Step 2Q in recovery fragment")
 	}
-	rawEnd := strings.Index(raw[rawStart:], "\n  ## Step 2R")
+	rawEnd := strings.Index(raw[rawStart:], "\n## Step 2R")
 	if rawEnd < 0 {
-		t.Fatalf("could not isolate raw Step 2Q recovery block")
+		t.Fatalf("could not isolate Step 2Q in recovery fragment")
 	}
 	rawBlock := raw[rawStart : rawStart+rawEnd]
 	for _, ownerSource := range []string{"{{ .Children.MCPText }}", "{{ .Workspace.Peers.AllText }}"} {
@@ -4020,6 +4024,7 @@ func TestTerminalParentClosureGuards(t *testing.T) {
 	}
 
 	supervisor := read("loop-processing.prompt.yaml")
+	recovery := read("shared/loop-processing-recovery.tmpl")
 	if got := strings.Count(supervisor, `open_children=$(bd children "$id" --json`); got != 2 {
 		t.Errorf("terminal sweep child guards = %d, want 2 (bug + non-bug)", got)
 	}
@@ -4032,8 +4037,8 @@ func TestTerminalParentClosureGuards(t *testing.T) {
 		`select((.metadata.claimed_by // "") == "" or (.metadata.claim_heartbeat_at // "") == "")`,
 		"reason=malformed_claim",
 	} {
-		if !strings.Contains(supervisor, frag) {
-			t.Errorf("supervisor missing malformed-claim recovery contract %q", frag)
+		if !strings.Contains(recovery, frag) {
+			t.Errorf("recovery fragment missing malformed-claim recovery contract %q", frag)
 		}
 	}
 

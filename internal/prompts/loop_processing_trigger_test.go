@@ -122,6 +122,61 @@ func TestLoopProcessing_OnTasksBlock_StillRendersUnchanged(t *testing.T) {
 	}
 }
 
+func TestLoopProcessingConditionalRecoveryAndPostTaskFragments(t *testing.T) {
+	for _, trigger := range []*cel.TriggerContext{
+		{Kind: "onTasks", OnTasks: &cel.TriggerOnTasksContext{}},
+		{Kind: "onChild", OnChild: &cel.TriggerOnChildContext{ChildID: "child-a", Event: "anyEndResponse"}},
+	} {
+		out := renderBuiltinPromptWithFragments(t, "Loop processing tasks", &cel.PromptEnabledContext{
+			Session: cel.SessionContext{ID: "orch-1"},
+			Prompts: loopProcessingPrompts(),
+			Trigger: trigger,
+		})
+		for _, omitted := range []string{
+			"## Step 2Q — Recover orphaned legacy `in_progress` beads",
+			"## Step 2R — Reap stale in-flight claims (cross-signal reaper)",
+			"## Step 5H — Post-task hook",
+		} {
+			if strings.Contains(out, omitted) {
+				t.Errorf("%s pass unexpectedly rendered %q", trigger.Kind, omitted)
+			}
+		}
+	}
+
+	scheduled := renderBuiltinPromptWithFragments(t, "Loop processing tasks", &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Prompts: loopProcessingPrompts(),
+		Trigger: &cel.TriggerContext{Kind: "schedule"},
+	})
+	for _, included := range []string{
+		"## Step 2Q — Recover orphaned legacy `in_progress` beads",
+		"## Step 2R — Reap stale in-flight claims (cross-signal reaper)",
+	} {
+		if !strings.Contains(scheduled, included) {
+			t.Errorf("scheduled pass omitted %q", included)
+		}
+	}
+	if strings.Contains(scheduled, "## Step 5H — Post-task hook") {
+		t.Error("scheduled pass without a post-task prompt rendered Step 5H")
+	}
+
+	withHook := renderBuiltinPromptWithFragments(t, "Loop processing tasks", &cel.PromptEnabledContext{
+		Session: cel.SessionContext{ID: "orch-1"},
+		Args: map[string]string{
+			"PostIterationPrompt":      "Run tests",
+			"PostIterationPrompt_Args": `{"Foo":"bar"}`,
+			"MaxParallelWorkers":       "3",
+			"SubmitStrategy":           "Pull Request",
+		},
+		Prompts: loopProcessingPrompts(),
+		Trigger: &cel.TriggerContext{Kind: "schedule"},
+	})
+	if !strings.Contains(withHook, "## Step 5H — Post-task hook") ||
+		!strings.Contains(withHook, `arguments: { "Foo": "bar" }`) {
+		t.Error("post-task hook fragment did not render with its argument map")
+	}
+}
+
 func TestLoopProcessing_NoTriggerContext_AllNewBranchesSilent(t *testing.T) {
 	out := renderBuiltinPromptWithFragments(t, "Loop processing tasks", &cel.PromptEnabledContext{
 		Session: cel.SessionContext{ID: "orch-1"},

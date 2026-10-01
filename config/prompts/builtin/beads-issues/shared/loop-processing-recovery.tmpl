@@ -1,0 +1,144 @@
+## Step 2Q — Recover orphaned legacy `in_progress` beads
+
+The current L1/L2 ownership protocol NEVER uses `status=in_progress`: a live
+driver leaves the bead `open` and carries a passive `in-flight` label plus
+`claimed_by`/heartbeat metadata. Legacy prompts and manual sessions did set
+`in_progress`, however, and 2B/2C intentionally exclude that status to avoid
+racing another worker. Without reconciliation, an abandoned legacy status is
+therefore invisible forever.
+
+Enumerate every non-epic `in_progress` bead. Preserve it (no writes) when ANY
+ownership/freshness signal is present:
+
+1. it carries `in-flight`; or
+2. its ID formally matches the `beads_issue` of a non-archived conversation in
+   `{{ .Children.MCPText }}` or the pre-rendered `Workspace peers:` block
+   (literal equality only; never infer ownership from titles); or
+3. its latest activity is less than 24h old. Latest activity is the later of
+   the issue's `updated_at` and newest `bd comments <id> --json` `created_at`.
+   Comments count because active audits may append evidence without changing
+   the issue row itself.
+
+```bash
+recovered_in_progress=()
+legacy_cutoff=$(date -u -v-24H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+formal_owners=$(cat <<'OWNERS'
+{{ .Children.MCPText }}
+{{ .Workspace.Peers.AllText }}
+OWNERS
+)
+
+while IFS= read -r id; do
+  # MCPText/AllText render a formal beads_issue as a literal trailing {<id>}.
+  # Fixed-string matching with braces is exact; titles never participate.
+  if grep -Fq "{$id}" <<<"$formal_owners"; then
+    continue
+  fi
+  issue_updated=$(bd show "$id" --json | jq -r '.[0].updated_at // empty')
+  comment_updated=$(bd comments "$id" --json | jq -r '[.[].created_at // empty] | max // empty')
+  last_activity=$(printf '%s\n%s\n' "$issue_updated" "$comment_updated" | grep -v '^$' | sort | tail -1)
+  if [ -n "$last_activity" ] && jq -n -e --arg activity "$last_activity" --arg cutoff "$legacy_cutoff" \
+       '$activity < $cutoff' >/dev/null; then
+    bd comment "$id" "Orchestrator recovery: legacy status=in_progress has no in-flight claim, no non-archived conversation owner, and no issue/comment activity for 24h; returning to open for normal verification. This does not mark the work complete."
+    bd update "$id" --status open
+    recovered_in_progress+=("$id")
+  fi
+done < <(bd list --status in_progress --json \
+  | jq -r '.[] | select(.issue_type != "epic") | select(((.labels // []) | index("in-flight")) == null) | .id')
+```
+
+Do NOT close a bead merely because stale notes say "implemented", tests passed,
+or a patch exists. Returning it to `open` deliberately routes it through 2B/2C's
+already-landed detection and the normal driver state machine, which must verify
+terminal evidence before closure. The status update is visible to Step 2 in this
+same pass; no restart or separate cleanup prompt is required.
+
+Log one-line count for Step 6: `Recovered-in-progress: <n>`.
+
+## Step 2R — Reap stale in-flight claims (cross-signal reaper)
+
+Run AFTER Step 2P (children/beads already reaped) and BEFORE Step 2Z (undefer),
+with 2Q just before. First reconcile
+**malformed claims**: an `in-flight` label missing `claimed_by` or `claim_heartbeat_at`
+can never be cross-signalled and would stay excluded forever. Preserve it only
+when the bead ID formally equals the `beads_issue` of a non-archived child or
+workspace-peer conversation; otherwise comment once, remove `in-flight`, clear
+partial `claimed_*` metadata, and classify as `malformed_claim`. Never use
+titles to infer ownership.
+
+```bash
+malformed_claim_owners=$(cat <<'OWNERS'
+{{ .Children.MCPText }}
+{{ .Workspace.Peers.AllText }}
+OWNERS
+)
+while IFS=$'\t' read -r id claimer heartbeat; do
+  [ -n "$id" ] || continue
+  if grep -Fq "{$id}" <<<"$malformed_claim_owners"; then
+    echo "Orchestrator reaper: preserving malformed claim for formally owned bead $id"
+    continue
+  fi
+  bd comment "$id" "Orchestrator reaper: releasing malformed in-flight claim (claimer=${claimer:-missing}, heartbeat=${heartbeat:-missing}, reason=malformed_claim). Bead is back in the normal work queue."
+  bd update "$id" --remove-label in-flight \
+    --unset-metadata claimed_by --unset-metadata claimed_at \
+    --unset-metadata claim_heartbeat_at
+done < <(bd list --status open --label in-flight --json \
+  | jq -r '.[] | select((.metadata.claimed_by // "") == "" or (.metadata.claim_heartbeat_at // "") == "") | [.id, (.metadata.claimed_by // ""), (.metadata.claim_heartbeat_at // "")] | @tsv')
+```
+
+Then enumerate every well-formed open `in-flight` bead whose
+`claim_heartbeat_at` is older than 60 min (drivers refresh it every
+iteration). Cross-signal each against the claimer conversation via
+`mitto_conversation_get` before clearing the claim (a long turn is not a
+stale claim):
+
+| Claimer conversation state           | Action                                            |
+|--------------------------------------|---------------------------------------------------|
+| not-found / archived / !is_running   | REAP (`conversation_gone`)                        |
+| is_prompting == true                 | SKIP (`still_prompting` — long turn is legit)     |
+| updated_at > now − 30 min            | SKIP-with-warn (`wedged_but_ticking`)             |
+| else                                 | REAP (`silent_conversation`)                      |
+
+Enumerate stale claims:
+
+```bash
+stale_cutoff=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+bd list --status open --label in-flight --has-metadata-key claim_heartbeat_at --json \
+  | jq -r --arg cutoff "$stale_cutoff" '.[] | select(.metadata.claim_heartbeat_at < $cutoff) | "\(.id)\t\(.metadata.claimed_by)\t\(.metadata.claim_heartbeat_at)"'
+```
+
+For each `<id>\t<claimer>\t<heartbeat>` row, cross-signal:
+
+```
+mitto_conversation_get(self_id: "{{ .Session.ID }}", conversation_id: "<claimer>")
+```
+
+Decide via the table above. On **REAP** — one bead comment, then clear the
+claim (the bead stays open and is picked up on the next pass). Promote
+`claimed_at` into `work_started_at` first, guarded on `work_started_at` being
+absent (earliest-start semantics, mitto-v3en):
+
+```bash
+bd comment <id> "Orchestrator reaper: releasing stale in-flight claim (claimer=<claimer>, last heartbeat=<heartbeat>, reason=<conversation_gone|silent_conversation|wedged_but_ticking>). Bead is back in the normal work queue."
+started=$(bd show <id> --json | jq -r '.[0].metadata.claimed_at // empty')
+prior=$(bd show <id> --json | jq -r '.[0].metadata.work_started_at // empty')
+if [ -n "$started" ] && [ -z "$prior" ]; then
+  bd update <id> --remove-label in-flight \
+    --unset-metadata claimed_by --unset-metadata claimed_at \
+    --unset-metadata claim_heartbeat_at \
+    --set-metadata "work_started_at=$started"
+else
+  bd update <id> --remove-label in-flight \
+    --unset-metadata claimed_by --unset-metadata claimed_at \
+    --unset-metadata claim_heartbeat_at
+fi
+```
+
+On **SKIP** / **SKIP-with-warn** — one bead comment only, do NOT clear the
+claim:
+
+```bash
+bd comment <id> "Orchestrator reaper: stale heartbeat (<heartbeat>) but claimer <claimer> is <is_prompting|updated recently>; leaving claim in place."
+```
+
+Log one-line count for Step 6: `Reaper: released=<n> skipped=<n>`.
