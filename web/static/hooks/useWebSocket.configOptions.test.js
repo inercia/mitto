@@ -5,6 +5,10 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, test, expect } from "../utils/testing/testGlobals.js";
+import {
+  describeConfigAdjustment,
+  configAdjustmentDedupKey,
+} from "../utils/configOptions.js";
 
 const source = readFileSync(
   new URL("./useWebSocket.js", import.meta.url),
@@ -37,24 +41,68 @@ function session(model) {
   };
 }
 
-function harness(text = source) {
-  let sessions = { active: session("opus"), background: session("sonnet") };
-  const flushed = [];
-  const handleSessionMessage = callback("handleSessionMessage", {
-    setSessions: (update) => {
-      sessions = update(sessions);
+// Richer fixture carrying a reasoning-effort-like selector with a display
+// `name` and an `options[]` catalog, so describeConfigAdjustment's
+// display-name resolution has something real to look up (mitto-bnk).
+function sessionWithReasoningEffort(model) {
+  const base = session(model);
+  return {
+    ...base,
+    info: {
+      ...base.info,
+      config_options: [
+        ...base.info.config_options,
+        {
+          id: "thought_level",
+          name: "Reasoning Effort",
+          category: "reasoning",
+          current_value: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
     },
-    sessionUpdateSchedulerRef: {
-      current: {
-        flushSession: (id) => {
-          flushed.push(id);
-          return false;
+  };
+}
+
+function harness(text = source, { initialSessions } = {}) {
+  let sessions = initialSessions ?? {
+    active: session("opus"),
+    background: session("sonnet"),
+  };
+  const flushed = [];
+  const toasts = [];
+  const activeSessionIdRef = { current: "active" };
+  const handleSessionMessage = callback(
+    "handleSessionMessage",
+    {
+      setSessions: (update) => {
+        sessions = update(sessions);
+      },
+      sessionUpdateSchedulerRef: {
+        current: {
+          flushSession: (id) => {
+            flushed.push(id);
+            return false;
+          },
         },
       },
+      COALESCED_BACKGROUND_MESSAGE_TYPES: new Set(),
+      console: { log() {} },
+      showToast: (opts) => {
+        toasts.push(opts);
+      },
+      activeSessionIdRef,
+      sessionsRef: { current: sessions },
+      configAdjustmentNoticeKeysRef: { current: new Set() },
+      describeConfigAdjustment,
+      configAdjustmentDedupKey,
     },
-    COALESCED_BACKGROUND_MESSAGE_TYPES: new Set(),
-    console: { log() {} },
-  });
+    text,
+  );
   const handleGlobalEvent = callback(
     "handleGlobalEvent",
     {
@@ -67,6 +115,8 @@ function harness(text = source) {
       return sessions;
     },
     flushed,
+    toasts,
+    activeSessionIdRef,
     global: handleGlobalEvent,
     perSession: handleSessionMessage,
   };
@@ -78,6 +128,19 @@ const change = (sessionId, value, configId = "model") => ({
 });
 const model = (h, id = "active") =>
   h.sessions[id].info.config_options[0].current_value;
+
+// Builds a full-snapshot broadcast (the shape the backend sends for model
+// changes), optionally carrying the new `adjustments` array. The real wire
+// format omits the `adjustments` key entirely when there are none, rather
+// than sending an empty array, so this mirrors that (mitto-bnk).
+const snapshotChange = (sessionId, configOptions, adjustments) => ({
+  type: "config_option_changed",
+  data: {
+    session_id: sessionId,
+    config_options: configOptions,
+    ...(adjustments !== undefined ? { adjustments } : {}),
+  },
+});
 
 describe("composer config broadcasts (mitto-6w3)", () => {
   test("global override and restoration update the dropdown's authoritative options", () => {
@@ -156,5 +219,159 @@ describe("composer config broadcasts (mitto-6w3)", () => {
       ).not.toThrow();
       expect(h.sessions).toEqual(initial);
     }
+  });
+});
+
+describe("model-change config snapshots and adjustments (mitto-bnk)", () => {
+  test("replaces the complete option snapshot and removes selectors that disappeared", () => {
+    const h = harness(source, {
+      initialSessions: {
+        active: sessionWithReasoningEffort("opus"),
+        background: session("sonnet"),
+      },
+    });
+    const nextSnapshot = [
+      { id: "model", name: "Model", category: "model", current_value: "sonnet" },
+      { id: "mode", name: "Mode", category: "mode", current_value: "default" },
+    ];
+
+    h.global(snapshotChange("active", nextSnapshot));
+
+    expect(h.sessions.active.info.config_options).toBe(nextSnapshot);
+    expect(h.sessions.active.info.config_options).toEqual(nextSnapshot);
+    expect(
+      h.sessions.active.info.config_options.some(
+        (option) => option.id === "thought_level",
+      ),
+    ).toBe(false);
+    expect(h.sessions.background.info.config_options).toHaveLength(2);
+    expect(h.flushed).toEqual(["active"]);
+  });
+
+  test("an empty snapshot removes all config selectors", () => {
+    const h = harness(source, {
+      initialSessions: {
+        active: sessionWithReasoningEffort("opus"),
+        background: session("sonnet"),
+      },
+    });
+
+    h.global(snapshotChange("active", []));
+
+    expect(h.sessions.active.info.config_options).toEqual([]);
+  });
+
+  test("shows a warning for a removed option using its prior display name", () => {
+    const h = harness(source, {
+      initialSessions: {
+        active: sessionWithReasoningEffort("opus"),
+        background: session("sonnet"),
+      },
+    });
+    const snapshot = [
+      { id: "model", name: "Model", category: "model", current_value: "sonnet" },
+    ];
+
+    h.global(
+      snapshotChange("active", snapshot, [
+        { config_id: "thought_level", reason: "option_removed" },
+      ]),
+    );
+
+    expect(h.toasts).toHaveLength(1);
+    expect(h.toasts[0].style).toBe("warning");
+    expect(h.toasts[0].message).toContain("Reasoning Effort");
+    expect(h.toasts[0].message).toContain("cleared");
+  });
+
+  test("shows a warning for an unsupported value and uses snapshot display names", () => {
+    const h = harness(source);
+    const snapshot = [
+      {
+        id: "thought_level",
+        name: "Reasoning Effort",
+        current_value: "low",
+        options: [{ value: "low", name: "Low" }],
+      },
+    ];
+
+    h.global(
+      snapshotChange("active", snapshot, [
+        {
+          config_id: "thought_level",
+          requested_value: "high",
+          applied_value: "low",
+          reason: "value_not_advertised",
+        },
+      ]),
+    );
+
+    expect(h.toasts).toHaveLength(1);
+    expect(h.toasts[0].style).toBe("warning");
+    expect(h.toasts[0].message).toContain("Reasoning Effort");
+    expect(h.toasts[0].message).toContain("Low");
+  });
+
+  test("shows an informational notice when the option snapshot is unconfirmed", () => {
+    const h = harness(source, {
+      initialSessions: {
+        active: sessionWithReasoningEffort("opus"),
+        background: session("sonnet"),
+      },
+    });
+
+    h.global(
+      snapshotChange("active", [], [
+        { config_id: "thought_level", reason: "snapshot_unconfirmed" },
+      ]),
+    );
+
+    expect(h.toasts).toHaveLength(1);
+    expect(h.toasts[0].style).toBe("info");
+    expect(h.toasts[0].message).toContain("Reasoning Effort");
+    expect(h.toasts[0].message.toLowerCase()).toContain("couldn't confirm");
+  });
+
+  test("shows no notice when adjustments are absent or empty", () => {
+    const h = harness();
+    const snapshot = [
+      { id: "model", category: "model", current_value: "sonnet" },
+    ];
+
+    h.global(snapshotChange("active", snapshot));
+    h.global(snapshotChange("active", snapshot, []));
+
+    expect(h.toasts).toHaveLength(0);
+  });
+
+  test("suppresses duplicate notices and ignores background-session adjustments", () => {
+    const h = harness();
+    const snapshot = [
+      { id: "thought_level", name: "Reasoning Effort", current_value: "low" },
+    ];
+    const event = snapshotChange("active", snapshot, [
+      {
+        config_id: "thought_level",
+        requested_value: "high",
+        applied_value: "low",
+        reason: "value_not_advertised",
+      },
+    ]);
+
+    h.global(event);
+    h.global(event);
+    expect(h.toasts).toHaveLength(1);
+
+    h.global(
+      snapshotChange("background", snapshot, [
+        {
+          config_id: "thought_level",
+          requested_value: "high",
+          applied_value: "low",
+          reason: "value_not_advertised",
+        },
+      ]),
+    );
+    expect(h.toasts).toHaveLength(1);
   });
 });

@@ -75,19 +75,28 @@ function resolveConfigValueDisplayName(configOption, value) {
  * `config_options` snapshot — e.g. "Reasoning effort isn't available for
  * this model and was cleared."
  *
- * Text is always derived from the agent-advertised option/value display
- * names in `configOptions` (the just-applied snapshot) — this function never
- * hardcodes a vendor, model, or effort-level name.
+ * Text is derived from agent-advertised option/value display names in the
+ * current snapshot, falling back to the previous snapshot for removed
+ * options — never from hardcoded vendor, model, or effort-level names.
  *
  * @param {{config_id: string, requested_value?: string, applied_value?: string, reason: string}} adjustment
  * @param {Array<{id: string, name?: string, options?: Array<{value: string, name?: string}>}>} [configOptions]
  *   The full snapshot array delivered in the same payload.
+ * @param {Array<{id: string, name?: string, options?: Array<{value: string, name?: string}>}>} [previousConfigOptions]
+ *   The prior snapshot, used only when an adjusted option was removed from the
+ *   new snapshot and its display name is no longer present there.
  * @returns {{style: "info"|"warning", title: string, message: string}}
  */
-export function describeConfigAdjustment(adjustment, configOptions) {
-  const configOption = Array.isArray(configOptions)
+export function describeConfigAdjustment(
+  adjustment,
+  configOptions,
+  previousConfigOptions,
+) {
+  const configOption = (Array.isArray(configOptions)
     ? configOptions.find((opt) => opt?.id === adjustment?.config_id)
-    : undefined;
+    : undefined) ?? (Array.isArray(previousConfigOptions)
+    ? previousConfigOptions.find((opt) => opt?.id === adjustment?.config_id)
+    : undefined);
   const optionName = configOption?.name || adjustment?.config_id || "Setting";
 
   switch (adjustment?.reason) {

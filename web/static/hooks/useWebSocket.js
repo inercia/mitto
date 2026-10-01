@@ -2675,12 +2675,18 @@ export function useWebSocket({
           msg.data?.adjustments?.length > 0 &&
           sessionId === activeSessionIdRef.current
         ) {
+          const previousConfigOptions =
+            sessionsRef.current[sessionId]?.info?.config_options ?? [];
           for (const adjustment of msg.data.adjustments) {
             const dedupKey = configAdjustmentDedupKey(sessionId, adjustment);
             if (configAdjustmentNoticeKeysRef.current.has(dedupKey)) continue;
             configAdjustmentNoticeKeysRef.current.add(dedupKey);
             showToast(
-              describeConfigAdjustment(adjustment, msg.data.config_options),
+              describeConfigAdjustment(
+                adjustment,
+                msg.data.config_options,
+                previousConfigOptions,
+              ),
             );
           }
         }
