@@ -21,6 +21,7 @@ defaults:
     COPILOT_PROVIDER_WIRE_API: "responses"
     COPILOT_MODEL: "qwen3:4b-thinking-2507-q4_K_M"
     COPILOT_OFFLINE: "true"
-  # Same pre-handshake MCP connect delay as github-copilot (mitto-sbj); a cold
-  # local model adds no init cost, so the same budget applies.
-  initializeTimeout: "90s"
+  # Pre-handshake MCP connect delay (mitto-sbj). Ollama cold-start (model
+  # download/load) blocks the subprocess before it completes the ACP initialize
+  # handshake. 90s insufficient for larger models; increased to 120s.
+  initializeTimeout: "120s"
