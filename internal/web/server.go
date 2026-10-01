@@ -619,6 +619,14 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.ModelProfilesByTagResolver = func(tag string) []configPkg.ModelProfile {
 		return config.MittoConfig.ModelProfilesByTag(tag)
 	}
+	// Global auxiliary model tag (fallback when the workspace sets none). Read at
+	// call time because settings can be hot-reloaded.
+	acpProcessMgr.GlobalAuxModelTagProvider = func() string {
+		if config.MittoConfig == nil {
+			return ""
+		}
+		return config.MittoConfig.Conversations.GetAuxiliaryModelTag()
+	}
 	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
 	// Inject the protocol-neutral backend acquisition seam (mitto-lrt.7/
 	// mitto-lrt.16) against the SAME underlying process manager as above, so

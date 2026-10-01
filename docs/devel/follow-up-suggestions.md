@@ -163,7 +163,11 @@ added on top of the capped content, so the total prompt is ~6k chars at the caps
 
 Auxiliary sessions use a workspace-level model preference
 (`AuxiliaryModelProfile` > `AuxiliaryModelTag` > `AuxiliaryModelSelection`,
-resolved in `internal/acpproc/acp_process_manager.go`). Setting the workspace
+resolved in `internal/acpproc/acp_process_manager.go`). When the workspace sets
+none of these, the global `conversations.auxiliary_model_tag` setting
+(`ACPProcessManager.GlobalAuxModelTagProvider`, read at call time) is used as a
+fallback; if it matches no available model a WARN is logged and the server default
+applies. It is ignored for synthesized model catalogs. Setting the workspace
 `AuxiliaryModelTag` to `Cheap` (e.g. the `Claude Haiku` profile) routes
 follow-up analysis to a cheap model. Per-purpose routing (only
 `PurposeFollowUp`) is not yet supported.

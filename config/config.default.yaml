@@ -438,6 +438,10 @@ web:
 conversations:
   action_buttons:
     enabled: true  # Enable follow-up suggestions by default
+  # Model-profile tag used for auxiliary sessions (title generation, follow-ups,
+  # processors). Fallback only: workspace-level auxiliary model settings win.
+  # Empty/omitted = the agent's default model. Must be a tag from `models:`.
+  auxiliary_model_tag: Cheap
   # external_images:
   #   enabled: false  # Allow external HTTPS images (default: false)
 

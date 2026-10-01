@@ -952,6 +952,11 @@ type ConversationsConfig struct {
 	// workspace auto_children config) are NOT counted toward this limit.
 	// nil means use default (10). 0 means unlimited.
 	MaxChildConversations *int `json:"max_child_conversations,omitempty" yaml:"max_child_conversations,omitempty"`
+	// AuxiliaryModelTag is the global model-profile tag used for auxiliary
+	// sessions (title generation, follow-ups, processors). It is only a
+	// fallback: workspace-level auxiliary model settings take precedence.
+	// Empty means use the agent's default model.
+	AuxiliaryModelTag string `json:"auxiliary_model_tag,omitempty" yaml:"auxiliary_model_tag,omitempty"`
 	// MaxLoopIterations caps the number of scheduled runs a loop conversation
 	// performs before it auto-stops. nil = use default (DefaultMaxLoopIterations);
 	// 0 = unlimited (still bounded by the hardcoded GlobalMaxLoopIterations backstop).
@@ -1163,6 +1168,15 @@ func (c *ConversationsConfig) GetMaxChildConversations() int {
 		return DefaultMaxChildConversations
 	}
 	return *c.MaxChildConversations
+}
+
+// GetAuxiliaryModelTag returns the global auxiliary-session model tag, trimmed.
+// Safe to call on nil receiver - returns "" (agent default model).
+func (c *ConversationsConfig) GetAuxiliaryModelTag() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.AuxiliaryModelTag)
 }
 
 // DefaultMaxLoopIterations is the default user-facing cap on scheduled runs
@@ -1600,6 +1614,7 @@ type rawConfig struct {
 		} `yaml:"external_images"`
 		DefaultFlags                  map[string]bool `yaml:"default_flags"`
 		MaxChildConversations         *int            `yaml:"max_child_conversations"`
+		AuxiliaryModelTag             string          `yaml:"auxiliary_model_tag"`
 		MaxLoopIterations             *int            `yaml:"max_loop_iterations"`
 		MinLoopCompletionDelaySeconds *int            `yaml:"min_loop_completion_delay_seconds"`
 	} `yaml:"conversations"`
@@ -2007,6 +2022,11 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MaxChildConversations = raw.Conversations.MaxChildConversations
 		}
 
+		// Copy global auxiliary model tag
+		if raw.Conversations.AuxiliaryModelTag != "" {
+			cfg.Conversations.AuxiliaryModelTag = raw.Conversations.AuxiliaryModelTag
+		}
+
 		// Copy max loop iterations
 		if raw.Conversations.MaxLoopIterations != nil {
 			cfg.Conversations.MaxLoopIterations = raw.Conversations.MaxLoopIterations
@@ -2021,7 +2041,8 @@ func Parse(data []byte) (*Config, error) {
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
 			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil {
+			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil &&
+			cfg.Conversations.AuxiliaryModelTag == "" {
 			cfg.Conversations = nil
 		}
 	}

@@ -2303,6 +2303,130 @@ func TestAuxiliaryModelTag_HonoursProfileOrder(t *testing.T) {
 	}
 }
 
+func globalAuxTestFixture(globalTag *string) (*ACPProcessManager, *conversation.SessionModelState) {
+	profiles := map[string]config.ModelProfile{
+		"Cheap Haiku": {
+			Name:     "Cheap Haiku",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Haiku"},
+			Tags:     []string{"Cheap"},
+		},
+		"Smart Sonnet": {
+			Name:     "Smart Sonnet",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"},
+			Tags:     []string{"Smart"},
+		},
+	}
+	mgr := NewACPProcessManager(context.Background(), nil)
+	mgr.ModelProfilesByTagResolver = func(tag string) []config.ModelProfile {
+		var out []config.ModelProfile
+		for _, p := range profiles {
+			for _, tg := range p.Tags {
+				if tg == tag {
+					out = append(out, p)
+				}
+			}
+		}
+		return out
+	}
+	mgr.ModelProfileResolver = func(name string) *config.ModelProfile {
+		if p, ok := profiles[name]; ok {
+			return &p
+		}
+		return nil
+	}
+	mgr.GlobalAuxModelTagProvider = func() string { return *globalTag }
+	models := &conversation.SessionModelState{
+		CurrentModelId: "gpt-4o",
+		AvailableModels: []conversation.ModelInfo{
+			{ModelId: "claude-haiku-4-5", Name: "Claude Haiku 4.5"},
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	return mgr, models
+}
+
+// TestResolveAuxConstraint_GlobalTagFallback covers the global
+// conversations.auxiliary_model_tag fallback (mitto-ee2.9).
+func TestResolveAuxConstraint_GlobalTagFallback(t *testing.T) {
+	tag := "Cheap"
+	mgr, models := globalAuxTestFixture(&tag)
+
+	// Workspace sets nothing (nil and empty) → global tag resolves.
+	for _, ws := range []*config.WorkspaceSettings{nil, {}} {
+		got := mgr.resolveAuxConstraint(ws, models, "ws", "title")
+		if got == nil || got.Pattern != "Haiku" {
+			t.Errorf("global fallback with ws=%+v = %+v, want Haiku", ws, got)
+		}
+	}
+
+	// Hot-reload: the provider is read at call time.
+	tag = "Smart"
+	if got := mgr.resolveAuxConstraint(nil, models, "ws", "title"); got == nil || got.Pattern != "Sonnet" {
+		t.Errorf("after global tag change = %+v, want Sonnet", got)
+	}
+
+	// Unresolvable tag → nil (server default), never an error.
+	tag = "NoSuchTag"
+	if got := mgr.resolveAuxConstraint(nil, models, "ws", "title"); got != nil {
+		t.Errorf("unknown tag = %+v, want nil", got)
+	}
+
+	// Empty / whitespace global → no-op.
+	for _, v := range []string{"", "   "} {
+		tag = v
+		if got := mgr.resolveAuxConstraint(nil, models, "ws", "title"); got != nil {
+			t.Errorf("global tag %q = %+v, want nil", v, got)
+		}
+	}
+
+	// Nil provider → no-op.
+	tag = "Cheap"
+	mgr.GlobalAuxModelTagProvider = nil
+	if got := mgr.resolveAuxConstraint(nil, models, "ws", "title"); got != nil {
+		t.Errorf("nil provider = %+v, want nil", got)
+	}
+}
+
+func TestResolveAuxConstraint_WorkspaceWinsOverGlobal(t *testing.T) {
+	tag := "Cheap"
+	mgr, models := globalAuxTestFixture(&tag)
+
+	cases := []struct {
+		name string
+		ws   *config.WorkspaceSettings
+		want string
+	}{
+		{"profile", &config.WorkspaceSettings{AuxiliaryModelProfile: "Smart Sonnet"}, "Sonnet"},
+		{"tag", &config.WorkspaceSettings{AuxiliaryModelTag: "Smart"}, "Sonnet"},
+		{"selection", &config.WorkspaceSettings{AuxiliaryModelSelection: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "GPT"}}, "GPT"},
+	}
+	for _, tc := range cases {
+		got := mgr.resolveAuxConstraint(tc.ws, models, "ws", "title")
+		if got == nil || got.Pattern != tc.want {
+			t.Errorf("%s: got %+v, want pattern %q", tc.name, got, tc.want)
+		}
+	}
+
+	// A workspace tag that matches nothing must NOT fall through to the global.
+	ws := &config.WorkspaceSettings{AuxiliaryModelTag: "NoSuchTag"}
+	if got := mgr.resolveAuxConstraint(ws, models, "ws", "title"); got != nil {
+		t.Errorf("unresolvable workspace tag = %+v, want nil (no global fallthrough)", got)
+	}
+}
+
+func TestResolveAuxConstraint_SynthesizedCatalogIgnoresGlobal(t *testing.T) {
+	tag := "Cheap"
+	mgr, models := globalAuxTestFixture(&tag)
+	models.Synthesized = true
+	if got := mgr.resolveAuxConstraint(nil, models, "ws", "title"); got != nil {
+		t.Errorf("synthesized catalog = %+v, want nil", got)
+	}
+	if got := mgr.resolveAuxConstraint(nil, nil, "ws", "title"); got != nil {
+		t.Errorf("nil models = %+v, want nil", got)
+	}
+}
+
 func TestAuxiliaryModelForLog(t *testing.T) {
 	tests := []struct {
 		name         string

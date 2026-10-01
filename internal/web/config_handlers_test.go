@@ -918,6 +918,57 @@ func TestBuildNewSettings_PreservesTaskLabelColors(t *testing.T) {
 	}
 }
 
+func TestBuildNewSettings_PreservesAuxiliaryModelTag(t *testing.T) {
+	server := &Server{config: Config{MittoConfig: &config.Config{
+		Conversations: &config.ConversationsConfig{AuxiliaryModelTag: "Cheap"},
+	}}}
+
+	settings, err := server.buildNewSettings(&ConfigSaveRequest{})
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+	if settings.Conversations == nil || settings.Conversations.AuxiliaryModelTag != "Cheap" {
+		t.Fatalf("Conversations = %+v, want AuxiliaryModelTag=Cheap preserved", settings.Conversations)
+	}
+
+	// An explicit request value replaces it.
+	settings, err = server.buildNewSettings(&ConfigSaveRequest{
+		Conversations: &config.ConversationsConfig{AuxiliaryModelTag: "Smart"},
+	})
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+	if settings.Conversations == nil || settings.Conversations.AuxiliaryModelTag != "Smart" {
+		t.Fatalf("Conversations = %+v, want AuxiliaryModelTag=Smart", settings.Conversations)
+	}
+}
+
+func TestHandleGetConfig_ReturnsAuxiliaryModelTag(t *testing.T) {
+	server := &Server{
+		config: Config{MittoConfig: &config.Config{
+			Conversations: &config.ConversationsConfig{AuxiliaryModelTag: "Cheap"},
+		}},
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w := httptest.NewRecorder()
+	server.handleGetConfig(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Conversations struct {
+			AuxiliaryModelTag string `json:"auxiliary_model_tag"`
+		} `json:"conversations"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Conversations.AuxiliaryModelTag != "Cheap" {
+		t.Errorf("conversations.auxiliary_model_tag = %q, want Cheap", resp.Conversations.AuxiliaryModelTag)
+	}
+}
+
 // TestBuildNewSettings_ModelsFiltersBlankNames verifies that profiles with a
 // blank (or whitespace-only) name are dropped before being persisted, as
 // defense-in-depth alongside the UI validation and Config.Parse's own skip.

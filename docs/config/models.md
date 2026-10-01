@@ -137,6 +137,30 @@ See [prompt-templates.md](../devel/prompt-templates.md) (context schema table an
 `Model` function) and [prompts.md](prompts.md) (`enabledWhen` with
 `Session.HasModelTag`) for the canonical reference.
 
+## Auxiliary conversations (`conversations.auxiliary_model_tag`)
+
+Auxiliary sessions (title generation, follow-up suggestions, prompt-mode processors)
+can be routed to a cheaper model via the global setting
+`conversations.auxiliary_model_tag` (Settings > Conversations). Its value is a model
+profile **tag** (e.g. `Cheap`); empty means "use the agent's default model".
+
+```yaml
+conversations:
+  auxiliary_model_tag: Cheap
+```
+
+- **Defaults**: empty for existing installs; new installs are seeded with `Cheap`
+  from `config.default.yaml`.
+- **Precedence**: the global tag is only a *fallback*. A workspace that sets any of
+  `auxiliary_model_profile` / `auxiliary_model_tag` / `auxiliary_model_selection`
+  wins (order: Profile > Tag > Selection) and the global tag is then ignored, even if
+  the workspace tag matches nothing.
+- **Resolution**: the tag is resolved through the profiles above (first profile
+  carrying the tag that matches an available model), read at call time so hot-reloaded
+  settings apply to the next auxiliary session.
+- **Best-effort**: no matching model logs a WARN and the server default is used; the
+  auxiliary session never fails. Ignored when the agent's model catalog is synthesized.
+
 ## Referenced by prompts (`preferredModels`)
 
 Prompts may declare a `preferredModels:` list to steer model selection at prompt
