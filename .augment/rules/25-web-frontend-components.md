@@ -70,6 +70,19 @@ The message stream and every ChatInput wrapper (textarea container, action-butto
 
 Menu prompt selections (prompts menu, Cmd+/ slash picker) call `onSend("", [], [], { promptName })` — **never the full prompt body**. All menus go through the shared helper `web/static/hooks/useConversationSeeding.js` (`seedConversationWithPrompt` for existing conversations, `startConversationWithPrompt` for atomic create+seed). Named prompts render in the message list as `NamedPromptPill` (`[data-testid="named-prompt-pill"]`); the queue dropdown shows `msg.prompt_name || msg.title`. The backend resolves name → text at dispatch in the target conversation's context.
 
+## Message (user/agent bubbles — daisyUI chat)
+
+User and agent messages in `web/static/components/Message.js` use daisyUI's `chat` component (mitto-pdv0). User block wraps with `<div class="chat chat-end group mb-2">`; agent block with `chat chat-start group mb-2`. The bubble div carries `chat-bubble bg-mitto-user text-mitto-user-text rounded-2xl before:hidden max-w-[95%] md:max-w-[75%]` (user) or `chat-bubble bg-mitto-agent …` (agent). Copy button + timestamp + `ProvenanceFooter` live in a **sibling** `<div class="chat-footer …">` — NOT inside the bubble.
+
+**Load-bearing invariants** — any refactor MUST preserve:
+
+1. `bg-mitto-user` / `bg-mitto-agent` stay directly on the `.chat-bubble` element. Playwright selectors in `tests/ui/utils/selectors.ts` (`userMessage: ".bg-mitto-user, .bg-blue-600"`, `agentMessage: ".bg-mitto-agent, .prose"`) and `.bg-mitto-agent .markdown-content` in `tests/ui/specs/perf/determinism.perf.spec.ts` depend on this — moving these classes to a wrapper or inner div silently breaks 4+ Playwright specs.
+2. `group` sits on the `.chat` wrapper (NOT the bubble) so `group-hover:opacity-100` on the copy button still fires when the button lives in `chat-footer`.
+3. `web/static/styles.css` overrides daisyUI's default `grid-template-columns: auto 1fr` / `1fr auto` with `auto minmax(0, 1fr)` / `minmax(0, 1fr) auto` so a long unbroken `<pre>` inside `.chat-bubble` wraps/scrolls within the bubble instead of pushing the page. Do NOT use `overflow:hidden` on `.chat-bubble` — it clips the (hidden) `:before` tail. Do NOT switch to `chat-bubble-primary` — the `bg-mitto-*` tokens carry the per-theme look.
+4. `before:hidden` on the bubble hides daisyUI's tail so an unbordered tail cannot appear next to a bordered bubble; keep `rounded-2xl` (daisyUI's more specific rule still squares the tail corner).
+
+Regression coverage in `web/static/components/Message.test.js`: mounted-DOM assertions on `.chat.chat-end` / `.chat.chat-start`, `bg-mitto-*` resolving to exactly `.chat-bubble`, and copy button + timestamp in a sibling `.chat-footer`; a source-scan test pins the `minmax(0, 1fr)` guard in `styles.css`. Other message kinds (thought bubble, tool-call, error alert, `NamedPromptPill`, system message) still use the pre-daisyUI markup — do not change them without a matching invariant review.
+
 ## QueueDropdown
 
 Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min: 100, max: 500). Auto-closes after 5s inactivity; paused on hover and drag.

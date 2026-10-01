@@ -369,6 +369,23 @@ budget risks breaking legitimate long child waits. Escalate to a
 tool-level budget only if the same pattern reproduces in a non-loop
 prompt.
 
+**Single-bead-driver variant** (observed on mitto-e9b, sessions
+`20260922-095839-aab2d507`): the disable-vector guard above ALSO applies
+to single-bead phase drivers (Review, Fix, etc.) that need to wall-clock
+defer a bead. `bd update … --defer --defer-until <ts>` is Beads-side
+state; `onCompletion` fires on the driver's OWN agent-completion event
+and knows nothing about Beads auto-wake. Setting
+`loop_enabled: false` to "quiet the driver during the wait" therefore
+strands the bead — auto-wake flips it back to `open` but nothing
+re-fires the loop, so the observation window silently never happens
+(mitto-e9b sat ~33h past `defer_until` before an external nudge). Correct
+options: leave `onCompletion` armed (Step 3 cheaply no-ops on
+`status=deferred`), OR switch trigger to `schedule` with `frequency_at`
+targeting a few minutes after `defer_until`, OR add `needs-human` and
+let the L1 supervisor re-spawn a driver after wake. Never silence + rely
+on Beads auto-wake alone. See bd memory
+`single-bead-driver-wall-clock-defer-self-silence-stranded`.
+
 ## Schema-Extension Pattern for New Loop Fields
 
 Canonical reference for adding an optional field to `LoopPrompt`: `CoalesceDuringBusy` (beads `mitto-dmb` / `mitto-f9q`). The plumbing touches, in order:

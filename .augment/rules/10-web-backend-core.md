@@ -10,6 +10,7 @@ globs:
   - "internal/web/client.go"
   - "internal/web/*_handlers.go"
   - "internal/web/markdown.go"
+  - "internal/web/file_server.go"
 keywords:
   - HTTP handler
   - routing
@@ -59,6 +60,10 @@ Dual listener architecture:
 2. **External** (`0.0.0.0`): Optional, requires authentication
 
 See architecture docs for auth flow and Tailscale funnel debugging.
+
+## File Server: Recovering Left-Truncated Paths (mitto-tda2, commit 4440fbb2)
+
+Tool-call activity titles display long file paths left-ellipsized (`…Development/inercia/mitto/docs/config/models.md`) to fit the UI, so the auto-generated file link the user clicks no longer matches a real path and 404s. `FileServer.resolveLeftTruncatedPath` (`internal/web/file_server.go`) detects a `…`/`.../` prefix, then resolves the suffix against the **selected workspace only**: first cheap workspace-relative reconstructions (no scan), then a bounded `filepath.WalkDir` (capped at `maxTruncatedPathScanEntries = 100000`). It opens the file **only if exactly one** real file matches that suffix — ambiguous or unmatched paths fall through to the normal 404/security path unchanged. Any new "recover a display-shortened path" feature should follow this same unique-suffix-match-or-refuse pattern rather than guessing.
 
 ## Testing the Web Server
 

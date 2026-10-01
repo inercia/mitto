@@ -141,6 +141,8 @@ Send `session_gone` (NOT generic error — clients stop reconnecting on `session
 | `session_gone`      | Server→Client   | Session deleted/not found (terminal) |
 | `ensure_resumed`    | Client→Server   | Request ACP resume on user focus |
 
+**`acp_stopped` reason taxonomy** (frontend classification, `handleSessionMessage` in `web/static/hooks/useWebSocket.js`, mitto-wko1): the backend reuses this single event for many distinct lifecycle causes carried in `msg.data.reason` — never render the raw reason string to the user. Classify into: `ARCHIVE_STOP_REASONS` (archived(_timeout), archived_via_mcp, archived_timeout_via_mcp, auto_archived(_timeout), parent_archived(_timeout), ancestor_archived, acp_server_reassigned(_timeout)) → neutral "Unarchive to continue" message; `TRANSIENT_STOP_REASON_TEXT` (agent_moved(_timeout), acp_server_reconfigured, gc_idle, gc_suspended, server_shutdown) → neutral "will resume automatically/when needed" message, no unarchive guidance; any other reason → generic "Session stopped unexpectedly." All `acp_stopped` chat messages are tagged `retryable: false`, and `buildRetryTargets` (`web/static/lib.js`) skips non-retryable messages so lifecycle transitions never offer a prompt-retry action. Adding a new backend stop reason requires adding it to one of these sets/maps or it silently falls into the generic error branch.
+
 
 ## Parent-Child Session Lifecycle Rules
 

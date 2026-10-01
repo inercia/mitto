@@ -173,5 +173,6 @@ When a perf spec measures whether a WS round trip caused a specific subtree to r
 |-------|---------|-------|
 | CDN resources blocked | Firefox, Safari | Tracking Prevention blocks `cdn.jsdelivr.net` |
 | Mermaid not rendering | Firefox | Tracking Prevention blocks Mermaid.js CDN |
+| iOS perf attribution | Playwright `webkit` | Desktop-WebKit host, NOT Mobile Safari. `devices['iPhone 15']` only overrides viewport/touch/UA — paint/scroll/compositor/JIT are still desktop. Use iOS Simulator + Safari Web Inspector (no native Playwright driver) for authentic iOS timing. See memory `playwright-webkit-vs-mobile-safari-perf-attribution`. |
 
 **Workaround**: Use Chromium for reliable testing, or disable tracking protection.

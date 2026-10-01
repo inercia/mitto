@@ -124,9 +124,23 @@ manager.Delete(ref)
 - `ErrCorruptVault` / `ErrUnsupportedVaultVersion`: unsafe persisted data.
 - `ErrUnsafeVaultPath`: Linux ownership, mode, type, or symlink validation failed.
 
+### Error surfacing — never silent-swallow (mitto-g4s5)
+
+Route every non-nil error from a SecretStore / Keychain lookup through the
+single classifier `secrets.IsBenignLookupErr(err)` (TRUE only for
+`ErrNotFound` / `ErrNotSupported`). On a non-benign error, emit `slog.Warn`
+with the account/credential name AND the error as structured fields — never
+the secret value. Do NOT `_ = err` a secret-store call and do NOT add ad-hoc
+`errors.Is` checks at call sites (keeps the definition of "benign" in one
+place). Applies to primary lookups AND best-effort migration/cleanup paths
+in `internal/config/settings.go` and `internal/secrets/secrets.go`. Pinned
+by `TestLoadSettingsWithFallback_LogsKeychainFailure_mittoG4s5` in
+`internal/config/settings_test.go`.
+
 ### Do Not
 
 - Commit or log secret values.
 - Add secret fields to status structs or API responses.
 - Use generic atomic JSON helpers for the Linux vault: they create mode-0755
   parents and do not provide no-follow validation.
+- `_ = err` a `SecretStore`/`Keychain` call — see the surfacing rule above.

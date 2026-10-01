@@ -76,6 +76,8 @@ useLayoutEffect(() => {
 
 **Separate concerns**: `useLayoutEffect` for session switch (instant), `useEffect` for streaming (smooth scroll).
 
+**Load-bearing invariant (mitto-rs7)**: `MessageList` and `useScrollManagement` MUST consume the SAME active-session store slice — otherwise the pre-paint scroll runs against the previous conversation's DOM on switch (most visible on iOS). Keyed external-store hooks (`useStoreSlice`) must synchronously read `getter(newKey)` for the switch render, not return the previous key via `useState`+passive `useEffect`. Unit stubs that flush `useEffect` synchronously mask this class of bug — regression tests must defer the effect for the key-switch render. See memory `keyed-sessionsstore-passive-effect-scroll-race`.
+
 ## Streaming Bottom-Growth: NO `scrollTop` Compensation (mitto-u5r)
 
 `.messages-container-reverse` is a **normal top-anchored** `display:block` scroller (`scrollTop=0` = visual top). `flex-col-reverse` is on the **inner** wrapper only (DOM ordering) — it does NOT make the scroller bottom-anchored. Bottom growth extends the document below the viewport, so a scrolled-up reader's `scrollTop` is naturally stable in both WebKit and Chromium.
