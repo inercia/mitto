@@ -8,22 +8,28 @@ import (
 )
 
 // ModelsToConfigOptions converts an agent model state into config option values
-// (Value=ModelId, Name, Description). Returns nil for a nil/empty model state.
+// (Value=ModelId, Name, Description). Duplicate IDs are represented once, using
+// the first advertised entry. Returns nil for a nil/empty model state.
 func ModelsToConfigOptions(models *SessionModelState) []SessionConfigOptionValue {
 	if models == nil || len(models.AvailableModels) == 0 {
 		return nil
 	}
-	options := make([]SessionConfigOptionValue, len(models.AvailableModels))
-	for i, m := range models.AvailableModels {
+	options := make([]SessionConfigOptionValue, 0, len(models.AvailableModels))
+	seen := make(map[string]bool, len(models.AvailableModels))
+	for _, m := range models.AvailableModels {
+		if seen[m.ModelId] {
+			continue
+		}
+		seen[m.ModelId] = true
 		desc := ""
 		if m.Description != nil {
 			desc = *m.Description
 		}
-		options[i] = SessionConfigOptionValue{
+		options = append(options, SessionConfigOptionValue{
 			Value:       m.ModelId,
 			Name:        m.Name,
 			Description: desc,
-		}
+		})
 	}
 	return options
 }

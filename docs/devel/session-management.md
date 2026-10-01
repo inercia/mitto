@@ -77,6 +77,11 @@ Fresh-context session replacement adopts the new ACP session ID and catalog,
 reapplies the same baseline, then applies that turn's preference. Failed fresh
 initialization aborts the prompt. Published model catalogs are owned snapshots,
 so concurrent startup updates cannot mutate readers' state.
+The model selector projects each advertised model ID only once (first entry
+wins), so duplicate catalog entries cannot produce multiple selected rows;
+the underlying agent catalog remains unchanged. Its dropdown displays model
+names alphabetically without changing catalog order for model resolution;
+other config-option menus retain their advertised order.
 
 WebSocket dispatch keeps slow preparation off the reader so keepalives and Stop
 remain available. ACK still follows persistence, never mere receipt; the browser

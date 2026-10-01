@@ -1,11 +1,39 @@
 package conversation
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
 )
+
+func TestModelsToConfigOptions_DeduplicatesIDs(t *testing.T) {
+	firstDescription := "Agent default"
+	duplicateDescription := "Duplicate default"
+	models := &SessionModelState{
+		CurrentModelId: "auto",
+		AvailableModels: []ModelInfo{
+			{ModelId: "auto", Name: "Auto", Description: &firstDescription},
+			{ModelId: "sonnet", Name: "Claude Sonnet 5"},
+			{ModelId: "auto", Name: "Auto", Description: &duplicateDescription},
+			{ModelId: "opus", Name: "Claude Opus 5.5"},
+		},
+	}
+
+	got := ModelsToConfigOptions(models)
+	want := []SessionConfigOptionValue{
+		{Value: "auto", Name: "Auto", Description: firstDescription},
+		{Value: "sonnet", Name: "Claude Sonnet 5"},
+		{Value: "opus", Name: "Claude Opus 5.5"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModelsToConfigOptions() = %+v, want %+v", got, want)
+	}
+	if len(models.AvailableModels) != 4 {
+		t.Fatalf("agent model catalog was mutated: %+v", models.AvailableModels)
+	}
+}
 
 // TestMatchConstraintOption tests the constraint matching logic for all match modes.
 func TestMatchConstraintOption(t *testing.T) {

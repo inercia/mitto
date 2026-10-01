@@ -77,6 +77,12 @@ export function ConfigOptionSelect({
   const currentLabel = currentOption
     ? currentOption.name
     : localValue || configOption.name;
+  const menuOptions =
+    configOption.category === "model"
+      ? [...(configOption.options || [])].sort((a, b) =>
+          a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+        )
+      : configOption.options;
 
   const tip = disabled
     ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
@@ -89,7 +95,9 @@ export function ConfigOptionSelect({
   // which is unreliable in WKWebView.
   const detailsClass = [
     "dropdown",
-    placement === "top" ? "chat-input-config-dropdown" : "config-dropdown-block",
+    placement === "top"
+      ? "chat-input-config-dropdown"
+      : "config-dropdown-block",
     isToolbar ? "" : "w-full",
   ]
     .filter(Boolean)
@@ -143,7 +151,7 @@ export function ConfigOptionSelect({
         ${!disabled &&
         html`
           <ul class=${menuClass}>
-            ${configOption.options?.map(
+            ${menuOptions?.map(
               (opt) => html`
                 <li key=${opt.value}>
                   <button
