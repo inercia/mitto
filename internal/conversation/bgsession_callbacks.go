@@ -426,7 +426,91 @@ func (bs *BackgroundSession) cbReplaceGenericConfigOptions(options []SessionConf
 		next = append(next, cloneConfigOption(opt))
 	}
 	bs.configOptions = next
+	bs.lastSnapshotModel = ""
+	for _, opt := range options {
+		if opt.Category == ConfigOptionCategoryModel {
+			bs.lastSnapshotModel = opt.CurrentValue
+			break
+		}
+	}
+	bs.configSnapshotGen++
+	if bs.configSnapshotSig != nil {
+		close(bs.configSnapshotSig)
+		bs.configSnapshotSig = nil
+	}
 	bs.configMu.Unlock()
+}
+
+// cbConfigSnapshotGeneration returns the replacement-snapshot generation.
+func (bs *BackgroundSession) cbConfigSnapshotGeneration() uint64 {
+	bs.configMu.RLock()
+	defer bs.configMu.RUnlock()
+	return bs.configSnapshotGen
+}
+
+// cbWaitConfigSnapshotAfter blocks (bounded by timeout and ctx) until a
+// replacement snapshot newer than gen arrives whose model matches wantModel
+// (or reports no model at all). Stale snapshots for another model are ignored.
+func (bs *BackgroundSession) cbWaitConfigSnapshotAfter(ctx context.Context, gen uint64, wantModel string, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		bs.configMu.Lock()
+		if bs.configSnapshotGen > gen && (bs.lastSnapshotModel == "" || wantModel == "" || bs.lastSnapshotModel == wantModel) {
+			bs.configMu.Unlock()
+			return true
+		}
+		if bs.configSnapshotSig == nil {
+			bs.configSnapshotSig = make(chan struct{})
+		}
+		sig := bs.configSnapshotSig
+		bs.configMu.Unlock()
+		select {
+		case <-sig:
+		case <-timer.C:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+// ConfigAdjustment is a generic, visible notice that a requested config
+// value could not be honoured after a model change. Carried on the next
+// config_option_changed broadcast as the optional "adjustments" array.
+type ConfigAdjustment struct {
+	ConfigID       string `json:"config_id"`
+	RequestedValue string `json:"requested_value,omitempty"`
+	AppliedValue   string `json:"applied_value,omitempty"`
+	Reason         string `json:"reason"`
+}
+
+// Adjustment reasons.
+const (
+	ConfigAdjustmentOptionRemoved       = "option_removed"
+	ConfigAdjustmentValueNotAdvertised  = "value_not_advertised"
+	ConfigAdjustmentSnapshotUnconfirmed = "snapshot_unconfirmed"
+)
+
+// cbNotifyConfigAdjusted queues adjustment notices and broadcasts the
+// authoritative snapshot, which carries them to the UI.
+func (bs *BackgroundSession) cbNotifyConfigAdjusted(notices []ConfigAdjustment) {
+	if len(notices) == 0 {
+		return
+	}
+	bs.configMu.Lock()
+	bs.pendingAdjustments = append(bs.pendingAdjustments, notices...)
+	bs.configMu.Unlock()
+	bs.cbNotifyConfigChanged("", "")
+}
+
+// TakeConfigAdjustments drains the queued adjustment notices.
+func (bs *BackgroundSession) TakeConfigAdjustments() []ConfigAdjustment {
+	bs.configMu.Lock()
+	defer bs.configMu.Unlock()
+	out := bs.pendingAdjustments
+	bs.pendingAdjustments = nil
+	return out
 }
 
 // cloneConfigOption deep-copies an option so callers cannot alias the stored

@@ -2671,12 +2671,18 @@ func (sm *SessionManager) broadcastConfigOptionChanged(sessionID, configID, valu
 			options = snapshot
 		}
 	}
-	sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+	payload := map[string]interface{}{
 		"session_id":     sessionID,
 		"config_id":      configID,
 		"value":          value,
 		"config_options": options,
-	})
+	}
+	if bs := sm.GetSession(sessionID); bs != nil {
+		if adj := bs.TakeConfigAdjustments(); len(adj) > 0 {
+			payload["adjustments"] = adj
+		}
+	}
+	sm.eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, payload)
 }
 
 // GetSession returns a running session by ID, or nil if not found.

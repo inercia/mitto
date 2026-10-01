@@ -315,6 +315,19 @@ type BackgroundSession struct {
 	// to the agent. Lock order: promptMu → configRPCMu.
 	configRPCMu sync.Mutex
 
+	// Replacement-snapshot bookkeeping (mitto-bnk). configSnapshotGen is bumped on
+	// every generic-option replacement (including an empty one, which means all
+	// generic options were removed); configSnapshotSig is closed and replaced on
+	// each bump so a model-change reconcile can wait (bounded) for the
+	// authoritative post-change snapshot. lastSnapshotModel is the model the
+	// latest snapshot reported ("" when it carried no model option).
+	// pendingAdjustments are visible-notice payloads awaiting the next
+	// config_option_changed broadcast. All guarded by configMu.
+	configSnapshotGen  uint64
+	configSnapshotSig  chan struct{}
+	lastSnapshotModel  string
+	pendingAdjustments []ConfigAdjustment
+
 	// Global MCP server for session registration.
 	// Sessions register with this server to enable session-scoped MCP tools.
 	globalMcpServer *mcpserver.Server

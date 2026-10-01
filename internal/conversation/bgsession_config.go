@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -78,6 +79,13 @@ func (bs *BackgroundSession) persistConfigValue(configID, value string) {
 
 func (bs *BackgroundSession) setActiveModelOnly(ctx context.Context, modelID string) error {
 	return bs.configMgr.setActiveModelOnly(bs, ctx, modelID)
+}
+
+// setActiveModelOnlyTemp switches the model for a per-prompt override: dependent
+// config is reconciled against the new snapshot but no operator override is
+// dropped, so the baseline preference survives the restore.
+func (bs *BackgroundSession) setActiveModelOnlyTemp(ctx context.Context, modelID string) error {
+	return bs.configMgr.setActiveModelOnlyOpts(bs, ctx, modelID, false)
 }
 
 func (bs *BackgroundSession) restoreBaselineIfOverride() {
@@ -211,14 +219,21 @@ func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID stri
 		if cfgId == "" {
 			cfgId = ModelConfigId
 		}
-		_, err := bs.acpConn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+		resp, err := bs.acpConn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
 			ValueId: &acp.SetSessionConfigOptionValueId{
 				SessionId: acp.SessionId(bs.acpID),
 				ConfigId:  cfgId,
 				Value:     acp.SessionConfigValueId(modelID),
 			},
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		// The response is the authoritative post-change snapshot (mitto-bnk).
+		if len(resp.ConfigOptions) > 0 {
+			bs.cmReplaceGenericConfigOptions(ConfigOptionsFromACP(resp.ConfigOptions))
+		}
+		return nil
 	}
 	return fmt.Errorf("no ACP connection")
 }
@@ -253,6 +268,51 @@ func (bs *BackgroundSession) cmReplaceGenericConfigOptions(opts []SessionConfigO
 	bs.cbReplaceGenericConfigOptions(opts)
 }
 
+func (bs *BackgroundSession) cmConfigSnapshotGeneration() uint64 {
+	return bs.cbConfigSnapshotGeneration()
+}
+
+func (bs *BackgroundSession) cmWaitConfigSnapshotAfter(ctx context.Context, gen uint64, wantModel string, timeout time.Duration) bool {
+	return bs.cbWaitConfigSnapshotAfter(ctx, gen, wantModel, timeout)
+}
+
+func (bs *BackgroundSession) cmNotifyConfigAdjusted(adj []ConfigAdjustment) {
+	bs.cbNotifyConfigAdjusted(adj)
+}
+
+// cmListConfigOverrides returns the operator's persisted selections for this
+// provider keyed by the agent's opaque option id.
+func (bs *BackgroundSession) cmListConfigOverrides() map[string]string {
+	if bs.store == nil || bs.persistedID == "" {
+		return nil
+	}
+	meta, err := bs.store.GetMetadata(bs.persistedID)
+	if err != nil || len(meta.ConfigOptionOverrides) == 0 {
+		return nil
+	}
+	prefix := session.ConfigOverrideKey(bs.acpServer, "")
+	out := map[string]string{}
+	for key, v := range meta.ConfigOptionOverrides {
+		if strings.HasPrefix(key, prefix) {
+			out[strings.TrimPrefix(key, prefix)] = v
+		}
+	}
+	return out
+}
+
+func (bs *BackgroundSession) cmDeleteConfigOverrides(ids []string) {
+	if bs.store == nil || bs.persistedID == "" || len(ids) == 0 {
+		return
+	}
+	if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+		for _, id := range ids {
+			delete(m.ConfigOptionOverrides, session.ConfigOverrideKey(bs.acpServer, id))
+		}
+	}); err != nil && bs.logger != nil {
+		bs.logger.Warn("Failed to delete config option overrides", "error", err)
+	}
+}
+
 func (bs *BackgroundSession) cmLockConfigRPC()   { bs.configRPCMu.Lock() }
 func (bs *BackgroundSession) cmUnlockConfigRPC() { bs.configRPCMu.Unlock() }
 
@@ -280,50 +340,7 @@ func (bs *BackgroundSession) reapplyConfigOverrides(ctx context.Context) {
 	if bs.store == nil || bs.persistedID == "" || bs.IsClosed() {
 		return
 	}
-	meta, err := bs.store.GetMetadata(bs.persistedID)
-	if err != nil || len(meta.ConfigOptionOverrides) == 0 {
-		return
-	}
-	prefix := session.ConfigOverrideKey(bs.acpServer, "")
-	var stale []string
-	for key, value := range meta.ConfigOptionOverrides {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		id := strings.TrimPrefix(key, prefix)
-		opt, ok := bs.cmFindByID(id)
-		if !ok {
-			// Not advertised right now (e.g. the active model lacks it): keep the
-			// override but do not apply it.
-			continue
-		}
-		if !isGenericConfigOption(opt) || !configOptionHasValue(opt, value) {
-			stale = append(stale, key)
-			continue
-		}
-		if opt.CurrentValue == value {
-			continue
-		}
-		bs.configRPCMu.Lock()
-		snap, err := bs.cmSetSessionConfigOption(ctx, id, value)
-		bs.configRPCMu.Unlock()
-		if err != nil {
-			if bs.logger != nil {
-				bs.logger.Warn("Failed to re-apply config option override", "config_id", id, "error", err)
-			}
-			continue
-		}
-		if len(snap) > 0 {
-			bs.cmReplaceGenericConfigOptions(snap)
-		}
-	}
-	if len(stale) > 0 {
-		_ = bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
-			for _, k := range stale {
-				delete(m.ConfigOptionOverrides, k)
-			}
-		})
-	}
+	bs.configMgr.revalidateOverrides(bs, ctx, true)
 }
 
 func configOptionHasValue(opt SessionConfigOption, value string) bool {

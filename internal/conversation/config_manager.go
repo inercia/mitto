@@ -192,6 +192,16 @@ type configDeps interface {
 	cmLockConfigRPC()
 	cmUnlockConfigRPC()
 	cmPersistConfigOverride(configID, value string)
+
+	// Dependent-config reconciliation (mitto-bnk). Snapshot generation lets a
+	// model change wait (bounded) for the agent's authoritative post-change
+	// snapshot; overrides are the operator's persisted choices for this provider,
+	// keyed by opaque option id.
+	cmConfigSnapshotGeneration() uint64
+	cmWaitConfigSnapshotAfter(ctx context.Context, gen uint64, wantModel string, timeout time.Duration) bool
+	cmNotifyConfigAdjusted(adj []ConfigAdjustment)
+	cmListConfigOverrides() map[string]string
+	cmDeleteConfigOverrides(ids []string)
 }
 
 // configManager is a stateless collaborator owning session-config + model-baseline logic.
@@ -302,18 +312,14 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 	d.cmLockPendingConfig()
 	d.cmDeletePendingEntry(configID)
 	d.cmUnlockPendingConfig()
-	if isGenericConfigOption(found) {
-		// Generic selects must be acked before the next composer prompt is
-		// admitted: take the RPC guard while still holding promptMu so a prompt
-		// turn reserved right after we release it waits for the ack
-		// (waitForStartupModel).
-		d.cmLockConfigRPC()
-		d.cmUnlockPromptMu()
-		defer d.cmUnlockConfigRPC()
-		return c.applyConfigOptionWithOpts(d, ctx, configID, value, recordTimeline)
-	}
+	// Every idle change (generic select, model, mode) must be acked — and a
+	// model change must also reconcile dependent options (mitto-bnk) — before
+	// the next composer prompt is admitted: take the RPC guard while still
+	// holding promptMu so a prompt turn reserved right after we release it
+	// waits (waitForStartupModel).
+	d.cmLockConfigRPC()
 	d.cmUnlockPromptMu()
-
+	defer d.cmUnlockConfigRPC()
 	return c.applyConfigOptionWithOpts(d, ctx, configID, value, recordTimeline)
 }
 
@@ -330,10 +336,18 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 	return c.applyConfigOptionWithBaseline(d, ctx, configID, value, recordTimeline, true)
 }
 
-// Deferred model selections already published and persisted their baseline at
+// Callers hold the config RPC guard (see setConfigOptionWithOpts). Deferred
+// model selections already published and persisted their baseline at
 // admission. Their RPC completion must only change active state, never promote
 // the old request over a newer selection accepted while the RPC was in flight.
 func (c configManager) applyConfigOptionWithBaseline(d configDeps, ctx context.Context, configID, value string, recordTimeline, updateBaseline bool) error {
+	return c.applyConfigOptionCarrying(d, ctx, configID, value, recordTimeline, updateBaseline, nil)
+}
+
+// applyConfigOptionCarrying is applyConfigOptionWithBaseline with explicit
+// dependent preferences (carried) queued alongside a model change; they are
+// validated against the post-change snapshot by the shared reconcile policy.
+func (c configManager) applyConfigOptionCarrying(d configDeps, ctx context.Context, configID, value string, recordTimeline, updateBaseline bool, carried map[string]string) error {
 	opt, ok := d.cmFindByID(configID)
 	if !ok {
 		return fmt.Errorf("unknown config option: %s", configID)
@@ -350,7 +364,7 @@ func (c configManager) applyConfigOptionWithBaseline(d configDeps, ctx context.C
 		}
 	} else if category == ConfigOptionCategoryModel {
 		previousModel := d.cmGetCurrentModelID()
-		if err := d.cmSetSessionModel(ctx, value); err != nil {
+		if err := c.setModelAndReconcile(d, ctx, value, true, carried); err != nil {
 			if l := d.cmLogger(); l != nil {
 				if mittoAcp.IsACPConnectionError(err) {
 					// Dead/restarting process (e.g. agent heap-OOM crash, mitto-5q8): this is a
@@ -822,7 +836,33 @@ func (c configManager) flushPendingConfig(d configDeps) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, configID := range orderPendingConfigIDs(pending, d.cmGetConfigOptions()) {
+	order := orderPendingConfigIDs(pending, d.cmGetConfigOptions())
+
+	// A pending model change goes first and carries the other pending entries
+	// into the post-change reconcile, so dependent choices are validated against
+	// the model's fresh snapshot exactly once (never sent stale).
+	if modelID, isModel := c.pendingModelEntry(d, pending); isModel {
+		carried := make(map[string]string, len(pending)-1)
+		for id, v := range pending {
+			if id != modelID {
+				carried[id] = v
+			}
+		}
+		d.cmLockConfigRPC()
+		err := c.applyConfigOptionCarrying(d, ctx, modelID, pending[modelID], true, false, carried)
+		d.cmUnlockConfigRPC()
+		if err != nil {
+			if l := d.cmLogger(); l != nil {
+				l.Error("Failed to flush deferred config option", "config_id", modelID, "value", pending[modelID], "error", err)
+			}
+			// The model did not change; the dependent entries are still valid
+			// against the unchanged snapshot, so fall through and apply them.
+		} else {
+			return
+		}
+		order = order[1:]
+	}
+	for _, configID := range order {
 		value := pending[configID]
 		// Re-validate against the fresh snapshot: a model change may have
 		// removed or reshaped a dependent option since it was queued.
@@ -839,22 +879,47 @@ func (c configManager) flushPendingConfig(d configDeps) {
 			if l := d.cmLogger(); l != nil {
 				l.Warn("Dropping deferred config option no longer valid", "config_id", configID, "value", value)
 			}
-			d.cmNotifyConfigChanged("", "")
+			d.cmNotifyConfigAdjusted([]ConfigAdjustment{{ConfigID: configID, RequestedValue: value, AppliedValue: currentValueOf(current), Reason: ConfigAdjustmentValueNotAdvertised}})
 			continue
 		}
-		if generic {
-			d.cmLockConfigRPC()
+		if current == nil {
+			if l := d.cmLogger(); l != nil {
+				l.Warn("Dropping deferred config option no longer advertised", "config_id", configID, "value", value)
+			}
+			d.cmNotifyConfigAdjusted([]ConfigAdjustment{{ConfigID: configID, RequestedValue: value, Reason: ConfigAdjustmentOptionRemoved}})
+			continue
 		}
+		d.cmLockConfigRPC()
 		err := c.applyConfigOptionWithBaseline(d, ctx, configID, value, true, false)
-		if generic {
-			d.cmUnlockConfigRPC()
-		}
+		d.cmUnlockConfigRPC()
 		if err != nil {
 			if l := d.cmLogger(); l != nil {
 				l.Error("Failed to flush deferred config option", "config_id", configID, "value", value, "error", err)
 			}
 		}
 	}
+}
+
+func currentValueOf(o *SessionConfigOption) string {
+	if o == nil {
+		return ""
+	}
+	return o.CurrentValue
+}
+
+// pendingModelEntry returns the ID of the pending model option, if any.
+func (c configManager) pendingModelEntry(d configDeps, pending map[string]string) (string, bool) {
+	for _, o := range d.cmGetConfigOptions() {
+		if o.Category == ConfigOptionCategoryModel || o.ID == ConfigOptionCategoryModel {
+			if _, ok := pending[o.ID]; ok {
+				return o.ID, true
+			}
+		}
+	}
+	if _, ok := pending[ConfigOptionCategoryModel]; ok {
+		return ConfigOptionCategoryModel, true
+	}
+	return "", false
 }
 
 // orderPendingConfigIDs returns pending IDs deterministically: the model
@@ -956,17 +1021,194 @@ func (c configManager) remapCorruptedBaselineName(d configDeps, ctx context.Cont
 	return nil
 }
 
+// setActiveModelOnly switches the active model durably (baseline-aligned
+// callers: constraints, fallback, baseline restore, remap, fresh-context reset)
+// and reconciles dependent options against the agent's fresh snapshot.
 func (c configManager) setActiveModelOnly(d configDeps, ctx context.Context, modelID string) error {
+	return c.setActiveModelOnlyOpts(d, ctx, modelID, true)
+}
+
+// setActiveModelOnlyOpts is setActiveModelOnly with an explicit durable flag.
+// durable=false marks a temporary per-prompt override (preferredModels): the
+// operator's persisted preferences are revalidated but never discarded, so the
+// baseline restore can reinstate them.
+func (c configManager) setActiveModelOnlyOpts(d configDeps, ctx context.Context, modelID string, durable bool) error {
 	if err := c.refuseSynthesizedModelID(d, modelID); err != nil {
 		return err
 	}
-	if err := d.cmSetSessionModel(ctx, modelID); err != nil {
+	d.cmLockConfigRPC()
+	defer d.cmUnlockConfigRPC()
+	if err := c.setModelAndReconcile(d, ctx, modelID, durable, nil); err != nil {
 		return fmt.Errorf("failed to set model: %w", err)
 	}
 	d.cmSetCurrentModelID(modelID)
 	d.cmUpdateConfigOptionValue(ConfigOptionCategoryModel, modelID)
 	d.cmNotifyConfigChanged(ConfigOptionCategoryModel, modelID)
 	return nil
+}
+
+// configSnapshotWaitTimeout bounds how long a model change waits for the
+// agent's authoritative post-change config snapshot. A package var so tests
+// can shorten it.
+var configSnapshotWaitTimeout = 5 * time.Second
+
+// setModelAndReconcile sends the model change and then reconciles dependent
+// agent-advertised options against the authoritative post-change snapshot.
+// The caller holds the config RPC guard, so no composer prompt can be admitted
+// between the model change and the reconciliation. A setter error is returned
+// unchanged (callers keep their own wrapping/logging); carried holds pending
+// dependent choices applied after the model (deferred model+effort changes).
+func (c configManager) setModelAndReconcile(d configDeps, ctx context.Context, modelID string, durable bool, carried map[string]string) error {
+	genBefore := d.cmConfigSnapshotGeneration()
+	hadGeneric := false
+	for _, o := range d.cmGetConfigOptions() {
+		if isGenericConfigOption(o) {
+			hadGeneric = true
+			break
+		}
+	}
+	if err := d.cmSetSessionModel(ctx, modelID); err != nil {
+		return err
+	}
+	c.reconcileDependentConfigAfterModelChange(d, ctx, modelID, genBefore, hadGeneric, durable, carried)
+	return nil
+}
+
+// reconcileDependentConfigAfterModelChange is the single policy applied after
+// every model change. Against the fresh snapshot it:
+//   - drops preferences for options that disappeared, never calling the setter
+//     to "reset" them (ACP has no unset RPC);
+//   - applies a surviving preference only if its opaque value is still
+//     advertised, else keeps the agent's own valid current value and surfaces
+//     an adjustment notice (never picking another value or translating one);
+//   - never touches anything when the agent advertised no preference-bearing
+//     options (legacy agents).
+//
+// Without a correlated fresh snapshot within the bounded wait nothing is sent
+// and the uncertainty is surfaced explicitly.
+func (c configManager) reconcileDependentConfigAfterModelChange(d configDeps, ctx context.Context, modelID string, genBefore uint64, hadGeneric, durable bool, carried map[string]string) {
+	requested := d.cmListConfigOverrides()
+	if requested == nil {
+		requested = map[string]string{}
+	}
+	for id, v := range carried {
+		requested[id] = v
+	}
+	if len(requested) == 0 {
+		return
+	}
+	var adj []ConfigAdjustment
+	if !d.cmWaitConfigSnapshotAfter(ctx, genBefore, modelID, configSnapshotWaitTimeout) {
+		if l := d.cmLogger(); l != nil {
+			l.Warn("No fresh config snapshot after model change; dependent options left untouched",
+				"session_id", d.cmSessionID(), "model", modelID)
+		}
+		if hadGeneric {
+			ids := make([]string, 0, len(requested))
+			for id := range requested {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				a := ConfigAdjustment{ConfigID: id, RequestedValue: requested[id], Reason: ConfigAdjustmentSnapshotUnconfirmed}
+				if o, ok := d.cmFindByID(id); ok {
+					a.AppliedValue = o.CurrentValue
+				}
+				adj = append(adj, a)
+			}
+			d.cmNotifyConfigAdjusted(adj)
+		}
+		return
+	}
+
+	adj = c.applyPreferencesToSnapshot(d, ctx, requested, carried, durable)
+	if len(adj) > 0 {
+		d.cmNotifyConfigAdjusted(adj)
+	}
+}
+
+// applyPreferencesToSnapshot validates each requested preference against the
+// current snapshot and applies the valid ones (see
+// reconcileDependentConfigAfterModelChange for the policy). The caller holds
+// the config RPC guard. It returns the adjustments to surface.
+func (c configManager) applyPreferencesToSnapshot(d configDeps, ctx context.Context, requested, carried map[string]string, durable bool) []ConfigAdjustment {
+	ordered := make([]string, 0, len(requested))
+	seen := make(map[string]bool, len(requested))
+	for _, o := range d.cmGetConfigOptions() {
+		if _, ok := requested[o.ID]; ok && !seen[o.ID] {
+			seen[o.ID] = true
+			ordered = append(ordered, o.ID)
+		}
+	}
+	var removed []string
+	for id := range requested {
+		if !seen[id] {
+			removed = append(removed, id)
+		}
+	}
+	sort.Strings(removed)
+	ordered = append(ordered, removed...)
+
+	var adj []ConfigAdjustment
+	var drop []string
+	for _, id := range ordered {
+		value := requested[id]
+		_, wasCarried := carried[id]
+		opt, ok := d.cmFindByID(id)
+		if !ok || !isGenericConfigOption(opt) {
+			if durable {
+				drop = append(drop, id)
+				adj = append(adj, ConfigAdjustment{ConfigID: id, RequestedValue: value, Reason: ConfigAdjustmentOptionRemoved})
+			}
+			continue
+		}
+		if !configOptionHasValue(opt, value) {
+			if durable {
+				drop = append(drop, id)
+			}
+			if durable || wasCarried {
+				adj = append(adj, ConfigAdjustment{ConfigID: id, RequestedValue: value, AppliedValue: opt.CurrentValue, Reason: ConfigAdjustmentValueNotAdvertised})
+			}
+			continue
+		}
+		if value == opt.CurrentValue {
+			continue
+		}
+		if err := c.applyGenericConfigOption(d, ctx, opt, value); err != nil {
+			if l := d.cmLogger(); l != nil {
+				l.Warn("Failed to reapply config preference after model change", "config_id", id, "value", value, "error", err)
+			}
+		}
+	}
+	if len(drop) > 0 {
+		d.cmDeleteConfigOverrides(drop)
+	}
+	return adj
+}
+
+// revalidateOverrides re-applies the persisted operator selections against the
+// CURRENT snapshot with the same policy used after a model change. It is the
+// entry point for startup/resume and fresh-context resets, where no model
+// change necessarily happens. Options not currently advertised are kept
+// untouched when keepUnadvertised is set (the active model may simply lack
+// them right now); otherwise they are dropped with a notice.
+func (c configManager) revalidateOverrides(d configDeps, ctx context.Context, keepUnadvertised bool) {
+	requested := d.cmListConfigOverrides()
+	if keepUnadvertised {
+		for id := range requested {
+			if _, ok := d.cmFindByID(id); !ok {
+				delete(requested, id)
+			}
+		}
+	}
+	if len(requested) == 0 {
+		return
+	}
+	d.cmLockConfigRPC()
+	defer d.cmUnlockConfigRPC()
+	if adj := c.applyPreferencesToSnapshot(d, ctx, requested, nil, true); len(adj) > 0 {
+		d.cmNotifyConfigAdjusted(adj)
+	}
 }
 
 func (c configManager) restoreBaselineIfOverride(d configDeps) {

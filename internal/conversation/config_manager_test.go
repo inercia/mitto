@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -72,6 +73,13 @@ type fakeConfigDeps struct {
 	replacedGeneric  [][]SessionConfigOption
 	callLog          []string
 	modelRPCHook     func()
+
+	// reconciliation support
+	snapGen         uint64
+	strictSnapWait  bool // when true the wait only succeeds after a replacement bumped snapGen
+	adjustments     [][]ConfigAdjustment
+	overrides       map[string]string
+	deletedOverride []string
 }
 
 func newFakeConfigDeps() *fakeConfigDeps {
@@ -281,6 +289,7 @@ func (f *fakeConfigDeps) cmReplaceGenericConfigOptions(options []SessionConfigOp
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.replacedGeneric = append(f.replacedGeneric, options)
+	f.snapGen++
 	kept := make([]SessionConfigOption, 0, len(f.configOptions))
 	for _, o := range f.configOptions {
 		if !isGenericConfigOption(o) {
@@ -1264,4 +1273,40 @@ func TestConfigManager_TryRuntimeFallbackToAvailableModel_ClosedSession(t *testi
 	if err := c.tryRuntimeFallbackToAvailableModel(d, context.Background()); err == nil {
 		t.Fatal("expected error on closed session, got nil")
 	}
+}
+
+func (f *fakeConfigDeps) cmConfigSnapshotGeneration() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snapGen
+}
+func (f *fakeConfigDeps) cmWaitConfigSnapshotAfter(_ context.Context, gen uint64, _ string, _ time.Duration) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.strictSnapWait {
+		return true
+	}
+	return f.snapGen > gen
+}
+func (f *fakeConfigDeps) cmNotifyConfigAdjusted(adj []ConfigAdjustment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adjustments = append(f.adjustments, adj)
+}
+func (f *fakeConfigDeps) cmListConfigOverrides() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.overrides))
+	for k, v := range f.overrides {
+		out[k] = v
+	}
+	return out
+}
+func (f *fakeConfigDeps) cmDeleteConfigOverrides(ids []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range ids {
+		delete(f.overrides, id)
+	}
+	f.deletedOverride = append(f.deletedOverride, ids...)
 }

@@ -1639,6 +1639,12 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 		if err := bs.setActiveModelOnly(ctx, baseline); err != nil {
 			return "", fmt.Errorf("initialize fresh ACP session baseline: %w", err)
 		}
+	} else {
+		// No model change: revalidate persisted selections against the fresh
+		// snapshot so a stale value is never inherited by the new session.
+		if bs.store != nil && bs.persistedID != "" && !bs.IsClosed() {
+			bs.configMgr.revalidateOverrides(bs, ctx, false)
+		}
 	}
 	bs.pdWriteOverrideActive(false)
 	bs.markACPContextFresh()
@@ -1699,7 +1705,7 @@ func (bs *BackgroundSession) pdWriteOverrideActive(active bool) {
 }
 
 func (bs *BackgroundSession) pdSetActiveModelOnly(ctx context.Context, modelID string) error {
-	return bs.setActiveModelOnly(ctx, modelID)
+	return bs.setActiveModelOnlyTemp(ctx, modelID)
 }
 
 func (bs *BackgroundSession) pdRecordSessionChange(kind, value, previousValue string) {
