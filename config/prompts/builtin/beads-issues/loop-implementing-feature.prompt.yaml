@@ -21,8 +21,10 @@ description: Auto-loop — drive a feature bead through plan → implement → t
 backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "feature" && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+# Cheap outer loop: the router only loads labels and dispatches phase prompts, each of
+# which pins its own tier via preferredModels.
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Cheap
 loop:
   trigger: [onCompletion]
   onCompletion:

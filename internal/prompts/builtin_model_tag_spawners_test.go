@@ -21,6 +21,7 @@ func TestBuiltinModelTagSpawners(t *testing.T) {
 	}{
 		{"support/housekeeping.prompt.yaml", "Reasoning"},
 		{"github/review-slack-prs.prompt.yaml", "Coding"},
+		{"beads-issues/loop-fixing-bug.prompt.yaml", "Coding"},
 	}
 
 	for _, tc := range cases {

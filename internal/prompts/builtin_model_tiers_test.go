@@ -11,10 +11,7 @@ import (
 func TestBuiltinCostAwareModelPreferences(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	files := []string{
-		"beads-issues/loop-fixing-bug.prompt.yaml",
-		"beads-issues/loop-implementing-feature.prompt.yaml",
 		"beads-issues/loop-until-complete.prompt.yaml",
-		"beads-issues/mention-driver.prompt.yaml",
 		"github/check-pr-comments.prompt.yaml",
 		"skills/add-doc.prompt.yaml",
 		"skills/update-references.prompt.yaml",
@@ -40,6 +37,9 @@ func TestBuiltinCostAwareModelPreferences(t *testing.T) {
 func TestBuiltinCheapOuterLoopModelPreferences(t *testing.T) {
 	installBuiltinFragmentsForTest(t)
 	files := []string{
+		"beads-issues/loop-fixing-bug.prompt.yaml",
+		"beads-issues/loop-implementing-feature.prompt.yaml",
+		"beads-issues/mention-driver.prompt.yaml",
 		"github/babysit-contributions.prompt.yaml",
 		"github/babysit-my-prs.prompt.yaml",
 		"github/babysit-this-pr.prompt.yaml",

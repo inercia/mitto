@@ -21,8 +21,10 @@ description: Auto-loop — drive a bug bead through investigate → reproduce �
 backgroundColor: '#FFCDD2'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "bug" && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+# Cheap outer loop: the router only loads labels and dispatches phase prompts, each of
+# which pins its own tier via preferredModels.
 preferredModels:
-  - modelTag: Coding
+  - modelTag: Cheap
 loop:
   trigger: [onCompletion]
   onCompletion:
@@ -304,7 +306,10 @@ prompt: |
   2. For each part, reuse a suitable **idle** child from `{{ .Children.MCPText }}` when
      possible, otherwise create one with `mitto_conversation_new` (prefer a
      faster/cheaper Coding-tier agent), seeding a fully self-contained worker prompt that
-     ends by reporting via `mitto_children_tasks_report`.
+     ends by reporting via `mitto_children_tasks_report`. Always pass
+     `model_tag: "Coding"` on the spawn so the worker does not inherit this driver's
+     Cheap model; if the call errors because no model matches the tag,
+     retry once without `model_tag`.
   3. Block on all of them:
      `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [<child ids>], task_id: "fix-{{ $target }}", timeout_seconds: 3600)`.
      On timeout, retry the pending children with the **same** `task_id` (omit the prompt);
