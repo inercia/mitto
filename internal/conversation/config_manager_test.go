@@ -61,6 +61,17 @@ type fakeConfigDeps struct {
 	putBackCalls      int
 	sessionChanges    [][3]string // kind, value, previousValue
 	sessionCtx        context.Context
+
+	// generic (agent-advertised select) support
+	rpcMu            sync.Mutex
+	genericRPCCalls  [][2]string
+	genericRPCErr    error
+	genericRPCHook   func(id, value string)
+	genericSnapshot  func(id, value string) []SessionConfigOption
+	persistedGeneric [][2]string
+	replacedGeneric  [][]SessionConfigOption
+	callLog          []string
+	modelRPCHook     func()
 }
 
 func newFakeConfigDeps() *fakeConfigDeps {
@@ -113,6 +124,9 @@ func (f *fakeConfigDeps) cmSetSessionModel(_ context.Context, modelID string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.modelRPCCalls = append(f.modelRPCCalls, modelID)
+	if f.modelRPCHook != nil {
+		f.modelRPCHook()
+	}
 	if len(f.setModelErrors) > 0 {
 		err := f.setModelErrors[0]
 		f.setModelErrors = f.setModelErrors[1:]
@@ -242,6 +256,50 @@ func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string
 	defer f.mu.Unlock()
 	f.sessionChanges = append(f.sessionChanges, [3]string{kind, value, previousValue})
 	return f.recordSessionChgErr
+}
+
+func (f *fakeConfigDeps) cmSetSessionConfigOption(ctx context.Context, id, value string) ([]SessionConfigOption, error) {
+	f.mu.Lock()
+	f.genericRPCCalls = append(f.genericRPCCalls, [2]string{id, value})
+	f.callLog = append(f.callLog, "generic:"+id+"="+value)
+	err := f.genericRPCErr
+	hook := f.genericRPCHook
+	snap := f.genericSnapshot
+	f.mu.Unlock()
+	if hook != nil {
+		hook(id, value)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if snap != nil {
+		return snap(id, value), nil
+	}
+	return f.cmGetConfigOptions(), nil
+}
+func (f *fakeConfigDeps) cmReplaceGenericConfigOptions(options []SessionConfigOption) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replacedGeneric = append(f.replacedGeneric, options)
+	kept := make([]SessionConfigOption, 0, len(f.configOptions))
+	for _, o := range f.configOptions {
+		if !isGenericConfigOption(o) {
+			kept = append(kept, o)
+		}
+	}
+	for _, o := range options {
+		if isGenericConfigOption(o) {
+			kept = append(kept, o)
+		}
+	}
+	f.configOptions = kept
+}
+func (f *fakeConfigDeps) cmLockConfigRPC()   { f.rpcMu.Lock() }
+func (f *fakeConfigDeps) cmUnlockConfigRPC() { f.rpcMu.Unlock() }
+func (f *fakeConfigDeps) cmPersistConfigOverride(configID, value string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.persistedGeneric = append(f.persistedGeneric, [2]string{configID, value})
 }
 
 // --- Tests ---

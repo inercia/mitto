@@ -184,6 +184,9 @@ func (f *fakeSharedProcess) PromptProcessorAsync(_ context.Context, _, _, _ stri
 type fakeHandshakeDeps struct {
 	mu sync.Mutex
 
+	pendingConfigOptions []SessionConfigOption
+	appliedConfigOptions [][]SessionConfigOption
+
 	// state knobs
 	sessionID          string
 	acpServer          string
@@ -304,6 +307,15 @@ func (f *fakeHandshakeDeps) hsGetPendingSharedModels() *SessionModelState {
 }
 func (f *fakeHandshakeDeps) hsSetPendingSharedModels(m *SessionModelState) {
 	f.pendingModels = m
+}
+func (f *fakeHandshakeDeps) hsGetPendingSharedConfigOptions() []SessionConfigOption {
+	return f.pendingConfigOptions
+}
+func (f *fakeHandshakeDeps) hsSetPendingSharedConfigOptions(opts []SessionConfigOption) {
+	f.pendingConfigOptions = opts
+}
+func (f *fakeHandshakeDeps) hsApplyConfigOptions(opts []SessionConfigOption) {
+	f.appliedConfigOptions = append(f.appliedConfigOptions, opts)
 }
 func (f *fakeHandshakeDeps) hsGetPendingSharedModelConfigId() string {
 	return f.pendingModelCfgId
@@ -1514,5 +1526,52 @@ func TestHandshaker_ResumeSharedACPSession_CombinedWallClock_BoundedBySingleCold
 			"session_load_failed@25001ms -> session_new_failed@265009ms (staleLoadProbeTimeout=%v + "+
 			"MCPInitTimeout=240s = 265s doomed-agent outage).",
 			combined, maxAllowed, coldBudget, coldBudget, staleLoadProbeTimeout)
+	}
+}
+
+func TestHandshaker_Snapshot_EnsureAndDeferredApply(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	d.pending = true
+	d.pendingDir = "my/working/dir"
+	fp := newFakeSharedProcess()
+	d.sharedProcess = fp
+	fp.newSessionHandle = &SessionHandle{
+		SessionID: "x",
+		ConfigOptions: []SessionConfigOption{
+			{ID: "effort", Type: ConfigOptionTypeSelect, CurrentValue: "high"},
+		},
+	}
+
+	c.ensureSharedACPSession(d)
+	if len(d.pendingConfigOptions) != 1 || d.pendingConfigOptions[0].ID != "effort" {
+		t.Fatalf("expected stashed config options, got %+v", d.pendingConfigOptions)
+	}
+
+	c.applyPendingSharedModes(d)
+	if len(d.appliedConfigOptions) != 1 || d.appliedConfigOptions[0][0].ID != "effort" {
+		t.Fatalf("expected applied config options, got %+v", d.appliedConfigOptions)
+	}
+	if len(d.pendingConfigOptions) != 0 {
+		t.Fatalf("expected pending options cleared after apply, got %+v", d.pendingConfigOptions)
+	}
+}
+
+func TestHandshaker_Snapshot_ResumeApplies(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{
+		SessionCapabilities: acp.SessionCapabilities{Resume: &acp.SessionResumeCapabilities{}},
+	}
+	fp.resumeSessionHandle = &SessionHandle{
+		SessionID:     "acp-sess-resumed",
+		ConfigOptions: []SessionConfigOption{{ID: "effort", CurrentValue: "low"}},
+	}
+	if err := c.resumeSharedACPSession(d, fp, "cwd", "persisted-acp-id"); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.appliedConfigOptions) != 1 || d.appliedConfigOptions[0][0].CurrentValue != "low" {
+		t.Fatalf("expected resume to apply snapshot, got %+v", d.appliedConfigOptions)
 	}
 }

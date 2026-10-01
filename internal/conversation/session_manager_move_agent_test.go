@@ -304,6 +304,32 @@ func TestSessionManager_MoveSessionToAgent_ClearsACPStartFailureCount(t *testing
 	}
 }
 
+// TestSessionManager_MoveSessionToAgent_ClearsConfigOptionOverrides pins that
+// provider-scoped generic config overrides never leak across agents.
+func TestSessionManager_MoveSessionToAgent_ClearsConfigOptionOverrides(t *testing.T) {
+	workingDir := "/tmp/move-agent"
+	sm, store := newMoveAgentTestManager(t, workingDir)
+
+	if err := store.Create(session.Metadata{
+		SessionID: "s1", ACPServer: "agent-a", WorkingDir: workingDir,
+		ConfigOptionOverrides: map[string]string{session.ConfigOverrideKey("agent-a", "effort"): "high"},
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	var result MoveAgentResult
+	if err := sm.moveAgentStopAndRebind("s1", "agent-a", "agent-b", 200*time.Millisecond, &result); err != nil {
+		t.Fatalf("moveAgentStopAndRebind failed: %v", err)
+	}
+	m, err := store.GetMetadata("s1")
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if len(m.ConfigOptionOverrides) != 0 {
+		t.Errorf("ConfigOptionOverrides = %v, want empty after provider migration", m.ConfigOptionOverrides)
+	}
+}
+
 // TestSessionManager_MoveSessionToAgent_UnreachableOldAgentDoesNotHang verifies
 // that a permanently-prompting (unreachable/hung) old-agent BackgroundSession
 // does not block the stop-and-rebind step beyond its close timeout:

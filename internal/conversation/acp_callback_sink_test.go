@@ -53,6 +53,7 @@ type fakeCallbackDeps struct {
 	modeCurrentValues   []string
 	persistedConfig     [][2]string
 	configChanged       [][2]string
+	genericReplaced     [][]SessionConfigOption
 	legacyModesSet      []SessionConfigOption
 	storedAgentModels   []*SessionModelState
 	modelReplacements   []SessionConfigOption
@@ -144,6 +145,12 @@ func (f *fakeCallbackDeps) cbNotifyConfigChanged(configID, value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.configChanged = append(f.configChanged, [2]string{configID, value})
+}
+
+func (f *fakeCallbackDeps) cbReplaceGenericConfigOptions(options []SessionConfigOption) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.genericReplaced = append(f.genericReplaced, options)
 }
 
 func (f *fakeCallbackDeps) cbSetLegacyModes(opt SessionConfigOption) {
@@ -685,5 +692,36 @@ func TestACPCallbackSink_SuppressionShortCircuits_StreamingCallbacks(t *testing.
 	// availableCmds must remain nil (cbSetAvailableCommands not called)
 	if d.availableCmds != nil {
 		t.Fatalf("expected available commands not stored when suppressed, got %v", d.availableCmds)
+	}
+}
+
+func TestCallbackSink_ConfigOptionsUpdate_ReplacementSnapshot(t *testing.T) {
+	s := acpCallbackSink{}
+	d := &fakeCallbackDeps{}
+
+	first := []SessionConfigOption{{ID: "effort", Type: ConfigOptionTypeSelect, CurrentValue: "high"}}
+	s.onConfigOptionsUpdate(d, first)
+	// Replacement with a changed set (option removed) and then an empty-but-present set.
+	s.onConfigOptionsUpdate(d, []SessionConfigOption{{ID: "other", CurrentValue: "a"}})
+	s.onConfigOptionsUpdate(d, []SessionConfigOption{})
+
+	if len(d.genericReplaced) != 3 {
+		t.Fatalf("expected 3 replacements, got %d", len(d.genericReplaced))
+	}
+	if d.genericReplaced[0][0].ID != "effort" || d.genericReplaced[1][0].ID != "other" || len(d.genericReplaced[2]) != 0 {
+		t.Fatalf("unexpected replacements: %+v", d.genericReplaced)
+	}
+	if len(d.configChanged) != 3 || d.configChanged[0] != [2]string{"", ""} {
+		t.Fatalf("expected snapshot-only notifications, got %v", d.configChanged)
+	}
+}
+
+func TestCallbackSink_ConfigOptionsUpdate_ClosedOrSuppressedIsNoop(t *testing.T) {
+	s := acpCallbackSink{}
+	for _, d := range []*fakeCallbackDeps{{closed: true}, {streamingSuppressed: true}} {
+		s.onConfigOptionsUpdate(d, []SessionConfigOption{{ID: "x"}})
+		if len(d.genericReplaced) != 0 || len(d.configChanged) != 0 {
+			t.Fatalf("expected no-op, got %+v %v", d.genericReplaced, d.configChanged)
+		}
 	}
 }

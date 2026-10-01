@@ -119,3 +119,72 @@ func TestSessionOps_Cancel_UnknownRef(t *testing.T) {
 		t.Fatalf("expected ErrSessionNotFound, got %v", err)
 	}
 }
+
+// configSettingFakeProcess adds the optional conversation.ConfigOptionSetter
+// capability to the shared fake.
+type configSettingFakeProcess struct {
+	*fakeSharedProcess
+	gotSession, gotID, gotValue string
+	result                      []conversation.SessionConfigOption
+	err                         error
+}
+
+func (p *configSettingFakeProcess) SetSessionConfigOption(_ context.Context, sessionID, configID, value string) ([]conversation.SessionConfigOption, error) {
+	p.gotSession, p.gotID, p.gotValue = sessionID, configID, value
+	return p.result, p.err
+}
+
+func newConfigSetterSession(t *testing.T, p *configSettingFakeProcess) (*Connection, agentbackend.SessionRef) {
+	t.Helper()
+	p.fakeSharedProcess.newSessionHandle = &conversation.SessionHandle{SessionID: "upstream-1"}
+	c := NewConnection(p, "acp", "/work", nil)
+	sess, err := c.NewSession(context.Background(), "acp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	return c, sess.Ref()
+}
+
+func TestSessionOps_SetConfigOption_ReturnsFullSnapshot(t *testing.T) {
+	p := &configSettingFakeProcess{
+		fakeSharedProcess: newFakeSharedProcess(),
+		result: []conversation.SessionConfigOption{
+			{ID: "effort", Category: "thought_level", Type: "select", CurrentValue: "high",
+				Options: []conversation.SessionConfigOptionValue{{Value: "low", Name: "Low"}, {Value: "high", Name: "High"}}},
+			{ID: "model", Category: "model", Type: "select", CurrentValue: "m-1"},
+		},
+	}
+	c, ref := newConfigSetterSession(t, p)
+
+	opts, err := c.SetConfigOption(context.Background(), ref, "effort", "high")
+	if err != nil {
+		t.Fatalf("SetConfigOption: %v", err)
+	}
+	if p.gotSession != "upstream-1" || p.gotID != "effort" || p.gotValue != "high" {
+		t.Errorf("underlying call = (%q,%q,%q)", p.gotSession, p.gotID, p.gotValue)
+	}
+	if len(opts) != 2 || opts[0].ID != "effort" || opts[0].Current != "high" || len(opts[0].Values) != 2 || opts[1].ID != "model" {
+		t.Errorf("neutral snapshot not preserved in agent order: %+v", opts)
+	}
+}
+
+func TestSessionOps_SetConfigOption_Unsupported(t *testing.T) {
+	c, ref := newTestSession(t, newFakeSharedProcess())
+	_, err := c.SetConfigOption(context.Background(), ref, "effort", "high")
+	var ue *agentbackend.UnsupportedError
+	if !errors.As(err, &ue) || ue.Feature != agentbackend.FeatureConfigSelection {
+		t.Fatalf("expected UnsupportedError(config_selection), got %v", err)
+	}
+}
+
+func TestSessionOps_SetConfigOption_SetterErrorAndUnknownRef(t *testing.T) {
+	p := &configSettingFakeProcess{fakeSharedProcess: newFakeSharedProcess(), err: errors.New("rejected")}
+	c, ref := newConfigSetterSession(t, p)
+	if _, err := c.SetConfigOption(context.Background(), ref, "effort", "bogus"); err == nil {
+		t.Fatal("expected setter error to propagate")
+	}
+	_, err := c.SetConfigOption(context.Background(), agentbackend.SessionRef{ConversationID: "ghost"}, "effort", "x")
+	if !errors.Is(err, agentbackend.ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+}
