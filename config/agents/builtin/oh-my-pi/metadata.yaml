@@ -1,0 +1,12 @@
+# Oh My Pi agent configuration
+name: "Oh My Pi"
+displayName: "Oh My Pi"
+acpId: "omp"
+description: "Oh My Pi coding agent with native ACP support"
+website: "https://omp.sh"
+repository: "https://github.com/can1357/oh-my-pi"
+license: "MIT"
+install:
+  method: "binary"
+  args: ["acp"]
+  note: "Install OMP separately and ensure the omp executable is on Mitto's PATH."

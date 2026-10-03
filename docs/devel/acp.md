@@ -6,10 +6,14 @@ share a single AI agent process.
 
 ## Overview
 
-Mitto communicates with AI coding agents (Claude Code, Auggie) via the ACP protocol.
+Mitto communicates with AI coding agents (Claude Code, Auggie, and Oh My Pi)
+via the ACP protocol.
 Rather than spawning one agent process per conversation, Mitto uses a **shared process
 architecture** where all conversations in the same workspace share a single agent
 process.
+
+For Oh My Pi, the built-in agent definition launches `omp acp` directly over
+stdio; no adapter process is involved.
 
 ```mermaid
 graph TB
