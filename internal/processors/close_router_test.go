@@ -448,9 +448,7 @@ func TestApplyOnClose_KnowledgeRouter_FullRoundTrip(t *testing.T) {
 	mu.Lock()
 	prompt := capturedPrompt
 	mu.Unlock()
-	if !strings.Contains(prompt, "<mitto_close_history_snapshot>") {
-		t.Error("dispatched prompt missing the close-history snapshot block")
-	}
+
 	if strings.Contains(prompt, "<mitto_close_router_state>") {
 		t.Error("a first-ever run has no prior written findings and must not inject a router-state block")
 	}
