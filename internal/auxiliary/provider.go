@@ -37,6 +37,17 @@ type ProcessProvider interface {
 	// CloseWorkspaceAuxiliary closes all auxiliary sessions for a workspace.
 	// This should be called when a workspace is removed or its ACP process is stopped.
 	CloseWorkspaceAuxiliary(workspaceUUID string) error
+
+	// SendAuxiliaryInstructions sends system instructions to an auxiliary session.
+	// Instructions are sent only once per session to avoid repeating them on subsequent prompts.
+	//
+	// Parameters:
+	//   - workspaceUUID: Identifies which workspace's ACP process to use
+	//   - purpose: Identifies the session type (e.g., "title-gen", "follow-up", "improve-prompt")
+	//   - instructions: The system instructions to send
+	//
+	// Returns error if the instructions couldn't be sent, or nil if already sent or successfully sent.
+	SendAuxiliaryInstructions(ctx context.Context, workspaceUUID, purpose, instructions string) error
 }
 
 // ProcessQuiescenceProvider is an optional ProcessProvider capability used by

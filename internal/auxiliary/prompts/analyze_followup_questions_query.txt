@@ -1,0 +1,9 @@
+Analyze this conversation turn and identify any questions or follow-up prompts for the user:
+
+<user_prompt>
+%s
+</user_prompt>
+
+<agent_response>
+%s
+</agent_response>

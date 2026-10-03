@@ -282,12 +282,13 @@ type auxSessionKey struct {
 
 // auxiliarySessionState tracks an auxiliary session's state.
 type auxiliarySessionState struct {
-	mu        sync.Mutex // Serializes requests to this session
-	modelMu   sync.RWMutex
-	sessionID string
-	client    *auxiliaryClient // Collects responses
-	lastUsed  time.Time
-	modelID   string
+	mu               sync.Mutex // Serializes requests to this session
+	modelMu          sync.RWMutex
+	sessionID        string
+	client           *auxiliaryClient // Collects responses
+	lastUsed         time.Time
+	modelID          string
+	instructionsSent bool // Tracks if system instructions have been sent to this session
 }
 
 type processQuiescenceWait struct {
@@ -1041,6 +1042,58 @@ func (m *ACPProcessManager) PromptAuxiliary(ctx context.Context, workspaceUUID, 
 
 // promptAuxiliary is the PromptAuxiliary implementation; it records telemetry
 // (never prompt or response content) into trace.
+
+// SendAuxiliaryInstructions sends system instructions to an auxiliary session once.
+// This is called only the first time a purpose-specific session is used to avoid
+// repeating instructions on subsequent prompts to the same session.
+func (m *ACPProcessManager) SendAuxiliaryInstructions(ctx context.Context, workspaceUUID, purpose, instructions string) error {
+	if m.DisableAuxiliary {
+		return fmt.Errorf("auxiliary sessions disabled")
+	}
+
+	// Get or create the auxiliary session
+	auxState, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose)
+	if err != nil {
+		return fmt.Errorf("failed to get auxiliary session: %w", err)
+	}
+
+	// Try to acquire the mutex with context cancellation support
+	if err := acquireAuxLock(ctx, auxState); err != nil {
+		return err
+	}
+	defer auxState.mu.Unlock()
+
+	if auxState.instructionsSent {
+		// Instructions already sent to this session, skip
+		return nil
+	}
+
+	auxState.lastUsed = time.Now()
+
+	process := m.GetProcess(workspaceUUID)
+	if process == nil {
+		return fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
+	}
+
+	auxState.client.reset()
+
+	_, err = process.Prompt(ctx, auxState.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: instructions}}})
+	if err != nil {
+		if ctx.Err() != nil {
+			m.retireCancelledAuxSession(process, workspaceUUID, purpose, auxState)
+			return fmt.Errorf("auxiliary instructions cancelled: %w", err)
+		}
+		if !mittoAcp.IsACPConnectionError(err) {
+			return fmt.Errorf("failed to send auxiliary instructions: %w", err)
+		}
+		// Connection error - will be retried on next prompt
+		return fmt.Errorf("auxiliary instructions connection error: %w", err)
+	}
+
+	auxState.instructionsSent = true
+	return nil
+}
+
 func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string, trace *auxPromptTrace) (string, error) {
 	if m.DisableAuxiliary {
 		return "", fmt.Errorf("auxiliary sessions disabled")

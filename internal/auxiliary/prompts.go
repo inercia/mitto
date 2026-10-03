@@ -39,8 +39,28 @@ var ImprovePromptTemplate string
 // 1. The user's prompt (what the user asked)
 // 2. The agent's response message
 //
+// Deprecated: Use AnalyzeFollowUpQuestionsInstructions (sent once) and
+// AnalyzeFollowUpQuestionsQueryTemplate (sent for each analysis) instead.
+//
 //go:embed prompts/analyze_followup_questions.txt
 var AnalyzeFollowUpQuestionsPromptTemplate string
+
+// AnalyzeFollowUpQuestionsInstructions is the system prompt that contains
+// instructions for analyzing follow-up questions. This is sent once when
+// the auxiliary session is first created, to avoid repeating instructions
+// on each subsequent analysis.
+//
+//go:embed prompts/analyze_followup_questions_instructions.txt
+var AnalyzeFollowUpQuestionsInstructions string
+
+// AnalyzeFollowUpQuestionsQueryTemplate is used for each follow-up analysis.
+// It contains only the data (user prompt and agent response) without the
+// instructions. Use with fmt.Sprintf, passing:
+// 1. The user's prompt (what the user asked)
+// 2. The agent's response message
+//
+//go:embed prompts/analyze_followup_questions_query.txt
+var AnalyzeFollowUpQuestionsQueryTemplate string
 
 // FetchMCPToolsPromptTemplate asks the agent for all its available tools.
 // This prompt requires no parameters (do not use fmt.Sprintf).

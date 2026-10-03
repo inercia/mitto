@@ -52,6 +52,11 @@ func (p *fakeNonProcessProvider) CloseWorkspaceAuxiliary(workspaceUUID string) e
 	return nil
 }
 
+func (p *fakeNonProcessProvider) SendAuxiliaryInstructions(_ context.Context, _, _ string, _ string) error {
+	// Fake implementation: do nothing
+	return nil
+}
+
 // SupportsAuxiliaryPurpose implements the optional CapabilityProvider seam.
 func (p *fakeNonProcessProvider) SupportsAuxiliaryPurpose(purpose string) bool {
 	return !p.unsupportedPurposes[purpose]

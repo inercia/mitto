@@ -43,6 +43,11 @@ func (m *mockProcessProvider) CloseWorkspaceAuxiliary(workspaceUUID string) erro
 	return nil
 }
 
+func (m *mockProcessProvider) SendAuxiliaryInstructions(ctx context.Context, workspaceUUID, purpose, instructions string) error {
+	// Mock implementation: do nothing (or could track calls for testing)
+	return nil
+}
+
 func TestWorkspaceAuxiliaryManager_GenerateTitle(t *testing.T) {
 	tests := []struct {
 		name           string

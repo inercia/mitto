@@ -286,7 +286,20 @@ func (m *WorkspaceAuxiliaryManager) AnalyzeFollowUpQuestions(ctx context.Context
 	truncatedUserPrompt := TruncateTailBiased(userPrompt, FollowUpMaxUserPromptChars)
 	truncatedAgentMsg := TruncateTailBiased(agentMessage, FollowUpMaxAgentChars)
 
-	prompt := fmt.Sprintf(AnalyzeFollowUpQuestionsPromptTemplate, truncatedUserPrompt, truncatedAgentMsg)
+	// Send system instructions on first call to this auxiliary session.
+	// SendAuxiliaryInstructions is idempotent and will only send once per session.
+	if err := m.provider.SendAuxiliaryInstructions(ctx, workspaceUUID, PurposeFollowUp, AnalyzeFollowUpQuestionsInstructions); err != nil {
+		if m.logger != nil {
+			m.logger.Debug("auxiliary follow-up analysis: failed to send instructions (non-fatal)",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error(),
+			)
+		}
+		// Continue anyway - instructions send failure is non-fatal; the model may still work
+	}
+
+	// Build query prompt with user prompt and agent message (no instructions)
+	queryPrompt := fmt.Sprintf(AnalyzeFollowUpQuestionsQueryTemplate, truncatedUserPrompt, truncatedAgentMsg)
 
 	if m.logger != nil {
 		m.logger.Debug("auxiliary follow-up analysis: sending request",
@@ -298,7 +311,7 @@ func (m *WorkspaceAuxiliaryManager) AnalyzeFollowUpQuestions(ctx context.Context
 		)
 	}
 
-	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeFollowUp, prompt)
+	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeFollowUp, queryPrompt)
 	if err != nil {
 		if m.logger != nil {
 			m.logger.Debug("auxiliary follow-up analysis: request failed",
