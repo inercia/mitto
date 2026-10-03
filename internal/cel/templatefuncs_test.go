@@ -365,6 +365,75 @@ func TestBuildTemplateFuncMap_GitStatusFilesRenderSmoke(t *testing.T) {
 	}
 }
 
+// TestBuildTemplateFuncMap_GitStatusSummaryRenderSmoke verifies GitStatusSummary
+// returns a human-readable summary of file statuses and that it renders correctly
+// through RenderPromptTemplate.
+func TestBuildTemplateFuncMap_GitStatusSummaryRenderSmoke(t *testing.T) {
+	dir := newGitRepo(t)
+
+	// Clean tree: expect empty output.
+	cleanCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	cleanFM := BuildTemplateFuncMap(cleanCtx)
+	got, err := RenderPromptTemplate("test", `[{{ GitStatusSummary }}]`, cleanCtx, cleanFM)
+	if err != nil {
+		t.Fatalf("render error (clean): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("GitStatusSummary on clean repo = %q, want %q", got, "[]")
+	}
+
+	// Dirty tree: modify tracked file, add untracked file, stage another file.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a file to be added and staged
+	if err := os.WriteFile(filepath.Join(dir, "added.txt"), []byte("added\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "added.txt")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git add failed: %v", err)
+	}
+
+	dirtyCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	dirtyFM := BuildTemplateFuncMap(dirtyCtx)
+	got, err = RenderPromptTemplate("test", `{{ GitStatusSummary }}`, dirtyCtx, dirtyFM)
+	if err != nil {
+		t.Fatalf("render error (dirty): %v", err)
+	}
+
+	// Verify summary contains all expected counts
+	if !strings.Contains(got, "modified") {
+		t.Errorf("GitStatusSummary output missing 'modified': %q", got)
+	}
+	if !strings.Contains(got, "added") {
+		t.Errorf("GitStatusSummary output missing 'added': %q", got)
+	}
+	if !strings.Contains(got, "new") {
+		t.Errorf("GitStatusSummary output missing 'new': %q", got)
+	}
+	// Verify it matches the expected pattern (e.g., "1 modified, 1 added, 1 new")
+	if !strings.Contains(got, "1") {
+		t.Errorf("GitStatusSummary output missing count '1': %q", got)
+	}
+
+	// Non-repo: expect empty output.
+	plain := t.TempDir()
+	plainCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: plain}}
+	plainFM := BuildTemplateFuncMap(plainCtx)
+	got, err = RenderPromptTemplate("test", `[{{ GitStatusSummary }}]`, plainCtx, plainFM)
+	if err != nil {
+		t.Fatalf("render error (non-repo): %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("GitStatusSummary on non-repo = %q, want %q", got, "[]")
+	}
+}
+
 func TestParity_HasPattern(t *testing.T) {
 	e := newTestEvaluator(t)
 	reachable := NewReachableToolsContext([]string{"github_pr", "jira_create", "slack_post"}).Servers

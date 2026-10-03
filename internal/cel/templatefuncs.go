@@ -803,6 +803,70 @@ func gitFileDeleted(folder, path string) bool {
 	return false
 }
 
+// gitStatusSummary returns a human-readable summary of file status counts
+// from `git status --porcelain` output. Returns a string like "3 modified, 2 added, 1 new"
+// with counts for each status type. Returns empty string outside a repo, when git is
+// unavailable, or when the tree is clean.
+func gitStatusSummary(folder, pathspec string) string {
+	lines, ok := gitStatusPorcelain(folder, pathspec)
+	if !ok || len(lines) == 0 {
+		return ""
+	}
+
+	counts := map[string]int{
+		"modified": 0,
+		"added":    0,
+		"deleted":  0,
+		"renamed":  0,
+		"new":      0,
+	}
+
+	for _, ln := range lines {
+		if len(ln) < 2 {
+			continue
+		}
+
+		xy := ln[:2]
+
+		// Untracked files
+		if xy == "??" {
+			counts["new"]++
+			continue
+		}
+
+		x, y := ln[0], ln[1]
+
+		// Check for each status type (order matters for some combinations)
+		// Renamed
+		if x == 'R' {
+			counts["renamed"]++
+		} else if x == 'A' {
+			// Added to index
+			counts["added"]++
+		} else if x == 'D' || y == 'D' {
+			// Deleted in index or working tree
+			counts["deleted"]++
+		} else if x == 'M' || y == 'M' {
+			// Modified in index or working tree
+			counts["modified"]++
+		}
+	}
+
+	// Build summary string with only non-zero counts
+	var parts []string
+	order := []string{"modified", "added", "deleted", "renamed", "new"}
+	for _, key := range order {
+		if counts[key] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[key], key))
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
 // runBd runs `bd --readonly <args...>` with the working directory set to folder
 // (when non-empty), bounded by bdCmdTimeout. Template/CEL helpers only inspect
 // beads state, so the explicit read-only open prevents prompt evaluation from
@@ -1427,6 +1491,9 @@ func FormatPeers(peers []PeerInfo) string {
 //     ("XY path", e.g. " M file", "?? new", "A  staged") for the workspace
 //     (or the given pathspec). Empty slice on a clean tree; nil outside a repo
 //     or when git is unavailable. Template-only (no CEL binding).
+//   - GitStatusSummary(path?) — string summary of file status counts, like "3 modified, 2 added, 1 new"
+//     for the workspace (or the given pathspec). Returns empty string on a clean tree, outside a repo,
+//     or when git is unavailable. Template-only (no CEL binding).
 //   - GitFileTracked(path) — true iff path is tracked by git (present in the index).
 //   - GitFileDeleted(path) — true iff the tracked file has been deleted (staged or unstaged).
 //   - BeadsCount(labels, statuses) — count of beads matching ALL comma-separated labels
@@ -1588,6 +1655,13 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 				return nil
 			}
 			return lines
+		},
+		"GitStatusSummary": func(path ...string) string {
+			p := ""
+			if len(path) > 0 {
+				p = path[0]
+			}
+			return gitStatusSummary(folder, p)
 		},
 		"GitFileTracked": func(path string) bool { return gitFileTracked(folder, path) },
 		"GitFileDeleted": func(path string) bool { return gitFileDeleted(folder, path) },

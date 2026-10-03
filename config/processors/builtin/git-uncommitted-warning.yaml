@@ -3,8 +3,8 @@
 #
 # When the workspace is a git repository AND the working tree has pending changes
 # (staged, unstaged, or untracked — anything git status --porcelain reports), this
-# processor prepends a safety warning that lists the affected files and instructs
-# the agent to confirm with the user before running any destructive git operation.
+# processor prepends a safety warning that summarizes the affected file counts and
+# instructs the agent to confirm with the user before running any destructive git operation.
 #
 # Activation conditions:
 #   - GitRepo() — the working directory is inside a git work tree
@@ -33,15 +33,12 @@ when:
   match: first
   rerun:
     afterTokens: 60000
-mutate: prepend
+mutate: append
 priority: 15
 text: |
+  ---
   [Uncommitted Changes Warning]
-  The working tree has uncommitted changes:
-
-  ```
-  {{ range GitStatusFiles }}{{ . }}
-  {{ end }}```
+  The working tree has uncommitted changes: {{ GitStatusSummary }}
 
   Before running any destructive git operation (checkout -f, reset --hard,
   clean -fd, stash drop, rebase, branch -D, worktree remove,
