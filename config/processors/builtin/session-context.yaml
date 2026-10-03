@@ -24,14 +24,21 @@ when:
   match: first
   rerun:
     afterTokens: 80000
-mutate: prepend
+mutate: append
 priority: 10
 text: |
+  ---
   [Session Context]
   Session: {{ .Session.ID }} ({{ .Session.Name }})
   Agent: {{ .ACP.Name }}
   Working Directory: {{ .Workspace.Folder }}
+  {{ if .Parent.Ref }}
   Parent: {{ .Parent.Ref }}
+  {{ end }}
+  {{ if .Children.All }}
   Children: {{ .Children.AllText }}
+  {{ end }}
+  {{ if .ACP.Available }}
   Available Agents: {{ .ACP.AvailableText }}
+  {{ end }}
   ---
