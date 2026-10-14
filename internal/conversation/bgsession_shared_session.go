@@ -153,7 +153,7 @@ func (bs *BackgroundSession) hsGetACPClient() *WebClient  { return bs.acpClient 
 func (bs *BackgroundSession) hsSetAgentSupportsImages(v bool) { bs.agentSupportsImages = v }
 
 func (bs *BackgroundSession) hsGetACPID() string   { return bs.acpID }
-func (bs *BackgroundSession) hsSetACPID(id string) { bs.acpID = id }
+func (bs *BackgroundSession) hsSetACPID(id string) { bs.setACPSessionID(id) }
 
 func (bs *BackgroundSession) hsMarkContextFresh()   { bs.markACPContextFresh() }
 func (bs *BackgroundSession) hsMarkContextUnknown() { bs.markACPContextUnknown() }

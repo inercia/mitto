@@ -1094,7 +1094,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			})
 			resumeCancel()
 			if err == nil {
-				bs.acpID = acpSessionID
+				bs.setACPSessionID(acpSessionID)
 				bs.resumeMethod = "resume"
 				// Resumed sessions may already hold agent-side history we cannot
 				// see from Go; virginity is not authoritative (mitto-s9g2).
@@ -1158,7 +1158,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 			loadCancel()
 			bs.acpClient.SetLoadingSession(false)
 			if err == nil {
-				bs.acpID = acpSessionID
+				bs.setACPSessionID(acpSessionID)
 				bs.resumeMethod = "load"
 				// Session/load replays history agent-side; virginity is not
 				// authoritative (mitto-s9g2).
@@ -1244,7 +1244,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		return stderrOutput, &sessionError{"failed to create session: " + err.Error()}
 	}
 
-	bs.acpID = string(sessResp.SessionId)
+	bs.setACPSessionID(string(sessResp.SessionId))
 	// A brand-new session created fresh in this process is provably empty (mitto-s9g2).
 	bs.markACPContextFresh()
 

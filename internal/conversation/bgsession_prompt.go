@@ -1635,7 +1635,7 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	// Adopt before any model RPC: config and prompt dispatch must address the
 	// same new session. WebClient itself has no session ID/binding to update;
 	// authenticated MCP ownership is bound to persistedID, which is unchanged.
-	bs.acpID = string(freshSess.SessionId)
+	bs.setACPSessionID(string(freshSess.SessionId))
 	bs.markACPContextUnknown() // Only mark fresh after initialization succeeds.
 	bs.hsPersistACPSessionID()
 	bs.setSessionModes(freshSess.Modes)

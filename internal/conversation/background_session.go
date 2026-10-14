@@ -2211,6 +2211,22 @@ func (bs *BackgroundSession) startSessionMcpServer(
 	if !ok {
 		return bs.sessionMCPServers
 	}
+	if bs.sharedCallerSessionSupported() {
+		// Identical descriptor for every conversation on the shared process;
+		// identity comes from per-call caller metadata (mitto-4hd).
+		bs.sessionMCPServers = []acp.McpServer{{
+			Http: &acp.McpServerHttpInline{
+				Type: "http",
+				Name: "mitto",
+				Url:  binding.URL,
+				Headers: []acp.HttpHeader{{
+					Name:  mcpserver.SharedMCPHeaderName,
+					Value: bs.globalMcpServer.SharedMCPSecret(),
+				}},
+			},
+		}}
+		return bs.sessionMCPServers
+	}
 	bs.sessionMCPServers = []acp.McpServer{{
 		Http: &acp.McpServerHttpInline{
 			Type: "http",
@@ -2223,6 +2239,28 @@ func (bs *BackgroundSession) startSessionMcpServer(
 		},
 	}}
 	return bs.sessionMCPServers
+}
+
+// sharedCallerSessionSupported reports whether this conversation runs on a
+// shared ACP process whose agent attaches the caller session in MCP metadata.
+func (bs *BackgroundSession) sharedCallerSessionSupported() bool {
+	if bs.sharedProcess == nil {
+		return false
+	}
+	caps := bs.sharedProcess.Capabilities()
+	return caps != nil && caps.Query(agentbackend.FeatureMCPCallerSession) == agentbackend.CapabilitySupported
+}
+
+// setACPSessionID assigns the ACP session id and binds it to this
+// conversation on the global MCP server for shared-transport identity.
+func (bs *BackgroundSession) setACPSessionID(id string) {
+	bs.acpID = id
+	if bs.globalMcpServer == nil || bs.persistedID == "" || id == "" {
+		return
+	}
+	if !bs.globalMcpServer.BindACPSession(bs.persistedID, id) && bs.logger != nil {
+		bs.logger.Warn("Failed to bind ACP session id for MCP identity", "session_id", bs.persistedID)
+	}
 }
 
 // stopSessionMcpServer unregisters from global MCP server.
