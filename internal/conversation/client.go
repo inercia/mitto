@@ -284,7 +284,8 @@ func (c *WebClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 		// Tool calls are buffered if we're in a markdown block, otherwise emitted immediately.
 		c.dispatchViaProjector(u, false, func() {
 			status := string(u.ToolCall.Status)
-			c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), u.ToolCall.Title, &status)
+			title := enrichToolTitle(u.ToolCall.Title, u.ToolCall.RawInput)
+			c.streamBuffer.AddToolCall(string(u.ToolCall.ToolCallId), title, &status)
 		})
 
 	case u.ToolCallUpdate != nil:
