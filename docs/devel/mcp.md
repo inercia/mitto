@@ -91,6 +91,44 @@ injected binding may correlate only with their exact conversation ID; ambiguous
 placeholder keys are rejected. Never-correlated transports still use the
 bounded idle policy.
 
+#### Shared OpenCode identity path (mitto-4hd)
+
+Mitto still has one global MCP server and tool catalog, but caller
+authentication depends on the transport path:
+
+- **Default / legacy path** (other ACP agents, OpenCode without the v2+
+  caller-session capability, and direct/dedicated ACP processes): the
+  per-conversation `X-Mitto-Session-Binding` header above. The protocol session
+  stays bound to exactly one registered conversation; the single-owner
+  invariant of `associateMCPSessionID` and its anti-impersonation behavior are
+  unchanged.
+- **Shared OpenCode path** (shared ACP process, exact OpenCode name, capability
+  `FeatureMCPCallerSession` supported, OpenCode v2+): every conversation gets an
+  *identical* `mitto` descriptor, with the same name, URL and
+  `X-Mitto-Shared-Secret` header. The secret is random per Mitto process, kept
+  in memory only, and never logged or persisted. OpenCode's MCP registry is
+  workspace/Location-scoped by server name, so per-conversation headers would
+  make configs differ and cause replacement/reconnect thrash; identical
+  descriptors avoid it. A wrong or missing secret, or both headers together,
+  is rejected with 401.
+
+On the shared transport the protocol session is deliberately **ownerless**.
+Each `tools/call` is authenticated per call from
+`_meta["ai.opencode/sessionID"]`, mapped from ACP session ID to a registered
+live Mitto conversation (`BindACPSession` at every ACP-ID assignment after
+`session/new`/`session/load`/restart). Model-supplied `self_id` is not
+authority: a different registered `self_id` is rejected, while placeholders
+(`init`, `self`) are replaced by the attested identity. Missing or unmapped
+metadata fails closed, with no protocol-session cache or legacy fallback.
+OpenCode child/subagent sessions are therefore not yet supported; mapping is
+tracked separately in mitto-cz6.
+
+ACP-ID map rules: rebinding a conversation drops its previous ID; an ID claimed
+by two conversations is quarantined and resolves to neither until all claimants
+unbind, unregister, or bind distinct IDs. `UnregisterSession` drops mappings
+and quarantine claims. Shared-secret transport auth and per-call caller identity
+are separate layers.
+
 ### STDIO Mode
 
 Standard input/output for communication. The MCP server reads JSON-RPC messages from stdin and writes responses to stdout.
@@ -1053,6 +1091,7 @@ The MCP server binds only to `127.0.0.1` (localhost) and cannot be accessed from
 - Exposes internal state for debugging
 - Should not be exposed to the network
 - HTTP-capable ACP sessions receive an opaque, memory-only binding header; session-scoped tools trust that immutable protocol-session mapping or exact ACP-observed legacy correlation
+- Shared OpenCode transport: a process-memory `X-Mitto-Shared-Secret` authenticates the transport only; each call's caller is attested by `_meta["ai.opencode/sessionID"]` mapped to a conversation, and missing/ambiguous metadata fails closed
 - A supplied registered conversation ID or shared placeholder such as `init` is not proof of caller identity
 
 ## Implementation
@@ -1206,7 +1245,7 @@ sequenceDiagram
     BS->>ACP: NewSession(McpServers: [mitto + binding header])
     ACP->>MCP: initialize + binding header
     MCP->>MCP: Bind protocol session to conversation
-
+    Note over MCP: Shared OpenCode v2+: identical descriptor with shared-secret header,<br/>ownerless protocol session; each call resolved via _meta ACP session ID
     ACP->>MCP: Call mitto_ui_options(self_id=X)
     MCP->>MCP: Resolve immutable protocol-session owner
     MCP->>Store: Read flags for session X
