@@ -1272,3 +1272,33 @@ func TestPromptOutcomeToACPResponse_NoUsageReported(t *testing.T) {
 		t.Errorf("StopReason = %q, want %q", got.StopReason, acp.StopReasonCancelled)
 	}
 }
+
+func TestMCPCallerSessionCapability_mitto4hd(t *testing.T) {
+	cases := []struct {
+		name, agent, ver string
+		want             agentbackend.CapabilityState
+	}{
+		{"opencode 2.0.23", "OpenCode", "2.0.23", agentbackend.CapabilitySupported},
+		{"opencode v3", "OpenCode", "v3.1.0-beta+x", agentbackend.CapabilitySupported},
+		{"opencode 1.x", "OpenCode", "1.9.0", agentbackend.CapabilityUnsupported},
+		{"opencode dev", "OpenCode", "dev", agentbackend.CapabilityUnsupported},
+		{"opencode empty", "OpenCode", "", agentbackend.CapabilityUnsupported},
+		{"opencode garbage", "OpenCode", "2x.0", agentbackend.CapabilityUnsupported},
+		{"other agent", "Other", "2.0.0", agentbackend.CapabilityUnsupported},
+		{"lowercase name", "opencode", "2.0.0", agentbackend.CapabilityUnsupported},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewProcessCapabilitiesWithAgentInfo(&acp.AgentCapabilities{}, tc.agent, tc.ver)
+			if got := c.Query(agentbackend.FeatureMCPCallerSession); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+	if got := NewProcessCapabilities(nil).Query(agentbackend.FeatureMCPCallerSession); got != agentbackend.CapabilityUnsupported {
+		t.Fatalf("no agent info: got %v", got)
+	}
+	if got := NewProcessCapabilities(nil).Query(agentbackend.FeatureImages); got != agentbackend.CapabilityUnknown {
+		t.Fatalf("existing nil-caps behavior changed: %v", got)
+	}
+}

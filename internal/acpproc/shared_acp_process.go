@@ -408,6 +408,9 @@ type SharedACPProcess struct {
 
 	// Agent capabilities (set after Initialize)
 	capabilities *acp.AgentCapabilities
+	// agentName/agentVersion come from initialize AgentInfo (mitto-4hd).
+	agentName    string
+	agentVersion string
 
 	// Context for process lifetime
 	ctx       context.Context
@@ -1153,6 +1156,10 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	}
 
 	p.capabilities = &initResp.AgentCapabilities
+	p.agentName, p.agentVersion = "", ""
+	if initResp.AgentInfo != nil {
+		p.agentName, p.agentVersion = initResp.AgentInfo.Name, initResp.AgentInfo.Version
+	}
 
 	if p.logger != nil {
 		logAttrs := []any{
@@ -3116,7 +3123,16 @@ func (p *SharedACPProcess) Done() <-chan struct{} {
 // accessor; same-package callers that need the raw ACP struct (e.g. the
 // aux-processor MCP transport decision) use rawCapabilities instead.
 func (p *SharedACPProcess) Capabilities() agentbackend.Capabilities {
-	return conversation.NewProcessCapabilities(p.rawCapabilities())
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return conversation.NewProcessCapabilitiesWithAgentInfo(p.capabilities, p.agentName, p.agentVersion)
+}
+
+// AgentInfo returns the initialize AgentInfo name and version ("" if unknown).
+func (p *SharedACPProcess) AgentInfo() (name, version string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.agentName, p.agentVersion
 }
 
 // rawCapabilities returns the agent's raw ACP capabilities snapshot for
@@ -3316,6 +3332,7 @@ func (p *SharedACPProcess) Restart(observedGen int) error {
 	p.killProcess("restart")
 	p.conn = nil
 	p.capabilities = nil
+	p.agentName, p.agentVersion = "", ""
 	p.generation++
 	p.mu.Unlock()
 

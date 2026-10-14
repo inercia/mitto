@@ -51,6 +51,10 @@ const (
 	// (ACP's AgentCapabilities.LoadSession), used by the shared-process resume
 	// handshake's fallback probe (mitto-mx9.1.3).
 	FeatureSessionLoad Feature = "session_load"
+
+	// FeatureMCPCallerSession reports whether the agent attaches the calling
+	// ACP session ID to every MCP tool call (OpenCode >= 2, mitto-4hd).
+	FeatureMCPCallerSession Feature = "mcp_caller_session"
 )
 
 // Capabilities reports the current capability state for each known feature

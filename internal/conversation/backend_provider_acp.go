@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -539,7 +540,33 @@ func (c *acpCapabilities) Query(feature agentbackend.Feature) agentbackend.Capab
 // CapabilityUnknown rather than guessing (per agentbackend.Capabilities'
 // contract).
 type acpProcessCapabilities struct {
-	caps *acp.AgentCapabilities
+	caps         *acp.AgentCapabilities
+	agentName    string
+	agentVersion string
+}
+
+// NewProcessCapabilitiesWithAgentInfo is NewProcessCapabilities plus the
+// initialize AgentInfo name/version, needed for FeatureMCPCallerSession.
+func NewProcessCapabilitiesWithAgentInfo(caps *acp.AgentCapabilities, name, version string) agentbackend.Capabilities {
+	return &acpProcessCapabilities{caps: caps, agentName: name, agentVersion: version}
+}
+
+// parseMajorVersion extracts the major version from strings like "2.0.23",
+// "v2.1.0" or "2.0.0-beta+x". Returns false when unparseable.
+func parseMajorVersion(v string) (int, bool) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	end := 0
+	for end < len(v) && v[end] >= '0' && v[end] <= '9' {
+		end++
+	}
+	if end == 0 || (end < len(v) && v[end] != '.' && v[end] != '-' && v[end] != '+') {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // NewProcessCapabilities wraps a raw ACP AgentCapabilities snapshot (possibly
@@ -551,6 +578,12 @@ func NewProcessCapabilities(caps *acp.AgentCapabilities) agentbackend.Capabiliti
 }
 
 func (c *acpProcessCapabilities) Query(feature agentbackend.Feature) agentbackend.CapabilityState {
+	if feature == agentbackend.FeatureMCPCallerSession {
+		if major, ok := parseMajorVersion(c.agentVersion); ok && c.agentName == "OpenCode" && major >= 2 {
+			return agentbackend.CapabilitySupported
+		}
+		return agentbackend.CapabilityUnsupported
+	}
 	if c.caps == nil {
 		return agentbackend.CapabilityUnknown
 	}
