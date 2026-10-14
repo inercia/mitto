@@ -1,0 +1,161 @@
+icon: build
+name: Implement
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to implement (must carry the `implementation-refined` label)
+  - name: SubmitStrategy
+    type: text
+    group: Advanced
+    required: false
+    description: How finished work is submitted. "Commit" (default) commits the increment; "Pull Request" commits on the configured task/epic branch; "None" leaves changes for review.
+  - name: AdditionalInstructions
+    type: text
+    group: Advanced
+    required: false
+    multiLine: true
+    description: Optional additional instructions for this run.
+description: Implement a bead that has already been investigated (`implementation-refined`) — follow its Investigation Report, then label and commit. Epics are advanced one refined child at a time.
+backgroundColor: '#C8E6C9'
+group: Tasks
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Id != "" && Item.Status != "closed" && Item.Labels != null && "implementation-refined" in Item.Labels) || (Item.Id == "" && Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "implementation-refined"))) && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Coding
+target:
+  reuse:
+    issue: true
+    coalesce: true
+prompt: |
+  {{ template "_shared/session-context" . }}
+
+  # Beads: Implement a Refined Bead
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  This is the **user-facing entry point to the shared implementation flow**: the same
+  machinery the `Loop fixing bug` / `Loop implementing feature` drivers dispatch
+  (`Bug fix — fix phase`, `Feature — implement phase`) and that `Loop until issue complete`
+  delegates to. It expects a bead that "Investigate more" (or a driver's investigation
+  phase) already refined: the **`implementation-refined`** label.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $silent := and .Session.IsLoop (not .Session.IsLoopForced) -}}
+  {{ $submit := .Args.SubmitStrategy -}}
+  {{ $commit := ne $submit "None" -}}
+  {{ $pr := eq $submit "Pull Request" -}}
+  {{ $suffix := "Submit strategy is **None** (`SubmitStrategy` argument) — commit is disabled." -}}
+  {{ if $pr }}{{ $suffix = "Submit strategy is **Pull Request** — commit on the configured task/epic branch." }}{{ else if $commit }}{{ $suffix = "Submit strategy is **Commit** (`SubmitStrategy` argument) — commit is enabled." }}{{ end -}}
+  {{ template "beads-issues/shared/target-bead-header-strict" (dict
+      "Target"      $target
+      "Noun"        "target bead"
+      "FromLink"    (ne .Session.BeadsIssue "")
+      "PhaseSuffix" $suffix
+  ) }}
+
+  {{ if $target -}}
+  {{ template "beads-issues/shared/additional-instructions" . }}
+
+  {{ template "beads-issues/shared/tier-check" (dict
+      "Target"    $target
+      "Tier"      "Coding"
+      "Phase"     "implement"
+      "Confirmed" (Model "Coding")
+      "ModelName" .Session.ModelName
+      "ModelTags" .Session.ModelTags
+  ) }}
+
+  ## Step 1 — Load LIVE state and resolve what to implement
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  {{ template "beads-issues/shared/scope-resolution" (dict "Target" $target "Mode" "one") }}
+
+  {{ template "beads-issues/shared/rank-candidates" (dict
+      "Set"           "the open, unblocked, `implementation-refined` children"
+      "Deterministic" true
+  ) }}
+
+  Treat the unit chosen above as **`<unit>`**. Then decide by its **live labels and type**
+  (`bd show <unit> --json`):
+
+  - Already carries the terminal label for its kind (`fixed` for a bug, `implemented` /
+    `tested` / `verified` for anything else) → its work is done: `bd comment` a note that the
+    run was redundant and stop without re-adding labels.
+  - **Does not carry `implementation-refined`** → it has not been investigated. Do **not**
+    implement it. Say so, suggest **"Investigate more"** (or `Loop until issue complete`, which
+    investigates first), and stop. This keeps one flow: investigate → label → implement.
+  - Carries `implementation-refined` → continue.
+
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
+
+  ## Step 2 — Claim and implement
+
+  ```bash
+  bd update <unit> --claim
+  ```
+
+  Pick the variant by the unit's type; the instructions and closure are the shared fragments
+  every other implementing flow uses.
+
+  ### If `<unit>` is a **bug** (type `bug`)
+
+  {{ template "beads-issues/shared/implement-work" (dict "Kind" "fix" "Silent" $silent) }}
+
+  {{ template "beads-issues/shared/implement-closure" (dict
+      "Ctx"    .
+      "Target" "<unit>"
+      "Kind"   "fix"
+      "Label"  "fixed"
+      "Tag"    "Fix"
+      "Commit" $commit
+      "PR"     $pr
+  ) }}
+
+  ### Otherwise (feature / task / chore / …)
+
+  {{ template "beads-issues/shared/implement-work" (dict "Kind" "feat" "Silent" $silent) }}
+
+  {{ template "beads-issues/shared/implement-closure" (dict
+      "Ctx"    .
+      "Target" "<unit>"
+      "Kind"   "feat"
+      "Label"  "implemented"
+      "Tag"    "Implementation"
+      "Commit" $commit
+      "PR"     $pr
+  ) }}
+
+  The labels (`fixed` / `implemented`) are the same ones the loop drivers use, so afterwards
+  `Loop fixing bug` takes its Done branch and `Loop implementing feature` continues with the
+  test and review phases — no work is repeated.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  {{ template "beads-issues/shared/blocked-defer-handoff" (dict
+      "Target"      $target
+      "SessionID"   .Session.ID
+      "Placeholder" "<unit>"
+      "Label"       "implemented"
+      "BlockedAt"   "implement"
+  ) }}
+
+  ## Guidelines
+
+  - **Refined beads only.** Never implement a bead that lacks `implementation-refined`; the
+    Investigation Report is the spec.
+  - **One unit per run.** For an epic, implement one refined child and stop; run again for the next.
+  - **Do not close the bead.** Closing belongs to the loop drivers' Done branch or the user.
+  {{ template "beads-issues/shared/phase-guidelines-footer" (dict
+      "IncludeItemNote" false
+      "TagNoun"         "summary"
+      "TagPrefix"       "Implementation"
+      "Tier"            "Coding"
+  ) }}

@@ -77,6 +77,8 @@ prompt: |
   done — `bd comment` a note that the phase re-ran redundantly and stop **without**
   re-adding the label.
 
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
+
   **Important — this phase runs in its own loop iteration.** Unlike a single
   long-lived session, each phase of this driver is a separate scheduled run, so any
   uncommitted work here would be lost between iterations unless committed now (see
@@ -84,55 +86,19 @@ prompt: |
 
   ## Step 2 — Implement the feature
 
-  This is a **scheduled, silent** phase (invoked by the driver's on-completion
-  loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
-  decide autonomously; if something is genuinely unclear or unsolvable without user
-  input, defer via **Step 4**.
-
-  Write the code per the plan, in the **smallest coherent increment** that makes
-  functional progress:
-
-  - Follow the design decisions and approach recorded in the `Plan:` comment.
-  - Match the surrounding style and conventions; do not refactor unrelated code.
-  - Do not gold-plate — implement exactly what the plan and acceptance criteria call
-    for; further increments (or the test/review phases) will build on this one.
-
-  When the increment is **functionally complete** (it builds and does what it is meant
-  to, even if tests/polish come in later phases), proceed to Step 3.
+  {{ template "beads-issues/shared/implement-work" (dict "Kind" "feat" "Silent" true) }}
 
   ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }}
 
-  ```bash
-  bd comment {{ $target }} "Implementation [tier: Coding]: <what was built, files touched, any deviations from the plan and why>."
-  bd update {{ $target }} --add-label implemented
-  ```
-
-  Only add the label after the comment is posted.
-
-  {{ if $commit -}}
-  {{ if $pr }}
-  Submit strategy is **Pull Request** — ensure the bead's feature branch exists and
-  is checked out before committing:
-
-  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+  {{ template "beads-issues/shared/implement-closure" (dict
       "Ctx"    .
       "Target" $target
-      "Type"   "feat"
+      "Kind"   "feat"
+      "Label"  "implemented"
+      "Tag"    "Implementation"
+      "Commit" $commit
+      "PR"     $pr
   ) }}
-  {{ end }}
-  Then commit the increment as a **single, focused commit** using the project's commit
-  conventions and reference the bead ID in the message.
-
-  {{ template "git/shared/safe-commit" (dict
-      "Type"     "feat"
-      "Target"   $target
-      "Summary"  "<one-line summary>"
-      "BodyHint" (printf "<body: what changed and why, reference %s>" $target)
-  ) }}
-  {{- else -}}
-  Do **not** commit. Leave the implementation changes staged/unstaged for the user to
-  review; the bead comment already records what changed.
-  {{- end }}
 
   Then stop — the driver's next scheduled run will observe `implemented` and dispatch
   the test phase.

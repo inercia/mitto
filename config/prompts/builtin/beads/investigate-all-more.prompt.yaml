@@ -124,6 +124,8 @@ prompt: |
       "ExtraCommands" "bd label add implementation-refined <bead-id>"
   ) }}
 
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "producer") }}
+
   Unlike the single-bead prompt, this pass does **not** decompose beads or create sub-issues. If the
   work is clearly too large for one reviewable unit, say so in the design notes and the audit note,
   and leave the split to the **"Decompose issue"** prompt.

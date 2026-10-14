@@ -1,0 +1,45 @@
+{{/*
+  implement-work — the shared "do the implementation" instructions used by every
+  flow that implements a refined bead: "Bug fix — fix phase", "Feature — implement
+  phase" and the user-facing "Implement" prompt.
+
+  Parameters (dict):
+    Kind   — "fix"  : bug fix (minimum change, reproduction test must go green)
+             "feat" : feature increment (smallest coherent increment per the plan)
+    Silent — true when no user may be asked (scheduled / driver-dispatched runs)
+
+      {{ template "beads-issues/shared/implement-work" (dict "Kind" "fix" "Silent" true) }}
+*/}}
+{{- if .Silent }}
+This is a **silent** run. Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
+decide autonomously; if something is genuinely unclear or unsolvable without user input, defer via
+**Step 4**.
+{{- else }}
+A user may be present, but decide autonomously whenever the report/plan already settles the question;
+ask (`mitto_ui_options`) only for a genuine gap, and prefer deferring via **Step 4** over guessing.
+{{- end }}
+
+{{ if eq .Kind "fix" -}}
+Apply the **minimum** change that makes the failing reproduction test pass:
+
+- Address the root cause identified in the Investigation Report, not just the symptom.
+- Keep the change surgical — do not refactor unrelated code, rename symbols, or reformat files.
+  Match the surrounding style and commenting density.
+- Update or add adjacent tests only when the fix genuinely requires it (e.g. an existing test
+  encoded the bug and now needs correcting).
+
+Run the reproduction test recorded on the bead and confirm it now **passes**, then run the broader
+relevant test suite and confirm nothing else broke. Capture the exact commands and passing output as
+evidence. If tests do not pass, iterate — never advance the label with red tests; if you cannot make
+them pass after reasonable effort, defer via Step 4.
+{{- else -}}
+Write the code per the plan, in the **smallest coherent increment** that makes functional progress:
+
+- Follow the design decisions and approach recorded in the Investigation Report / `Plan:` comment.
+- Match the surrounding style and conventions; do not refactor unrelated code.
+- Do not gold-plate — implement exactly what the plan and acceptance criteria call for; further
+  increments (or the test/review phases) build on this one.
+
+When the increment is **functionally complete** (it builds and does what it is meant to, even if
+tests/polish come in later phases), proceed to the closure step.
+{{- end }}

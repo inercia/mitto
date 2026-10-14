@@ -1,0 +1,85 @@
+{{/*
+  implement-closure — the shared "record, label, commit, verify" closure used by
+  every implementing flow ("Bug fix — fix phase", "Feature — implement phase" and
+  the user-facing "Implement" prompt).
+
+  Parameters (dict):
+    Ctx    — the template root (pass `.`), needed by ensure-bead-branch
+    Target — bead ID
+    Kind   — "fix" | "feat" (commit type and branch type)
+    Label  — phase label to add on success (e.g. "fixed", "implemented")
+    Tag    — comment prefix (e.g. "Fix", "Implementation")
+    Commit — bool, commit at the end
+    PR     — bool, Pull Request submit strategy (commit on the bead branch)
+*/}}
+### Closure 1 — Record the work on the bead
+
+```bash
+bd comment {{ .Target }} "{{ .Tag }} [tier: Coding]: <what changed and why, files touched, deviations from the report/plan>. Tests: <command and result>."
+```
+
+### Closure 2 — Advance the state machine
+
+Only after the comment has posted{{ if not .Commit }} and the diff is clean{{ end }}:
+
+```bash
+bd update {{ .Target }} --add-label {{ .Label }}
+```
+
+{{ if .Commit -}}
+### Closure 3 — Format, then commit (explicit paths only)
+
+{{ if .PR }}
+Submit strategy is **Pull Request** — ensure the bead's branch exists and is checked out first:
+
+{{ template "beads-issues/shared/ensure-bead-branch" (dict
+    "Ctx"    .Ctx
+    "Target" .Target
+    "Type"   .Kind
+) }}
+{{ end }}
+Run the language-appropriate formatter before staging:
+
+```bash
+make fmt
+```
+
+Commit as a **single, focused commit** with **explicit paths** (concurrent conversations leave
+unrelated dirty files in the tree; a wildcard stage would sweep them in). Verify only your files are
+staged:
+
+```bash
+git status --porcelain
+```
+
+{{ template "git/shared/safe-commit" (dict
+    "Type"     .Kind
+    "Target"   .Target
+    "Summary"  "<one-line summary>"
+    "BodyHint" (printf "<body: what changed and why. Refs: %s>" .Target)
+) }}
+{{- else -}}
+### Closure 3 — Do NOT commit
+
+Do **not** commit. Leave the changes staged/unstaged for the user to review; the bead comment already records what changed.
+{{- end }}
+
+### Closure V — Self-verification (MANDATORY before ending the turn)
+
+Run each check; if one fails, the matching step was NOT completed — finish it and re-run. Never end
+the turn with a red check.
+
+```bash
+# V.1: bead carries the `{{ .Label }}` label
+bd show {{ .Target }} --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; assert '{{ .Label }}' in d.get('labels',[]), 'MISSING {{ .Label }} label'; print('OK: {{ .Label }} label present')"
+
+# V.2: `{{ .Tag }} [tier: Coding]:` comment is on the bead
+bd show {{ .Target }} --include-comments | grep -F "{{ .Tag }} [tier: Coding]:" >/dev/null && echo "OK: comment present" || echo "MISSING {{ .Tag }} [tier: Coding]: comment"
+{{ if .Commit }}
+# V.3: commit exists on HEAD referencing this bead
+git log -1 --format=%B | grep -F "{{ .Target }}" >/dev/null && echo "OK: commit references {{ .Target }}" || echo "MISSING commit for {{ .Target }}"
+
+# V.4: working tree has no leftover changes for the files you touched
+git status --porcelain
+{{- end }}
+```

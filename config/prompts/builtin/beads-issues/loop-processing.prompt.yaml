@@ -269,81 +269,32 @@ prompt: |
 
   ### Reject terminal labels carried through a reopen
 
-  Mandatory before walking children (else the reaper deletes a recurrence's
-  worker over a stale terminal label). Build `current_terminal_labels` from each
-  `id` + `terminal_label` (`fixed` for bugs, `verified` for other non-epics).
-  History is newest-first status snapshots (`CommitDate` + `Issue`, no labels).
-  The probe finds the
-  most recent transition into the current non-closed episode
-  and the
-  most recent terminal phase comment
-  (`Fix [tier:` for bugs, `Review [tier:`
-  otherwise). `datetime.fromisoformat` compares parsed instants, never strings.
-  A never-reopened bead is current; a reopened one is current only if its comment is
-  strictly newer than the current episode
-  open transition. Missing or malformed
-  evidence is stale (fail safe):
+  The prompt machinery already classified every open bead carrying a class-terminal
+  label (`fixed` for bugs, `verified` for other non-epics) against its history and
+  terminal phase comment. A label carried through a reopen is stale; missing or
+  malformed evidence is stale too (fail safe).
+  {{- $terminal := TerminalBeads (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}
+  {{ $staleN := 0 }}{{ range $terminal }}{{ if .Stale }}{{ $staleN = 1 }}{{ end }}{{ end }}
+  {{- if $staleN }}
+  Run these now (stale labels):
 
   ```bash
-  declare -A current_terminal_labels=()
-  while IFS=$'\t' read -r id terminal_label; do
-    [ -n "$id" ] || continue
-    history=$(bd history "$id" --json 2>/dev/null || printf '[]')
-    current=$(bd show "$id" --json --include-comments 2>/dev/null || printf '[]')
-    payload=$(printf '%s\n%s\n' "$history" "$current" \
-      | jq -s '{history:.[0],current:.[1]}' 2>/dev/null \
-      || printf '{"history":[],"current":[]}')
-    verdict=$(printf '%s' "$payload" | python3 -c '
-  import json, sys
-  from datetime import datetime
-
-  label = sys.argv[1]
-  prefixes = {"fixed": "Fix [tier:", "verified": "Review [tier:"}
-  try:
-      payload = json.load(sys.stdin)
-      entries = payload.get("history")
-      current = payload.get("current")
-      if not isinstance(entries, list) or not entries or not isinstance(current, list) or not current:
-          raise ValueError("missing evidence")
-      issue = lambda e: e.get("Issue") or {}
-      status = lambda e: issue(e).get("status")
-      when = lambda e: e.get("CommitDate")
-      live = current[0]
-      if live.get("status") not in ("open", "in_progress") or label not in (live.get("labels") or []):
-          raise ValueError("candidate no longer terminal")
-      reopened_at = next((when(entries[i]) for i in range(len(entries) - 1)
-          if status(entries[i]) in ("open", "in_progress") and status(entries[i + 1]) == "closed"), None)
-      if reopened_at is None:
-          print("current")
-          raise SystemExit
-      prefix = prefixes[label]
-      terminal_at = max((comment.get("created_at") for comment in (live.get("comments") or [])
-          if (comment.get("text") or "").startswith(prefix) and comment.get("created_at")), default=None)
-      parse = lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))
-      print("current" if terminal_at and parse(terminal_at) > parse(reopened_at) else "stale")
-  except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-      print("stale")
-  ' "$terminal_label" 2>/dev/null || printf 'stale')
-    if [ "$verdict" = "current" ]; then
-      current_terminal_labels["$id"]="$terminal_label"
-      continue
-    fi
-    bd comment "$id" "Orchestrator: terminal label=$terminal_label is not newer than the current open episode; removing the stale label so the recurrence remains actionable."
-    bd update "$id" --remove-label "$terminal_label"
-  done < <(
-    {{ if ne .Args.FixBugs "false" -}}
-    bd list --type bug --status open,in_progress --label fixed --json | jq -r '.[] | "\(.id)\tfixed"'
-    {{ end -}}
-    {{ if ne .Args.WorkOnFeatures "false" -}}
-    bd list --status open,in_progress --label verified --json \
-      | jq -r '.[] | select(.issue_type != "bug" and .issue_type != "epic") | "\(.id)\tverified"'
-    {{ end -}}
-  )
+  {{- range $terminal }}{{ if .Stale }}
+  bd comment {{ .ID }} "Orchestrator: terminal label={{ .Label }} is not newer than the current open episode; removing the stale label so the recurrence remains actionable."
+  bd update {{ .ID }} --remove-label {{ .Label }}
+  {{- end }}{{ end }}
   ```
+  {{- else }}
+  No stale terminal labels this pass.
+  {{- end }}
 
+  Beads whose terminal label is current (the only IDs that may be reaped as terminal
+  or closed below):
+  {{ $curN := 0 }}{{ range $terminal }}{{ if not .Stale }}{{ $curN = 1 }}- `{{ .ID }}` (`{{ .Label }}`, non-closed children: {{ .OpenChildren }})
+  {{ end }}{{ end }}{{ if not $curN }}- (none)
+  {{ end }}
   A stale result removes only the class-terminal label so preserved phase labels route the recurrence to the next required driver phase
-  and leave the bead actionable. Only IDs in `current_terminal_labels` may be reaped as terminal or
-  closed below.
+  and leave the bead actionable.
 
   After this normalization, walk `{{ .Children.MCPText }}` and delete
   (via `mitto_conversation_delete`, NOT archive — delete frees the ACP slot fully)
@@ -355,7 +306,7 @@ prompt: |
   forever and every subsequent pass yields at-cap{{ end }}.
 
   1. **Terminal** — child status `done`/`completed`/`stopped`/`failed`, OR its
-     `beads_issue` is present in `current_terminal_labels` with the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for `Fix …`{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for
+     `beads_issue` is in the current-terminal list above with the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for `Fix …`{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for
      `Implement …`{{ end }}). Also close the bead in the same pass (see below).
   2. **Orphaned** — `beads_issue` bead is closed OR carries `needs-human` (driver
      is deferred; §B/§C will re-spawn once Step 2Z undefers).
@@ -383,136 +334,55 @@ prompt: |
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   ### Close terminal-label beads
 
-  After the reap loop, close any open OR legacy-`in_progress` bead still carrying
-  the class-terminal label (regardless of driver), **only when it has no non-closed
-  direct children**; a terminal parent with open children keeps its label and stays
-  open for §B/§C. Fail closed on child-enumeration failure or malformed JSON. Track
-  closed IDs in `closed_this_pass` (2B/2C skip their parent-child dependents this
-  pass; the epic-reaper below walks their parents).
-
-  Strip the `in-flight` label + `claimed_*` metadata before `bd close` (mitto-ial: ghost claims must not survive into archives).
-  First promote `claimed_at` into `work_started_at` if that is absent
-  (earliest-start semantics; mitto-v3en):
+  After the reap loop, close the beads listed below (current terminal label and no
+  non-closed direct children, as computed by the prompt machinery); a terminal parent
+  with open children keeps its label and stays open for §B/§C. Track closed IDs in
+  `closed_this_pass` (2B/2C skip their parent-child dependents this pass).
+  {{- $closeIDs := "" }}
+  {{- range $terminal }}{{ if .Closable }}{{ $closeIDs = printf "%s,%s" $closeIDs .ID }}{{ end }}{{ end }}
+  {{ $closeN := 0 }}{{ range $terminal }}{{ if .Closable }}{{ $closeN = 1 }}{{ end }}{{ end }}
+  {{- if $closeN }}
+  The `in-flight` label and `claimed_*` metadata are stripped before `bd close` (mitto-ial: ghost claims must not survive into archives); `claimed_at` is promoted into `work_started_at` when that is absent (mitto-v3en):
 
   ```bash
-  closed_this_pass=()
-  {{ if ne .Args.FixBugs "false" -}}
-  for id in $(bd list --type bug --status open,in_progress --label fixed --json | jq -r '.[].id'); do
-    [ "${current_terminal_labels[$id]:-}" = "fixed" ] || continue
-    open_children=$(bd children "$id" --json 2>/dev/null \
-      | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
-    if [ "${open_children:-1}" -ne 0 ]; then
-      echo "Orchestrator: keeping terminal parent $id open; non-closed children=$open_children"
-      continue
-    fi
-    bd comment "$id" "Orchestrator: terminal label=fixed; closing."
-    started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
-    prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
-    if [ -n "$started" ] && [ -z "$prior" ]; then
-      bd update "$id" --remove-label in-flight \
-        --unset-metadata claimed_by --unset-metadata claimed_at \
-        --unset-metadata claim_heartbeat_at \
-        --set-metadata "work_started_at=$started"
-    else
-      bd update "$id" --remove-label in-flight \
-        --unset-metadata claimed_by --unset-metadata claimed_at \
-        --unset-metadata claim_heartbeat_at
-    fi
-    bd close "$id"
-    closed_this_pass+=("$id")
-  done
-  {{ end }}
-  {{- if ne .Args.WorkOnFeatures "false" }}
-  for id in $(bd list --status open,in_progress --label verified --json \
-    | jq -r '.[] | select(.issue_type != "bug" and .issue_type != "epic") | .id'); do
-    [ "${current_terminal_labels[$id]:-}" = "verified" ] || continue
-    open_children=$(bd children "$id" --json 2>/dev/null \
-      | jq '[.[] | select(.status != "closed")] | length' 2>/dev/null || printf '1')
-    if [ "${open_children:-1}" -ne 0 ]; then
-      echo "Orchestrator: keeping terminal parent $id open; non-closed children=$open_children"
-      continue
-    fi
-    bd comment "$id" "Orchestrator: terminal label=verified; closing."
-    started=$(bd show "$id" --json | jq -r '.[0].metadata.claimed_at // empty')
-    prior=$(bd show "$id" --json | jq -r '.[0].metadata.work_started_at // empty')
-    if [ -n "$started" ] && [ -z "$prior" ]; then
-      bd update "$id" --remove-label in-flight \
-        --unset-metadata claimed_by --unset-metadata claimed_at \
-        --unset-metadata claim_heartbeat_at \
-        --set-metadata "work_started_at=$started"
-    else
-      bd update "$id" --remove-label in-flight \
-        --unset-metadata claimed_by --unset-metadata claimed_at \
-        --unset-metadata claim_heartbeat_at
-    fi
-    bd close "$id"
-    closed_this_pass+=("$id")
-  done
-  {{- end }}
+  {{- range $terminal }}{{ if .Closable }}
+  bd comment {{ .ID }} "Orchestrator: terminal label={{ .Label }}; closing."
+  bd update {{ .ID }} --remove-label in-flight --unset-metadata claimed_by --unset-metadata claimed_at --unset-metadata claim_heartbeat_at{{ if .WorkStarted }} --set-metadata "work_started_at={{ .WorkStarted }}"{{ end }}
+  bd close {{ .ID }}
+  {{- end }}{{ end }}
   ```
+  {{- else }}
+  Nothing to close this pass.
+  {{- end }}
 
   Log one-line counts for Step 6: `Closed: <n>`.
 
   ### Reap epics whose children are all closed
 
-  After the terminal-label close loop, derive candidate epics from `closed_this_pass`,
-  `reaped_child_beads`, and the current `onTasks` delta's touched bead IDs (the latter
-  two cover a leaf already closed by a driver/human). Bounded: never sweep all open
+  Candidate epics derive from the beads closed above, the children reaped in the
+  walk (`reaped_child_beads`), and the current `onTasks` delta's touched bead IDs
+  (covering a leaf already closed by a driver/human). Bounded: never sweep all open
   epics. Reaping lives ONLY here (never in per-driver prompts) to avoid parent-close
   races between concurrent drivers.
+  {{- $touched := "" }}
+  {{- with .Trigger }}{{ with .OnTasks }}{{ range .Changes.Touched }}{{ $touched = printf "%s,%s" $touched .id }}{{ end }}{{ end }}{{ end }}
+  {{ $epics := ReapableEpics (printf "%s,%s" $touched $closeIDs) $closeIDs }}
+  {{- if $epics }}
+  Epics (all children closed, capped at 20 per pass) — run now:
 
   ```bash
-  reaped_epics=()
-  touched_child_beads=()
-  {{- with .Trigger }}{{ with .OnTasks }}
-  {{- range .Changes.Touched }}
-  touched_child_beads+=({{ .id | printf "%q" }})
+  {{- range $epics }}
+  bd comment {{ . }} "Orchestrator: reaping epic {{ . }} — all children closed after activity-local reconciliation."
+  bd close {{ . }} --reason "All children closed by L1 orchestrator pass"
   {{- end }}
-  {{- end }}{{ end }}
-
-  # Touched epics + their parents (nested epics reconcile on successive events).
-  declare -A touched_epics_set=()
-  candidate_beads=("${closed_this_pass[@]}" "${reaped_child_beads[@]}" "${touched_child_beads[@]}")
-  for cid in "${candidate_beads[@]}"; do
-    candidate=$(bd show "$cid" --json 2>/dev/null)
-    kind=$(jq -r '.[0].issue_type // empty' <<<"$candidate")
-    pid=$(jq -r '.[0].parent // empty' <<<"$candidate")
-    if [ "$kind" = "epic" ]; then
-      touched_epics_set["$cid"]=1
-    fi
-    if [ -n "$pid" ]; then
-      touched_epics_set["$pid"]=1
-    fi
-  done
-  touched_epics=("${!touched_epics_set[@]}")
-
-  # Hard cap: 20 reaped epics per pass; log-and-skip beyond.
-  reap_cap=20
-  reap_count=0
-  overflow_epics=()
-  for epic_id in "${touched_epics[@]}"; do
-    if [ "$reap_count" -ge "$reap_cap" ]; then
-      overflow_epics+=("$epic_id")
-      continue
-    fi
-    # Idempotency: skip if already closed.
-    meta=$(bd show "$epic_id" --json 2>/dev/null | jq -r '.[0] | "\(.issue_type)|\(.status)"')
-    if [ "$meta" != "epic|open" ]; then
-      continue
-    fi
-    # A child epic counts only when itself closed (reaps in dependency order).
-    open_children=$(bd children "$epic_id" --json 2>/dev/null | jq '[.[] | select(.status != "closed")] | length')
-    if [ "${open_children:-1}" -eq 0 ]; then
-      bd comment "$epic_id" "Orchestrator: reaping epic $epic_id — all children closed after activity-local reconciliation."
-      bd close "$epic_id" --reason "All children closed by L1 orchestrator pass"
-      reaped_epics+=("$epic_id")
-      reap_count=$((reap_count + 1))
-    fi
-  done
-  if [ "${#overflow_epics[@]}" -gt 0 ]; then
-    echo "Epic reaper cap ($reap_cap) reached; remaining touched epics: ${overflow_epics[*]}"
-  fi
   ```
+  {{- else }}
+  No touched epic is ready to reap.
+  {{- end }}
+
+  For each bead in `reaped_child_beads`, also check its parent epic: if
+  `bd children <parent> --json` shows no non-closed child and the epic is `open`,
+  comment and close it the same way.
 
   Log one-line count for Step 6: `Reaped epics: <n>`.
   {{- end }}

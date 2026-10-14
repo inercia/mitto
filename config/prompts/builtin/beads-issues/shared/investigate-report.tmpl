@@ -26,6 +26,17 @@
   and — just as important — what is **out of scope**.
 - **Findings & code locations**: key files/symbols and current behaviour, with evidence.
 - **Approach**: the recommended step-by-step plan, in order, with the concrete call sites to touch.
+- **Problem decomposition**: an ordered breakdown into reviewable work units. For each unit give its
+  goal, the files/symbols or interfaces involved, its dependencies, and the tests or checks that
+  verify it; say which units can proceed independently and which must be sequenced. If the work is
+  intentionally one unit, give a phased breakdown and explain why it is cohesive instead of
+  inventing artificial sub-issues.
+- **Implementation instructions**: for each work unit, what to change and the expected behaviour,
+  the contracts/constraints that must be preserved, and how to validate the change. Precise enough
+  that an implementer can start coding without making design decisions.
+- **Code not to touch**: specific files, symbols, or components that must stay unchanged (or an
+  explicit "none identified" after checking), why each is out of scope or risky to alter, and how
+  the implementation avoids changing it. No vague exclusions like "leave unrelated code alone".
 - **Refined acceptance criteria**: specific, testable conditions for "done".
 - **Design notes**: trade-offs and constraints behind the approach (if applicable).
 - **Edge cases & risks**: what could break or is easy to miss — callers, tests, migrations, config.

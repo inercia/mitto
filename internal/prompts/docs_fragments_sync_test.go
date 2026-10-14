@@ -13,7 +13,7 @@ import (
 // increment against silent drift: heading, the two-extension convention, the
 // two guardian-test callouts, the non-goals block, and a worked-example marker
 // must all remain present. The sibling scope-block pointer near the top of the
-// document and the pointer section in .augment/rules/07-prompts.md are also
+// document and the pointer section in .agents/rules/07-prompts.md are also
 // pinned so removing either breaks this test instead of the docs drifting.
 //
 // A test that ships with the docs increment is the standard docs↔code sync
@@ -23,7 +23,7 @@ import (
 func TestDocsFragmentsSectionExists(t *testing.T) {
 	root := repoRootForTest(t)
 	spec := readFileForTest(t, filepath.Join(root, "docs", "devel", "prompt-templates.md"))
-	rule := readFileForTest(t, filepath.Join(root, ".augment", "rules", "07-prompts.md"))
+	rule := readFileForTest(t, filepath.Join(root, ".agents", "rules", "07-prompts.md"))
 
 	// § heading — the section anchor referenced by the rules-doc pointer and
 	// by every other prompt-templates cross-reference. Match the whole heading
@@ -73,14 +73,14 @@ func TestDocsFragmentsSectionExists(t *testing.T) {
 		t.Errorf("docs/devel/prompt-templates.md §11b: missing worked-example {{ template \"…\" }} invocation")
 	}
 
-	// Rules-doc pointer — .augment/rules/07-prompts.md must point to §11b so
+	// Rules-doc pointer — .agents/rules/07-prompts.md must point to §11b so
 	// agents editing prompts learn the mechanism exists without a full-spec
 	// duplicate.
 	if !strings.Contains(rule, "Prompt Fragments") {
-		t.Errorf(".augment/rules/07-prompts.md: missing 'Prompt Fragments' pointer section")
+		t.Errorf(".agents/rules/07-prompts.md: missing 'Prompt Fragments' pointer section")
 	}
 	if !strings.Contains(rule, "§11b") {
-		t.Errorf(".augment/rules/07-prompts.md: pointer section must reference §11b")
+		t.Errorf(".agents/rules/07-prompts.md: pointer section must reference §11b")
 	}
 }
 

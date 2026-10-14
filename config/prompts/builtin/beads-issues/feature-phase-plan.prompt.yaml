@@ -59,9 +59,20 @@ prompt: |
   bd show {{ $target }} --json --include-comments
   ```
 
-  Read its `labels` array, description, and acceptance criteria. If `planned` is
-  already present, this phase's work is already done — `bd comment` a note that the
-  phase re-ran redundantly and stop **without** re-adding the label.
+  Read its `labels` array, description, and acceptance criteria.
+  {{- if BeadHasLabels $target "planned" }} The bead **already carries `planned`**, so this
+  phase's work is already done — `bd comment` a note that the phase re-ran redundantly and
+  stop **without** re-adding the label.
+  {{- else if BeadHasLabels $target "implementation-refined" }} The bead **already carries
+  `implementation-refined`**: a prior investigation already produced the plan. Do **not**
+  re-plan — add `planned` and stop:
+
+  ```bash
+  bd update {{ $target }} --add-label planned
+  ```
+  {{- else }} Neither `planned` nor `implementation-refined` is set, so continue to Step 2.
+  {{- end }}
+  {{- if not (or (BeadHasLabels $target "planned") (BeadHasLabels $target "implementation-refined")) }}
 
   ## Step 2 — Produce an implementation plan
 
@@ -71,10 +82,13 @@ prompt: |
     {{- else }} **Interactive mode** may apply (a user is present, e.g. first send). You *may* ask clarifying questions via `mitto_ui_options` during planning; every other phase decides autonomously or defers.
     {{- end }}
 
+  {{ template "beads-issues/shared/investigate-evidence" $target }}
+
   Read the bead's description, acceptance criteria, and any related code so the plan is
   grounded in the actual codebase — do not speculate about code you have not opened.
-  Produce a concrete implementation plan: the approach, key design decisions, and the
-  files/areas it will touch.
+  Produce a concrete implementation plan in the shared Investigation Report shape:
+
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" $target "SubIssues" true) }}
 
   If the work is large enough to span multiple reviewable increments, decompose it into
   sub-issues:
@@ -89,12 +103,16 @@ prompt: |
   bead and advance the state:
 
   ```bash
-  bd comment {{ $target }} "Plan [tier: Reasoning]: <approach, key design decisions, files/areas touched, any sub-issues created>."
+  bd comment {{ $target }} "Plan [tier: Reasoning]: <the Investigation Report above: approach, problem decomposition, implementation instructions, code not to touch, any sub-issues created>."
   bd update {{ $target }} --add-label planned
+  bd update {{ $target }} --add-label implementation-refined   # only if the plan is implementation-ready
   ```
+
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "producer") }}
 
   Only add the label after the comment is posted. Then stop — the driver's next
   scheduled run will pick up the `planned` state and dispatch the implement phase.
+  {{- end }}
   {{- end }}
 
   ## Step 4 — Blocked → Defer + Handoff

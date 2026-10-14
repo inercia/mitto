@@ -76,120 +76,27 @@ prompt: |
   phase's work is already done — `bd comment` a note that the phase re-ran
   redundantly and stop **without** re-adding the label.
 
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
+
   ## Step 2 — Implement the fix
 
-  This is a **scheduled, silent** phase (invoked by the driver's on-completion
-  loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
-  decide autonomously; if something is genuinely unclear or unsolvable without user
-  input, defer via **Step 4**.
-
-  Apply the **minimum** change that makes the failing reproduction test pass:
-
-  - Address the root cause identified in the `Investigation:` comment, not just the
-    symptom.
-  - Keep the change surgical — do not refactor unrelated code, rename symbols, or
-    reformat files. Match the surrounding style and commenting density.
-  - Update or add adjacent tests only when the fix genuinely requires it (e.g. an
-    existing test encoded the bug and now needs correcting).
-
-  Run the reproduction test recorded on the bead and confirm it now **passes**. Then
-  run the broader relevant test suite (package tests, related integration tests) and
-  confirm nothing else broke. Capture the exact commands and passing output as
-  evidence.
-
-  If tests do not pass, iterate on the fix — do **not** advance the `fixed` label
-  with red tests. If after reasonable effort you cannot make them pass, defer via
-  Step 4.
+  {{ template "beads-issues/shared/implement-work" (dict "Kind" "fix" "Silent" true) }}
 
   ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }} — MANDATORY CLOSURE
 
-  When the reproduction test passes and adjacent tests are still green, execute
-  the following checklist **in order**. This is not optional prose: every item
-  must complete before the turn ends, and Step 3.V verifies each item actually
-  landed. Historically this closure has been the single most common execution
-  miss (agent writes the Fix comment, then stops without labeling / committing),
-  which leaves the bead lying about the state of the tree — the verification
-  step exists specifically to catch that class of miss.
+  Execute the checklist **in order**; every item must complete before the turn ends. Historically
+  this closure is the most common execution miss (comment written, then no label / commit), so the
+  final self-verification must pass.
 
-  ### Step 3.1 — Record the fix on the bead
-
-  ```bash
-  bd comment {{ $target }} "Fix [tier: Coding]: <one-line description of the change>. Reproduction test now passes: <command>. Adjacent tests green: <command>."
-  ```
-
-  ### Step 3.2 — Advance the state machine
-
-  Only after Step 3.1 has posted{{ if not $commit }} and the diff is clean{{ end }}:
-
-  ```bash
-  bd update {{ $target }} --add-label fixed
-  ```
-
-  {{ if $commit -}}
-  ### Step 3.3 — Format, then commit (explicit paths only)
-
-  {{ if $pr }}
-  Submit strategy is **Pull Request** — ensure the bead's fix branch exists and is
-  checked out before formatting/committing:
-
-  {{ template "beads-issues/shared/ensure-bead-branch" (dict
+  {{ template "beads-issues/shared/implement-closure" (dict
       "Ctx"    .
       "Target" $target
-      "Type"   "fix"
+      "Kind"   "fix"
+      "Label"  "fixed"
+      "Tag"    "Fix"
+      "Commit" $commit
+      "PR"     $pr
   ) }}
-  {{ end }}
-  Before staging, run `make fmt` (or the language-appropriate formatter). The
-  project's pre-commit hook rejects gofmt-dirty commits — running the formatter
-  up front avoids a blocked commit and re-stage cycle.
-
-  ```bash
-  make fmt
-  ```
-
-  Then commit the fix as a **single, focused commit** with **explicit paths**.
-  Concurrent conversations frequently leave unrelated dirty files in the working
-  tree (per the concurrent-loop stash-reset gotcha), and a wildcard stage sweeps
-  them into the fix commit.
-
-  Before committing, verify only fix files are staged:
-
-  ```bash
-  git status --porcelain
-  ```
-
-  {{ template "git/shared/safe-commit" (dict
-      "Type"     "fix"
-      "Target"   $target
-      "Summary"  "<one-line summary>"
-      "BodyHint" (printf "<body: what changed and why. Refs: %s>" $target)
-  ) }}
-  {{- else -}}
-  ### Step 3.3 — Do NOT commit
-
-  Leave the fix changes staged/unstaged for the user to review; the bead comment
-  already records what changed.
-  {{- end }}
-
-  ### Step 3.V — Self-verification (MANDATORY before ending the turn)
-
-  Run each of these commands and confirm the expected result. If any check
-  fails, the corresponding step above was NOT completed — go back and finish
-  it, then re-run the failing check. Do **not** end the turn with a red check.
-
-  ```bash
-  # V.1: bead carries the `fixed` label
-  bd show {{ $target }} --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; assert 'fixed' in d.get('labels',[]), 'MISSING fixed label'; print('OK: fixed label present')"
-
-  # V.2: `Fix [tier: Coding]:` comment is on the bead
-  bd show {{ $target }} --include-comments | grep -F "Fix [tier: Coding]:" >/dev/null && echo "OK: Fix comment present" || echo "MISSING Fix [tier: Coding]: comment"
-  {{ if $commit }}
-  # V.3: commit exists on HEAD referencing this bead
-  git log -1 --format=%B | grep -F "{{ $target }}" >/dev/null && echo "OK: commit references {{ $target }}" || echo "MISSING commit for {{ $target }}"
-
-  # V.4: working tree has no leftover changes for the files you touched
-  git status --porcelain
-  {{- end }}
-  ```
 
   Only after all checks print `OK`, stop — the driver's next scheduled run will
   observe `fixed` and close the bug via its inline "Done" branch.

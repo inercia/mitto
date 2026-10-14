@@ -60,7 +60,9 @@ prompt: |
 
   Read its `labels` array and any prior comments. If `researched` is already present,
   this phase's work is already done — `bd comment` a note that the phase re-ran
-  redundantly and stop **without** re-adding the label.
+  redundantly and stop **without** re-adding the label. If `implementation-refined` is
+  already present, a prior investigation already produced the report: add `researched`
+  (it advances the state machine) without re-investigating, and stop.
 
   ## Step 2 — Investigate the bug
 
@@ -71,6 +73,8 @@ prompt: |
   - {{- if and .Session.IsLoop (not .Session.IsLoopForced) }} **Silent mode** (scheduled continuation of the driver's loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Decide autonomously; if something is genuinely unclear/unsolvable, defer via **Step 4** rather than guess.
     {{- else }} **Interactive mode** may apply (a user is present, e.g. first send). You *may* ask clarifying questions via `mitto_ui_options` during investigation; every other phase decides autonomously or defers.
     {{- end }}
+
+  {{ template "beads-issues/shared/investigate-evidence" $target }}
 
   Gather the concrete evidence you need: root-cause hypothesis, code locations, logs,
   reproduction preconditions.
@@ -87,9 +91,17 @@ prompt: |
 
   ### Step 3.1 — Record the investigation on the bead
 
+  The comment body is an **Investigation Report** in the shared shape used by the
+  "Investigate more" prompt, so the later fix phase (possibly a different agent) can
+  implement without further design work:
+
+  {{ template "beads-issues/shared/investigate-report" (dict "Target" $target) }}
+
   ```bash
-  bd comment {{ $target }} "Investigation [tier: Reasoning]: <root cause hypothesis, code locations, evidence>."
+  bd comment {{ $target }} "Investigation [tier: Reasoning]: <the Investigation Report above: root cause, code locations, evidence, problem decomposition, implementation instructions, code not to touch>."
   ```
+
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "producer") }}
 
   ### Step 3.2 — Advance the state machine
 
@@ -97,6 +109,7 @@ prompt: |
 
   ```bash
   bd update {{ $target }} --add-label researched
+  bd update {{ $target }} --add-label implementation-refined   # only if the report is implementation-ready
   ```
 
   ### Step 3.V — Self-verification (MANDATORY before ending the turn)

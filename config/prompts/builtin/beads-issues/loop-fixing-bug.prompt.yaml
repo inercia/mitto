@@ -188,6 +188,7 @@ prompt: |
   - `fixed` present → **Step 3d: Done (handled inline).** ← early-exit; check first.
   - `reproduced` present, `fixed` absent → **Step 3c: dispatch Fix.**
   - `researched` present, `reproduced` absent → **Step 3b: dispatch Reproduce.**
+  - `implementation-refined` present (by "Investigate more"), `researched` absent → **Step 3a** (the Investigate phase only adds `researched` — it does not re-investigate), then Reproduce.
   - None of `researched`, `reproduced`, `fixed` present → **Step 3a: dispatch Investigate.**
 
   If the driver itself is unable to load state or resolve the target autonomously, go
@@ -316,10 +317,14 @@ prompt: |
   1. Define each part completely and self-contained: the exact sub-problem, the
      **disjoint** set of files/modules it owns (confirm the sets do not overlap),
      verification for that part, and a definition of done.
-  2. For each part, reuse a suitable **idle** child from `{{ .Children.MCPText }}` when
-     possible, otherwise create one with `mitto_conversation_new` (prefer a
-     faster/cheaper Coding-tier agent), seeding a fully self-contained worker prompt that
-     ends by reporting via `mitto_children_tasks_report`. Always pass
+  2. {{ if and .Children (gt .Children.MCPCount 0) }}Child conversations already exist. For each part,
+     reuse a suitable **idle** child from `{{ .Children.MCPText }}` when possible; if
+     none is suitable and idle (or there are more parts than reusable children), create
+     a new one with `mitto_conversation_new`.{{ else }}No child conversations exist, so
+     create one with `mitto_conversation_new` for each part.{{ end }} Prefer a
+     faster/cheaper Coding-tier agent, and seed every new child with a fully
+     self-contained worker prompt that ends by reporting via
+     `mitto_children_tasks_report`. Always pass
      `model_tag: "Coding"` on the spawn so the worker does not inherit this driver's
      Cheap model; if the call errors because no model matches the tag,
      retry once without `model_tag`.

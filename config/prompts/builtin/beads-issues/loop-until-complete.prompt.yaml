@@ -28,8 +28,14 @@ target:
     issue: true
 prompt: |
   {{ template "_shared/session-context" . }}
+
   Available ACP servers: `{{ Default "(none)" .ACP.AvailableText }}`
-  Existing children: `{{ Default "(none)" .Children.MCPText }}`
+
+  {{ if .Children.MCPText }}
+  Existing children conversations: {{ .Children.MCPText }}
+  {{ else }}
+  No existing children conversations.
+  {{ end }}
 
   # Beads: Loop Until Issue Complete
 
@@ -111,27 +117,11 @@ prompt: |
   bd show <target-bead> --children --json     # child beads (is this an epic/parent?)
   ```
 
-  Decide what to actually work on **this run**:
+  {{ template "beads-issues/shared/scope-resolution" (dict "Target" "<target-bead>" "Mode" "one") }}
 
-  - **Normal issue (no children)** → the target *is* the target bead.
-  - **Epic / parent (has children)** → an epic is a container, not directly
-    implementable; you must advance it by working on **the next issue inside the
-    epic**, one child per run:
-    - **Finish before you start.** If a child is already `in_progress` with active,
-      well-scoped work, continue and finish **that** child before picking up
-      anything new.
-    - **Otherwise start the next ready child in logical order.** Among open,
-      unblocked children (not `closed`/`in_progress`), build a topological order
-      and choose the first workable child by applying the canonical ranking
-      below, then proceed with **one**.
-    - **Defer what is not ready.** Any child that is **not clearly defined** (vague
-      or missing acceptance criteria) or **not genuinely ready for work** must be
-      **deferred**, not guessed at — record the gap on that child and drop it out of
-      `ready` (see Step 4), then move on to the next candidate.
-    - **Record your decision.** Add a `bd comment` on the epic noting which child you
-      chose for this run and why (or why none was actionable), so the reasoning is
-      auditable across runs.
-    **Do NOT ask the user** which child; this is automated.
+  Any child that is **not clearly defined** or **not genuinely ready** must be **deferred**
+  (Step 4), not guessed at; then move on to the next candidate.
+  **Do NOT ask the user** which child; this is automated.
 
   ### Canonical ranking
 
@@ -195,11 +185,53 @@ prompt: |
      bd update <target> --claim
      ```
 
-  3. **Delegate the next concrete increment to a child conversation — never do the
+  {{- $top := "" }}
+  {{- if .Session.BeadsIssue }}{{ $top = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $top = .Args.IssueID }}{{ end }}
+  3. **Investigation vs implementation** (decided by the `implementation-refined` label).
+     {{- if and $top (BeadHasLabels $top "implementation-refined") }}
+     The top-level bead `{{ $top }}` **already carries `implementation-refined`**: an
+     Investigation Report is on the bead (comment + description/acceptance/design). Skip
+     investigation and go to item 4, handing the implementation child that report as its
+     spec. (If `<target>` resolved to a *child* of it, run `bd show <target> --json` and
+     apply the same label test to that child.)
+     {{- else }}
+     {{ if $top }}`{{ $top }}` does **not** carry `implementation-refined`.{{ end }} If
+     `<target>` is a child chosen in Step 1, check `bd show <target> --json` → `labels`
+     for it. Then:
+     - **`implementation-refined` present** → skip investigation; go to item 4 with the
+       report on the bead as the spec.
+     - **Absent, and the work is not already small and fully specified** → this run's
+       increment is **investigation**, not implementation. Dispatch **one** investigation
+       child on the **Smart** tier (`model_tag: "Smart"` on `mitto_conversation_new_mitto`;
+       if the spawn rejects the tag, retry once without it) whose worker prompt tells it to
+       produce this report, write it back to the bead, and flag it, then report back:
+
+       {{ template "beads-issues/shared/investigate-report" (dict "Target" "<target>") }}
+
+       {{ template "beads-issues/shared/investigate-apply" (dict
+           "Target" "<target>"
+           "ExtraCommands" "bd label add implementation-refined <target>   # only if implementation-ready"
+       ) }}
+
+       {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "producer") }}
+
+       After it reports back, log an `Iterate run:` comment and end the run — the next run
+       sees `implementation-refined` and dispatches implementation. If the child could not
+       reach an implementation-ready report, defer per Step 4.
+     - **Absent but the bead is small and fully specified** → proceed to item 4 directly.
+     {{- end }}
+
+  4. **Delegate the next concrete increment to a child conversation — never do the
      implementation work yourself.** This conversation is an **orchestrator**: it
      plans, dispatches, tracks progress, and stops. All actual work happens in a
      child.
-     - **Hand the child a fully-defined problem.** Before dispatching, make sure the
+     - **Hand the child a fully-defined problem.** For a refined bead, the spec is the
+       Investigation Report: put it (or the bead ID plus an instruction to load the
+       `bd comment` report) in the worker prompt and include this rule verbatim:
+
+       {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
+
+       Otherwise, before dispatching, make sure the
        work is unambiguous and self-contained. If `<target>` is itself a small,
        well-defined bead, you may hand the child the **whole bead**; otherwise carve
        out **one** clearly-scoped increment and define it completely (bead ID, title,
@@ -210,9 +242,8 @@ prompt: |
        difficulty: use a **faster/cheaper** agent for routine or well-scoped work,
        and reserve a more capable (slower/expensive) agent only for genuinely complex
        increments.
-     - Reuse a suitable **idle** child from `{{ .Children.MCPText }}` when possible via
-       `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
-     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "<target-bead> · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
+     - **Child dispatch:** {{ if and .Children (gt .Children.MCPCount 0) }}Child conversations already exist. Reuse a suitable **idle** child from `{{ .Children.MCPText }}` when possible via `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`. If no suitable idle child is available, create one using the call below.{{ else }}No child conversations exist, so create one using the call below.{{ end }}
+       `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "<target-bead> · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
      - Cap spawning at **one** new child per run to avoid runaway fan-out.
   {{- if ne .Args.SubmitStrategy "None" }}
      - **Tell the worker to commit its work.** Include in the worker prompt an
@@ -222,7 +253,7 @@ prompt: |
 
        {{ template "git/shared/safe-stage" . }}
   {{- end }}
-  4. **Wait for the child to finish, then judge the outcome.** Block until the
+  5. **Wait for the child to finish, then judge the outcome.** Block until the
      child reports back so this run can act on the result:
 
      ```
@@ -232,13 +263,13 @@ prompt: |
      Read the report to decide whether the increment **succeeded**, only
      **partially advanced**, or **got stuck** — this drives what you log below and
      whether you close.
-  5. Log progress on the bead so the tracker reflects what happened:
+  6. Log progress on the bead so the tracker reflects what happened:
 
      ```bash
      bd comment <target> "Iterate run: <what the child advanced this increment / what remains>."
      ```
 
-  6. If this increment **completes** the acceptance criteria, close it:
+  7. If this increment **completes** the acceptance criteria, close it:
 
      ```bash
      bd comment <target> "Completed: <what was delivered, verification performed>."
@@ -290,7 +321,8 @@ prompt: |
     (Step 4) instead of asking or guessing.
   - **Orchestrate, don't implement.** You never do the work yourself — always
     delegate the increment to a child conversation (Step 3), preferring a
-    faster/cheaper model and handing it a fully-defined problem.
+    faster/cheaper model and handing it a fully-defined problem. Investigation is also
+    delegated (to a Smart-tier child); implementation then follows the resulting report.
   - **One increment per run.** Advance the work a meaningful step, then return —
     the next scheduled run continues. Do not try to finish everything in one run.
   - **Stay in scope.** Only ever act on the target bead or, for an epic, its subtree.

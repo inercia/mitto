@@ -10,6 +10,8 @@ description: 'Deep-dive a bead: gather context, clarify unclear details, enrich 
 backgroundColor: '#B3E5FC'
 group: Tasks
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && !(Item.Labels != null && "support-question" in Item.Labels) && !(Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question"))'
+preferredModels:
+  - modelTag: Smart
 target:
   reuse:
     issue: true
@@ -35,6 +37,14 @@ prompt: |
   {{ template "beads-issues/shared/load-context" $target }}
 
   Note what is already well-specified versus what is thin, vague, or missing.
+
+  ### Epic or standalone?
+
+  {{ template "beads-issues/shared/scope-resolution" (dict "Target" $target "Mode" "all") }}
+
+  Steps 2–8 below apply **to each unit** (the issue itself, or every open child of an epic).
+  For an epic, also produce a short epic-level summary at the end; do not re-investigate
+  children already labelled `implementation-refined`.
   {{- end }}
 
   ## Step 2 — Investigate against the codebase and history
@@ -87,7 +97,12 @@ prompt: |
 
   ## Step 8 — Apply the approved changes
 
-  {{ template "beads-issues/shared/investigate-apply" (dict "Target" $target) }}
+  {{ template "beads-issues/shared/investigate-apply" (dict
+      "Target" $target
+      "ExtraCommands" (printf "bd label add implementation-refined %s   # only if the bead is now implementation-ready" $target)
+  ) }}
+
+  {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "producer") }}
 
   Create approved **sub-issues** as children, then wire any dependencies:
 

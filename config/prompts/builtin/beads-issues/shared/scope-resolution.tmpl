@@ -1,0 +1,28 @@
+{{- /* Params: Target (bead ID), Mode ("one" = one unit per run, "all" = every unit this run). Decides whether the target is a standalone issue or an epic and which units the same per-issue heuristics apply to. */ -}}
+Determine the **units of work** for `{{ .Target }}`:
+
+```bash
+bd show {{ .Target }} --children --json     # child beads (is this an epic/parent?)
+bd dep tree {{ .Target }}                    # blockers and ordering
+```
+
+- **No children (standalone issue)** → the unit is `{{ .Target }}` itself.
+- **Has children (epic / parent)** → the epic is a container, not directly implementable.
+  The units are its **open children**; treat any child that is itself a parent the same way
+  (recurse). Apply the **identical per-issue heuristics** below to **each** child, exactly as
+  you would to a standalone issue:
+  - skip `closed` children;
+  - a child already labelled `implementation-refined` is **already investigated** — do not
+    re-investigate it, use its report as the spec;
+  - a child that is vague, lacks acceptance criteria, or is blocked is **not ready** — handle
+    it per the surrounding step (defer / enrich), never guess;
+  - order the remaining children topologically by dependencies.
+{{ if eq .Mode "one" }}
+  **One unit per run.** Finish before you start: continue a child already `in_progress` with
+  well-scoped work; otherwise take the first workable child by the ranking below. Record on the
+  epic (`bd comment`) which child you chose and why, so the decision is auditable.
+{{ else }}
+  **Every unit this run.** Walk all open children in topological order and run the full
+  procedure on each; keep a per-child result so the final summary covers the epic as a whole.
+{{ end }}
+Treat the chosen unit(s) as `<unit>` for the rest of this procedure.

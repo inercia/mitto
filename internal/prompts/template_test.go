@@ -3854,11 +3854,8 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	}
 
 	// --- Terminal-label loop tracks closed_this_pass ---
-	if !strings.Contains(out, "closed_this_pass=()") {
-		t.Errorf("expected the terminal-label close loop to initialise `closed_this_pass=()` so the reaper below can walk parents of just-closed children; not found in rendered body")
-	}
-	if !strings.Contains(out, `closed_this_pass+=("$id")`) {
-		t.Errorf("expected the terminal-label close loop to append closed bead IDs into closed_this_pass (`closed_this_pass+=(\"$id\")`); not found in rendered body")
+	if !strings.Contains(out, "`closed_this_pass`") {
+		t.Errorf("expected the terminal-label close section to track `closed_this_pass` so the reaper below can walk parents of just-closed children")
 	}
 	if !strings.Contains(out, "reaped_child_beads=()") || !strings.Contains(out, `reaped_child_beads+=("<bead-id>")`) {
 		t.Errorf("expected Step 2P to retain linked bead IDs from reaped children for parent reconciliation")
@@ -3870,7 +3867,6 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	if anchor < 0 {
 		t.Fatalf("expected Step 2P sub-heading %q in rendered body (mitto-qxb); not found — the epic-reaper block is missing", reaperHeader)
 	}
-	// Bound the reaper block to the next H3/H2 heading or the end of body.
 	tail := out[anchor+len(reaperHeader):]
 	nextH := len(tail)
 	for _, marker := range []string{"\n### ", "\n## "} {
@@ -3880,25 +3876,17 @@ func TestIssueLoopProcessing_EpicReaperPresent(t *testing.T) {
 	}
 	block := tail[:nextH]
 
-	// Load-bearing pieces of the reaper bash: merge this pass's closures,
-	// reaped workers' linked beads, and the current onTasks delta; derive parent
-	// epics; guard on epic|open; count open children; close with the canonical
-	// reason; and enforce the 20/pass cap.
+	// The epic candidates (touched delta + closed leaves -> parent epics with
+	// all children closed, capped at 20) are computed by the ReapableEpics
+	// template func; the agent only runs the resulting commands.
 	mustContain := []struct {
 		frag string
 		why  string
 	}{
-		{`touched_child_beads+=("mitto-driver-closed")`, "reaper must materialize the current onTasks touched-bead delta so driver-closed leaves remain visible"},
-		{`candidate_beads=("${closed_this_pass[@]}" "${reaped_child_beads[@]}" "${touched_child_beads[@]}")`, "reaper must union all three bounded reconciliation sources"},
-		{`for cid in "${candidate_beads[@]}"`, "reaper must inspect the union rather than only leaves closed by Step 2P itself"},
-		{`.[0].parent`, "reaper must read the .parent field from `bd show <id> --json` to find each closed child's owning epic"},
-		{`if [ "$kind" = "epic" ]`, "reaper must also consider a touched child-epic directly so nested epic closure propagates"},
-		{`"epic|open"`, "reaper must guard on issue_type==epic && status==open before closing (idempotency + type safety)"},
-		{`bd children`, "reaper must count non-closed children via `bd children <epic> --json` — the all-children-closed check"},
-		{`bd close "$epic_id"`, "reaper must actually close the epic via bd close"},
-		{"All children closed by L1 orchestrator pass", "reaper must use the canonical close reason from the plan/design"},
-		{"reap_cap=20", "reaper must enforce a hard cap of 20 reaped epics per pass (bounded blast radius)"},
-		{"Epic reaper cap", "reaper must log an overflow message when the 20/pass cap is hit so operators can see the backlog"},
+		{`bd comment epic-1 "Orchestrator: reaping epic epic-1`, "reaper must surface the parent epic of a touched, driver-closed leaf"},
+		{`bd close epic-1 --reason "All children closed by L1 orchestrator pass"`, "reaper must close with the canonical close reason"},
+		{"capped at 20 per pass", "reaper must state the hard cap of 20 reaped epics per pass"},
+		{"reaped_child_beads", "reaper must still reconcile parents of reaped children"},
 	}
 	for _, m := range mustContain {
 		if !strings.Contains(block, m.frag) {
@@ -3953,9 +3941,6 @@ func TestIssueLoopProcessing_RecoversOrphanedInProgress(t *testing.T) {
 
 	for _, frag := range []string{
 		"## Step 2Q — Recover orphaned legacy `in_progress` beads",
-		"bd list --type bug --status open,in_progress --label fixed",
-		"bd list --status open,in_progress --label verified",
-		`select(.issue_type != "bug" and .issue_type != "epic")`,
 		"bd list --status in_progress --json",
 		`select(.issue_type != "epic")`,
 		`index("in-flight")) == null`,
@@ -4025,11 +4010,11 @@ func TestTerminalParentClosureGuards(t *testing.T) {
 
 	supervisor := read("loop-processing.prompt.yaml")
 	recovery := read("shared/loop-processing-recovery.tmpl")
-	if got := strings.Count(supervisor, `open_children=$(bd children "$id" --json`); got != 2 {
-		t.Errorf("terminal sweep child guards = %d, want 2 (bug + non-bug)", got)
-	}
-	if got := strings.Count(supervisor, `if [ "${open_children:-1}" -ne 0 ]`); got < 2 {
-		t.Errorf("terminal sweep fail-closed branches = %d, want at least 2", got)
+	// Child-aware closure is computed by the TerminalBeads template func
+	// (fail-closed on child enumeration failure); the supervisor only renders
+	// close commands for beads without non-closed children.
+	if !strings.Contains(supervisor, "TerminalBeads") || !strings.Contains(supervisor, ".Closable") {
+		t.Errorf("terminal sweep must derive closable beads from TerminalBeads/.Closable")
 	}
 	for _, frag := range []string{
 		"**malformed claims**",

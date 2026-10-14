@@ -1693,7 +1693,27 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// a per-bead value (e.g. Slack channel ID) when the caller did not pass
 		// it as an explicit argument.
 		"BeadMetadata": func(id, key string) string { return beadMetadata(folder, id, key) },
-		"HasPattern":   func(pattern string) bool { return hasPattern(toolServers, pattern) },
+		// TerminalBeads(fixBugs, workFeatures) — classify open beads carrying a
+		// class-terminal label (stale-after-reopen vs current, open-children
+		// count). Read-only; see terminalBeads.
+		"TerminalBeads": func(fixBugs, workFeatures bool) []TerminalBead {
+			return terminalBeads(folder, fixBugs, workFeatures)
+		},
+		// ReapableEpics(candidatesCSV, assumeClosedCSV) — open epics (max 20)
+		// among the candidates' epics/parents whose children are all closed.
+		"ReapableEpics": func(candidates, assumeClosed string) []string {
+			split := func(s string) []string {
+				var out []string
+				for _, p := range strings.Split(s, ",") {
+					if p = strings.TrimSpace(p); p != "" {
+						out = append(out, p)
+					}
+				}
+				return out
+			}
+			return reapableEpics(folder, split(candidates), split(assumeClosed), 20)
+		},
+		"HasPattern": func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
 		"Model": func(tag string) bool { return hasModelTag(modelTags, tag) },

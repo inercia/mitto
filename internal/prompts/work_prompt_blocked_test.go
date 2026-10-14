@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestBuiltinStartWorkExplainsBlockedBeadBeforeClaim(t *testing.T) {
+func TestBuiltinStartWorkExplainsBlockedBeadAndQueuesApprovedContinuation(t *testing.T) {
 	const builtinDir = "../../config/prompts/builtin"
 
 	prev := CurrentFragments()
@@ -39,10 +39,19 @@ func TestBuiltinStartWorkExplainsBlockedBeadBeforeClaim(t *testing.T) {
 	for _, hallmark := range []string{
 		"## Step 1a — Stop and explain if the work is blocked",
 		"bd comments {{ $target }}",
-		"**do not claim the bead and do not continue to Steps 2–5**",
+		"**do not claim the bead and do not continue to Steps 2–4**",
 		`template "beads-issues/shared/unblock-guidance"`,
 		"Stop after this handoff and wait for the user",
 		"children**, follow Step 1a's blocked-work explanation",
+		"## Step 3 — Pick and propose the next phase from the live labels",
+		"**Propose and confirm the selected next phase.**",
+		"mitto_ui_options(self_id: \"{{ .Session.ID }}\", question: \"Proceed to <phase>?\"",
+		"If `mitto_ui_options` returns `timed_out: true`",
+		"say **\"continue\"**",
+		"prompt_name: \"Start work\"",
+		"Queue this only after the user approved and the phase prompt was dispatched",
+		"Do not queue a follow-up after",
+		"a timeout, a declined proposal, blocked work",
 	} {
 		if !strings.Contains(body, hallmark) {
 			t.Errorf("Start work prompt missing blocked-work hallmark %q", hallmark)
@@ -53,5 +62,12 @@ func TestBuiltinStartWorkExplainsBlockedBeadBeforeClaim(t *testing.T) {
 	claim := strings.Index(body, "## Step 2 — Claim the bead")
 	if guard < 0 || claim < 0 || guard >= claim {
 		t.Errorf("blocked-work guard must appear before claim step: guard=%d claim=%d", guard, claim)
+	}
+
+	proposal := strings.Index(body, "**Propose and confirm the selected next phase.**")
+	phaseDispatch := strings.Index(body, `prompt_name: "<phase prompt name above>"`)
+	continuation := strings.Index(body, `prompt_name: "Start work"`)
+	if proposal < 0 || phaseDispatch < 0 || continuation < 0 || proposal >= phaseDispatch || phaseDispatch >= continuation {
+		t.Errorf("next-phase approval, phase dispatch, and continuation must appear in order: proposal=%d dispatch=%d continuation=%d", proposal, phaseDispatch, continuation)
 	}
 }

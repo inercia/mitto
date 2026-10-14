@@ -1,0 +1,36 @@
+{{/*
+  investigation-handoff — the label contract that lets every investigation
+  flow and every implementation flow coexist on the same bead. The label
+  `implementation-refined` means: "an Investigation Report (see
+  beads-issues/shared/investigate-report) is on the bead — problem
+  decomposition, implementation instructions and code-not-to-touch are
+  defined, so an implementer needs no further design work".
+
+  Producers: beads-issues/investigate ("Investigate more"), beads/investigate-all-more,
+  and the inner investigation phases of the loop drivers
+  (Bug fix — investigate phase, Feature — plan phase).
+  Consumers: the implementation phases (Bug fix — fix phase,
+  Feature — implement phase) and the drivers' phase selection.
+
+  Parameters (dict):
+    Role — "producer": explains when to add the label.
+           "consumer": explains how to recognise and use it.
+
+      {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "producer") }}
+*/}}
+{{- if eq .Role "consumer" }}
+**Refined beads.** If the bead carries the **`implementation-refined`** label, a prior investigation
+already produced an Investigation Report (a `bd comment` plus the enriched description / acceptance /
+design fields). Treat it as the authoritative spec: do **not** re-investigate or re-plan. Implement
+exactly the **Implementation instructions** for each work unit in the report's **Problem
+decomposition** order, change only the files and symbols the report names, and **never touch anything
+listed under "Code not to touch"**. If the live code contradicts the report, or following it would
+require touching excluded code, stop and defer (Step 4) instead of improvising.
+{{- else }}
+**Mark the result.** Add the **`implementation-refined`** label only when the report is genuinely
+implementation-ready: every section is settled, the decomposition and implementation instructions are
+concrete, and "Code not to touch" is explicit. Never add it to a bead you deferred or left with open
+questions. The label lets other flows (and a later implementation phase, possibly run by a different
+agent) recognise that the problem is already refined and skip straight to implementing the defined
+changes. Never remove it, and keep any phase labels you are responsible for alongside it.
+{{- end }}

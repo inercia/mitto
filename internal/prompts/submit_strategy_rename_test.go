@@ -184,7 +184,9 @@ func TestSubmitStrategy_FragmentWiringCallSites(t *testing.T) {
 			t.Fatalf("read %s: %v", rel, err)
 		}
 		content := string(data)
-		hasBranch := strings.Contains(content, `template "beads-issues/shared/ensure-bead-branch"`)
+		// The implementing phases reach ensure-bead-branch through the shared implement-closure fragment.
+		hasBranch := strings.Contains(content, `template "beads-issues/shared/ensure-bead-branch"`) ||
+			strings.Contains(content, `template "beads-issues/shared/implement-closure"`)
 		if hasBranch != wantBranch[rel] {
 			t.Errorf("%s: ensure-bead-branch invocation present=%v, want %v", rel, hasBranch, wantBranch[rel])
 		}

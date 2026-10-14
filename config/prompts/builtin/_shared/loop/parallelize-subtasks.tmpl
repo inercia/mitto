@@ -54,10 +54,15 @@ To fan out (use `{{ .SessionID }}` as `self_id` for every `mitto_*` call):
    **disjoint** set of files/modules it owns (verify the sets do not overlap), how to
    verify that increment, and a definition of done. Cap at **3–4** parallel subtasks
    per run.
-2. For each subtask, reuse a suitable **idle** existing child when available, otherwise
-   `mitto_conversation_new` one — preferring a faster/cheaper agent for routine work —
-   seeding a fully self-contained worker prompt that ends by reporting via
-   `mitto_children_tasks_report`.
+2. {{ if and .Children (gt .Children.MCPCount 0) }}Child conversations already exist. Reuse a suitable
+   **idle** child for each subtask when possible; if none is suitable and idle (or there
+   are more subtasks than reusable children), create a new one with
+   `mitto_conversation_new` — preferring a faster/cheaper agent for routine work —
+   and seed it with a fully self-contained worker prompt that ends by reporting via
+   `mitto_children_tasks_report`.{{ else }}No child conversations exist, so create one
+   with `mitto_conversation_new` for each subtask, preferring a faster/cheaper agent for
+   routine work and seeding each with a fully self-contained worker prompt that ends by
+   reporting via `mitto_children_tasks_report`.{{ end }}
 3. Block on all of them at once:
    `mitto_children_tasks_wait(self_id: "{{ .SessionID }}", children_list: [<child ids>], task_id: "<short label>", timeout_seconds: 1800)`.
    On timeout, retry the pending children with the **same** `task_id` (omit the prompt

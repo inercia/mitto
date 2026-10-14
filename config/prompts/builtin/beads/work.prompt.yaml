@@ -185,15 +185,26 @@ prompt: |
 
   Keep the analysis and coordination **in this conversation**, but hand the actual implementation to children. Only parallelize work items that are **truly independent** (no shared files, no ordering dependency). Run trivial or tightly-coupled items inline here rather than dispatching a separate conversation for each.
 
-  For each parallelizable work item in the approved plan, **reuse a suitable existing child when possible, otherwise create a new one**:
+  For each parallelizable work item in the approved plan:
 
-  1. **Reuse vs. create:**
-     - Check the existing children listed above (`{{ .Children.AllText }}`). If one is **idle** (not currently running) and a good fit — for example a **"Coder"** child for implementation work in the same workspace — **reuse it** with
-       `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.
-     - Otherwise create a new conversation with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", ...)`:
-       - `title`: the work item title prefixed with the bead ID (e.g., `"<bead-id> · Add database migration"`)
-       - `beads_issue`: the chosen bead ID (links the worker conversation to this bead)
-       - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
+  {{ if and .Children (gt .Children.MCPCount 0) }}
+  1. **Reuse existing children first.** Check the existing children listed above
+     (`{{ .Children.AllText }}`). If one is **idle** (not currently running) and a good
+     fit — for example a **"Coder"** child for implementation work in the same workspace
+     — reuse it with
+     `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.
+     If no suitable idle child is available for a work item, or the parallel work items
+     outnumber the suitable idle children, create a new conversation for that work item.
+  {{ else }}
+  1. **Create new children.** No child conversations currently exist, so create a new
+     conversation for each parallelizable work item.
+  {{ end }}
+
+     For each new conversation, use
+     `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", ...)` with:
+     - `title`: the work item title prefixed with the bead ID (e.g., `"<bead-id> · Add database migration"`)
+     - `beads_issue`: the chosen bead ID (links the worker conversation to this bead)
+     - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
 
   2. The **worker prompt** (reused or new) must be **self-contained** and include:
      - The full bead ID, title, and description
