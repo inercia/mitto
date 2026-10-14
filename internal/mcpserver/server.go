@@ -1923,7 +1923,24 @@ func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRe
 	// is cached. Checking this before WaitForPendingRequest avoids the 5s stall
 	// for repeat calls from the same MCP client.
 	mcpSessionID := req.Session.ID()
-	if cached := s.lookupMCPSession(mcpSessionID); cached != "" {
+	//
+	// A cached owner is only trusted when it matches the caller's self_id.
+	// Shared-process agents (e.g. OpenCode) may multiplex several conversations
+	// over one MCP protocol session. Resolving such a call to the first owner
+	// would run it (and show its UI) in the wrong conversation, while resolving
+	// it to the caller-supplied self_id would let any caller impersonate another
+	// conversation (mitto-o779). So a mismatch fails closed.
+	cached := s.lookupMCPSession(mcpSessionID)
+	// Placeholder self_ids (e.g. "init") are not registered sessions and keep
+	// using the cache.
+	if cached != "" && cached != inputSessionID && s.getSession(inputSessionID) != nil {
+		s.logger.Warn("MCP protocol session shared by multiple conversations; rejecting self_id mismatch",
+			"mcp_session_id", mcpSessionID,
+			"cached_session_id", cached,
+			"input_session_id", inputSessionID)
+		return ""
+	}
+	if cached != "" {
 		if !s.associateMCPSession(req, cached) {
 			return ""
 		}

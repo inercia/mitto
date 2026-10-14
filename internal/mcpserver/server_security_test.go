@@ -106,8 +106,12 @@ func TestMCPCallerCannotImpersonateRegisteredSessionID(t *testing.T) {
 	result, err := clientSession.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: "mitto_conversation_get_current", Arguments: map[string]any{"self_id": "victim-session"},
 	})
-	if err != nil || result.IsError {
-		t.Fatalf("repeat get_current: err=%v result=%+v", err, result)
+	if err != nil {
+		t.Fatalf("repeat get_current: %v", err)
+	}
+	if result.IsError {
+		// Failing closed on a registered-ID mismatch also preserves identity.
+		return
 	}
 	var got CurrentSessionOutput
 	raw, err := json.Marshal(result.StructuredContent)
