@@ -517,7 +517,14 @@ func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, inp
 func (s *Server) handleWorkspaceUINotify(_ context.Context, req *mcp.CallToolRequest, input WorkspaceUINotifyInput) (*mcp.CallToolResult, WorkspaceUINotifyOutput, error) {
 	// Validate self_id (used for audit/logging; not required to resolve to
 	// a live registered session — auxiliary sessions have none).
-	if input.SelfID == "" {
+	shared := req != nil && s.isSharedTransportRequest(req)
+	sharedOwner := ""
+	if shared {
+		sharedOwner = s.resolveSharedCaller(req, input.SelfID)
+		if sharedOwner == "" {
+			return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("caller identity could not be verified on shared MCP transport")
+		}
+	} else if input.SelfID == "" {
 		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("self_id is required")
 	}
 
@@ -551,7 +558,10 @@ func (s *Server) handleWorkspaceUINotify(_ context.Context, req *mcp.CallToolReq
 			realSessionID = cached
 		}
 	}
-	if realSessionID == "" && s.getSession(input.SelfID) != nil {
+	if shared {
+		realSessionID = sharedOwner
+	}
+	if realSessionID == "" && !shared && s.getSession(input.SelfID) != nil {
 		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("caller identity for registered self_id %q could not be verified", input.SelfID)
 	}
 	if realSessionID != "" {
