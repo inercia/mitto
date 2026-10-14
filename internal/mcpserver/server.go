@@ -165,6 +165,10 @@ type Server struct {
 	acpSessionsMu sync.Mutex
 	acpSessions   map[string]string
 	acpByConv     map[string]string
+	// acpAmbiguous quarantines ACP IDs claimed by more than one conversation
+	// (id -> claimant conversation IDs). Quarantined IDs resolve to nobody until
+	// every claimant unbinds, unregisters or moves to a distinct ID.
+	acpAmbiguous map[string]map[string]struct{}
 
 	// Pending request registry for exact-ID legacy ACP/MCP correlation. Ambiguous
 	// shared keys are rejected by RegisterPendingRequest.
@@ -556,6 +560,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		sharedSecret:          newSharedSecret(),
 		acpSessions:           make(map[string]string),
 		acpByConv:             make(map[string]string),
+		acpAmbiguous:          make(map[string]map[string]struct{}),
 		pendingRequests:       make(map[string][]*pendingRequest),
 		stickyPendingRequests: make(map[string]string),
 		mcpSessionMap:         make(map[string]string),
@@ -1594,28 +1599,66 @@ func (s *Server) validSharedSecret(values []string) bool {
 }
 
 // BindACPSession records that acpSessionID belongs to conversation convID,
-// replacing any previous ACP ID of that conversation. It returns false (and
-// warns) if acpSessionID is already bound to another conversation.
+// replacing any previous ACP ID of that conversation. If acpSessionID is
+// already claimed by another conversation the ID becomes ambiguous: it is
+// quarantined (resolves to no conversation) until all claimants leave, and
+// false is returned.
 func (s *Server) BindACPSession(convID, acpSessionID string) bool {
 	if convID == "" || acpSessionID == "" {
 		return false
 	}
 	s.acpSessionsMu.Lock()
 	defer s.acpSessionsMu.Unlock()
+	if claimants, ok := s.acpAmbiguous[acpSessionID]; ok {
+		s.dropACPClaimLocked(convID, acpSessionID)
+		s.unmapConvLocked(convID)
+		claimants[convID] = struct{}{}
+		s.logger.Warn("ACP session ID is ambiguous; refusing to bind",
+			"mitto_session_id", convID)
+		return false
+	}
 	if owner, ok := s.acpSessions[acpSessionID]; ok && owner != convID {
-		s.logger.Warn("ACP session ID already bound to another conversation",
+		delete(s.acpSessions, acpSessionID)
+		delete(s.acpByConv, owner)
+		s.dropACPClaimLocked(convID, "")
+		s.unmapConvLocked(convID)
+		s.acpAmbiguous[acpSessionID] = map[string]struct{}{owner: {}, convID: {}}
+		s.logger.Warn("ACP session ID claimed by multiple conversations; quarantined",
 			"mitto_session_id", convID, "bound_to", owner)
 		return false
 	}
 	if prev, ok := s.acpByConv[convID]; ok && prev != acpSessionID {
 		delete(s.acpSessions, prev)
 	}
+	s.dropACPClaimLocked(convID, acpSessionID)
 	s.acpSessions[acpSessionID] = convID
 	s.acpByConv[convID] = acpSessionID
 	return true
 }
 
-// UnbindACPSession removes the ACP mapping of convID, if any.
+// unmapConvLocked removes convID's own ACP mapping. Caller holds acpSessionsMu.
+func (s *Server) unmapConvLocked(convID string) {
+	if prev, ok := s.acpByConv[convID]; ok {
+		delete(s.acpSessions, prev)
+		delete(s.acpByConv, convID)
+	}
+}
+
+// dropACPClaimLocked removes convID from every quarantine set except keepID,
+// clearing sets that become empty. Caller holds acpSessionsMu.
+func (s *Server) dropACPClaimLocked(convID, keepID string) {
+	for id, claimants := range s.acpAmbiguous {
+		if id == keepID {
+			continue
+		}
+		delete(claimants, convID)
+		if len(claimants) == 0 {
+			delete(s.acpAmbiguous, id)
+		}
+	}
+}
+
+// UnbindACPSession removes the ACP mapping and any quarantine claims of convID.
 func (s *Server) UnbindACPSession(convID string) {
 	s.acpSessionsMu.Lock()
 	defer s.acpSessionsMu.Unlock()
@@ -1623,11 +1666,15 @@ func (s *Server) UnbindACPSession(convID string) {
 		delete(s.acpSessions, prev)
 		delete(s.acpByConv, convID)
 	}
+	s.dropACPClaimLocked(convID, "")
 }
 
 func (s *Server) lookupACPSession(acpSessionID string) string {
 	s.acpSessionsMu.Lock()
 	defer s.acpSessionsMu.Unlock()
+	if _, amb := s.acpAmbiguous[acpSessionID]; amb {
+		return ""
+	}
 	return s.acpSessions[acpSessionID]
 }
 

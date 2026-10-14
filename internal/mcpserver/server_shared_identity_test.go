@@ -131,8 +131,8 @@ func TestBindACPSession_Semantics(t *testing.T) {
 	if srv.BindACPSession("conv-b", "ses_1") {
 		t.Fatal("collision accepted")
 	}
-	if srv.lookupACPSession("ses_1") != "conv-a" {
-		t.Fatal("collision altered owner")
+	if srv.lookupACPSession("ses_1") != "" {
+		t.Fatal("collided id must fail closed")
 	}
 	if !srv.BindACPSession("conv-a", "ses_2") {
 		t.Fatal("rebind")
@@ -156,5 +156,72 @@ func TestSharedWorkspaceUINotify_UsesAttestedIdentity(t *testing.T) {
 	_, _, err = srv.handleWorkspaceUINotify(context.Background(), sharedReq(srv, "ses_a"), WorkspaceUINotifyInput{SelfID: "conv-b", WorkspaceUUID: "w", Title: "t"})
 	if err == nil {
 		t.Fatal("forged self_id must be rejected")
+	}
+}
+
+func TestBindACPSession_CollisionQuarantine(t *testing.T) {
+	srv := newSharedIdentityServer(t, "conv-a", "conv-b", "conv-c")
+	srv.BindACPSession("conv-c", "ses_ok")
+	srv.BindACPSession("conv-a", "ses_dup")
+	if srv.BindACPSession("conv-b", "ses_dup") {
+		t.Fatal("collision accepted")
+	}
+	if got := srv.lookupACPSession("ses_dup"); got != "" {
+		t.Fatalf("ambiguous id resolved to %q", got)
+	}
+	if srv.lookupACPSession("ses_ok") != "conv-c" {
+		t.Fatal("unrelated mapping lost")
+	}
+	// Re-binding by either claimant, or a third conversation, stays rejected.
+	for _, c := range []string{"conv-a", "conv-b", "conv-c"} {
+		if srv.BindACPSession(c, "ses_dup") {
+			t.Fatalf("%s bound quarantined id", c)
+		}
+	}
+	if srv.lookupACPSession("ses_dup") != "" {
+		t.Fatal("attribution restored")
+	}
+	// Quarantine clears only when all claimants (a, b, c) have left.
+	srv.UnbindACPSession("conv-a")
+	srv.UnbindACPSession("conv-b")
+	if srv.lookupACPSession("ses_dup") != "" {
+		t.Fatal("quarantine cleared early")
+	}
+	srv.UnbindACPSession("conv-c")
+	if !srv.BindACPSession("conv-a", "ses_dup") || srv.lookupACPSession("ses_dup") != "conv-a" {
+		t.Fatal("clean id not bindable after claimants left")
+	}
+}
+
+func TestBindACPSession_CollisionMovesToDistinctID(t *testing.T) {
+	srv := newSharedIdentityServer(t, "conv-a", "conv-b")
+	srv.BindACPSession("conv-a", "ses_dup")
+	srv.BindACPSession("conv-b", "ses_dup")
+	if !srv.BindACPSession("conv-a", "ses_a2") {
+		t.Fatal("distinct id rebind")
+	}
+	srv.UnregisterSession("conv-b")
+	if srv.lookupACPSession("ses_dup") != "" {
+		t.Fatal("stale identity for ses_dup")
+	}
+	if !srv.BindACPSession("conv-b", "ses_dup") || srv.lookupACPSession("ses_dup") != "conv-b" {
+		t.Fatal("quarantine not cleared after claimants left")
+	}
+}
+
+func TestSharedResolve_CollisionFailsClosed(t *testing.T) {
+	srv := newSharedIdentityServer(t, "conv-a", "conv-b", "conv-c")
+	srv.BindACPSession("conv-c", "ses_c")
+	srv.BindACPSession("conv-a", "ses_dup")
+	if srv.BindACPSession("conv-b", "ses_dup") {
+		t.Fatal("collision must be rejected")
+	}
+	for _, self := range []string{"init", "conv-a", "conv-b"} {
+		if got := srv.resolveSelfIDWithMCP(self, sharedReq(srv, "ses_dup")); got != "" {
+			t.Fatalf("self=%s resolved %q on colliding id", self, got)
+		}
+	}
+	if got := srv.resolveSelfIDWithMCP("init", sharedReq(srv, "ses_c")); got != "conv-c" {
+		t.Fatalf("unrelated mapping broken: %q", got)
 	}
 }

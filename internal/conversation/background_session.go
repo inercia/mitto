@@ -2255,7 +2255,11 @@ func (bs *BackgroundSession) sharedCallerSessionSupported() bool {
 // conversation on the global MCP server for shared-transport identity.
 func (bs *BackgroundSession) setACPSessionID(id string) {
 	bs.acpID = id
-	if bs.globalMcpServer == nil || bs.persistedID == "" || id == "" {
+	if bs.globalMcpServer == nil || bs.persistedID == "" {
+		return
+	}
+	if id == "" {
+		bs.globalMcpServer.UnbindACPSession(bs.persistedID)
 		return
 	}
 	if !bs.globalMcpServer.BindACPSession(bs.persistedID, id) && bs.logger != nil {

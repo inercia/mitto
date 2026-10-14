@@ -114,20 +114,18 @@ func TestSetACPSessionID_BindsRebindsAndRejectsCollision(t *testing.T) {
 	if srv.BindACPSession(b.persistedID, "ses_1") {
 		t.Fatal("collision must not bind")
 	}
-	// Restart/rebind frees the previous id.
-	a.setACPSessionID("ses_2")
-	if !srv.BindACPSession(b.persistedID, "ses_1") {
-		t.Fatal("previous id should be released after rebind")
+	// Collision quarantines the id: a further bind of it still fails.
+	if srv.BindACPSession(b.persistedID, "ses_1") {
+		t.Fatal("quarantined id must not bind")
 	}
-	// Collision via the helper still assigns locally but must not steal the mapping.
-	b.setACPSessionID("ses_2")
-	if srv.BindACPSession(b.persistedID, "ses_2") {
-		t.Fatal("ses_2 still owned by first conversation")
-	}
-	// Empty id is a no-op for binding.
+	// A distinct id binds fine and empty id unbinds the previous mapping.
+	a.setACPSessionID("ses_3")
 	a.setACPSessionID("")
 	if a.acpID != "" {
 		t.Fatalf("expected cleared acpID, got %q", a.acpID)
+	}
+	if !srv.BindACPSession(b.persistedID, "ses_3") {
+		t.Fatal("empty id must release a's previous mapping")
 	}
 }
 
