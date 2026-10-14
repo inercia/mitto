@@ -1217,7 +1217,7 @@ Sessions register with the global MCP server to enable session-scoped tools. Thi
 1. **Session Start**: When a session is created or resumed:
    - `BackgroundSession` calls `globalMcpServer.RegisterSession(sessionID, uiPrompter, logger)`
    - The session's `UIPrompter` is stored for routing UI prompts
-   - **No MCP servers are passed to ACP** - the agent should have MCP pre-configured globally
+   - Mitto supplies the HTTP MCP descriptor through ACP `session/new` and `session/load` when the agent advertises HTTP MCP support (nothing is supplied otherwise). Standard path: a per-session `X-Mitto-Session-Binding` header. Shared OpenCode v2+ (capability supported): an identical session-independent descriptor with the `X-Mitto-Shared-Secret` header. This is distinct from any MCP servers the agent has preconfigured on its own side.
 
 2. **Tool Execution**: When an agent calls a session-scoped tool:
    - The `session_id` parameter identifies the target session
@@ -1242,12 +1242,18 @@ sequenceDiagram
     Note over BS: Session starts
     BS->>MCP: RegisterSession(sessionID, uiPrompter)
     MCP-->>BS: Per-session HTTP binding
-    BS->>ACP: NewSession(McpServers: [mitto + binding header])
-    ACP->>MCP: initialize + binding header
-    MCP->>MCP: Bind protocol session to conversation
-    Note over MCP: Shared OpenCode v2+: identical descriptor with shared-secret header,<br/>ownerless protocol session; each call resolved via _meta ACP session ID
-    ACP->>MCP: Call mitto_ui_options(self_id=X)
-    MCP->>MCP: Resolve immutable protocol-session owner
+    BS->>ACP: session/new or session/load (McpServers: [mitto descriptor])
+    alt Default path: per-session binding header
+        ACP->>MCP: initialize + X-Mitto-Session-Binding
+        MCP->>MCP: Bind protocol session to conversation
+        ACP->>MCP: Call mitto_ui_options(self_id=X)
+        MCP->>MCP: Resolve cached protocol-session owner
+    else Shared OpenCode v2+ (shared-secret descriptor)
+        ACP->>MCP: initialize + X-Mitto-Shared-Secret
+        MCP->>MCP: Validate secret, protocol session stays ownerless
+        ACP->>MCP: Call mitto_ui_options(self_id=X, _meta ai.opencode/sessionID)
+        MCP->>MCP: Map ACP session ID to conversation (fail closed if missing or unmapped)
+    end
     MCP->>Store: Read flags for session X
     Store-->>MCP: {can_prompt_user: true}
     MCP->>BS: UIPrompt(question)
