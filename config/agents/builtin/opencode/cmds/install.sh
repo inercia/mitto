@@ -3,4 +3,4 @@
 # Input: {} (none required)
 # Output: {"success": bool, "message": "...", "version": "..."}
 
-echo '{"success": false, "message": "Download OpenCode from https://github.com/anomalyco/opencode/releases", "version": ""}'
+echo '{"success": false, "message": "Install OpenCode with: curl -fsSL https://opencode.ai/v2/install | bash", "version": ""}'

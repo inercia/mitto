@@ -4,7 +4,7 @@
 
 COMMAND="opencode"
 VERSION_FLAG="--version"
-MCP_CONFIG_PATH="${HOME}/.opencode/settings.json"
+MCP_CONFIG_PATH="${HOME}/.config/opencode/opencode.json"
 
 # Check if installed
 INSTALLED=false

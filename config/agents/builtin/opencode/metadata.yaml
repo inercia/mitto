@@ -2,13 +2,13 @@
 name: "OpenCode"
 displayName: "OpenCode"
 acpId: "opencode"
-description: "The open source coding agent"
+description: "OpenCode coding agent with native ACP support"
 website: "https://opencode.ai"
 repository: "https://github.com/anomalyco/opencode"
 license: "MIT"
 install:
   method: "binary"
-  note: "Download from https://github.com/anomalyco/opencode/releases"
+  note: "Install with: curl -fsSL https://opencode.ai/v2/install | bash"
   args: ["acp"]
 mcp:
   scopes: ["user", "project"]

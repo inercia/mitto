@@ -1071,3 +1071,46 @@ func TestMCPServer_EnvOmitEmpty(t *testing.T) {
 		t.Errorf("marshaled = %s, want env included", got)
 	}
 }
+
+// TestOpenCode_MCPList_JSONCConfig_mitto_34y reproduces OpenCode's JSONC
+// trailing-comma parsing failure: mcp-list.sh must surface the configured
+// server instead of silently returning an empty list.
+func TestOpenCode_MCPList_JSONCConfig_mitto_34y(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+
+	builtinDir := builtinAgentsDirForTest(t)
+	agentsDir := filepath.Dir(builtinDir)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	config := `{
+  "mcp": {
+    "mitto-34y-repro": {
+      "type": "local",
+      "command": ["node", "server.js"],
+      "enabled": true,
+    },
+  },
+}`
+	if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	out, err := m.ListMCPServers(context.Background(), "opencode", &MCPListInput{Path: t.TempDir()})
+	if err != nil {
+		t.Fatalf("ListMCPServers returned unexpected error: %v", err)
+	}
+	for _, server := range out.Servers {
+		if server.Name == "mitto-34y-repro" {
+			return
+		}
+	}
+	t.Fatalf("mitto-34y: JSONC-configured server was not surfaced; got servers=%+v (mcp-list.sh silently returns an empty list when strict JSON parsing rejects the trailing comma)", out.Servers)
+}

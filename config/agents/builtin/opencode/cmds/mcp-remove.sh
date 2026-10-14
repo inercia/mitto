@@ -15,48 +15,54 @@ fi
 SCOPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('scope',''))" 2>/dev/null)
 WORKSPACE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('path',''))" 2>/dev/null)
 
-# Determine config file based on scope
+# OpenCode reads MCP servers from the `mcp` property in opencode.json.
 case "$SCOPE" in
     project)
         if [ -z "$WORKSPACE_PATH" ]; then
             echo "{\"success\": false, \"message\": \"path is required for project scope\", \"name\": \"$NAME\"}"
             exit 1
         fi
-        CONFIG_FILE="${WORKSPACE_PATH}/.opencode/settings.json"
+        CONFIG_FILE="${WORKSPACE_PATH}/opencode.json"
         ;;
     *)
-        CONFIG_FILE="${HOME}/.opencode/settings.json"
+        CONFIG_FILE="${HOME}/.config/opencode/opencode.json"
         ;;
 esac
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "{\"success\": false, \"message\": \"Config file not found: $CONFIG_FILE\", \"name\": \"$NAME\"}"
-    exit 1
-fi
+printf '%s\n' "$INPUT" | CONFIG_FILE="$CONFIG_FILE" python3 -c '
+import json, os, sys
 
-echo "$INPUT" | python3 -c "
-import json, sys
-input_data = json.load(sys.stdin)
-name = input_data.get('name', '')
+try:
+    data = json.load(sys.stdin)
+    name = data.get("name", "")
+    config_file = os.environ["CONFIG_FILE"]
 
-with open('$CONFIG_FILE') as f:
-    config = json.load(f)
+    try:
+        with open(config_file, encoding="utf-8") as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        print(json.dumps({"success": False, "message": "Config file not found: " + config_file, "name": name}))
+        sys.exit(0)
 
-servers = config.get('mcpServers', {})
-if name not in servers:
-    print(json.dumps({'success': False, 'message': 'MCP server ' + repr(name) + ' not found', 'name': name}))
-    sys.exit(0)
+    servers = config.get("mcp", {})
+    if not isinstance(servers, dict):
+        raise ValueError("OpenCode config `mcp` property must be an object")
+    if name not in servers:
+        print(json.dumps({"success": False, "message": "MCP server " + repr(name) + " not found", "name": name}))
+        sys.exit(0)
 
-del servers[name]
-config['mcpServers'] = servers
+    del servers[name]
+    config["mcp"] = servers
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
 
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-
-print(json.dumps({'success': True, 'message': 'Removed MCP server ' + repr(name), 'name': name}))
-"
+    print(json.dumps({"success": True, "message": "Removed MCP server " + repr(name), "name": name}))
+except Exception as exc:
+    print(json.dumps({"success": False, "message": "Failed to update OpenCode config: " + str(exc), "name": ""}))
+    sys.exit(1)
+'
 
 if [ $? -ne 0 ]; then
-    echo "{\"success\": false, \"message\": \"Failed to update config\", \"name\": \"$NAME\"}"
     exit 1
 fi
