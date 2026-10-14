@@ -36,13 +36,14 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 80000
+    afterTokens: 15000
 mutate: append
 priority: 93
 
 text: |
   ---
-  [Beads Issue Tracker Reminder]
+  # Beads Issue Tracker Reminder
+
   {{ if HasStandingBeadsGuidance -}}
   This project uses `bd` (beads) for issue and task tracking. See the standing
   agent-instructions file (e.g. `AGENTS.md`) for the full workflow.

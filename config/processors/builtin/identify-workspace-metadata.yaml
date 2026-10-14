@@ -19,7 +19,10 @@
 ##########################################################################################
 name: identify-workspace-metadata
 description: "Analyzes the project and fills in workspace metadata (description, URL) in .mittorc"
+
+# disabled by default: it consumes some context
 enabled: false
+
 when:
   on: userPrompt
   match: first

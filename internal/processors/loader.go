@@ -320,10 +320,10 @@ func validateProcessor(proc *Processor, path string, docIndex int) error {
 		if proc.Output == OutputTransform || proc.Output == OutputPrepend || proc.Output == OutputAppend {
 			return errorf("processor 'output: %s' is not allowed for 'when.on: %s'; use 'discard', 'notify', 'actionButtons', or 'userData'", proc.Output, proc.When.On)
 		}
-		// Default stopReasons to ["end_turn"] if not specified.
-		// These match the ACP SDK StopReason constants (snake_case).
+		// Default stopReasons to ["endTurn"] if not specified. The processor
+		// config uses camelCase; matching maps this value to ACP's "end_turn".
 		if len(proc.When.StopReasons) == 0 {
-			proc.When.StopReasons = []string{"end_turn"}
+			proc.When.StopReasons = []string{"endTurn"}
 		}
 		// cadence validation (rules 12-15)
 		if proc.When.Cadence != nil {

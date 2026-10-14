@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/bdexec"
 	"github.com/inercia/mitto/internal/config"
@@ -1518,6 +1519,14 @@ func (m *Manager) AccumulateTokenUsage(totalTokens int) {
 //
 // Returns an ApplyAfterResult — never returns an error; individual processor failures
 // are collected non-fatally in ApplyAfterResult.Errors.
+// matchesProcessorStopReason maps the camelCase config value to the ACP wire value.
+func matchesProcessorStopReason(configured, actual string) bool {
+	if configured == "endTurn" {
+		return actual == "end_turn"
+	}
+	return configured == actual
+}
+
 func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) ApplyAfterResult {
 	// --- Load persisted state ---
 	store := m.stateStore
@@ -1575,7 +1584,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 		if len(proc.When.StopReasons) > 0 {
 			matched := false
 			for _, sr := range proc.When.StopReasons {
-				if sr == input.StopReason {
+				if matchesProcessorStopReason(sr, input.StopReason) {
 					matched = true
 					break
 				}
@@ -1938,9 +1947,10 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 	// N identical copies of the same snapshot. Standalone dispatches
 	// (knowledge-router, memory-curation) keep their own inline handling and
 	// pass "" here to avoid a double-attach.
-	// Snapshot generation disabled - no close-phase processors
 	var sharedSnapshotBlock string
-	_ = sharedSnapshotBlock // unused since snapshots are disabled
+	if snapshot := strings.TrimSpace(input.HistorySnapshot); snapshot != "" {
+		sharedSnapshotBlock = "## Source conversation history (JSON)\n" + snapshot
+	}
 
 	// summaryEntries accumulates one CloseRunProcessorEntry per processor
 	// evaluated by this pipeline, persisted as the close-run-summary.json
@@ -2726,6 +2736,21 @@ var pendingDispatchBusyRetryInterval = 100 * time.Millisecond
 // remains. var (not const) so tests can shrink it.
 var dispatchBusyMaxAttempts = 10
 
+// authDispatchCooldown bounds repeated processor dispatches that can only fail
+// until the user re-authenticates the ACP provider. Tests may shorten it.
+var authDispatchCooldown = 5 * time.Minute
+
+type authDispatchBlock struct {
+	until      time.Time
+	lastError  string
+	noticeSent bool
+}
+
+var (
+	authDispatchBlocksMu sync.Mutex
+	authDispatchBlocks   = make(map[string]authDispatchBlock)
+)
+
 const pendingDispatchAckMaxAttempts = 3
 
 var pendingDispatchAckRetryDelay = 25 * time.Millisecond
@@ -2761,6 +2786,112 @@ var dispatchSaturationRetryInterval = 5 * time.Second
 // (mitto-6bn.1).
 func isNonRetryableDispatchErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no shared process for workspace")
+}
+
+// isAuthDispatchErr reports whether err is an ACP authentication failure.
+// Unlike transient transport failures, another prompt cannot help until the
+// user re-authenticates the provider.
+func isAuthDispatchErr(err error) bool {
+	return err != nil && acp.IsAuthError(err)
+}
+
+func blockAuthDispatch(workspaceUUID string, err error) time.Time {
+	if workspaceUUID == "" {
+		return time.Time{}
+	}
+	now := time.Now()
+	until := now.Add(authDispatchCooldown)
+	authDispatchBlocksMu.Lock()
+	// Repeated failures extend the cooldown, but must not reset the notice bit
+	// while the previous cooldown is still active.
+	noticeSent := false
+	if previous, ok := authDispatchBlocks[workspaceUUID]; ok && now.Before(previous.until) {
+		noticeSent = previous.noticeSent
+	}
+	authDispatchBlocks[workspaceUUID] = authDispatchBlock{
+		until:      until,
+		lastError:  err.Error(),
+		noticeSent: noticeSent,
+	}
+	authDispatchBlocksMu.Unlock()
+	return until
+}
+
+// ClaimAuthDispatchNotice returns true once per workspace authentication
+// cooldown. Processor failure callbacks use it to suppress duplicate
+// user-facing re-authentication notices across live, close-phase, and sweep
+// dispatch paths. A successful dispatch clears the cooldown and notice state.
+func ClaimAuthDispatchNotice(workspaceUUID string) bool {
+	if workspaceUUID == "" {
+		return true
+	}
+
+	now := time.Now()
+	authDispatchBlocksMu.Lock()
+	defer authDispatchBlocksMu.Unlock()
+
+	block, ok := authDispatchBlocks[workspaceUUID]
+	if !ok || !now.Before(block.until) {
+		if ok {
+			delete(authDispatchBlocks, workspaceUUID)
+		}
+		// In normal operation blockAuthDispatch runs before the callback. Be
+		// defensive for callers reporting a persisted auth failure without an
+		// active block, while still deduplicating that notice for one cooldown.
+		authDispatchBlocks[workspaceUUID] = authDispatchBlock{
+			until:      now.Add(authDispatchCooldown),
+			noticeSent: true,
+		}
+		return true
+	}
+	if block.noticeSent {
+		return false
+	}
+	block.noticeSent = true
+	authDispatchBlocks[workspaceUUID] = block
+	return true
+}
+
+func authDispatchBlocked(workspaceUUID string) (authDispatchBlock, bool) {
+	if workspaceUUID == "" {
+		return authDispatchBlock{}, false
+	}
+	authDispatchBlocksMu.Lock()
+	defer authDispatchBlocksMu.Unlock()
+	block, ok := authDispatchBlocks[workspaceUUID]
+	if ok && !time.Now().Before(block.until) {
+		delete(authDispatchBlocks, workspaceUUID)
+		return authDispatchBlock{}, false
+	}
+	return block, ok
+}
+
+func clearAuthDispatchBlock(workspaceUUID string) {
+	authDispatchBlocksMu.Lock()
+	defer authDispatchBlocksMu.Unlock()
+	delete(authDispatchBlocks, workspaceUUID)
+}
+
+// persistAuthCooldownDispatch retains new or already-claimed work without
+// refreshing SavedAt, so pendingDispatchMaxAge remains the upper bound.
+func (m *Manager) persistAuthCooldownDispatch(entry PendingDispatchEntry, trackedPersisted bool, lastError string) error {
+	if m.pendingDispatchStore == nil || entry.WorkspaceUUID == "" {
+		return errors.New("pending-dispatch store is unavailable")
+	}
+	entry.LastError = lastError
+	if trackedPersisted {
+		dropped, err := m.pendingDispatchStore.Requeue(entry.WorkspaceUUID, []PendingDispatchEntry{entry})
+		if err == nil {
+			m.logPendingDispatchDrops(entry.WorkspaceUUID, dropped)
+		}
+		return err
+	}
+	result, err := m.pendingDispatchStore.Append(entry)
+	if err == nil {
+		m.logPendingDispatchWatermark(entry.WorkspaceUUID, result.Depth)
+		m.logPendingDispatchDrops(entry.WorkspaceUUID, result.Dropped)
+	}
+	return err
 }
 
 // isSaturationDispatchErr reports whether err indicates the shared ACP
@@ -2835,6 +2966,9 @@ func isSaturationDispatchErr(err error) bool {
 // which is the only site with access to that signal.
 func isTransientAuxUnavailableDispatchErr(err error) bool {
 	if err == nil {
+		return false
+	}
+	if isAuthDispatchErr(err) {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -3125,6 +3259,28 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	// process-global rather than a *Manager field.
 	gate := admitDispatch(workspaceUUID)
 	gate.Lock()
+	if block, blocked := authDispatchBlocked(workspaceUUID); blocked {
+		gate.Unlock()
+		if block.lastError == "" {
+			block.lastError = "ACP authentication required; dispatch suppressed during authentication cooldown"
+		}
+		if persistErr := m.persistAuthCooldownDispatch(entry, trackedPersisted, block.lastError); persistErr != nil {
+			lastErr = fmt.Errorf("authentication cooldown active until %s; failed to persist deferred dispatch: %w", block.until.Format(time.RFC3339), persistErr)
+			if m.logger != nil {
+				m.logger.Error("prompt-mode processor dispatch suppressed during ACP authentication cooldown; failed to persist batch",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name,
+					"until", block.until, "error", lastErr)
+			}
+		} else {
+			lastErr = errDispatchDeferredToSpool
+			if m.logger != nil {
+				m.logger.Info("prompt-mode processor dispatch suppressed during ACP authentication cooldown; batch persisted for later retry",
+					"dispatch_id", entry.ID, "workspace_uuid", workspaceUUID, "name", name,
+					"until", block.until, "error", block.lastError)
+			}
+		}
+		return
+	}
 	var totalAttempts int
 	var waited time.Duration
 	var busyDeadline time.Time
@@ -3424,7 +3580,18 @@ func (m *Manager) runDispatchRetryLoopTracked(ctx context.Context, workspaceUUID
 		totalAttempts++
 
 		if lastErr == nil {
+			clearAuthDispatchBlock(workspaceUUID)
 			return completion, totalAttempts, time.Since(start), nil
+		}
+
+		if isAuthDispatchErr(lastErr) {
+			until := blockAuthDispatch(workspaceUUID, lastErr)
+			if m.logger != nil {
+				m.logger.Info("prompt-mode processor dispatch requires ACP re-authentication; stopping retries",
+					"dispatch_id", dispatchID, "workspace_uuid", workspaceUUID, "name", name,
+					"until", until, "error", lastErr)
+			}
+			return completion, totalAttempts, time.Since(start), lastErr
 		}
 
 		if isNonRetryableDispatchErr(lastErr) {
@@ -3512,6 +3679,13 @@ func (m *Manager) FlushPendingDispatches(ctx context.Context, workspaceUUID stri
 	if m == nil || m.pendingDispatchStore == nil || !m.hasPromptExecutor() || workspaceUUID == "" {
 		return
 	}
+	if block, blocked := authDispatchBlocked(workspaceUUID); blocked {
+		if m.logger != nil {
+			m.logger.Debug("pending-dispatch flush: suppressed during ACP authentication cooldown",
+				"workspace_uuid", workspaceUUID, "until", block.until, "error", block.lastError)
+		}
+		return
+	}
 
 	// mitto-6ys1: give dead-lettered batches one bounded chance to retry once
 	// they've cooled down. ReplayDeadLetters merges eligible entries directly
@@ -3584,6 +3758,14 @@ flushEntries:
 			break
 		}
 
+		if entry.Attempts >= pendingDispatchMaxAttempts {
+			if isAuthDispatchErr(errors.New(entry.LastError)) {
+				// Older spool entries may already have exhausted their attempt
+				// count under the pre-auth-aware retry policy. Permit one fresh
+				// post-cooldown attempt instead of dead-lettering recoverable work.
+				entry.Attempts = pendingDispatchTransientRetryAttempts
+			}
+		}
 		if entry.Attempts >= pendingDispatchMaxAttempts {
 			// mitto-unc: a failure history made up entirely of transient
 			// aux-unavailable errors (e.g. auxiliary process timeouts) must
@@ -3724,6 +3906,20 @@ flushEntries:
 			// further attempt) and stop — later entries would fail the
 			// same way.
 			requeue = append(requeue, entries[i:]...)
+			break
+		}
+		if isAuthDispatchErr(lastErr) {
+			// Authentication is workspace-wide: retain this entry and the
+			// remaining batch without consuming attempts or refreshing age.
+			entry.LastError = lastErr.Error()
+			if m.notifyFunc != nil {
+				// The first time a background sweep encounters an auth failure,
+				// surface it just like a live dispatch. The callback deduplicates
+				// notices with the workspace cooldown set above.
+				m.notifyFunc(workspaceUUID, entry.Name, lastErr)
+			}
+			requeue = append(requeue, entry)
+			requeue = append(requeue, entries[i+1:]...)
 			break
 		}
 

@@ -24,6 +24,51 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+func TestMatchesProcessorStopReason(t *testing.T) {
+	tests := []struct {
+		configured string
+		actual     string
+		want       bool
+	}{
+		{configured: "endTurn", actual: "end_turn", want: true},
+		{configured: "endTurn", actual: "max_tokens", want: false},
+		{configured: "end_turn", actual: "end_turn", want: true},
+		{configured: "max_tokens", actual: "max_tokens", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.configured+"/"+tt.actual, func(t *testing.T) {
+			if got := matchesProcessorStopReason(tt.configured, tt.actual); got != tt.want {
+				t.Errorf("matchesProcessorStopReason(%q, %q) = %t, want %t", tt.configured, tt.actual, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoaderDefaultsStopReasonsToEndTurn(t *testing.T) {
+	processorsDir := t.TempDir()
+	processorYAML := `name: default-stop-reason
+when:
+  on: agentResponded
+  match: all
+command: /bin/true
+`
+	if err := os.WriteFile(filepath.Join(processorsDir, "default.yaml"), []byte(processorYAML), 0o600); err != nil {
+		t.Fatalf("write processor config: %v", err)
+	}
+
+	loaded, err := NewLoader(processorsDir, nil).Load()
+	if err != nil {
+		t.Fatalf("load processor config: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("loaded %d processors, want 1", len(loaded))
+	}
+	if got := loaded[0].When.StopReasons; len(got) != 1 || got[0] != "endTurn" {
+		t.Errorf("default StopReasons = %v, want [endTurn]", got)
+	}
+}
+
 func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
 	input := &ProcessorInput{
 		SessionID:    "sess-1",
@@ -1359,7 +1404,7 @@ name: bad-up-stop
 when:
   on: userPrompt
   match: all
-  stopReasons: ["end_turn"]
+  stopReasons: ["endTurn"]
 command: /bin/echo
 `,
 			expectSkip:  true,
@@ -1583,7 +1628,7 @@ name: bad-close-stop
 when:
   on: conversationClosed
   match: all
-  stopReasons: ["end_turn"]
+  stopReasons: ["endTurn"]
 command: /bin/echo
 `,
 			expectSkip:  true,
@@ -3844,7 +3889,7 @@ func TestApplyAfter_StopReasonFilter(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "end-turn-only",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputDiscard,
 	}
@@ -3872,7 +3917,7 @@ func TestApplyAfter_OriginFilter(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "no-loop",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}, ExcludeOrigins: []string{"loop-runner"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}, ExcludeOrigins: []string{"loop-runner"}},
 		Command: scriptPath,
 		Output:  OutputDiscard,
 	}
@@ -3899,7 +3944,7 @@ func TestApplyAfter_MatchFirst(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "first-only",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchFirst, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchFirst, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputNotify,
 	}
@@ -3928,7 +3973,7 @@ func TestApplyAfter_MatchAllExceptFirst(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "not-first",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAllExceptFirst, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAllExceptFirst, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputNotify,
 	}
@@ -3957,7 +4002,7 @@ func TestApplyAfter_OutputDiscard(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "side-effect",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputDiscard,
 	}
@@ -3979,7 +4024,7 @@ printf '{"title":"Alert","message":"Done","style":"success"}'`), 0755)
 
 	proc := &Processor{
 		Name:    "json-notify",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputNotify,
 	}
@@ -4003,7 +4048,7 @@ func TestApplyAfter_OutputNotify_PlainText(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "text-notify",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputNotify,
 	}
@@ -4031,7 +4076,7 @@ printf '[{"label":"Run tests","prompt":"Run tests now"},{"label":"Deploy","promp
 
 	proc := &Processor{
 		Name:    "array-buttons",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputActionButtons,
 	}
@@ -4055,7 +4100,7 @@ printf '{"label":"Deploy","prompt":"Deploy now"}'`), 0755)
 
 	proc := &Processor{
 		Name:    "single-button",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputActionButtons,
 	}
@@ -4083,13 +4128,13 @@ printf '{"version":"2.0","extra":"yes"}'`), 0755)
 
 	proc1 := &Processor{
 		Name:    "ud1",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: script1,
 		Output:  OutputUserData,
 	}
 	proc2 := &Processor{
 		Name:    "ud2",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: script2,
 		Output:  OutputUserData,
 	}
@@ -4123,13 +4168,13 @@ printf '{"title":"OK","message":"ran"}'`), 0755)
 
 	proc1 := &Processor{
 		Name:    "will-fail",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: failScript,
 		Output:  OutputDiscard,
 	}
 	proc2 := &Processor{
 		Name:    "will-succeed",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: succScript,
 		Output:  OutputNotify,
 	}
@@ -4158,7 +4203,7 @@ func TestApplyAfter_StdinPayload(t *testing.T) {
 
 	proc := &Processor{
 		Name:    "capture",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: captureScript,
 		Output:  OutputNotify,
 	}
@@ -4291,7 +4336,7 @@ func TestApplyAfter_PromptMode_Dispatched(t *testing.T) {
 
 	proc := &Processor{
 		Name:   "auggie-update-rules",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt: `Update rules for stop: @mitto:stop_reason origin: @mitto:origin`,
 		// Output field is intentionally set to OutputNotify to confirm it is ignored for prompt-mode.
 		Output: OutputNotify,
@@ -4472,7 +4517,7 @@ func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
 func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 	proc := &Processor{
 		Name:   "report-to-file",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt: "Write summary to {{ .Args.dest }}.",
 		Parameters: []config.PromptParameter{
 			{Name: "dest", Type: "text", Default: "SUMMARY.md"},
@@ -4539,7 +4584,7 @@ func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 func TestPromptMode_ArgSubstitution_PreferencesFile(t *testing.T) {
 	proc := &Processor{
 		Name:       "memorize-preferences-test",
-		When:       WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:       WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt:     "Update the {{ .Args.PreferencesFile }} file.",
 		Parameters: []config.PromptParameter{{Name: "PreferencesFile", Type: "text", Default: "AGENTS.md"}},
 	}
@@ -4698,7 +4743,7 @@ func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
 func TestApplyAfter_PromptMode_NoPromptFunc(t *testing.T) {
 	proc := &Processor{
 		Name:   "orphan-prompt",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt: `Do something`,
 	}
 	// makeAfterManager does not set a PromptFunc.
@@ -4728,7 +4773,7 @@ printf '{"title":"cadence","message":"fired"}'`), 0755)
 		When: WhenConfig{
 			On:          PhaseAgentResponded,
 			Match:       MatchAll,
-			StopReasons: []string{"end_turn"},
+			StopReasons: []string{"endTurn"},
 			Cadence:     &CadenceConfig{EveryNTurns: 2},
 		},
 		Command: scriptPath,
@@ -4779,7 +4824,7 @@ printf '{"title":"idle","message":"fired"}'`), 0755)
 
 	proc := &Processor{
 		Name:    "idle-proc",
-		When:    WhenConfig{On: PhaseAgentIdle, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentIdle, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputNotify,
 	}
@@ -4816,7 +4861,7 @@ printf '{"title":"idle","message":"fired"}'`), 0755)
 		When: WhenConfig{
 			On:          PhaseAgentIdle,
 			Match:       MatchAll,
-			StopReasons: []string{"end_turn"},
+			StopReasons: []string{"endTurn"},
 			Cadence:     &CadenceConfig{EveryNTurns: 2},
 		},
 		Command: scriptPath,
@@ -4860,7 +4905,7 @@ printf '{"title":"interval","message":"fired"}'`), 0755)
 		When: WhenConfig{
 			On:          PhaseAgentResponded,
 			Match:       MatchAll,
-			StopReasons: []string{"end_turn"},
+			StopReasons: []string{"endTurn"},
 			Cadence:     &CadenceConfig{AfterInterval: "1h"},
 		},
 		Command: scriptPath,
@@ -4911,7 +4956,7 @@ printf '{"title":"tokens","message":"fired"}'`), 0755)
 		When: WhenConfig{
 			On:          PhaseAgentResponded,
 			Match:       MatchAll,
-			StopReasons: []string{"end_turn"},
+			StopReasons: []string{"endTurn"},
 			Cadence:     &CadenceConfig{EveryNTokens: 10000},
 		},
 		Command: scriptPath,
@@ -4967,7 +5012,7 @@ printf '{"title":"tokens","message":"fired"}'`), 0755)
 		When: WhenConfig{
 			On:          PhaseAgentResponded,
 			Match:       MatchAll,
-			StopReasons: []string{"end_turn"},
+			StopReasons: []string{"endTurn"},
 			Cadence:     &CadenceConfig{EveryNTokens: 1000},
 		},
 		Command: scriptPath,
@@ -4996,7 +5041,7 @@ printf '{"title":"first","message":"only once"}'`), 0755)
 
 	proc := &Processor{
 		Name:    "first-ever",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchFirst, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchFirst, StopReasons: []string{"endTurn"}},
 		Command: scriptPath,
 		Output:  OutputNotify,
 	}
@@ -5463,7 +5508,7 @@ func TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty(t *testing.T) {
 	t.Run("empty render is not dispatched", func(t *testing.T) {
 		proc := &Processor{
 			Name:   "empty-body",
-			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 			Prompt: `{{ if DirExists ".definitely-does-not-exist-xyz" }}should not appear{{ end }}`,
 		}
 		var mu sync.Mutex
@@ -5491,7 +5536,7 @@ func TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty(t *testing.T) {
 	t.Run("non-empty render is dispatched", func(t *testing.T) {
 		proc := &Processor{
 			Name:   "non-empty-body",
-			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 			Prompt: `{{ if not (DirExists ".definitely-does-not-exist-xyz") }}real work{{ end }}`,
 		}
 		var mu sync.Mutex
@@ -6260,7 +6305,7 @@ func TestApplyAfter_PromptMode_SustainedSaturation_PersistsBatchOnGiveUp(t *test
 
 	proc := &Processor{
 		Name:   "identify-user-data",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt: "Persist for session @mitto:session_id.",
 	}
 
@@ -6717,7 +6762,7 @@ func TestBuildCELContext_TriggerSlack(t *testing.T) {
 func TestApplyAfter_TemplateExposesWorkspaceUUID(t *testing.T) {
 	proc := &Processor{
 		Name:   "after-uuid-probe",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt: `{{ if .Workspace.UUID }}ws={{ .Workspace.UUID }}{{ else }}no-ws{{ end }}`,
 	}
 
@@ -7624,9 +7669,9 @@ func TestApplyAfter_RunRecorder(t *testing.T) {
 	os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0755)
 
 	procs := []*Processor{
-		{Name: "after-ok", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}}, Command: okScript, Output: OutputDiscard},
+		{Name: "after-ok", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}}, Command: okScript, Output: OutputDiscard},
 		{Name: "after-skip", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"max_tokens"}}, Command: okScript, Output: OutputDiscard},
-		{Name: "after-fail", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}}, Command: failScript, Output: OutputDiscard},
+		{Name: "after-fail", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}}, Command: failScript, Output: OutputDiscard},
 	}
 	m := makeAfterManager(procs)
 	rec := &recordingRecorder{}
@@ -7664,7 +7709,7 @@ echo '[{"title":"t","message":"m"}]'
 
 	proc := &Processor{
 		Name:    "after-notify",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Command: notifyScript,
 		Output:  OutputNotify,
 	}
@@ -7828,7 +7873,7 @@ func TestApplyOnClose_RunRecorder_PromptModeDispatched(t *testing.T) {
 func TestApplyAfter_RunRecorder_PromptModeDispatched(t *testing.T) {
 	proc := &Processor{
 		Name:   "after-prompt",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"endTurn"}},
 		Prompt: "summarize the turn",
 	}
 	m := makeAfterManager([]*Processor{proc})

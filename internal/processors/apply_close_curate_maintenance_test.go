@@ -551,4 +551,8 @@ func TestApplyOnClose_CurateMemories_CountTimeout_NotLoggedAsWarn(t *testing.T) 
 	if !found {
 		t.Fatalf("no %q log record captured — test setup did not reproduce the count failure", "memory count failed")
 	}
+	// The prompt dispatch completes asynchronously and its completion callback
+	// clears the in-flight ledger. Wait for that write before TempDir cleanup
+	// removes the isolated app directory.
+	waitForLedgerSettled(t, workspaceUUID)
 }

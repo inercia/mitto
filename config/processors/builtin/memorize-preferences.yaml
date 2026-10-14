@@ -1,0 +1,41 @@
+################################################################################
+# Legacy close processor: persist durable personal workflow preferences.
+# Suppressed when knowledge-router is enabled to avoid duplicate writes.
+################################################################################
+name: memorize-preferences
+description: "Remember durable personal workflow preferences from a conversation"
+enabled: true
+when:
+  on: conversationClosed
+  match: all
+priority: 110
+timeout: 300s
+onError: skip
+enabledWhen: '!Session.IsLoop && !Prompts.IsEnabled("knowledge-router")'
+
+prompt: |
+  Review the closed conversation for explicit, durable personal workflow preferences.
+  Do not record project conventions, secrets, transient requests, or inferred traits.
+
+  {{- $file := .Args.PreferencesFile -}}
+  {{- if eq $file "" -}}
+    {{- if DirExists ".augment/rules" -}}
+      {{- $file = ".augment/rules/90-local.md" -}}
+    {{- else if DirExists ".claude/rules" -}}
+      {{- $file = ".claude/rules/90-local.md" -}}
+    {{- else -}}
+      {{- $file = ".agents/rules/90-local.md" -}}
+    {{- end -}}
+  {{- end }}
+
+  Save any qualifying preferences in `{{ $file }}`. Create the parent directory and
+  file if needed; merge without removing unrelated content. If there are no durable
+  preferences, make no changes.
+
+  {{- if .Workspace.UUID }}
+  After completing, call `mitto_workspace_ui_notify` with `workspace_uuid: "{{ .Workspace.UUID }}"`
+  and briefly report whether preferences were saved. If no preference was found,
+  still notify that no durable preference needed saving.
+  {{- else }}
+  No workspace UUID is available; skip the toast and exit silently.
+  {{- end }}

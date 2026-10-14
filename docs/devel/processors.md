@@ -307,7 +307,7 @@ The loader enforces 16 strict rules. Processors that fail any rule are skipped w
 | 5   | `on: agentResponded` forbids `mutate:`                                                             |
 | 6   | `on: agentResponded` forbids `when.rerun:`                                                         |
 | 7   | `on: agentResponded` forbids `output: transform/prepend/append`                                    |
-| 8   | `on: agentResponded` defaults `stopReasons` to `["end_turn"]` if not specified                     |
+| 8   | `on: agentResponded` defaults `stopReasons` to `["endTurn"]` if not specified                     |
 | 9   | `on: userPrompt` forbids `when.stopReasons:`                                                       |
 | 10  | `on: userPrompt` forbids `when.excludeOrigins:`                                                    |
 | 11  | Text-mode processors (`text:` set, `command:` empty) require `mutate: prepend` or `mutate: append` |

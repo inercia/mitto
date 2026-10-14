@@ -14,11 +14,14 @@
 ##########################################################################################
 name: identify-user-data
 description: "Detects user data values from conversations and sets them via MCP"
-enabled: true
+
+# disabled by default: it consumes some context
+enabled: false
+
 when:
   on: agentIdle
   match: all
-  stopReasons: [end_turn]
+  stopReasons: [endTurn]
   cadence:
     everyNTurns: 2
     everyNTokens: 6000

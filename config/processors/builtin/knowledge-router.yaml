@@ -1,0 +1,55 @@
+################################################################################
+# Builtin close processor: classify durable findings from a closed conversation.
+# The router records its structured result in the session sidecar so retries on
+# an unchanged history snapshot do not repeat already-persisted findings.
+################################################################################
+name: knowledge-router
+description: "Classifies durable conversation findings for workspace destinations"
+enabled: true
+when:
+  on: conversationClosed
+  match: all
+priority: 120
+timeout: 300s
+onError: skip
+enabledWhen: '!Session.IsLoop'
+
+prompt: |
+  Review the just-closed conversation and classify only durable, reusable findings.
+  Do not invent findings. Ignore transient details, repeated task instructions, and
+  information already present in the workspace.
+
+  Working directory: {{ .Workspace.Folder }}
+
+  ## Destinations
+
+  Preferences are personal workflow preferences. Write them to exactly one file:
+  {{- if .Args.PreferencesFile }}
+  - `{{ .Args.PreferencesFile }}` (explicitly configured)
+  {{- else if DirExists ".augment/rules" }}
+  - `.augment/rules/90-local.md`
+  {{- else if DirExists ".claude/rules" }}
+  - `.claude/rules/90-local.md`
+  {{- else }}
+  - `.agents/rules/90-local.md` (local-only fallback)
+  {{- end }}
+
+  Project rules are durable codebase conventions, architecture facts, and lessons
+  that will help future work. {{- if DirExists ".augment/rules" }}
+  Put rules findings under `.augment/rules/`.{{- else if DirExists ".claude/rules" }}
+  Put rules findings under `.claude/rules/`.{{- else }}
+  none found — skip rules findings.{{- end }}
+
+  Issue findings are concrete, actionable follow-up work not already tracked.
+  Use destination `none` for anything that should not be persisted. Do not create
+  an issue for preferences or general rules.
+
+  ## Output contract
+
+  Return exactly one JSON object and no surrounding prose:
+
+  {"findings":[{"text":"concise finding","destination":"preferences|rules|issue|none","written":true,"target_path":"relative/path"}]}
+
+  Use `written: true` only when the destination was actually persisted; use false
+  for `none` or an unsuccessful write. Omit `target_path` when there is no file
+  target. Preserve separate findings when they have different destinations.

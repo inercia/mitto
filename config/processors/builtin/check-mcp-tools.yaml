@@ -23,12 +23,13 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 60000
+    afterTokens: 15000
 mutate: append
 priority: 15
 text: |
   ---
-  [Mitto MCP Tools Check]
+  # Mitto MCP Tools Check
+
   Check if Mitto's MCP tools are available. You should have access to
   tools like `mitto_ui_options`, `mitto_conversation_new`,
   `mitto_conversation_get_current`, etc.

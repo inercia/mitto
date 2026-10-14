@@ -24,13 +24,13 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 80000
+    afterTokens: 15000
 mutate: append
 priority: 92
 
 text: |
-  ---
-  [Mitto UI Tools Guidance]
+  # Mitto UI Tools Guidance
+
   You have access to Mitto's interactive UI tools. ALWAYS use them instead of
   asking the user to type responses manually:
 

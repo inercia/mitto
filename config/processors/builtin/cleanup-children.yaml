@@ -26,15 +26,15 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 40000
+    afterTokens: 15000
 mutate: append
 priority: 95
 enabledWhen: 'Children.Count > 0 && Children.PromptingCount == 0 && Tools.HasPattern("mitto_conversation_delete_*")'
 text: |
   {{- $count := .Children.MCPCount -}}
   {{- if gt $count 0 -}}
-  ---
-  [Child Conversation Cleanup Reminder]
+  # Child Conversation Cleanup Reminder
+
   You have {{ $count }} active child conversation{{ if ne $count 1 }}s{{ end }} that {{ if eq $count 1 }}was{{ else }}were{{ end }} created
   by you, and {{ if eq $count 1 }}it is{{ else }}all of them are{{ end }} currently idle (not responding to any prompts).
   Consider deleting child conversations you no longer need using

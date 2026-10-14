@@ -32,22 +32,21 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 60000
+    afterTokens: 15000
 mutate: append
 priority: 15
 text: |
   ---
-  [Uncommitted Changes Warning]
+  # Uncommitted Changes Warning
+
   The working tree has uncommitted changes: {{ GitStatusSummary }}
 
   Before running any destructive git operation (checkout -f, reset --hard,
   clean -fd, stash drop, rebase, branch -D, worktree remove,
   restore --source, switch --discard-changes), you MUST:
 
-  1. Confirm with the user before discarding, resetting, or overwriting any
-     of these changes.
-  2. Prefer non-destructive alternatives — `git stash push -u`, a WIP commit
-     on a scratch branch, or `git add -N` — when in doubt.
+  1. Confirm with the user before discarding, resetting, or overwriting any of these changes.
+  2. Prefer non-destructive alternatives — `git stash push -u`, a WIP commit on a scratch branch, or `git add -N` — when in doubt.
 
   Do NOT assume uncommitted changes are safe to drop just because they look
   unrelated to the current task: a concurrent conversation, a loop, or the

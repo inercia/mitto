@@ -1,0 +1,32 @@
+################################################################################
+# Legacy close processor: update existing Claude Code memory/rules.
+# Suppressed when knowledge-router is enabled to avoid duplicate writes.
+################################################################################
+name: claude-update-memory
+description: "Update Claude Code memory with durable project findings"
+enabled: true
+when:
+  on: conversationClosed
+  match: all
+priority: 110
+timeout: 300s
+onError: skip
+enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsLoop && (FileExists("CLAUDE.md") || DirExists(".claude")) && !Prompts.IsEnabled("knowledge-router")'
+
+prompt: |
+  Review the closed conversation for new, durable project conventions or technical
+  facts that belong in this workspace's existing Claude Code memory or rules.
+  Do not record personal preferences, transient task details, secrets, or information
+  already documented. If there is nothing useful, leave the workspace unchanged.
+
+  Prefer a focused file under `.claude/rules/` when one exists; otherwise update the
+  applicable project memory file. Keep rules concise and scoped, and preserve
+  unrelated content.
+
+  {{- if .Workspace.UUID }}
+  After completing, call `mitto_workspace_ui_notify` with `workspace_uuid: "{{ .Workspace.UUID }}"`
+  and briefly report the result. If no durable finding was found, still notify that
+  no update was needed.
+  {{- else }}
+  No workspace UUID is available; skip the toast and exit silently.
+  {{- end }}

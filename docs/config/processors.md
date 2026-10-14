@@ -607,8 +607,8 @@ when: # Trigger condition — always a block
     afterSentMsgs: 20 # re-run after 20 user messages since last run
     afterTokens: 50000 # re-run after 50000 tokens consumed since last run
   # agentResponded / agentIdle-only fields (forbidden for userPrompt):
-  stopReasons: # which ACP stop reasons trigger this processor (default: ["end_turn"])
-    - end_turn # valid values: end_turn, max_tokens, max_turn_requests, refusal, cancelled
+  stopReasons: # which stop reasons trigger this processor (default: ["endTurn"])
+    - endTurn # valid values: endTurn, max_tokens, max_turn_requests, refusal, cancelled
   excludeOrigins: # skip processor when message origin matches any of these
     - loop-runner
 
@@ -670,7 +670,7 @@ The `when:` block is required for all processors. Both `on:` and `match:` are re
 | `match`          | `first` \| `all` \| `allExceptFirst`                                    | ✅ Yes   | Which messages to fire on. Must be `all` for `conversationClosed`                                   |
 | `rerun`          | sub-block (see below)                                                   | No       | Only valid with `on: userPrompt` + `match: first`                                                   |
 | `cadence`        | sub-block (see below)                                                   | No       | Only valid with `on: agentResponded` / `agentIdle`; not with `match: first` or `conversationClosed` |
-| `stopReasons`    | list of strings                                                         | No       | Only valid with `on: agentResponded` / `agentIdle`. Default: `["end_turn"]`                         |
+| `stopReasons`    | list of strings                                                         | No       | Only valid with `on: agentResponded` / `agentIdle`. Default: `["endTurn"]`                         |
 | `excludeOrigins` | list of strings                                                         | No       | Only valid with `on: agentResponded` / `agentIdle`                                                  |
 
 **`match` values:**
@@ -679,11 +679,12 @@ The `when:` block is required for all processors. Both `on:` and `match:` are re
 - `all` — fires on every message.
 - `allExceptFirst` — fires on every message _except_ the first. _(Note: camelCase only — `all-except-first` is rejected.)_
 
-**`stopReasons` values** (only for `on: agentResponded`):
+**`stopReasons` values** (only for `on: agentResponded`): The camelCase `endTurn` value
+matches the ACP stop reason `end_turn`.
 
 | Value               | Meaning                           |
 | ------------------- | --------------------------------- |
-| `end_turn`          | Agent finished normally (default) |
+| `endTurn`           | Agent finished normally (default) |
 | `max_tokens`        | Context limit reached             |
 | `max_turn_requests` | Turn request limit reached        |
 | `refusal`           | Agent refused to respond          |
@@ -711,7 +712,7 @@ Which fields are allowed or forbidden depends on the `on:` phase:
 | `when.match: first`                     | ✅ allowed                       | ✅ allowed                         | ❌ forbidden (must be `all`)  |
 | `when.rerun:`                           | ✅ allowed (`match: first` only) | ❌ forbidden                       | ❌ forbidden                  |
 | `when.cadence:`                         | ❌ forbidden                     | ✅ allowed                         | ❌ forbidden                  |
-| `when.stopReasons:`                     | ❌ forbidden                     | ✅ allowed (default: `[end_turn]`) | ❌ forbidden                  |
+| `when.stopReasons:`                     | ❌ forbidden                     | ✅ allowed (default: `[endTurn]`) | ❌ forbidden                  |
 | `when.excludeOrigins:`                  | ❌ forbidden                     | ✅ allowed                         | ❌ forbidden                  |
 | `output: transform/prepend/append`      | ✅ allowed                       | ❌ forbidden                       | ❌ forbidden                  |
 | `output: notify/actionButtons/userData` | ❌ forbidden                     | ✅ allowed                         | ❌ forbidden (session closed) |
@@ -832,7 +833,7 @@ accumulated and at most once every 5 minutes:
 when:
   on: agentResponded
   match: all
-  stopReasons: [end_turn]
+  stopReasons: [endTurn]
   cadence:
     everyNTurns: 5
     everyNTokens: 30000

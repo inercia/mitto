@@ -41,7 +41,7 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 80000
+    afterTokens: 15000
 mutate: append
 priority: 90
 enabledWhen: >-
@@ -52,8 +52,8 @@ enabledWhen: >-
     "reasoning", "smartest", "thinking", "deep", "slow", "expensive"
   ])
 text: |
-  ---
-  [Multi-Agent Delegation Guidance]
+  # Multi-Agent Delegation Guidance
+
   You are running on a premium reasoning model ({{ .ACP.Name }}{{ if .Session.ModelName }}, model {{ .Session.ModelName }}{{ end }}).
   Your session ID is: {{ .Session.ID }}
 
@@ -69,5 +69,6 @@ text: |
 
   Propose creating a child with `mitto_conversation_new` (use `model_tag: Coding`),
   picking from the available agents above.
+
   {{ end -}}
-  Use your session ID as self_id in all mitto_* tools.
+  Use your session ID as self_id in all `mitto_*`` tools.

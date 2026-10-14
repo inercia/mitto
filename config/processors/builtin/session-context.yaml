@@ -23,22 +23,22 @@ when:
   on: userPrompt
   match: first
   rerun:
-    afterTokens: 80000
+    afterTokens: 15000
 mutate: append
 priority: 10
 text: |
-  ---
-  [Session Context]
-  Session: {{ .Session.ID }} ({{ .Session.Name }})
-  Agent: {{ .ACP.Name }}
-  Working Directory: {{ .Workspace.Folder }}
+  # Session Context
+
+  - Session: {{ .Session.ID }} ({{ .Session.Name }})
+  - Agent: {{ .ACP.Name }}
+  - Working Directory: {{ .Workspace.Folder }}
   {{ if .Parent.Ref }}
-  Parent: {{ .Parent.Ref }}
+  - Parent: {{ .Parent.Ref }}
   {{ end }}
   {{ if .Children.All }}
-  Children: {{ .Children.AllText }}
+  - Children: {{ .Children.AllText }}
   {{ end }}
   {{ if .ACP.Available }}
-  Available Agents: {{ .ACP.AvailableText }}
+  - Available Agents: {{ .ACP.AvailableText }}
   {{ end }}
   ---

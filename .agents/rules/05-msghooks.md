@@ -49,10 +49,10 @@ when: # required block — BOTH on: and match: are required
   match: first # required: first | all | allExceptFirst (NOT all-except-first)
   rerun: # optional; only valid with on:userPrompt + match:first
     afterSentMsgs: 15
-    afterTokens: 50000
+    afterTokens: 120000
     afterTime: 1h
   # agentResponded/agentIdle-only (forbidden on userPrompt):
-  stopReasons: [end_turn] # default ["end_turn"]; origins to skip: excludeOrigins: [user, queue, ...]
+  stopReasons: [endTurn] # default ["endTurn"]; origins to skip: excludeOrigins: [user, queue, ...]
   cadence: # optional throttle; only valid with on:agentResponded|agentIdle + match:all/allExceptFirst
     everyNTurns: 3 # fire every N responses; everyNTokens: 15000; afterInterval: 5m (all AND-logic)
 priority: 100 # lower = earlier
@@ -95,7 +95,7 @@ parameters:
 | `mutate:` (req w/ text)            | ✅                    | ❌ forbidden                                  |
 | `command:` / `prompt:`             | ✅                    | ✅                                            |
 | `when.rerun:`                      | ✅ (match:first only) | ❌ forbidden                                  |
-| `when.stopReasons:`                | ❌ forbidden          | ✅ default `[end_turn]`                       |
+| `when.stopReasons:`                | ❌ forbidden          | ✅ default `[endTurn]`                        |
 | `when.excludeOrigins:`             | ❌ forbidden          | ✅                                            |
 | `output: transform/prepend/append` | ✅                    | ❌ forbidden                                  |
 | `output: discard`                  | ✅                    | ✅                                            |
