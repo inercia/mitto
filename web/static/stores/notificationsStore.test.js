@@ -99,22 +99,36 @@ describe("notificationsStore (mitto-sus.11) > toasts", () => {
     expect(toasts.map((t) => t.id)).toEqual(ids.slice(1));
   });
 
-  test("an info/success/warning toast auto-dismisses after its severity duration", () => {
-    store.showToast({ style: "info", title: "auto" });
+  test("info and success toasts auto-dismiss after the 10s default duration", () => {
+    for (const style of ["info", "success"]) {
+      store.showToast({ style, title: "auto" });
+      expect(store.getToasts()).toHaveLength(1);
+
+      jest.advanceTimersByTime(5000);
+      expect(store.getToasts()).toHaveLength(1);
+
+      jest.advanceTimersByTime(5000);
+      expect(store.getToasts()).toHaveLength(0);
+    }
+  });
+
+  test("a warning toast uses the longer 20s default duration", () => {
+    store.showToast({ style: "warning", title: "auto-warn" });
+
+    jest.advanceTimersByTime(10_000);
     expect(store.getToasts()).toHaveLength(1);
 
-    jest.advanceTimersByTime(5000);
-
+    jest.advanceTimersByTime(10_000);
     expect(store.getToasts()).toHaveLength(0);
   });
 
-  test("a warning toast uses the longer 10s default duration", () => {
-    store.showToast({ style: "warning", title: "auto-warn" });
+  test("an unknown style uses the 10s fallback duration", () => {
+    store.showToast({ style: "other", title: "fallback" });
 
-    jest.advanceTimersByTime(5000);
+    jest.advanceTimersByTime(9999);
     expect(store.getToasts()).toHaveLength(1);
 
-    jest.advanceTimersByTime(5000);
+    jest.advanceTimersByTime(1);
     expect(store.getToasts()).toHaveLength(0);
   });
 
@@ -150,7 +164,7 @@ describe("notificationsStore (mitto-sus.11) > toasts", () => {
 
     // The pending timer must not throw or double-dismiss once it would have
     // fired -- covered by not throwing when advancing past its duration.
-    expect(() => jest.advanceTimersByTime(5000)).not.toThrow();
+    expect(() => jest.advanceTimersByTime(10_000)).not.toThrow();
     expect(store.getToasts()).toHaveLength(0);
   });
 });

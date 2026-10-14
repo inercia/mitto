@@ -269,6 +269,9 @@ type SessionManager struct {
 	// preferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	preferredModelsResolver func(name, workingDir string) []config.PromptPreferredModel
+	// agentModelCatalogRecorder persists real model catalogs advertised by an ACP
+	// server. It is passed to every new and resumed BackgroundSession.
+	agentModelCatalogRecorder AgentModelCatalogRecorder
 
 	// promptParametersResolver resolves a named workspace prompt to its declared parameter list.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
@@ -484,6 +487,20 @@ func (sm *SessionManager) SetStatsAggregator(agg stats.Aggregator) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.statsAggregator = agg
+}
+
+// SetAgentModelCatalogRecorder configures persistence for model lists reported
+// by ACP sessions. New and resumed sessions snapshot this callback at creation.
+func (sm *SessionManager) SetAgentModelCatalogRecorder(recorder AgentModelCatalogRecorder) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.agentModelCatalogRecorder = recorder
+}
+
+func (sm *SessionManager) getAgentModelCatalogRecorder() AgentModelCatalogRecorder {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.agentModelCatalogRecorder
 }
 
 // attachStatsObserver attaches a live-path statsObserver to bs when a stats
@@ -947,11 +964,14 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		workspaceName = ws.Name
 	}
 	procMgr.SetNotifyFunc(func(wsUUID, name string, lastErr error) {
-		sm.BroadcastWorkspaceUINotify(wsUUID, workspaceName, workingDir, UINotifyRequest{
+		notice, send := FormatProcessorFailureNotice(wsUUID, workspaceName, lastErr, UINotifyRequest{
 			Title:   "Close-phase processor failed",
 			Message: fmt.Sprintf("%q could not be dispatched after retries: %v", name, lastErr),
 			Style:   "warning",
 		})
+		if send {
+			sm.BroadcastWorkspaceUINotify(wsUUID, workspaceName, workingDir, notice)
+		}
 	})
 
 	// Wire the durable pending-dispatch spool (mitto-3421): if prompt delivery
@@ -2367,6 +2387,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	autoApprove := sm.autoApprove
 	if !autoApprove && sm.mittoConfig != nil && acpServer != "" {
 		if serverConfig, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+			//nolint:staticcheck // Preserve legacy settings.json behavior until all server configs migrate to Permissions.
 			autoApprove = serverConfig.AutoApprove
 			if autoApprove && sm.logger != nil {
 				sm.logger.Debug("Using per-server auto_approve setting",
@@ -2377,6 +2398,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	}
 	// Per-workspace auto_approve overrides global and per-server settings
 	if !autoApprove {
+		//nolint:staticcheck // Preserve legacy workspace settings.json behavior during permission migration.
 		if workspace != nil && workspace.AutoApprove != nil && *workspace.AutoApprove {
 			autoApprove = true
 			if sm.logger != nil {
@@ -2385,7 +2407,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 					"working_dir", workingDir,
 					"auto_approve", autoApprove)
 			}
-		} else if workspace == nil && foundWs != nil && foundWs.AutoApprove != nil && *foundWs.AutoApprove {
+		} else if workspace == nil && foundWs != nil && foundWs.AutoApprove != nil && *foundWs.AutoApprove { //nolint:staticcheck // Preserve legacy workspace settings.json behavior during permission migration.
 			autoApprove = true
 			if sm.logger != nil {
 				sm.logger.Debug("Using per-workspace auto_approve setting",
@@ -2403,6 +2425,14 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 	}
 	if effectiveWs == nil {
 		effectiveWs = sm.wsRegistry.GetDefaultWorkspace()
+	}
+	workspaceName := workspaceUUID
+	if effectiveWs != nil && effectiveWs.Name != "" {
+		workspaceName = effectiveWs.Name
+	}
+	var workspaceModelOverrides config.ModelOverrides
+	if effectiveWs != nil {
+		workspaceModelOverrides = effectiveWs.ModelOverrides
 	}
 	sharedProcessStart := time.Now()
 	sharedProcess, sharedLease := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
@@ -2444,6 +2474,7 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		ACPCwd:                         acpCwd,
 		Env:                            acpEnv,
 		ACPServer:                      acpServer,
+		OnAgentModels:                  sm.getAgentModelCatalogRecorder(),
 		WorkingDir:                     workingDir,
 		AutoApprove:                    autoApprove,
 		Logger:                         sm.logger,
@@ -2457,8 +2488,10 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		FileLinksConfig:                fileLinksConfig,
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
+		WorkspaceName:                  workspaceName,
 		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
 		InitialModelPreference:         initialModelPref, // Per-workspace initial-model preference (applied on fresh sessions)
+		ModelOverrides:                 workspaceModelOverrides,
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
@@ -3005,6 +3038,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	autoApprove := sm.autoApprove
 	if !autoApprove && sm.mittoConfig != nil && acpServer != "" {
 		if serverConfig, err := sm.mittoConfig.GetServer(acpServer); err == nil {
+			//nolint:staticcheck // Preserve legacy settings.json behavior until all server configs migrate to Permissions.
 			autoApprove = serverConfig.AutoApprove
 			if autoApprove && sm.logger != nil {
 				sm.logger.Debug("Using per-server auto_approve setting for resumed session",
@@ -3015,7 +3049,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		}
 	}
 	// Per-workspace auto_approve overrides global and per-server settings
-	if !autoApprove && foundWs != nil && foundWs.AutoApprove != nil && *foundWs.AutoApprove {
+	if !autoApprove && foundWs != nil && foundWs.AutoApprove != nil && *foundWs.AutoApprove { //nolint:staticcheck // Preserve legacy workspace settings.json behavior during permission migration.
 		autoApprove = true
 		if sm.logger != nil {
 			sm.logger.Debug("Using per-workspace auto_approve setting for resumed session",
@@ -3133,6 +3167,14 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 
 	// Create a background session with the existing persisted session ID
 	// Pass the ACP session ID for potential server-side resumption
+	workspaceName := workspaceUUID
+	if foundWs != nil && foundWs.Name != "" {
+		workspaceName = foundWs.Name
+	}
+	var workspaceModelOverrides config.ModelOverrides
+	if foundWs != nil {
+		workspaceModelOverrides = foundWs.ModelOverrides
+	}
 	cfg := BackgroundSessionConfig{
 		// CreationCtx is canceled by CloseSession when deletion invalidates this pending
 		// resume, allowing the handshake to abort before any load/new fallback.
@@ -3143,6 +3185,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		ACPCwd:                         acpCwd,
 		Env:                            acpEnv,
 		ACPServer:                      acpServer,
+		OnAgentModels:                  sm.getAgentModelCatalogRecorder(),
 		ACPSessionID:                   acpSessionID,
 		WorkingDir:                     workingDir,
 		AutoApprove:                    autoApprove,
@@ -3157,8 +3200,10 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		FileLinksConfig:                fileLinksConfig,
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
-		MittoConfig:                    sm.mittoConfig,         // Pass config for default flags
-		InitialModelPreference:         initialModelPref,       // Initial-model preference: workspace/ACP-server default or auto-child model_tag (mitto-b3qe)
+		WorkspaceName:                  workspaceName,
+		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
+		InitialModelPreference:         initialModelPref, // Initial-model preference: workspace/ACP-server default or auto-child model_tag (mitto-b3qe)
+		ModelOverrides:                 workspaceModelOverrides,
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,

@@ -116,6 +116,7 @@ func seedACPServerDefaults(s *configPkg.ACPServerSettings, d *agents.AgentDefaul
 	if s.ContextFlushCommand == "" && d.ContextFlushCommand != "" {
 		s.ContextFlushCommand = d.ContextFlushCommand
 	}
+	//nolint:staticcheck // Seed the legacy field for compatibility with existing agent metadata and settings.
 	s.AutoApprove = d.AutoApprove
 }
 

@@ -92,6 +92,10 @@ export function createWorkspacesResource(config) {
      */
     getAcpStatus: (uuid, opts) => call("GET", `/api/workspaces/${enc(uuid)}/acp-status`, opts),
 
+    /** GET /api/workspaces/{uuid}/models — the last-seen model catalog. */
+    getModels: (uuid, opts) =>
+      call("GET", `/api/workspaces/${enc(uuid)}/models`, opts),
+
     /** POST /api/workspaces/{uuid}/restart-acp — restarts the shared ACP
      *  process so MCP changes take effect. */
     restartAcp: (uuid, opts) => call("POST", `/api/workspaces/${enc(uuid)}/restart-acp`, opts),

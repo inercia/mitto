@@ -145,10 +145,11 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		acpServers := make([]map[string]interface{}, len(h.deps.MittoConfig.ACPServers))
 		for i, srv := range h.deps.MittoConfig.ACPServers {
 			acpServers[i] = map[string]interface{}{
-				"name":         srv.Name,
-				"command":      srv.Command,
-				"source":       string(srv.Source), // Include source for frontend read-only indication
-				"auto_approve": srv.AutoApprove,    // Include auto-approve setting for permissions
+				"name":    srv.Name,
+				"command": srv.Command,
+				"source":  string(srv.Source), // Include source for frontend read-only indication
+				//nolint:staticcheck // Expose the legacy setting so existing clients retain their current config view.
+				"auto_approve": srv.AutoApprove, // Include auto-approve setting for permissions
 				// SECURITY: mask values of keys that look like API keys / tokens / secrets.
 				"env":  SanitizeEnvVars(srv.Env),
 				"tags": srv.Tags, // Include categorization tags

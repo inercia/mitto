@@ -41,6 +41,42 @@ func TestWorkspaceSettings_AuxiliaryModelSelection_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSettings_ModelOverrides_JSONRoundTripAndLookup(t *testing.T) {
+	w := WorkspaceSettings{
+		ACPServer:  "opencode",
+		WorkingDir: "/proj",
+		ModelOverrides: ModelOverrides{
+			{ACPServer: "opencode", Tag: "Coding", ModelID: "gpt-5-codex"},
+			{ACPServer: "claude", Tag: "Coding", ModelID: "claude-sonnet-4-6"},
+		},
+	}
+
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got WorkspaceSettings
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(got.ModelOverrides) != 2 || got.ModelOverrides[0] != w.ModelOverrides[0] || got.ModelOverrides[1] != w.ModelOverrides[1] {
+		t.Fatalf("ModelOverrides round-trip = %+v, want %+v", got.ModelOverrides, w.ModelOverrides)
+	}
+	if modelID, ok := got.OverrideFor("opencode", "Coding"); !ok || modelID != "gpt-5-codex" {
+		t.Errorf("OverrideFor(opencode, Coding) = (%q, %v), want (%q, true)", modelID, ok, "gpt-5-codex")
+	}
+	if modelID, ok := got.OverrideFor("other-agent", "Coding"); ok || modelID != "" {
+		t.Errorf("OverrideFor(other-agent, Coding) = (%q, %v), want empty/false", modelID, ok)
+	}
+	if modelID, ok := got.OverrideFor("opencode", "Reasoning"); ok || modelID != "" {
+		t.Errorf("OverrideFor(opencode, Reasoning) = (%q, %v), want empty/false", modelID, ok)
+	}
+	var nilWorkspace *WorkspaceSettings
+	if modelID, ok := nilWorkspace.OverrideFor("opencode", "Coding"); ok || modelID != "" {
+		t.Errorf("nil WorkspaceSettings.OverrideFor() = (%q, %v), want empty/false", modelID, ok)
+	}
+}
+
 func TestWorkspaceSettings_AuxiliaryModelSelection_JSONOmitempty(t *testing.T) {
 	// When AuxiliaryModelSelection is nil, it should be omitted from JSON
 	w := WorkspaceSettings{
@@ -280,7 +316,7 @@ func TestLoadWorkspacesFromFile_JSON(t *testing.T) {
 func TestLoadWorkspacesFromFile_YAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workspaces.yaml")
-	content := "workspaces:\n  - acp_server: auggie\n    working_dir: /proj1\n"
+	content := "workspaces:\n  - acp_server: auggie\n    working_dir: /proj1\n    model_overrides:\n      - acp_server: auggie\n        tag: Coding\n        model_id: claude-sonnet\n"
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -293,6 +329,11 @@ func TestLoadWorkspacesFromFile_YAML(t *testing.T) {
 	}
 	if workspaces[0].ACPServer != "auggie" {
 		t.Errorf("workspaces[0].ACPServer = %q, want %q", workspaces[0].ACPServer, "auggie")
+	}
+	if len(workspaces[0].ModelOverrides) != 1 || workspaces[0].ModelOverrides[0] != (ModelOverride{
+		ACPServer: "auggie", Tag: "Coding", ModelID: "claude-sonnet",
+	}) {
+		t.Errorf("workspaces[0].ModelOverrides = %+v, want the YAML model_overrides entry", workspaces[0].ModelOverrides)
 	}
 }
 
@@ -475,7 +516,13 @@ func TestSaveWorkspaces(t *testing.T) {
 
 	// Save workspaces
 	workspaces := []WorkspaceSettings{
-		{ACPServer: "test-server", WorkingDir: "/test/path"},
+		{
+			ACPServer:  "test-server",
+			WorkingDir: "/test/path",
+			ModelOverrides: ModelOverrides{
+				{ACPServer: "test-server", Tag: "Coding", ModelID: "model-123"},
+			},
+		},
 	}
 	if err := SaveWorkspaces(workspaces); err != nil {
 		t.Fatalf("SaveWorkspaces() returned error: %v", err)
@@ -500,6 +547,9 @@ func TestSaveWorkspaces(t *testing.T) {
 	}
 	if loaded[0].WorkingDir != "/test/path" {
 		t.Errorf("loaded[0].WorkingDir = %q, want %q", loaded[0].WorkingDir, "/test/path")
+	}
+	if len(loaded[0].ModelOverrides) != 1 || loaded[0].ModelOverrides[0] != workspaces[0].ModelOverrides[0] {
+		t.Errorf("loaded[0].ModelOverrides = %+v, want %+v", loaded[0].ModelOverrides, workspaces[0].ModelOverrides)
 	}
 }
 

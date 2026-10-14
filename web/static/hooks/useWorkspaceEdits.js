@@ -31,6 +31,7 @@ export function useWorkspaceEdits({
   // profile wins server-side when both are set.
   const [editInitialModelProfile, setEditInitialModelProfile] = useState("");
   const [editInitialModelTag, setEditInitialModelTag] = useState("");
+  const [editModelOverrides, setEditModelOverrides] = useState([]);
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
@@ -62,6 +63,12 @@ export function useWorkspaceEdits({
         auxiliary_model_selection: auxModelSelection,
         initial_model_profile: editInitialModelProfile || undefined,
         initial_model_tag: editInitialModelTag || undefined,
+        model_overrides: (() => {
+          const savedOverrides = editModelOverrides.filter(
+            (override) => override.tag && override.model_id,
+          );
+          return savedOverrides.length ? savedOverrides : undefined;
+        })(),
         restricted_runner: editRunner,
         restricted_runner_config:
           editRunner !== "exec" ? editRunnerConfig : undefined,
@@ -78,6 +85,7 @@ export function useWorkspaceEdits({
       editAuxModelConstraintCleared,
       editInitialModelProfile,
       editInitialModelTag,
+      editModelOverrides,
       editRunner,
       editRunnerConfig,
       editAutoApprove,
@@ -116,6 +124,11 @@ export function useWorkspaceEdits({
     setEditAuxModelConstraintCleared(false);
     setEditInitialModelProfile(selectedWorkspace.initial_model_profile || "");
     setEditInitialModelTag(selectedWorkspace.initial_model_tag || "");
+    setEditModelOverrides(
+      Array.isArray(selectedWorkspace.model_overrides)
+        ? selectedWorkspace.model_overrides.map((override) => ({ ...override }))
+        : [],
+    );
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
@@ -133,6 +146,7 @@ export function useWorkspaceEdits({
     editAuxModelConstraintCleared,
     editInitialModelProfile,
     editInitialModelTag,
+    editModelOverrides,
     editRunner,
     editRunnerConfig,
     editAutoApprove,
@@ -144,6 +158,7 @@ export function useWorkspaceEdits({
     setEditAuxModelConstraintCleared,
     setEditInitialModelProfile,
     setEditInitialModelTag,
+    setEditModelOverrides,
     setEditRunner,
     setEditRunnerConfig,
     setEditAutoApprove,

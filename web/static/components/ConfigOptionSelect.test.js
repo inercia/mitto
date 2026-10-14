@@ -79,6 +79,56 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
     }
   });
 
+  test("gives the toolbar mode selector more room than other selectors", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    const mount = (category) =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: category,
+            name: category,
+            category,
+            current_value: "default",
+            options: [{ value: "default", name: "Default" }],
+          },
+          variant: "toolbar",
+        }),
+        container,
+      );
+
+    try {
+      mount("mode");
+      expect(container.querySelector("summary").classList).toContain(
+        "max-w-[264px]",
+      );
+      expect(
+        container.querySelector("summary .truncate-left"),
+      ).not.toBeNull();
+      const modeOptionButton = container.querySelector("ul button");
+      expect(modeOptionButton.classList).toContain("w-full");
+      expect(
+        modeOptionButton.querySelector("span.truncate-left").classList,
+      ).toContain("flex-1");
+      expect(container.querySelector("ul").classList).toContain("w-[250px]");
+
+      mount("model");
+      expect(container.querySelector("summary").classList).toContain(
+        "max-w-[200px]",
+      );
+      expect(container.querySelector("ul").classList).toContain("w-[250px]");
+      expect(
+        container
+          .querySelector("summary span.truncate-left bdi")
+          .getAttribute("dir"),
+      ).toBe("ltr");
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
   // Preact's plain `useEffect` (not `useLayoutEffect`) is flushed via
   // `requestAnimationFrame`, never on a microtask — a bare
   // `await Promise.resolve()` is not enough to observe its side effects.
@@ -139,7 +189,8 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       // `await Promise.resolve()` is enough to observe the re-render.
       await Promise.resolve();
       expect(
-        buttons().find((b) => b.classList.contains("menu-active"))
+        buttons()
+          .find((b) => b.classList.contains("menu-active"))
           ?.textContent.trim(),
       ).toBe("High");
 
@@ -148,7 +199,8 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       mount("high");
       await waitFor(
         () =>
-          buttons().find((b) => b.classList.contains("menu-active"))
+          buttons()
+            .find((b) => b.classList.contains("menu-active"))
             ?.textContent.trim() === "High",
       );
       expect(toasts).toEqual([]);
@@ -191,7 +243,8 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       // a single awaited microtask tick is enough to observe the DOM update.
       await Promise.resolve();
       expect(
-        buttons().find((b) => b.classList.contains("menu-active"))
+        buttons()
+          .find((b) => b.classList.contains("menu-active"))
           ?.textContent.trim(),
       ).toBe("High");
       expect(toasts).toEqual([]);
@@ -201,7 +254,8 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       mount();
       await waitFor(
         () =>
-          buttons().find((b) => b.classList.contains("menu-active"))
+          buttons()
+            .find((b) => b.classList.contains("menu-active"))
             ?.textContent.trim() === "Low",
       );
       expect(toasts).toHaveLength(1);

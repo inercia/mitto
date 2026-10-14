@@ -20,7 +20,12 @@ import {
 
 import { RunnerRestrictionsEditor } from "./SettingsDialog.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
-import { ModelTagSelect } from "./ModelTagSelect.js";
+import { ModelTagSelect, collectModelTags } from "./ModelTagSelect.js";
+import {
+  modelCatalogOptions,
+  modelOverridesForAgent,
+  replaceAgentModelOverrides,
+} from "../utils/workspaceModelOverrides.js";
 
 const buildMcpServerJson = (srv) => {
   const cfg = {};
@@ -53,6 +58,12 @@ export function WorkspaceEditor({
   setEditInitialModelProfile,
   editInitialModelTag,
   setEditInitialModelTag,
+  editModelOverrides = [],
+  setEditModelOverrides,
+  modelsData,
+  modelsLoading,
+  modelsError,
+  loadModels,
   editAuxModelProfile,
   setEditAuxModelProfile,
   editAuxModelTag,
@@ -281,6 +292,196 @@ export function WorkspaceEditor({
           </p>
         </div>
       `}
+
+      <!-- Workspace Models tab -->
+      ${activeTab === "models" &&
+      (() => {
+        const agentOverrides = modelOverridesForAgent(
+          editModelOverrides,
+          editAcpServer,
+        );
+        // The API returns the saved workspace agent's catalog. Do not offer
+        // those models for a different, unsaved agent selection.
+        const catalogMatchesAgent = modelsData?.acp_server === editAcpServer;
+        const models = catalogMatchesAgent ? modelsData?.models || [] : [];
+        const tags = collectModelTags(modelProfiles);
+        const updateRows = (rows) =>
+          setEditModelOverrides?.((previous) =>
+            replaceAgentModelOverrides(previous, editAcpServer, rows),
+          );
+
+        return html`
+          <div class="space-y-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-medium">
+                  Model overrides for ${editAcpServer || "this agent"}
+                </h3>
+                <p class="text-xs text-mitto-text-muted mt-1">
+                  Choose the model to use for each capability tag in this
+                  workspace.
+                </p>
+              </div>
+              <div class="flex gap-1 shrink-0">
+                ${selectedWorkspace?.uuid &&
+                html`<button
+                  type="button"
+                  class="btn btn-ghost btn-square btn-sm"
+                  data-testid="ws-model-catalog-refresh"
+                  aria-label="Refresh model catalog"
+                  disabled=${modelsLoading}
+                  onClick=${() => loadModels?.(selectedWorkspace.uuid)}
+                >
+                  <${RefreshIcon}
+                    className=${`w-4 h-4 ${modelsLoading ? "animate-spin" : ""}`}
+                  />
+                </button>`}
+                <button
+                  type="button"
+                  class="btn btn-outline btn-sm"
+                  data-testid="ws-model-override-add"
+                  disabled=${!editAcpServer}
+                  onClick=${() =>
+                    updateRows([...agentOverrides, { tag: "", model_id: "" }])}
+                >
+                  <${PlusIcon} className="w-4 h-4" /> Add override
+                </button>
+              </div>
+            </div>
+
+            ${modelsLoading
+              ? html`<div
+                  class="flex items-center gap-2 text-sm text-mitto-text-muted"
+                  role="status"
+                >
+                  <${SpinnerIcon} className="w-4 h-4" /> Loading available
+                  models…
+                </div>`
+              : modelsError
+                ? html`<p class="text-sm text-mitto-warning" role="status">
+                    ${modelsError} Saved overrides are preserved.
+                  </p>`
+                : !catalogMatchesAgent || models.length === 0
+                  ? html`<p class="text-sm text-mitto-text-muted" role="status">
+                      ${!selectedWorkspace?.uuid
+                        ? "Save this workspace before model options can be loaded."
+                        : catalogMatchesAgent
+                          ? "No model catalog is available yet. Start the agent to discover models; saved overrides are preserved."
+                          : "Save the agent selection before its model catalog can be loaded; saved overrides are preserved."}
+                    </p>`
+                  : html`<p
+                      class="text-xs text-mitto-text-muted"
+                      data-testid="ws-model-catalog-status"
+                    >
+                      ${modelsData.live
+                        ? "Agent is running"
+                        : "Showing last-seen models"}
+                      ${modelsData.updated_at
+                        ? ` · Updated ${new Date(modelsData.updated_at).toLocaleString()}`
+                        : ""}
+                    </p>`}
+            ${agentOverrides.length === 0
+              ? html`<p
+                  class="rounded-md border border-dashed border-mitto-border p-6 text-center text-sm text-mitto-text-muted"
+                >
+                  No model overrides configured for this agent.
+                </p>`
+              : html`<div class="space-y-2">
+                  ${agentOverrides.map((override, index) => {
+                    const options = modelCatalogOptions(
+                      models,
+                      override.model_id,
+                    );
+                    const rowTags =
+                      tags.includes(override.tag) || !override.tag
+                        ? tags
+                        : [...tags, override.tag].sort((a, b) =>
+                            a.localeCompare(b),
+                          );
+                    return html`<div
+                      key=${`${editAcpServer}-${index}`}
+                      class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2"
+                    >
+                      <select
+                        class="select select-sm w-full"
+                        aria-label=${`Capability tag for override ${index + 1}`}
+                        data-testid=${`ws-model-override-tag-${index}`}
+                        value=${override.tag || ""}
+                        onInput=${(event) =>
+                          updateRows(
+                            agentOverrides.map((row, rowIndex) =>
+                              rowIndex === index
+                                ? { ...row, tag: event.target.value }
+                                : row,
+                            ),
+                          )}
+                      >
+                        <option value="">Choose a tag</option>
+                        ${rowTags.length === 0 &&
+                        html`<option value="" disabled>
+                          (no tags defined in model profiles)
+                        </option>`}
+                        ${rowTags.map(
+                          (tag) =>
+                            html`<option key=${tag} value=${tag}>
+                              ${tag}${!tags.includes(tag)
+                                ? " (unavailable)"
+                                : ""}
+                            </option>`,
+                        )}
+                      </select>
+                      <select
+                        class="select select-sm w-full"
+                        aria-label=${`Model for override ${index + 1}`}
+                        data-testid=${`ws-model-override-model-${index}`}
+                        value=${override.model_id || ""}
+                        onInput=${(event) =>
+                          updateRows(
+                            agentOverrides.map((row, rowIndex) =>
+                              rowIndex === index
+                                ? { ...row, model_id: event.target.value }
+                                : row,
+                            ),
+                          )}
+                      >
+                        <option value="">
+                          ${models.length
+                            ? "Choose a model"
+                            : "No models available"}
+                        </option>
+                        ${options.map(
+                          (model) =>
+                            html`<option
+                              key=${model.id}
+                              value=${model.id}
+                              title=${model.description || model.name}
+                            >
+                              ${model.name || model.id}
+                            </option>`,
+                        )}
+                      </select>
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-square btn-sm"
+                        aria-label=${`Remove model override ${index + 1}`}
+                        data-testid=${`ws-model-override-remove-${index}`}
+                        onClick=${() =>
+                          updateRows(
+                            agentOverrides.filter(
+                              (_, rowIndex) => rowIndex !== index,
+                            ),
+                          )}
+                      >
+                        <${TrashIcon}
+                          className="w-4 h-4 text-mitto-text-muted"
+                        />
+                      </button>
+                    </div>`;
+                  })}
+                </div>`}
+          </div>
+        `;
+      })()}
 
       <!-- Workspace Runner tab -->
       ${activeTab === "runner" &&

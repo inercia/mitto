@@ -14,6 +14,8 @@ import (
 // --- Types (workspaces.go) ---
 type WorkspacesFile = workspaces.WorkspacesFile
 type AutoChild = workspaces.AutoChild
+type ModelOverride = workspaces.ModelOverride
+type ModelOverrides = workspaces.ModelOverrides
 type WorkspaceSettings = workspaces.WorkspaceSettings
 
 // --- Types (folders.go) ---

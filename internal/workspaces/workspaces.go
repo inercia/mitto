@@ -59,6 +59,32 @@ type AutoChild struct {
 	ModelTag string `json:"model_tag,omitempty" yaml:"model_tag,omitempty"`
 }
 
+// ModelOverride forces a model id for a capability tag when a workspace uses
+// the specified ACP server. The model id is accepted only when that agent
+// advertises it in its available-model catalog.
+type ModelOverride struct {
+	ACPServer string `json:"acp_server" yaml:"acp_server"`
+	Tag       string `json:"tag" yaml:"tag"`
+	ModelID   string `json:"model_id" yaml:"model_id"`
+}
+
+// ModelOverrides is the ordered list of workspace-scoped model overrides.
+type ModelOverrides []ModelOverride
+
+// OverrideFor returns the first non-empty model id configured for the exact
+// ACP server and capability tag pair.
+func (overrides ModelOverrides) OverrideFor(acpServer, tag string) (modelID string, ok bool) {
+	if acpServer == "" || tag == "" {
+		return "", false
+	}
+	for _, override := range overrides {
+		if override.ACPServer == acpServer && override.Tag == tag && override.ModelID != "" {
+			return override.ModelID, true
+		}
+	}
+	return "", false
+}
+
 // WorkspaceSettings is the JSON representation of a workspace.
 // It represents an ACP server + working directory pair.
 // Each workspace can run its own ACP server instance.
@@ -144,6 +170,10 @@ type WorkspaceSettings struct {
 	// definition order) carrying this tag whose Criteria matches an available
 	// model. Empty means keep the agent's default model.
 	InitialModelTag string `json:"initial_model_tag,omitempty" yaml:"initial_model_tag,omitempty"`
+	// ModelOverrides forces a model id for a capability tag in this workspace.
+	// The ACP server is part of each key so overrides never leak across agents.
+	// This is per-workspace data and is intentionally not hoisted into folders.json.
+	ModelOverrides ModelOverrides `json:"model_overrides,omitempty" yaml:"model_overrides,omitempty"`
 	// IsDefault marks this workspace as the default for its working directory.
 	// When multiple workspaces share the same folder (e.g. different ACP servers
 	// or model variants), the one with IsDefault set is preferred when a workspace
@@ -217,6 +247,15 @@ func (w *WorkspaceSettings) GetInitialModelPreference() []prompts.PromptPreferre
 		return []prompts.PromptPreferredModel{{ModelTag: w.InitialModelTag}}
 	}
 	return nil
+}
+
+// OverrideFor returns the workspace's model id override for an ACP server and
+// tag. It is safe to call on a nil receiver.
+func (w *WorkspaceSettings) OverrideFor(acpServer, tag string) (string, bool) {
+	if w == nil {
+		return "", false
+	}
+	return w.ModelOverrides.OverrideFor(acpServer, tag)
 }
 
 // NormalizeDefaultWorkspaces enforces the invariant that at most one workspace

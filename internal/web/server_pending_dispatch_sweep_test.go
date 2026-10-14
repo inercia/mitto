@@ -2,6 +2,9 @@ package web
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -64,7 +67,7 @@ func TestStartPendingDispatchSweep_StartupSweep_WarmsPresentIdleWorkspace(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stop := startPendingDispatchSweep(ctx, nil, nil, spoolDir, nil, workspaceExists, ensureWorkspaceProcess)
+	stop := startPendingDispatchSweep(ctx, nil, nil, spoolDir, nil, workspaceExists, ensureWorkspaceProcess, nil, nil)
 	defer stop()
 
 	select {
@@ -104,7 +107,7 @@ func TestStartPendingDispatchSweep_StartupSweep_SkipsOrphanedWorkspace(t *testin
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stop := startPendingDispatchSweep(ctx, nil, nil, spoolDir, nil, workspaceExists, ensureWorkspaceProcess)
+	stop := startPendingDispatchSweep(ctx, nil, nil, spoolDir, nil, workspaceExists, ensureWorkspaceProcess, nil, nil)
 	// Give the shortened startup sweep time to run before asserting.
 	time.Sleep(200 * time.Millisecond)
 	stop()
@@ -126,7 +129,7 @@ func TestStartPendingDispatchSweep_StopCancelsPromptly(t *testing.T) {
 	workspaceExists := func(string) bool { return false }
 	ensureWorkspaceProcess := func(string) error { return nil }
 
-	stop := startPendingDispatchSweep(context.Background(), nil, nil, spoolDir, nil, workspaceExists, ensureWorkspaceProcess)
+	stop := startPendingDispatchSweep(context.Background(), nil, nil, spoolDir, nil, workspaceExists, ensureWorkspaceProcess, nil, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -158,6 +161,10 @@ func (*blockingSweepProvider) PromptAuxiliaryAsync(context.Context, string, stri
 
 func (*blockingSweepProvider) CloseWorkspaceAuxiliary(string) error { return nil }
 
+func (*blockingSweepProvider) SendAuxiliaryInstructions(context.Context, string, string, string) error {
+	return nil
+}
+
 // TestStartPendingDispatchSweep_StopCancelsActiveFlush pins mitto-ctg: an
 // already-running startup sweep must receive shutdown cancellation through
 // FlushPendingDispatches and its active auxiliary prompt. Otherwise stop waits
@@ -177,6 +184,7 @@ func TestStartPendingDispatchSweep_StopCancelsActiveFlush(t *testing.T) {
 		context.Background(), nil, auxMgr, spoolDir, nil,
 		func(workspaceUUID string) bool { return workspaceUUID == wsUUID },
 		func(string) error { return nil },
+		nil, nil,
 	)
 
 	select {
@@ -203,5 +211,175 @@ func TestStartPendingDispatchSweep_StopCancelsActiveFlush(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Attempts != 1 || entries[0].LastError != "" {
 		t.Fatalf("entry after cancellation = %+v, want one unchanged entry", entries)
+	}
+}
+
+type authFailureSweepProvider struct {
+	err error
+}
+
+func (p *authFailureSweepProvider) PromptAuxiliary(context.Context, string, string, string) (string, error) {
+	return "", p.err
+}
+
+func (*authFailureSweepProvider) PromptAuxiliaryAsync(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*authFailureSweepProvider) CloseWorkspaceAuxiliary(string) error { return nil }
+
+func (*authFailureSweepProvider) SendAuxiliaryInstructions(context.Context, string, string, string) error {
+	return nil
+}
+
+type completionSweepProvider struct{}
+
+func (*completionSweepProvider) PromptAuxiliary(_ context.Context, _, _, prompt string) (string, error) {
+	const dispatchIDMarker = `The dispatch ID is "`
+	markerStart := strings.Index(prompt, dispatchIDMarker)
+	if markerStart < 0 {
+		return "", fmt.Errorf("tracked prompt missing dispatch ID")
+	}
+	dispatchIDStart := markerStart + len(dispatchIDMarker)
+	dispatchIDEnd := strings.IndexByte(prompt[dispatchIDStart:], '"')
+	if dispatchIDEnd < 0 {
+		return "", fmt.Errorf("tracked prompt has unterminated dispatch ID")
+	}
+	dispatchID := prompt[dispatchIDStart : dispatchIDStart+dispatchIDEnd]
+	return fmt.Sprintf(`MITTO_PROCESSOR_COMPLETION {"dispatch_id":%q,"save_count":1}`, dispatchID), nil
+}
+
+func (*completionSweepProvider) PromptAuxiliaryAsync(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*completionSweepProvider) CloseWorkspaceAuxiliary(string) error { return nil }
+
+func (*completionSweepProvider) SendAuxiliaryInstructions(context.Context, string, string, string) error {
+	return nil
+}
+
+func TestStartPendingDispatchSweep_AuthFailureInvokesNotifyCallback(t *testing.T) {
+	orig := pendingDispatchStartupSweepDelay
+	pendingDispatchStartupSweepDelay = 20 * time.Millisecond
+	defer func() { pendingDispatchStartupSweepDelay = orig }()
+
+	spoolDir := t.TempDir()
+	wsUUID := fmt.Sprintf("ws-server-auth-failure-%d", time.Now().UnixNano())
+	seedFreshSpoolEntry(t, spoolDir, wsUUID)
+
+	provider := &authFailureSweepProvider{err: errors.New(`authentication required: {"error":"expired-token-secret"}`)}
+	auxMgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
+	warmCh := make(chan struct{}, 2)
+	ensureWorkspaceProcess := func(string) error {
+		warmCh <- struct{}{}
+		return nil
+	}
+	notifyCh := make(chan struct {
+		workspaceUUID string
+		name          string
+		err           error
+	}, 1)
+	stopFirst := startPendingDispatchSweep(
+		context.Background(), nil, auxMgr, spoolDir, nil,
+		func(workspaceUUID string) bool { return workspaceUUID == wsUUID },
+		ensureWorkspaceProcess,
+		func(workspaceUUID, name string, lastErr error) {
+			notifyCh <- struct {
+				workspaceUUID string
+				name          string
+				err           error
+			}{workspaceUUID: workspaceUUID, name: name, err: lastErr}
+		},
+		nil,
+	)
+	defer stopFirst()
+
+	select {
+	case got := <-notifyCh:
+		if got.workspaceUUID != wsUUID || got.name != "extract-memories-on-close" {
+			t.Fatalf("notify callback args = (%q, %q), want (%q, %q)", got.workspaceUUID, got.name, wsUUID, "extract-memories-on-close")
+		}
+		if got.err == nil || !strings.Contains(got.err.Error(), "authentication required") {
+			t.Fatalf("notify callback error = %v, want authentication error", got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup sweep did not invoke NotifyFunc for an authentication failure")
+	}
+	select {
+	case <-warmCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup sweep did not warm the workspace before flushing its spool")
+	}
+	stopFirst()
+
+	// A separate sweep manager sees the same workspace spool while the auth
+	// cooldown is active. It should still discover/warm the workspace, but must
+	// not send another re-authentication notice.
+	stopSecond := startPendingDispatchSweep(
+		context.Background(), nil, auxMgr, spoolDir, nil,
+		func(workspaceUUID string) bool { return workspaceUUID == wsUUID },
+		ensureWorkspaceProcess,
+		func(workspaceUUID, name string, lastErr error) {
+			notifyCh <- struct {
+				workspaceUUID string
+				name          string
+				err           error
+			}{workspaceUUID: workspaceUUID, name: name, err: lastErr}
+		},
+		nil,
+	)
+	defer stopSecond()
+	select {
+	case <-warmCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second startup sweep did not run during the active auth cooldown")
+	}
+	time.Sleep(100 * time.Millisecond)
+	stopSecond()
+	select {
+	case duplicate := <-notifyCh:
+		t.Fatalf("second sweep emitted duplicate auth notice: %+v", duplicate)
+	default:
+	}
+}
+
+func TestStartPendingDispatchSweep_LateDeliveryInvokesCallback(t *testing.T) {
+	orig := pendingDispatchStartupSweepDelay
+	pendingDispatchStartupSweepDelay = 20 * time.Millisecond
+	defer func() { pendingDispatchStartupSweepDelay = orig }()
+
+	spoolDir := t.TempDir()
+	const wsUUID = "ws-server-late-delivery"
+	seedFreshSpoolEntry(t, spoolDir, wsUUID)
+
+	provider := &completionSweepProvider{}
+	auxMgr := auxiliary.NewWorkspaceAuxiliaryManager(provider, nil)
+	type delivery struct {
+		workspaceUUID string
+		names         []string
+	}
+	deliveryCh := make(chan delivery, 1)
+	stop := startPendingDispatchSweep(
+		context.Background(), nil, auxMgr, spoolDir, nil,
+		func(workspaceUUID string) bool { return workspaceUUID == wsUUID },
+		func(string) error { return nil },
+		nil,
+		func(workspaceUUID string, names []string) {
+			deliveryCh <- delivery{workspaceUUID: workspaceUUID, names: names}
+		},
+	)
+	defer stop()
+
+	select {
+	case got := <-deliveryCh:
+		if got.workspaceUUID != wsUUID {
+			t.Fatalf("late-delivery workspace = %q, want %q", got.workspaceUUID, wsUUID)
+		}
+		if len(got.names) != 1 || got.names[0] != "extract-memories-on-close" {
+			t.Fatalf("late-delivery names = %v, want [extract-memories-on-close]", got.names)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup sweep did not invoke LateDeliveryFunc after successful delivery")
 	}
 }

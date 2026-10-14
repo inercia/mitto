@@ -225,18 +225,28 @@ func (bs *BackgroundSession) logAfterProcessorRunOmissions() {
 // work stranded before this session existed (or during a prior saturation
 // window on this same session) is retried as soon as a live session is
 // available again instead of waiting for the workspace to close.
+func (bs *BackgroundSession) processorFailureNotifyFunc() processors.NotifyFunc {
+	return func(workspaceUUID, name string, lastErr error) {
+		if workspaceUUID == "" {
+			workspaceUUID = bs.workspaceUUID
+		}
+		notice, send := FormatProcessorFailureNotice(workspaceUUID, bs.workspaceName, lastErr, UINotifyRequest{
+			Title:   "After-phase processor failed",
+			Message: fmt.Sprintf("%q could not be dispatched after retries: %v", name, lastErr),
+			Style:   "warning",
+		})
+		if send {
+			_ = bs.UINotify(notice)
+		}
+	}
+}
+
 func (bs *BackgroundSession) wireProcessorPendingDispatch() {
 	if bs.processorManager == nil {
 		return
 	}
 	bs.processorManager.SetPendingDispatchStore(&processors.FilePendingDispatchStore{})
-	bs.processorManager.SetNotifyFunc(func(_, name string, lastErr error) {
-		_ = bs.UINotify(UINotifyRequest{
-			Title:   "After-phase processor failed",
-			Message: fmt.Sprintf("%q could not be dispatched after retries: %v", name, lastErr),
-			Style:   "warning",
-		})
-	})
+	bs.processorManager.SetNotifyFunc(bs.processorFailureNotifyFunc())
 	bs.processorManager.SetLateDeliveryFunc(func(_ string, names []string) {
 		_ = bs.UINotify(UINotifyRequest{
 			Title:   "Deferred processor work delivered",
@@ -370,6 +380,19 @@ func (bs *BackgroundSession) cbStoreAgentModels(models *SessionModelState) {
 	bs.agentModelsMu.Lock()
 	bs.agentModels = snapshot
 	bs.agentModelsMu.Unlock()
+
+	// Persist only a real, non-empty catalog. A synthesized list is derived from
+	// local profiles rather than confirmed by the agent, and an empty update
+	// must not erase the last catalog advertised by this ACP server.
+	if bs.onAgentModels == nil || snapshot == nil || snapshot.Synthesized || len(snapshot.AvailableModels) == 0 {
+		return
+	}
+	stateForRecorder := cloneSessionModelState(snapshot)
+	if err := bs.onAgentModels(bs.acpServer, stateForRecorder.AvailableModels); err != nil && bs.logger != nil {
+		bs.logger.Warn("Failed to persist agent model catalog",
+			"acp_server", bs.acpServer,
+			"error", err)
+	}
 }
 
 // cbACPServerConstraint returns the constraint for a category (may be nil).
@@ -551,7 +574,7 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 				l.Warn("mitto-a7wm: skipping model-preference seeding from a synthesized model catalog",
 					"session_id", bs.persistedID, "default_model", defaultModel)
 			}
-		} else if selected := SelectHighestPriorityModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models); selected != "" {
+		} else if selected := SelectHighestPriorityModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models, bs.modelOverrideForTag); selected != "" {
 			// Resolve the initial choice BEFORE persisting anything. A default written
 			// first would make a fresh conversation look resumed and mask its preference.
 			// ACP model settings are defaults, not constraints on later manual choices.

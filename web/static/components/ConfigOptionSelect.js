@@ -157,19 +157,22 @@ export function ConfigOptionSelect({
   const menuClass = [
     "dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box p-2 shadow",
     "border border-mitto-border-1 max-h-64 overflow-y-auto flex-nowrap",
-    isToolbar ? "w-52" : "w-full",
+    isToolbar ? "w-[250px]" : "w-full",
   ].join(" ");
 
   const trigger = isToolbar
     ? html`
         <summary
-          class="btn btn-ghost btn-xs font-normal list-none flex-nowrap max-w-[200px] ${open
-            ? ""
-            : "tooltip tooltip-top"}"
+          class="btn btn-ghost btn-xs font-normal list-none flex-nowrap ${configOption.category ===
+          "mode"
+            ? "max-w-[264px]"
+            : "max-w-[200px]"} ${open ? "" : "tooltip tooltip-top"}"
           data-tip=${tip}
           aria-label=${configOption.name}
         >
-          <span class="truncate min-w-0">${currentLabel}</span>
+          <span class="truncate-left min-w-0"
+            ><bdi dir="ltr">${currentLabel}</bdi></span
+          >
           <${ChevronDownIcon} className="w-3 h-3 opacity-60" />
         </summary>
       `
@@ -207,13 +210,17 @@ export function ConfigOptionSelect({
                 <li key=${opt.value}>
                   <button
                     type="button"
-                    class=${opt.value === localValue ? "menu-active" : ""}
+                    class=${opt.value === localValue
+                      ? "w-full menu-active"
+                      : "w-full"}
                     onClick=${() => handleSelect(opt.value)}
                   >
                     ${opt.value === localValue
                       ? html`<${CheckIcon} className="w-4 h-4" />`
                       : html`<span class="inline-block w-4 h-4"></span>`}
-                    <span class="truncate">${opt.name}</span>
+                    <span class="truncate-left min-w-0 flex-1"
+                      ><bdi dir="ltr">${opt.name}</bdi></span
+                    >
                   </button>
                 </li>
               `,

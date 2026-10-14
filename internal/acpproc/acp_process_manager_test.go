@@ -14,6 +14,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
@@ -225,6 +226,75 @@ func TestACPProcessManager_PromptAuxiliary_NoProcess(t *testing.T) {
 
 	if err == nil {
 		t.Error("PromptAuxiliary() should return error when workspace process doesn't exist")
+	}
+}
+
+// TestIsACPConnectionError_AuthenticationRequired_IsNotRetried (mitto-p4t) pins
+// the classifier invariant that promptAuxiliary's single connection-retry gate
+// (acp_process_manager.go, the `!mittoAcp.IsACPConnectionError(err)` check
+// around L1153, mirrored in SendAuxiliaryInstructions around L1086) relies on:
+// an ACP "Authentication required" JSON-RPC error must NOT be classified as a
+// connection error, so it is NOT retried with backoff. Auth-error detection
+// itself is handled by the separate, already-tested mittoAcp.IsAuthError
+// predicate (see internal/acp/errors_test.go TestIsAuthError) which drives a
+// different code path (handlePromptError / queue-pausing). This test only
+// confirms the two predicates don't overlap: IsACPConnectionError must stay
+// false for every auth-error shape, while still correctly flagging genuine
+// transport/connection errors as retryable.
+func TestIsACPConnectionError_AuthenticationRequired_IsNotRetried(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantErr bool // expected return value of IsACPConnectionError
+	}{
+		{
+			name:    "plain authentication required message",
+			err:     errors.New("Authentication required: provider authentication required"),
+			wantErr: false,
+		},
+		{
+			name:    "lowercase authentication required message",
+			err:     errors.New("authentication required"),
+			wantErr: false,
+		},
+		{
+			name: "JSON-RPC shaped auth error from the bead report",
+			err: errors.New(
+				`{"code":-32000,"message":"Authentication required: provider authentication required","data":{}}`,
+			),
+			wantErr: false,
+		},
+		{
+			name:    "wrapped authentication required error",
+			err:     fmt.Errorf("auxiliary prompt failed: %w", errors.New("Authentication required: provider authentication required")),
+			wantErr: false,
+		},
+		// Belt-and-suspenders: confirm the predicate still fires for genuine
+		// connection-error shapes, so this test isn't vacuously trivial.
+		{
+			name:    "broken pipe is still a connection error",
+			err:     errors.New("write: broken pipe"),
+			wantErr: true,
+		},
+		{
+			name:    "shared ACP process has exited is still a connection error",
+			err:     errors.New("shared ACP process has exited"),
+			wantErr: true,
+		},
+		{
+			name:    "nil error is not a connection error",
+			err:     nil,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mittoAcp.IsACPConnectionError(tt.err)
+			if got != tt.wantErr {
+				t.Errorf("IsACPConnectionError(%v) = %v, want %v", tt.err, got, tt.wantErr)
+			}
+		})
 	}
 }
 

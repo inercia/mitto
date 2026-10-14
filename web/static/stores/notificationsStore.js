@@ -28,10 +28,10 @@ const MAX_TOASTS = 5;
 // Default durations by severity (milliseconds) -- unchanged from the
 // pre-mitto-sus.11 per-hook table in hooks/useToast.js.
 const DURATION_BY_STYLE = {
-  info: 5000,
-  success: 5000,
-  warning: 10000,
-  error: 10000,
+  info: 10000,
+  success: 10000,
+  warning: 20000,
+  error: 20000,
 };
 
 const state = {
@@ -125,7 +125,7 @@ export function showToast({
   // Auto-dismiss unless sticky. Error toasts never auto-dismiss so users
   // cannot miss critical messages; they stay until manually closed.
   if (!sticky && style !== "error") {
-    const ms = duration ?? DURATION_BY_STYLE[style] ?? 5000;
+    const ms = duration ?? DURATION_BY_STYLE[style] ?? 10000;
     toastTimers[id] = setTimeout(() => {
       delete toastTimers[id];
       dismissToast(id);

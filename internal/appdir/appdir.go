@@ -76,6 +76,9 @@ const (
 	// DefenseBlocklistFileName is the name of the scanner defense blocklist file.
 	DefenseBlocklistFileName = "scanner_blocklist.json"
 
+	// ModelCacheFileName is the name of the persisted ACP-server model catalog.
+	ModelCacheFileName = "model-cache.json"
+
 	// MCPToolsCacheDirName is the name of the subdirectory holding per-workspace
 	// persisted real-MCP tools snapshots (one JSON file per workspace UUID).
 	MCPToolsCacheDirName = "mcp-tools-cache"
@@ -482,6 +485,16 @@ func DefenseBlocklistPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, DefenseBlocklistFileName), nil
+}
+
+// ModelCachePath returns the persisted ACP-server model catalog path
+// ($MITTO_DIR/model-cache.json). The file is created atomically on first write.
+func ModelCachePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ModelCacheFileName), nil
 }
 
 // MCPToolsCacheDir returns the directory holding per-workspace persisted

@@ -130,6 +130,20 @@ describe("workspaces resource", () => {
     expect(result).toEqual({ alive: true });
   });
 
+  test("getModels(uuid) calls GET .../models", async () => {
+    const { workspaces, calls, respondWith } = mk();
+    const result = {
+      acp_server: "opencode",
+      models: [{ id: "m1", name: "Model One" }],
+      live: false,
+      updated_at: "2026-10-06T00:00:00Z",
+    };
+    respondWith(() => fakeResponse({ body: result }));
+    await expect(workspaces.getModels("uuid-1")).resolves.toEqual(result);
+    expect(calls[0].url).toBe("/api/workspaces/uuid-1/models");
+    expect(calls[0].init.method).toBe("GET");
+  });
+
   test("restartAcp(uuid) POSTs to .../restart-acp", async () => {
     const { workspaces, calls } = mk();
     await workspaces.restartAcp("u1");

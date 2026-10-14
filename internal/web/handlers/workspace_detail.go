@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/modelcache"
 	"github.com/inercia/mitto/internal/runner"
 )
 
@@ -27,6 +29,11 @@ func (h *Handlers) HandleWorkspaceACPStatus(w http.ResponseWriter, r *http.Reque
 	h.handleWorkspaceACPStatus(w, r, r.PathValue("uuid"))
 }
 
+// HandleWorkspaceModels handles GET /api/workspaces/{uuid}/models.
+func (h *Handlers) HandleWorkspaceModels(w http.ResponseWriter, r *http.Request) {
+	h.handleWorkspaceModels(w, r, r.PathValue("uuid"))
+}
+
 // handleWorkspaceACPStatus handles GET /api/workspaces/{uuid}/acp-status.
 // Reports whether the workspace has a live shared ACP process, so the UI can
 // decide whether an MCP install/remove needs an ACP restart to take effect.
@@ -41,6 +48,41 @@ func (h *Handlers) handleWorkspaceACPStatus(w http.ResponseWriter, r *http.Reque
 		alive = h.deps.HasLiveWorkspaceACP(workspaceUUID)
 	}
 	writeJSONOK(w, map[string]interface{}{"alive": alive})
+}
+
+// WorkspaceModelsResponse is the last-seen advertised catalog for a workspace's ACP server.
+type WorkspaceModelsResponse struct {
+	ACPServer string             `json:"acp_server"`
+	Models    []modelcache.Model `json:"models"`
+	Live      bool               `json:"live"`
+	UpdatedAt *time.Time         `json:"updated_at,omitempty"`
+}
+
+// handleWorkspaceModels serves the cached catalog independently of any one
+// running session. Session iteration order is unspecified, so live sessions
+// must not be used to select the returned model list.
+func (h *Handlers) handleWorkspaceModels(w http.ResponseWriter, r *http.Request, workspaceUUID string) {
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(workspaceUUID)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+
+	response := WorkspaceModelsResponse{
+		ACPServer: ws.ACPServer,
+		Models:    []modelcache.Model{},
+	}
+	if h.deps.ModelCache != nil {
+		if catalog, ok := h.deps.ModelCache.Get(ws.ACPServer); ok {
+			response.Models = catalog.Models
+			updatedAt := catalog.UpdatedAt
+			response.UpdatedAt = &updatedAt
+		}
+	}
+	if h.deps.HasLiveWorkspaceACP != nil {
+		response.Live = h.deps.HasLiveWorkspaceACP(workspaceUUID)
+	}
+	writeJSONOK(w, response)
 }
 
 // EffectiveRunnerConfigResponse is the response for GET /api/workspaces/{uuid}/effective-runner-config.

@@ -102,6 +102,7 @@ type fakePromptDeps struct {
 	modelTagsByName        map[string][]string // when set, pdResolveModelTags keys off the model name
 	resolvedPreferred      []config.PromptPreferredModel
 	modelProfiles          []config.ModelProfile
+	modelOverrides         map[string]string
 	baselineModel          string
 	overrideActive         bool
 	setActiveModelCalls    []string
@@ -371,7 +372,11 @@ func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPrefe
 	return f.resolvedPreferred
 }
 func (f *fakePromptDeps) pdModelProfiles() []config.ModelProfile { return f.modelProfiles }
-func (f *fakePromptDeps) pdReadBaselineModel() string            { return f.baselineModel }
+func (f *fakePromptDeps) pdModelOverrideForTag(tag string) (string, bool) {
+	modelID, ok := f.modelOverrides[tag]
+	return modelID, ok
+}
+func (f *fakePromptDeps) pdReadBaselineModel() string { return f.baselineModel }
 func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -3043,6 +3048,43 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 	if sc := d.recordedSessionChanges[0]; sc.Kind != ConfigOptionCategoryModelOverride ||
 		sc.Value != "Model 2" || sc.PreviousValue != "Model 1" {
 		t.Fatalf("unexpected model_override pill: %+v", sc)
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_ModelTagWorkspaceOverride(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &SessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []ModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Profile Model"},
+			{ModelId: "m-3", Name: "Workspace Model"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Profile2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Profile Model"}, Tags: []string{"Coding"}},
+	}
+	d.modelOverrides = map[string]string{"Coding": "m-3"}
+	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelTag: "Coding"}}}
+
+	if got := p.intendedModelID(d, meta, d.agentModels); got != "m-3" {
+		t.Fatalf("intendedModelID() = %q, want workspace override m-3", got)
+	}
+	p.applyModelPreference(d, meta)
+
+	if len(d.setActiveModelCalls) != 1 || d.setActiveModelCalls[0] != "m-3" {
+		t.Fatalf("expected setActiveModelOnly('m-3'), got %v", d.setActiveModelCalls)
+	}
+	if !d.overrideActive {
+		t.Fatal("expected overrideActive=true when workspace override differs from baseline")
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 model_override pill, got %d", len(d.recordedSessionChanges))
+	}
+	if change := d.recordedSessionChanges[0]; change.Value != "Workspace Model" || change.PreviousValue != "Model 1" {
+		t.Fatalf("unexpected model_override pill: %+v", change)
 	}
 }
 

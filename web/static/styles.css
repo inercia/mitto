@@ -2233,6 +2233,16 @@ mitto-action {
   z-index: 999;
 }
 
+/* Keep the most distinguishing suffix of long model names visible in the
+   toolbar selector. The isolated LTR run preserves punctuation in model IDs. */
+.chat-input-config-dropdown .truncate-left {
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Config selector daisyUI dropdowns in the properties panels open DOWNWARD and
    fill the trigger width. Same rationale as above: daisyUI's default dropdown
    placement relies on CSS anchor `position-area`, unavailable in WKWebView, so

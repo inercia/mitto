@@ -71,7 +71,16 @@ func TestKnowledgeRouterClose_EndToEnd_DispatchIDRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
-	defer ts.Client.DeleteSession(sess.SessionID)
+	archived := false
+	defer func() {
+		// DeleteSession also runs the close-processor pipeline. Once this test
+		// has archived the session and observed the router completion, deleting
+		// it would dispatch a second asynchronous batch while TempDir cleanup is
+		// removing the spool files.
+		if !archived {
+			_ = ts.Client.DeleteSession(sess.SessionID)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -119,6 +128,7 @@ func TestKnowledgeRouterClose_EndToEnd_DispatchIDRoundTrips(t *testing.T) {
 	if err := ts.Client.ArchiveSession(sess.SessionID, true); err != nil {
 		t.Fatalf("ArchiveSession(true) failed: %v", err)
 	}
+	archived = true
 
 	// ApplyOnClose's knowledge-router dispatch is fire-and-forget from
 	// ApplyOnClose's own point of view (dispatchPromptBatch spawns an

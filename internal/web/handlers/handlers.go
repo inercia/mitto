@@ -21,6 +21,7 @@ import (
 	"github.com/inercia/mitto/internal/beads"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/modelcache"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/slackbridge"
 	"github.com/inercia/mitto/internal/slackcatalog"
@@ -174,6 +175,10 @@ type Deps struct {
 	// SessionManager mirrors Server.sessionManager: the runtime conversation
 	// manager used to look up live BackgroundSessions. May be nil.
 	SessionManager *conversation.SessionManager
+
+	// ModelCache is the persisted last-seen model catalog keyed by exact ACP
+	// server name. May be nil; workspace model requests then return an empty list.
+	ModelCache *modelcache.Store
 
 	// BroadcastSettingsUpdated mirrors Server.BroadcastSessionSettingsUpdated:
 	// it broadcasts an advanced-settings change to all connected clients for the

@@ -31,7 +31,7 @@ func behaviorCatalog(current string) *SessionModelState {
 // computed by SessionManager is handed to a BackgroundSession whose agent reported
 // agentDefault, and cbInitBaselineModelIfEmpty picks the baseline. persisted, when
 // non-empty, simulates an existing conversation with a stored BaselineModel.
-func seedBaseline(t *testing.T, prefs []config.PromptPreferredModel, agentDefault, persisted string) (*BackgroundSession, *session.Store, string) {
+func seedBaseline(t *testing.T, prefs []config.PromptPreferredModel, agentDefault, persisted string, overrides ...config.ModelOverrides) (*BackgroundSession, *session.Store, string) {
 	t.Helper()
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -45,11 +45,17 @@ func seedBaseline(t *testing.T, prefs []config.PromptPreferredModel, agentDefaul
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	var modelOverrides config.ModelOverrides
+	if len(overrides) > 0 {
+		modelOverrides = overrides[0]
+	}
 	bs := &BackgroundSession{
 		persistedID:            sid,
 		store:                  store,
 		mittoConfig:            &config.Config{Models: behaviorProfiles()},
 		initialModelPreference: prefs,
+		modelOverrides:         modelOverrides,
+		acpServer:              "test-server",
 		agentModels:            behaviorCatalog(agentDefault),
 	}
 	bs.cbInitBaselineModelIfEmpty(agentDefault)
@@ -107,6 +113,42 @@ func TestNamedPromptInitialModel_BecomesPersistedBaselineWithoutFirstTurnSwitch(
 	}
 	if d.overrideActive {
 		t.Error("first turn left a transient override active")
+	}
+}
+
+func TestNamedPromptInitialModel_WorkspaceModelOverrideBecomesBaseline(t *testing.T) {
+	prefs := []config.PromptPreferredModel{{ModelTag: "bh-deep"}}
+	tests := []struct {
+		name      string
+		overrides config.ModelOverrides
+		want      string
+	}{
+		{
+			name: "matching ACP server uses override",
+			overrides: config.ModelOverrides{
+				{ACPServer: "test-server", Tag: "bh-deep", ModelID: "m-beta"},
+			},
+			want: "m-beta",
+		},
+		{
+			name: "different ACP server falls back to profile",
+			overrides: config.ModelOverrides{
+				{ACPServer: "another-server", Tag: "bh-deep", ModelID: "m-beta"},
+			},
+			want: "m-alpha",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bs, store, sid := seedBaseline(t, prefs, "m-gamma", "", tt.overrides)
+			if got := bs.GetBaselineModel(); got != tt.want {
+				t.Fatalf("in-memory baseline = %q, want %q", got, tt.want)
+			}
+			if got := persistedBaseline(t, store, sid); got != tt.want {
+				t.Fatalf("persisted baseline = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

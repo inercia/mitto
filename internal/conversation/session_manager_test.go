@@ -1503,7 +1503,7 @@ func TestSessionManager_WorkspaceAutoApprove_Enabled(t *testing.T) {
 	if ws == nil {
 		t.Fatal("GetWorkspaceByUUID should find ws-auto-approve")
 	}
-	if ws.AutoApprove == nil || !*ws.AutoApprove {
+	if ws.AutoApprove == nil || !*ws.AutoApprove { //nolint:staticcheck // Exercises legacy workspace settings compatibility during migration.
 		t.Error("Workspace ws-auto-approve should have AutoApprove=true")
 	}
 
@@ -1512,8 +1512,8 @@ func TestSessionManager_WorkspaceAutoApprove_Enabled(t *testing.T) {
 	if ws2 == nil {
 		t.Fatal("GetWorkspaceByUUID should find ws-no-auto-approve")
 	}
-	if ws2.AutoApprove != nil {
-		t.Errorf("Workspace ws-no-auto-approve should have AutoApprove=nil, got %v", *ws2.AutoApprove)
+	if ws2.AutoApprove != nil { //nolint:staticcheck // Exercises legacy workspace settings compatibility during migration.
+		t.Errorf("Workspace ws-no-auto-approve should have AutoApprove=nil, got %v", *ws2.AutoApprove) //nolint:staticcheck // Reports the legacy setting under test.
 	}
 }
 
@@ -1541,9 +1541,9 @@ func TestSessionManager_WorkspaceAutoApprove_Disabled(t *testing.T) {
 	if ws == nil {
 		t.Fatal("GetWorkspaceByUUID should find ws-explicit-false")
 	}
-	if ws.AutoApprove == nil {
+	if ws.AutoApprove == nil { //nolint:staticcheck // Exercises explicit false in legacy workspace settings during migration.
 		t.Error("Workspace ws-explicit-false should have AutoApprove set (not nil)")
-	} else if *ws.AutoApprove != false {
+	} else if *ws.AutoApprove != false { //nolint:staticcheck // Exercises explicit false in legacy workspace settings during migration.
 		t.Error("Workspace ws-explicit-false should have AutoApprove=false")
 	}
 }
@@ -1569,7 +1569,7 @@ func TestSessionManager_WorkspaceAutoApprove_SetWorkspaces(t *testing.T) {
 	if ws == nil {
 		t.Fatal("GetWorkspaceByUUID should find ws-with-auto")
 	}
-	if ws.AutoApprove == nil || !*ws.AutoApprove {
+	if ws.AutoApprove == nil || !*ws.AutoApprove { //nolint:staticcheck // Verifies legacy settings survive SetWorkspaces during migration.
 		t.Error("SetWorkspaces should preserve AutoApprove=true")
 	}
 }
@@ -1584,7 +1584,7 @@ func TestSessionManager_WorkspaceAutoApprove_AddWorkspace(t *testing.T) {
 		UUID:        "ws-added",
 		ACPServer:   "test-server",
 		WorkingDir:  "/path/added",
-		AutoApprove: &autoApproveTrue,
+		AutoApprove: &autoApproveTrue, //nolint:staticcheck // Tests preservation of the legacy workspace setting during migration.
 	}
 	sm.AddWorkspace(ws)
 
@@ -1593,7 +1593,7 @@ func TestSessionManager_WorkspaceAutoApprove_AddWorkspace(t *testing.T) {
 	if addedWs == nil {
 		t.Fatal("GetWorkspaceByUUID should find ws-added")
 	}
-	if addedWs.AutoApprove == nil || !*addedWs.AutoApprove {
+	if addedWs.AutoApprove == nil || !*addedWs.AutoApprove { //nolint:staticcheck // Tests preservation of the legacy workspace setting during migration.
 		t.Error("AddWorkspace should preserve AutoApprove=true")
 	}
 }
@@ -1875,17 +1875,17 @@ func TestSessionManager_WorkspaceAutoApprove_GetWorkspaces(t *testing.T) {
 		switch ws.UUID {
 		case "ws-1":
 			foundWs1 = true
-			if ws.AutoApprove == nil || !*ws.AutoApprove {
+			if ws.AutoApprove == nil || !*ws.AutoApprove { //nolint:staticcheck // Tests legacy settings survive workspace enumeration during migration.
 				t.Error("ws-1 should have AutoApprove=true")
 			}
 		case "ws-2":
 			foundWs2 = true
-			if ws.AutoApprove == nil || *ws.AutoApprove {
+			if ws.AutoApprove == nil || *ws.AutoApprove { //nolint:staticcheck // Tests legacy settings survive workspace enumeration during migration.
 				t.Error("ws-2 should have AutoApprove=false")
 			}
 		case "ws-3":
 			foundWs3 = true
-			if ws.AutoApprove != nil {
+			if ws.AutoApprove != nil { //nolint:staticcheck // Tests legacy unset semantics during migration.
 				t.Error("ws-3 should have AutoApprove=nil")
 			}
 		}

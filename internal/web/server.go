@@ -34,6 +34,7 @@ import (
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 	"github.com/inercia/mitto/internal/mcpserver"
+	"github.com/inercia/mitto/internal/modelcache"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/prompts"
 	"github.com/inercia/mitto/internal/rememberedargs"
@@ -428,10 +429,14 @@ func startPendingDispatchSweep(
 	logger *slog.Logger,
 	workspaceExists func(workspaceUUID string) bool,
 	ensureWorkspaceProcess func(workspaceUUID string) error,
+	notifyFunc processors.NotifyFunc,
+	lateDeliveryFunc processors.LateDeliveryFunc,
 ) (stop func()) {
 	runCtx, cancel := context.WithCancel(ctx)
 	procMgr := processors.NewManager("", logger)
 	procMgr.SetPendingDispatchStore(&processors.FilePendingDispatchStore{BaseDir: spoolDir})
+	procMgr.SetNotifyFunc(notifyFunc)
+	procMgr.SetLateDeliveryFunc(lateDeliveryFunc)
 	if auxMgr != nil {
 		procMgr.SetPromptCompletionFunc(func(promptCtx context.Context, wsUUID, processorName, dispatchID, prompt string) (processors.PromptCompletion, error) {
 			saveCount, finalMessage, err := auxMgr.PromptProcessorTracked(promptCtx, wsUUID, processorName, dispatchID, prompt)
@@ -597,6 +602,26 @@ func NewServer(config Config) (*Server, error) {
 		sessionMgr.SetAPIPrefix(apiPrefix)
 	}
 	sessionMgr.SetStore(store)
+
+	modelCachePath, pathErr := appdir.ModelCachePath()
+	if pathErr != nil {
+		logger.Warn("Failed to resolve agent model catalog cache path", "error", pathErr)
+	}
+	modelCatalogCache, cacheErr := modelcache.New(modelCachePath)
+	if cacheErr != nil {
+		logger.Warn("Failed to load agent model catalog cache; starting with an empty cache", "error", cacheErr)
+	}
+	sessionMgr.SetAgentModelCatalogRecorder(func(acpServer string, models []conversation.ModelInfo) error {
+		cachedModels := make([]modelcache.Model, len(models))
+		for i, model := range models {
+			cachedModels[i] = modelcache.Model{
+				ID:          model.ModelId,
+				Name:        model.Name,
+				Description: model.Description,
+			}
+		}
+		return modelCatalogCache.Record(acpServer, cachedModels)
+	})
 
 	// Create shared ACP process manager for workspace-level process sharing.
 	// Clean up orphaned ACP processes from any previous Mitto instance that crashed
@@ -910,8 +935,44 @@ func NewServer(config Config) (*Server, error) {
 				}
 				return sessionMgr.EnsureWorkspaceProcess(workspaceUUID)
 			}
+			resolveWorkspaceNotificationContext := func(workspaceUUID string) (name, workingDir string) {
+				name = workspaceUUID
+				if sessionMgr == nil {
+					return name, ""
+				}
+				if workspace := sessionMgr.GetWorkspaceByUUID(workspaceUUID); workspace != nil {
+					if workspace.Name != "" {
+						name = workspace.Name
+					}
+					workingDir = workspace.WorkingDir
+				}
+				return name, workingDir
+			}
+			notifyFunc := processors.NotifyFunc(func(workspaceUUID, name string, lastErr error) {
+				workspaceName, workingDir := resolveWorkspaceNotificationContext(workspaceUUID)
+				if workspaceName == "" {
+					workspaceName = name
+				}
+				notice, send := conversation.FormatProcessorFailureNotice(workspaceUUID, workspaceName, lastErr, conversation.UINotifyRequest{
+					Title:   "Deferred processor failed",
+					Message: fmt.Sprintf("%q could not be delivered from the pending processor spool: %v", name, lastErr),
+					Style:   "warning",
+				})
+				if send && sessionMgr != nil {
+					sessionMgr.BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, workingDir, notice)
+				}
+			})
+			lateDeliveryFunc := processors.LateDeliveryFunc(func(workspaceUUID string, names []string) {
+				workspaceName, workingDir := resolveWorkspaceNotificationContext(workspaceUUID)
+				sessionMgr.BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, workingDir, conversation.UINotifyRequest{
+					Title:   "Deferred processor work delivered",
+					Message: fmt.Sprintf("%d previously undelivered batch(es) were dispatched: %s", len(names), strings.Join(names, ", ")),
+					Style:   "info",
+				})
+			})
 			pendingDispatchSweepStop = startPendingDispatchSweep(
-				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger, workspaceExists, ensureWorkspaceProcess,
+				context.Background(), acpProcessMgr, auxiliaryManager, pendingDispatchDir, logger,
+				workspaceExists, ensureWorkspaceProcess, notifyFunc, lateDeliveryFunc,
 			)
 		} else {
 			logger.Warn("pending-dispatch sweep disabled: cannot resolve spool dir", "error", direrr)
@@ -1683,6 +1744,7 @@ func NewServer(config Config) (*Server, error) {
 
 	s.apiHandlers = handlers.New(handlers.Deps{
 		Logger:                   logger,
+		ModelCache:               modelCatalogCache,
 		SlackCatalog:             slackCatalog,
 		SlackEnvironment:         slackEnvironment,
 		SlackManager:             s.slackManager,

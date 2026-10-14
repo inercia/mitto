@@ -1687,6 +1687,14 @@ func (bs *BackgroundSession) pdModelProfiles() []config.ModelProfile {
 	return bs.mittoConfig.EffectiveModelProfiles()
 }
 
+func (bs *BackgroundSession) modelOverrideForTag(tag string) (string, bool) {
+	return bs.modelOverrides.OverrideFor(bs.acpServer, tag)
+}
+
+func (bs *BackgroundSession) pdModelOverrideForTag(tag string) (string, bool) {
+	return bs.modelOverrideForTag(tag)
+}
+
 func (bs *BackgroundSession) pdResolvePromptParameters(promptName string) []config.PromptParameter {
 	if bs.promptParametersResolver == nil || promptName == "" {
 		return nil

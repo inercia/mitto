@@ -1,9 +1,11 @@
 package conversation
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAgentModelsSnapshot_NilAndEmpty(t *testing.T) {
@@ -156,4 +158,82 @@ func TestAgentModelsSnapshot_ConcurrentReadersAndWriters(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
+}
+
+func TestAgentModelsSnapshot_RecordsOnlyRealCatalogsOutsideLock(t *testing.T) {
+	description := "agent description"
+	var calls int
+	bs := &BackgroundSession{acpServer: "agent-a"}
+	bs.onAgentModels = func(acpServer string, models []ModelInfo) error {
+		calls++
+		if acpServer != "agent-a" {
+			t.Errorf("recorded ACP server = %q, want agent-a", acpServer)
+		}
+		if len(models) != 1 || models[0].ModelId != "model-a" || models[0].Name != "Model A" || models[0].Description == nil || *models[0].Description != "agent description" {
+			t.Errorf("recorded catalog = %+v, want only the advertised model", models)
+		}
+
+		// A concurrent reader must be able to take the model-state lock while
+		// persistence runs; the recorder must not be called under that lock.
+		readDone := make(chan struct{})
+		go func() {
+			_ = bs.AgentModels()
+			close(readDone)
+		}()
+		select {
+		case <-readDone:
+		case <-time.After(time.Second):
+			t.Error("model-state lock remained held during catalog recording")
+		}
+
+		// The callback receives an owned slice; mutating it must not affect the
+		// in-memory snapshot. Persistence errors are deliberately non-fatal.
+		models[0].Name = "callback mutation"
+		*models[0].Description = "callback mutation"
+		return errors.New("disk unavailable")
+	}
+
+	bs.cbStoreAgentModels(&SessionModelState{
+		CurrentModelId: "must-not-be-persisted",
+		AvailableModels: []ModelInfo{{
+			ModelId:     "model-a",
+			Name:        "Model A",
+			Description: &description,
+		}},
+	})
+	if calls != 1 {
+		t.Fatalf("recorder calls after real catalog = %d, want 1", calls)
+	}
+	if got := bs.AgentModels(); got == nil || got.CurrentModelId != "must-not-be-persisted" || got.AvailableModels[0].Name != "Model A" || *got.AvailableModels[0].Description != "agent description" {
+		t.Fatalf("failed persistence or callback mutation changed in-memory state: %+v", got)
+	}
+
+	// Empty and synthesized model states must not erase the last persisted list.
+	bs.cbStoreAgentModels(&SessionModelState{AvailableModels: []ModelInfo{}})
+	bs.cbStoreAgentModels(&SessionModelState{AvailableModels: []ModelInfo{{ModelId: "local-profile"}}, Synthesized: true})
+	bs.cbStoreAgentModels(nil)
+	if calls != 1 {
+		t.Fatalf("recorder calls after empty/synthetic updates = %d, want 1", calls)
+	}
+}
+
+func TestResumeBackgroundSession_WiresOnAgentModels(t *testing.T) {
+	var gotServer string
+	bs, err := ResumeBackgroundSession(BackgroundSessionConfig{
+		PersistedID:   "test-onagentmodels-resume",
+		ACPServer:     "test-server",
+		WorkingDir:    "/tmp",
+		SharedProcess: newFakeSharedProcess(),
+		OnAgentModels: func(acpServer string, _ []ModelInfo) error {
+			gotServer = acpServer
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResumeBackgroundSession failed: %v", err)
+	}
+	bs.cbStoreAgentModels(&SessionModelState{AvailableModels: []ModelInfo{{ModelId: "m1"}}})
+	if gotServer != "test-server" {
+		t.Fatalf("recorder not wired on resume; got server %q", gotServer)
+	}
 }

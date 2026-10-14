@@ -133,8 +133,9 @@ type promptDeps interface {
 	pdResolveModelTags(modelName string) []string // config.ResolveModelTags; nil when no config/match
 	pdResolvePreferredModels(promptName string) []config.PromptPreferredModel
 	pdModelProfiles() []config.ModelProfile // global model profiles (Settings → Models)
-	pdReadBaselineModel() string            // modelMu.Lock + read + Unlock
-	pdWriteOverrideActive(active bool)      // modelMu.Lock + write + Unlock
+	pdModelOverrideForTag(tag string) (string, bool)
+	pdReadBaselineModel() string       // modelMu.Lock + read + Unlock
+	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
 	pdSetActiveModelOnly(ctx context.Context, modelID string) error
 	// pdRestoreBaselineIfOverride (mitto-1yo) restores the persisted baseline
 	// model if a per-prompt override is currently active, without touching
@@ -1368,7 +1369,7 @@ func (p promptDispatcher) intendedModelID(d promptDeps, meta PromptMeta, models 
 	if len(preferredModels) == 0 {
 		return ""
 	}
-	return SelectPreferredModel(preferredModels, d.pdModelProfiles(), models)
+	return SelectPreferredModel(preferredModels, d.pdModelProfiles(), models, d.pdModelOverrideForTag)
 }
 
 // applyModelPreference ensures the correct model is active before sending the prompt.
@@ -1438,7 +1439,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	desired := baseline
 	matched := false
 	if len(preferredModels) > 0 {
-		if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), models); resolved != "" {
+		if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), models, d.pdModelOverrideForTag); resolved != "" {
 			desired = resolved
 			matched = true
 		}

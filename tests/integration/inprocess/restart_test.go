@@ -135,10 +135,14 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
+	promptingStates := make(chan bool, 1)
 	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
 			t.Logf("Error: %s", msg)
+		},
+		OnEventsLoaded: func(_ []api.SyncEvent, _ bool, isPrompting bool) {
+			promptingStates <- isPrompting
 		},
 	}
 
@@ -150,6 +154,11 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 
 	if err := ws.LoadEvents(50, 0, 0); err != nil {
 		t.Fatalf("LoadEvents failed: %v", err)
+	}
+	select {
+	case <-promptingStates:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for initial events_loaded response")
 	}
 
 	// Trigger 4 crashes, waiting for each restart to complete before the next.
@@ -199,6 +208,7 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 				found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 				return found
 			}, fmt.Sprintf("crash %d: restart completion", i))
+			waitForPromptIdle(t, ws, promptingStates, 10*time.Second, i)
 		} else {
 			// 4th should hit the limit
 			waitFor(t, 15*time.Second, func() bool {
@@ -206,6 +216,34 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 				return found
 			}, "crash 4: 'keeps crashing' message after hitting restart limit")
 		}
+	}
+}
+
+// waitForPromptIdle polls the server's authoritative isPrompting state. The
+// user-facing restart error is emitted before the prompt turn releases its
+// in-progress guard, so observing that error alone is not sufficient before
+// sending the next prompt.
+func waitForPromptIdle(t *testing.T, ws *api.Session, states <-chan bool, timeout time.Duration, crash int) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ws.LoadEvents(1, 0, 0); err != nil {
+			t.Fatalf("LoadEvents while waiting for crash %d prompt completion: %v", crash, err)
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("timed out waiting for crash %d prompt to become idle", crash)
+		}
+		select {
+		case isPrompting := <-states:
+			if !isPrompting {
+				return
+			}
+		case <-time.After(remaining):
+			t.Fatalf("timed out waiting for crash %d prompt to become idle", crash)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -225,9 +263,13 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 	defer cancel()
 
 	errorCollector := &safeErrorCollector{}
+	promptingStates := make(chan bool, 1)
 	callbacks := api.SessionCallbacks{
 		OnError: func(msg string) {
 			errorCollector.add(msg)
+		},
+		OnEventsLoaded: func(_ []api.SyncEvent, _ bool, isPrompting bool) {
+			promptingStates <- isPrompting
 		},
 	}
 
@@ -239,6 +281,11 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 
 	if err := ws.LoadEvents(50, 0, 0); err != nil {
 		t.Fatalf("LoadEvents failed: %v", err)
+	}
+	select {
+	case <-promptingStates:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for initial events_loaded response")
 	}
 
 	// Trigger 3 crashes and measure the full crash→restart-complete cycle time.
@@ -270,6 +317,7 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 			found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 			return found
 		}, fmt.Sprintf("restart %d completion", i))
+		waitForPromptIdle(t, ws, promptingStates, 10*time.Second, i)
 
 		duration := time.Since(start)
 		cycleDurations = append(cycleDurations, duration)

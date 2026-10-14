@@ -66,6 +66,9 @@ type BackgroundSession struct {
 	// modelMu → agentModelsMu. Never hold agentModelsMu across callbacks or RPCs.
 	agentModelsMu sync.RWMutex
 	agentModels   *SessionModelState
+	// onAgentModels records an agent-confirmed non-empty catalog after the
+	// in-memory snapshot has been updated and its lock released.
+	onAgentModels AgentModelCatalogRecorder
 	// modelConfigId is the SessionConfigId the agent advertised for the model
 	// config option. Used when issuing session/set_config_option so we match the
 	// agent-declared id. Falls back to ModelConfigId when empty.
@@ -212,6 +215,7 @@ type BackgroundSession struct {
 	fileLinksConfig *config.FileLinksConfig // Configuration for file path linking
 	apiPrefix       string                  // URL prefix for API endpoints (for HTTP file links)
 	workspaceUUID   string                  // Workspace UUID for secure file links
+	workspaceName   string                  // Display name used by workspace-scoped UI notifications
 	acpServer       string                  // ACP server name (informational; propagated to observers/stats)
 
 	// Restricted runner for sandboxed execution
@@ -281,17 +285,20 @@ type BackgroundSession struct {
 	// Nil for resumed sessions, auto-children, and workspaces without a
 	// preference configured.
 	initialModelPreference []config.PromptPreferredModel
-	contextFlushCommand    string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
-	procCtl                acpProcessController    // ACP restart policy collaborator (composition)
-	titleCoord             titleCoordinator        // Auto-title generation triggers collaborator (composition)
-	promptArgCache         *promptArgCache         // Per-conversation prompt argument value cache (composition)
-	queueDisp              queueDispatcher         // Queue tick / dispatch logic collaborator (composition)
-	callbackSink           acpCallbackSink         // WebClient callback cluster collaborator (composition)
-	uiPromptCtr            uiPromptCenter          // UI prompt + notify collaborator (composition)
-	followUpCoord          followUpCoordinator     // Follow-up suggestions + action-button collaborator (composition)
-	configMgr              configManager           // Session-config / model-baseline collaborator (composition)
-	handshaker             sharedSessionHandshaker // Shared-process session handshake collaborator (composition)
-	promptDisp             promptDispatcher        // PromptWithMeta helper-split collaborator (composition)
+	// modelOverrides is the immutable per-workspace override list used by all
+	// model-tag selection paths for this session.
+	modelOverrides      config.ModelOverrides
+	contextFlushCommand string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
+	procCtl             acpProcessController    // ACP restart policy collaborator (composition)
+	titleCoord          titleCoordinator        // Auto-title generation triggers collaborator (composition)
+	promptArgCache      *promptArgCache         // Per-conversation prompt argument value cache (composition)
+	queueDisp           queueDispatcher         // Queue tick / dispatch logic collaborator (composition)
+	callbackSink        acpCallbackSink         // WebClient callback cluster collaborator (composition)
+	uiPromptCtr         uiPromptCenter          // UI prompt + notify collaborator (composition)
+	followUpCoord       followUpCoordinator     // Follow-up suggestions + action-button collaborator (composition)
+	configMgr           configManager           // Session-config / model-baseline collaborator (composition)
+	handshaker          sharedSessionHandshaker // Shared-process session handshake collaborator (composition)
+	promptDisp          promptDispatcher        // PromptWithMeta helper-split collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -520,6 +527,11 @@ type activeUIPrompt struct {
 	cancelFn   context.CancelFunc
 }
 
+// AgentModelCatalogRecorder persists models advertised by an ACP server. It is
+// called only for non-empty, non-synthesized model lists and receives no
+// currently selected model ID.
+type AgentModelCatalogRecorder func(acpServer string, models []ModelInfo) error
+
 // BackgroundSessionConfig holds configuration for creating a BackgroundSession.
 type BackgroundSessionConfig struct {
 	PersistedID      string
@@ -527,6 +539,7 @@ type BackgroundSessionConfig struct {
 	ACPCwd           string            // Working directory for the ACP process (not the session working dir)
 	Env              map[string]string // Server-specific env vars from settings.json (acp_servers[].env)
 	ACPServer        string
+	OnAgentModels    AgentModelCatalogRecorder
 	ACPSessionID     string // ACP-assigned session ID for resumption (optional)
 	WorkingDir       string
 	AutoApprove      bool
@@ -546,6 +559,7 @@ type BackgroundSessionConfig struct {
 	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
 	APIPrefix           string                      // URL prefix for API endpoints (for HTTP file links)
 	WorkspaceUUID       string                      // Workspace UUID for secure file links
+	WorkspaceName       string                      // Display name for workspace-scoped UI notifications
 
 	// MittoConfig is the full Mitto configuration (used for default flags)
 	MittoConfig *config.Config
@@ -559,6 +573,9 @@ type BackgroundSessionConfig struct {
 	// auto-children alike; a persisted BaselineModel on resume always wins over
 	// re-resolving this preference.
 	InitialModelPreference []config.PromptPreferredModel
+	// ModelOverrides carries the selected workspace's model-tag overrides into
+	// this session. It is copied when the BackgroundSession is constructed.
+	ModelOverrides config.ModelOverrides
 
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
 	// configured for the session's working directory. Populated by SessionManager using
@@ -898,7 +915,9 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		fileLinksConfig:                cfg.FileLinksConfig,
 		apiPrefix:                      cfg.APIPrefix,
 		workspaceUUID:                  cfg.WorkspaceUUID,
+		workspaceName:                  cfg.WorkspaceName,
 		acpServer:                      cfg.ACPServer,
+		onAgentModels:                  cfg.OnAgentModels,
 		runner:                         cfg.Runner,
 		lease:                          cfg.BackendLease,
 		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
@@ -928,6 +947,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		isChildPrompting:               cfg.IsChildPrompting,         // Callback to check if a child session is prompting
 		childModelName:                 cfg.ChildModelName,           // Callback to resolve a child's current model name
 		creationCtx:                    cfg.CreationCtx,              // Context for initial ACP session creation RPC only
+		modelOverrides:                 cloneWorkspaceModelOverrides(cfg.ModelOverrides),
 	}
 	// Fail-safe default: virginity is unknown until a handshake site proves the
 	// session was created fresh (mitto-s9g2). Must be set before any handshake runs.
@@ -939,6 +959,8 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	bs.mittoConfig = cfg.MittoConfig
 	// Per-workspace initial-model preference (applied after agent reports models).
 	bs.initialModelPreference = cfg.InitialModelPreference
+	// Workspace overrides are copied above so later workspace updates cannot mutate
+	// the selection policy of an already-running session.
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(cfg.MittoConfig, cfg.ACPServer)
 
@@ -1126,6 +1148,13 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	return bs, nil
 }
 
+func cloneWorkspaceModelOverrides(overrides config.ModelOverrides) config.ModelOverrides {
+	if len(overrides) == 0 {
+		return nil
+	}
+	return append(config.ModelOverrides(nil), overrides...)
+}
+
 // ResumeBackgroundSession creates a background session for an existing persisted session.
 // This is used when switching to an old conversation - we create a new ACP connection
 // but continue recording to the existing session.
@@ -1163,7 +1192,9 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		fileLinksConfig:                config.FileLinksConfig,
 		apiPrefix:                      config.APIPrefix,
 		workspaceUUID:                  config.WorkspaceUUID,
+		workspaceName:                  config.WorkspaceName,
 		acpServer:                      config.ACPServer,
+		onAgentModels:                  config.OnAgentModels,
 		runner:                         config.Runner,
 		lease:                          config.BackendLease,
 		onStreamingStateChanged:        config.OnStreamingStateChanged,
@@ -1192,6 +1223,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		isChildPrompting:               config.IsChildPrompting,         // Callback to check if a child session is prompting
 		childModelName:                 config.ChildModelName,           // Callback to resolve a child's current model name
 		creationCtx:                    config.CreationCtx,              // Context for initial ACP session creation RPC only
+		modelOverrides:                 cloneWorkspaceModelOverrides(config.ModelOverrides),
 	}
 	// Fail-safe default: virginity is unknown until a handshake site proves the
 	// session was created fresh (mitto-s9g2). Must be set before any handshake runs.
@@ -1205,6 +1237,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	// auto-child's ModelTag): applied by cbInitBaselineModelIfEmpty after the
 	// agent reports its models, unless a persisted BaselineModel already wins.
 	bs.initialModelPreference = config.InitialModelPreference
+	// Workspace model overrides are copied into the session literal above.
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(config.MittoConfig, config.ACPServer)
 

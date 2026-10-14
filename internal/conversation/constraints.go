@@ -7,6 +7,10 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
+// ModelOverrideLookup resolves a workspace-scoped model override for a tag.
+// The returned model id is still validated against the agent's available models.
+type ModelOverrideLookup func(tag string) (modelID string, ok bool)
+
 // ModelsToConfigOptions converts an agent model state into config option values
 // (Value=ModelId, Name, Description). Duplicate IDs are represented once, using
 // the first advertised entry. Returns nil for a nil/empty model state.
@@ -88,30 +92,38 @@ func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *Sessi
 
 // SelectPreferredModel resolves an ordered list of preferred-model profile references
 // (each naming a global Model profile by ModelName or ModelTag) to the model id the
-// session should run with. Entries are walked in preference order and, for each entry,
-// the currently active model is checked FIRST: when it already satisfies the entry's
-// profile criteria it is kept as-is (returning the current id) so no needless
-// SetSessionModel RPC is issued. Only when the active model does not satisfy the entry
-// does the function fall back to the model resolved from the entry's profile(s) via
-// ResolveProfileModel. A ModelTag entry considers every profile carrying that tag, in
-// profiles-slice order, and uses the first one that resolves to an available model
-// (deterministic first-match-wins). Unknown names/tags or entries that resolve to no
-// available model are skipped, so resolution continues with the next preference.
+// session should run with. Entries are walked in preference order. For ModelName, the
+// active model is kept when it satisfies the profile criteria; otherwise the profile
+// resolves through ResolveProfileModel. For ModelTag, an optional workspace override
+// is checked first and used only when its id is present in the agent's advertised
+// catalog. Without a valid override, the active model is kept when it satisfies any
+// tagged profile; otherwise the first tagged profile that resolves to an available
+// model wins (deterministic first-match-wins). Unknown names/tags or entries that
+// resolve to no available model are skipped, so resolution continues with the next
+// preference.
 // Returns "" when nothing matches, signalling the caller to fall back to the baseline.
-func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState) string {
-	return selectPreferredModel(prefs, profiles, models, true)
+func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, overrideLookups ...ModelOverrideLookup) string {
+	return selectPreferredModel(prefs, profiles, models, true, firstModelOverrideLookup(overrideLookups))
 }
 
 // SelectHighestPriorityModel resolves prefs like SelectPreferredModel but never keeps
 // the current model just because it satisfies a preference: each entry resolves to the
 // highest-priority profile (profiles-slice order) that matches an available model. Used
 // for the initial model of a new conversation, where the agent's default must not
-// shadow a higher-priority profile carrying the requested tag.
-func SelectHighestPriorityModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState) string {
-	return selectPreferredModel(prefs, profiles, models, false)
+// shadow a higher-priority profile carrying the requested tag. For ModelTag
+// preferences, a valid workspace override takes priority over profile matching.
+func SelectHighestPriorityModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, overrideLookups ...ModelOverrideLookup) string {
+	return selectPreferredModel(prefs, profiles, models, false, firstModelOverrideLookup(overrideLookups))
 }
 
-func selectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, keepCurrent bool) string {
+func firstModelOverrideLookup(lookups []ModelOverrideLookup) ModelOverrideLookup {
+	if len(lookups) == 0 {
+		return nil
+	}
+	return lookups[0]
+}
+
+func selectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, keepCurrent bool, overrideForTag ModelOverrideLookup) string {
 	if len(prefs) == 0 || models == nil {
 		return ""
 	}
@@ -141,6 +153,20 @@ func selectPreferredModel(prefs []config.PromptPreferredModel, profiles []config
 				return resolved
 			}
 		case pref.ModelTag != "":
+			// A synthesized catalog contains profile labels, not ids verified by
+			// the ACP agent. Never use workspace overrides against it.
+			if overrideForTag != nil && !models.Synthesized {
+				if override, ok := overrideForTag(pref.ModelTag); ok && override != "" {
+					for _, available := range models.AvailableModels {
+						if available.ModelId == override {
+							if keepCurrent && current == override {
+								return current
+							}
+							return override
+						}
+					}
+				}
+			}
 			tagged := config.ProfilesByTag(profiles, pref.ModelTag)
 			if len(tagged) == 0 {
 				continue

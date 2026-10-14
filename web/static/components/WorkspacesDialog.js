@@ -16,6 +16,7 @@ import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
 import { useWorkspaceEdits } from "../hooks/useWorkspaceEdits.js";
 import { useWorkspaceMcpActions } from "../hooks/useWorkspaceMcpActions.js";
 import { useWorkspaceMcpTools } from "../hooks/useWorkspaceMcpTools.js";
+import { useWorkspaceModels } from "../hooks/useWorkspaceModels.js";
 import { useWorkspaceMutations } from "../hooks/useWorkspaceMutations.js";
 import { useWorkspacesData } from "../hooks/useWorkspacesData.js";
 import { useWorkspacesSaveCoordinator } from "../hooks/useWorkspacesSaveCoordinator.js";
@@ -483,6 +484,7 @@ export function WorkspacesDialog({
     editAuxModelTag,
     editInitialModelProfile,
     editInitialModelTag,
+    editModelOverrides,
     editRunner,
     editRunnerConfig,
     editAutoApprove,
@@ -494,6 +496,7 @@ export function WorkspacesDialog({
     setEditAuxModelConstraintCleared,
     setEditInitialModelProfile,
     setEditInitialModelTag,
+    setEditModelOverrides,
     setEditRunner,
     setEditRunnerConfig,
     setEditAutoApprove,
@@ -546,6 +549,13 @@ export function WorkspacesDialog({
     selectedFolder,
     editAcpServer,
   });
+
+  const { modelsData, modelsLoading, modelsError, loadModels } =
+    useWorkspaceModels({
+      activeTab,
+      selectedWorkspace,
+      selectedWorkspaceKey,
+    });
 
   // MCP install/remove + ACP restart cluster: owns install form state (open,
   // json, name, scope, loading, error, success), remove state + scope ref,
@@ -768,6 +778,7 @@ export function WorkspacesDialog({
   const workspaceTabs = [
     { id: "general", label: "General" },
     { id: "runner", label: "Runner" },
+    { id: "models", label: "Models" },
     { id: "mcp", label: "MCP" },
   ];
 
@@ -929,6 +940,12 @@ export function WorkspacesDialog({
                   setEditInitialModelProfile=${setEditInitialModelProfile}
                   editInitialModelTag=${editInitialModelTag}
                   setEditInitialModelTag=${setEditInitialModelTag}
+                  editModelOverrides=${editModelOverrides}
+                  setEditModelOverrides=${setEditModelOverrides}
+                  modelsData=${modelsData}
+                  modelsLoading=${modelsLoading}
+                  modelsError=${modelsError}
+                  loadModels=${loadModels}
                   editAuxModelProfile=${editAuxModelProfile}
                   setEditAuxModelProfile=${setEditAuxModelProfile}
                   editAuxModelTag=${editAuxModelTag}

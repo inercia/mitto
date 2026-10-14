@@ -302,6 +302,7 @@ func TestHandleWorkspaces_DELETE(t *testing.T) {
 func TestSeedACPServerDefaults_NilDefaults(t *testing.T) {
 	s := &config.ACPServerSettings{Name: "test"}
 	seedACPServerDefaults(s, nil)
+	//nolint:staticcheck // This test verifies the legacy metadata field remains unchanged when defaults are nil.
 	if s.Env != nil || s.Tags != nil || s.Constraints != nil || s.AutoApprove {
 		t.Error("settings should be unchanged when defaults is nil")
 	}
@@ -330,7 +331,8 @@ func TestSeedACPServerDefaults_FullDefaults(t *testing.T) {
 	if len(s.Tags) != 2 || s.Tags[0] != "alpha" {
 		t.Errorf("Tags not seeded; got %v", s.Tags)
 	}
-	if !s.AutoApprove {
+	//nolint:staticcheck // This test verifies seeding of legacy agent metadata during migration.
+	if !s.AutoApprove { //nolint:staticcheck // Verifies migration of legacy agent metadata defaults.
 		t.Error("AutoApprove not seeded")
 	}
 	c, ok := s.Constraints["model"]
@@ -368,7 +370,7 @@ func TestSeedACPServerDefaults_PresetFieldsNotOverwritten(t *testing.T) {
 		t.Error("preset Constraints should not be overwritten")
 	}
 	// AutoApprove is always set from defaults (no pre-set field to preserve).
-	if !s.AutoApprove {
+	if !s.AutoApprove { //nolint:staticcheck // Verifies migration of legacy agent metadata defaults.
 		t.Error("AutoApprove should be set from defaults")
 	}
 }
@@ -425,7 +427,7 @@ func TestSeedACPServerDefaults_FieldLevelOverride(t *testing.T) {
 	}
 
 	// AutoApprove always taken from defaults.
-	if !s.AutoApprove {
+	if !s.AutoApprove { //nolint:staticcheck // Verifies migration of legacy agent metadata defaults.
 		t.Error("AutoApprove should be set from defaults")
 	}
 }

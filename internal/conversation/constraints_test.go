@@ -369,6 +369,78 @@ func TestSelectHighestPriorityModel_IgnoresCurrentModel(t *testing.T) {
 	}
 }
 
+func TestModelTagOverrideResolution(t *testing.T) {
+	profiles := []config.ModelProfile{
+		{Name: "Coding fallback", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Fallback"}, Tags: []string{"Coding"}},
+	}
+	modelState := func(current string) *SessionModelState {
+		return &SessionModelState{
+			CurrentModelId: current,
+			AvailableModels: []ModelInfo{
+				{ModelId: "m-current", Name: "Current model"},
+				{ModelId: "m-override", Name: "Workspace override"},
+				{ModelId: "m-fallback", Name: "Coding Fallback"},
+			},
+		}
+	}
+	lookup := ModelOverrideLookup(func(tag string) (string, bool) {
+		if tag == "Coding" {
+			return "m-override", true
+		}
+		return "", false
+	})
+	prefs := []config.PromptPreferredModel{{ModelTag: "Coding"}}
+
+	t.Run("override wins for both selector modes", func(t *testing.T) {
+		if got := SelectPreferredModel(prefs, profiles, modelState("m-current"), lookup); got != "m-override" {
+			t.Errorf("SelectPreferredModel() = %q, want override m-override", got)
+		}
+		if got := SelectHighestPriorityModel(prefs, profiles, modelState("m-current"), lookup); got != "m-override" {
+			t.Errorf("SelectHighestPriorityModel() = %q, want override m-override", got)
+		}
+	})
+
+	t.Run("override supersedes a current profile match", func(t *testing.T) {
+		if got := SelectPreferredModel(prefs, profiles, modelState("m-fallback"), lookup); got != "m-override" {
+			t.Errorf("SelectPreferredModel() = %q, want override m-override", got)
+		}
+	})
+
+	t.Run("keep-current when current equals valid override", func(t *testing.T) {
+		if got := SelectPreferredModel(prefs, profiles, modelState("m-override"), lookup); got != "m-override" {
+			t.Errorf("SelectPreferredModel() = %q, want current override m-override", got)
+		}
+	})
+
+	t.Run("unavailable override falls back to tagged profiles", func(t *testing.T) {
+		unavailable := ModelOverrideLookup(func(string) (string, bool) { return "not-advertised", true })
+		if got := SelectPreferredModel(prefs, profiles, modelState("m-current"), unavailable); got != "m-fallback" {
+			t.Errorf("SelectPreferredModel() = %q, want profile fallback m-fallback", got)
+		}
+	})
+
+	t.Run("missing override falls back to tagged profiles", func(t *testing.T) {
+		if got := SelectPreferredModel(prefs, profiles, modelState("m-current"), nil); got != "m-fallback" {
+			t.Errorf("SelectPreferredModel() = %q, want profile fallback m-fallback", got)
+		}
+	})
+
+	t.Run("ModelName ignores workspace overrides", func(t *testing.T) {
+		byName := []config.PromptPreferredModel{{ModelName: "Coding fallback"}}
+		if got := SelectPreferredModel(byName, profiles, modelState("m-current"), lookup); got != "m-fallback" {
+			t.Errorf("SelectPreferredModel(ModelName) = %q, want profile result m-fallback", got)
+		}
+	})
+
+	t.Run("synthetic catalog ignores workspace overrides", func(t *testing.T) {
+		synthetic := modelState("m-current")
+		synthetic.Synthesized = true
+		if got := SelectPreferredModel(prefs, profiles, synthetic, lookup); got != "m-fallback" {
+			t.Errorf("SelectPreferredModel(synthetic) = %q, want profile fallback m-fallback", got)
+		}
+	})
+}
+
 // TestConstraintModelSwitchBudgetMath verifies that constraintModelSwitchCallerBudget
 // (90s) is large enough to cover worst-case setModelSem contention at server wakeup
 // (mitto-f7q). Mirrors internal/web's TestSetModelAsyncBudgetMath.

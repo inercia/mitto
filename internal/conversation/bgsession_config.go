@@ -150,7 +150,7 @@ func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (str
 	profiles := bs.mittoConfig.EffectiveModelProfiles()
 	resolved := SelectHighestPriorityModel(
 		[]config.PromptPreferredModel{{ModelTag: tag}},
-		profiles, models,
+		profiles, models, bs.modelOverrideForTag,
 	)
 	if resolved == "" {
 		return "", fmt.Errorf("model_tag %q did not resolve to any available model", tag)
