@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
@@ -142,4 +143,76 @@ func TestJSONLineFilterReader_EmptyInput(t *testing.T) {
 	if len(output) != 0 {
 		t.Errorf("expected empty output, got %q", string(output))
 	}
+}
+
+func TestJSONLineFilterReader_TransformRunsAfterFilterAndSanitizer(t *testing.T) {
+	input := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","content":[{"type":"diff","oldText":{"text":"preserve me"}}]}}}` + "\n"
+	var stages []string
+	reader := NewJSONLineFilterReaderWithTransform(strings.NewReader(input), nil,
+		func([]byte) bool {
+			stages = append(stages, "filter")
+			return false
+		},
+		func(line []byte) ([]byte, bool) {
+			stages = append(stages, "transform")
+			var message struct {
+				Params struct {
+					Update struct {
+						Content []struct {
+							OldText string `json:"oldText"`
+						} `json:"content"`
+					} `json:"update"`
+				} `json:"params"`
+			}
+			if err := json.Unmarshal(line, &message); err != nil {
+				t.Errorf("transform received invalid JSON: %v", err)
+			} else if got := message.Params.Update.Content[0].OldText; got != "preserve me" {
+				t.Errorf("transform ran before standard sanitation: oldText=%q", got)
+			}
+			return line, false
+		})
+	if _, err := io.ReadAll(reader); err != nil {
+		t.Fatalf("read filtered JSON: %v", err)
+	}
+	if got, want := strings.Join(stages, ","), "filter,transform"; got != want {
+		t.Fatalf("hook order = %q, want %q", got, want)
+	}
+}
+
+func TestJSONLineFilterReader_TransformHandlesPartialSourceReadsAndDiscards(t *testing.T) {
+	input := `{"jsonrpc":"2.0","method":"before"}` + "\n" + `{"jsonrpc":"2.0","method":"drop"}` + "\n"
+	reader := NewJSONLineFilterReaderWithTransform(&shortReadReader{reader: strings.NewReader(input), maxRead: 3}, nil, nil,
+		func(line []byte) ([]byte, bool) {
+			if bytes.Contains(line, []byte(`"drop"`)) {
+				return nil, true
+			}
+			return bytes.Replace(line, []byte(`"before"`), []byte(`"after"`), 1), false
+		})
+	buf := make([]byte, 4)
+	var output []byte
+	for {
+		n, err := reader.Read(buf)
+		output = append(output, buf[:n]...)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("partial read: %v", err)
+		}
+	}
+	if got, want := string(output), `{"jsonrpc":"2.0","method":"after"}`+"\n"; got != want {
+		t.Fatalf("transformed output = %q, want %q", got, want)
+	}
+}
+
+type shortReadReader struct {
+	reader  io.Reader
+	maxRead int
+}
+
+func (r *shortReadReader) Read(p []byte) (int, error) {
+	if len(p) > r.maxRead {
+		p = p[:r.maxRead]
+	}
+	return r.reader.Read(p)
 }

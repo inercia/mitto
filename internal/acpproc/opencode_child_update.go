@@ -132,6 +132,9 @@ func parseJSONObject(raw []byte) (jsonObject, bool) {
 			return result, false
 		}
 		start := skipJSONWhitespace(raw, int(decoder.InputOffset()))
+		if start < len(raw) && raw[start] == ':' {
+			start = skipJSONWhitespace(raw, start+1)
+		}
 		var value json.RawMessage
 		if err := decoder.Decode(&value); err != nil {
 			return result, false
@@ -186,8 +189,8 @@ func decodeOpenCodeChildUpdate(raw json.RawMessage) (conversation.ChildSessionUp
 		if !present {
 			return "", !required
 		}
-		var result string
-		if json.Unmarshal(value, &result) != nil || (required && result == "") || (maxBytes > 0 && len(result) > maxBytes) {
+		result, isString := rawJSONString(value)
+		if !isString || (required && result == "") || (maxBytes > 0 && len(result) > maxBytes) {
 			return "", false
 		}
 		return result, true
@@ -291,11 +294,12 @@ func decodeChildSessionError(raw json.RawMessage) (*conversation.ChildSessionUpd
 }
 
 func rawJSONString(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '"' {
 		return "", false
 	}
 	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if err := json.Unmarshal(trimmed, &value); err != nil {
 		return "", false
 	}
 	return value, true
