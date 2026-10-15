@@ -165,7 +165,7 @@ func (s *Server) findPromptByName(workingDir, name string) (config.WebPrompt, bo
 
 // handlePromptList handles the mitto_prompt_list tool.
 func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest, input PromptListInput) (*mcp.CallToolResult, PromptListOutput, error) {
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, PromptListOutput{Error: "could not resolve session: provide a valid self_id"}, nil
 	}
@@ -199,7 +199,7 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 
 // handlePromptGet handles the mitto_prompt_get tool.
 func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, input PromptGetInput) (*mcp.CallToolResult, PromptGetOutput, error) {
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, PromptGetOutput{Error: "could not resolve session: provide a valid self_id"}, nil
 	}
@@ -248,7 +248,7 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 
 // handlePromptUpdate handles the mitto_prompt_update tool.
 func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolRequest, input PromptUpdateInput) (*mcp.CallToolResult, PromptUpdateOutput, error) {
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, PromptUpdateOutput{Error: "could not resolve session: provide a valid self_id"}, nil
 	}

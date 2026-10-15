@@ -37,7 +37,7 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, GetConversationOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
@@ -147,7 +147,7 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, ArchiveConversationOutput{
 			Success: false,
@@ -329,7 +329,7 @@ func (s *Server) handleDeleteConversation(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, DeleteConversationOutput{
 			Success: false,
@@ -475,7 +475,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, ConversationUpdateOutput{
 			Success: false,

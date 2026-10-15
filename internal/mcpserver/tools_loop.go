@@ -35,7 +35,7 @@ func (s *Server) handleRunLoopNow(ctx context.Context, req *mcp.CallToolRequest,
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, RunLoopNowOutput{
 			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),

@@ -160,7 +160,7 @@ func (s *Server) handleWorkspaceUpdate(ctx context.Context, req *mcp.CallToolReq
 		return nil, WorkspaceUpdateOutput{Success: false, Error: "self_id is required"}, nil
 	}
 
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, WorkspaceUpdateOutput{
 			Success: false,
@@ -390,7 +390,7 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 
 		if input.SelfID != "" {
 			// Resolve caller's session ID.
-			realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+			realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 			if realSessionID == "" {
 				return nil, ListConversationsOutput{}, fmt.Errorf(
 					"session not found: the self_id '%s' could not be resolved", input.SelfID)

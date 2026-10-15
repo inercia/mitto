@@ -52,7 +52,7 @@ func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
@@ -188,7 +188,7 @@ func (s *Server) handleUITextbox(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, UITextboxOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
@@ -321,7 +321,7 @@ func (s *Server) handleUIForm(ctx context.Context, req *mcp.CallToolRequest, inp
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, UIFormOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",
@@ -420,14 +420,14 @@ func (s *Server) handleUIForm(ctx context.Context, req *mcp.CallToolRequest, inp
 	}, nil
 }
 
-func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, input UINotifyInput) (*mcp.CallToolResult, UINotifyOutput, error) {
+func (s *Server) handleUINotify(ctx context.Context, req *mcp.CallToolRequest, input UINotifyInput) (*mcp.CallToolResult, UINotifyOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
 		return nil, UINotifyOutput{}, fmt.Errorf("self_id is required")
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, UINotifyOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved",

@@ -230,7 +230,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	}
 
 	// Resolve the self_id to a real session ID (parent)
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, ChildrenTasksWaitOutput{
 			Success: false,
@@ -851,7 +851,7 @@ func (s *Server) handleChildrenTasksReport(ctx context.Context, req *mcp.CallToo
 	}
 
 	// Resolve the self_id to a real session ID (child)
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, ChildrenTasksReportOutput{
 			Success: false,

@@ -43,7 +43,7 @@ func (s *Server) handleConversationHistory(ctx context.Context, req *mcp.CallToo
 		return nil, emptyOut, nil
 	}
 
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		emptyOut.Error = fmt.Sprintf("session not found: self_id '%s' could not be resolved", input.SelfID)
 		return nil, emptyOut, nil

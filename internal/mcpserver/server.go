@@ -165,6 +165,15 @@ type Server struct {
 	acpSessionsMu sync.Mutex
 	acpSessions   map[string]string
 	acpByConv     map[string]string
+	// acpRootGenerations and acpChildren are guarded by acpSessionsMu. Root
+	// generations make delayed child lifecycle events from a replaced ACP
+	// process unable to mutate the current caller registry.
+	acpRootGenerations   map[string]acpRootBinding
+	acpChildren          map[string]*acpChildBinding
+	acpChildQuarantine   map[string]map[string]struct{}
+	acpChildRegistryFull bool
+	acpGeneration        atomic.Uint64
+	acpChildWaiters      atomic.Int64
 	// acpAmbiguous quarantines ACP IDs claimed by more than one conversation
 	// (id -> claimant conversation IDs). Quarantined IDs resolve to nobody until
 	// every claimant unbinds, unregisters or moves to a distinct ID.
@@ -560,6 +569,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		sharedSecret:          newSharedSecret(),
 		acpSessions:           make(map[string]string),
 		acpByConv:             make(map[string]string),
+		acpRootGenerations:    make(map[string]acpRootBinding),
+		acpChildren:           make(map[string]*acpChildBinding),
+		acpChildQuarantine:    make(map[string]map[string]struct{}),
 		acpAmbiguous:          make(map[string]map[string]struct{}),
 		pendingRequests:       make(map[string][]*pendingRequest),
 		stickyPendingRequests: make(map[string]string),
@@ -1609,6 +1621,32 @@ func (s *Server) BindACPSession(convID, acpSessionID string) bool {
 	}
 	s.acpSessionsMu.Lock()
 	defer s.acpSessionsMu.Unlock()
+	if child := s.acpChildren[acpSessionID]; child != nil {
+		s.quarantineACPChildIDLocked(acpSessionID, convID, child.owner)
+		return false
+	}
+	if s.acpIDQuarantinedLocked(acpSessionID) {
+		return false
+	}
+	if !s.bindACPSessionLocked(convID, acpSessionID) {
+		return false
+	}
+	// Legacy callers bind the root through this API. Refresh its generation so
+	// any lifecycle events from the previous ACP root are rejected.
+	generation := s.acpGeneration.Add(1)
+	s.acpRootGenerations[convID] = acpRootBinding{rootID: acpSessionID, generation: generation}
+	s.dropACPChildClaimsLocked(convID)
+	for id, child := range s.acpChildren {
+		if child.owner == convID {
+			delete(s.acpChildren, id)
+		}
+	}
+	return true
+}
+
+// bindACPSessionLocked implements the legacy root mapping operation. Caller
+// holds acpSessionsMu.
+func (s *Server) bindACPSessionLocked(convID, acpSessionID string) bool {
 	if claimants, ok := s.acpAmbiguous[acpSessionID]; ok {
 		s.dropACPClaimLocked(convID, acpSessionID)
 		s.unmapConvLocked(convID)
@@ -1667,6 +1705,13 @@ func (s *Server) UnbindACPSession(convID string) {
 		delete(s.acpByConv, convID)
 	}
 	s.dropACPClaimLocked(convID, "")
+	s.dropACPChildClaimsLocked(convID)
+	delete(s.acpRootGenerations, convID)
+	for id, child := range s.acpChildren {
+		if child.owner == convID {
+			delete(s.acpChildren, id)
+		}
+	}
 }
 
 func (s *Server) lookupACPSession(acpSessionID string) string {
@@ -1693,6 +1738,10 @@ func (s *Server) isSharedTransportRequest(req *mcp.CallToolRequest) bool {
 // unmapped, or the supplied self_id names a different registered conversation.
 // It never uses the legacy correlation, sticky or protocol-session caches.
 func (s *Server) resolveSharedCaller(req *mcp.CallToolRequest, inputSessionID string) string {
+	return s.resolveSharedCallerContext(context.Background(), req, inputSessionID)
+}
+
+func (s *Server) resolveSharedCallerContext(ctx context.Context, req *mcp.CallToolRequest, inputSessionID string) string {
 	var acpID string
 	hasMeta := false
 	if req.Params != nil {
@@ -1703,7 +1752,10 @@ func (s *Server) resolveSharedCaller(req *mcp.CallToolRequest, inputSessionID st
 	}
 	owner := ""
 	if acpID != "" {
-		owner = s.lookupACPSession(acpID)
+		owner = s.resolveACPCaller(acpID)
+		if owner == "" && validACPChildID(acpID) {
+			owner = s.waitForACPChild(ctx, acpID)
+		}
 	}
 	if owner == "" || s.getSession(owner) == nil {
 		s.logger.Warn("Shared MCP caller identity unavailable", "has_caller_meta", hasMeta)
@@ -1902,8 +1954,16 @@ func (s *Server) getOrCreateCollector(parentSessionID string) (*childReportColle
 //
 // Returns the resolved session ID, or empty string if resolution fails.
 func (s *Server) resolveSelfIDWithMCP(inputSessionID string, req *mcp.CallToolRequest) string {
+	return s.resolveSelfIDWithMCPContext(context.Background(), inputSessionID, req)
+}
+
+// resolveSelfIDWithMCPContext is the production resolver. Shared transport
+// requests use only their per-call ACP identity and may wait briefly for a
+// child lifecycle event; legacy requests retain the historical correlation
+// behavior through this context-aware entry point.
+func (s *Server) resolveSelfIDWithMCPContext(ctx context.Context, inputSessionID string, req *mcp.CallToolRequest) string {
 	if req != nil && s.isSharedTransportRequest(req) {
-		return s.resolveSharedCaller(req, inputSessionID)
+		return s.resolveSharedCallerContext(ctx, req, inputSessionID)
 	}
 	if inputSessionID == "" {
 		return ""
@@ -2482,7 +2542,7 @@ func (s *Server) handleGetCurrentSession(ctx context.Context, req *mcp.CallToolR
 	}
 
 	// Resolve via the MCP protocol-session cache or ACP-observed correlation.
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, CurrentSessionOutput{}, fmt.Errorf(
 			"session not found: the self_id '%s' could not be resolved. "+

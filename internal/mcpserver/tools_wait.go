@@ -161,7 +161,7 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 	}
 
 	// Resolve the self_id to a real session ID
-	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
+	realSessionID := s.resolveSelfIDWithMCPContext(ctx, input.SelfID, req)
 	if realSessionID == "" {
 		return nil, ConversationWaitOutput{
 			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
