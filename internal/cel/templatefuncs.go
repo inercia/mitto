@@ -1150,6 +1150,49 @@ func beadHasLabels(folder, id, labels string) bool {
 	return true
 }
 
+// beadHasLabelsStrict is the fail-CLOSED companion to beadHasLabels, for
+// render-time callers that treat a positive result as an ASSERTION about the
+// bead's real state rather than as a gate that merely hides an optional prompt.
+// It returns true only when `bd show <id> --json` was read successfully AND the
+// bead carries ALL of the comma-separated labels.
+//
+// Rationale (mitto-sfk): beadHasLabels fails OPEN to true, so a transient bd
+// failure (missing bd, empty id, non-zero exit, or an bdexec.Acquire timeout —
+// see internal/bdexec/limiter.go) was indistinguishable from "the label is
+// present". The feature-phase-plan prompt used `BeadHasLabels $target "planned"`
+// to mean "planning already happened, stop", so any failed lookup silently
+// skipped planning and stalled the feature pipeline forever. Any render-time
+// POSITIVE assertion must use this strict variant instead.
+//
+// Fail-closed (false): empty id, empty labels list, any lookup error, or a
+// genuinely absent label.
+func beadHasLabelsStrict(folder, id, labels string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false // fail-closed: nothing was verified
+	}
+	want := splitCSV(labels)
+	if len(want) == 0 {
+		return false // fail-closed: no requirement to verify
+	}
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return false // fail-closed: could not read the bead
+	}
+
+	have := make(map[string]struct{}, len(bead.Labels))
+	for _, l := range bead.Labels {
+		have[l] = struct{}{}
+	}
+	for _, w := range want {
+		if _, ok := have[w]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // beadHasStatus reports whether the single bead identified by id has ANY of the
 // comma-separated statuses, running `bd show <id> --json` in folder. It exists
 // primarily for linked-conversation prompt gates, where Item.Status is absent.
@@ -1682,6 +1725,12 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// comma-separated labels (via `bd show <id> --json`). Fail-open. Scopes to
 		// one issue, unlike HasBeads which aggregates across the workspace.
 		"BeadHasLabels": func(id, labels string) bool { return beadHasLabels(folder, id, labels) },
+		// BeadHasLabelsStrict(id, labels) — fail-CLOSED companion to
+		// BeadHasLabels: true only when the bead was READ SUCCESSFULLY and
+		// carries ALL comma-separated labels. Use this for render-time POSITIVE
+		// assertions ("this label IS present"), where a failed lookup must not
+		// be read as success (mitto-sfk).
+		"BeadHasLabelsStrict": func(id, labels string) bool { return beadHasLabelsStrict(folder, id, labels) },
 		// BeadHasStatus(id, statuses) — true iff the single bead <id> has ANY
 		// requested status. Fail-open. Used when Item.Status is unavailable.
 		"BeadHasStatus": func(id, statuses string) bool { return beadHasStatus(folder, id, statuses) },

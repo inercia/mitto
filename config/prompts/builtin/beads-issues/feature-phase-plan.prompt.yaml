@@ -60,10 +60,10 @@ prompt: |
   ```
 
   Read its `labels` array, description, and acceptance criteria.
-  {{- if BeadHasLabels $target "planned" }} The bead **already carries `planned`**, so this
+  {{- if BeadHasLabelsStrict $target "planned" }} The bead **already carries `planned`**, so this
   phase's work is already done — `bd comment` a note that the phase re-ran redundantly and
   stop **without** re-adding the label.
-  {{- else if BeadHasLabels $target "implementation-refined" }} The bead **already carries
+  {{- else if BeadHasLabelsStrict $target "implementation-refined" }} The bead **already carries
   `implementation-refined`**: a prior investigation already produced the plan. Do **not**
   re-plan — add `planned` and stop:
 
@@ -72,7 +72,7 @@ prompt: |
   ```
   {{- else }} Neither `planned` nor `implementation-refined` is set, so continue to Step 2.
   {{- end }}
-  {{- if not (or (BeadHasLabels $target "planned") (BeadHasLabels $target "implementation-refined")) }}
+  {{- if not (or (BeadHasLabelsStrict $target "planned") (BeadHasLabelsStrict $target "implementation-refined")) }}
 
   ## Step 2 — Produce an implementation plan
 

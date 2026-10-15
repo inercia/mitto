@@ -188,7 +188,7 @@ prompt: |
   {{- $top := "" }}
   {{- if .Session.BeadsIssue }}{{ $top = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $top = .Args.IssueID }}{{ end }}
   3. **Investigation vs implementation** (decided by the `implementation-refined` label).
-     {{- if and $top (BeadHasLabels $top "implementation-refined") }}
+     {{- if and $top (BeadHasLabelsStrict $top "implementation-refined") }}
      The top-level bead `{{ $top }}` **already carries `implementation-refined`**: an
      Investigation Report is on the bead (comment + description/acceptance/design). Skip
      investigation and go to item 4, handing the implementation child that report as its

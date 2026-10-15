@@ -1004,7 +1004,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "ReadFile", "ReadTemplate", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitStatusFiles", "GitFileTracked", "GitFileDeleted",
-		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadHasStatus", "BeadIsOpen", "BeadMetadata",
+		"BeadsCount", "HasBeads", "BeadHasLabels", "BeadHasLabelsStrict", "BeadHasStatus", "BeadIsOpen", "BeadMetadata",
 		"PromptText", "PromptTextWithArgs", "ArgsMap",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join", "Dir",
 	}
@@ -2155,6 +2155,54 @@ func TestBeadHasLabels_ArrayShape(t *testing.T) {
 	}
 }
 
+// TestBeadHasLabelsStrict_FailClosed (mitto-sfk) verifies the fail-CLOSED
+// companion to beadHasLabels. It returns true only when the bead was read
+// successfully AND carries every requested label; a genuinely absent label, an
+// empty id, or an empty labels list all return false — the OPPOSITE of
+// beadHasLabels' fail-open corners.
+func TestBeadHasLabelsStrict_FailClosed(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open","labels":["planned","support-question"]}]`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabelsStrict(tmp, "mitto-1", "planned") {
+		t.Errorf("beadHasLabelsStrict present label = false, want true")
+	}
+	if !beadHasLabelsStrict(tmp, "mitto-1", "planned,support-question") {
+		t.Errorf("beadHasLabelsStrict all-present = false, want true")
+	}
+	if beadHasLabelsStrict(tmp, "mitto-1", "implementation-refined") {
+		t.Errorf("beadHasLabelsStrict absent label = true, want false")
+	}
+
+	// Fail-closed corners that beadHasLabels treats as true.
+	if beadHasLabelsStrict(tmp, "", "planned") {
+		t.Errorf("beadHasLabelsStrict empty id = true, want false (fail-closed)")
+	}
+	if beadHasLabelsStrict(tmp, "mitto-1", "") {
+		t.Errorf("beadHasLabelsStrict empty labels = true, want false (fail-closed)")
+	}
+}
+
+// TestBeadHasLabelsStrict_FailClosedOnLookupError (mitto-sfk) pins the two
+// failure modes that made the feature plan phase silently skip its work in the
+// field: unparseable bd output, and bd absent from PATH. Both must yield false
+// so a render-time positive assertion can never be satisfied by a failed
+// lookup.
+func TestBeadHasLabelsStrict_FailClosedOnLookupError(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+	if beadHasLabelsStrict(tmp, "mitto-1", "planned") {
+		t.Errorf("beadHasLabelsStrict bad JSON = true, want false (fail-closed)")
+	}
+
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	InvalidateAllBeadsCaches()
+	if beadHasLabelsStrict(emptyDir, "mitto-1", "planned") {
+		t.Errorf("beadHasLabelsStrict missing bd = true, want false (fail-closed)")
+	}
+}
+
 // TestBeadIsOpen_OpenAndClosed verifies beadIsOpen returns true for a non-closed
 // bead and false for a closed one, across both the array and bare-object shapes.
 func TestBeadIsOpen_OpenAndClosed(t *testing.T) {
@@ -2420,6 +2468,35 @@ func TestBeadMetadata_TemplateFuncRender(t *testing.T) {
 	}
 	if got != "channel=C0TMPL" {
 		t.Errorf("BeadMetadata render = %q, want %q", got, "channel=C0TMPL")
+	}
+}
+
+// TestBeadHasLabelsStrict_TemplateFuncRender (mitto-sfk) verifies the strict
+// helper is wired into the production render path and that a lookup success
+// with a present label renders the "true" branch.
+func TestBeadHasLabelsStrict_TemplateFuncRender(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","labels":["planned"]}]`, 0)
+	tmp := t.TempDir()
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	body := `{{ if BeadHasLabelsStrict "mitto-1" "planned" }}skip{{ else }}plan{{ end }}`
+	got, err := RenderPromptTemplate("test", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render BeadHasLabelsStrict: %v", err)
+	}
+	if got != "skip" {
+		t.Errorf("BeadHasLabelsStrict render = %q, want %q", got, "skip")
+	}
+
+	body = `{{ if BeadHasLabelsStrict "mitto-1" "implementation-refined" }}skip{{ else }}plan{{ end }}`
+	got, err = RenderPromptTemplate("test", body, ctx, fm)
+	if err != nil {
+		t.Fatalf("render BeadHasLabelsStrict (absent label): %v", err)
+	}
+	if got != "plan" {
+		t.Errorf("BeadHasLabelsStrict absent-label render = %q, want %q", got, "plan")
 	}
 }
 
