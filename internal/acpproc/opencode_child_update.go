@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 
 	acp "github.com/coder/acp-go-sdk"
 
@@ -39,14 +40,19 @@ type jsonTokenSpan struct {
 // Requests to the reserved private method are redirected to an unhandled
 // private method so they cannot invoke the notification callback.
 func adaptOpenCodeChildUpdate(line []byte) ([]byte, bool) {
+	adapted, discard, _ := adaptOpenCodeChildUpdateWithReason(line)
+	return adapted, discard
+}
+
+func adaptOpenCodeChildUpdateWithReason(line []byte) ([]byte, bool, string) {
 	obj, ok := parseJSONObject(line)
 	if !ok {
-		return line, false
+		return line, false, ""
 	}
 
 	methods := obj.methods
 	if len(methods) == 0 {
-		return line, false
+		return line, false, ""
 	}
 	containsMethod := func(method string) bool {
 		for _, token := range methods {
@@ -63,40 +69,50 @@ func adaptOpenCodeChildUpdate(line []byte) ([]byte, bool) {
 	// method key still resolves to a method-not-found response.
 	if containsMethod(mittoChildUpdateMethod) {
 		if !idPresent {
-			return nil, true
+			return nil, true, "reserved_alias_notification"
 		}
 		if obj.duplicates["method"] {
-			return replaceMethodTokens(line, methods, reservedChildUpdateMethod), false
+			return replaceMethodTokens(line, methods, reservedChildUpdateMethod), false, ""
 		}
-		return replaceMethodTokens(line, []jsonTokenSpan{methods[len(methods)-1]}, reservedChildUpdateMethod), false
+		return replaceMethodTokens(line, []jsonTokenSpan{methods[len(methods)-1]}, reservedChildUpdateMethod), false, ""
 	}
 
 	if !containsMethod(opencodeChildUpdateMethod) {
-		return line, false
+		return line, false, ""
 	}
 	// A request (including id:null) is never adapted into a callback.
 	if idPresent {
-		return line, false
+		return line, false, ""
 	}
 	// Ambiguous routing keys cannot safely identify a notification. Drop only
 	// the exact lifecycle notification; unrelated malformed JSON remains under
 	// the reader's existing behavior.
 	if obj.duplicates["jsonrpc"] || obj.duplicates["method"] || obj.duplicates["params"] {
-		return nil, true
+		return nil, true, "ambiguous_notification"
 	}
 	var version, method string
 	if json.Unmarshal(obj.values["jsonrpc"], &version) != nil || version != "2.0" ||
 		json.Unmarshal(obj.values["method"], &method) != nil || method != opencodeChildUpdateMethod {
-		return nil, true
+		return nil, true, "invalid_notification"
 	}
 	params := obj.values["params"]
 	if !isJSONObjectRaw(params) {
-		return nil, true
+		return nil, true, "invalid_params"
 	}
 	if _, err := decodeOpenCodeChildUpdate(params); err != nil {
-		return nil, true
+		return nil, true, "invalid_lifecycle_envelope"
 	}
-	return replaceMethodTokens(line, []jsonTokenSpan{methods[len(methods)-1]}, mittoChildUpdateMethod), false
+	return replaceMethodTokens(line, []jsonTokenSpan{methods[len(methods)-1]}, mittoChildUpdateMethod), false, ""
+}
+
+func sharedACPChildUpdateTransform(logger *slog.Logger) func([]byte) ([]byte, bool) {
+	return func(line []byte) ([]byte, bool) {
+		adapted, discard, reason := adaptOpenCodeChildUpdateWithReason(line)
+		if discard && logger != nil {
+			logger.Warn("Discarded OpenCode child lifecycle notification", "reason", reason)
+		}
+		return adapted, discard
+	}
 }
 
 func replaceMethodTokens(line []byte, spans []jsonTokenSpan, method string) []byte {

@@ -1,11 +1,13 @@
 package acpproc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +157,27 @@ func TestAdaptOpenCodeChildUpdate_PreservesParamsAndHandlesMethodBoundary(t *tes
 	}
 }
 
+func TestSharedACPChildUpdateTransform_LogsSanitizedRejections(t *testing.T) {
+	var logs bytes.Buffer
+	transform := sharedACPChildUpdateTransform(slog.New(slog.NewTextHandler(&logs, nil)))
+	payloadSentinel := "payload-secret-sentinel"
+	titleSentinel := "title-secret-sentinel"
+	errorSentinel := "error-secret-sentinel"
+	line := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"opencode/session/child_update","params":{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"update","title":%q,"error":{"type":"failed","message":%q},"update":{"sessionUpdate":"bad"},"private":%q}}`, titleSentinel, errorSentinel, payloadSentinel))
+	if _, discard := transform(line); !discard {
+		t.Fatal("malformed lifecycle notification was not discarded")
+	}
+	text := logs.String()
+	if !strings.Contains(text, "Discarded OpenCode child lifecycle notification") || !strings.Contains(text, "invalid_lifecycle_envelope") {
+		t.Fatalf("missing bounded rejection diagnostic: %s", text)
+	}
+	for _, secret := range []string{payloadSentinel, titleSentinel, errorSentinel} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("diagnostic leaked %q: %s", secret, text)
+		}
+	}
+}
+
 func TestMultiplexClient_HandleChildUpdate(t *testing.T) {
 	const params = `{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"status","status":"running"}`
 	mc := NewMultiplexClient()
@@ -187,7 +210,10 @@ func TestMultiplexClient_HandleChildUpdate(t *testing.T) {
 func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 	rootEntered := make(chan struct{}, 1)
 	releaseRoot := make(chan struct{})
-	events := make(chan string, 8)
+	events := make(chan string, 16)
+	process := &SharedACPProcess{}
+	var replayLogs bytes.Buffer
+	process.logger = slog.New(slog.NewTextHandler(&replayLogs, nil))
 	mux := NewMultiplexClient()
 	mux.RegisterSession("root", &conversation.SessionCallbacks{
 		OnSessionUpdate: func(_ context.Context, params acp.SessionNotification) error {
@@ -200,6 +226,17 @@ func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 			return nil
 		},
 		OnChildSessionUpdate: func(_ context.Context, update conversation.ChildSessionUpdate) error {
+			if update.Type == "update" {
+				if update.Update == nil {
+					return fmt.Errorf("child update missing decoded payload")
+				}
+				payload, err := json.Marshal(update.Update)
+				if err != nil || !bytes.Contains(payload, []byte("projected child text")) {
+					return fmt.Errorf("child update payload was not preserved: %v", err)
+				}
+				events <- "child-update"
+				return nil
+			}
 			events <- "child-" + update.Status
 			return nil
 		},
@@ -208,7 +245,7 @@ func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 	agentToClientR, agentToClientW := io.Pipe()
 	clientToAgentR, clientToAgentW := io.Pipe()
 	conn := acp.NewClientSideConnection(mux, clientToAgentW,
-		mittoAcp.NewJSONLineFilterReaderWithTransform(agentToClientR, nil, nil, adaptOpenCodeChildUpdate),
+		mittoAcp.NewJSONLineFilterReaderWithTransform(agentToClientR, nil, process.filterLoadReplayNotification, sharedACPChildUpdateTransform(nil)),
 		acp.WithMaxQueuedNotifications(sharedACPNotificationQueueCapacity))
 	t.Cleanup(func() {
 		_ = agentToClientR.Close()
@@ -216,6 +253,16 @@ func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 		_ = clientToAgentR.Close()
 		_ = clientToAgentW.Close()
 	})
+	responses := make(chan map[string]json.RawMessage, 8)
+	go func() {
+		scanner := bufio.NewScanner(clientToAgentR)
+		for scanner.Scan() {
+			var response map[string]json.RawMessage
+			if json.Unmarshal(scanner.Bytes(), &response) == nil {
+				responses <- response
+			}
+		}
+	}()
 
 	write := func(line string) {
 		t.Helper()
@@ -223,6 +270,46 @@ func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 			t.Fatalf("write notification: %v", err)
 		}
 	}
+	seenResponses := make(map[string]map[string]json.RawMessage)
+	waitResponse := func(id string) map[string]json.RawMessage {
+		t.Helper()
+		if response := seenResponses[id]; response != nil {
+			return response
+		}
+		for {
+			select {
+			case response := <-responses:
+				var responseID string
+				_ = json.Unmarshal(response["id"], &responseID)
+				seenResponses[responseID] = response
+				if responseID == id {
+					return response
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("timed out waiting for response %q; observed responses %v", id, seenResponses)
+				return nil
+			}
+		}
+	}
+	process.beginLoadReplaySuppression("root")
+	write(childNotificationLine(`{"rootSessionId":"root","childSessionId":"replayed","parentSessionId":"root","depth":1,"type":"status","status":"created"}`))
+	write(childNotificationLine(`{"rootSessionId":"root","childSessionId":"replayed","parentSessionId":"root","depth":1,"type":"update","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"replayed text"}}}`))
+	write(`{"jsonrpc":"2.0","method":"_other/replay_barrier","id":"replay-barrier","params":{}}`)
+	if response := waitResponse("replay-barrier"); len(response["error"]) == 0 {
+		t.Fatalf("replay barrier request unexpectedly succeeded: %s", response)
+	}
+	process.loadReplayMu.RLock()
+	state := process.loadReplaySuppressions["root"]
+	gotSuppressed := state.suppressed.Load()
+	process.loadReplayMu.RUnlock()
+	if gotSuppressed != 2 {
+		t.Fatalf("reader did not suppress both status/update replay before queueing: count=%d", gotSuppressed)
+	}
+	process.endLoadReplaySuppression("root")
+	if !strings.Contains(replayLogs.String(), `suppressed_notifications=2`) {
+		t.Fatalf("replay suppression summary missing expected count: %s", replayLogs.String())
+	}
+
 	write(rootSessionUpdateLine(1))
 	select {
 	case <-rootEntered:
@@ -230,13 +317,18 @@ func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 		t.Fatal("first root callback did not start")
 	}
 	write(`{"jsonrpc":"2.0","method":"opencode/session/child_update","params":{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"status","status":"unknown"}}`)
+	write(`{"jsonrpc":"2.0","method":"_mitto/opencode/session/child_update","params":{"rootSessionId":"root","childSessionId":"private-child","parentSessionId":"root","depth":1,"type":"status","status":"created"}}`)
 	write(childNotificationLine(`{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"status","status":"created"}`))
+	write(childNotificationLine(`{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"status","status":"running"}`))
+	write(childNotificationLine(`{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"update","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"projected child text"},"_meta":{"opencode/child-session":{"id":"child","parentID":"root","depth":1}}}}`))
+	write(childNotificationLine(`{"rootSessionId":"root","childSessionId":"child","parentSessionId":"root","depth":1,"type":"status","status":"completed"}`))
 	write(childNotificationLine(`{"rootSessionId":"unknown-root","childSessionId":"other-child","parentSessionId":"unknown-root","depth":1,"type":"status","status":"running"}`))
 	write(rootSessionUpdateLine(2))
 	close(releaseRoot)
 
 	var got []string
-	for len(got) < 3 {
+	want := []string{"root-1", "child-created", "child-running", "child-update", "child-completed", "root-2"}
+	for len(got) < len(want) {
 		select {
 		case event := <-events:
 			got = append(got, event)
@@ -244,8 +336,23 @@ func TestSharedACPChildUpdates_AreOrderedWithRootUpdates(t *testing.T) {
 			t.Fatalf("timed out waiting for ordered callbacks; received %v", got)
 		}
 	}
-	if want := []string{"root-1", "child-created", "root-2"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("callback order = %v, want %v", got, want)
+	}
+	// Both the original request and a request attempting the private alias must
+	// receive method-not-found responses without invoking the lifecycle callback.
+	write(`{"jsonrpc":"2.0","method":"opencode/session/child_update","id":"wire-request","params":{}}`)
+	write(`{"jsonrpc":"2.0","method":"_mitto/opencode/session/child_update","id":"private-request","params":{}}`)
+	for _, id := range []string{"wire-request", "private-request"} {
+		response := waitResponse(id)
+		if len(response["error"]) == 0 {
+			t.Errorf("request %q did not receive method-not-found error: %s", id, response["error"])
+		}
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("request caused unexpected lifecycle callback %q", event)
+	default:
 	}
 	select {
 	case <-conn.Done():
