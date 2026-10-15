@@ -19,6 +19,7 @@ type JSONLineFilterReader struct {
 	scanner      *bufio.Scanner
 	logger       *slog.Logger
 	filter       func([]byte) bool
+	transform    func([]byte) ([]byte, bool)
 	pending      []byte // buffered data from a valid line
 	pendingIndex int    // current read position in pending
 }
@@ -34,6 +35,14 @@ func NewJSONLineFilterReader(r io.Reader, logger *slog.Logger) *JSONLineFilterRe
 // predicate that can discard JSON-RPC lines before they reach the ACP SDK.
 // The predicate receives a trimmed line and returns true to discard it.
 func NewJSONLineFilterReaderWithFilter(r io.Reader, logger *slog.Logger, filter func([]byte) bool) *JSONLineFilterReader {
+	return NewJSONLineFilterReaderWithTransform(r, logger, filter, nil)
+}
+
+// NewJSONLineFilterReaderWithTransform creates a filtering reader with an
+// optional predicate and synchronous line transform. The predicate runs before
+// standard ACP sanitation; the transform runs after sanitation and may discard
+// a line by returning true as its second result.
+func NewJSONLineFilterReaderWithTransform(r io.Reader, logger *slog.Logger, filter func([]byte) bool, transform func([]byte) ([]byte, bool)) *JSONLineFilterReader {
 	const (
 		initialBufSize = 1024 * 1024      // 1MB initial buffer (same as SDK)
 		maxBufSize     = 10 * 1024 * 1024 // 10MB max (same as SDK)
@@ -44,9 +53,10 @@ func NewJSONLineFilterReaderWithFilter(r io.Reader, logger *slog.Logger, filter 
 	scanner.Buffer(buf, maxBufSize)
 
 	return &JSONLineFilterReader{
-		scanner: scanner,
-		logger:  logger,
-		filter:  filter,
+		scanner:   scanner,
+		logger:    logger,
+		filter:    filter,
+		transform: transform,
 	}
 }
 
@@ -83,6 +93,13 @@ func (f *JSONLineFilterReader) Read(p []byte) (n int, err error) {
 			outLine := line
 			if sanitized, changed := sanitizeToolCallDiffOldText(trimmed); changed {
 				outLine = sanitized
+			}
+			if f.transform != nil {
+				transformed, discard := f.transform(outLine)
+				if discard {
+					continue
+				}
+				outLine = transformed
 			}
 
 			// Valid JSON line - add newline and buffer it

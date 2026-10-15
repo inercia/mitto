@@ -11,6 +11,8 @@ import (
 type SessionCallbacks struct {
 	// OnSessionUpdate handles streaming updates (agent messages, thoughts, tool calls, etc.)
 	OnSessionUpdate func(ctx context.Context, params acp.SessionNotification) error
+	// OnChildSessionUpdate handles OpenCode child lifecycle events on shared ACP.
+	OnChildSessionUpdate func(ctx context.Context, update ChildSessionUpdate) error
 	// OnReadTextFile handles file read requests from the agent.
 	OnReadTextFile func(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error)
 	// OnWriteTextFile handles file write requests from the agent.

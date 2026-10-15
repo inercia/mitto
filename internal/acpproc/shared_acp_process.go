@@ -1047,7 +1047,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}()
 	}
 
-	filteredStdout := mittoAcp.NewJSONLineFilterReaderWithFilter(stdout, p.logger, p.filterLoadReplayNotification)
+	filteredStdout := mittoAcp.NewJSONLineFilterReaderWithTransform(stdout, p.logger, p.filterLoadReplayNotification, adaptOpenCodeChildUpdate)
 
 	// Use a larger notification queue for shared processes since all sessions
 	// multiplex over the same connection. The default 1024 can overflow when

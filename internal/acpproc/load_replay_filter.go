@@ -62,25 +62,55 @@ func (p *SharedACPProcess) filterLoadReplayNotification(line []byte) bool {
 		return false
 	}
 
-	var envelope struct {
-		Method string `json:"method"`
-		Params struct {
-			SessionID acp.SessionId `json:"sessionId"`
-		} `json:"params"`
+	envelope, ok := parseJSONObject(line)
+	if !ok || envelope.duplicates["method"] {
+		return false
 	}
-	if err := json.Unmarshal(line, &envelope); err != nil || envelope.Method != acp.ClientMethodSessionUpdate {
+	method, ok := rawJSONString(envelope.values["method"])
+	if !ok {
+		return false
+	}
+	var sessionID acp.SessionId
+	switch method {
+	case acp.ClientMethodSessionUpdate:
+		var params struct {
+			SessionID acp.SessionId `json:"sessionId"`
+		}
+		if json.Unmarshal(envelope.values["params"], &params) != nil {
+			return false
+		}
+		sessionID = params.SessionID
+	case opencodeChildUpdateMethod:
+		if envelope.values["id"] != nil || envelope.duplicates["id"] ||
+			envelope.duplicates["params"] || envelope.duplicates["jsonrpc"] {
+			return false
+		}
+		var version string
+		if json.Unmarshal(envelope.values["jsonrpc"], &version) != nil || version != "2.0" {
+			return false
+		}
+		params, ok := parseJSONObject(envelope.values["params"])
+		if !ok || len(params.duplicates) > 0 {
+			return false
+		}
+		root, ok := rawJSONString(params.values["rootSessionId"])
+		if !ok || root == "" || len(root) > maxChildSessionIDBytes {
+			return false
+		}
+		sessionID = acp.SessionId(root)
+	default:
 		return false
 	}
 
 	p.loadReplayMu.RLock()
-	state := p.loadReplaySuppressions[envelope.Params.SessionID]
+	state := p.loadReplaySuppressions[sessionID]
 	count := uint64(0)
 	if state != nil {
 		count = state.suppressed.Add(1)
 	}
 	p.loadReplayMu.RUnlock()
 	if isReplayPressureMilestone(count) {
-		logReplayPressure(p.logger, envelope.Params.SessionID, count)
+		logReplayPressure(p.logger, sessionID, count)
 	}
 	return state != nil
 }
