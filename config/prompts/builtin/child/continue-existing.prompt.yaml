@@ -56,7 +56,7 @@ prompt: |
   ```
 
   Confirm and pick the wait behaviour in a single
-  `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s):
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 60, ...)`:
 
   ```
   question: "Send these instructions to <target title>?"
@@ -69,7 +69,8 @@ prompt: |
   free_text_placeholder: "Describe what to do differently..."
   ```
 
-  On timeout: abort. Do not send without explicit confirmation. Free-text feedback means
+  {{ template "_shared/timeout-default-continue" . }}
+  Here a timeout means: "Send and wait for a report". Free-text feedback means
   revise the instructions and present this confirmation again.
 
   **If the user chose to wait**, pick a short, descriptive `task_id` (e.g.

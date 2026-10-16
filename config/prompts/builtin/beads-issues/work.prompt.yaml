@@ -188,7 +188,7 @@ prompt: |
 
   **Propose and confirm the selected next phase.** Once the branch above identifies the phase,
   tell the user what the phase will do and ask whether to proceed using
-  `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Proceed to <phase>?", options: [{label: "Continue to <phase>"}, {label: "Not now"}], allow_free_text: true)`. Make
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Proceed to <phase>?", options: [{label: "Continue to <phase>"}, {label: "Not now"}], allow_free_text: true, timeout_seconds: 60)`. Make
   **"Continue to <phase>"** the recommended first option. Dispatch only when the user selects
   the continue option. If the user chooses not now or gives different instructions, honor that
   and stop without dispatching or queueing a follow-up.
@@ -201,9 +201,9 @@ prompt: |
   twice. On feedback instead of approval, record it with `bd comment` and revise via the
   investigate/plan phase instead.
 
-  If `mitto_ui_options` returns `timed_out: true`, do **not** dispatch or queue anything. Tell the
-  user the phase was not started and to say **"continue"** when they are back; then stop. When
-  they continue, rerun this prompt and re-read the bead's live labels before proposing a phase.
+  {{ template "_shared/timeout-default-continue" . }}
+  Here a timeout means: dispatch the proposed phase (including the first implementation phase
+  after the approval gate) and queue the follow-up as usual.
 
   Dispatch (self-send, so the phase runs under its own preferred model):
 
@@ -228,9 +228,9 @@ prompt: |
   ```
 
   Use the selected child ID here if Step 1b narrowed an epic to one child; otherwise use
-  `{{ $target }}`. Queue this only after the user approved and the phase prompt was dispatched,
-  so it runs after that phase finishes and sees its updated labels. Do not queue a follow-up after
-  a timeout, a declined proposal, blocked work, or the terminal Done branch. When multiple
+  `{{ $target }}`. Queue this only after the user approved (or the question timed out and you
+  continued) and the phase prompt was dispatched, so it runs after that phase finishes and sees
+  its updated labels. Do not queue a follow-up after a declined proposal, blocked work, or the terminal Done branch. When multiple
   independent epic children are running in separate conversations, do not queue a follow-up on
   the parent; each child conversation's own Start work run handles its phases.
 

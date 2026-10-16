@@ -49,7 +49,7 @@ prompt: |
 
   ## Phase 3: Select ACP Server
 
-  Ask via `mitto_ui_options` (timeout: 60s):
+  Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 60, ...)`:
   ```
   question: "Which AI agent would you like to use for the parallel tasks?"
   options: <list of server names from {{ .ACP.AvailableText }}>
@@ -153,10 +153,12 @@ prompt: |
   - **C. Re-decomposition**: Original breakdown was wrong; return to Phase 2
   - **D. Escalate**: Need user input for ambiguities or conflicting requirements
 
-  If next step isn't obvious, ask via `mitto_ui_options` (timeout: 120s):
+  If next step isn't obvious, ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 60, ...)`:
   ```
   options: ["Continue with follow-up tasks", "Retry failed tasks", "Re-decompose", "Let me review", "Stop here"]
   ```
+
+  {{ template "_shared/timeout-default-continue" . }} Here a timeout means: continue with follow-up tasks.
 
   For new children, include: specific task, summary of prior iterations, relevant findings, known dead-ends to avoid.
 

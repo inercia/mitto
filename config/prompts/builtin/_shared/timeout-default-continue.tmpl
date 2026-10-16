@@ -1,0 +1,15 @@
+{{/*
+  timeout-default-continue — canonical rule for routine "Proceed to X?" gates
+  asked through `mitto_ui_options`. When the question returns `timed_out: true`
+  the user is assumed to want to continue with the recommended option, unless
+  the action needs a real go-ahead. Destructive, external-posting and
+  data-collection gates must NOT use this fragment; keep them explicit.
+
+  Usage — right after the `mitto_ui_options` call it applies to:
+  Set `timeout_seconds: 60` on that call so the user has one minute to respond.
+
+      {{ template "_shared/timeout-default-continue" . }}
+*/}}
+**On timeout** (`timed_out: true`): the user did not answer, which means they are not objecting. Assume they want to continue with the recommended option and proceed as if it had been selected. Say in your reply that you assumed "continue" because the question timed out. Do NOT continue on timeout if the action is destructive, needs the user's attention, or otherwise requires an explicit go-ahead (for example deleting or overwriting data, or posting to an external system); in that case stop and tell the user what is waiting for them. An explicit decline, "Not now" or free-text feedback is an answer, not a timeout: honour it and do not continue.
+
+If the user explicitly cancels or aborts the UI prompt, stop; cancellation is not a timeout.

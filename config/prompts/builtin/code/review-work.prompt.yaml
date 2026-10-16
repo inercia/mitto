@@ -1,0 +1,63 @@
+icon: check
+name: Review Work
+menus: conversation
+description: Review the work done in this conversation — code, docs, plans, or any deliverable — against its intent
+group: Code Quality
+backgroundColor: '#C8E6C9'
+enabledWhen: 'Session.HasMessages && !Session.IsLoopConversation'
+preferredModels:
+  - modelTag: Reasoning
+  - modelTag: Smart
+prompt: |
+  Review the **work done in this conversation** and judge it against three questions, in this order:
+
+  1. **Are all the requirements fulfilled?**
+  2. **Is the result correct, and does it avoid introducing new problems?**
+  3. **Is the scope tight?** It should do only what was asked — no scope creep or over-engineering.
+
+  The work may be code, documentation, configuration, a plan, an investigation, or any other
+  deliverable. Stay on what this conversation produced; this is not an audit of everything else.
+
+  ## Step 1 — Reconstruct what we have been doing
+
+  Before looking at any file, re-read this conversation and write down:
+
+  - **The goal** — what the user actually asked for, including later redirections.
+  - **Requirements / acceptance criteria** — explicit ones first, inferred ones marked as such.
+    {{- if .Session.BeadsIssue }}
+    This conversation is linked to beads issue `{{ .Session.BeadsIssue }}`; load it for the
+    authoritative criteria: `bd show {{ .Session.BeadsIssue }} --long --json`.
+    {{- end }}
+  - **Key decisions and constraints** agreed along the way.
+  - **What was claimed done** versus what is still open or deferred.
+  - **Artifacts produced** — files created/changed, commands run, documents or answers delivered.
+
+  Do not ask the user for the baseline; derive it from the conversation. Only ask if the goal is
+  genuinely ambiguous.
+
+  ## Step 2 — Gather the artifacts under review
+
+  - **If files were changed**, inspect them for real — read the actual diff, not just the
+    names, limited to the paths this conversation touched (other uncommitted changes may belong to
+    someone else):
+
+    ```bash
+    git status
+    git diff -- <paths>
+    git diff --staged -- <paths>
+    git log --oneline -10
+    ```
+
+    Read the touched files and their tests. Verify claims by reading, do not assume.
+  - **If no files were changed** (an answer, plan, analysis), review that output itself:
+    factual accuracy, completeness, and whether it answers what was asked.
+  - Judge changes **in the context of the goal** from Step 1: does each change serve it, and
+    does it fit the surrounding code or document?
+
+  {{ template "code/shared/review-axes" . }}
+
+  ## Step 5 — Present the review
+
+  Write the review directly in your reply, using the template above. It is **your** assessment,
+  addressed to the user: do **not** open a textbox or form asking the user to edit or approve it.
+  Finish with the verdict and, if changes are requested, offer to fix the findings.

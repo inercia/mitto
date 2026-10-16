@@ -2230,6 +2230,12 @@ for the shipped inventory and the internals.
 
 ---
 
+### Timeout default for routine confirmation gates
+
+Builtin prompts that ask "continue to the next phase?" via `mitto_ui_options` include the shared fragment `{{ template "_shared/timeout-default-continue" . }}`. If the question times out, the agent assumes the user wants to continue (and says so). The fragment must NOT be used for destructive actions, posting to external systems (e.g. Slack), data-collection forms, or anything needing an explicit go-ahead; those gates keep treating a timeout as cancel/skip.
+
+Calls using this rule pass `timeout_seconds: 60`, giving the user one minute to answer or cancel before the routine continuation proceeds. An explicit cancel/abort stops the action; only `timed_out: true` triggers the default continuation. Do not rely on the tool's longer default timeout.
+
 ## Variable Substitution in Prompts
 
 > **Deprecated in prompt bodies.** Use [Go template syntax](#go-template-syntax-in-prompts) instead — it is more expressive, type-safe, and validated at load time. `@mitto:` substitution **still works** during the deprecation window and the `@mitto:` pass still runs after template rendering. A non-fatal warning is logged at prompt load/save when a migratable `@mitto:` token appears in a body.

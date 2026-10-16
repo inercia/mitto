@@ -20,14 +20,15 @@ prompt: |
 
   Call `mitto_workspace_list()` to get all workspaces.
 
-  Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 60s):
+  Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 60, ...)`:
 
   ```
   question: "Which workspace should the new conversation run in?"
   options: <workspaces formatted as "Name — ACP Server (working_dir)", current workspace first and labelled "(current)">
   ```
 
-  On timeout: abort. Do not proceed without explicit selection.
+  {{ template "_shared/timeout-default-continue" . }}
+  Here a timeout means: use the current workspace.
 
   - If the user picks the **current** workspace, you'll create the conversation here.
   - If the user picks **another** workspace, you'll pass its UUID as `workspace`. This
@@ -55,7 +56,7 @@ prompt: |
   **Recommended Model:** <suggestion based on task complexity>
   ```
 
-  Confirm via `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s):
+  Confirm via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 60, ...)`:
 
   ```
   question: "Create a new conversation with this handoff?"
@@ -66,7 +67,8 @@ prompt: |
   free_text_placeholder: "Describe what to change or do differently..."
   ```
 
-  On timeout: abort. Do not create a conversation without explicit confirmation.
+  {{ template "_shared/timeout-default-continue" . }}
+  Here a timeout means: create the conversation as proposed.
 
   ## Phase 4: Select ACP Server
 
@@ -74,7 +76,7 @@ prompt: |
   If the target is another workspace, use the ACP servers reported for it by
   `mitto_workspace_list` (prefer the one marked `is_default` for that folder).
 
-  Ask via `mitto_ui_options` (timeout: 60s):
+  Ask via `mitto_ui_options(self_id: "{{ .Session.ID }}", timeout_seconds: 60, ...)`:
   ```
   question: "Which AI agent for continuing this work?"
   options: <list of server names for the chosen workspace>
