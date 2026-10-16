@@ -106,9 +106,7 @@ test.describe("File Link Handling", () => {
     expect(workspaceUUID).toBeTruthy();
 
     // Navigate directly to the HTML file via API
-    await page.goto(
-      `/mitto/api/files?ws=${workspaceUUID}&path=test-page.html`
-    );
+    await page.goto(`/mitto/api/files?ws=${workspaceUUID}&path=test-page.html`);
 
     // Verify the HTML is rendered with styles applied
     // The test-page.html has a green test-marker class
@@ -231,7 +229,7 @@ test.describe("File Link Handling", () => {
 
     // Fetch the rendered markdown directly via API
     const apiResponse = await page.request.get(
-      `/mitto/api/files?ws=${workspaceUUID}&path=README.md&render=html`
+      `/mitto/api/files?ws=${workspaceUUID}&path=README.md&render=html`,
     );
 
     expect(apiResponse.ok()).toBeTruthy();
@@ -300,8 +298,6 @@ test.describe("File Link Handling", () => {
   });
 });
 
-
-
 /**
  * Unified Viewer UI tests.
  *
@@ -326,7 +322,7 @@ test.describe("Unified Viewer UI", () => {
   // Helper: navigate to viewer.html for a given file
   async function openViewer(page: any, wsUUID: string, filePath: string) {
     await page.goto(
-      `/mitto/viewer.html?ws=${wsUUID}&path=${encodeURIComponent(filePath)}`
+      `/mitto/viewer.html?ws=${wsUUID}&path=${encodeURIComponent(filePath)}`,
     );
     await page.waitForLoadState("domcontentloaded");
   }
@@ -369,14 +365,28 @@ test.describe("Unified Viewer UI", () => {
     // Verify Download button is present and has correct title attribute
     // (button is icon-only with an SVG, uses title="Download file" for accessibility)
     await expect(page.locator("#downloadBtn")).toBeVisible();
-    await expect(page.locator("#downloadBtn")).toHaveAttribute("title", "Download file");
+    await expect(page.locator("#downloadBtn")).toHaveAttribute(
+      "title",
+      "Download file",
+    );
 
     // Verify font size buttons are visible (shown for code files)
     await expect(page.locator("#decreaseFontBtn")).toBeVisible();
     await expect(page.locator("#increaseFontBtn")).toBeVisible();
 
-    // Verify code block is visible (not markdown article)
-    await expect(page.locator("#codeBlock")).toBeVisible();
+    // Source mode uses CodeMirror when available, with a highlight.js fallback.
+    await expect
+      .poll(
+        async () => {
+          const editorVisible = await page
+            .locator("#editorContainer")
+            .isVisible();
+          const fallbackVisible = await page.locator("#codeBlock").isVisible();
+          return editorVisible || fallbackVisible;
+        },
+        { timeout: 5000 },
+      )
+      .toBeTruthy();
     await expect(page.locator("#markdownContent")).toBeHidden();
 
     // No CSP violations
@@ -430,7 +440,7 @@ test.describe("Unified Viewer UI", () => {
     // Verify markdown is actually rendered (not raw text)
     await expect(page.locator("#markdownContent h1")).toBeVisible();
     await expect(page.locator("#markdownContent h1")).toContainText(
-      "Project Alpha"
+      "Project Alpha",
     );
 
     // No CSP violations
@@ -488,7 +498,7 @@ test.describe("Unified Viewer UI", () => {
             };
           `,
         });
-      }
+      },
     );
 
     await openViewer(page, wsUUID, "ARCHITECTURE.md");
@@ -500,7 +510,7 @@ test.describe("Unified Viewer UI", () => {
     // Verify markdown content is displayed
     await expect(page.locator("#markdownContent")).toBeVisible();
     await expect(page.locator("#markdownContent h1")).toContainText(
-      "Architecture"
+      "Architecture",
     );
 
     // Wait for mermaid to load (via our CDN mock) and render the diagram.
@@ -519,9 +529,7 @@ test.describe("Unified Viewer UI", () => {
     await expect(mermaidDiagram.first()).toContainText("Database");
 
     // The raw mermaid code block should NOT be visible
-    const rawMermaidBlock = page.locator(
-      '#markdownContent pre.mermaid'
-    );
+    const rawMermaidBlock = page.locator("#markdownContent pre.mermaid");
     await expect(rawMermaidBlock).toHaveCount(0);
 
     // No CSP violations
@@ -547,7 +555,7 @@ test.describe("Unified Viewer UI", () => {
           contentType: "application/javascript",
           body: "window.mermaid = { initialize: function(){}, render: async function(id, def) { return { svg: '<svg></svg>' }; } };",
         });
-      }
+      },
     );
 
     await openViewer(page, wsUUID, "ARCHITECTURE.md");
@@ -558,13 +566,13 @@ test.describe("Unified Viewer UI", () => {
     // Check the nonce on the page's inline script vs the dynamically created mermaid script
     const nonces = await page.evaluate(() => {
       // Get the nonce from the page's main inline script (the one with our code)
-      const inlineScript = document.querySelector('script[nonce]');
-      const pageNonce = inlineScript ? (inlineScript as HTMLScriptElement).nonce : "";
+      const inlineScript = document.querySelector("script[nonce]");
+      const pageNonce = inlineScript
+        ? (inlineScript as HTMLScriptElement).nonce
+        : "";
 
       // Get the nonce from the dynamically created mermaid script
-      const mermaidScript = document.querySelector(
-        'script[src*="mermaid"]'
-      );
+      const mermaidScript = document.querySelector('script[src*="mermaid"]');
       const mermaidNonce = mermaidScript
         ? (mermaidScript as HTMLScriptElement).nonce ||
           mermaidScript.getAttribute("nonce") ||

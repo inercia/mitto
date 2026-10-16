@@ -99,10 +99,8 @@ const MOCK_ISSUE_T1 = {
 const DASHBOARD_BUTTON = 'button[title="Dashboard"]';
 // Beads detail panel — shared with beads.spec.ts.
 const DETAIL_PANEL = "div.properties-panel";
-// Mobile viewport — matches the one used across the other mobile specs
-// (beads.spec.ts, side-panels-outside-click-mobile.spec.ts, etc.). Below the
-// Tailwind `md` breakpoint (768px) so the Dashboard's responsive grid
-// (mitto-aqo.5) collapses to a single column while still rendering every list.
+// Mobile viewport shared with the other mobile specs. Dashboard list panels
+// remain in a horizontal carousel that overflows at this narrow width.
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 async function openDashboard(page, timeouts) {
@@ -142,7 +140,10 @@ testWithCleanup.describe("Global Dashboard", () => {
       data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
     });
     const createResp = await request.post(apiUrl("/api/sessions"), {
-      data: { name: `Dashboard Seed ${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+      data: {
+        name: `Dashboard Seed ${Date.now()}`,
+        working_dir: WORKSPACE_ALPHA,
+      },
     });
     expect(createResp.ok()).toBeTruthy();
 
@@ -175,21 +176,19 @@ testWithCleanup.describe("Global Dashboard", () => {
         .filter({ hasText: "Issues in progress" });
       await expect(inProgressCol.locator("div.text-2xl")).toContainText("7");
 
-      // Responsive grid (mitto-aqo.5): every list panel is always visible;
-      // there is no carousel/pagination.
+      // Both leading panels remain mounted in the horizontal list carousel.
       await expect(page.locator("#dash-slide-prompting")).toBeVisible();
       await expect(page.locator("#dash-slide-in-progress")).toBeVisible();
     },
   );
 
   testWithCleanup(
-    "all four list panel labels are visible at once",
+    "all four list panel labels are rendered in the horizontal carousel",
     async ({ page, timeouts }) => {
       await openDashboard(page, timeouts);
 
-      // Responsive grid (mitto-aqo.5): all four list panels are always
-      // rendered simultaneously; there is no pagination. Assert every label
-      // is visible without any navigation.
+      // All four panels share the horizontal carousel; each label remains
+      // mounted without requiring pagination or separate navigation.
       await expect(
         page.getByText("Recent conversations", { exact: true }),
       ).toBeVisible();
@@ -234,12 +233,31 @@ testWithCleanup.describe("Global Dashboard", () => {
   );
 
   testWithCleanup(
-    "empty prompting-conversations slide shows the empty placeholder",
-    async ({ page, timeouts }) => {
+    "empty Recent conversations slide shows the empty placeholder",
+    async ({ page, timeouts, apiUrl }) => {
+      await page.route(`**${apiUrl("/api/sessions")}`, async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: "[]",
+          });
+        } else {
+          await route.continue();
+        }
+      });
+      await page.evaluate(() => {
+        localStorage.removeItem("mitto_last_session_id");
+        localStorage.removeItem("mitto_last_session_id_conversations");
+        localStorage.removeItem("mitto_last_session_id_loop");
+        localStorage.removeItem("mitto_last_session_id_archived");
+        localStorage.removeItem("mitto_conversation_filter_tab");
+      });
+      await page.reload();
       await openDashboard(page, timeouts);
 
-      // The mocked dashboard payload has no prompting conversations, and the
-      // seeded conversation is idle → the prompting slide renders "No items".
+      // The session-list route is empty in this test, so Recent conversations
+      // should render its empty placeholder once Dashboard data has loaded.
       await expect(
         page.locator("#dash-slide-prompting").getByText("No items"),
       ).toBeVisible();
@@ -247,23 +265,20 @@ testWithCleanup.describe("Global Dashboard", () => {
   );
 
   testWithCleanup(
-    "mobile viewport renders all four panels in a single column",
+    "mobile viewport keeps all four panels in the horizontal carousel",
     async ({ page, timeouts }) => {
-      // Open the dashboard on the default (desktop) viewport first — the
-      // sidebar Dashboard button is always visible there, so we do not have
-      // to open the mobile drawer to reach it. Then shrink the viewport,
-      // which fires the (min-width:768px) matchMedia listener wired in
-      // Dashboard.js and collapses the responsive grid from 4 columns to 1.
+      // Open Dashboard on desktop first, then resize to verify the list carousel
+      // remains horizontally scrollable at a narrow viewport.
       await openDashboard(page, timeouts);
       await page.setViewportSize(MOBILE_VIEWPORT);
 
-      // Responsive grid (mitto-aqo.5): mobile only changes the column count
-      // (1 instead of 2/3/4); every list stays mounted. The four slide ids
-      // come from SLIDES in Dashboard.js and are stable.
+      // All four slide IDs remain mounted in the horizontal carousel at mobile
+      // width; the following checks verify their order and scrollability.
       const promptingSlide = page.locator("#dash-slide-prompting");
       const inProgressSlide = page.locator("#dash-slide-in-progress");
       const readySlide = page.locator("#dash-slide-ready");
       const recentSlide = page.locator("#dash-slide-recent");
+      const carousel = promptingSlide.locator("..");
 
       await expect(promptingSlide).toBeVisible({
         timeout: timeouts.shortAction,
@@ -271,10 +286,10 @@ testWithCleanup.describe("Global Dashboard", () => {
       await expect(inProgressSlide).toBeVisible();
       await expect(readySlide).toBeVisible();
       await expect(recentSlide).toBeVisible();
+      await expect(carousel).toHaveClass(/mitto-carousel/);
 
-      // Panels stack vertically: each slide's top edge is strictly below the
-      // previous one's, confirming the single-column layout rather than a
-      // side-by-side row.
+      // Panels share one carousel row. Their x positions preserve slide order,
+      // while the overflow assertion ensures later panels can be reached by scrolling.
       const promptingBox = await promptingSlide.boundingBox();
       const inProgressBox = await inProgressSlide.boundingBox();
       const readyBox = await readySlide.boundingBox();
@@ -283,9 +298,23 @@ testWithCleanup.describe("Global Dashboard", () => {
       expect(inProgressBox).not.toBeNull();
       expect(readyBox).not.toBeNull();
       expect(recentBox).not.toBeNull();
-      expect(inProgressBox!.y).toBeGreaterThan(promptingBox!.y);
-      expect(readyBox!.y).toBeGreaterThan(inProgressBox!.y);
-      expect(recentBox!.y).toBeGreaterThan(readyBox!.y);
+
+      const carouselMetrics = await carousel.evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        overflowX: getComputedStyle(element).overflowX,
+      }));
+      expect(carouselMetrics.overflowX).toBe("auto");
+      expect(carouselMetrics.scrollWidth).toBeGreaterThan(
+        carouselMetrics.clientWidth,
+      );
+
+      expect(inProgressBox!.y).toBe(promptingBox!.y);
+      expect(readyBox!.y).toBe(promptingBox!.y);
+      expect(recentBox!.y).toBe(promptingBox!.y);
+      expect(inProgressBox!.x).toBeGreaterThan(promptingBox!.x);
+      expect(readyBox!.x).toBeGreaterThan(inProgressBox!.x);
+      expect(recentBox!.x).toBeGreaterThan(readyBox!.x);
     },
   );
 });

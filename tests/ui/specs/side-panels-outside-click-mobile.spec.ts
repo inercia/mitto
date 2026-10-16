@@ -93,7 +93,7 @@ testWithCleanup.describe("Side panels - mobile outside-click dismissal", () => {
       const overlay = await openSidebar(page, timeouts);
 
       // Select the seeded conversation: this closes the sidebar and shows the
-      // conversation view (so the header title can open the properties panel).
+      // conversation view.
       const conversation = overlay
         .locator("div[data-session-id]")
         .filter({ hasText: SEED_NAME_PREFIX })
@@ -102,11 +102,9 @@ testWithCleanup.describe("Side panels - mobile outside-click dismissal", () => {
       await conversation.click();
       await expect(page.locator(SIDEBAR_TOGGLE)).not.toBeChecked();
 
-      // Open the properties panel via the header title ("Click to view
-      // properties"). It is the first level-1 heading (conversation view).
-      const title = page.getByRole("heading", { level: 1 }).first();
-      await expect(title).toBeVisible({ timeout: timeouts.appReady });
-      await title.click();
+      // Open the properties panel through its toolbar control. The title
+      // heading itself starts inline title editing.
+      await page.getByTestId("header-session-details").click();
 
       const panel = page.locator(SESSION_PANEL);
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });

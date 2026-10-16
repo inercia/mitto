@@ -1,4 +1,57 @@
 import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
+import type { APIRequestContext } from "@playwright/test";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, "../../..");
+const WORKSPACE_ALPHA = path.join(
+  projectRoot,
+  "tests/fixtures/workspaces/project-alpha",
+);
+const WORKSPACE_AGENT = "mock-acp";
+let projectAlphaWasPinned = false;
+
+async function pinProjectAlphaForSessionCreation(
+  request: APIRequestContext,
+): Promise<boolean> {
+  const { apiUrl } = await import("../utils/selectors");
+  const workspaceResponse = await request.post(apiUrl("/api/workspaces"), {
+    data: { acp_server: WORKSPACE_AGENT, working_dir: WORKSPACE_ALPHA },
+  });
+  expect([201, 409]).toContain(workspaceResponse.status());
+
+  const pinStateResponse = await request.get(
+    apiUrl(
+      `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+    ),
+  );
+  expect(pinStateResponse.ok()).toBeTruthy();
+  const wasPinned = (await pinStateResponse.json()).pinned === true;
+
+  const pinResponse = await request.put(
+    apiUrl(
+      `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+    ),
+    { data: { pinned: true } },
+  );
+  expect(pinResponse.status()).toBe(200);
+  return wasPinned;
+}
+
+async function restoreProjectAlphaPin(
+  request: APIRequestContext,
+  wasPinned: boolean,
+): Promise<void> {
+  const { apiUrl } = await import("../utils/selectors");
+  const response = await request.put(
+    apiUrl(
+      `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+    ),
+    { data: { pinned: wasPinned } },
+  );
+  expect(response.status()).toBe(200);
+}
 
 /**
  * Message Reliability Tests
@@ -28,6 +81,44 @@ test.describe("Message Ordering After Page Reload", () => {
         await request.delete(apiUrl(`/api/sessions/${session.session_id}`));
       }
     }
+
+    // With all sessions removed, no session-derived folder remains in the
+    // sidebar. Pin the fixture workspace so createFreshSession can find its
+    // per-folder New conversation button on the empty Dashboard.
+    const workspaceResponse = await request.post(apiUrl("/api/workspaces"), {
+      data: {
+        acp_server: WORKSPACE_AGENT,
+        working_dir: WORKSPACE_ALPHA,
+      },
+    });
+    expect([201, 409]).toContain(workspaceResponse.status());
+
+    const pinStateResponse = await request.get(
+      apiUrl(
+        `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+      ),
+    );
+    expect(pinStateResponse.ok()).toBeTruthy();
+    projectAlphaWasPinned = (await pinStateResponse.json()).pinned;
+
+    const pinResponse = await request.put(
+      apiUrl(
+        `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+      ),
+      { data: { pinned: true } },
+    );
+    expect(pinResponse.status()).toBe(200);
+  });
+
+  test.afterAll(async ({ request }) => {
+    const { apiUrl } = await import("../utils/selectors");
+    const response = await request.put(
+      apiUrl(
+        `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+      ),
+      { data: { pinned: projectAlphaWasPinned } },
+    );
+    expect(response.status()).toBe(200);
   });
 
   test.beforeEach(async ({ page, helpers }) => {
@@ -41,7 +132,6 @@ test.describe("Message Ordering After Page Reload", () => {
     selectors,
     timeouts,
   }) => {
-
     // Create a fresh session for complete isolation
     const sessionId = await helpers.createFreshSession(page);
     expect(sessionId).toBeTruthy();
@@ -111,7 +201,7 @@ test.describe("Message Ordering After Page Reload", () => {
 
     // Verify user message is visible
     await expect(
-      page.locator(selectors.userMessage).filter({ hasText: testMessage })
+      page.locator(selectors.userMessage).filter({ hasText: testMessage }),
     ).toBeVisible({ timeout: timeouts.shortAction });
 
     // Count agent messages after reload
@@ -127,7 +217,6 @@ test.describe("Conversation Switching", () => {
     selectors,
     timeouts,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -163,7 +252,6 @@ test.describe("Conversation Switching", () => {
     helpers,
     selectors,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -192,7 +280,6 @@ test.describe("Conversation Switching", () => {
     selectors,
     timeouts,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -226,7 +313,6 @@ test.describe("Visibility Change Sync", () => {
     helpers,
     selectors,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -258,10 +344,11 @@ test.describe("Visibility Change Sync", () => {
     });
 
     // Wait for sync by polling message count stability
-    await expect.poll(
-      async () => page.locator(selectors.userMessage).count(),
-      { timeout: 5000 }
-    ).toBe(userCountBefore);
+    await expect
+      .poll(async () => page.locator(selectors.userMessage).count(), {
+        timeout: 5000,
+      })
+      .toBe(userCountBefore);
 
     // Count USER messages after - should be same (no duplicates or losses)
     const userCountAfter = await page.locator(selectors.userMessage).count();
@@ -280,7 +367,6 @@ test.describe("Visibility Change Sync", () => {
     helpers,
     selectors,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -329,10 +415,11 @@ test.describe("Visibility Change Sync", () => {
     }
 
     // Wait for message count stability
-    await expect.poll(
-      async () => page.locator(selectors.userMessage).count(),
-      { timeout: 5000 }
-    ).toBe(orderBefore.length);
+    await expect
+      .poll(async () => page.locator(selectors.userMessage).count(), {
+        timeout: 5000,
+      })
+      .toBe(orderBefore.length);
 
     // Order should be preserved
     const orderAfter = await getOrder();
@@ -350,7 +437,6 @@ test.describe("Streaming Interruption", () => {
     selectors,
     timeouts,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -361,17 +447,13 @@ test.describe("Streaming Interruption", () => {
     const msg = helpers.uniqueMessage("Cancel test");
     await helpers.sendMessage(page, msg);
 
-    // Wait briefly for streaming to start
-    await page.waitForTimeout(100);
-
-    // Try to cancel if stop button is available
+    // Wait until the response is actively streaming so cancellation is exercised.
     const stopBtn = page.locator(selectors.stopButton);
-    if ((await stopBtn.count()) > 0) {
-      await stopBtn.click();
-    }
+    await expect(stopBtn).toBeVisible({ timeout: timeouts.agentResponse });
+    await stopBtn.click();
 
-    // Wait for either stop button to disappear or response to complete
-    await helpers.waitForStreamingComplete(page);
+    // Cancellation ends the stream without requiring a successful agent response.
+    await expect(stopBtn).toBeHidden({ timeout: timeouts.agentResponse });
 
     // User message should still be visible
     await expect(
@@ -396,6 +478,11 @@ test.describe("Session Isolation Under Load", () => {
         await request.delete(apiUrl(`/api/sessions/${session.session_id}`));
       }
     }
+    projectAlphaWasPinned = await pinProjectAlphaForSessionCreation(request);
+  });
+
+  test.afterAll(async ({ request }) => {
+    await restoreProjectAlphaPin(request, projectAlphaWasPinned);
   });
 
   test("should isolate messages when many sessions exist", async ({
@@ -441,16 +528,16 @@ test.describe("Session Isolation Under Load", () => {
     await helpers.waitForMessagesLoaded(page, 1);
 
     // Should show the first marker
-    await expect(userMessages.filter({ hasText: firstData.marker })).toBeVisible({
+    await expect(
+      userMessages.filter({ hasText: firstData.marker }),
+    ).toBeVisible({
       timeout: timeouts.shortAction,
     });
 
     // Should NOT show other markers from this test run
     for (let i = 1; i < numSessions; i++) {
       const otherMarker = sessionData[i].marker;
-      const count = await userMessages
-        .filter({ hasText: otherMarker })
-        .count();
+      const count = await userMessages.filter({ hasText: otherMarker }).count();
       expect(count).toBe(0);
     }
   });
@@ -461,7 +548,6 @@ test.describe("Session Isolation Under Load", () => {
     selectors,
     timeouts,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -483,7 +569,9 @@ test.describe("Session Isolation Under Load", () => {
     const userMessages = page.locator(selectors.userMessage);
 
     // The last marker should be visible
-    await expect(userMessages.filter({ hasText: lastSession.marker })).toBeVisible();
+    await expect(
+      userMessages.filter({ hasText: lastSession.marker }),
+    ).toBeVisible();
 
     // Other markers should NOT be visible
     for (let i = 0; i < sessionData.length - 1; i++) {
@@ -497,6 +585,16 @@ test.describe("Session Isolation Under Load", () => {
 });
 
 test.describe("Sequence Number Tracking", () => {
+  let projectAlphaWasPinned = false;
+
+  test.beforeAll(async ({ request }) => {
+    projectAlphaWasPinned = await pinProjectAlphaForSessionCreation(request);
+  });
+
+  test.afterAll(async ({ request }) => {
+    await restoreProjectAlphaPin(request, projectAlphaWasPinned);
+  });
+
   test("should track sequence numbers in API responses", async ({
     page,
     request,
@@ -504,7 +602,6 @@ test.describe("Sequence Number Tracking", () => {
     helpers,
     selectors,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -551,7 +648,6 @@ test.describe("Sequence Number Tracking", () => {
     helpers,
     selectors,
   }) => {
-    
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
 
@@ -608,6 +704,16 @@ test.describe("Sequence Number Tracking", () => {
 });
 
 test.describe("Deduplication Across Reconnect Boundary", () => {
+  let projectAlphaWasPinned = false;
+
+  test.beforeAll(async ({ request }) => {
+    projectAlphaWasPinned = await pinProjectAlphaForSessionCreation(request);
+  });
+
+  test.afterAll(async ({ request }) => {
+    await restoreProjectAlphaPin(request, projectAlphaWasPinned);
+  });
+
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
     await helpers.clearLocalStorage(page);
@@ -638,7 +744,7 @@ test.describe("Deduplication Across Reconnect Boundary", () => {
           debug._setLastKnownSeq(sid, 0);
         }
       },
-      { sid: sessionId }
+      { sid: sessionId },
     );
 
     // 4. Trigger reconnect via visibility change: hidden → visible causes resync
@@ -660,10 +766,9 @@ test.describe("Deduplication Across Reconnect Boundary", () => {
     });
 
     // 5. Wait for sync to settle — poll until message count stabilises at countBefore
-    await expect.poll(
-      async () => userMsgLocator.count(),
-      { timeout: 5000 }
-    ).toBe(countBefore);
+    await expect
+      .poll(async () => userMsgLocator.count(), { timeout: 5000 })
+      .toBe(countBefore);
 
     // 6. Count messages again — must NOT have doubled
     const countAfter = await userMsgLocator.count();
@@ -671,8 +776,12 @@ test.describe("Deduplication Across Reconnect Boundary", () => {
 
     // 7. Verify the specific messages are still present exactly once each
     const allUserTexts = await userMsgLocator.allTextContents();
-    const alphaCount = allUserTexts.filter((t) => t.includes("dedup-test-alpha")).length;
-    const betaCount  = allUserTexts.filter((t) => t.includes("dedup-test-beta")).length;
+    const alphaCount = allUserTexts.filter((t) =>
+      t.includes("dedup-test-alpha"),
+    ).length;
+    const betaCount = allUserTexts.filter((t) =>
+      t.includes("dedup-test-beta"),
+    ).length;
     expect(alphaCount).toBe(1);
     expect(betaCount).toBe(1);
   });
@@ -684,10 +793,15 @@ test.describe("Deduplication Across Reconnect Boundary", () => {
   }) => {
     // Simpler variant: count total messages (user + agent) before and after forced resync
     const sessionId = await helpers.createFreshSession(page);
-    await helpers.sendMessageAndWait(page, helpers.uniqueMessage("dedup-agent-test"));
+    await helpers.sendMessageAndWait(
+      page,
+      helpers.uniqueMessage("dedup-agent-test"),
+    );
 
     // Count all visible messages (user + agent)
-    const allMsgLocator = page.locator(`${selectors.userMessage}, ${selectors.agentMessage}`);
+    const allMsgLocator = page.locator(
+      `${selectors.userMessage}, ${selectors.agentMessage}`,
+    );
     const before = await allMsgLocator.count();
 
     // Force from-zero replay via zeroing the watermark
@@ -695,7 +809,7 @@ test.describe("Deduplication Across Reconnect Boundary", () => {
       ({ sid }) => {
         (window as any).__debug?._setLastKnownSeq?.(sid, 0);
       },
-      { sid: sessionId }
+      { sid: sessionId },
     );
 
     // Visibility change approach: triggers reconnect + load_events(after_seq=0)
@@ -716,10 +830,9 @@ test.describe("Deduplication Across Reconnect Boundary", () => {
     });
 
     // Wait for sync to settle — poll until count stabilises at `before`
-    await expect.poll(
-      async () => allMsgLocator.count(),
-      { timeout: 5000 }
-    ).toBe(before);
+    await expect
+      .poll(async () => allMsgLocator.count(), { timeout: 5000 })
+      .toBe(before);
 
     const after = await allMsgLocator.count();
     expect(after).toBe(before);

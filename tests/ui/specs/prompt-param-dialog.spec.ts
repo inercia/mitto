@@ -57,8 +57,15 @@ async function clickBeadsButton(page, timeouts) {
 }
 
 /** Opens the context menu for the first issue row and selects a prompt by group + name. */
-async function selectBeadsPrompt(page, timeouts, groupText: string, promptText: string) {
-  await expect(page.getByText("Alpha issue").first()).toBeVisible({ timeout: timeouts.appReady });
+async function selectBeadsPrompt(
+  page,
+  timeouts,
+  groupText: string,
+  promptText: string,
+) {
+  await expect(page.getByText("Alpha issue").first()).toBeVisible({
+    timeout: timeouts.appReady,
+  });
 
   const issueMenuBtn = page.locator('[data-testid="beads-issue-menu"]').first();
   await expect(issueMenuBtn).toBeVisible({ timeout: timeouts.shortAction });
@@ -67,164 +74,210 @@ async function selectBeadsPrompt(page, timeouts, groupText: string, promptText: 
   const mainMenu = page.locator(BEADS_MENU).first();
   await expect(mainMenu).toBeVisible({ timeout: timeouts.shortAction });
 
-  const groupBtn = page.locator(`${BEADS_MENU} button`).filter({ hasText: groupText }).first();
+  const groupBtn = page
+    .locator(`${BEADS_MENU} button`)
+    .filter({ hasText: groupText })
+    .first();
   await expect(groupBtn).toBeVisible({ timeout: timeouts.appReady });
   await groupBtn.dispatchEvent("mouseenter");
 
   const submenu = page.locator(BEADS_MENU).nth(1);
   await expect(submenu).toBeVisible({ timeout: timeouts.shortAction });
 
-  const promptBtn = submenu.locator("button").filter({ hasText: promptText }).first();
+  const promptBtn = submenu
+    .locator("button")
+    .filter({ hasText: promptText })
+    .first();
   await expect(promptBtn).toBeVisible({ timeout: timeouts.shortAction });
   await promptBtn.click();
 }
 
-testWithCleanup.describe("PromptParameterDialog — beadsIssues invocation flow", () => {
-  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route(/\/api\/issues(\?|$)/, async (route) => {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_ISSUES) });
+testWithCleanup.describe(
+  "PromptParameterDialog — beadsIssues invocation flow",
+  () => {
+    testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_ISSUES),
+        });
+      });
+      await request.post(apiUrl("/api/workspaces"), {
+        data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+      });
+      const resp = await request.post(apiUrl("/api/sessions"), {
+        data: { name: `PPD-${Date.now()}`, working_dir: WORKSPACE_ALPHA },
+      });
+      expect(resp.ok()).toBeTruthy();
+      const seedId = (await resp.json()).session_id;
+      await page.addInitScript((sid) => {
+        localStorage.setItem("mitto_last_session_id", sid);
+        localStorage.removeItem("mitto_conversation_filter_tab");
+      }, seedId);
+      await helpers.navigateAndWait(page);
     });
-    await request.post(apiUrl("/api/workspaces"), { data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA } });
-    const resp = await request.post(apiUrl("/api/sessions"), { data: { name: `PPD-${Date.now()}`, working_dir: WORKSPACE_ALPHA } });
-    expect(resp.ok()).toBeTruthy();
-    const seedId = (await resp.json()).session_id;
-    await page.addInitScript((sid) => {
-      localStorage.setItem("mitto_last_session_id", sid);
-      localStorage.removeItem("mitto_conversation_filter_tab");
-    }, seedId);
-    await helpers.navigateAndWait(page);
-  });
 
-  // ── Test 1: dialog opens for prompt with missing params ───────────────────
-  testWithCleanup(
-    "opens PromptParameterDialog for prompt with required text param",
-    async ({ page, timeouts }) => {
-      await clickBeadsButton(page, timeouts);
-      await selectBeadsPrompt(page, timeouts, "Param", "Beads Param Test");
+    // ── Test 1: dialog opens for prompt with missing params ───────────────────
+    testWithCleanup(
+      "opens PromptParameterDialog for prompt with required text param",
+      async ({ page, timeouts }) => {
+        await clickBeadsButton(page, timeouts);
+        await selectBeadsPrompt(page, timeouts, "Param", "Beads Param Test");
 
-      // Dialog must appear
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toBeVisible({
-        timeout: timeouts.shortAction,
-      });
+        // Dialog must appear
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-      // The free-text CONDITION field must be present (textarea for type=text)
-      const conditionField = page.locator('[data-testid="prompt-param-dialog"] textarea');
-      await expect(conditionField).toBeVisible({ timeout: timeouts.shortAction });
+        // The free-text CONDITION field must be present (textarea for type=text)
+        const conditionField = page.locator(
+          '[data-testid="prompt-param-dialog"] textarea',
+        );
+        await expect(conditionField).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-      // The dialog title reflects the prompt name
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toContainText("Beads Param Test");
+        // The dialog title reflects the prompt name
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toContainText("Beads Param Test");
 
-      // The auto-filled ISSUE_ID field must NOT appear (beadsId is auto-filled by the menu)
-      // The dialog receives only the MISSING params, so only CONDITION is shown
-      const fieldsets = page.locator('[data-testid="prompt-param-dialog"] fieldset');
-      await expect(fieldsets).toHaveCount(1);
-    },
-  );
+        // The auto-filled ISSUE_ID remains visible and read-only so the user can
+        // review it alongside the required CONDITION value they must supply.
+        const dialog = page.locator('[data-testid="prompt-param-dialog"]');
+        const fieldsets = dialog.locator("fieldset");
+        await expect(fieldsets).toHaveCount(2);
 
-  // ── Test 2: submit dispatches with merged auto + user args ────────────────
-  testWithCleanup(
-    "submitting the dialog dispatches with merged auto-filled and user-entered arguments",
-    async ({ page, timeouts }) => {
-      await clickBeadsButton(page, timeouts);
-      await selectBeadsPrompt(page, timeouts, "Param", "Beads Param Test");
+        const issueIdField = fieldsets.filter({ hasText: "ISSUE_ID" });
+        const issueIdInput = issueIdField.getByRole("textbox");
+        await expect(issueIdInput).toHaveValue("mitto-aaa");
+        await expect(issueIdInput).toBeDisabled();
+        await expect(conditionField).toBeEnabled();
+      },
+    );
 
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toBeVisible({
-        timeout: timeouts.shortAction,
-      });
+    // ── Test 2: submit dispatches with merged auto + user args ────────────────
+    testWithCleanup(
+      "submitting the dialog dispatches with merged auto-filled and user-entered arguments",
+      async ({ page, timeouts }) => {
+        await clickBeadsButton(page, timeouts);
+        await selectBeadsPrompt(page, timeouts, "Param", "Beads Param Test");
 
-      // Fill the CONDITION textarea
-      const conditionField = page.locator('[data-testid="prompt-param-dialog"] textarea');
-      await conditionField.fill("must be high priority");
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-      // Intercept POST /api/sessions and capture the request body
-      const [sessionRequest] = await Promise.all([
-        page.waitForRequest(
-          (req) => req.url().includes("/api/sessions") && req.method() === "POST",
+        // Fill the CONDITION textarea
+        const conditionField = page.locator(
+          '[data-testid="prompt-param-dialog"] textarea',
+        );
+        await conditionField.fill("must be high priority");
+
+        // Intercept POST /api/sessions and capture the request body
+        const [sessionRequest] = await Promise.all([
+          page.waitForRequest(
+            (req) =>
+              req.url().includes("/api/sessions") && req.method() === "POST",
+            { timeout: timeouts.appReady },
+          ),
+          page.locator('[data-testid="prompt-param-save-btn"]').click(),
+        ]);
+
+        const body = JSON.parse(sessionRequest.postData() || "{}");
+        // Both auto-filled ISSUE_ID and user-entered CONDITION must be present
+        expect(body.arguments?.ISSUE_ID).toBe("mitto-aaa");
+        expect(body.arguments?.CONDITION).toBe("must be high priority");
+
+        // Dialog should close after submit
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).not.toBeVisible({
+          timeout: timeouts.shortAction,
+        });
+
+        // Toast confirms dispatch
+        await expect(
+          page.getByText('Started "Beads Param Test" for mitto-aaa'),
+        ).toBeVisible({ timeout: timeouts.appReady });
+      },
+    );
+
+    // ── Test 3: prompt with no missing params dispatches without dialog ────────
+    testWithCleanup(
+      "prompt with no missing params dispatches directly — no dialog shown",
+      async ({ page, timeouts }) => {
+        await clickBeadsButton(page, timeouts);
+
+        // Intercept POST /api/sessions to verify dispatch happens
+        const sessionRequestPromise = page.waitForRequest(
+          (req) =>
+            req.url().includes("/api/sessions") && req.method() === "POST",
           { timeout: timeouts.appReady },
-        ),
-        page.locator('[data-testid="prompt-param-save-btn"]').click(),
-      ]);
+        );
 
-      const body = JSON.parse(sessionRequest.postData() || "{}");
-      // Both auto-filled ISSUE_ID and user-entered CONDITION must be present
-      expect(body.arguments?.ISSUE_ID).toBe("mitto-aaa");
-      expect(body.arguments?.CONDITION).toBe("must be high priority");
+        // "Beads Issue Task" has no parameters — no dialog should open
+        await selectBeadsPrompt(page, timeouts, "Task", "Beads Issue Task");
 
-      // Dialog should close after submit
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).not.toBeVisible({
-        timeout: timeouts.shortAction,
-      });
+        // Dialog must NOT appear
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).not.toBeVisible({
+          timeout: 2000,
+        });
 
-      // Toast confirms dispatch
-      await expect(
-        page.getByText('Started "Beads Param Test" for mitto-aaa'),
-      ).toBeVisible({ timeout: timeouts.appReady });
-    },
-  );
+        // Dispatch should happen automatically
+        await sessionRequestPromise;
 
-  // ── Test 3: prompt with no missing params dispatches without dialog ────────
-  testWithCleanup(
-    "prompt with no missing params dispatches directly — no dialog shown",
-    async ({ page, timeouts }) => {
-      await clickBeadsButton(page, timeouts);
+        // Toast confirms dispatch
+        await expect(
+          page.getByText('Started "Beads Issue Task" for mitto-aaa'),
+        ).toBeVisible({ timeout: timeouts.appReady });
+      },
+    );
 
-      // Intercept POST /api/sessions to verify dispatch happens
-      const sessionRequestPromise = page.waitForRequest(
-        (req) => req.url().includes("/api/sessions") && req.method() === "POST",
-        { timeout: timeouts.appReady },
-      );
+    // ── Test 4: cancelling the dialog does not dispatch ───────────────────────
+    testWithCleanup(
+      "cancelling the dialog (Close) does not dispatch",
+      async ({ page, timeouts }) => {
+        await clickBeadsButton(page, timeouts);
+        await selectBeadsPrompt(page, timeouts, "Param", "Beads Param Test");
 
-      // "Beads Issue Task" has no parameters — no dialog should open
-      await selectBeadsPrompt(page, timeouts, "Task", "Beads Issue Task");
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-      // Dialog must NOT appear
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).not.toBeVisible({
-        timeout: 2000,
-      });
+        // Track whether any POST /api/sessions fires after cancel
+        let sessionDispatched = false;
+        page.on("request", (req) => {
+          if (req.url().includes("/api/sessions") && req.method() === "POST") {
+            sessionDispatched = true;
+          }
+        });
 
-      // Dispatch should happen automatically
-      await sessionRequestPromise;
+        // Click Close (dismiss)
+        await page.locator('[data-testid="prompt-param-close-btn"]').click();
 
-      // Toast confirms dispatch
-      await expect(
-        page.getByText('Started "Beads Issue Task" for mitto-aaa'),
-      ).toBeVisible({ timeout: timeouts.appReady });
-    },
-  );
+        // Dialog closes
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).not.toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-  // ── Test 4: cancelling the dialog does not dispatch ───────────────────────
-  testWithCleanup(
-    "cancelling the dialog (Close) does not dispatch",
-    async ({ page, timeouts }) => {
-      await clickBeadsButton(page, timeouts);
-      await selectBeadsPrompt(page, timeouts, "Param", "Beads Param Test");
-
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toBeVisible({
-        timeout: timeouts.shortAction,
-      });
-
-      // Track whether any POST /api/sessions fires after cancel
-      let sessionDispatched = false;
-      page.on("request", (req) => {
-        if (req.url().includes("/api/sessions") && req.method() === "POST") {
-          sessionDispatched = true;
-        }
-      });
-
-      // Click Close (dismiss)
-      await page.locator('[data-testid="prompt-param-close-btn"]').click();
-
-      // Dialog closes
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).not.toBeVisible({
-        timeout: timeouts.shortAction,
-      });
-
-      // Wait a bit to ensure no delayed dispatch fires
-      await page.waitForTimeout(1500);
-      expect(sessionDispatched).toBe(false);
-    },
-  );
-});
+        // Wait a bit to ensure no delayed dispatch fires
+        await page.waitForTimeout(1500);
+        expect(sessionDispatched).toBe(false);
+      },
+    );
+  },
+);
 
 // =============================================================================
 // Conversation-menu invocation flow
@@ -256,176 +309,232 @@ async function openConvoMenu(page, timeouts, sessionId: string) {
 }
 
 /** Hovers a group button and clicks the named prompt in the submenu. */
-async function selectConvoPrompt(page, timeouts, groupText: string, promptText: string) {
+async function selectConvoPrompt(
+  page,
+  timeouts,
+  groupText: string,
+  promptText: string,
+) {
   const menuButtons = page.locator(`${CONVO_MENU} button`);
   const groupItem = menuButtons.filter({ hasText: groupText }).first();
   await expect(groupItem).toBeVisible({ timeout: timeouts.appReady });
   await groupItem.hover();
   const submenu = page.locator(CONVO_MENU).nth(1);
   await expect(submenu).toBeVisible({ timeout: timeouts.shortAction });
-  const promptBtn = submenu.locator("button").filter({ hasText: promptText }).first();
+  const promptBtn = submenu
+    .locator("button")
+    .filter({ hasText: promptText })
+    .first();
   await expect(promptBtn).toBeVisible({ timeout: timeouts.shortAction });
   await promptBtn.click();
 }
 
-testWithCleanup.describe("PromptParameterDialog — conversation-menu invocation flow", () => {
-  let sessionId: string;
+testWithCleanup.describe(
+  "PromptParameterDialog — conversation-menu invocation flow",
+  () => {
+    let sessionId: string;
 
-  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await request.post(apiUrl("/api/workspaces"), {
-      data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
-    });
-    const createResp = await request.post(apiUrl("/api/sessions"), {
-      data: { name: `PPD-Conv-${Date.now()}`, working_dir: WORKSPACE_ALPHA },
-    });
-    expect(createResp.ok()).toBeTruthy();
-    sessionId = (await createResp.json()).session_id;
-
-    await helpers.navigateAndWait(page);
-    await helpers.navigateToSession(page, sessionId);
-  });
-
-  // ── Test 1: dialog opens for conversation-menu prompt with missing params ──
-  testWithCleanup(
-    "opens dialog for conversation-menu prompt with a required text param",
-    async ({ page, timeouts }) => {
-      await openConvoMenu(page, timeouts, sessionId);
-      await selectConvoPrompt(page, timeouts, CONVO_PARAM_GROUP, CONVO_PARAM_PROMPT);
-
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toBeVisible({
-        timeout: timeouts.shortAction,
+    testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+      await request.post(apiUrl("/api/workspaces"), {
+        data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
       });
-
-      // One fieldset (only TASK is missing; it has type=text)
-      const fieldsets = page.locator('[data-testid="prompt-param-dialog"] fieldset');
-      await expect(fieldsets).toHaveCount(1);
-
-      // Dialog title reflects the prompt name
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toContainText(CONVO_PARAM_PROMPT);
-    },
-  );
-
-  // ── Test 2: submit dispatches queue POST with arguments ───────────────────
-  testWithCleanup(
-    "submitting the dialog dispatches a queue POST including arguments",
-    async ({ page, timeouts }) => {
-      await openConvoMenu(page, timeouts, sessionId);
-      await selectConvoPrompt(page, timeouts, CONVO_PARAM_GROUP, CONVO_PARAM_PROMPT);
-
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toBeVisible({
-        timeout: timeouts.shortAction,
+      const createResp = await request.post(apiUrl("/api/sessions"), {
+        data: { name: `PPD-Conv-${Date.now()}`, working_dir: WORKSPACE_ALPHA },
       });
+      expect(createResp.ok()).toBeTruthy();
+      sessionId = (await createResp.json()).session_id;
 
-      // Fill the TASK textarea
-      const taskField = page.locator('[data-testid="prompt-param-dialog"] textarea');
-      await taskField.fill("review the PR");
+      await helpers.navigateAndWait(page);
+      await helpers.navigateToSession(page, sessionId);
+    });
 
-      // Intercept POST to the session queue
-      const [queueRequest] = await Promise.all([
-        page.waitForRequest(
-          (req) => req.url().includes(`/api/sessions/${sessionId}/queue`) && req.method() === "POST",
+    // ── Test 1: dialog opens for conversation-menu prompt with missing params ──
+    testWithCleanup(
+      "opens dialog for conversation-menu prompt with a required text param",
+      async ({ page, timeouts }) => {
+        await openConvoMenu(page, timeouts, sessionId);
+        await selectConvoPrompt(
+          page,
+          timeouts,
+          CONVO_PARAM_GROUP,
+          CONVO_PARAM_PROMPT,
+        );
+
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
+
+        // One fieldset (only TASK is missing; it has type=text)
+        const fieldsets = page.locator(
+          '[data-testid="prompt-param-dialog"] fieldset',
+        );
+        await expect(fieldsets).toHaveCount(1);
+
+        // Dialog title reflects the prompt name
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toContainText(CONVO_PARAM_PROMPT);
+      },
+    );
+
+    // ── Test 2: submit dispatches queue POST with arguments ───────────────────
+    testWithCleanup(
+      "submitting the dialog dispatches a queue POST including arguments",
+      async ({ page, timeouts }) => {
+        await openConvoMenu(page, timeouts, sessionId);
+        await selectConvoPrompt(
+          page,
+          timeouts,
+          CONVO_PARAM_GROUP,
+          CONVO_PARAM_PROMPT,
+        );
+
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
+
+        // Fill the TASK textarea
+        const taskField = page.locator(
+          '[data-testid="prompt-param-dialog"] textarea',
+        );
+        await taskField.fill("review the PR");
+
+        // Intercept POST to the session queue
+        const [queueRequest] = await Promise.all([
+          page.waitForRequest(
+            (req) =>
+              req.url().includes(`/api/sessions/${sessionId}/queue`) &&
+              req.method() === "POST",
+            { timeout: timeouts.appReady },
+          ),
+          page.locator('[data-testid="prompt-param-save-btn"]').click(),
+        ]);
+
+        const body = JSON.parse(queueRequest.postData() || "{}");
+        expect(body.prompt_name).toBe(CONVO_PARAM_PROMPT);
+        expect(body.arguments?.TASK).toBe("review the PR");
+
+        // Dialog closes
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).not.toBeVisible({
+          timeout: timeouts.shortAction,
+        });
+
+        // Success toast
+        await expect(
+          page.getByText(`Sent "${CONVO_PARAM_PROMPT}" to conversation`),
+        ).toBeVisible({ timeout: timeouts.appReady });
+
+        // ── Arg-counter badge visibility (regression) ──────────────────────────
+        // The sent prompt substituted exactly one argument (TASK), so the
+        // NamedPromptPill must render a numeric arg-counter badge showing "1".
+        const pill = page
+          .locator('[data-testid="named-prompt-pill"]')
+          .filter({ hasText: CONVO_PARAM_PROMPT })
+          .first();
+        await expect(pill).toBeVisible({ timeout: 15_000 });
+
+        const argBadge = pill.locator('[data-testid="prompt-arg-count"]');
+        await expect(argBadge).toBeVisible({ timeout: timeouts.shortAction });
+        await expect(argBadge).toHaveText("1");
+
+        // The counter must be visually distinct from the parent pill. The bug was
+        // that the inner badge inherited the parent's primary `--badge-color`, so
+        // its background matched the pill and the counter was effectively
+        // invisible. `badge-ghost` gives it an explicit base-200 background, so
+        // its computed background-color must differ from the pill's.
+        const pillBg = await pill.evaluate(
+          (el) => getComputedStyle(el).backgroundColor,
+        );
+        const badgeBg = await argBadge.evaluate(
+          (el) => getComputedStyle(el).backgroundColor,
+        );
+        expect(badgeBg).not.toBe(pillBg);
+      },
+    );
+
+    // ── Test 3: no-missing-params prompt dispatches directly, no dialog ────────
+    testWithCleanup(
+      "conversation-menu prompt with no missing params dispatches directly — no dialog shown",
+      async ({ page, timeouts }) => {
+        await openConvoMenu(page, timeouts, sessionId);
+
+        // Intercept the queue POST before clicking so we don't miss it
+        const queueRequestPromise = page.waitForRequest(
+          (req) =>
+            req.url().includes(`/api/sessions/${sessionId}/queue`) &&
+            req.method() === "POST",
           { timeout: timeouts.appReady },
-        ),
-        page.locator('[data-testid="prompt-param-save-btn"]').click(),
-      ]);
+        );
 
-      const body = JSON.parse(queueRequest.postData() || "{}");
-      expect(body.prompt_name).toBe(CONVO_PARAM_PROMPT);
-      expect(body.arguments?.TASK).toBe("review the PR");
+        await selectConvoPrompt(
+          page,
+          timeouts,
+          CONVO_NO_PARAM_GROUP,
+          CONVO_NO_PARAM_PROMPT,
+        );
 
-      // Dialog closes
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).not.toBeVisible({
-        timeout: timeouts.shortAction,
-      });
+        // Dialog must NOT appear
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).not.toBeVisible({
+          timeout: 2000,
+        });
 
-      // Success toast
-      await expect(
-        page.getByText(`Sent "${CONVO_PARAM_PROMPT}" to conversation`),
-      ).toBeVisible({ timeout: timeouts.appReady });
+        // Queue POST fires without dialog
+        await queueRequestPromise;
 
-      // ── Arg-counter badge visibility (regression) ──────────────────────────
-      // The sent prompt substituted exactly one argument (TASK), so the
-      // NamedPromptPill must render a numeric arg-counter badge showing "1".
-      const pill = page
-        .locator('[data-testid="named-prompt-pill"]')
-        .filter({ hasText: CONVO_PARAM_PROMPT })
-        .first();
-      await expect(pill).toBeVisible({ timeout: 15_000 });
+        // Success toast
+        await expect(
+          page.getByText(`Sent "${CONVO_NO_PARAM_PROMPT}" to conversation`),
+        ).toBeVisible({ timeout: timeouts.appReady });
+      },
+    );
 
-      const argBadge = pill.locator('[data-testid="prompt-arg-count"]');
-      await expect(argBadge).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(argBadge).toHaveText("1");
+    // ── Test 4: cancelling the dialog does not dispatch ───────────────────────
+    testWithCleanup(
+      "cancelling the conversation-menu param dialog does not dispatch",
+      async ({ page, timeouts }) => {
+        await openConvoMenu(page, timeouts, sessionId);
+        await selectConvoPrompt(
+          page,
+          timeouts,
+          CONVO_PARAM_GROUP,
+          CONVO_PARAM_PROMPT,
+        );
 
-      // The counter must be visually distinct from the parent pill. The bug was
-      // that the inner badge inherited the parent's primary `--badge-color`, so
-      // its background matched the pill and the counter was effectively
-      // invisible. `badge-ghost` gives it an explicit base-200 background, so
-      // its computed background-color must differ from the pill's.
-      const pillBg = await pill.evaluate(
-        (el) => getComputedStyle(el).backgroundColor,
-      );
-      const badgeBg = await argBadge.evaluate(
-        (el) => getComputedStyle(el).backgroundColor,
-      );
-      expect(badgeBg).not.toBe(pillBg);
-    },
-  );
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-  // ── Test 3: no-missing-params prompt dispatches directly, no dialog ────────
-  testWithCleanup(
-    "conversation-menu prompt with no missing params dispatches directly — no dialog shown",
-    async ({ page, timeouts }) => {
-      await openConvoMenu(page, timeouts, sessionId);
+        let dispatched = false;
+        page.on("request", (req) => {
+          if (
+            req.url().includes(`/api/sessions/${sessionId}/queue`) &&
+            req.method() === "POST"
+          ) {
+            dispatched = true;
+          }
+        });
 
-      // Intercept the queue POST before clicking so we don't miss it
-      const queueRequestPromise = page.waitForRequest(
-        (req) => req.url().includes(`/api/sessions/${sessionId}/queue`) && req.method() === "POST",
-        { timeout: timeouts.appReady },
-      );
+        await page.locator('[data-testid="prompt-param-close-btn"]').click();
 
-      await selectConvoPrompt(page, timeouts, CONVO_NO_PARAM_GROUP, CONVO_NO_PARAM_PROMPT);
+        await expect(
+          page.locator('[data-testid="prompt-param-dialog"]'),
+        ).not.toBeVisible({
+          timeout: timeouts.shortAction,
+        });
 
-      // Dialog must NOT appear
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).not.toBeVisible({
-        timeout: 2000,
-      });
-
-      // Queue POST fires without dialog
-      await queueRequestPromise;
-
-      // Success toast
-      await expect(
-        page.getByText(`Sent "${CONVO_NO_PARAM_PROMPT}" to conversation`),
-      ).toBeVisible({ timeout: timeouts.appReady });
-    },
-  );
-
-  // ── Test 4: cancelling the dialog does not dispatch ───────────────────────
-  testWithCleanup(
-    "cancelling the conversation-menu param dialog does not dispatch",
-    async ({ page, timeouts }) => {
-      await openConvoMenu(page, timeouts, sessionId);
-      await selectConvoPrompt(page, timeouts, CONVO_PARAM_GROUP, CONVO_PARAM_PROMPT);
-
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).toBeVisible({
-        timeout: timeouts.shortAction,
-      });
-
-      let dispatched = false;
-      page.on("request", (req) => {
-        if (req.url().includes(`/api/sessions/${sessionId}/queue`) && req.method() === "POST") {
-          dispatched = true;
-        }
-      });
-
-      await page.locator('[data-testid="prompt-param-close-btn"]').click();
-
-      await expect(page.locator('[data-testid="prompt-param-dialog"]')).not.toBeVisible({
-        timeout: timeouts.shortAction,
-      });
-
-      await page.waitForTimeout(1500);
-      expect(dispatched).toBe(false);
-    },
-  );
-});
+        await page.waitForTimeout(1500);
+        expect(dispatched).toBe(false);
+      },
+    );
+  },
+);

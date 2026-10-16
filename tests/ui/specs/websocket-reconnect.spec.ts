@@ -45,7 +45,9 @@ test.describe("WebSocket Reconnection During Send", () => {
       await sendButton.click();
 
       // Input should be cleared even with latency (within timeout)
-      await expect(textarea).toHaveValue("", { timeout: timeouts.agentResponse });
+      await expect(textarea).toHaveValue("", {
+        timeout: timeouts.agentResponse,
+      });
 
       // Message should appear in chat (use user message selector to avoid matching agent response)
       await expect(
@@ -173,7 +175,10 @@ test.describe("WebSocket Reconnection During Send", () => {
       (window as any).__testWebSockets = [];
 
       // Monkey-patch WebSocket to track connections
-      (window as any).WebSocket = function (url: string, protocols?: string | string[]) {
+      (window as any).WebSocket = function (
+        url: string,
+        protocols?: string | string[],
+      ) {
         const ws = new originalWS(url, protocols);
         (window as any).__testWebSockets.push(ws);
         return ws;
@@ -260,8 +265,10 @@ test.describe("WebSocket Reconnection During Send", () => {
     helpers,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Race condition after page refresh in Docker environment');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Race condition after page refresh in Docker environment",
+    );
     // This test verifies behavior when page is refreshed during/after send
     // First, create a fresh session to avoid interference from other tests
     await page.locator(selectors.newSessionButton).click();
@@ -410,7 +417,7 @@ test.describe("Pending Send Recovery", () => {
     // Message should appear
     // Use exact text match with getByText to avoid matching agent response containing the message
     await expect(
-      page.getByText(testMessage, { exact: true }).first()
+      page.getByText(testMessage, { exact: true }).first(),
     ).toBeVisible({
       timeout: timeouts.shortAction,
     });
@@ -481,8 +488,6 @@ test.describe("Multi-Tab Scenarios", () => {
     await page2.close();
   });
 });
-
-
 
 // =============================================================================
 // Gap 3 — Pending prompt delivered after reconnect
@@ -579,9 +584,11 @@ test.describe("Gap 3 — Pending Prompt Retry via retryPendingPrompts", () => {
     // Shape checks — exactly what getPendingPromptsForSession() reads.
     expect(pendingValues.length).toBeGreaterThan(0);
 
-    const entry = pendingValues.find((p) => p.message?.includes("pending-offline"));
+    const entry = pendingValues.find((p) =>
+      p.message?.includes("pending-offline"),
+    );
     expect(entry).toBeTruthy();
-    expect(entry!.sessionId).toBe(sessionId);   // filter key in getPendingPromptsForSession
+    expect(entry!.sessionId).toBe(sessionId); // filter key in getPendingPromptsForSession
     expect(entry!.imageIds).toBeInstanceOf(Array); // required by retryPendingPrompts
     expect(typeof entry!.timestamp).toBe("number"); // required for expiry check
 
@@ -620,7 +627,7 @@ test.describe("Gap 3 — Pending Prompt Retry via retryPendingPrompts", () => {
     });
 
     // Install WS tracker before session WS is created.
-    await page.evaluate(() => {
+    await page.addInitScript(() => {
       const origWS = window.WebSocket;
       (window as any).__testWebSockets = [];
       window.WebSocket = function (url: string, protocols?: string | string[]) {
@@ -630,6 +637,8 @@ test.describe("Gap 3 — Pending Prompt Retry via retryPendingPrompts", () => {
       } as unknown as typeof WebSocket;
       Object.assign(window.WebSocket, origWS);
     });
+
+    await helpers.navigateAndWait(page);
 
     const sessionId = await helpers.createFreshSession(page);
     await helpers.waitForWebSocketReady(page);
@@ -669,7 +678,10 @@ test.describe("Gap 3 — Pending Prompt Retry via retryPendingPrompts", () => {
     // emits prompt_received → removePendingPrompt() → localStorage entry cleared.
     await page.evaluate(() => {
       for (const ws of (window as any).__testWebSockets ?? []) {
-        if (ws.readyState === 0 /* CONNECTING */ || ws.readyState === 1 /* OPEN */) {
+        if (
+          ws.readyState === 0 /* CONNECTING */ ||
+          ws.readyState === 1 /* OPEN */
+        ) {
           ws.close();
         }
       }
@@ -709,4 +721,3 @@ test.describe("Gap 3 — Pending Prompt Retry via retryPendingPrompts", () => {
     ).toBe(true);
   });
 });
-

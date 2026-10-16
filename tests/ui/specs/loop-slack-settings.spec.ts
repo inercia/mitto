@@ -276,9 +276,15 @@ test.describe("onSlack loop settings", () => {
 
     await expect(page.getByTestId("slack-channel-id-0")).toHaveValue("C404");
     await page.getByTestId("slack-channel-picker-open-0").click();
-    await expect(page.getByText(/channels:read and groups:read/)).toBeVisible();
+    const channelError = page
+      .getByTestId("slack-channel-picker-modal")
+      .getByRole("alert");
+    await expect(channelError).toContainText(/temporarily unavailable/);
+    await expect(channelError).toContainText(
+      /Retry resumes where loading paused/,
+    );
     await page.getByRole("button", { name: "Retry" }).click();
-    await expect(page.getByText(/channels:read and groups:read/)).toBeHidden();
+    await expect(channelError).toBeHidden();
     await expect(page.getByTestId("slack-channel-id-0")).toHaveValue("C404");
     await expect(
       page.getByTestId("slack-channel-picker-row-C404"),

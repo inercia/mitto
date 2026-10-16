@@ -64,7 +64,9 @@ async function mountSlackSettings(page: Page) {
   });
   await expect(page.getByTestId("slack-settings-tab")).toBeVisible();
   await expect(page.getByTestId("slack-app-app-a")).toBeVisible();
-  await expect(page.getByTestId("slack-installation-inst-a")).toBeVisible();
+  const installationDetails = page.getByTestId("slack-installation-detail");
+  await expect(installationDetails).toBeVisible();
+  await expect(installationDetails).toContainText("Workspace Alpha");
 }
 
 test.describe("Slack Settings external links", () => {

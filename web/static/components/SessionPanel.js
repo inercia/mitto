@@ -694,8 +694,9 @@ export function SessionPanel({
           <${Tooltip} tip="Close" placement="bottom">
             <button
               class="btn btn-ghost btn-square btn-sm"
-              onClick=${handleClose}
-              aria-label="Close"
+                        onClick=${handleClose}
+                        aria-label="Close"
+                        data-testid="session-panel-close"
             >
               <${CloseIcon} className="w-5 h-5" />
             </button>

@@ -47,7 +47,8 @@ export const selectors = {
   thoughtMessage: ".text-gray-400",
   toolMessage: '.text-yellow-500:has-text("🔧")',
   // All messages in the chat (for ordering tests)
-  allMessages: ".message-enter",
+  // .message-enter is stripped ~250ms after mount (mitto-e5k); use the stable row class.
+  allMessages: ".mitto-msg-row",
   // Messages container (for scroll operations) - the one with messages-container-reverse class
   messagesContainer: ".messages-container-reverse",
 
@@ -58,10 +59,9 @@ export const selectors = {
   conversationsHeader: 'h2:has-text("Mitto")',
   sessionsHeader: 'h2:has-text("Mitto")', // Alias for backwards compatibility
   // Session items are in containers with class "session-item-container"
-  sessionsList: '.session-item-container',
+  sessionsList: ".session-item-container",
   newSessionButton: 'button[data-testid="new-conversation-btn"]',
-  sessionItem: (name: string) =>
-    `.session-item-container:has-text("${name}")`,
+  sessionItem: (name: string) => `.session-item-container:has-text("${name}")`,
   // Active session: the clickable inner div gets a solid bg-mitto-accent fill when isActive
   activeSessionItem: '[data-session-id][class*="bg-mitto-accent "]',
   activeSessionItemById: (id: string) =>
@@ -80,29 +80,29 @@ export const selectors = {
   darkTheme: ".bg-mitto-bg",
 
   // Queue dropdown
-  queueToggleButton: '[data-queue-toggle]',
-  queueDropdown: '.queue-dropdown',
-  queueResizeHandle: '.queue-resize-handle',
-  queueDropdownHeader: '.queue-dropdown-header',
-  queueDropdownList: '.queue-dropdown-list',
-  queueDropdownItem: '.queue-dropdown-item',
-  queueDropdownEmpty: '.queue-dropdown-empty',
+  queueToggleButton: "[data-queue-toggle]",
+  queueDropdown: ".queue-dropdown",
+  queueResizeHandle: ".queue-resize-handle",
+  queueDropdownHeader: ".queue-dropdown-header",
+  queueDropdownList: ".queue-dropdown-list",
+  queueDropdownItem: ".queue-dropdown-item",
+  queueDropdownEmpty: ".queue-dropdown-empty",
 
   // Scroll to bottom button
-  scrollToBottomWrapper: '.scroll-to-bottom-wrapper',
-  scrollToBottomButton: '.scroll-to-bottom-btn',
+  scrollToBottomWrapper: ".scroll-to-bottom-wrapper",
+  scrollToBottomButton: ".scroll-to-bottom-btn",
 
   // Message list — empty state
   // Shown when messages.length === 0 (no active session or brand-new session)
   emptyStateFavicon: 'img[alt="Mitto"]',
-  emptyStateHeading: 'p.text-2xl',
+  emptyStateHeading: "p.text-2xl",
 
   // Message list — date separator
   // Appears between messages of different calendar days (or at the oldest message)
-  dateSeparator: '.date-separator',
+  dateSeparator: ".date-separator",
 
   // Message list — error bubble and retry button
-  errorMessageBubble: '.alert.alert-error',
+  errorMessageBubble: ".alert.alert-error",
   retryButton: 'button[aria-label="Retry — resend the last prompt"]',
 
   // Copy as Markdown
@@ -120,7 +120,7 @@ export const selectors = {
   headerCopyLastResponseMd: '[data-testid="header-copy-last-response-md"]',
   // Fixed-position daisyUI context menu rendered by the ContextMenu component
   // (shared by the conversation header menu and the sidebar row menu).
-  contextMenu: '.menu.fixed.z-50.shadow-xl',
+  contextMenu: ".menu.fixed.z-50.shadow-xl",
 } as const;
 
 /**

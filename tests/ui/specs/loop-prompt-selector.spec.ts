@@ -47,13 +47,8 @@ async function apiCreateSession(
 }
 
 /**
- * Configure loop on a session via REST API.
- *
- * The `loop_updated` broadcast arrives on the global events WebSocket
- * (/api/events) which may connect slightly after the session WS. We retry
- * the PUT a few times with a brief delay to ensure the message is received.
- * Callers should then wait for a UI signal (e.g. loop-frequency-panel
- * visible) with a generous timeout.
+ * Configure a session loop with one REST request. The settings panel stays
+ * collapsed until the user opens it through the LoopControlBar.
  */
 async function enableLoop(
   request: import("@playwright/test").APIRequestContext,
@@ -67,7 +62,19 @@ async function enableLoop(
       enabled: true,
     },
   });
-  expect(resp.ok(), `PUT loop failed: ${resp.status()} ${await resp.text()}`).toBe(true);
+  expect(
+    resp.ok(),
+    `PUT loop failed: ${resp.status()} ${await resp.text()}`,
+  ).toBe(true);
+}
+
+async function openLoopSettings(
+  page: import("@playwright/test").Page,
+  timeout: number,
+): Promise<void> {
+  const settingsButton = page.getByTestId("loop-open-settings");
+  await expect(settingsButton).toBeVisible({ timeout });
+  await settingsButton.click();
 }
 
 test.describe("LoopPromptSelector internals", () => {
@@ -85,16 +92,16 @@ test.describe("LoopPromptSelector internals", () => {
     const sessionId = await apiCreateSession(page, request);
     expect(sessionId).toBeTruthy();
     await enableLoop(request, sessionId, "Hello Greeting");
+    await openLoopSettings(page, t.agentResponse);
 
-    // LoopFrequencyPanel becomes visible when loop_enabled=true.
-    // Use agentResponse timeout to handle the global events WS race: the
-    // loop_updated broadcast arrives on /api/events which may connect
-    // slightly after the session WS, so the state update can take a few seconds.
-    const frequencyPanel = page.locator('[data-testid="loop-frequency-panel"]');
-    await expect(frequencyPanel).toBeVisible({ timeout: t.agentResponse });
+    // The settings panel is open, so its prompt selector controls can be tested.
+    const loopSettingsTab = page.getByTestId("loop-settings-tab");
+    await expect(loopSettingsTab).toBeVisible({ timeout: t.agentResponse });
 
     // The trigger button should show the currently selected prompt name
-    const triggerBtn = page.locator('[data-testid="loop-prompt-selector-button"]');
+    const triggerBtn = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-button",
+    );
     await expect(triggerBtn).toBeAttached();
     await expect(triggerBtn).toContainText("Hello Greeting");
 
@@ -102,18 +109,20 @@ test.describe("LoopPromptSelector internals", () => {
     await triggerBtn.click();
 
     // Dropdown panel should now appear
-    const dropdown = page.locator('[data-testid="loop-prompt-selector-dropdown"]');
+    const dropdown = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-dropdown",
+    );
     await expect(dropdown).toBeVisible({ timeout: t.shortAction });
 
     // Search filter input should be focused
-    const searchInput = page.locator('[data-testid="loop-prompt-selector-search"]');
+    const searchInput = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-search",
+    );
     await expect(searchInput).toBeVisible();
     await expect(searchInput).toBeFocused();
 
     // At least the "Hello Greeting" prompt from the project-alpha workspace should appear
-    const promptList = page.locator(
-      '[data-testid="loop-prompt-selector-list"]',
-    );
+    const promptList = loopSettingsTab.getByTestId("loop-settings-prompt-list");
     await expect(promptList).toBeVisible();
 
     // Prompt item containing "Hello Greeting" should be present
@@ -134,24 +143,30 @@ test.describe("LoopPromptSelector internals", () => {
     const sessionId = await apiCreateSession(page, request);
     expect(sessionId).toBeTruthy();
     await enableLoop(request, sessionId, "Hello Greeting");
+    await openLoopSettings(page, t.agentResponse);
 
-    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
+    const loopSettingsTab = page.getByTestId("loop-settings-tab");
+    await expect(loopSettingsTab).toBeVisible({
       timeout: t.agentResponse,
     });
 
-    const triggerBtn = page.locator('[data-testid="loop-prompt-selector-button"]');
+    const triggerBtn = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-button",
+    );
     await triggerBtn.click();
 
-    const dropdown = page.locator('[data-testid="loop-prompt-selector-dropdown"]');
+    const dropdown = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-dropdown",
+    );
     await expect(dropdown).toBeVisible({ timeout: t.shortAction });
 
-    const searchInput = page.locator('[data-testid="loop-prompt-selector-search"]');
+    const searchInput = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-search",
+    );
 
     // Type a filter that matches "Hello Greeting"
     await searchInput.fill("hello");
-    const promptList = page.locator(
-      '[data-testid="loop-prompt-selector-list"]',
-    );
+    const promptList = loopSettingsTab.getByTestId("loop-settings-prompt-list");
     const greetingItem = promptList.locator("button.prompt-item", {
       hasText: "Hello Greeting",
     });
@@ -182,13 +197,17 @@ test.describe("LoopPromptSelector internals", () => {
   }) => {
     const sessionId = await apiCreateSession(page, request);
     await enableLoop(request, sessionId, "Hello Greeting");
+    await openLoopSettings(page, t.agentResponse);
 
-    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
+    const loopSettingsTab = page.getByTestId("loop-settings-tab");
+    await expect(loopSettingsTab).toBeVisible({
       timeout: t.agentResponse,
     });
 
-    await page.locator('[data-testid="loop-prompt-selector-button"]').click();
-    const dropdown = page.locator('[data-testid="loop-prompt-selector-dropdown"]');
+    await loopSettingsTab.getByTestId("loop-settings-prompt-button").click();
+    const dropdown = loopSettingsTab.getByTestId(
+      "loop-settings-prompt-dropdown",
+    );
     await expect(dropdown).toBeVisible({ timeout: t.shortAction });
 
     // Click somewhere outside the dropdown

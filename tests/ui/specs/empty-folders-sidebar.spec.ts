@@ -49,11 +49,15 @@ testWithCleanup.describe("Empty pinned folders in sidebar", () => {
       data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_BETA },
     });
     await request.put(
-      apiUrl(`/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`),
+      apiUrl(
+        `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_ALPHA)}`,
+      ),
       { data: { pinned: false } },
     );
     await request.put(
-      apiUrl(`/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_BETA)}`),
+      apiUrl(
+        `/api/folders/pin?working_dir=${encodeURIComponent(WORKSPACE_BETA)}`,
+      ),
       { data: { pinned: false } },
     );
   });
@@ -252,10 +256,12 @@ testWithCleanup.describe("Empty pinned folders in sidebar", () => {
         menu.locator("button").filter({ hasText: "Remove from sidebar" }),
       ).toHaveCount(0);
 
-      await page.keyboard.press("Escape");
-      await expect(page.locator(MENU)).toHaveCount(0, {
-        timeout: timeouts.shortAction,
-      });
+      // ContextMenu registers its Escape listener in a post-paint effect, so a
+      // press right after the menu becomes visible can be lost; retry the press.
+      await expect(async () => {
+        await page.keyboard.press("Escape");
+        await expect(page.locator(MENU)).toHaveCount(0, { timeout: 1000 });
+      }).toPass({ timeout: timeouts.shortAction });
     },
   );
 });

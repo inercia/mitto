@@ -79,7 +79,7 @@ test.describe("Loop control bar and settings tab", () => {
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect.poll(() => runNowCalls).toBe(1);
 
-    await panel.getByRole("button", { name: "Close" }).click();
+    await page.getByTestId("session-panel-close").click();
     await expect(panel).toHaveCount(0);
 
     const playPause = bar.locator('[data-testid="loop-pause-resume-button"]');

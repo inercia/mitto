@@ -215,7 +215,7 @@ test.describe("Message Send Flow", () => {
     // 4. User message should appear in chat
     // Use exact text match with getByText to avoid matching agent response containing the message
     await expect(
-      page.getByText(testMessage, { exact: true }).first()
+      page.getByText(testMessage, { exact: true }).first(),
     ).toBeVisible({
       timeout: timeouts.shortAction,
     });
@@ -441,18 +441,16 @@ test.describe("Message Send Error Handling", () => {
 
 test.describe("Message List Rendering", () => {
   /**
-   * Empty State
-   * Verifies the welcome/empty-state placeholder (favicon + "Welcome to Mitto"
-   * heading) is rendered when there are no messages, and disappears once a
-   * conversation has content.
+   * With no sessions, startup opens the global Dashboard. Creating a
+   * conversation from its workspace row opens the chat pane; the welcome
+   * placeholder then disappears when the new conversation has content.
    *
-   * Strategy: intercept the /api/sessions list to return an empty array so the
-   * app has no sessions to auto-select.  This forces activeSessionId to null and
-   * messages to [], which is the condition that renders the empty state.
-   * We then remove the intercept, create a new session, and confirm the empty
-   * state disappears.
+   * Intercept /api/sessions as empty and clear remembered session IDs. The app
+   * intentionally selects Dashboard when there is no initial session. Then
+   * remove the intercept, create a session from the pinned workspace, and
+   * verify that the conversation pane replaces the no-conversations dashboard.
    */
-  test("empty state shows when no session is selected and hides after session starts", async ({
+  test("shows Dashboard with no sessions and opens a conversation after creation", async ({
     page,
     selectors,
     timeouts,
@@ -483,40 +481,36 @@ test.describe("Message List Rendering", () => {
 
     await page.goto("/");
 
-    // Wait for the messages container to be rendered
     await expect(
-      page.locator(selectors.messagesContainer).first(),
+      page.getByText("Dashboard", { exact: true }).first(),
     ).toBeVisible({ timeout: timeouts.appReady });
-
-    // The empty state must be visible: favicon img + "Welcome to Mitto" heading
-    const faviconImg = page.locator(selectors.emptyStateFavicon).first();
-    await expect(faviconImg).toBeVisible({ timeout: timeouts.appReady });
-
-    const heading = page.locator(selectors.emptyStateHeading).first();
-    await expect(heading).toContainText("Welcome to Mitto", {
+    await expect(page.getByText("No conversations yet").first()).toBeVisible({
       timeout: timeouts.appReady,
     });
 
     // Remove the intercept so session creation works normally.
     await page.unroute(`**${apiUrl("/api/sessions")}`);
 
-    // Ensure the Conversations tab is selected, then create a new session.
-    // A new session adds a system message, which makes messages.length > 0
-    // and hides the empty-state placeholder.
-    const conversationsTab = page.getByRole("tab", { name: "Conversations" });
-    if (await conversationsTab.isVisible()) {
-      const isSelected = await conversationsTab.getAttribute("aria-selected");
-      if (isSelected !== "true") await conversationsTab.click();
-    }
-    await page.locator(selectors.newSessionButton).click();
+    // The pinned project-alpha folder exposes its own New conversation action.
+    await page
+      .getByRole("button", {
+        name: "New conversation in project-alpha",
+        exact: true,
+      })
+      .click();
 
-    // Wait for the session chat input to appear (session is now active)
+    // Creating a session opens the chat pane with an active input.
     await expect(page.locator(selectors.chatInput)).toBeEnabled({
       timeout: timeouts.appReady,
     });
+    await expect(page.locator(selectors.messagesContainer).first()).toBeVisible(
+      { timeout: timeouts.appReady },
+    );
 
-    // The empty-state heading must now be gone
-    await expect(heading).not.toBeVisible({ timeout: timeouts.shortAction });
+    // The new conversation has content, so the empty-state heading is gone.
+    await expect(
+      page.locator(selectors.emptyStateHeading).first(),
+    ).not.toBeVisible({ timeout: timeouts.shortAction });
   });
 
   /**
@@ -770,28 +764,32 @@ test.describe("Scroll to Bottom Button", () => {
 
     // Click the button using JavaScript to ensure it fires the scroll action
     await page.evaluate(() => {
-      const btn = document.querySelector(".scroll-to-bottom-btn") as HTMLElement;
+      const btn = document.querySelector(
+        ".scroll-to-bottom-btn",
+      ) as HTMLElement;
       if (btn) btn.click();
     });
 
     // Wait for the smooth-scroll animation to complete.
     // scroll-smooth duration is variable under load, so poll until at bottom
     // rather than using a fixed timeout that can expire mid-animation.
-    await expect.poll(
-      async () => {
-        return await page.evaluate(() => {
-          const containers = document.querySelectorAll(".overflow-y-auto");
-          for (const c of containers) {
-            if (c.querySelector(".message-enter")) {
-              const el = c as HTMLElement;
-              const maxScroll = el.scrollHeight - el.clientHeight;
-              return el.scrollTop >= maxScroll - 100;
+    await expect
+      .poll(
+        async () => {
+          return await page.evaluate(() => {
+            const containers = document.querySelectorAll(".overflow-y-auto");
+            for (const c of containers) {
+              if (c.querySelector(".message-enter")) {
+                const el = c as HTMLElement;
+                const maxScroll = el.scrollHeight - el.clientHeight;
+                return el.scrollTop >= maxScroll - 100;
+              }
             }
-          }
-          return false;
-        });
-      },
-      { timeout: 10_000, intervals: [200, 300, 500, 500, 1000] },
-    ).toBe(true);
+            return false;
+          });
+        },
+        { timeout: 10_000, intervals: [200, 300, 500, 500, 1000] },
+      )
+      .toBe(true);
   });
 });

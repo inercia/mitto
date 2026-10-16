@@ -39,6 +39,29 @@ test.describe("QueueDropdown internals", () => {
     const sessionId: string = data.session_id;
     expect(sessionId).toBeTruthy();
 
+    // Keep the fake REST queue count consistent with the authoritative session
+    // WebSocket connected state, without seeding real items that the idle ACP
+    // agent would immediately process.
+    await page.routeWebSocket(`**/api/sessions/${sessionId}/ws`, (route) => {
+      const server = route.connectToServer();
+      route.onMessage((message) => server.send(message));
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const payload = JSON.parse(message);
+            if (payload.type === "connected" && payload.data) {
+              payload.data.queue_length = 3;
+              route.send(JSON.stringify(payload));
+              return;
+            }
+          } catch {
+            // Forward non-JSON session messages unchanged.
+          }
+        }
+        route.send(message);
+      });
+    });
+
     // ── 2. Set up in-memory queue and intercept queue endpoints ─────────────
     // Use a plain object wrapper so the closure captures the reference and
     // mutations are visible across handler calls.
@@ -49,19 +72,20 @@ test.describe("QueueDropdown internals", () => {
         { id: "q3", message: "Queued msg 3" },
       ] as Array<{ id: string; message: string }>,
     };
-
     // Single combined handler to avoid glob-ordering pitfalls.
     // Matches any URL containing /queue (with or without a path suffix).
     await page.route(`**/${sessionId}/queue**`, async (route) => {
       const url = route.request().url();
       const method = route.request().method();
-
       // GET …/queue — initial fetch + re-fetch after delete
       if (method === "GET" && /\/queue$/.test(url)) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ messages: state.queue, count: state.queue.length }),
+          body: JSON.stringify({
+            messages: state.queue,
+            count: state.queue.length,
+          }),
         });
         return;
       }
@@ -88,15 +112,24 @@ test.describe("QueueDropdown internals", () => {
         const idx = state.queue.findIndex((item) => item.id === id);
         if (idx !== -1) {
           if (direction === "up" && idx > 0) {
-            [state.queue[idx - 1], state.queue[idx]] = [state.queue[idx], state.queue[idx - 1]];
+            [state.queue[idx - 1], state.queue[idx]] = [
+              state.queue[idx],
+              state.queue[idx - 1],
+            ];
           } else if (direction === "down" && idx < state.queue.length - 1) {
-            [state.queue[idx], state.queue[idx + 1]] = [state.queue[idx + 1], state.queue[idx]];
+            [state.queue[idx], state.queue[idx + 1]] = [
+              state.queue[idx + 1],
+              state.queue[idx],
+            ];
           }
         }
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ messages: state.queue, count: state.queue.length }),
+          body: JSON.stringify({
+            messages: state.queue,
+            count: state.queue.length,
+          }),
         });
         return;
       }
@@ -119,7 +152,7 @@ test.describe("QueueDropdown internals", () => {
       { timeout: timeouts.agentResponse },
     );
 
-    // ── 4. Toggle button should be visible (queueLength=3 from intercepted GET) ──
+    // ── 4. Toggle button should be visible (fake REST and connected WS both report 3) ──
     const toggleBtn = page.locator(selectors.queueToggleButton);
     await expect(toggleBtn).toBeVisible({ timeout: timeouts.shortAction });
 
@@ -131,7 +164,9 @@ test.describe("QueueDropdown internals", () => {
     // ── 6. Three item rows visible ──────────────────────────────────────────
     const items = page.locator('[data-testid="queue-item"]');
     await expect(items).toHaveCount(3, { timeout: timeouts.shortAction });
-    await expect(items.first().locator(".queue-item-text")).toContainText("Queued msg 1");
+    await expect(items.first().locator(".queue-item-text")).toContainText(
+      "Queued msg 1",
+    );
 
     // ── 7. Hover first row — action buttons ────────────────────────────────
     await items.first().hover();
@@ -154,9 +189,12 @@ test.describe("QueueDropdown internals", () => {
     // ── 8. Exercise move-down on first row ─────────────────────────────────
     await moveDown.click();
     // After move, first row should now show "Queued msg 2"
-    await expect(items.first().locator(".queue-item-text")).toContainText("Queued msg 2", {
-      timeout: timeouts.shortAction,
-    });
+    await expect(items.first().locator(".queue-item-text")).toContainText(
+      "Queued msg 2",
+      {
+        timeout: timeouts.shortAction,
+      },
+    );
 
     // ── 9. Delete the last item — count drops to 2 ──────────────────────────
     const lastItem = items.last();
@@ -164,7 +202,9 @@ test.describe("QueueDropdown internals", () => {
     await lastItem.locator(".queue-item-delete").click();
 
     const remainingItems = page.locator('[data-testid="queue-item"]');
-    await expect(remainingItems).toHaveCount(2, { timeout: timeouts.shortAction });
+    await expect(remainingItems).toHaveCount(2, {
+      timeout: timeouts.shortAction,
+    });
 
     // New last item: move-up enabled, move-down disabled
     const newLastItem = remainingItems.last();

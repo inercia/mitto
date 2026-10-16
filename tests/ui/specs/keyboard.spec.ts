@@ -70,7 +70,7 @@ test.describe("Keyboard Navigation", () => {
 
 test.describe("Keyboard Shortcuts", () => {
   test.beforeEach(async ({ page, helpers }) => {
-    await helpers.navigateAndWait(page);
+    await helpers.navigateAndEnsureSession(page);
   });
 
   test("should support Cmd/Ctrl+1-9 for session switching", async ({
@@ -138,7 +138,8 @@ test.describe("Session Navigation", () => {
     // Sanity: confirm session1 is now active
     await expect
       .poll(
-        () => page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
+        () =>
+          page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
         { timeout: timeouts.shortAction },
       )
       .toBe(session1Id);
@@ -149,7 +150,8 @@ test.describe("Session Navigation", () => {
     // Primary assertion: localStorage ground-truth reflects the switch
     await expect
       .poll(
-        () => page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
+        () =>
+          page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
         { timeout: timeouts.shortAction },
       )
       .toBe(session2Id);
@@ -165,7 +167,8 @@ test.describe("Session Navigation", () => {
     // Primary assertion: localStorage shows session1 is active again
     await expect
       .poll(
-        () => page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
+        () =>
+          page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
         { timeout: timeouts.shortAction },
       )
       .toBe(session1Id);
@@ -203,7 +206,7 @@ test.describe("Session Navigation", () => {
 
 test.describe("Accessibility", () => {
   test.beforeEach(async ({ page, helpers }) => {
-    await helpers.navigateAndWait(page);
+    await helpers.navigateAndEnsureSession(page);
   });
 
   test("should have accessible chat input", async ({ page, selectors }) => {
@@ -358,9 +361,7 @@ test.describe("Close Conversation Confirmation (Cmd+W)", () => {
     await expect
       .poll(
         () =>
-          page.evaluate(() =>
-            localStorage.getItem("mitto_last_session_id"),
-          ),
+          page.evaluate(() => localStorage.getItem("mitto_last_session_id")),
         { timeout: timeouts.appReady },
       )
       .not.toBe(beforeId);

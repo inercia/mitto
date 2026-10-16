@@ -56,16 +56,20 @@ test.describe("WebSocket Connection", () => {
     await expect(textarea).toBeEnabled({ timeout: timeouts.appReady });
   });
 
-  test("should maintain session list after refresh", async ({
+  test("should maintain the active session row after refresh", async ({
     page,
     selectors,
     timeouts,
   }) => {
-    // Get the conversations sidebar
-    const conversationsHeader = page.getByRole("heading", {
-      name: "Conversations",
-    });
-    await expect(conversationsHeader).toBeVisible({
+    const sessionId = await page.evaluate(() =>
+      localStorage.getItem("mitto_last_session_id"),
+    );
+    expect(sessionId).toBeTruthy();
+    if (!sessionId) {
+      throw new Error("navigateAndEnsureSession did not persist a session ID");
+    }
+    const sessionRow = page.locator(`[data-session-id="${sessionId}"]`);
+    await expect(sessionRow).toBeVisible({
       timeout: timeouts.appReady,
     });
 
@@ -75,10 +79,8 @@ test.describe("WebSocket Connection", () => {
       timeout: timeouts.appReady,
     });
 
-    // Conversations sidebar should still be visible
-    await expect(
-      page.getByRole("heading", { name: "Conversations" }),
-    ).toBeVisible({
+    // The exact session row should still be present in the sidebar.
+    await expect(sessionRow).toBeVisible({
       timeout: timeouts.appReady,
     });
   });

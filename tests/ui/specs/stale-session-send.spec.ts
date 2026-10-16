@@ -8,7 +8,7 @@ import { test, expect } from "../fixtures/test-fixtures";
  * closed it). The ACK timeout mechanism and retry logic are exercised.
  *
  * Message delivery pipeline:
- *   sendMessage() → attemptSend(3s ACK timeout)
+ *   sendMessage() → attemptSend(180s durable-ACK timeout)
  *     → ON ACK_TIMEOUT: verifyDeliveryAfterReconnect(4s timeout)
  *       → force close → reconnect → load_events to check delivery
  *     → if NOT delivered: retry on fresh connection
@@ -22,7 +22,7 @@ import { test, expect } from "../fixtures/test-fixtures";
 test.describe("Stale Session Send Recovery", () => {
   test.skip(
     ({ browserName }) => browserName !== "chromium",
-    "CDP (newCDPSession) is only available in Chromium"
+    "CDP (newCDPSession) is only available in Chromium",
   );
   test.setTimeout(60000);
 
@@ -37,7 +37,7 @@ test.describe("Stale Session Send Recovery", () => {
    * 1. Create fresh session, send baseline message (establishes healthy connection)
    * 2. Go offline via CDP to create zombie WebSocket
    * 3. Type message and click Send
-   * 4. Wait for ACK timeout → verify/retry → error toast (≤15s)
+   * 4. Fast-forward the durable-ACK timeout → verify/retry → error toast
    * 5. Restore network, wait for recovery
    * 6. Click Send again (message preserved) → verify success
    */
@@ -47,8 +47,10 @@ test.describe("Stale Session Send Recovery", () => {
     selectors,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Strict mode violation in Docker due to duplicate message elements');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Strict mode violation in Docker due to duplicate message elements",
+    );
     await helpers.createFreshSession(page);
     await helpers.waitForWebSocketReady(page);
 
@@ -56,6 +58,7 @@ test.describe("Stale Session Send Recovery", () => {
     const initialMessage = helpers.uniqueMessage("Baseline message");
     await helpers.sendMessageAndWait(page, initialMessage);
 
+    await page.clock.install();
     const cdpSession = await page.context().newCDPSession(page);
 
     try {
@@ -67,18 +70,22 @@ test.describe("Stale Session Send Recovery", () => {
         latency: 0,
       });
 
-      // Wait 2s: enough for keepalive to consider connection unhealthy,
-      // but NOT 20-25s (which triggers the keepalive-forced reconnect)
+      // Give the partition time to take effect before sending.
       await page.waitForTimeout(2000);
 
       // Type and send a message over the dead connection
-      const stalledMessage = helpers.uniqueMessage("Message on stale connection");
+      const stalledMessage = helpers.uniqueMessage(
+        "Message on stale connection",
+      );
       await page.locator(selectors.chatInput).fill(stalledMessage);
       await page.locator(selectors.sendButton).click();
+      await expect(page.locator(selectors.chatInput)).toBeDisabled();
+      // Production allows 180s for backend preflight before timing out; advance
+      // only the page clock so this failure path remains fast to test.
+      await page.clock.fastForward(180000);
 
-      // ACK timeout (3s) + reconnect attempt (~4s) + error shown ≈ 7-10s
-      // The send error appears as a daisyUI alert-warning bar below the chat input
-      const errorToast = page.locator(".alert.alert-warning").first();
+      // After the durable-ACK budget expires, reconnection must report failure.
+      const errorToast = page.getByTestId("send-error");
       await expect(errorToast).toBeVisible({ timeout: 15000 });
 
       // The error message should reference delivery failure
@@ -89,12 +96,14 @@ test.describe("Stale Session Send Recovery", () => {
         errorText?.includes("Connection lost");
       expect(
         hasDeliveryError,
-        `Expected delivery error text, got: "${errorText}"`
+        `Expected delivery error text, got: "${errorText}"`,
       ).toBe(true);
 
       // Message text must be PRESERVED in the input for easy retry
       const inputValue = await page.locator(selectors.chatInput).inputValue();
-      expect(inputValue).toContain(stalledMessage.split(" ").slice(-2).join(" "));
+      expect(inputValue).toContain(
+        stalledMessage.split(" ").slice(-2).join(" "),
+      );
 
       // The "preserved" hint must be visible
       await expect(page.getByText("preserved")).toBeVisible();
@@ -119,7 +128,10 @@ test.describe("Stale Session Send Recovery", () => {
       // send-failure + retry can leave two matching bubbles (optimistic render
       // plus the server echo after recovery).
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: "stale connection" }).first()
+        page
+          .locator(selectors.userMessage)
+          .filter({ hasText: "stale connection" })
+          .first(),
       ).toBeVisible({ timeout: timeouts.agentResponse });
 
       // Agent should respond (confirms full round-trip restored)
@@ -141,7 +153,7 @@ test.describe("Stale Session Send Recovery", () => {
    * 1. Create fresh session
    * 2. Go offline
    * 3. Type a specific message and click Send
-   * 4. Wait for error toast
+   * 4. Fast-forward the durable-ACK timeout and wait for the error toast
    * 5. Verify textarea still contains the original message text
    * 6. Verify the "preserved" hint text is visible
    * 7. Restore network, retry, verify message appears in chat
@@ -152,11 +164,14 @@ test.describe("Stale Session Send Recovery", () => {
     selectors,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Strict mode violation in Docker due to duplicate message elements');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Strict mode violation in Docker due to duplicate message elements",
+    );
     await helpers.createFreshSession(page);
     await helpers.waitForWebSocketReady(page);
 
+    await page.clock.install();
     const cdpSession = await page.context().newCDPSession(page);
     const importantMessage = "Important message that must not be lost";
 
@@ -171,9 +186,11 @@ test.describe("Stale Session Send Recovery", () => {
 
       await page.locator(selectors.chatInput).fill(importantMessage);
       await page.locator(selectors.sendButton).click();
+      await expect(page.locator(selectors.chatInput)).toBeDisabled();
+      await page.clock.fastForward(180000);
 
       // Wait for error toast
-      const errorToast = page.locator(".alert.alert-warning").first();
+      const errorToast = page.getByTestId("send-error");
       await expect(errorToast).toBeVisible({ timeout: 15000 });
 
       // Key assertion: input text must be preserved verbatim
@@ -203,7 +220,10 @@ test.describe("Stale Session Send Recovery", () => {
       // a send-failure + retry can leave two matching bubbles (optimistic
       // render plus the server echo after recovery).
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: "must not be lost" }).first()
+        page
+          .locator(selectors.userMessage)
+          .filter({ hasText: "must not be lost" })
+          .first(),
       ).toBeVisible({ timeout: timeouts.agentResponse });
     } finally {
       await cdpSession.send("Network.emulateNetworkConditions", {
@@ -268,7 +288,7 @@ test.describe("Stale Session Send Recovery", () => {
 
       // Race: which comes first — delivery error toast OR the user message bubble?
       // Both are valid outcomes depending on whether the ACK arrived in 50ms.
-      const errorToastLocator = page.locator(".alert.alert-warning").first();
+      const errorToastLocator = page.getByTestId("send-error");
       const userMsgLocator = page
         .locator(selectors.userMessage)
         .filter({ hasText: uniqueSuffix })
@@ -279,13 +299,15 @@ test.describe("Stale Session Send Recovery", () => {
         await Promise.race([
           errorToastLocator
             .waitFor({ state: "visible", timeout: 15000 })
-            .then(() => { errorToastAppeared = true; }),
+            .then(() => {
+              errorToastAppeared = true;
+            }),
           userMsgLocator.waitFor({ state: "visible", timeout: 15000 }),
         ]);
       } catch {
         // Neither appeared within 15s — this is a genuine test failure
         throw new Error(
-          "Neither error toast nor user message appeared within 15s after going offline mid-delivery"
+          "Neither error toast nor user message appeared within 15s after going offline mid-delivery",
         );
       }
 
@@ -308,10 +330,14 @@ test.describe("Stale Session Send Recovery", () => {
         expect(inputValue).toContain(uniqueSuffix.split(" ")[0]);
 
         await page.locator(selectors.sendButton).click();
-        await expect(userMsgLocator).toBeVisible({ timeout: timeouts.agentResponse });
+        await expect(userMsgLocator).toBeVisible({
+          timeout: timeouts.agentResponse,
+        });
       } else {
         // Delivery succeeded before partition — message already visible in chat
-        await expect(userMsgLocator).toBeVisible({ timeout: timeouts.agentResponse });
+        await expect(userMsgLocator).toBeVisible({
+          timeout: timeouts.agentResponse,
+        });
       }
 
       // Either way, the session must be fully functional: agent responds
@@ -326,4 +352,3 @@ test.describe("Stale Session Send Recovery", () => {
     }
   });
 });
-

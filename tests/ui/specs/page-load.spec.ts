@@ -131,7 +131,9 @@ test.describe("Initial UI Elements", () => {
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
+    await helpers.ensureActiveSession(page);
     // Look for the textarea input
     const textarea = page.locator(selectors.chatInput);
     await expect(textarea).toBeVisible({ timeout: timeouts.appReady });
@@ -141,7 +143,9 @@ test.describe("Initial UI Elements", () => {
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
+    await helpers.ensureActiveSession(page);
     // The send button (icon-only, paper plane)
     const sendButton = page.locator(selectors.sendButton);
     await expect(sendButton).toBeVisible({ timeout: timeouts.appReady });
@@ -173,15 +177,17 @@ test.describe("Responsive Behavior", () => {
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
-    // Set mobile viewport
-    await page.setViewportSize({ width: 375, height: 667 });
+    // Load and create a regular session before narrowing the sidebar.
     await page.goto("/");
 
     // Wait for app to load
     await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
       timeout: timeouts.appReady,
     });
+    await helpers.ensureActiveSession(page);
+    await page.setViewportSize({ width: 375, height: 667 });
 
     // Chat input should still be visible
     const textarea = page.locator(selectors.chatInput);
@@ -192,6 +198,7 @@ test.describe("Responsive Behavior", () => {
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
     // Set tablet viewport
     await page.setViewportSize({ width: 768, height: 1024 });
@@ -201,6 +208,7 @@ test.describe("Responsive Behavior", () => {
     await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
       timeout: timeouts.appReady,
     });
+    await helpers.ensureActiveSession(page);
 
     // Chat input should be visible
     const textarea = page.locator(selectors.chatInput);
@@ -211,6 +219,7 @@ test.describe("Responsive Behavior", () => {
     page,
     selectors,
     timeouts,
+    helpers,
   }) => {
     // Set desktop viewport
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -225,6 +234,7 @@ test.describe("Responsive Behavior", () => {
     const sessionsHeader = page.locator(selectors.sessionsHeader);
     await expect(sessionsHeader).toBeVisible({ timeout: timeouts.appReady });
 
+    await helpers.ensureActiveSession(page);
     // Chat input should be visible
     const textarea = page.locator(selectors.chatInput);
     await expect(textarea).toBeVisible({ timeout: timeouts.appReady });

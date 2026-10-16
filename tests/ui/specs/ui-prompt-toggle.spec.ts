@@ -110,7 +110,7 @@ test.describe("MCP UI options panel — stop button", () => {
     await expect(page.locator(".chat-input-container")).toBeVisible();
   });
 
-  test("loop frequency panel hides during a UI prompt and reappears after Stop", async ({
+  test("loop control bar hides during a UI prompt and reappears after Stop", async ({
     page,
     request,
     apiUrl,
@@ -141,9 +141,7 @@ test.describe("MCP UI options panel — stop button", () => {
 
     // The loop_updated broadcast flips loopConfigured=true, so the
     // LoopFrequencyPanel opens (isOpen → opacity-100; collapsed → h-0).
-    const loopPanel = page.locator(
-      '[data-testid="loop-frequency-panel"]',
-    );
+    const loopPanel = page.locator('[data-testid="loop-control-bar"]');
     await expect(loopPanel).toBeVisible({ timeout: timeouts.appReady });
 
     // Inject a synthetic ui_prompt (options) into the active session WebSocket.
@@ -185,11 +183,11 @@ test.describe("MCP UI options panel — stop button", () => {
     const panel = page.locator(".ui-prompt-panel");
     await expect(panel).toBeVisible({ timeout: 5000 });
 
-    // ...and the loop frequency panel collapses (hidden) while the UI prompt
+    // ...and the loop control bar collapses (hidden) while the UI prompt
     // is active — the two are mutually exclusive.
     await expect(loopPanel).toBeHidden({ timeout: 5000 });
 
-    // Stopping the prompt aborts it; the loop frequency panel reappears.
+    // Stopping the prompt aborts it; the loop control bar reappears.
     const stopBtn = page.locator(
       '.ui-prompt-panel button[data-tip="Stop the agent"]',
     );

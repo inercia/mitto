@@ -34,8 +34,10 @@ test.describe("Long Conversation Handling", () => {
     selectors,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Timing-sensitive: send button disabled due to session accumulation in Docker');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Timing-sensitive: send button disabled due to session accumulation in Docker",
+    );
 
     // Create a new session
     await page.locator(selectors.newSessionButton).click();
@@ -94,7 +96,6 @@ test.describe("Long Conversation Handling", () => {
     selectors,
     timeouts,
   }) => {
-
     // Create a new session
     await page.locator(selectors.newSessionButton).click();
     await expect(page.locator(selectors.chatInput)).toBeEnabled({
@@ -146,13 +147,40 @@ test.describe("Long Conversation Handling", () => {
     await expect(page.locator(selectors.chatInput)).toBeEnabled({
       timeout: timeouts.appReady,
     });
-    // Wait for messages to reappear (fallback context load may take 1-2 seconds).
+    // The initial history window contains the newest events; page back until
+    // the full pre-reload history is visible.
+    for (let pageIndex = 0; pageIndex < orderBefore.length; pageIndex++) {
+      const loadedCount = (await getMessageOrder()).length;
+      if (loadedCount >= orderBefore.length) break;
+
+      const loadEarlierButton = page.getByTestId("load-more-button");
+      await expect
+        .poll(
+          async () => {
+            const currentCount = (await getMessageOrder()).length;
+            return (
+              currentCount >= orderBefore.length ||
+              (await loadEarlierButton.isVisible())
+            );
+          },
+          { timeout: 15_000, intervals: [500, 1000, 1000, 2000] },
+        )
+        .toBe(true);
+
+      const currentCount = (await getMessageOrder()).length;
+      if (currentCount >= orderBefore.length) break;
+      await loadEarlierButton.click();
+      await expect
+        .poll(async () => (await getMessageOrder()).length, {
+          timeout: timeouts.appReady,
+        })
+        .toBeGreaterThan(currentCount);
+    }
     await expect
-      .poll(
-        async () => (await getMessageOrder()).length,
-        { timeout: 15_000, intervals: [500, 1000, 1000, 2000] },
-      )
-      .toBeGreaterThan(0);
+      .poll(async () => (await getMessageOrder()).length, {
+        timeout: timeouts.appReady,
+      })
+      .toBe(orderBefore.length);
 
     // Get message order after reload
     const orderAfter = await getMessageOrder();
@@ -180,8 +208,10 @@ test.describe("Infinite Scroll and Pagination", () => {
     selectors,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Timing-sensitive: send button disabled due to session accumulation in Docker');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Timing-sensitive: send button disabled due to session accumulation in Docker",
+    );
 
     // Create a new session
     await page.locator(selectors.newSessionButton).click();
@@ -236,7 +266,9 @@ test.describe("Infinite Scroll and Pagination", () => {
       await page.waitForTimeout(2000);
 
       // Check if more messages loaded
-      const countAfterScroll = await page.locator(selectors.userMessage).count();
+      const countAfterScroll = await page
+        .locator(selectors.userMessage)
+        .count();
       console.log(`Message count after scroll to top: ${countAfterScroll}`);
 
       // Should have loaded more messages or all messages
@@ -250,7 +282,6 @@ test.describe("Infinite Scroll and Pagination", () => {
     selectors,
     timeouts,
   }) => {
-
     // Create a new session
     await page.locator(selectors.newSessionButton).click();
     await expect(page.locator(selectors.chatInput)).toBeEnabled({
@@ -317,8 +348,10 @@ test.describe("Memory and Performance", () => {
     selectors,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Timing-sensitive: send button disabled due to session accumulation in Docker');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Timing-sensitive: send button disabled due to session accumulation in Docker",
+    );
 
     // Create a new session
     await page.locator(selectors.newSessionButton).click();
@@ -365,8 +398,10 @@ test.describe("Memory and Performance", () => {
     selectors,
     timeouts,
   }) => {
-    test.skip(!!process.env.MITTO_EXTERNAL_SERVER,
-      'Timing-sensitive: send button disabled due to session accumulation in Docker');
+    test.skip(
+      !!process.env.MITTO_EXTERNAL_SERVER,
+      "Timing-sensitive: send button disabled due to session accumulation in Docker",
+    );
 
     const testRunId = Date.now();
 
@@ -425,4 +460,3 @@ test.describe("Memory and Performance", () => {
     }
   });
 });
-

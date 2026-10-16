@@ -21,6 +21,9 @@ mkdir -p "$MITTO_DIR/sessions"
 #   - NO web.auth section (prevents keychain access on macOS)
 #   - host: 127.0.0.1 (localhost only)
 # These settings ensure tests run in isolation without external access or auth prompts.
+# Use an available localhost MCP port rather than the default 5757, which may
+# belong to a separately running Mitto instance on the developer's machine.
+MCP_PORT="$(node -e 'const net = require("node:net"); const server = net.createServer(); server.listen(0, "127.0.0.1", () => { process.stdout.write(String(server.address().port)); server.close(); });')"
 cat > "$MITTO_DIR/settings.json" << EOF
 {
   "acp_servers": [
@@ -34,7 +37,8 @@ cat > "$MITTO_DIR/settings.json" << EOF
     "port": 8089,
     "external_port": -1,
     "theme": "v2"
-  }
+  },
+  "mcp": { "host": "127.0.0.1", "port": ${MCP_PORT} }
 }
 EOF
 
@@ -61,4 +65,3 @@ echo "Created test folders at $MITTO_DIR/folders.json"
 
 # Start mitto web server
 exec ./mitto web --port 8089 --dir mock-acp:tests/fixtures/workspaces/project-alpha
-

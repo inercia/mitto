@@ -73,7 +73,10 @@ test.describe("Copy as Markdown", () => {
       .locator(selectors.userMessage)
       .filter({ hasText: msg })
       .first();
-    const copyBtn = bubble.locator(selectors.copyMessageMarkdown);
+    const messageRow = bubble.locator(
+      'xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " mitto-msg-row ")][1]',
+    );
+    const copyBtn = messageRow.locator(selectors.copyMessageMarkdown);
 
     // The button is opacity-0 until its message group is hovered.
     await page.mouse.move(0, 0);
@@ -82,13 +85,15 @@ test.describe("Copy as Markdown", () => {
     expect(await opacity()).toBeLessThan(0.5);
 
     await bubble.hover();
-    await expect.poll(opacity, { timeout: timeouts.shortAction }).toBeGreaterThan(0.9);
+    await expect
+      .poll(opacity, { timeout: timeouts.shortAction })
+      .toBeGreaterThan(0.9);
 
     await copyBtn.click();
 
     // UI confirmation: the daisyUI tooltip wrapper flips its data-tip to
     // "Copied!" (and force-opens) for ~1.5s.
-    const userCopyTip = bubble.locator(
+    const userCopyTip = messageRow.locator(
       '.tooltip:has([data-testid="copy-message-markdown"])',
     );
     await expect(userCopyTip).toHaveAttribute("data-tip", "Copied!", {
@@ -109,12 +114,15 @@ test.describe("Copy as Markdown", () => {
 
     const bubble = page.locator(selectors.agentMessage).last();
     await expect(bubble).toBeVisible({ timeout: timeouts.agentResponse });
-    const copyBtn = bubble.locator(selectors.copyMessageMarkdown);
+    const messageRow = bubble.locator(
+      'xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " mitto-msg-row ")][1]',
+    );
+    const copyBtn = messageRow.locator(selectors.copyMessageMarkdown);
 
     await bubble.hover();
     await copyBtn.click();
 
-    const agentCopyTip = bubble.locator(
+    const agentCopyTip = messageRow.locator(
       '.tooltip:has([data-testid="copy-message-markdown"])',
     );
     await expect(agentCopyTip).toHaveAttribute("data-tip", "Copied!", {
@@ -156,9 +164,11 @@ test.describe("Copy as Markdown", () => {
     await page.locator(selectors.headerCopyConversationMd).click();
 
     // Success toast appears and no context menu is left open.
-    await expect(page.getByText("Conversation copied as Markdown")).toBeVisible({
-      timeout: timeouts.appReady,
-    });
+    await expect(page.getByText("Conversation copied as Markdown")).toBeVisible(
+      {
+        timeout: timeouts.appReady,
+      },
+    );
     await expect(page.locator(selectors.contextMenu)).toHaveCount(0);
 
     // The whole-conversation copy includes role headers, the user message, and
@@ -179,7 +189,10 @@ test.describe("Copy as Markdown", () => {
     helpers,
     timeouts,
   }) => {
-    await helpers.sendMessageAndWait(page, helpers.uniqueMessage("Name/ID copy"));
+    await helpers.sendMessageAndWait(
+      page,
+      helpers.uniqueMessage("Name/ID copy"),
+    );
 
     await page.locator(selectors.headerCopyMarkdown).click();
     await expect(page.locator(selectors.headerCopyMenu)).toBeVisible({

@@ -29,11 +29,15 @@ const __dirname = path.dirname(__filename);
  */
 
 const projectRoot = path.resolve(__dirname, "../../..");
-const WORKSPACE = path.join(projectRoot, "tests/fixtures/workspaces/empty-project");
+const WORKSPACE = path.join(
+  projectRoot,
+  "tests/fixtures/workspaces/empty-project",
+);
 const PROMPTS_DIR = path.join(WORKSPACE, ".mitto/prompts");
 const PROMPT_NAME = "Round-Trip Edge Cases";
 const PROMPT_FILENAME = "round-trip-edge-cases.prompt.yaml";
-const PROMPT_DESCRIPTION = 'Edge-case body: "quotes", `backticks`, colons: yes.';
+const PROMPT_DESCRIPTION =
+  'Edge-case body: "quotes", `backticks`, colons: yes.';
 
 // Every YAML-hostile construct the round-trip must survive intact:
 //   - backticks, single + double quotes, colons (YAML-significant), backslashes
@@ -41,17 +45,18 @@ const PROMPT_DESCRIPTION = 'Edge-case body: "quotes", `backticks`, colons: yes.'
 //   - blank lines mid-body
 //   - trailing whitespace + newlines (buildFileContent strips these — the
 //     round-trip is byte-for-byte against the *stripped* input).
-const PROMPT_BODY_RAW = [
-  "Line with `backticks` and \"double\" and 'single' quotes.",
-  "Colon in text: value: another.",
-  "Backslash: C:\\path\\to\\file and escape \\n literal.",
-  "Unicode → em-dash — and arrow.",
-  "",
-  "After blank line.",
-  "  Indented line with trailing spaces.   ",
-  "",
-  "",
-].join("\n") + "   \n\n";
+const PROMPT_BODY_RAW =
+  [
+    "Line with `backticks` and \"double\" and 'single' quotes.",
+    "Colon in text: value: another.",
+    "Backslash: C:\\path\\to\\file and escape \\n literal.",
+    "Unicode → em-dash — and arrow.",
+    "",
+    "After blank line.",
+    "  Indented line with trailing spaces.   ",
+    "",
+    "",
+  ].join("\n") + "   \n\n";
 
 const PROMPT_BODY_EXPECTED = PROMPT_BODY_RAW.replace(/\s+$/, "");
 
@@ -61,6 +66,8 @@ const PROMPT_BODY_EXPECTED = PROMPT_BODY_RAW.replace(/\s+$/, "");
  * is stale — see upload-zero-byte.spec.ts). Also stubs window.mittoPickFolder
  * so isNativeApp() returns true and the Save Prompt trigger renders.
  */
+const createdSessionIds: string[] = [];
+
 async function bootWithSession(
   page: Page,
   request: APIRequestContext,
@@ -71,6 +78,7 @@ async function bootWithSession(
   });
   expect(resp.ok(), `POST /api/sessions failed: ${resp.status()}`).toBe(true);
   const id: string = (await resp.json()).session_id;
+  createdSessionIds.push(id);
 
   await page.addInitScript((sid) => {
     localStorage.setItem("mitto_last_session_id", sid);
@@ -112,6 +120,11 @@ test.describe("SavePromptDialog round-trip (mitto-rxr)", () => {
   });
 
   test.afterEach(async ({ request, apiUrl }) => {
+    // Remove sessions so empty-project does not linger in the sidebar and
+    // make folder-scoped controls ambiguous for later specs.
+    for (const id of createdSessionIds.splice(0)) {
+      await request.delete(apiUrl(`/api/sessions/${id}`)).catch(() => {});
+    }
     // Delete via API first (idempotent — 404 is fine if the test failed early),
     // then rm the directory to leave the fixture as we found it (.gitkeep only).
     await request
@@ -151,11 +164,15 @@ test.describe("SavePromptDialog round-trip (mitto-rxr)", () => {
     // Fill Name / Description; override Save-to directory to point into the
     // fixture workspace's .mitto/prompts/ (default resolves to workingDir which
     // for the mount-active session may not equal the fixture path).
-    await page.locator('[data-testid="save-prompt-name-input"]').fill(PROMPT_NAME);
+    await page
+      .locator('[data-testid="save-prompt-name-input"]')
+      .fill(PROMPT_NAME);
     await page
       .locator('[data-testid="save-prompt-description-input"]')
       .fill(PROMPT_DESCRIPTION);
-    const dirInput = page.locator('[data-testid="save-prompt-directory-input"]');
+    const dirInput = page.locator(
+      '[data-testid="save-prompt-directory-input"]',
+    );
     await dirInput.fill(PROMPTS_DIR);
 
     await page.locator('[data-testid="save-prompt-save-btn"]').click();
@@ -173,14 +190,22 @@ test.describe("SavePromptDialog round-trip (mitto-rxr)", () => {
     // is not parseable by internal/prompts.ParsePromptFile, it will not appear
     // in the response.
     const resp = await request.get(
-      apiUrl(`/api/workspace-prompts?working_dir=${encodeURIComponent(WORKSPACE)}`),
+      apiUrl(
+        `/api/workspace-prompts?working_dir=${encodeURIComponent(WORKSPACE)}`,
+      ),
     );
     expect(resp.ok()).toBeTruthy();
     const body = await resp.json();
-    const prompts: Array<{ name: string; description?: string; prompt?: string }> =
-      body.prompts || [];
+    const prompts: Array<{
+      name: string;
+      description?: string;
+      prompt?: string;
+    }> = body.prompts || [];
     const found = prompts.find((p) => p.name === PROMPT_NAME);
-    expect(found, `prompt "${PROMPT_NAME}" must round-trip through the backend loader`).toBeDefined();
+    expect(
+      found,
+      `prompt "${PROMPT_NAME}" must round-trip through the backend loader`,
+    ).toBeDefined();
     expect(found!.description).toBe(PROMPT_DESCRIPTION);
     expect(found!.prompt).toBe(PROMPT_BODY_EXPECTED);
   });

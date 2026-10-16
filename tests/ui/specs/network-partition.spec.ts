@@ -16,7 +16,7 @@ import { test, expect } from "../fixtures/test-fixtures";
 test.describe("Network Partition Recovery", () => {
   test.skip(
     ({ browserName }) => browserName !== "chromium",
-    "CDP (newCDPSession) is only available in Chromium"
+    "CDP (newCDPSession) is only available in Chromium",
   );
   test.setTimeout(90000);
 
@@ -29,12 +29,12 @@ test.describe("Network Partition Recovery", () => {
    *
    * Flow:
    * 1. Create fresh session, send baseline message
-   * 2. Monitor console logs for keepalive messages
+   * 2. Observe keepalive traffic on the session WebSocket
    * 3. Go offline via CDP
-   * 4. Wait 25s (2 missed keepalives at 10s each → forced reconnect)
+   * 4. Verify keepalives go unacknowledged long enough to trigger recovery
    * 5. Restore network
    * 6. Verify app recovers (input enabled, can send/receive again)
-   * 7. Assert keepalive zombie detection was logged
+   * 7. Verify a replacement session socket and successful recovery
    */
   test("should detect zombie connection and recover after network partition", async ({
     page,
@@ -42,6 +42,43 @@ test.describe("Network Partition Recovery", () => {
     selectors,
     timeouts,
   }) => {
+    const sessionSockets: Array<{ url: string; closed: boolean }> = [];
+    const keepaliveFrames: Array<{
+      direction: "framesent" | "framereceived";
+      url: string;
+      payload: { type: string; data?: unknown };
+    }> = [];
+    page.on("websocket", (socket) => {
+      const observed = { url: socket.url(), closed: false };
+      sessionSockets.push(observed);
+      socket.on("close", () => {
+        observed.closed = true;
+      });
+      for (const direction of ["framesent", "framereceived"] as const) {
+        socket.on(direction, (event) => {
+          const raw =
+            typeof event.payload === "string"
+              ? event.payload
+              : event.payload.toString();
+          try {
+            const message = JSON.parse(raw) as { type: string; data?: unknown };
+            if (
+              message.type === "keepalive" ||
+              message.type === "keepalive_ack"
+            ) {
+              keepaliveFrames.push({
+                direction,
+                url: socket.url(),
+                payload: message,
+              });
+            }
+          } catch {
+            // Ignore non-JSON frames.
+          }
+        });
+      }
+    });
+
     const sessionId = await helpers.createFreshSession(page);
     await helpers.waitForWebSocketReady(page);
 
@@ -49,21 +86,14 @@ test.describe("Network Partition Recovery", () => {
     const initialMessage = helpers.uniqueMessage("Baseline message");
     await helpers.sendMessageAndWait(page, initialMessage);
 
-    // Start monitoring console logs BEFORE the network partition
-    const consoleLogs: string[] = [];
-    page.on("console", (msg) => {
-      const text = msg.text();
-      if (
-        text.includes("Keepalive") ||
-        text.includes("keepalive") ||
-        text.includes("missed") ||
-        text.includes("forcing reconnect") ||
-        text.includes("force reconnect") ||
-        text.includes("zombie")
-      ) {
-        consoleLogs.push(text);
-      }
-    });
+    const sessionSocketPath = `/api/sessions/${encodeURIComponent(sessionId)}/ws`;
+    const matchingSessionSockets = () =>
+      sessionSockets.filter((socket) => socket.url.includes(sessionSocketPath));
+    const matchingKeepaliveFrames = () =>
+      keepaliveFrames.filter(({ url }) => url.includes(sessionSocketPath));
+    const socketsBeforePartition = matchingSessionSockets().length;
+    expect(socketsBeforePartition).toBeGreaterThan(0);
+    const framesBeforePartition = matchingKeepaliveFrames().length;
 
     // Get CDP session for network emulation
     const cdpSession = await page.context().newCDPSession(page);
@@ -77,9 +107,31 @@ test.describe("Network Partition Recovery", () => {
         latency: 0,
       });
 
-      // Wait for 2 missed keepalives to accumulate and trigger forced reconnect
-      // Keepalive interval: 10s, max missed: 2 → ~20-25s total
-      await page.waitForTimeout(25000);
+      // The first keepalive may be nearly 10s away; allow two unacknowledged
+      // probes and the following missed-ack interval while CDP remains offline.
+      const sentKeepaliveCount = () =>
+        matchingKeepaliveFrames()
+          .slice(framesBeforePartition)
+          .filter(
+            ({ direction, payload }) =>
+              direction === "framesent" && payload.type === "keepalive",
+          ).length;
+      await expect
+        .poll(sentKeepaliveCount, {
+          timeout: 25_000,
+          intervals: [1000, 2000, 3000],
+        })
+        .toBeGreaterThanOrEqual(2);
+      await page.waitForTimeout(11_000);
+      const partitionFrames = matchingKeepaliveFrames().slice(
+        framesBeforePartition,
+      );
+      expect(
+        partitionFrames.filter(
+          ({ direction, payload }) =>
+            direction === "framereceived" && payload.type === "keepalive_ack",
+        ),
+      ).toHaveLength(0);
 
       // Restore network connectivity
       await cdpSession.send("Network.emulateNetworkConditions", {
@@ -89,10 +141,26 @@ test.describe("Network Partition Recovery", () => {
         latency: 0,
       });
 
+      // Once network traffic can complete the close handshake, the zombie
+      // stream must close and open a replacement connection.
+      await expect
+        .poll(() => matchingSessionSockets().some((socket) => socket.closed), {
+          timeout: timeouts.agentResponse,
+        })
+        .toBe(true);
       // App should recover: chat input becomes enabled again
       await expect(page.locator(selectors.chatInput)).toBeEnabled({
         timeout: timeouts.appReady,
       });
+      await expect
+        .poll(() => matchingSessionSockets().length, {
+          timeout: timeouts.agentResponse,
+        })
+        .toBeGreaterThan(socketsBeforePartition);
+      await helpers.waitForWebSocketReady(page);
+      expect(matchingSessionSockets().some((socket) => !socket.closed)).toBe(
+        true,
+      );
 
       // Send another message to confirm the connection is fully functional
       const recoveryMessage = helpers.uniqueMessage("Recovery message");
@@ -101,27 +169,16 @@ test.describe("Network Partition Recovery", () => {
 
       // Recovery message should appear in chat
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: recoveryMessage }),
+        page
+          .locator(selectors.userMessage)
+          .filter({ hasText: recoveryMessage }),
       ).toBeVisible({ timeout: timeouts.agentResponse });
 
       // Agent should respond (confirms full round-trip is working)
       await helpers.waitForAgentResponse(page);
 
-      // Key assertion: keepalive zombie detection must have been logged
-      const hasKeepaliveDetection = consoleLogs.some(
-        (log) =>
-          log.includes("Keepalive missed") ||
-          log.includes("Too many missed keepalives") ||
-          log.includes("forcing reconnect"),
-      );
-
-      expect(
-        hasKeepaliveDetection,
-        `Expected keepalive zombie detection logs. Got:\n${consoleLogs.join("\n")}`,
-      ).toBe(true);
-
-      // Suppress unused variable warning — sessionId used implicitly by helpers
-      void sessionId;
+      // The session stream closed during the partition and opened a replacement
+      // socket before the recovery prompt completed.
     } finally {
       // Always restore network conditions to avoid affecting subsequent tests
       await cdpSession.send("Network.emulateNetworkConditions", {
@@ -132,7 +189,6 @@ test.describe("Network Partition Recovery", () => {
       });
     }
   });
-
 
   /**
    * Test 2: Verify missed events are synced after network partition during streaming.
@@ -220,7 +276,9 @@ test.describe("Network Partition Recovery", () => {
         page.locator(selectors.userMessage).filter({ hasText: initialMessage }),
       ).toBeVisible({ timeout: timeouts.agentResponse });
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: streamingMessage }),
+        page
+          .locator(selectors.userMessage)
+          .filter({ hasText: streamingMessage }),
       ).toBeVisible({ timeout: timeouts.agentResponse });
 
       // Key assertion 2: Agent responses are visible — the streaming response
@@ -237,10 +295,14 @@ test.describe("Network Partition Recovery", () => {
       expect(fatalErrorCount).toBe(0);
 
       // Key assertion 4: App is functional — can send a follow-up message
-      const followUpMessage = helpers.uniqueMessage("Follow-up after partition");
+      const followUpMessage = helpers.uniqueMessage(
+        "Follow-up after partition",
+      );
       await helpers.sendMessageAndWait(page, followUpMessage);
       await expect(
-        page.locator(selectors.userMessage).filter({ hasText: followUpMessage }),
+        page
+          .locator(selectors.userMessage)
+          .filter({ hasText: followUpMessage }),
       ).toBeVisible();
     } finally {
       // Always restore network conditions
@@ -253,4 +315,3 @@ test.describe("Network Partition Recovery", () => {
     }
   });
 });
-

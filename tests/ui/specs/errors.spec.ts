@@ -9,7 +9,7 @@ import { test, expect } from "../fixtures/test-fixtures";
 
 test.describe("Error Handling", () => {
   test.beforeEach(async ({ page, helpers }) => {
-    await helpers.navigateAndWait(page);
+    await helpers.navigateAndEnsureSession(page);
   });
 
   test("should handle empty message submission gracefully", async ({
@@ -74,7 +74,7 @@ test.describe("Error Handling", () => {
 
 test.describe("UI Resilience", () => {
   test.beforeEach(async ({ page, helpers }) => {
-    await helpers.navigateAndWait(page);
+    await helpers.navigateAndEnsureSession(page);
   });
 
   test("should handle viewport resize", async ({
@@ -115,6 +115,9 @@ test.describe("UI Resilience", () => {
     for (let i = 0; i < 3; i++) {
       await page.reload();
       await expect(page.locator(selectors.loadingSpinner)).toBeHidden({
+        timeout: timeouts.appReady,
+      });
+      await expect(page.locator(selectors.chatInput)).toBeEnabled({
         timeout: timeouts.appReady,
       });
     }
