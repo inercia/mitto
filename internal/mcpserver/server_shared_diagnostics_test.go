@@ -256,8 +256,10 @@ func TestSharedDiagnosticsCorrelateConcurrentSDKCallsPerRequest(t *testing.T) {
 	}
 	for range calls {
 		got := <-results
-		if got.err == nil && (got.result == nil || !got.result.IsError) {
-			t.Errorf("%s unexpectedly succeeded: result=%#v err=%v", got.tool, got.result, got.err)
+		if got.err != nil {
+			t.Errorf("%s transport failed instead of returning a tool rejection: %v", got.tool, got.err)
+		} else if got.result == nil || !got.result.IsError {
+			t.Errorf("%s unexpectedly succeeded: result=%#v", got.tool, got.result)
 		}
 	}
 
@@ -296,6 +298,7 @@ func TestSharedDiagnosticsCorrelateConcurrentSDKCallsPerRequest(t *testing.T) {
 		"mitto_ui_notify":  {state: "string", reason: "caller_unresolved"},
 	}
 	seen := make(map[string]bool)
+	seenRequestIDs := make(map[string]bool)
 	for _, warning := range warnings {
 		tool, _ := warning["tool_name"].(string)
 		wantFields, ok := want[tool]
@@ -313,6 +316,10 @@ func TestSharedDiagnosticsCorrelateConcurrentSDKCallsPerRequest(t *testing.T) {
 		if !isMCPDiagnosticRequestID(requestID) || requestID == "spoofed" {
 			t.Errorf("warning has invalid/missing server request ID: %#v", warning)
 		}
+		if seenRequestIDs[requestID] {
+			t.Errorf("different tool calls share diagnostic request ID %q", requestID)
+		}
+		seenRequestIDs[requestID] = true
 		received, completed := false, false
 		for _, record := range records {
 			if record["mcp_req_id"] != requestID || record["rpc_method"] != "tools/call" {
