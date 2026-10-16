@@ -908,6 +908,14 @@ func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		// Carry this request's correlation ID through the SDK's per-call
+		// RequestExtra headers. Streamable HTTP reuses a session context across
+		// calls, so a context value here could incorrectly identify a later call
+		// with the initialize request's ID.
+		r = r.Clone(r.Context())
+		r.Header = r.Header.Clone()
+		r.Header.Set(mcpDiagnosticRequestIDHeader, reqID)
+
 		// Peek the JSON-RPC method/id from the body without consuming it.
 		var rpcMethod, rpcID string
 		var bodyLen int
@@ -1744,10 +1752,19 @@ func (s *Server) resolveSharedCaller(req *mcp.CallToolRequest, inputSessionID st
 func (s *Server) resolveSharedCallerContext(ctx context.Context, req *mcp.CallToolRequest, inputSessionID string) string {
 	var acpID string
 	hasMeta := false
+	metaState := "absent"
 	if req.Params != nil {
 		if v, ok := req.Params.Meta[OpenCodeCallerMetaKey]; ok {
 			hasMeta = true
-			acpID, _ = v.(string)
+			var isString bool
+			acpID, isString = v.(string)
+			if !isString {
+				metaState = "wrong_type"
+			} else if acpID == "" {
+				metaState = "empty_string"
+			} else {
+				metaState = "string"
+			}
 		}
 	}
 	owner := ""
@@ -1757,13 +1774,25 @@ func (s *Server) resolveSharedCallerContext(ctx context.Context, req *mcp.CallTo
 			owner = s.waitForACPChild(ctx, acpID)
 		}
 	}
-	if owner == "" || s.getSession(owner) == nil {
-		s.logger.Warn("Shared MCP caller identity unavailable", "has_caller_meta", hasMeta)
+	if owner == "" {
+		reason := "caller_unresolved"
+		switch metaState {
+		case "absent":
+			reason = "caller_meta_absent"
+		case "wrong_type":
+			reason = "caller_meta_wrong_type"
+		case "empty_string":
+			reason = "caller_meta_empty"
+		}
+		s.logger.Warn("Shared MCP caller identity unavailable", sharedCallerDiagnosticAttrs(req, hasMeta, metaState, reason)...)
+		return ""
+	}
+	if s.getSession(owner) == nil {
+		s.logger.Warn("Shared MCP caller identity unavailable", sharedCallerDiagnosticAttrs(req, hasMeta, metaState, "owner_unregistered")...)
 		return ""
 	}
 	if inputSessionID != "" && inputSessionID != owner && s.getSession(inputSessionID) != nil {
-		s.logger.Warn("Shared MCP self_id mismatch rejected",
-			"attested_session_id", owner, "claimed_session_id", inputSessionID)
+		s.logger.Warn("Shared MCP self_id mismatch rejected", sharedCallerDiagnosticAttrs(req, hasMeta, metaState, "self_id_mismatch")...)
 		return ""
 	}
 	return owner
