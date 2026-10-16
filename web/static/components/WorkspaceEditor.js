@@ -400,10 +400,10 @@ export function WorkspaceEditor({
                           );
                     return html`<div
                       key=${`${editAcpServer}-${index}`}
-                      class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2"
+                      class="flex items-center gap-2"
                     >
                       <select
-                        class="select select-sm w-full"
+                        class="select select-sm flex-1 min-w-0"
                         aria-label=${`Capability tag for override ${index + 1}`}
                         data-testid=${`ws-model-override-tag-${index}`}
                         value=${override.tag || ""}
@@ -431,7 +431,7 @@ export function WorkspaceEditor({
                         )}
                       </select>
                       <select
-                        class="select select-sm w-full"
+                        class="select select-sm flex-1 min-w-0"
                         aria-label=${`Model for override ${index + 1}`}
                         data-testid=${`ws-model-override-model-${index}`}
                         value=${override.model_id || ""}
@@ -462,7 +462,7 @@ export function WorkspaceEditor({
                       </select>
                       <button
                         type="button"
-                        class="btn btn-ghost btn-square btn-sm"
+                        class="btn btn-ghost btn-square btn-sm shrink-0"
                         aria-label=${`Remove model override ${index + 1}`}
                         data-testid=${`ws-model-override-remove-${index}`}
                         onClick=${() =>
