@@ -136,7 +136,7 @@ func (p *configSettingFakeProcess) SetSessionConfigOption(_ context.Context, ses
 
 func newConfigSetterSession(t *testing.T, p *configSettingFakeProcess) (*Connection, agentbackend.SessionRef) {
 	t.Helper()
-	p.fakeSharedProcess.newSessionHandle = &conversation.SessionHandle{SessionID: "upstream-1"}
+	p.newSessionHandle = &conversation.SessionHandle{SessionID: "upstream-1"}
 	c := NewConnection(p, "acp", "/work", nil)
 	sess, err := c.NewSession(context.Background(), "acp")
 	if err != nil {

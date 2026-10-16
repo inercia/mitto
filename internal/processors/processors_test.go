@@ -8438,29 +8438,3 @@ func TestFlushPendingDispatches_LateDeliveryFuncNotCalledWhenNothingDelivered(t 
 // mitto-telc: beads-prime index-only injection + extract/curate memory
 // commands and curation policy rework.
 // ---------------------------------------------------------------------------
-
-// loadBuiltinProcessorForTest reads the named embedded builtin processor YAML,
-// loads it via the real Loader (full validation path, same as
-// TestBuiltinProcessorsValidity), and returns the single resulting
-// *Processor. Fails the test if the file can't be read/loaded or doesn't
-// yield exactly one processor.
-func loadBuiltinProcessorForTest(t *testing.T, name string) *Processor {
-	t.Helper()
-	srcPath := rootconfig.BuiltinProcessorsDir + "/" + name + ".yaml"
-	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, name+".yaml"), content, 0644); err != nil {
-		t.Fatalf("WriteFile error = %v", err)
-	}
-	procs, err := NewLoader(dir, nil).Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if len(procs) != 1 {
-		t.Fatalf("expected exactly 1 processor from %s.yaml, got %d", name, len(procs))
-	}
-	return procs[0]
-}

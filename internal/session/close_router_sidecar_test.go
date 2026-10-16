@@ -156,7 +156,7 @@ func TestCloseRouterLogicalKey_StableAndNormalized(t *testing.T) {
 
 func TestCloseRouterSnapshotHash_Deterministic(t *testing.T) {
 	snap := []byte(`{"events":[{"role":"user","text":"hi"}]}`)
-	if CloseRouterSnapshotHash(snap) != CloseRouterSnapshotHash(snap) {
+	if CloseRouterSnapshotHash(snap) != CloseRouterSnapshotHash(append([]byte(nil), snap...)) {
 		t.Errorf("SnapshotHash not deterministic for identical input")
 	}
 	if CloseRouterSnapshotHash(snap) == CloseRouterSnapshotHash([]byte(`{"events":[]}`)) {
