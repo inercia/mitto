@@ -12,6 +12,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
@@ -940,6 +941,64 @@ func TestBuildNewSettings_PreservesAuxiliaryModelTag(t *testing.T) {
 	}
 	if settings.Conversations == nil || settings.Conversations.AuxiliaryModelTag != "Smart" {
 		t.Fatalf("Conversations = %+v, want AuxiliaryModelTag=Smart", settings.Conversations)
+	}
+}
+
+func TestBuildNewSettings_AuthDisabledCredentialCleanup(t *testing.T) {
+	const storedPassword = "external-access-secret"
+
+	tests := []struct {
+		name           string
+		existingConfig string
+		wantSecretKept bool
+	}{
+		{
+			name:           "keeps secret when auth was already disabled",
+			existingConfig: `{"web":{"auth":null}}`,
+			wantSecretKept: true,
+		},
+		{
+			name:           "deletes secret when disabling existing simple auth",
+			existingConfig: `{"web":{"auth":{"simple":{"username":"user","password":"password"}}}}`,
+			wantSecretKept: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restoreStore := secrets.SetStoreForTest(secrets.NewFakeStore())
+			t.Cleanup(restoreStore)
+
+			if err := secrets.SetExternalAccessPassword(storedPassword); err != nil {
+				t.Fatalf("seed external access password: %v", err)
+			}
+
+			var existingConfig config.Config
+			if err := json.Unmarshal([]byte(tt.existingConfig), &existingConfig); err != nil {
+				t.Fatalf("unmarshal existing config: %v", err)
+			}
+			var req ConfigSaveRequest
+			if err := json.Unmarshal([]byte(`{"web":{"auth":null}}`), &req); err != nil {
+				t.Fatalf("unmarshal save request: %v", err)
+			}
+
+			server := &Server{config: Config{MittoConfig: &existingConfig}}
+			if _, err := server.buildNewSettings(&req); err != nil {
+				t.Fatalf("buildNewSettings: %v", err)
+			}
+
+			got, err := secrets.GetExternalAccessPassword()
+			if tt.wantSecretKept {
+				if err != nil {
+					t.Fatalf("GetExternalAccessPassword returned error: %v", err)
+				}
+				if got != storedPassword {
+					t.Fatalf("stored password = %q, want %q", got, storedPassword)
+				}
+			} else if err == nil {
+				t.Fatalf("external access password %q was not deleted", got)
+			}
+		})
 	}
 }
 

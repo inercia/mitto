@@ -120,7 +120,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			Type:                srv.Type,                 // Optional type for prompt matching
 			Env:                 srv.Env,                  // Environment variables
 			Source:              configPkg.SourceSettings, // Mark as settings-sourced
-			AutoApprove:         srv.AutoApprove,          // Auto-approve permission requests
+			AutoApprove:         srv.AutoApprove,          //nolint:staticcheck // preserve the legacy config-save API field
 			Tags:                srv.Tags,                 // Categorization tags
 			InitialModelProfile: srv.InitialModelProfile,  // Initial baseline model profile (mitto-fqj)
 			InitialModelTag:     srv.InitialModelTag,      // Initial baseline model capability tag
@@ -212,8 +212,8 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 					Username: req.Web.Auth.Simple.Username,
 					Password: password, // Empty when stored in Keychain
 				}
-			} else if secrets.IsSupported() {
-				// Clean up stored password when simple auth is disabled
+			} else if secrets.IsSupported() && s.hasExistingSimpleAuth() {
+				// Clean up the stored password when disabling configured simple auth.
 				_ = secrets.DeleteExternalAccessPassword()
 			}
 
@@ -237,7 +237,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		} else {
 			newWebConfig.Auth = nil
 			// Clean up any stored password when auth is disabled
-			if secrets.IsSupported() {
+			if secrets.IsSupported() && s.hasExistingSimpleAuth() {
 				_ = secrets.DeleteExternalAccessPassword() // Ignore errors
 			}
 		}
