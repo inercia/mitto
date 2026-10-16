@@ -247,7 +247,7 @@ func GetEffectiveAutoApprove(cmd *cobra.Command) bool {
 	}
 	// Otherwise, use the config setting (defaults to true if not set)
 	if cfg != nil && cfg.Permissions != nil {
-		return cfg.Permissions.IsAutoApprove()
+		return cfg.Permissions.EffectiveMode() == config.PermissionModeAllow
 	}
 	// Default: true (until permission UI is implemented)
 	return true

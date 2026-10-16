@@ -170,7 +170,7 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		if srv, err := s.config.MittoConfig.GetServer(meta.ACPServer); err == nil {
 			ctx.ACP.Type = srv.GetType()
 			ctx.ACP.Tags = srv.Tags
-			ctx.ACP.AutoApprove = srv.AutoApprove
+			ctx.ACP.AutoApprove = srv.EffectivePermissionMode(s.config.MittoConfig.Permissions.EffectiveMode()) == config.PermissionModeAllow
 		}
 	}
 	// ACP.Available: list of ACP servers with workspaces for this folder.
@@ -435,7 +435,7 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 		if srv, err := s.config.MittoConfig.GetServer(acpServerName); err == nil {
 			ctx.ACP.Type = srv.GetType()
 			ctx.ACP.Tags = srv.Tags
-			ctx.ACP.AutoApprove = srv.AutoApprove
+			ctx.ACP.AutoApprove = srv.EffectivePermissionMode(s.config.MittoConfig.Permissions.EffectiveMode()) == config.PermissionModeAllow
 		}
 	}
 	if ctx.ACP.Type == "" {

@@ -213,6 +213,21 @@ type ACPServer struct {
 	ContextFlushCommand string
 }
 
+// EffectivePermissionMode resolves the ACP server permission mode against its
+// legacy setting and then the global fallback. The legacy field is retained
+// for settings.json compatibility until existing configurations are migrated.
+func (s *ACPServer) EffectivePermissionMode(global PermissionMode) PermissionMode {
+	if s == nil {
+		return global
+	}
+	legacyMode := MigrateLegacyAutoApprove(&s.AutoApprove, false) //nolint:staticcheck // required to preserve legacy settings until migration completes
+	mode := s.Permissions.EffectiveMode(legacyMode)
+	if mode == PermissionModeUnset {
+		return global
+	}
+	return mode
+}
+
 // GetType returns the type identifier for prompt matching.
 // If Type is not set, returns the Name as the type.
 func (s *ACPServer) GetType() string {

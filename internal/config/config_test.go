@@ -2533,6 +2533,32 @@ func TestPermissionsConfig_EffectiveMode(t *testing.T) {
 	}
 }
 
+func TestACPServer_EffectivePermissionMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		server *ACPServer
+		global PermissionMode
+		want   PermissionMode
+	}{
+		{name: "nil server uses global mode", server: nil, global: PermissionModeAsk, want: PermissionModeAsk},
+		{name: "unset server mode inherits global", server: &ACPServer{}, global: PermissionModeAllow, want: PermissionModeAllow},
+		{
+			name:   "server mode overrides global",
+			server: &ACPServer{Permissions: &PermissionSettings{Mode: PermissionModeSystemOne}},
+			global: PermissionModeAllow,
+			want:   PermissionModeSystemOne,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.server.EffectivePermissionMode(tt.global); got != tt.want {
+				t.Errorf("EffectivePermissionMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
 	tests := []struct {
 		name     string
