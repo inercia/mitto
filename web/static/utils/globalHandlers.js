@@ -24,6 +24,9 @@ import {
 // Backward compatibility is maintained for old file:// and /api/files? links
 // from session recordings.
 document.addEventListener("click", (e) => {
+  // Component handlers may deliberately handle links before this fallback.
+  if (e.defaultPrevented) return;
+
   // Find the closest anchor element (handles clicks on nested elements inside links)
   const link = e.target.closest("a");
   if (!link) return;
@@ -70,7 +73,10 @@ document.addEventListener("click", (e) => {
           // that need URL escaping produce a valid file:// URL for the
           // native opener.
           const encoded = absolute.split("/").map(encodeURIComponent).join("/");
-          console.log("[Mitto] Non-viewable file — opening in system app:", absolute);
+          console.log(
+            "[Mitto] Non-viewable file — opening in system app:",
+            absolute,
+          );
           openFileURL("file://" + encoded);
           return;
         }
@@ -87,7 +93,10 @@ document.addEventListener("click", (e) => {
         }
       }
     } catch (err) {
-      console.warn("[Mitto] Failed to inspect viewer URL for non-viewable check:", err);
+      console.warn(
+        "[Mitto] Failed to inspect viewer URL for non-viewable check:",
+        err,
+      );
     }
 
     if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
