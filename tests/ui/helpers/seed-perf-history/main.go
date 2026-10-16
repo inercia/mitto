@@ -35,7 +35,11 @@ import (
 // medium/max) to the seeded session ID, for the spec to read.
 
 type historySnapshot struct {
-	Name     string `json:"name"`
+	Name   string `json:"name"`
+	Events []struct {
+		Type string         `json:"type"`
+		Data map[string]any `json:"data"`
+	} `json:"events"`
 	Messages []struct {
 		Role string `json:"role"` // "user" | "agent"
 		Text string `json:"text"`
@@ -101,6 +105,12 @@ func main() {
 			log.Fatalf("Failed to create session for %s: %v", snap.Name, err)
 		}
 
+		for _, rawEvent := range snap.Events {
+			evt := session.Event{Type: session.EventType(rawEvent.Type), Data: rawEvent.Data}
+			if err := store.AppendEvent(sessionID, evt); err != nil {
+				log.Fatalf("Failed to append event for %s: %v", snap.Name, err)
+			}
+		}
 		for _, m := range snap.Messages {
 			var evt session.Event
 			switch m.Role {
@@ -115,7 +125,7 @@ func main() {
 		}
 
 		sessionIDs[snap.Name] = sessionID
-		fmt.Printf("Seeded %s history: %d messages (session %s)\n", snap.Name, len(snap.Messages), sessionID)
+		fmt.Printf("Seeded %s history: %d raw events (session %s)\n", snap.Name, len(snap.Events)+len(snap.Messages), sessionID)
 	}
 
 	outPath := filepath.Join(mittoDir, "perf-history-sessions.json")

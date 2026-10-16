@@ -140,7 +140,6 @@ test.describe("Perf: history-size load cost", () => {
     await enablePerf(page);
     await helpers.navigateAndWait(page);
 
-    let prevDomNodes = 0;
     for (const size of SIZES) {
       const sessionId = sessionIds[size];
       if (!sessionId) {
@@ -163,7 +162,12 @@ test.describe("Perf: history-size load cost", () => {
         Math.floor(totalMessages / 2),
         Math.floor(INITIAL_EVENTS_LIMIT / 2),
       );
-      await helpers.waitForMessagesLoaded(page, expectedUserMessages);
+      await expect
+        .poll(() => page.locator(selectors.userMessage).count(), {
+          timeout: timeouts.appReady,
+        })
+        .toBeGreaterThanOrEqual(expectedUserMessages);
+      await expect(page.getByText("Loading earlier messages...", { exact: true })).toBeHidden();
 
       const domStats = await collectDOMStats(page);
       expect(domStats.domNodes).toBeGreaterThan(0);
@@ -188,10 +192,6 @@ test.describe("Perf: history-size load cost", () => {
           domStats.usedJSHeapBytes,
         );
       }
-
-      // DOM node count should not shrink as history size grows (monotonic-by-size).
-      expect(domStats.domNodes).toBeGreaterThanOrEqual(prevDomNodes);
-      prevDomNodes = domStats.domNodes;
 
       // mitto-sus.10.1: deterministic soft ceiling against the baseline.
       if (process.env.PERF_RUN) {

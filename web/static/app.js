@@ -571,6 +571,8 @@ function App() {
   const messagesEndRef = useRef(null);
   const mainContentRef = useRef(null);
   const messagesContainerRef = useRef(null);
+  const historyFillRef = useRef(null);
+  const latestHistoryMetricsRef = useRef(null);
   // Scroll position preservation for "load more" (prepend) - stores scroll metrics before loading
   const scrollPreservationRef = useRef(null);
 
@@ -918,8 +920,8 @@ function App() {
   // Note: isLoadingMore state is managed by useWebSocket hook, not locally.
   // The hook sets isLoadingMore=true when sending load_events request,
   // and clears it when events_loaded response is received.
-  const handleLoadMore = useCallback(() => {
-    if (isLoadingMore || !activeSessionId || !hasMoreMessages) return;
+  const requestHistoryBatch = useCallback((sessionId) => {
+    if (!sessionId) return;
 
     // Save scroll metrics BEFORE loading for scroll position preservation
     // When new messages are prepended, we'll restore the position relative to existing content
@@ -935,8 +937,68 @@ function App() {
       );
     }
 
-    loadMoreMessages(activeSessionId);
-  }, [isLoadingMore, activeSessionId, hasMoreMessages, loadMoreMessages]);
+    loadMoreMessages(sessionId);
+  }, [loadMoreMessages]);
+
+  const handleLoadMore = useCallback(() => {
+    if (isLoadingMore || !activeSessionId || !hasMoreMessages) return;
+    const metrics = latestHistoryMetricsRef.current;
+    const viewportHeight = metrics?.sessionId === activeSessionId
+      ? metrics.viewportHeight
+      : messagesContainerRef.current?.clientHeight || 0;
+    const contentHeight = metrics?.sessionId === activeSessionId
+      ? metrics.contentHeight
+      : 0;
+    historyFillRef.current = {
+      sessionId: activeSessionId,
+      targetHeight: contentHeight + viewportHeight * 2,
+      startedAt: Date.now(),
+      requests: 0,
+      pending: true,
+    };
+    requestHistoryBatch(activeSessionId);
+  }, [isLoadingMore, activeSessionId, hasMoreMessages, requestHistoryBatch]);
+
+  const handleHistoryContentMeasured = useCallback((metrics) => {
+    latestHistoryMetricsRef.current = metrics;
+    if (!metrics.sessionId || !metrics.viewportHeight) return;
+    if (!hasMoreMessages) {
+      historyFillRef.current = null;
+      return;
+    }
+    let operation = historyFillRef.current;
+    if (operation && operation.sessionId !== metrics.sessionId) {
+      historyFillRef.current = null;
+      operation = null;
+    }
+    if (!operation) {
+      operation = {
+        sessionId: metrics.sessionId,
+        targetHeight: metrics.viewportHeight * 2,
+        startedAt: Date.now(),
+        requests: 0,
+        pending: false,
+      };
+      historyFillRef.current = operation;
+    }
+    if (isLoadingMore) {
+      operation.pending = true;
+      return;
+    }
+    if (operation.pending) operation.pending = false;
+    else if (operation.requests > 0) return;
+    if (
+      metrics.contentHeight >= operation.targetHeight ||
+      operation.requests >= 20 ||
+      Date.now() - operation.startedAt >= 10000
+    ) {
+      historyFillRef.current = null;
+      return;
+    }
+    operation.requests += 1;
+    operation.pending = true;
+    requestHistoryBatch(metrics.sessionId);
+  }, [hasMoreMessages, isLoadingMore, requestHistoryBatch]);
 
   // Infinite scroll for loading earlier messages
   // Uses IntersectionObserver to detect when user scrolls near the top
@@ -4005,6 +4067,7 @@ function App() {
                       isStreaming=${isStreaming}
                       agentWorking=${agentWorking}
                       onLoadMore=${handleLoadMore}
+                      onContentMeasured=${handleHistoryContentMeasured}
                       onScrollToBottom=${scrollToBottom}
                       isUserAtBottom=${isUserAtBottom}
                       hasNewMessages=${hasNewMessages}

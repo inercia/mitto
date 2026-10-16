@@ -2,7 +2,7 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment, useMemo, useState, useEffect, useLayoutEffect, memo } =
+const { html, Fragment, useMemo, useState, useEffect, useLayoutEffect, useRef, memo } =
   window.preact;
 
 import { Message } from "./Message.js";
@@ -68,6 +68,7 @@ function MessageListImpl({
   messagesContainerRef,
   mcpInitState,
   clearMCPInit,
+  onContentMeasured,
 }) {
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
@@ -97,6 +98,30 @@ function MessageListImpl({
   // (background/Cmd-H), and catches up on wake so the chip's mm:ss is never
   // stuck at an old value.
   const [workingNow, setWorkingNow] = useState(Date.now());
+  const contentRef = useRef(null);
+  useLayoutEffect(() => {
+    const container = messagesContainerRef?.current;
+    const content = contentRef.current;
+    if (container && content) {
+      // Measure actual message rows instead of the flex wrapper's scrollHeight:
+      // its min-height: 100% makes an empty/sparse panel look artificially full.
+      const contentHeight = Array.from(content.querySelectorAll(".mitto-msg-row")).reduce(
+        (total, row) => {
+          const style = window.getComputedStyle(row);
+          const verticalMargins =
+            (parseFloat(style.marginTop) || 0) +
+            (parseFloat(style.marginBottom) || 0);
+          return total + row.offsetHeight + verticalMargins;
+        },
+        0,
+      );
+      onContentMeasured?.({
+        sessionId: activeSessionId,
+        contentHeight,
+        viewportHeight: container.clientHeight,
+      });
+    }
+  }, [messages, activeSessionId, hasMoreMessages, isLoadingMore, onContentMeasured]);
   useVisibleInterval(() => setWorkingNow(Date.now()), 2000, {
     enabled: isStreaming && !!agentWorking,
   });
@@ -277,6 +302,7 @@ function MessageListImpl({
           `
         }
         <div
+          ref=${contentRef}
           key=${activeSessionId}
           class="max-w-[60rem] mx-auto flex flex-col-reverse ${
             swipeDirection ? `swipe-slide-${swipeDirection}` : ""
