@@ -9,4 +9,4 @@ linters:
   exclusions:
     paths:
       - cmd/mitto-app  # macOS-specific, requires cgo and webview
-
+      - ^node_modules/  # ignored third-party dependency sources
