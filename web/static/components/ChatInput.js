@@ -742,10 +742,19 @@ function ChatInputImpl({
   useEffect(() => {
     if (inputRef) {
       inputRef.current = {
-        focus: () => {
-          if (textareaRef.current) {
-            textareaRef.current.focus();
+        focus: (options) => {
+          const textarea = textareaRef.current;
+          if (!textarea || textarea.disabled || textarea.readOnly) return false;
+          textarea.focus(
+            options?.preventScroll ? { preventScroll: true } : undefined,
+          );
+          if (options?.caretAtEnd) {
+            textarea.setSelectionRange(
+              textarea.value.length,
+              textarea.value.length,
+            );
           }
+          return true;
         },
         togglePrompts: () => {
           handleTogglePrompts();
@@ -2617,7 +2626,7 @@ function ChatInputImpl({
       ${sendError &&
       html`
         <div class="max-w-[60rem] mx-auto mb-2">
-          <div class="alert alert-warning text-sm">
+          <div class="alert alert-warning text-sm" data-testid="send-error">
             <svg
               class="w-4 h-4 shrink-0"
               fill="none"

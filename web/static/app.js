@@ -983,21 +983,11 @@ function App() {
         if (e.key === "ArrowUp") {
           e.preventDefault();
           navigateToSessionAbove();
-          setTimeout(() => {
-            if (chatInputRef.current) {
-              chatInputRef.current.focus();
-            }
-          }, 100);
           return;
         }
         if (e.key === "ArrowDown") {
           e.preventDefault();
           navigateToSessionBelow();
-          setTimeout(() => {
-            if (chatInputRef.current) {
-              chatInputRef.current.focus();
-            }
-          }, 100);
           return;
         }
       }
@@ -1038,12 +1028,6 @@ function App() {
           e.preventDefault();
           const index = parseInt(key, 10) - 1; // Convert to 0-based index
           navigateToSessionByIndex(index);
-          // Focus the input after switching sessions
-          setTimeout(() => {
-            if (chatInputRef.current) {
-              chatInputRef.current.focus();
-            }
-          }, 100);
         }
         // Command+, to open settings (standard macOS convention)
         if (key === ",") {
@@ -1351,6 +1335,67 @@ function App() {
 
   // Ref for the chat input component to allow focusing from native menu
   const chatInputRef = useRef(null);
+  const composerFocusRef = useRef({
+    key: null,
+    pending: false,
+  });
+
+  // All conversation navigation (sidebar, native swipes, shortcuts, notifications,
+  // and new sessions) converges here. Wait until ChatInput has restored the new
+  // session's draft before moving the caret. Never summon the mobile keyboard.
+  useEffect(() => {
+    const focusState = composerFocusRef.current;
+    const key = `${mainView}:${activeSessionId || ""}`;
+    if (focusState.key !== key) {
+      focusState.key = key;
+      focusState.pending = mainView === "conversation" && !!activeSessionId;
+    }
+    if (!focusState.pending || sessionInfo?.archived) {
+      if (sessionInfo?.archived) focusState.pending = false;
+      return undefined;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      if (
+        window.matchMedia?.("(max-width: 767.98px)").matches ||
+        isModalDialogOpen() ||
+        quickCreate.open ||
+        settingsDialog.isOpen ||
+        workspaceDialog.isOpen
+      ) {
+        focusState.pending = false;
+        return;
+      }
+      const active = document.activeElement;
+      if (
+        active?.matches?.(
+          "input, textarea, select, [contenteditable='true']",
+        ) &&
+        !active.matches(".chat-input-textarea")
+      ) {
+        // A rename, filter, or other inline editor owns focus.
+        focusState.pending = false;
+        return;
+      }
+      // A disabled/unmounted composer may become editable after session resume.
+      // Keep the request pending until a session status change re-runs the effect.
+      if (
+        chatInputRef.current?.focus({ preventScroll: true, caretAtEnd: true })
+      ) {
+        focusState.pending = false;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    activeSessionId,
+    mainView,
+    sessionInfo?.archived,
+    sessionInfo?.gc_suspended,
+    isRunning,
+    quickCreate.open,
+    settingsDialog.isOpen,
+    workspaceDialog.isOpen,
+  ]);
 
   // Expose global functions for native macOS menu integration
   useEffect(() => {
@@ -1395,12 +1440,6 @@ function App() {
         }
       }
       setShowSidebar(false);
-      // Focus the input after creating new session
-      setTimeout(() => {
-        if (chatInputRef.current) {
-          chatInputRef.current.focus();
-        }
-      }, 100);
     };
 
     // Focus Input - called from native Cmd+L menu
@@ -1619,12 +1658,6 @@ function App() {
           // newSession activates the new conversation; switch away from the beads
           // panel so the new conversation is shown instead of the beads view.
           setMainView("conversation");
-          // Focus the input after creating new session
-          setTimeout(() => {
-            if (chatInputRef.current) {
-              chatInputRef.current.focus();
-            }
-          }, 100);
         }
         return;
       }
@@ -1657,9 +1690,6 @@ function App() {
           } else if (result?.sessionId) {
             // Switch away from the beads panel so the new conversation is shown.
             setMainView("conversation");
-            setTimeout(() => {
-              if (chatInputRef.current) chatInputRef.current.focus();
-            }, 100);
           }
         } else if (filteredWs.length > 1) {
           setWorkspaceDialog({ isOpen: true, filteredWorkspaces: filteredWs });
@@ -1705,12 +1735,6 @@ function App() {
         } else if (result?.sessionId) {
           // Switch away from the beads panel so the new conversation is shown.
           setMainView("conversation");
-          // Focus the input after creating new session
-          setTimeout(() => {
-            if (chatInputRef.current) {
-              chatInputRef.current.focus();
-            }
-          }, 100);
         }
       }
     },
@@ -1740,12 +1764,6 @@ function App() {
     } else if (result?.sessionId) {
       // Switch away from the beads panel so the new conversation is shown.
       setMainView("conversation");
-      // Focus the input after creating new session
-      setTimeout(() => {
-        if (chatInputRef.current) {
-          chatInputRef.current.focus();
-        }
-      }, 100);
     }
   };
 
