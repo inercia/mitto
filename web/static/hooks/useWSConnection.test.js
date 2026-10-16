@@ -64,7 +64,7 @@ describe("useWSConnection.js: connectToEvents backed by EventsStream (mitto-7gta
 
   test('both "connected" and "event" emissions are re-wrapped into {type, data} and routed through the single handleGlobalEvent entrypoint', () => {
     expect(useWSConnectionJs).toMatch(
-      /stream\.on\("connected", \(data\) => handleGlobalEvent\(\{ type: "connected", data \}\)\);/,
+      /stream\.on\("connected", \(data\) =>\s*handleGlobalEvent\(\{ type: "connected", data \}\),\s*\);/,
     );
     expect(useWSConnectionJs).toMatch(
       /stream\.on\("event", \(msg\) => handleGlobalEvent\(msg\)\);/,

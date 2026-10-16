@@ -43,8 +43,16 @@
 
 const { useCallback, useEffect, useRef, useState } = window.preact;
 
-import { ROLE_ERROR, INITIAL_EVENTS_LIMIT, limitMessages, getMaxSeq } from "../lib.js";
-import { setLastActiveSessionId, getLastActiveSessionId } from "../utils/storage.js";
+import {
+  ROLE_ERROR,
+  INITIAL_EVENTS_LIMIT,
+  limitMessages,
+  getMaxSeq,
+} from "../lib.js";
+import {
+  setLastActiveSessionId,
+  getLastActiveSessionId,
+} from "../utils/storage.js";
 import {
   getSdkClient,
   getSdkWsBaseUrl,
@@ -118,7 +126,9 @@ export function useWSConnection({
     const isAuthenticated = await checkAuthOrRedirect();
     if (!isAuthenticated) return false; // already redirected to login on 401
     if (serverShuttingDownRef.current) {
-      console.log("Server is shutting down, not reconnecting session WebSocket");
+      console.log(
+        "Server is shutting down, not reconnecting session WebSocket",
+      );
       return false;
     }
     return true;
@@ -154,6 +164,7 @@ export function useWSConnection({
       });
 
       stream.on("open", () => {
+        const openedAt = Date.now();
         console.log(`Session stream connected: ${sessionId}`);
 
         const session = sessionsRef.current[sessionId];
@@ -221,7 +232,7 @@ export function useWSConnection({
         // Retry any pending prompts after a short delay to ensure connection is stable
         setTimeout(() => {
           if (retryPendingPromptsRef.current) {
-            retryPendingPromptsRef.current(sessionId);
+            retryPendingPromptsRef.current(sessionId, openedAt);
           }
         }, 500);
       });
@@ -433,7 +444,9 @@ export function useWSConnection({
     // switches on msg.type (including a "connected" case), so both are
     // routed through it re-wrapped into the original {type, data} shape to
     // preserve behaviour identically to the raw-WebSocket implementation.
-    stream.on("connected", (data) => handleGlobalEvent({ type: "connected", data }));
+    stream.on("connected", (data) =>
+      handleGlobalEvent({ type: "connected", data }),
+    );
     stream.on("event", (msg) => handleGlobalEvent(msg));
 
     stream.on("close", (event) => {

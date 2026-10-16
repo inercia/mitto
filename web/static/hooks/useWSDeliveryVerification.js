@@ -409,8 +409,11 @@ export function useWSDeliveryVerification({
   }, [activeSessionId]);
 
   // Retry pending prompts for a session (called on reconnect or visibility change)
-  const retryPendingPrompts = useCallback((sessionId) => {
-    const pending = getPendingPromptsForSession(sessionId);
+  const retryPendingPrompts = useCallback((sessionId, openedAt) => {
+    const stored = getPendingPromptsForSession(sessionId);
+    const pending = stored.filter(
+      (prompt) => openedAt === undefined || prompt.timestamp < openedAt,
+    );
     if (pending.length === 0) return;
 
     console.log(
