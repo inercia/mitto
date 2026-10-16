@@ -388,7 +388,7 @@ func auxPromptFor(purpose string) string {
 	case auxiliary.PurposeTitleGen:
 		return fmt.Sprintf(auxiliary.GenerateTitlePromptTemplate, "simulated cold-start prompt")
 	case auxiliary.PurposeFollowUp:
-		return fmt.Sprintf(auxiliary.AnalyzeFollowUpQuestionsPromptTemplate,
+		return fmt.Sprintf(auxiliary.AnalyzeFollowUpQuestionsQueryTemplate,
 			"simulated user prompt", "simulated agent response")
 	case auxiliary.PurposeMCPCheck:
 		url := fmt.Sprintf("http://127.0.0.1:%d/mcp", promptMCPPort)
