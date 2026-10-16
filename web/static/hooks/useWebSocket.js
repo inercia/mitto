@@ -4598,7 +4598,7 @@ export function useWebSocket({
     lastConfirmedPromptRef,
   });
   // Wire the composer-owned ref-bridges to C2's callbacks so C1's onopen /
-  // onmessage handlers (which invoke retryPendingPromptsRef.current(sid) and
+  // onmessage handlers (which invoke retryPendingPromptsRef.current(sid, openedAt) and
   // resolvePendingSendsRef.current(sid)) reach C2's implementations.
   // Unconditional per-render assignment is safe for mutable refs.
   retryPendingPromptsRef.current = retryPendingPrompts;
