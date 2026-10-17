@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	mittoAcp "github.com/inercia/mitto/internal/acp"
 	"github.com/inercia/mitto/internal/acpproc/acperrors"
 	"github.com/inercia/mitto/internal/agentbackend"
 	"github.com/inercia/mitto/internal/appdir"
@@ -3495,6 +3496,47 @@ func TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic(t 
 	if calls := provider.callCount(); calls != 1 {
 		t.Fatalf("AcquireSession calls = %d, want exactly 1", calls)
 	}
+}
+
+func TestSessionManager_GetSharedProcess_ExecutableUnavailablePropagatesWithoutFallback(t *testing.T) {
+	missingErr := &mittoAcp.ACPClassifiedError{
+		Class:         mittoAcp.ACPErrorPermanent,
+		OriginalError: fmt.Errorf("%w: test-agent unavailable", mittoAcp.ErrACPExecutableUnavailable),
+	}
+	ws := &config.WorkspaceSettings{UUID: "ws-missing-executable", WorkingDir: "/tmp"}
+
+	t.Run("backend provider", func(t *testing.T) {
+		sm := NewSessionManager("echo test", "test-server", true, nil)
+		provider := &recordingBackendProvider{err: missingErr}
+		sm.SetBackendProvider(provider)
+		pm := &fakeBackendProcessManager{process: newFakeBackendSharedProcess()}
+		sm.SetACPProcessManager(pm)
+
+		proc, lease, err := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+		if !errors.Is(err, mittoAcp.ErrACPExecutableUnavailable) {
+			t.Fatalf("getSharedProcess() error = %v, want unavailable sentinel", err)
+		}
+		if proc != nil || lease != nil {
+			t.Fatalf("getSharedProcess() = (%v, %v), want (nil, nil)", proc, lease)
+		}
+		if got := provider.callCount(); got != 1 {
+			t.Errorf("provider calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("direct process manager", func(t *testing.T) {
+		sm := NewSessionManager("echo test", "test-server", true, nil)
+		pm := &fakeBackendProcessManager{err: missingErr}
+		sm.SetACPProcessManager(pm)
+
+		proc, lease, err := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+		if !errors.Is(err, mittoAcp.ErrACPExecutableUnavailable) {
+			t.Fatalf("getSharedProcess() error = %v, want unavailable sentinel", err)
+		}
+		if proc != nil || lease != nil {
+			t.Fatalf("getSharedProcess() = (%v, %v), want (nil, nil)", proc, lease)
+		}
+	})
 }
 
 // TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager
