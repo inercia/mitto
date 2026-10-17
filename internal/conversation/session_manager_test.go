@@ -3440,7 +3440,10 @@ func TestSessionManager_GetSharedProcess_RoutesThroughInjectedBackendProvider(t 
 	ws := &config.WorkspaceSettings{UUID: "ws-provider-1", WorkingDir: "/tmp"}
 	acpEnv := map[string]string{"FOO": "bar"}
 
-	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", acpEnv, nil)
+	got, gotLease, gotErr := sm.getSharedProcess(ws, "echo test", "/tmp", acpEnv, nil)
+	if gotErr != nil {
+		t.Fatalf("getSharedProcess() error = %v", gotErr)
+	}
 
 	if got != proc {
 		t.Fatalf("getSharedProcess = %v, want %v (the process exposed by the injected provider's lease)", got, proc)
@@ -3478,7 +3481,10 @@ func TestSessionManager_GetSharedProcess_ProviderError_ReturnsNilWithoutPanic(t 
 	sm.SetBackendProvider(provider)
 
 	ws := &config.WorkspaceSettings{UUID: "ws-provider-2", WorkingDir: "/tmp"}
-	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+	got, gotLease, gotErr := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+	if gotErr != nil {
+		t.Fatalf("getSharedProcess() error = %v", gotErr)
+	}
 
 	if got != nil {
 		t.Fatalf("getSharedProcess = %v, want nil on provider AcquireSession error", got)
@@ -3505,7 +3511,10 @@ func TestSessionManager_GetSharedProcess_NilProvider_FallsBackToProcessManager(t
 	// Deliberately do NOT call SetBackendProvider — backendProvider stays nil.
 
 	ws := &config.WorkspaceSettings{UUID: "ws-provider-3", WorkingDir: "/tmp"}
-	got, gotLease := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+	got, gotLease, gotErr := sm.getSharedProcess(ws, "echo test", "/tmp", nil, nil)
+	if gotErr != nil {
+		t.Fatalf("getSharedProcess() error = %v", gotErr)
+	}
 
 	if got != proc {
 		t.Fatalf("getSharedProcess = %v, want %v (direct ProcessManager fallback with a nil provider)", got, proc)

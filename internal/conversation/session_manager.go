@@ -1466,7 +1466,10 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 	// Resolve ACP command/cwd/env via registry (self-locking).
 	acpCommand, acpCwd, acpEnv := sm.wsRegistry.ResolveWorkspaceACP(ws)
 
-	p, _ := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
+	p, _, err := sm.getSharedProcess(ws, acpCommand, acpCwd, acpEnv, r)
+	if err != nil {
+		return err
+	}
 	if p == nil {
 		return fmt.Errorf("failed to start ACP process for workspace %s", workspaceUUID)
 	}
@@ -1475,7 +1478,7 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 }
 
 // getSharedProcess returns the shared ACP process for the given workspace,
-// or nil if shared process management is not enabled.
+// its backend lease, and a typed executable-availability error when applicable.
 // acpCommand, acpCwd, acpEnv are the resolved ACP connection parameters
 // (from resolveWorkspaceACPLocked or directly from global config).
 // The caller must NOT hold sm.mu when calling this method.
@@ -1499,14 +1502,14 @@ func (sm *SessionManager) EnsureWorkspaceProcess(workspaceUUID string) error {
 // from the SharedProcess directly. It is nil whenever no BackendProvider is
 // injected, the acquire failed, or the process came from the pm fallback
 // path below — all byte-identical fallback cases carry no lease.
-func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) (SharedProcess, BackendLease) {
+func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, acpCommand, acpCwd string, acpEnv map[string]string, r *runner.Runner) (SharedProcess, BackendLease, error) {
 	sm.mu.RLock()
 	pm := sm.acpProcessManager
 	provider := sm.backendProvider
 	sm.mu.RUnlock()
 
 	if workspace == nil || workspace.UUID == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if provider != nil {
@@ -1520,6 +1523,9 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 			DeferSession: true,
 		})
 		if err != nil {
+			if errors.Is(err, mittoAcp.ErrACPExecutableUnavailable) {
+				return nil, nil, err
+			}
 			if sm.logger != nil {
 				// ClassifyAcquireError (mitto-lrt.18) is purely advisory here: it
 				// enriches the log with the neutral lifecycle-state taxonomy
@@ -1536,29 +1542,32 @@ func (sm *SessionManager) getSharedProcess(workspace *config.WorkspaceSettings, 
 					"lifecycle_state", lifecycleState,
 					"error", err)
 			}
-			return nil, nil
+			return nil, nil, nil
 		}
 		process, ok := lease.LocalProcess()
 		if !ok || process == nil {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return process, lease
+		return process, lease, nil
 	}
 
 	if pm == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	process, err := pm.GetOrCreateProcess(workspace, acpCommand, acpCwd, acpEnv, r, true)
 	if err != nil {
+		if errors.Is(err, mittoAcp.ErrACPExecutableUnavailable) {
+			return nil, nil, err
+		}
 		if sm.logger != nil {
 			sm.logger.Warn("Failed to get shared ACP process, falling back to per-session",
 				"workspace_uuid", workspace.UUID,
 				"error", err)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
-	return process, nil
+	return process, nil, nil
 }
 
 // BroadcastSessionCreated broadcasts a session_created event to all connected clients.
@@ -2435,7 +2444,10 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		workspaceModelOverrides = effectiveWs.ModelOverrides
 	}
 	sharedProcessStart := time.Now()
-	sharedProcess, sharedLease := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
+	sharedProcess, sharedLease, acquireErr := sm.getSharedProcess(effectiveWs, acpCommand, acpCwd, acpEnv, r)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
 	sharedProcessDuration := time.Since(sharedProcessStart)
 
 	// Capture timing before the prewarm goroutine so create latency is not inflated.
@@ -3084,7 +3096,12 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// budget so background sessions are never stranded if the process never warms;
 	// getSharedProcess is idempotent so the later call reuses the same instance.
 	if !foreground {
-		if warmGate, _ := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r); warmGate != nil && !warmGate.MCPInitDone() {
+		warmGate, _, warmErr := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+		if warmErr != nil {
+			signalDone(nil, warmErr)
+			return nil, warmErr
+		}
+		if warmGate != nil && !warmGate.MCPInitDone() {
 			if waitBudget := warmGate.RecommendedLoadTimeout(true); waitBudget > 0 {
 				waitCtx, waitCancel := context.WithTimeout(context.Background(), waitBudget)
 				warmed := warmGate.WaitForMCPInit(waitCtx)
@@ -3157,7 +3174,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// IMPORTANT: Do NOT fall back to an arbitrary default workspace here. For resumed
 	// sessions, foundWs has already been resolved against the session's ACP server.
 	// Falling back again would risk mixing different ACP servers on the same folder.
-	sharedProcess, sharedLease := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+	sharedProcess, sharedLease, acquireErr := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
 
 	// Build pruning configuration from global settings (with default)
 	pruneConfig := sm.buildPruneConfig()
@@ -3294,7 +3311,11 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			sm.deleteSessionAndChildren(sessionID, "self_destructed")
 		},
 	}
-	bs, err := ResumeBackgroundSession(cfg)
+	var bs *BackgroundSession
+	err = acquireErr
+	if err == nil {
+		bs, err = ResumeBackgroundSession(cfg)
+	}
 
 	// mitto-ei81: a concurrent GC recycle can close the shared process instance
 	// out from under this resume's own restart attempt (recycle-vs-resume race
@@ -3309,8 +3330,12 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			sm.logger.Info("Resume raced a concurrent shared-process recycle; retrying with a freshly-created process",
 				"session_id", sessionID)
 		}
-		cfg.SharedProcess, cfg.BackendLease = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
-		bs, err = ResumeBackgroundSession(cfg)
+		cfg.SharedProcess, cfg.BackendLease, acquireErr = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+		if acquireErr != nil {
+			err = acquireErr
+		} else {
+			bs, err = ResumeBackgroundSession(cfg)
+		}
 	}
 
 	// mitto-n2fn: a still-saturated shared ACP process is TRANSIENT — cleared
@@ -3343,7 +3368,11 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 					"foreground", foreground,
 					"error", err)
 			}
-			cfg.SharedProcess, cfg.BackendLease = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+			cfg.SharedProcess, cfg.BackendLease, acquireErr = sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r)
+			if acquireErr != nil {
+				err = acquireErr
+				break
+			}
 			bs, err = ResumeBackgroundSession(cfg)
 		}
 	}
@@ -3367,6 +3396,10 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 
 	if err != nil {
+		if errors.Is(err, mittoAcp.ErrACPExecutableUnavailable) {
+			signalDone(nil, err)
+			return nil, err
+		}
 		// mitto-54k.6 / mitto-wub: a cold-start MCP-init timeout, or a shared-ACP-process
 		// saturation bail (repeated RPC timeouts, mid-flight budget exhaustion, or
 		// concurrent-load shedding — internal/acpproc/acperrors.ErrSharedProcessSaturated
@@ -3375,8 +3408,9 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		// saturation cooldown, succeeds on a later retry). Do NOT count it toward the
 		// hard ACP-start failure threshold and do NOT auto-archive; a later resume
 		// attempt (interactive or MCP auto-resume) will succeed. Genuine permanent
-		// failures (missing binary, broken MCP server on a WARM process, etc.) still
-		// fall through to the counter/archive logic below.
+		// failures (for example, a broken MCP server on a WARM process) still fall
+		// through to the counter/archive logic below. A missing bare executable is
+		// returned separately above as a configuration error, not a start failure.
 		//
 		// mitto-ei81: acperrors.ErrProcessClosedConcurrently indicates the retry
 		// above (fresh getSharedProcess + ResumeBackgroundSession) also lost a race

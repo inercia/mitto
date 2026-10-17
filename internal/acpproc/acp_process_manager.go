@@ -745,6 +745,11 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		}
 	}
 
+	if err := checkACPExecutable(workspace, acpCommand, r); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+
 	// Create new shared process
 	processLogger := m.logger
 	if processLogger != nil {

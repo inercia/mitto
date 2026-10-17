@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// ErrACPExecutableUnavailable identifies a direct-exec ACP command whose bare
+// executable cannot be resolved on Mitto's process PATH.
+var ErrACPExecutableUnavailable = errors.New("ACP executable unavailable")
+
 // Shared ACP process restart constants.
 // These are used by both SharedACPProcess and BackgroundSession to ensure
 // consistent restart behavior across both code paths.
