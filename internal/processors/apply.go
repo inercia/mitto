@@ -3375,8 +3375,10 @@ func (m *Manager) dispatchWithRetry(workspaceUUID, name, prompt string, timeout 
 	// removed from disk — see FilePendingDispatchStore) so it survives and
 	// can be retried later, converting the loss into a delay.
 	persisted := false
-	entry.Attempts = spoolAttempts
-	entry.SavedAt = time.Now()
+	if !acp.IsAuxiliaryModelUnavailable(lastErr) {
+		entry.Attempts = spoolAttempts
+		entry.SavedAt = time.Now()
+	}
 	if lastErr != nil {
 		entry.LastError = lastErr.Error()
 	}
@@ -3593,6 +3595,11 @@ func (m *Manager) runDispatchRetryLoopTracked(ctx context.Context, workspaceUUID
 			}
 			return completion, totalAttempts, time.Since(start), lastErr
 		}
+		if acp.IsAuxiliaryModelUnavailable(lastErr) {
+			// A model pause cannot be repaired by another prompt attempt. The
+			// caller persists the batch below without consuming its retry budget.
+			return completion, totalAttempts, time.Since(start), lastErr
+		}
 
 		if isNonRetryableDispatchErr(lastErr) {
 			if m.logger != nil {
@@ -3757,8 +3764,8 @@ flushEntries:
 			requeue = append(requeue, entries[i:]...)
 			break
 		}
-
-		if entry.Attempts >= pendingDispatchMaxAttempts {
+		modelPaused := acp.IsAuxiliaryModelUnavailable(errors.New(entry.LastError))
+		if entry.Attempts >= pendingDispatchMaxAttempts && !modelPaused {
 			if isAuthDispatchErr(errors.New(entry.LastError)) {
 				// Older spool entries may already have exhausted their attempt
 				// count under the pre-auth-aware retry policy. Permit one fresh
@@ -3766,7 +3773,7 @@ flushEntries:
 				entry.Attempts = pendingDispatchTransientRetryAttempts
 			}
 		}
-		if entry.Attempts >= pendingDispatchMaxAttempts {
+		if entry.Attempts >= pendingDispatchMaxAttempts && !modelPaused {
 			// mitto-unc: a failure history made up entirely of transient
 			// aux-unavailable errors (e.g. auxiliary process timeouts) must
 			// not be treated the same as a genuinely poisoned batch — keep
@@ -3921,6 +3928,11 @@ flushEntries:
 			requeue = append(requeue, entry)
 			requeue = append(requeue, entries[i+1:]...)
 			break
+		}
+		if acp.IsAuxiliaryModelUnavailable(lastErr) {
+			entry.LastError = lastErr.Error()
+			requeue = append(requeue, entry)
+			continue
 		}
 
 		entry.Attempts++

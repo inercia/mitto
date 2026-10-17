@@ -1762,111 +1762,51 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		modelID:   initialModelID,
 	}
 
-	// Apply auxiliary model selection if configured for this workspace.
-	// Precedence: AuxiliaryModelProfile > AuxiliaryModelTag > AuxiliaryModelSelection
-	// (mitto-hke, mitto-9vz). If AuxiliaryModelProfile is set, it takes precedence and
-	// its resolved Criteria is used in place of the legacy AuxiliaryModelSelection
-	// matchMode/pattern. Else, if AuxiliaryModelTag is set, the first Model profile
-	// carrying that tag whose Criteria matches an available model is used. Falls back
-	// to AuxiliaryModelSelection when neither resolves. On no match or nil selection,
-	// leave the ACP server's default model unchanged.
-	//
-	// When the workspace sets none of the three, the global
-	// conversations.auxiliary_model_tag (GlobalAuxModelTagProvider, mitto-ee2.9) is
-	// used as a fallback via the same tag-resolution path.
-	{
-		var ws *config.WorkspaceSettings
-		if m.WorkspaceConfigProvider != nil {
-			ws = m.WorkspaceConfigProvider(workspaceUUID)
-		}
-		auxConstraint := m.resolveAuxConstraint(ws, sessionHandle.Models, workspaceUUID, purpose)
-		if auxConstraint != nil && auxConstraint.Pattern != "" {
-			matched, shouldSet := conversation.ResolveAuxModelSwitch(auxConstraint, sessionHandle.Models)
-			switch {
-			case shouldSet:
-				// Best-effort async model switch (mitto-f7q, Option 4): return the aux
-				// session immediately on the server-default model and perform the preferred-
-				// model switch in a background goroutine. This prevents the capacity-1
-				// setModelSem from blocking aux-session creation — and all callers queued
-				// behind it — during server wakeup when several concurrent aux sessions
-				// start simultaneously.
-				//
-				// The first aux prompt may run on the default model; this is explicitly
-				// acceptable per the bead.
-				//
-				// Budget: setModelAsyncCallerBudget (90s) derived from m.ctx (NOT the caller
-				// ctx, which is short-lived and may expire before the goroutine runs).
-				// Worst-case: setModelSem queued behind ~3 other holders each taking up to
-				// the schedule {20s,15s,8s} + jitter backoff (~44s each) before the semaphore
-				// is acquired. Since this is off the critical path, a generous budget has no
-				// UX cost. m.ctx cancels on manager shutdown as a safety backstop.
-				capturedWorkspaceUUID := workspaceUUID
-				capturedPurpose := purpose
-				capturedMatched := matched
-				capturedProcess := process
-				capturedSessionID := sessionHandle.SessionID
-				capturedLogger := m.logger
-				capturedState := state
-				go func() {
-					// De-stagger concurrent prewarmed aux model-set goroutines (mitto-xicp).
-					// All 4 purposes fire at nearly the same instant during prewarmAuxiliarySessions;
-					// without jitter they all queue on the capacity-1 setModelSem simultaneously and
-					// the last one exhausts its 90 s budget before the semaphore is released.
-					// The jitter waits on m.ctx — NOT inside the budget context — so it does not
-					// consume the setModelAsyncCallerBudget (mitto-f7q: per-attempt deadline unchanged).
-					// Mirrors the child-session de-stagger pattern from mitto-x4e.
-					if jitter := auxStartupJitter(auxModelSwitchStartupJitter); jitter > 0 {
-						if capturedLogger != nil {
-							capturedLogger.Debug("Auxiliary session: staggering startup model switch",
-								"workspace_uuid", capturedWorkspaceUUID,
-								"purpose", capturedPurpose,
-								"jitter_ms", jitter.Milliseconds())
-						}
-						select {
-						case <-time.After(jitter):
-						case <-m.ctx.Done():
-							return
-						}
-					}
-					setCtx, setCancel := context.WithTimeout(m.ctx, setModelAsyncCallerBudget)
-					defer setCancel()
-					if setErr := capturedProcess.SetSessionModel(setCtx, capturedSessionID, capturedMatched); setErr != nil {
-						if capturedLogger != nil {
-							capturedLogger.Warn("Auxiliary session: failed to set model",
-								"workspace_uuid", capturedWorkspaceUUID,
-								"purpose", capturedPurpose,
-								"model_id", capturedMatched,
-								"error", setErr)
-						}
-					} else if capturedLogger != nil {
-						capturedState.setModelID(capturedMatched)
-						capturedLogger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
-							"workspace_uuid", capturedWorkspaceUUID,
-							"purpose", capturedPurpose,
-							"model_id", capturedMatched)
-					} else {
-						capturedState.setModelID(capturedMatched)
-					}
-				}()
-			case matched != "":
-				// The freshly-created session already runs the preferred model, so the
-				// set_model RPC is needless — skip it to avoid the per-process serialisation
-				// contention that drives the 8s deadline cascade at server wakeup (mitto-ykb).
-				if m.logger != nil {
-					m.logger.Info("Auxiliary session: model already matches AuxiliaryModelSelection, skipping set_model",
-						"workspace_uuid", workspaceUUID,
-						"purpose", purpose,
-						"model_id", matched)
-				}
-			default:
-				if m.logger != nil {
-					m.logger.Debug("Auxiliary session: no model matched AuxiliaryModelSelection, using server default",
-						"workspace_uuid", workspaceUUID,
-						"purpose", purpose,
-						"match_mode", auxConstraint.MatchMode,
-						"pattern", auxConstraint.Pattern)
-				}
+	// A configured auxiliary model is a safety requirement, not a preference:
+	// do not register or publish this session until the agent confirms it.
+	var ws *config.WorkspaceSettings
+	if m.WorkspaceConfigProvider != nil {
+		ws = m.WorkspaceConfigProvider(workspaceUUID)
+	}
+	configured := ws != nil && (ws.AuxiliaryModelProfile != "" || ws.AuxiliaryModelTag != "" || ws.AuxiliaryModelSelection != nil)
+	selector := "workspace"
+	if !configured && m.GlobalAuxModelTagProvider != nil && strings.TrimSpace(m.GlobalAuxModelTagProvider()) != "" {
+		configured = true
+		selector = "global tag " + strings.TrimSpace(m.GlobalAuxModelTagProvider())
+	}
+	if configured {
+		pause := func(modelID, reason string, cause error) (*auxiliarySessionState, error) {
+			cleanupCtx, cleanupCancel := context.WithTimeout(m.ctx, 2*time.Second)
+			_ = process.Cancel(cleanupCtx, sessionHandle.SessionID)
+			cleanupCancel()
+			modelErr := &mittoAcp.AuxiliaryModelUnavailableError{Workspace: workspaceUUID, Purpose: purpose, Selector: selector, ModelID: modelID, Reason: reason}
+			if cause != nil {
+				return nil, fmt.Errorf("%w: %v", modelErr, cause)
 			}
+			return nil, modelErr
+		}
+		if sessionHandle.Models == nil || sessionHandle.Models.Synthesized {
+			return pause("", "agent did not provide a usable model catalog", nil)
+		}
+		constraint := m.resolveAuxConstraint(ws, sessionHandle.Models, workspaceUUID, purpose)
+		if constraint == nil || constraint.Pattern == "" {
+			return pause("", "configured selector does not resolve against the agent model catalog", nil)
+		}
+		matched, shouldSet := conversation.ResolveAuxModelSwitch(constraint, sessionHandle.Models)
+		if matched == "" {
+			return pause("", "configured selector matches no model in the agent catalog", nil)
+		}
+		if shouldSet {
+			setCtx, setCancel := context.WithTimeout(ctx, setModelAsyncCallerBudget)
+			setErr := process.SetSessionModel(setCtx, sessionHandle.SessionID, matched)
+			setCancel()
+			if setErr != nil {
+				if m.logger != nil {
+					m.logger.Warn("Auxiliary session paused: configured model was not confirmed", "workspace_uuid", workspaceUUID, "purpose", purpose, "model_id", matched, "error", setErr)
+				}
+				return pause(matched, "agent rejected or did not confirm the configured model", setErr)
+			}
+			state.setModelID(matched)
 		}
 	}
 
@@ -1956,21 +1896,27 @@ func auxiliaryModelForLog(modelID string) (string, bool) {
 // default model in place. Never fails the session.
 func (m *ACPProcessManager) resolveAuxConstraint(ws *config.WorkspaceSettings, models *conversation.SessionModelState, workspaceUUID, purpose string) *config.ACPServerConstraint {
 	if ws != nil && (ws.AuxiliaryModelProfile != "" || ws.AuxiliaryModelTag != "" || ws.AuxiliaryModelSelection != nil) {
-		auxConstraint := ws.AuxiliaryModelSelection
-		if ws.AuxiliaryModelProfile != "" && m.ModelProfileResolver != nil {
-			if profile := m.ModelProfileResolver(ws.AuxiliaryModelProfile); profile != nil && profile.Criteria != nil {
-				auxConstraint = profile.Criteria
+		if ws.AuxiliaryModelProfile != "" {
+			if m.ModelProfileResolver == nil {
+				return nil
 			}
-		} else if ws.AuxiliaryModelTag != "" && m.ModelProfilesByTagResolver != nil {
+			profile := m.ModelProfileResolver(ws.AuxiliaryModelProfile)
+			if profile == nil || profile.Criteria == nil {
+				return nil
+			}
+			return profile.Criteria
+		}
+		if ws.AuxiliaryModelTag != "" {
+			if m.ModelProfilesByTagResolver == nil {
+				return nil
+			}
 			// Priority axis is profile-list order: ModelProfilesByTagResolver returns
 			// tagged profiles in Config.Models order (mirrors config.ProfilesByTag),
 			// and resolveAuxTagConstraint picks the FIRST whose Criteria resolves
 			// against the session's models (mitto-ex7 "list order = priority").
-			if c := resolveAuxTagConstraint(m.ModelProfilesByTagResolver(ws.AuxiliaryModelTag), models); c != nil {
-				auxConstraint = c
-			}
+			return resolveAuxTagConstraint(m.ModelProfilesByTagResolver(ws.AuxiliaryModelTag), models)
 		}
-		return auxConstraint
+		return ws.AuxiliaryModelSelection
 	}
 
 	if m.GlobalAuxModelTagProvider == nil || m.ModelProfilesByTagResolver == nil {

@@ -13,6 +13,19 @@ func containsIgnoreCase(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
+func TestIsAuxiliaryModelUnavailable(t *testing.T) {
+	typed := &AuxiliaryModelUnavailableError{Workspace: "ws", Purpose: "title", ModelID: "missing", Reason: "rejected"}
+	if !IsAuxiliaryModelUnavailable(typed) || !errors.Is(typed, ErrAuxiliaryModelUnavailable) {
+		t.Fatal("typed model-unavailable error was not recognized")
+	}
+	if !IsAuxiliaryModelUnavailable(fmt.Errorf("persisted: %s", typed)) {
+		t.Fatal("serialized model-unavailable marker was not recognized")
+	}
+	if IsAuxiliaryModelUnavailable(nil) || IsAuxiliaryModelUnavailable(errors.New("other")) {
+		t.Fatal("unrelated error was classified as model-unavailable")
+	}
+}
+
 func TestClassifyACPError(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"regexp"
@@ -472,6 +473,42 @@ func IsAuthError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "authentication required")
+}
+
+// ErrAuxiliaryModelUnavailable marks auxiliary work that cannot safely run
+// because its configured model has not been confirmed by the agent.
+var ErrAuxiliaryModelUnavailable = errors.New("AUXILIARY_MODEL_UNAVAILABLE")
+
+// AuxiliaryModelUnavailableError is a durable, recognizable pause error. Its
+// marker survives pending-dispatch serialization; callers must not retry it
+// as a transient prompt failure or choose a different model.
+type AuxiliaryModelUnavailableError struct {
+	Workspace string
+	Purpose   string
+	Selector  string
+	ModelID   string
+	Reason    string
+}
+
+func (e *AuxiliaryModelUnavailableError) Error() string {
+	if e == nil {
+		return ErrAuxiliaryModelUnavailable.Error()
+	}
+	return fmt.Sprintf("%s workspace=%q purpose=%q selector=%q model=%q: %s",
+		ErrAuxiliaryModelUnavailable, e.Workspace, e.Purpose, e.Selector, e.ModelID, e.Reason)
+}
+
+func (e *AuxiliaryModelUnavailableError) Is(target error) bool {
+	return target == ErrAuxiliaryModelUnavailable
+}
+
+// IsAuxiliaryModelUnavailable recognizes both live typed errors and their
+// marker-bearing form persisted in the processor spool.
+func IsAuxiliaryModelUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrAuxiliaryModelUnavailable) || strings.Contains(err.Error(), ErrAuxiliaryModelUnavailable.Error())
 }
 
 // IsHandshakeQueryClosedError reports whether err is the agent's "query closed
