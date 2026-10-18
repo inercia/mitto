@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -175,6 +176,20 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 					Message:    "MCP server port must be a fixed port between 1 and 65535 (0 / auto-assigned is not allowed; the address must be known in advance for ACP servers to connect)",
 				}
 			}
+		}
+	}
+
+	if req.ModelShortcuts != nil {
+		if err := configPkg.ValidateModelShortcuts(*req.ModelShortcuts); err != nil {
+			validationErr := &configValidationError{
+				StatusCode: http.StatusBadRequest,
+				Message:    err.Error(),
+			}
+			var shortcutErr *configPkg.ModelShortcutValidationError
+			if errors.As(err, &shortcutErr) {
+				validationErr.Details = map[string]interface{}{"field": shortcutErr.Field}
+			}
+			return validationErr
 		}
 	}
 

@@ -330,6 +330,16 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		modelsConfig = filteredModels
 	}
 
+	// Select mappings independently of model profiles and normalize a fresh copy
+	// so building settings cannot mutate the live config before persistence.
+	var modelShortcuts []configPkg.ModelShortcut
+	if req.ModelShortcuts != nil {
+		modelShortcuts = *req.ModelShortcuts
+	} else if s.config.MittoConfig != nil {
+		modelShortcuts = s.config.MittoConfig.ModelShortcuts
+	}
+	modelShortcuts = configPkg.NormalizeModelShortcuts(modelShortcuts)
+
 	// Preserve global shortcut buttons. They are not part of the config-save
 	// request body (edited via the dedicated /api/global/shortcuts endpoint), so
 	// carry the existing value forward to avoid wiping them on an unrelated save.
@@ -350,6 +360,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		Permissions:     permissionsConfig,
 		MCP:             mcpConfig,
 		Models:          modelsConfig,
+		ModelShortcuts:  modelShortcuts,
 		Shortcuts:       shortcutsConfig,
 		TaskLabelColors: taskLabelColorsConfig,
 	}, nil
@@ -440,6 +451,7 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.config.MittoConfig.Conversations = settings.Conversations
 		s.config.MittoConfig.MCP = settings.MCP
 		s.config.MittoConfig.Models = settings.Models
+		s.config.MittoConfig.ModelShortcuts = settings.ModelShortcuts
 
 		// Update session manager's global conversations config so new sessions use the updated settings
 		s.sessionManager.SetGlobalConversations(settings.Conversations)

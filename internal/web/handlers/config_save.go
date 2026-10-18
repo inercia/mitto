@@ -73,6 +73,8 @@ type ConfigSaveRequest struct {
 	// from "section present" (apply it as the authoritative full list — the Settings dialog,
 	// which always sends the complete models array). nil means preserve; non-nil replaces.
 	Models *[]configPkg.ModelProfile `json:"models,omitempty"`
+	// ModelShortcuts is independent of Models: omitted/null preserves; [] clears.
+	ModelShortcuts *[]configPkg.ModelShortcut `json:"model_shortcuts"`
 	// ServerRenames maps old ACP server names to their new names. The UI sends
 	// this when a server is renamed in place so the backend can migrate the
 	// stored ACPServer of existing conversations (otherwise they would be

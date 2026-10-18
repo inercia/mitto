@@ -73,6 +73,7 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"config_readonly": h.deps.ConfigReadOnly,
 		"api_prefix":      h.deps.APIPrefix, // Include API prefix for frontend to use
 		"models":          []configPkg.ModelProfile{},
+		"model_shortcuts": []configPkg.ModelShortcut{},
 		// Canonical capability tags (single Go source of truth) so the frontend can
 		// suggest them when editing model-profile tags, without duplicating the list.
 		"model_tags": configPkg.CanonicalModelTags(),
@@ -104,6 +105,9 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		// receives an array, never JSON null.
 		if h.deps.MittoConfig.Models != nil {
 			response["models"] = h.deps.MittoConfig.Models
+		}
+		if h.deps.MittoConfig.ModelShortcuts != nil {
+			response["model_shortcuts"] = h.deps.MittoConfig.ModelShortcuts
 		}
 
 		// MCP server config — send effective values (getters are nil-safe).

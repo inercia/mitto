@@ -78,7 +78,6 @@ models:
 | `criteria.matchMode` | Yes (if criteria set) | string         | One of `contains`, `exact`, `startsWith`, `regex`, `lookAlike`.                              |
 | `criteria.pattern`   | Yes (if criteria set) | string         | The pattern compared against the model's display name.                                       |
 | `tags`               | No                    | list of string | Capability tags associated with this profile.                                                |
-| `shortcutNumber`     | No                    | int            | Optional keyboard-shortcut slot (`1`-`5`) shown next to the profile in the Models settings tab. Pressing `Cmd/Ctrl+Shift+<1-5>` in the composer switches the active conversation model to the profile assigned to that slot (matched against the session's available models the same way `preferredModels` resolves a profile). `0` (default) means unassigned. Each value is unique across profiles — assigning it to a second profile clears it from whichever profile held it before.                                                |
 
 ### Match Modes
 
@@ -92,6 +91,62 @@ engine as ACP-server model constraints (see [ACP Servers](acp.md)):
 | `startsWith` | starts with the pattern                                      |
 | `regex`      | matches the pattern as a regular expression (`(?i)` applied) |
 | `lookAlike`  | contains every whitespace-separated word of the pattern      |
+
+## Model shortcuts (`model_shortcuts`)
+
+Model shortcuts are a separate top-level list mapping a numeric slot to a **model
+tag**, not to a profile or model ID. They are independent of the `models` list and
+the toolbar prompt buttons configured in Settings > Shortcuts.
+
+YAML configuration:
+
+```yaml
+model_shortcuts:
+  - number: 1
+    model_tag: Coding
+  - number: 3
+    model_tag: Fast
+```
+
+The same mappings in `settings.json`:
+
+```json
+{
+  "model_shortcuts": [
+    { "number": 1, "model_tag": "Coding" },
+    { "number": 3, "model_tag": "Fast" }
+  ]
+}
+```
+
+- **Validation:** each `number` must be an integer from **1 to 5**, numbers must be
+  unique, and `model_tag` must be nonblank after trimming surrounding whitespace.
+  Tag case, internal whitespace and entry order are preserved. Custom tags and tags
+  with no currently available model are allowed; multiple numbers may use the same
+  tag.
+- **Config saves:** omitting `model_shortcuts` or sending `null` preserves the
+  effective mappings. Sending a list replaces them completely; `[]` clears them.
+  Invalid lists reject the entire API save with HTTP 400 and an indexed field
+  error. Successful saves update the live configuration without a restart, and
+  config GET always returns an array (including `[]` when unassigned).
+- **Loading files:** semantic-invalid entries (out-of-range numbers or blank tags)
+  are dropped. The first **valid** entry for each number wins, and survivor order
+  is preserved. Malformed syntax or wrong encoded types fail decoding; YAML
+  fractional numbers are not truncated. Loading does not rewrite the file just to
+  normalize mappings.
+- **RC precedence:** when loading settings together with an RC file, a non-null
+  settings list overrides RC mappings, including `[]` as an explicit clear.
+  Missing or `null` settings mappings fall back to the RC list. Settings retain
+  the distinction between `null` and `[]` across saves and restarts. An unrelated
+  config save may persist the current effective RC mappings into settings.
+- **Legacy assignments:** per-profile `shortcutNumber` (YAML) and
+  `shortcut_number` (JSON) are ignored and no longer emitted. They are **not
+  migrated**, even for a single-tag profile, because profiles may have multiple
+  tags. Recreate desired mappings by tag in **Settings > Keyboard**.
+
+YAML input can be converted through Config to settings JSON; this does not add a
+whole-config YAML export format. Explicit read-only config files retain their
+existing save restrictions.
 
 ## Internal Go API
 

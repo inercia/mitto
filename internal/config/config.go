@@ -58,10 +58,6 @@ type ModelProfile struct {
 	Criteria *ACPServerConstraint `json:"criteria,omitempty"`
 	// Tags is the list of capability tags carried by matching models (e.g. "Smart", "Cheap").
 	Tags []string `json:"tags,omitempty"`
-	// ShortcutNumber optionally binds this profile to a quick-switch shortcut (1-5).
-	// 0 means unassigned. At most one profile may hold a given number; the UI
-	// enforces "last selection wins" uniqueness when editing.
-	ShortcutNumber int `json:"shortcut_number,omitempty"`
 }
 
 // DefaultModelProfiles returns the canonical, hardcoded set of model profiles.
@@ -1428,6 +1424,8 @@ type Config struct {
 	// Models is the list of named model profiles (criteria + tags) for tag-based
 	// model-capability lookups.
 	Models []ModelProfile
+	// ModelShortcuts maps numeric quick-switch keys to model capability tags.
+	ModelShortcuts []ModelShortcut
 	// Shortcuts holds global per-section configurable shortcut buttons, keyed by
 	// section ID (e.g. "conversations", "tasksList", "beadsIssue"). These are
 	// merged with folder-level shortcuts at render time (global entries first).
@@ -1447,10 +1445,9 @@ type rawModelCriteria struct {
 
 // rawModelProfile is used for YAML unmarshaling of model profile entries.
 type rawModelProfile struct {
-	Name           string            `yaml:"name"`
-	Criteria       *rawModelCriteria `yaml:"criteria"`
-	Tags           []string          `yaml:"tags"`
-	ShortcutNumber int               `yaml:"shortcutNumber"`
+	Name     string            `yaml:"name"`
+	Criteria *rawModelCriteria `yaml:"criteria"`
+	Tags     []string          `yaml:"tags"`
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -1490,7 +1487,8 @@ type rawACPServerConfig struct {
 type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
 	// Models is the top-level named model profiles section
-	Models []rawModelProfile `yaml:"models"`
+	Models         []rawModelProfile  `yaml:"models"`
+	ModelShortcuts []rawModelShortcut `yaml:"model_shortcuts"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
 		Name            string `yaml:"name"`
@@ -1725,6 +1723,13 @@ func Parse(data []byte) (*Config, error) {
 	cfg := &Config{
 		ACPServers: make([]ACPServer, 0, len(raw.ACP)),
 	}
+	if raw.ModelShortcuts != nil {
+		shortcuts := make([]ModelShortcut, len(raw.ModelShortcuts))
+		for i, shortcut := range raw.ModelShortcuts {
+			shortcuts[i] = ModelShortcut(shortcut)
+		}
+		cfg.ModelShortcuts = NormalizeModelShortcuts(shortcuts)
+	}
 
 	for _, entry := range raw.ACP {
 		for name, server := range entry {
@@ -1781,9 +1786,8 @@ func Parse(data []byte) (*Config, error) {
 			continue
 		}
 		mp := ModelProfile{
-			Name:           m.Name,
-			Tags:           m.Tags,
-			ShortcutNumber: m.ShortcutNumber,
+			Name: m.Name,
+			Tags: m.Tags,
 		}
 		if m.Criteria != nil {
 			mp.Criteria = &ACPServerConstraint{

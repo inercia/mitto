@@ -78,6 +78,8 @@ type Settings struct {
 	MCP *MCPConfig `json:"mcp,omitempty"`
 	// Models is the list of named model profiles (criteria + tags)
 	Models []ModelProfile `json:"models,omitempty"`
+	// ModelShortcuts preserves null (RC fallback) versus [] (explicit clear).
+	ModelShortcuts []ModelShortcut `json:"model_shortcuts"`
 	// Shortcuts holds global per-section configurable shortcut buttons, keyed by
 	// section ID (e.g. "conversations"). Merged with folder-level shortcuts at
 	// render time (global entries first).
@@ -822,6 +824,7 @@ func (s *Settings) ToConfig() *Config {
 		RestrictedRunners: s.RestrictedRunners,
 		MCP:               s.MCP,
 		Models:            s.Models,
+		ModelShortcuts:    NormalizeModelShortcuts(s.ModelShortcuts),
 		Shortcuts:         s.Shortcuts,
 		TaskLabelColors:   s.TaskLabelColors,
 	}
@@ -847,6 +850,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		RestrictedRunners: cfg.RestrictedRunners,
 		MCP:               cfg.MCP,
 		Models:            cfg.Models,
+		ModelShortcuts:    NormalizeModelShortcuts(cfg.ModelShortcuts),
 		Shortcuts:         cfg.Shortcuts,
 		TaskLabelColors:   cfg.TaskLabelColors,
 	}
@@ -1445,6 +1449,10 @@ func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 	// but override ACP servers with the merged list
 	mergedCfg := rcCfg
 	mergedCfg.ACPServers = mergeResult.Items
+	// A nonnil settings list is authoritative, including an explicit clear.
+	if settings.ModelShortcuts != nil {
+		mergedCfg.ModelShortcuts = settingsCfg.ModelShortcuts
+	}
 
 	// Merge Web settings from settings.json into the merged config
 	// These settings are typically configured via the UI and saved to settings.json,

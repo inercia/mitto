@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -759,10 +760,9 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 func twoProfileFixture() []config.ModelProfile {
 	return []config.ModelProfile{
 		{
-			Name:           "Opus",
-			Criteria:       &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
-			Tags:           []string{"Smartest", "Expensive"},
-			ShortcutNumber: 1,
+			Name:     "Opus",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+			Tags:     []string{"Smartest", "Expensive"},
 		},
 		{
 			Name:     "Sonnet",
@@ -829,16 +829,10 @@ func TestHandleGetConfig_ModelProfiles(t *testing.T) {
 	if len(tags0) != 2 || tags0[0] != "Smartest" || tags0[1] != "Expensive" {
 		t.Errorf("models[0].tags = %v, want [Smartest Expensive]", tags0)
 	}
-	if models[0]["shortcut_number"] != float64(1) {
-		t.Errorf("models[0].shortcut_number = %v, want 1", models[0]["shortcut_number"])
-	}
 
 	// Check second profile (Sonnet)
 	if models[1]["name"] != "Sonnet" {
 		t.Errorf("models[1].name = %v, want Sonnet", models[1]["name"])
-	}
-	if _, ok := models[1]["shortcut_number"]; ok {
-		t.Errorf("models[1].shortcut_number = %v, want omitted", models[1]["shortcut_number"])
 	}
 }
 
@@ -868,9 +862,6 @@ func TestBuildNewSettings_ModelsPresent(t *testing.T) {
 	}
 	if settings.Models[1].Name != "Sonnet" {
 		t.Errorf("settings.Models[1].Name = %q, want Sonnet", settings.Models[1].Name)
-	}
-	if settings.Models[0].ShortcutNumber != 1 {
-		t.Errorf("settings.Models[0].ShortcutNumber = %d, want 1", settings.Models[0].ShortcutNumber)
 	}
 }
 
@@ -1163,5 +1154,326 @@ func TestApplyConfigChanges_SimpleAuthSaveArmsPasskey(t *testing.T) {
 	}
 	if !authMgr.HasPasskeyEnabled() {
 		t.Fatal("HasPasskeyEnabled() = false after simple-auth save; passkeys were silently disabled (regression: mitto-4mz)")
+	}
+}
+
+// modelShortcutServer uses a valid full request scaffold without relaxing the
+// required-workspace rule. The settings file is isolated from user settings.
+func modelShortcutServer(t *testing.T) (*Server, string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, dir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{{WorkingDir: "/workspace1", ACPServer: "test-server"}})
+	s := &Server{
+		config: Config{MittoConfig: &config.Config{
+			ACPServers:     []config.ACPServer{{Name: "test-server", Command: "test-cmd"}},
+			Models:         twoProfileFixture(),
+			ModelShortcuts: []config.ModelShortcut{{Number: 2, ModelTag: "Existing"}},
+			Shortcuts:      map[string][]config.ShortcutButton{"global": {}},
+		}},
+		sessionManager: sm,
+	}
+	settings, err := s.buildNewSettings(&ConfigSaveRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	return s, filepath.Join(dir, appdir.SettingsFileName)
+}
+
+func modelShortcutRequest(extra string) *http.Request {
+	return httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{
+		"workspaces":[{"working_dir":"/workspace1","acp_server":"test-server"}],
+		"acp_servers":[{"name":"test-server","command":"test-cmd"}]`+extra+`}`))
+}
+
+func readModelShortcutSettings(t *testing.T, path string) (*config.Settings, []byte) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings config.Settings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	return &settings, data
+}
+
+func TestHandleSaveConfig_ModelShortcutsPresence(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		extra string
+		want  []config.ModelShortcut
+	}{
+		{"omitted", "", []config.ModelShortcut{{Number: 2, ModelTag: "Existing"}}},
+		{"null", `,"model_shortcuts":null`, []config.ModelShortcut{{Number: 2, ModelTag: "Existing"}}},
+		{"clear", `,"model_shortcuts":[]`, []config.ModelShortcut{}},
+		{"replace trimmed custom same tag", `,"model_shortcuts":[{"number":5,"model_tag":"  Custom  Tag  "},{"number":1,"model_tag":"Custom  Tag"}]`, []config.ModelShortcut{{Number: 5, ModelTag: "Custom  Tag"}, {Number: 1, ModelTag: "Custom  Tag"}}},
+		{"models only", `,"models":[]`, []config.ModelShortcut{{Number: 2, ModelTag: "Existing"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, path := modelShortcutServer(t)
+			live := s.config.MittoConfig
+			oldProfiles := live.Models
+			oldToolbar := live.Shortcuts
+			oldMappings := append([]config.ModelShortcut(nil), live.ModelShortcuts...)
+			before := httptest.NewRecorder()
+			s.handleGetConfig(before, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+			applied := false
+			// Observe the real handler boundary: disk is already saved, while the
+			// shared live config still has its old value at entry to Apply.
+			h := handlers.New(handlers.Deps{
+				MittoConfig: live, SessionManager: s.sessionManager,
+				ValidateAndPrepareConfig: s.validateAndPrepareSaveConfig,
+				BuildNewSettings:         s.buildNewSettings,
+				ApplyConfigChanges: func(req *ConfigSaveRequest, settings *config.Settings) *ExternalAccessWarning {
+					applied = true
+					saved, _ := readModelShortcutSettings(t, path)
+					if !reflect.DeepEqual(saved.ModelShortcuts, tt.want) || !reflect.DeepEqual(settings.ModelShortcuts, tt.want) {
+						t.Fatalf("saved/built mappings = %+v/%+v, want %+v", saved.ModelShortcuts, settings.ModelShortcuts, tt.want)
+					}
+					if !reflect.DeepEqual(live.ModelShortcuts, oldMappings) {
+						t.Fatal("live mappings changed before successful save/apply")
+					}
+					// Applying must use persisted Settings, not the request slice.
+					req.ModelShortcuts = nil
+					return s.applyConfigChanges(req, settings)
+				},
+			})
+			w := httptest.NewRecorder()
+			h.HandleSaveConfig(w, modelShortcutRequest(tt.extra))
+			if w.Code != http.StatusOK || !applied {
+				t.Fatalf("status=%d applied=%v body=%s", w.Code, applied, w.Body.String())
+			}
+			if s.config.MittoConfig != live || !reflect.DeepEqual(live.ModelShortcuts, tt.want) {
+				t.Fatalf("live pointer/mappings changed incorrectly: %+v", live.ModelShortcuts)
+			}
+			saved, _ := readModelShortcutSettings(t, path)
+			if !reflect.DeepEqual(saved.Shortcuts, oldToolbar) || !reflect.DeepEqual(live.Shortcuts, oldToolbar) {
+				t.Fatal("mapping save changed unrelated toolbar shortcuts")
+			}
+			wantProfiles := oldProfiles
+			if tt.name == "models only" {
+				wantProfiles = []config.ModelProfile{}
+			}
+			// Models retains its existing omitempty persistence behavior: an
+			// explicit empty live list decodes back from disk as nil.
+			savedProfilesMatch := reflect.DeepEqual(saved.Models, wantProfiles)
+			if tt.name == "models only" {
+				savedProfilesMatch = len(saved.Models) == 0
+			}
+			if !savedProfilesMatch || !reflect.DeepEqual(live.Models, wantProfiles) {
+				t.Fatal("profile presence semantics changed")
+			}
+			after := httptest.NewRecorder()
+			h.HandleGetConfig(after, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+			var response struct {
+				ModelShortcuts []config.ModelShortcut `json:"model_shortcuts"`
+			}
+			if err := json.Unmarshal(after.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(response.ModelShortcuts, tt.want) {
+				t.Fatalf("subsequent GET = %+v, want %+v", response.ModelShortcuts, tt.want)
+			}
+			if !reflect.DeepEqual(oldMappings, tt.want) && before.Header().Get("ETag") == after.Header().Get("ETag") {
+				t.Fatal("mapping-only change did not change ETag")
+			}
+		})
+	}
+}
+
+func TestHandleSaveConfig_ModelShortcutsInvalid(t *testing.T) {
+	for _, tt := range []struct {
+		name, value, field string
+	}{
+		{"zero", `[{"number":0,"model_tag":"Tag"}]`, "model_shortcuts[0].number"},
+		{"negative", `[{"number":-1,"model_tag":"Tag"}]`, "model_shortcuts[0].number"},
+		{"six", `[{"number":6,"model_tag":"Tag"}]`, "model_shortcuts[0].number"},
+		{"missing number", `[{"model_tag":"Tag"}]`, "model_shortcuts[0].number"},
+		{"null number", `[{"number":null,"model_tag":"Tag"}]`, "model_shortcuts[0].number"},
+		{"duplicate", `[{"number":3,"model_tag":"Tag"},{"number":3,"model_tag":"Other"}]`, "model_shortcuts[1].number"},
+		{"blank", `[{"number":1,"model_tag":"Tag"},{"number":4,"model_tag":" \t "}]`, "model_shortcuts[1].model_tag"},
+		{"null tag", `[{"number":1,"model_tag":null}]`, "model_shortcuts[0].model_tag"},
+		{"tag type", `[{"number":1,"model_tag":42}]`, ""},
+		{"number type", `[{"number":"1","model_tag":"Tag"}]`, ""},
+		{"fraction", `[{"number":1.5,"model_tag":"Tag"}]`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, path := modelShortcutServer(t)
+			_, before := readModelShortcutSettings(t, path)
+			live := s.config.MittoConfig
+			old := append([]config.ModelShortcut(nil), live.ModelShortcuts...)
+			built, applied := false, false
+			h := handlers.New(handlers.Deps{
+				ValidateAndPrepareConfig: s.validateAndPrepareSaveConfig,
+				BuildNewSettings: func(req *ConfigSaveRequest) (*config.Settings, error) {
+					built = true
+					return s.buildNewSettings(req)
+				},
+				ApplyConfigChanges: func(req *ConfigSaveRequest, settings *config.Settings) *ExternalAccessWarning {
+					applied = true
+					return s.applyConfigChanges(req, settings)
+				},
+			})
+			w := httptest.NewRecorder()
+			h.HandleSaveConfig(w, modelShortcutRequest(`,"model_shortcuts":`+tt.value))
+			if w.Code != http.StatusBadRequest || built || applied {
+				t.Fatalf("status=%d built=%v applied=%v body=%s", w.Code, built, applied, w.Body.String())
+			}
+			if tt.field != "" {
+				var response struct {
+					Error struct {
+						Message string `json:"message"`
+						Details struct {
+							Field string `json:"field"`
+						} `json:"details"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasPrefix(response.Error.Message, tt.field+": ") || response.Error.Details.Field != tt.field {
+					t.Fatalf("missing indexed semantic error: %s", w.Body.String())
+				}
+			}
+			_, after := readModelShortcutSettings(t, path)
+			if string(after) != string(before) || s.config.MittoConfig != live || !reflect.DeepEqual(live.ModelShortcuts, old) {
+				t.Fatal("invalid request changed disk or live config")
+			}
+		})
+	}
+}
+
+func TestHandleGetConfig_ModelShortcutsArrays(t *testing.T) {
+	for _, cfg := range []*config.Config{nil, {}, {ModelShortcuts: []config.ModelShortcut{}}, {ModelShortcuts: []config.ModelShortcut{{Number: 5, ModelTag: "Last"}, {Number: 1, ModelTag: "First"}}}} {
+		s := &Server{config: Config{MittoConfig: cfg}, sessionManager: conversation.NewSessionManager("", "", false, nil)}
+		w := httptest.NewRecorder()
+		s.handleGetConfig(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+		var response map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		want := "[]"
+		if cfg != nil && len(cfg.ModelShortcuts) > 0 {
+			data, err := json.Marshal(cfg.ModelShortcuts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want = string(data)
+		}
+		if string(response["model_shortcuts"]) != want {
+			t.Fatalf("GET mappings = %s, want %s", response["model_shortcuts"], want)
+		}
+		etag := w.Header().Get("ETag")
+		if etag == "" {
+			t.Fatal("missing ETag")
+		}
+		r := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+		r.Header.Set("If-None-Match", etag)
+		cached := httptest.NewRecorder()
+		s.handleGetConfig(cached, r)
+		if cached.Code != http.StatusNotModified {
+			t.Fatalf("cached status = %d", cached.Code)
+		}
+	}
+}
+
+func TestHandleSaveConfig_ModelShortcutsSaveFailureAndReadOnly(t *testing.T) {
+	for _, readOnly := range []bool{false, true} {
+		t.Run(map[bool]string{false: "save failure", true: "read only"}[readOnly], func(t *testing.T) {
+			s, path := modelShortcutServer(t)
+			_, before := readModelShortcutSettings(t, path)
+			live := s.config.MittoConfig
+			old := append([]config.ModelShortcut(nil), live.ModelShortcuts...)
+			s.config.ConfigReadOnly = readOnly
+			if !readOnly {
+				// A directory at settings.json deterministically rejects atomic file
+				// replacement even when tests run with elevated permissions.
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "sentinel"), before, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := httptest.NewRecorder()
+			s.handleSaveConfig(w, modelShortcutRequest(`,"model_shortcuts":[{"number":5,"model_tag":"New"}]`))
+			wantStatus := http.StatusInternalServerError
+			if readOnly {
+				wantStatus = http.StatusForbidden
+			}
+			if w.Code != wantStatus {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			if s.config.MittoConfig != live || !reflect.DeepEqual(live.ModelShortcuts, old) {
+				t.Fatal("failed save mutated live config")
+			}
+			checkPath := path
+			if !readOnly {
+				checkPath = filepath.Join(path, "sentinel")
+			}
+			after, err := os.ReadFile(checkPath)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("failed save mutated disk: %v", err)
+			}
+		})
+	}
+}
+
+func TestHandleSaveConfig_LegacyProfileShortcutIgnored(t *testing.T) {
+	s, path := modelShortcutServer(t)
+	s.config.MittoConfig.ModelShortcuts = nil
+	w := httptest.NewRecorder()
+	s.handleSaveConfig(w, modelShortcutRequest(`,"models":[{"name":"Legacy","criteria":{"matchMode":"contains","pattern":"Model"},"tags":["OnlyTag"],"shortcut_number":1,"shortcutNumber":2}]`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	saved, data := readModelShortcutSettings(t, path)
+	if saved.ModelShortcuts != nil || s.config.MittoConfig.ModelShortcuts != nil {
+		t.Fatal("inferred mapping from legacy profile")
+	}
+	if strings.Contains(string(data), "shortcut_number") || strings.Contains(string(data), "shortcutNumber") {
+		t.Fatal("persisted legacy field")
+	}
+	want := []config.ModelProfile{{Name: "Legacy", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model"}, Tags: []string{"OnlyTag"}}}
+	if !reflect.DeepEqual(saved.Models, want) {
+		t.Fatalf("legacy profile lost non-shortcut fields: %+v", saved.Models)
+	}
+}
+
+func TestBuildNewSettings_ModelShortcutsIndependentCopy(t *testing.T) {
+	for _, useRequest := range []bool{false, true} {
+		input := []config.ModelShortcut{{Number: 3, ModelTag: "  Custom  Tag  "}}
+		s := &Server{config: Config{MittoConfig: &config.Config{ModelShortcuts: input}}}
+		req := &ConfigSaveRequest{}
+		if useRequest {
+			req.ModelShortcuts = &input
+		}
+		settings, err := s.buildNewSettings(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if input[0].ModelTag != "  Custom  Tag  " || settings.ModelShortcuts[0].ModelTag != "Custom  Tag" {
+			t.Fatal("normalization mutated source or did not trim")
+		}
+		settings.ModelShortcuts[0].ModelTag = "Changed"
+		if input[0].ModelTag != "  Custom  Tag  " {
+			t.Fatal("settings mappings alias source")
+		}
+	}
+	s := &Server{}
+	settings, err := s.buildNewSettings(&ConfigSaveRequest{})
+	if err != nil || settings.ModelShortcuts != nil {
+		t.Fatalf("nil config mappings = %+v, err=%v", settings.ModelShortcuts, err)
 	}
 }

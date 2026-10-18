@@ -966,10 +966,9 @@ func TestConfigToSettings_RoundTripWithModels(t *testing.T) {
 	original := &Config{
 		Models: []ModelProfile{
 			{
-				Name:           "Opus",
-				Criteria:       &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
-				Tags:           []string{"Smartest", "Expensive"},
-				ShortcutNumber: 1,
+				Name:     "Opus",
+				Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+				Tags:     []string{"Smartest", "Expensive"},
 			},
 			{
 				Name: "TagsOnly",
@@ -1008,9 +1007,6 @@ func TestConfigToSettings_RoundTripWithModels(t *testing.T) {
 	if len(opus.Tags) != 2 || opus.Tags[0] != "Smartest" || opus.Tags[1] != "Expensive" {
 		t.Errorf("Models[0].Tags = %v, want [Smartest Expensive]", opus.Tags)
 	}
-	if opus.ShortcutNumber != 1 {
-		t.Errorf("Models[0].ShortcutNumber = %d, want 1", opus.ShortcutNumber)
-	}
 
 	tagsOnly := result.Models[1]
 	if tagsOnly.Name != "TagsOnly" {
@@ -1021,9 +1017,6 @@ func TestConfigToSettings_RoundTripWithModels(t *testing.T) {
 	}
 	if len(tagsOnly.Tags) != 1 || tagsOnly.Tags[0] != "Fast" {
 		t.Errorf("Models[1].Tags = %v, want [Fast]", tagsOnly.Tags)
-	}
-	if tagsOnly.ShortcutNumber != 0 {
-		t.Errorf("Models[1].ShortcutNumber = %d, want 0 (unset)", tagsOnly.ShortcutNumber)
 	}
 }
 

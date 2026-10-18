@@ -2930,18 +2930,10 @@ models:
 		t.Errorf("Models[1].Tags = %v, want [Smart Cheap]", sonnet.Tags)
 	}
 
-	// Neither profile declared shortcutNumber; must default to 0 (unassigned).
-	if opus.ShortcutNumber != 0 {
-		t.Errorf("Models[0].ShortcutNumber = %d, want 0 (unset)", opus.ShortcutNumber)
-	}
-	if sonnet.ShortcutNumber != 0 {
-		t.Errorf("Models[1].ShortcutNumber = %d, want 0 (unset)", sonnet.ShortcutNumber)
-	}
 }
 
-// TestParse_ModelsShortcutNumber pins YAML parsing of the shortcutNumber field
-// (mitto-qmqq.1): present values pass through verbatim, absent defaults to 0.
-func TestParse_ModelsShortcutNumber(t *testing.T) {
+// Legacy shortcut keys are ignored without affecting profile parsing.
+func TestParse_ModelsLegacyShortcutIgnored(t *testing.T) {
 	yaml := `
 models:
   - name: Opus
@@ -2966,14 +2958,13 @@ models:
 	if len(cfg.Models) != 3 {
 		t.Fatalf("Models count = %d, want 3", len(cfg.Models))
 	}
-	if cfg.Models[0].ShortcutNumber != 1 {
-		t.Errorf("Models[0] (Opus).ShortcutNumber = %d, want 1", cfg.Models[0].ShortcutNumber)
+	for i, name := range []string{"Opus", "Sonnet", "Haiku"} {
+		if cfg.Models[i].Name != name || cfg.Models[i].Criteria == nil || cfg.Models[i].Criteria.Pattern != name {
+			t.Errorf("Models[%d] = %+v, want profile for %s", i, cfg.Models[i], name)
+		}
 	}
-	if cfg.Models[1].ShortcutNumber != 0 {
-		t.Errorf("Models[1] (Sonnet).ShortcutNumber = %d, want 0 (field omitted in YAML)", cfg.Models[1].ShortcutNumber)
-	}
-	if cfg.Models[2].ShortcutNumber != 0 {
-		t.Errorf("Models[2] (Haiku).ShortcutNumber = %d, want 0 (explicit zero)", cfg.Models[2].ShortcutNumber)
+	if cfg.ModelShortcuts != nil {
+		t.Errorf("legacy profiles inferred shortcuts: %v", cfg.ModelShortcuts)
 	}
 }
 
