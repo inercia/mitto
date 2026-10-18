@@ -84,6 +84,16 @@ import {
 } from "../utils/agentDeleteChoice.js";
 import { buildAutoChildAgentOptions } from "../utils/autoChildAgentOptions.js";
 import { buildAuxiliaryModelTagOptions } from "../utils/auxiliaryModelTagOptions.js";
+import {
+  loadModelShortcuts,
+  availableModelShortcutNumbers,
+  addModelShortcut,
+  updateModelShortcut,
+  removeModelShortcut,
+  validateModelShortcuts,
+  serializeModelShortcuts,
+  modelShortcutLabel,
+} from "../utils/settingsModelShortcuts.js";
 
 // Section descriptors for the global Shortcuts tab. Section IDs match those used
 // by the folder-level editor and the render-time toolbars; each maps to the
@@ -2054,6 +2064,8 @@ export function SettingsDialog({
   const [acpServers, setAcpServers] = useState([]);
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
+  // Independent local drafts, persisted only by the normal Settings Save.
+  const [modelShortcuts, setModelShortcuts] = useState([]);
   // Canonical capability tags suggested when editing a profile's tags. Sourced
   // from the backend (config.model_tags → config.CanonicalModelTags), so the
   // suggestion list stays in sync with Go and is always present. Free-text entry
@@ -2483,7 +2495,16 @@ export function SettingsDialog({
       const servers = config.acp_servers || [];
       servers.forEach(assignStableKey);
       setAcpServers(servers);
-      setModelProfiles(Array.isArray(config.models) ? config.models : []);
+      setModelProfiles(
+        Array.isArray(config.models)
+          ? config.models.map((profile) => ({
+              name: profile.name || "",
+              criteria: profile.criteria ? { ...profile.criteria } : null,
+              tags: Array.isArray(profile.tags) ? [...profile.tags] : [],
+            }))
+          : [],
+      );
+      setModelShortcuts(loadModelShortcuts(config.model_shortcuts));
       setModelTags(Array.isArray(config.model_tags) ? config.model_tags : []);
       setExpandedProfileIndex(-1);
       setTagDrafts({});
@@ -2841,6 +2862,13 @@ export function SettingsDialog({
       return;
     }
 
+    const modelShortcutError = validateModelShortcuts(modelShortcuts);
+    if (modelShortcutError) {
+      setError(modelShortcutError);
+      setActiveTab("keyboard");
+      return;
+    }
+
     setSaving(true);
     const saveStartTime = Date.now();
     try {
@@ -3031,11 +3059,6 @@ export function SettingsDialog({
           tags: Array.isArray(p.tags)
             ? p.tags.filter((t) => t && t.trim())
             : [],
-          // Only persist a valid 1-5 shortcut; "Unassigned" (0) and any
-          // out-of-range value are omitted so the backend's omitempty drops them.
-          ...(p.shortcut_number >= 1 && p.shortcut_number <= 5
-            ? { shortcut_number: p.shortcut_number }
-            : {}),
         }))
         .filter((p) => p.name !== "" || p.criteria || p.tags.length > 0);
 
@@ -3056,6 +3079,7 @@ export function SettingsDialog({
           port: parseInt(mcpPort, 10) >= 1 ? parseInt(mcpPort, 10) : 5757,
         },
         models: modelProfilesToSave,
+        model_shortcuts: serializeModelShortcuts(modelShortcuts),
         restricted_runners:
           Object.keys(restrictedRunnersToSave).length > 0
             ? restrictedRunnersToSave
@@ -3539,8 +3563,6 @@ export function SettingsDialog({
         name: `${(src.name || "").trim()} (Copy)`.trim(),
         criteria: src.criteria ? { ...src.criteria } : null,
         tags: Array.isArray(src.tags) ? [...src.tags] : [],
-        // Shortcut numbers are unique per profile — never carry over to a duplicate.
-        shortcut_number: 0,
       };
       const next = [...prev];
       next.splice(i + 1, 0, copy);
@@ -3573,36 +3595,6 @@ export function SettingsDialog({
     setTagDrafts((prev) => ({ ...prev, [i]: "" }));
   };
 
-  // Shortcut numbers (1-5) must be unique across profiles; assigning one to
-  // profile `i` steals it from whichever other profile currently holds it
-  // ("last selection wins"), surfacing a warning toast on collision.
-  const setProfileShortcut = (i, value) => {
-    const shortcut = Number(value) || 0;
-    setModelProfiles((prev) => {
-      if (i < 0 || i >= prev.length) return prev;
-      let stolenFrom = null;
-      const next = prev.map((p, idx) => {
-        if (idx === i) {
-          return { ...p, shortcut_number: shortcut };
-        }
-        if (shortcut > 0 && (p.shortcut_number || 0) === shortcut) {
-          stolenFrom = p.name || `Profile ${idx + 1}`;
-          return { ...p, shortcut_number: 0 };
-        }
-        return p;
-      });
-      if (stolenFrom) {
-        showToast?.({
-          style: "warning",
-          title: "Shortcut reassigned",
-          message: `Shortcut ${shortcut} moved from "${stolenFrom}" to this profile.`,
-          duration: 4000,
-        });
-      }
-      return next;
-    });
-  };
-
   if (!isOpen) return null;
 
   // Can close if we have both ACP servers and workspaces configured
@@ -3612,6 +3604,7 @@ export function SettingsDialog({
   const navItems = [
     { id: "servers", label: "Agents", icon: ServerIcon },
     { id: "models", label: "Models", icon: LayersIcon },
+    { id: "keyboard", label: "Keyboard", icon: KeyboardIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
@@ -6300,6 +6293,103 @@ export function SettingsDialog({
                   </div>
                 `}
 
+                <!-- Keyboard Tab: independent model-tag mappings, not toolbar buttons -->
+                ${activeTab === "keyboard" &&
+                html`
+                  <div class="space-y-4">
+                    <h3 class="font-medium">Model Shortcuts</h3>
+                    <p class="text-mitto-text-muted text-sm">
+                      Assign a keyboard shortcut to a model tag. Custom tags are
+                      allowed. Delete a row to unassign its shortcut, then Save.
+                    </p>
+                    <datalist id="keyboard-model-tag-suggestions">
+                      ${collectModelTags([
+                        ...modelProfiles,
+                        { tags: modelTags },
+                        { tags: modelShortcuts.map((row) => row.model_tag) },
+                      ]).map(
+                        (tag) => html`<option key=${tag} value=${tag}></option>`,
+                      )}
+                    </datalist>
+                    ${modelShortcuts.length === 0 &&
+                    html`<p class="text-mitto-text-muted text-sm">
+                      No model shortcuts assigned. Add a shortcut to get started.
+                    </p>`}
+                    ${modelShortcuts.map((row, i) => html`
+                      <fieldset
+                        key=${i}
+                        class="fieldset border border-mitto-border-1 rounded-lg p-3"
+                        data-testid=${`model-shortcut-row-${i}`}
+                      >
+                        <legend class="fieldset-legend">Shortcut ${i + 1}</legend>
+                        <div class="flex flex-col sm:flex-row gap-2 sm:items-center">
+                          <select
+                            class="select select-sm w-full sm:w-auto"
+                            aria-label=${`Shortcut number for row ${i + 1}`}
+                            data-testid=${`model-shortcut-number-${i}`}
+                            value=${row.number}
+                            onChange=${(e) => {
+                              const number = Number(e.target.value);
+                              setModelShortcuts((prev) =>
+                                updateModelShortcut(prev, i, { number }),
+                              );
+                            }}
+                          >
+                            ${availableModelShortcutNumbers(modelShortcuts, i).map((number) => html`
+                              <option value=${number}>
+                                ${modelShortcutLabel(number, navigator.platform)}
+                              </option>
+                            `)}
+                          </select>
+                          <input
+                            type="text"
+                            class="input input-sm w-full flex-1"
+                            aria-label=${`Model tag for shortcut row ${i + 1}`}
+                            data-testid=${`model-shortcut-tag-${i}`}
+                            list="keyboard-model-tag-suggestions"
+                            placeholder="e.g., Coding"
+                            value=${row.model_tag}
+                            onInput=${(e) => {
+                              const model_tag = e.target.value;
+                              setModelShortcuts((prev) =>
+                                updateModelShortcut(prev, i, { model_tag }),
+                              );
+                            }}
+                          />
+                          <button
+                            type="button"
+                            class="btn btn-sm btn-ghost text-error"
+                            aria-label=${`Delete model shortcut row ${i + 1}`}
+                            data-testid=${`delete-model-shortcut-${i}`}
+                            onClick=${() =>
+                              setModelShortcuts((prev) => removeModelShortcut(prev, i))}
+                          >
+                            <${TrashIcon} className="w-4 h-4" />
+                            Delete
+                          </button>
+                        </div>
+                      </fieldset>
+                    `)}
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      data-testid="add-model-shortcut"
+                      disabled=${availableModelShortcutNumbers(modelShortcuts).length === 0}
+                      aria-describedby="model-shortcuts-capacity"
+                      onClick=${() =>
+                        setModelShortcuts((prev) => addModelShortcut(prev))}
+                    >
+                      <${PlusIcon} className="w-4 h-4" />
+                      Add Shortcut
+                    </button>
+                    <p id="model-shortcuts-capacity" class="text-mitto-text-muted text-sm">
+                      ${availableModelShortcutNumbers(modelShortcuts).length === 0
+                        ? "All five shortcut numbers are assigned. Delete a row to add another."
+                        : "Shortcut numbers 1–5 are available; each number can be assigned once."}
+                    </p>
+                  </div>
+                `}
+
                 <!-- Models Tab -->
                 ${activeTab === "models" &&
                 html`
@@ -6553,31 +6643,6 @@ export function SettingsDialog({
                                 `}
                               </div>
 
-                              <!-- Shortcut number -->
-                              <div class="space-y-1">
-                                <label
-                                  class="text-xs font-medium text-mitto-text-secondary"
-                                >
-                                  Shortcut
-                                </label>
-                                <select
-                                  class="select select-sm w-full"
-                                  data-testid="model-profile-shortcut-${i}"
-                                  value=${p.shortcut_number || 0}
-                                  onChange=${(e) =>
-                                    setProfileShortcut(
-                                      i,
-                                      parseInt(e.target.value, 10) || 0,
-                                    )}
-                                >
-                                  <option value="0">Unassigned</option>
-                                  ${[1, 2, 3, 4, 5].map(
-                                    (n) => html`
-                                      <option value=${n}>${n}</option>
-                                    `,
-                                  )}
-                                </select>
-                              </div>
                             </div>
                           `}
                         </div>

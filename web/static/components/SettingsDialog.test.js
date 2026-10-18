@@ -1,7 +1,7 @@
 /**
- * Unit tests for the Models settings tab pure data-transform helpers.
+ * Settings data-transform and source-wiring tests (not mounted browser tests).
  *
- * These duplicate the pure transforms from SettingsDialog.js (the component
+ * Legacy Models tests duplicate pure transforms from SettingsDialog.js (the component
  * reads window.preact globals at module load and cannot be imported directly
  * under jsdom). Keep these helpers in sync with the implementation.
  *
@@ -12,6 +12,14 @@
 
 import { readFileSync } from "node:fs";
 import { buildAutoChildAgentOptions } from "../utils/autoChildAgentOptions.js";
+import {
+  loadModelShortcuts,
+  addModelShortcut,
+  updateModelShortcut,
+  removeModelShortcut,
+  serializeModelShortcuts,
+  validateModelShortcuts,
+} from "../utils/settingsModelShortcuts.js";
 
 /**
  * Duplicated from SettingsDialog.js (Tags onInput handler, ~lines 4745-4775).
@@ -44,9 +52,7 @@ const commitTagTokens = (raw, existingTags = []) => {
 
 /**
  * Duplicated from SettingsDialog.js (modelProfilesToSave, ~lines 1919-1933).
- * Normalizes a model profile object for the save payload. Only a valid 1-5
- * shortcut_number is persisted; "Unassigned" (0) and any out-of-range value
- * are omitted entirely so the backend's `omitempty` drops the JSON key.
+ * Normalizes only the supported model profile fields for the save payload.
  */
 const normalizeModelProfile = (p) => ({
   name: (p.name || "").trim(),
@@ -55,44 +61,18 @@ const normalizeModelProfile = (p) => ({
       ? { matchMode: p.criteria.matchMode, pattern: p.criteria.pattern || "" }
       : null,
   tags: Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [],
-  ...(p.shortcut_number >= 1 && p.shortcut_number <= 5
-    ? { shortcut_number: p.shortcut_number }
-    : {}),
 });
 
 /**
  * Duplicated from SettingsDialog.js (duplicateProfile, ~lines 2280-2295).
- * Shortcut numbers are never carried over to a duplicated profile — they
- * always reset to 0 (Unassigned) on the copy.
+ * Copies profile data independently and appends the existing copy-name suffix.
  */
 const duplicateModelProfileCopy = (src) => ({
   ...src,
-  shortcut_number: 0,
+  name: `${(src.name || "").trim()} (Copy)`.trim(),
+  criteria: src.criteria ? { ...src.criteria } : null,
+  tags: Array.isArray(src.tags) ? [...src.tags] : [],
 });
-
-/**
- * Duplicated from SettingsDialog.js (setProfileShortcut, ~lines 2322-2345).
- * Assigns `shortcut` (0 = Unassigned, 1-5 = valid) to the profile at index
- * `i`, atomically clearing that same shortcut from any OTHER profile that
- * currently holds it (last-selection-wins uniqueness). Returns
- * `{ profiles, stolenFrom }` where `stolenFrom` is the name (or fallback
- * label) of the profile that lost its shortcut, or null if no collision.
- */
-const applyProfileShortcut = (profiles, i, shortcut) => {
-  if (i < 0 || i >= profiles.length) return { profiles, stolenFrom: null };
-  let stolenFrom = null;
-  const next = profiles.map((p, idx) => {
-    if (idx === i) {
-      return { ...p, shortcut_number: shortcut };
-    }
-    if (shortcut > 0 && (p.shortcut_number || 0) === shortcut) {
-      stolenFrom = p.name || `Profile ${idx + 1}`;
-      return { ...p, shortcut_number: 0 };
-    }
-    return p;
-  });
-  return { profiles: next, stolenFrom };
-};
 
 /**
  * Duplicated from SettingsDialog.js (modelProfilesToSave filter, ~line 1933).
@@ -230,133 +210,202 @@ describe("normalizeModelProfile", () => {
     });
   });
 
-  test("shortcut_number is omitted when 0 (unassigned)", () => {
-    const result = normalizeModelProfile({ name: "Opus", shortcut_number: 0 });
-    expect(result).not.toHaveProperty("shortcut_number");
-  });
-
-  test("shortcut_number is omitted when absent", () => {
-    const result = normalizeModelProfile({ name: "Opus" });
-    expect(result).not.toHaveProperty("shortcut_number");
-  });
-
-  test("shortcut_number is included for valid boundary value 1", () => {
-    expect(
-      normalizeModelProfile({ name: "Opus", shortcut_number: 1 }).shortcut_number,
-    ).toBe(1);
-  });
-
-  test("shortcut_number is included for valid boundary value 5", () => {
-    expect(
-      normalizeModelProfile({ name: "Opus", shortcut_number: 5 }).shortcut_number,
-    ).toBe(5);
-  });
-
-  test("shortcut_number is omitted when out of range (6)", () => {
-    const result = normalizeModelProfile({ name: "Opus", shortcut_number: 6 });
-    expect(result).not.toHaveProperty("shortcut_number");
-  });
-
-  test("shortcut_number is omitted when out of range (-1)", () => {
-    const result = normalizeModelProfile({ name: "Opus", shortcut_number: -1 });
-    expect(result).not.toHaveProperty("shortcut_number");
+  test("legacy shortcut fields are ignored rather than migrated", () => {
+    expect(normalizeModelProfile({ name: "Opus", shortcut_number: 3 })).toEqual({
+      name: "Opus", criteria: null, tags: [],
+    });
   });
 });
 
 describe("duplicateModelProfileCopy", () => {
-  test("resets shortcut_number to 0 when the source had a valid shortcut", () => {
-    const src = { name: "Opus", tags: ["Smart"], shortcut_number: 3 };
-    expect(duplicateModelProfileCopy(src).shortcut_number).toBe(0);
-  });
-
-  test("resets shortcut_number to 0 when the source had none", () => {
-    const src = { name: "Opus", tags: [] };
-    expect(duplicateModelProfileCopy(src).shortcut_number).toBe(0);
-  });
-
-  test("preserves other fields (name, criteria, tags) unchanged", () => {
+  test("copies name, criteria and tags without aliasing", () => {
     const src = {
       name: "Opus",
       criteria: { matchMode: "contains", pattern: "Opus" },
       tags: ["Smart", "Expensive"],
-      shortcut_number: 2,
     };
     const copy = duplicateModelProfileCopy(src);
-    expect(copy.name).toBe("Opus");
+    expect(copy.name).toBe("Opus (Copy)");
     expect(copy.criteria).toEqual({ matchMode: "contains", pattern: "Opus" });
     expect(copy.tags).toEqual(["Smart", "Expensive"]);
+    expect(copy.criteria).not.toBe(src.criteria);
+    expect(copy.tags).not.toBe(src.tags);
   });
 });
 
-describe("applyProfileShortcut", () => {
-  test("assigns a valid shortcut with no prior collision", () => {
-    const profiles = [
-      { name: "Opus", shortcut_number: 0 },
-      { name: "Sonnet", shortcut_number: 0 },
-    ];
-    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 0, 1);
-    expect(next[0].shortcut_number).toBe(1);
-    expect(next[1].shortcut_number).toBe(0);
-    expect(stolenFrom).toBeNull();
+describe("Keyboard settings production wiring and config fixtures (mitto-28t.2)", () => {
+  const source = readFileSync(new URL("./SettingsDialog.js", import.meta.url), "utf8");
+  const keyboardPanel = source.split("<!-- Keyboard Tab:")[1].split("<!-- Models Tab -->")[0];
+  const loadSource = source.slice(source.indexOf("      setModelProfiles("), source.indexOf("      setExpandedProfileIndex(-1);", source.indexOf("const loadConfig =")));
+  const validationSource = source.slice(source.indexOf("    const modelShortcutError ="), source.indexOf("    setSaving(true);", source.indexOf("const handleSave =")));
+  const saveSource = source.slice(source.indexOf("      const modelProfilesToSave ="), source.indexOf("      // DEBUG: Log config being saved"));
+
+  // Execute the actual load/save seams, not copies of the payload algorithm.
+  // This does not mount Preact or claim browser interaction coverage.
+  const loadDrafts = (config) => {
+    const state = {};
+    new Function("config", "setModelProfiles", "setModelShortcuts", "setModelTags", "loadModelShortcuts", loadSource)(
+      config,
+      (value) => { state.models = value; },
+      (value) => { state.modelShortcuts = value; },
+      (value) => { state.modelTags = value; },
+      loadModelShortcuts,
+    );
+    return state;
+  };
+  const validateDrafts = (rows) => {
+    const state = {};
+    state.valid = new Function("modelShortcuts", "validateModelShortcuts", "setError", "setActiveTab", `${validationSource}\nreturn true;`)(
+      rows, validateModelShortcuts,
+      (value) => { state.error = value; },
+      (value) => { state.tab = value; },
+    );
+    return state;
+  };
+  const saveDrafts = (fixture, drafts, serverConfig) => {
+    const context = {
+      modelProfiles: drafts.models,
+      modelShortcuts: drafts.modelShortcuts,
+      serializeModelShortcuts,
+      workspaces: fixture.workspaces,
+      acpServersToSave: fixture.acp_servers,
+      webConfig: fixture.web,
+      uiConfig: fixture.ui,
+      conversationsConfig: fixture.conversations,
+      sessionConfig: fixture.session,
+      permissionsConfig: fixture.permissions,
+      mcpHost: fixture.mcp.host,
+      mcpPort: fixture.mcp.port,
+      restrictedRunnersToSave: fixture.restricted_runners,
+      serverRenames: {},
+      getSdkClient: () => ({ serverConfig }),
+    };
+    return new Function("context", `const {${Object.keys(context).join(",")}} = context;\n${saveSource}\nreturn getSdkClient().serverConfig.save(config);`)(context);
+  };
+  const fixture = {
+    workspaces: [{ name: "work", working_dir: "/work", acp: "agent" }],
+    acp_servers: [{ name: "agent", command: "agent" }],
+    web: { host: "127.0.0.1" }, ui: { theme: "dark" },
+    conversations: { title: "keep" }, session: { mode: "keep" },
+    permissions: { auto_approve: false }, mcp: { host: "localhost", port: 5757 },
+    restricted_runners: { sandbox: { restrictions: { enabled: true } } },
+    models: [{ name: "Named", criteria: { matchMode: "exact", pattern: "model" }, tags: ["Profile"] }],
+    model_tags: ["Canonical"],
+    model_shortcuts: [{ number: 5, model_tag: "  CuStOm,  Tag  " }],
+  };
+
+  test("distinct Keyboard navigation, accessible local controls and guarded Add", () => {
+    expect(source).toContain('{ id: "keyboard", label: "Keyboard", icon: KeyboardIcon }');
+    expect(source).toContain('{ id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon }');
+    expect(keyboardPanel).toContain('activeTab === "keyboard"');
+    expect(keyboardPanel).toContain("Model Shortcuts");
+    for (const id of ["model-shortcut-row-", "model-shortcut-number-", "model-shortcut-tag-", "delete-model-shortcut-", "add-model-shortcut"]) {
+      expect(keyboardPanel).toContain(id);
+    }
+    expect(keyboardPanel).toContain("availableModelShortcutNumbers(modelShortcuts, i)");
+    expect(keyboardPanel).toContain("modelShortcutLabel(number, navigator.platform)");
+    expect(keyboardPanel).toContain("const number = Number(e.target.value)");
+    expect(keyboardPanel).toContain("updateModelShortcut(prev, i, { number })");
+    expect(keyboardPanel).toContain("const model_tag = e.target.value");
+    expect(keyboardPanel).toContain("updateModelShortcut(prev, i, { model_tag })");
+    expect(keyboardPanel).toContain("removeModelShortcut(prev, i)");
+    expect(keyboardPanel).toContain("addModelShortcut(prev)");
+    expect(keyboardPanel).toContain("disabled=${availableModelShortcutNumbers(modelShortcuts).length === 0}");
+    expect(keyboardPanel).toContain("All five shortcut numbers are assigned");
+    expect(keyboardPanel).toContain("No model shortcuts assigned");
+    expect(keyboardPanel.match(/aria-label=/g)).toHaveLength(3);
+    expect(keyboardPanel.match(/type="button"/g)).toHaveLength(2);
+    expect(keyboardPanel).toContain('list="keyboard-model-tag-suggestions"');
+    expect(keyboardPanel).toMatch(/collectModelTags\(\[\s*\.\.\.modelProfiles,\s*\{ tags: modelTags \},\s*\{ tags: modelShortcuts\.map/);
+    expect(keyboardPanel).not.toContain(".trim()");
+    expect(keyboardPanel).not.toContain("isMacApp");
+    expect(keyboardPanel).not.toMatch(/getSdkClient|fetch\(|save\(|apply_model_tag/);
   });
 
-  test("stealing an already-assigned shortcut clears it from the other profile", () => {
-    const profiles = [
-      { name: "Opus", shortcut_number: 1 },
-      { name: "Sonnet", shortcut_number: 0 },
-    ];
-    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 1, 1);
-    expect(next[1].shortcut_number).toBe(1);
-    expect(next[0].shortcut_number).toBe(0);
-    expect(stolenFrom).toBe("Opus");
+  test("actual suggestion expression unions all sources without coercing custom drafts", async () => {
+    window.preact = window.preact || {};
+    const { collectModelTags } = await import("./ModelTagSelect.js");
+    const expression = keyboardPanel.match(/collectModelTags\(\[[\s\S]*?\]\)/)?.[0];
+    expect(expression).toBeDefined();
+    const suggestions = new Function("collectModelTags", "modelProfiles", "modelTags", "modelShortcuts", `return ${expression};`);
+    const drafts = loadDrafts(fixture);
+    expect(suggestions(collectModelTags, drafts.models, drafts.modelTags, drafts.modelShortcuts)).toEqual(["Canonical", "CuStOm,  Tag", "Profile"]);
+    drafts.modelShortcuts = updateModelShortcut(drafts.modelShortcuts, 0, { model_tag: "  CuStOm,  Tag  " });
+    expect(suggestions(collectModelTags, [], [], drafts.modelShortcuts)).toEqual(["CuStOm,  Tag"]);
+    expect(drafts.modelShortcuts[0].model_tag).toBe("  CuStOm,  Tag  ");
+    expect(serializeModelShortcuts(drafts.modelShortcuts)[0].model_tag).toBe("CuStOm,  Tag");
   });
 
-  test("stealing from an unnamed profile falls back to a positional label", () => {
-    const profiles = [
-      { name: "", shortcut_number: 4 },
-      { name: "Sonnet", shortcut_number: 0 },
-    ];
-    const { stolenFrom } = applyProfileShortcut(profiles, 1, 4);
-    expect(stolenFrom).toBe("Profile 1");
+  test("actual load whitelists/clones Models, clones mappings and never infers legacy assignments", () => {
+    const config = structuredClone(fixture);
+    config.models[0].shortcut_number = 1;
+    config.models[0].extra = "ignored";
+    const drafts = loadDrafts(config);
+    expect(drafts.models).toEqual(fixture.models);
+    expect(drafts.models[0]).not.toBe(config.models[0]);
+    expect(drafts.models[0].criteria).not.toBe(config.models[0].criteria);
+    expect(drafts.models[0].tags).not.toBe(config.models[0].tags);
+    expect(drafts.modelShortcuts).toEqual(fixture.model_shortcuts);
+    expect(drafts.modelShortcuts[0]).not.toBe(config.model_shortcuts[0]);
+    for (const value of [undefined, null, []]) {
+      expect(loadDrafts({ ...config, model_shortcuts: value }).modelShortcuts).toEqual([]);
+    }
+    expect(source).not.toMatch(/shortcut_number|setProfileShortcut|model-profile-shortcut-/);
   });
 
-  test("assigning 0 (Unassigned) clears without stealing from anyone", () => {
-    const profiles = [
-      { name: "Opus", shortcut_number: 2 },
-      { name: "Sonnet", shortcut_number: 0 },
-    ];
-    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 1, 0);
-    expect(next[1].shortcut_number).toBe(0);
-    expect(next[0].shortcut_number).toBe(2);
-    expect(stolenFrom).toBeNull();
+  test("actual normal payload saves explicit mappings and preserves unrelated config", async () => {
+    const captured = [];
+    const drafts = loadDrafts(fixture);
+    await saveDrafts(fixture, drafts, { save: async (config) => { captured.push(config); } });
+    expect(captured[0].model_shortcuts).toEqual([{ number: 5, model_tag: "CuStOm,  Tag" }]);
+    for (const key of ["models", "workspaces", "acp_servers", "web", "ui", "conversations", "session", "permissions", "mcp", "restricted_runners"]) {
+      expect(captured[0][key]).toEqual(fixture[key]);
+    }
+    expect(drafts.modelShortcuts[0].model_tag).toBe("  CuStOm,  Tag  ");
+    for (const rows of [[], removeModelShortcut(drafts.modelShortcuts, 0)]) {
+      await saveDrafts(fixture, { ...drafts, modelShortcuts: rows }, { save: async (config) => { captured.push(config); } });
+      expect(captured.at(-1)).toHaveProperty("model_shortcuts", []);
+    }
+    const untouchedEmpty = loadDrafts({ ...fixture, model_shortcuts: undefined });
+    await saveDrafts(fixture, untouchedEmpty, { save: async (config) => { captured.push(config); } });
+    expect(captured.at(-1).model_shortcuts).toEqual([]);
   });
 
-  test("out-of-bounds index returns profiles unchanged with stolenFrom null", () => {
-    const profiles = [{ name: "Opus", shortcut_number: 1 }];
-    const { profiles: next, stolenFrom } = applyProfileShortcut(profiles, 5, 2);
-    expect(next).toBe(profiles);
-    expect(stolenFrom).toBeNull();
-  });
-});
-
-describe("model profile shortcut source wiring (mitto-qmqq.1)", () => {
-  const source = readFileSync(
-    new URL("./SettingsDialog.js", import.meta.url),
-    "utf8",
-  );
-  const shortcutSelect = source.match(
-    /data-testid="model-profile-shortcut-\$\{i\}"[\s\S]*?<\/select>/,
-  )?.[0];
-
-  test("renders exactly Unassigned and shortcut numbers 1-5", () => {
-    expect(shortcutSelect).toBeDefined();
-    expect(shortcutSelect).toContain('<option value="0">Unassigned</option>');
-    expect(shortcutSelect).toContain("${[1, 2, 3, 4, 5].map(");
+  test("actual validation selects Keyboard with row error before saving or network effects", () => {
+    for (const rows of [addModelShortcut([]), [{ number: 6, model_tag: "x" }], [{ number: 1.5, model_tag: "x" }], [{ number: 1, model_tag: "x" }, { number: 1, model_tag: "y" }]]) {
+      const state = validateDrafts(rows);
+      expect(state.valid).toBeUndefined();
+      expect(state.tab).toBe("keyboard");
+      expect(state.error).toContain("Model shortcut row");
+    }
+    expect(validateDrafts([])).toEqual({ valid: true });
+    expect(source.indexOf("const modelShortcutError =")).toBeLessThan(source.indexOf("setSaving(true)"));
+    expect(source.indexOf("setSaving(true)")).toBeLessThan(source.indexOf("serverConfig.save(config)"));
   });
 
-  test("binds the selected value and uniqueness handler", () => {
-    expect(shortcutSelect).toContain("value=${p.shortcut_number || 0}");
-    expect(shortcutSelect).toContain("setProfileShortcut(");
+  test("draft lifecycle is independent, failed Save retains edits and reopen reloads", async () => {
+    const drafts = loadDrafts(fixture);
+    const savedBefore = structuredClone(fixture);
+    drafts.modelShortcuts = updateModelShortcut(drafts.modelShortcuts, 0, { model_tag: "Raw  Custom" });
+    drafts.models = [duplicateModelProfileCopy(drafts.models[0]), ...drafts.models];
+    expect(drafts.modelShortcuts).toEqual([{ number: 5, model_tag: "Raw  Custom" }]);
+    await expect(saveDrafts(fixture, drafts, { save: async () => { throw new Error("save failed"); } })).rejects.toThrow("save failed");
+    expect(drafts.modelShortcuts[0].model_tag).toBe("Raw  Custom");
+    drafts.models = []; // Removing every profile cannot remove a custom binding.
+    expect(serializeModelShortcuts(drafts.modelShortcuts)).toEqual([{ number: 5, model_tag: "Raw  Custom" }]);
+    expect(fixture).toEqual(savedBefore);
+    expect(loadDrafts(fixture).modelShortcuts).toEqual(fixture.model_shortcuts);
+    expect(source).toContain("fetchConfig(null, /* force */ true)");
+    expect(source.match(/setModelShortcuts\(loadModelShortcuts/g)).toHaveLength(1);
+    const close = source.slice(source.indexOf("  const handleClose ="), source.indexOf("  const handleClose =") + 300);
+    expect(close).toContain("onClose");
+    expect(close).not.toMatch(/save\(|setModelShortcuts/);
+    const profileHelpers = source.split("// Helpers for editing model profiles inline")[1].split("if (!isOpen) return null;")[0];
+    expect(profileHelpers).not.toContain("setModelShortcuts");
+    expect(source).toContain("invalidateConfigCache();");
+    expect(source).toContain("await persistGlobalShortcuts();");
+    expect(source).toContain("onSave?.()");
+    expect(source).toContain("<${ShortcutsEditor}");
   });
 });
 
