@@ -29,6 +29,24 @@ type WSMessage struct {
 	Data json.RawMessage `json:"data,omitempty"` // Type-specific payload
 }
 
+// ApplyModelTagRequest targets only the session bound to the socket. Null or
+// omitted fields decode as empty strings; validation distinguishes blank tags.
+type ApplyModelTagRequest struct {
+	ModelTag  string `json:"model_tag"`
+	RequestID string `json:"request_id"`
+}
+
+// ModelTagAppliedResult is requester-only and is never persisted or replayed.
+// Applied means selection accepted; activation may be deferred during a prompt.
+type ModelTagAppliedResult struct {
+	SessionID string `json:"session_id"`
+	RequestID string `json:"request_id"`
+	ModelTag  string `json:"model_tag"`
+	Status    string `json:"status"`
+	ModelID   string `json:"model_id,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
 // ParseMessage parses raw message bytes into a WSMessage.
 func ParseMessage(data []byte) (WSMessage, error) {
 	var msg WSMessage
@@ -384,6 +402,9 @@ const (
 	// For backward compatibility with legacy modes, use config_id "mode" for mode changes.
 	// Data: { "config_id": string, "value": string }
 	WSMsgTypeSetConfigOption = "set_config_option"
+
+	WSMsgTypeApplyModelTag   = "apply_model_tag"
+	WSMsgTypeModelTagApplied = "model_tag_applied"
 
 	// WSMsgTypeHookFailed notifies that a lifecycle hook failed to execute.
 	// Sent when an up/down hook exits with a non-zero exit code.

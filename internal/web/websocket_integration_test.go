@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,106 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
+
+// This harness uses actual wire bytes and the production envelope parser,
+// dispatch, handler and writer. Authentication is the existing route wrapper;
+// external provenance is supplied by the listener, never by a client header.
+func TestModelTagWebSocketWireAndAuth(t *testing.T) {
+	auth := middleware.NewAuthManager(&config.WebAuth{Simple: &config.SimpleAuth{Username: "user", Password: "pass"}})
+	defer auth.Close()
+	authSession, err := auth.CreateSession("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookieWriter := httptest.NewRecorder()
+	auth.SetSessionCookie(cookieWriter, httptest.NewRequest(http.MethodGet, "/", nil), authSession)
+	headers := http.Header{}
+	headers.Set("Cookie", cookieWriter.Result().Cookies()[0].String())
+	mux := http.NewServeMux()
+	upgrader := websocket.Upgrader{}
+	mux.HandleFunc("/api/sessions/{id}/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		wsConn := &WSConn{conn: conn, send: make(chan []byte, 64), config: middleware.DefaultWebSocketSecurityConfig()}
+		done := make(chan struct{})
+		client := &SessionWSClient{sessionID: r.PathValue("id"), bgSession: modelTagTestSession(), wsConn: wsConn}
+		go wsConn.WritePump(r.Context(), done)
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			msg, err := ParseMessage(raw)
+			if err != nil {
+				client.sendError("Invalid message format")
+				continue
+			}
+			client.handleMessage(msg)
+		}
+	})
+	protected := auth.AuthMiddleware(mux)
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), middleware.ContextKeyExternalConnection, true))
+		protected.ServeHTTP(w, r)
+	}))
+	defer external.Close()
+	url := "ws" + strings.TrimPrefix(external.URL, "http") + "/api/sessions/first/ws"
+	denied, response, err := testWSDialer.Dial(url, nil)
+	if denied != nil {
+		denied.Close()
+		t.Fatal("unauthenticated external socket upgraded")
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("external unauthenticated response=%v err=%v", response, err)
+	}
+	response.Body.Close()
+	first, _, err := testWSDialer.Dial(url, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, _, err := testWSDialer.Dial(strings.Replace(url, "/first/", "/second/", 1), headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	check := func(conn *websocket.Conn, sessionID, requestID string) {
+		t.Helper()
+		msg := readWSMessage(t, conn, 2*time.Second)
+		var result ModelTagAppliedResult
+		if err := json.Unmarshal(msg.Data, &result); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Type != WSMsgTypeModelTagApplied || result.SessionID != sessionID || result.RequestID != requestID || result.Status != "already_active" || result.ModelTag != "Coding" || result.ModelID != "sonnet" || result.Message != "" {
+			t.Fatalf("wire result type=%s data=%s", msg.Type, msg.Data)
+		}
+	}
+	// A forged data.session_id cannot redirect selection or result. Repeated IDs
+	// are independent invocations, and results never leak onto another socket.
+	for i := 0; i < 2; i++ {
+		sendWSMessage(t, first, WSMsgTypeApplyModelTag, map[string]string{"model_tag": " Coding ", "request_id": "same", "session_id": "second"})
+		check(first, "first", "same")
+	}
+	sendWSMessage(t, second, WSMsgTypeApplyModelTag, map[string]string{"model_tag": "Coding", "request_id": "second-only"})
+	check(second, "second", "second-only")
+	// A subsequent command is an ordering barrier proving no duplicate result
+	// was queued on the requester (nor a result from the other session).
+	sendWSMessage(t, first, WSMsgTypeApplyModelTag, map[string]string{"model_tag": "Coding", "request_id": "barrier"})
+	check(first, "first", "barrier")
+	local := httptest.NewServer(protected)
+	defer local.Close()
+	localConn := connectTestWS(t, local, "/api/sessions/local/ws")
+	defer localConn.Close()
+	sendWSMessage(t, localConn, WSMsgTypeApplyModelTag, map[string]string{"model_tag": "Coding", "request_id": "local"})
+	check(localConn, "local", "local")
+}
 
 // testWSDialer is a WebSocket dialer for tests
 var testWSDialer = websocket.Dialer{

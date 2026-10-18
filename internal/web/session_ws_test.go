@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -148,6 +149,90 @@ func newMockWSConn() *mockWSConn {
 		messages: make([]capturedMessage, 0),
 		send:     make(chan []byte, 256),
 	}
+}
+
+func TestHandleLoadEventsBoundsCompleteEnvelopeAndReportsOversizedEvent(t *testing.T) {
+	t.Run("trimmed suffix keeps matching cursor", func(t *testing.T) {
+		store, sessionID := createTestSessionStore(t)
+		for _, event := range []session.Event{
+			{Type: "agent_message", Data: map[string]interface{}{"text": strings.Repeat("o", 300*1024)}},
+			{Type: "agent_message", Data: map[string]interface{}{"text": strings.Repeat("x", 300*1024)}},
+		} {
+			if err := store.AppendEvent(sessionID, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mock := newMockWSConn()
+		client := &SessionWSClient{sessionID: sessionID, wsConn: &WSConn{send: mock.send}, store: store}
+		if _, ok := client.handleLoadEvents(50, 0, 0); !ok {
+			t.Fatal("handleLoadEvents failed")
+		}
+		data := readLoadEventsTestResponse(t, mock)
+		if data["first_seq"] != float64(2) || data["last_seq"] != float64(2) {
+			t.Fatalf("trimmed response cursors = (%v, %v), want (2, 2)", data["first_seq"], data["last_seq"])
+		}
+		if data["has_more"] != true || len(data["events"].([]interface{})) != 1 {
+			t.Fatalf("trimmed response must retain event and advertise older history: %#v", data)
+		}
+		encoded, err := json.Marshal(data)
+		if err != nil || len(encoded) > 512*1024 {
+			t.Fatalf("encoded response length %d, err %v; must fit 512 KiB", len(encoded), err)
+		}
+	})
+
+	t.Run("single oversized event is terminal and explicit", func(t *testing.T) {
+		store, sessionID := createTestSessionStore(t)
+		if err := store.AppendEvent(sessionID, session.Event{
+			Type: "agent_message", Data: map[string]interface{}{"text": strings.Repeat("x", 600*1024)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		mock := newMockWSConn()
+		client := &SessionWSClient{sessionID: sessionID, wsConn: &WSConn{send: mock.send}, store: store}
+		if _, ok := client.handleLoadEvents(50, 0, 0); !ok {
+			t.Fatal("handleLoadEvents failed")
+		}
+		data := readLoadEventsTestResponse(t, mock)
+		if data["has_more"] != false || data["history_error"] == nil || len(data["events"].([]interface{})) != 0 {
+			t.Fatalf("oversized event must produce explicit terminal outcome: %#v", data)
+		}
+	})
+}
+
+func readLoadEventsTestResponse(t *testing.T, mock *mockWSConn) map[string]interface{} {
+	t.Helper()
+	select {
+	case raw := <-mock.send:
+		var message WSMessage
+		if err := json.Unmarshal(raw, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Type != WSMsgTypeEventsLoaded {
+			t.Fatalf("response type = %q, want events_loaded", message.Type)
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal(message.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		return data
+	default:
+		t.Fatal("no WebSocket response captured")
+		return nil
+	}
+}
+
+func createTestSessionStore(t *testing.T) (*session.Store, string) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sessionID := "history-payload-test"
+	if err := store.Create(session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	return store, sessionID
 }
 
 func (m *mockWSConn) SendMessage(msgType string, data interface{}) {

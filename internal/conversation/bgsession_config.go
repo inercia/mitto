@@ -6,6 +6,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -139,13 +140,32 @@ func (bs *BackgroundSession) ConsumeRuntimeModelSwapSucceeded() bool {
 // preferredModels frontmatter, which must not fight the operator's active model
 // every turn — do not change that path.
 func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (string, error) {
+	result, err := bs.ApplyModelTagWithResult(ctx, tag)
+	return result.ModelID, err
+}
+
+var (
+	ErrModelTagCatalogUnavailable = errors.New("agent has not advertised a model catalog")
+	ErrModelTagNoMatch            = errors.New("model tag did not resolve to any available model")
+)
+
+// ModelTagApplyResult describes accepted selection, which may be deferred while
+// prompting. AlreadyActive identifies only the idle, no-RPC baseline promotion.
+type ModelTagApplyResult struct {
+	ModelID       string
+	AlreadyActive bool
+}
+
+// ApplyModelTagWithResult is the canonical implementation shared by transports.
+// Empty tags retain ApplyModelTag's transient-override clearing semantics.
+func (bs *BackgroundSession) ApplyModelTagWithResult(ctx context.Context, tag string) (ModelTagApplyResult, error) {
 	if tag == "" {
 		bs.restoreBaselineIfOverride()
-		return "", nil
+		return ModelTagApplyResult{}, nil
 	}
 	models := bs.AgentModels()
 	if models == nil {
-		return "", fmt.Errorf("agent has not advertised a model catalog")
+		return ModelTagApplyResult{}, ErrModelTagCatalogUnavailable
 	}
 	profiles := bs.mittoConfig.EffectiveModelProfiles()
 	resolved := SelectHighestPriorityModel(
@@ -153,7 +173,7 @@ func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (str
 		profiles, models, bs.modelOverrideForTag,
 	)
 	if resolved == "" {
-		return "", fmt.Errorf("model_tag %q did not resolve to any available model", tag)
+		return ModelTagApplyResult{}, fmt.Errorf("model_tag %q did not resolve to any available model: %w", tag, ErrModelTagNoMatch)
 	}
 	if resolved == models.CurrentModelId && !bs.IsPrompting() {
 		// mitto-1yo: the resolved tag already matches the active model, so no
@@ -166,12 +186,12 @@ func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (str
 		// "looked" overridden.
 		bs.cmSetBaselineAndClearOverride(resolved)
 		bs.cmPersistBaselineModel(resolved)
-		return resolved, nil
+		return ModelTagApplyResult{ModelID: resolved, AlreadyActive: true}, nil
 	}
 	if err := bs.SetConfigOption(ctx, string(ModelConfigId), resolved); err != nil {
-		return "", fmt.Errorf("failed to apply model_tag %q: %w", tag, err)
+		return ModelTagApplyResult{}, fmt.Errorf("failed to apply model_tag %q: %w", tag, err)
 	}
-	return resolved, nil
+	return ModelTagApplyResult{ModelID: resolved}, nil
 }
 
 // =============================================================================

@@ -1029,6 +1029,9 @@ func (c *SessionWSClient) handleMessage(msg WSMessage) {
 		}
 		c.handleKeepalive(data.ClientTime, data.LastSeenSeq)
 
+	case WSMsgTypeApplyModelTag:
+		c.handleApplyModelTag(msg.Data)
+
 	case WSMsgTypeSetConfigOption:
 		var data struct {
 			ConfigID string `json:"config_id"`
@@ -1524,56 +1527,55 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 	//
 	// 512 KB keeps us comfortably below the 1 MB WKWebView limit even after the
 	// JSON envelope overhead (has_more, first_seq, last_seq, max_seq, …) is added.
+	// Get session status for the complete response envelope.
+	c.initialLoadMu.Lock()
+	bgSession := c.bgSession
+	c.initialLoadMu.Unlock()
+	isRunning := bgSession != nil && !bgSession.IsClosed()
+	isPrompting := isRunning && bgSession.IsPrompting()
+
 	const maxEventsLoadedBytes = 512 * 1024
-	if !isPrepend && len(events) > 1 {
-		payloadJSON, payloadErr := json.Marshal(events)
-		if payloadErr == nil && len(payloadJSON) > maxEventsLoadedBytes {
-			originalCount := len(events)
-			originalBytes := len(payloadJSON)
-			for len(events) > 1 {
-				events = events[1:] // drop oldest — still reachable via before_seq
-				hasMore = true
-				payloadJSON, payloadErr = json.Marshal(events)
-				if payloadErr != nil || len(payloadJSON) <= maxEventsLoadedBytes {
-					break
-				}
-			}
-			// If we are left with a single event (or small slice) that is still too
-			// large, avoid sending an oversized payload by dropping it from this
-			// response and logging the condition. The event remains reachable via
-			// pagination, but will not be sent in this batch.
-			if payloadErr == nil && len(payloadJSON) > maxEventsLoadedBytes {
-				droppedCount := len(events)
-				events = nil
-				hasMore = true
-				payloadJSON = []byte("[]")
-				if c.logger != nil {
-					c.logger.Error("events_loaded_single_event_too_large",
-						"session_id", c.sessionID,
-						"client_id", c.clientID,
-						"dropped_event_count", droppedCount,
-						"max_payload_bytes", maxEventsLoadedBytes)
-				}
-				_ = droppedCount // used only in the log above
-			}
-			// Recompute firstSeq after trimming (lastSeq is unchanged).
-			if len(events) > 0 {
-				firstSeq = events[0].Seq
-			}
-			if c.logger != nil {
-				c.logger.Warn("events_loaded_payload_trimmed",
-					"session_id", c.sessionID,
-					"client_id", c.clientID,
-					"original_event_count", originalCount,
-					"original_payload_bytes", originalBytes,
-					"trimmed_event_count", len(events),
-					"trimmed_payload_bytes", len(payloadJSON),
-					"max_payload_bytes", maxEventsLoadedBytes,
-					"new_first_seq", firstSeq,
-					"last_seq", lastSeq,
-					"has_more", hasMore)
-			}
+	maxSeq := c.getServerMaxSeq()
+	makePayload := func(batch []session.Event, more bool, first, last int64, oversized bool) map[string]interface{} {
+		payload := map[string]interface{}{
+			"events": batch, "has_more": more, "first_seq": first, "last_seq": last,
+			"max_seq": maxSeq, "total_count": meta.EventCount, "prepend": isPrepend,
+			"is_running": isRunning, "is_prompting": isPrompting,
 		}
+		if oversized {
+			payload["history_error"] = "A history event exceeds the safe WebSocket response size"
+		}
+		return payload
+	}
+	originalCount := len(events)
+	originalBytes, _ := json.Marshal(makePayload(events, hasMore, firstSeq, lastSeq, false))
+	for len(events) > 0 && len(originalBytes) > maxEventsLoadedBytes {
+		// Drop only the oldest prefix. The retained contiguous suffix is returned
+		// with its true cursor; the dropped events remain reachable by before_seq.
+		events = events[1:]
+		hasMore = true
+		if len(events) > 0 {
+			firstSeq = events[0].Seq
+		} else {
+			firstSeq, lastSeq = 0, 0
+		}
+		originalBytes, _ = json.Marshal(makePayload(events, hasMore, firstSeq, lastSeq, false))
+	}
+	oversizedEvent := len(events) == 0 && originalCount > 0
+	if oversizedEvent {
+		// A singleton that cannot fit has an explicit terminal outcome, rather
+		// than an empty has_more response that would retry the same cursor forever.
+		hasMore = false
+		if c.logger != nil {
+			c.logger.Error("events_loaded_event_exceeds_payload_limit", "session_id", c.sessionID,
+				"client_id", c.clientID, "max_payload_bytes", maxEventsLoadedBytes)
+		}
+	}
+	if len(events) < originalCount && len(events) > 0 && c.logger != nil {
+		c.logger.Warn("events_loaded_payload_trimmed", "session_id", c.sessionID,
+			"client_id", c.clientID, "original_event_count", originalCount,
+			"trimmed_event_count", len(events), "new_first_seq", firstSeq,
+			"last_seq", lastSeq, "has_more", hasMore)
 	}
 
 	// Update lastSentSeq for non-prepend loads (initial load and sync)
@@ -1586,16 +1588,6 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 		}
 		c.seqMu.Unlock()
 	}
-
-	// Get session status. bgSession is read under initialLoadMu because it can
-	// be concurrently written by attachToBackgroundSession (async ACP resume
-	// racing this very load_events) — see the coordination comment on
-	// initialLoadMu near the struct definition.
-	c.initialLoadMu.Lock()
-	bgSession := c.bgSession
-	c.initialLoadMu.Unlock()
-	isRunning := bgSession != nil && !bgSession.IsClosed()
-	isPrompting := isRunning && bgSession.IsPrompting()
 
 	// DEBUG: Log event order being sent to client
 	if c.logger != nil && len(events) > 0 {
@@ -1613,17 +1605,7 @@ func (c *SessionWSClient) handleLoadEvents(limit int, beforeSeq, afterSeq int64)
 			"event_order", eventSummary)
 	}
 
-	c.sendMessage(WSMsgTypeEventsLoaded, map[string]interface{}{
-		"events":       events,
-		"has_more":     hasMore,
-		"first_seq":    firstSeq,
-		"last_seq":     lastSeq,
-		"max_seq":      c.getServerMaxSeq(),
-		"total_count":  meta.EventCount,
-		"prepend":      isPrepend,
-		"is_running":   isRunning,
-		"is_prompting": isPrompting,
-	})
+	c.sendMessage(WSMsgTypeEventsLoaded, makePayload(events, hasMore, firstSeq, lastSeq, oversizedEvent))
 
 	// Return the result so handleLoadEventsAsync can release loadEventsMu and then
 	// call postLoadProcessing without holding the lock.
@@ -1971,10 +1953,15 @@ func (c *SessionWSClient) handleSetConfigOption(configID, value string) {
 // broadcastConfigSnapshot re-broadcasts the authoritative (unchanged) config
 // snapshot after a rejected change so clients can roll back optimistic state.
 func (c *SessionWSClient) broadcastConfigSnapshot(configID string) {
-	if c.bgSession == nil {
+	c.broadcastConfigSnapshotForSession(c.bgSession, configID)
+}
+
+// broadcastConfigSnapshotForSession uses a captured session across detachment.
+func (c *SessionWSClient) broadcastConfigSnapshotForSession(bgSession *conversation.BackgroundSession, configID string) {
+	if bgSession == nil {
 		return
 	}
-	options := c.bgSession.ConfigOptions()
+	options := bgSession.ConfigOptions()
 	if options == nil {
 		options = []conversation.SessionConfigOption{}
 	}
