@@ -181,6 +181,20 @@ change is acknowledged via `session/set_config_option` before the next
 unaffected) and flushed before the next prompt. If the agent rejects it, the
 server sends `error` plus a re-broadcast of the unchanged snapshot.
 
+### `apply_model_tag` — Apply a model tag to the socket session
+
+```json
+{"type":"apply_model_tag","data":{"model_tag":"Coding","request_id":"unique-client-id"}}
+```
+
+Uses the authenticated `/api/sessions/{id}/ws` session only; a payload target
+cannot select another session. `model_tag` is required and trimmed at its edges
+only (case/internal whitespace retained). `request_id` is an optional string,
+echoed for correlation, **not** a deduplication key; absent/null means empty.
+The canonical backend resolves the tag, including workspace Agent overrides.
+No client model catalog is required. A dispatched request receives one
+requester-only `model_tag_applied` result, not a second generic error toast.
+
 ### `run_mcp_install_command` — Execute MCP installation
 
 Sent from frontend when user confirms running a suggested MCP installation command.
@@ -877,6 +891,34 @@ may only become resolvable once the agent's commands arrive: when no command is
 statically configured, it is detected from this very list. Omitted entirely when
 no `BackgroundSession` is attached — clients must preserve their previous value
 rather than clearing it on absence.
+
+### `model_tag_applied` — Requester-only tag application result
+
+```json
+{"type":"model_tag_applied","data":{"session_id":"socket-session","request_id":"unique-client-id","model_tag":"Coding","status":"applied","model_id":"resolved-id"}}
+```
+
+Always includes `session_id`, `request_id`, `model_tag` and `status`.
+`model_id` is present only for `applied` / `already_active`; errors include a
+fixed safe `message`. Result statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `applied` | Selection accepted through the normal path; may be deferred during a running prompt. |
+| `already_active` | Canonical idle/current-model branch; not a browser comparison. |
+| `no_match` | No matching model (including an empty catalog). |
+| `catalog_unavailable` | Model catalog unavailable. |
+| `invalid_tag` | Missing/null/blank tag. |
+| `invalid_request` | Invalid data/field types. |
+| `missing_session` | Socket session unavailable; no creation or resume is performed. |
+| `internal_error` | Canonical application failed. |
+
+This event goes only to the requesting session socket, never the global bus.
+It is not persisted or replayed. Result/config event order is unspecified;
+model display must remain driven by authoritative config events, not this
+result's `model_id`. Failures can have partial effects, with no rollback
+promise. A lost confirmation does not prove the selection failed; clients
+must not automatically retry or claim immediate activation on acceptance.
 
 #### `config_option_changed` — Config option changed
 

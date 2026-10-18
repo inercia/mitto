@@ -108,6 +108,7 @@ export const EVENTS = Object.freeze({
   SESSION_UI_PROMPT: "session_ui_prompt",
   BACKGROUND_UI_PROMPT_TIMEOUT: "background_ui_prompt_timeout",
   CONFIG_OPTION_CHANGED: "config_option_changed",
+  MODEL_TAG_APPLIED: "model_tag_applied",
   SESSION_CHANGE: "session_change",
   RUNNER_FALLBACK: "runner_fallback",
   MCP_TOOLS_AVAILABLE: "mcp_tools_available",
@@ -141,6 +142,7 @@ export const COMMANDS = Object.freeze({
   UI_PROMPT_ANSWER: "ui_prompt_answer",
   ENSURE_RESUMED: "ensure_resumed",
   SET_CONFIG_OPTION: "set_config_option",
+  APPLY_MODEL_TAG: "apply_model_tag",
   RUN_MCP_INSTALL_COMMAND: "run_mcp_install_command",
 });
 
@@ -253,6 +255,24 @@ export function isCommandType(type) {
  * Payload of {@link COMMANDS.RUN_MCP_INSTALL_COMMAND} (`run_mcp_install_command`).
  * @typedef {Object} RunMcpInstallCommandPayload
  * @property {string} command - Install command to execute.
+ */
+
+/**
+ * Apply a tag through canonical server selection on the socket's session.
+ * @typedef {Object} ApplyModelTagPayload
+ * @property {string} model_tag - Tag; only edge whitespace is trimmed.
+ * @property {string} [request_id] - Echoed correlation ID, not a deduplication key.
+ */
+
+/**
+ * Requester-only, nonpersistent confirmation; applied selection may be deferred.
+ * @typedef {Object} ModelTagAppliedPayload
+ * @property {string} session_id - Socket-bound target session.
+ * @property {string} request_id - Echoed ID (empty when omitted).
+ * @property {string} model_tag - Edge-trimmed tag.
+ * @property {"applied"|"already_active"|"no_match"|"catalog_unavailable"|"invalid_tag"|"invalid_request"|"missing_session"|"internal_error"} status - Canonical outcome.
+ * @property {string} [model_id] - Present only on applied/already_active.
+ * @property {string} [message] - Fixed safe error message on errors.
  */
 
 // --- Connection & session lifecycle ------------------------------------------

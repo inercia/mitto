@@ -230,8 +230,8 @@ export const KEYBOARD_SHORTCUTS = [
   },
   {
     keys: "⌘⇧1-5",
-    description: "Switch to model 1-5",
+    description: "Apply model tag shortcut 1-5",
     section: "Input",
-    hint: "Per Settings shortcut assignment; use Ctrl+Shift+1-5 on Windows/Linux",
+    hint: "Assign tags in Settings > Keyboard; Command+Shift+1-5 on macOS, Ctrl+Shift+1-5 on Windows/Linux",
   },
 ];

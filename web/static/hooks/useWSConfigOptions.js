@@ -7,15 +7,45 @@
 // set_config_option message.
 // =============================================================================
 
-const { useEffect, useCallback } = window.preact;
+const { useEffect, useCallback, useRef } = window.preact;
 
 import { setConfigOptions } from "../stores/configOptionsStore.js";
+import { createModelTagRequests } from "../utils/modelTagRequests.js";
 
 export function useWSConfigOptions(
   activeSession,
   activeSessionId,
   sendToSession,
 ) {
+  const sendRef = useRef(sendToSession);
+  sendRef.current = sendToSession;
+  const modelTagRequestsRef = useRef(null);
+  const createRequests = () => createModelTagRequests({
+    sendToSession: (sessionId, message) => sendRef.current(sessionId, message),
+  });
+  // Be ready for a key event before passive effects run. Setup replay below
+  // still replaces a disposed controller rather than reviving it.
+  if (modelTagRequestsRef.current === null) {
+    modelTagRequestsRef.current = createRequests();
+  }
+  useEffect(() => {
+    const requests = modelTagRequestsRef.current ?? createRequests();
+    modelTagRequestsRef.current = requests;
+    return () => {
+      requests.dispose();
+      modelTagRequestsRef.current = null;
+    };
+  }, []);
+  const applyModelTag = useCallback(
+    (targetSessionId, modelTag) => modelTagRequestsRef.current?.applyModelTag(targetSessionId, modelTag)
+      ?? Promise.resolve({ status: "cancelled" }),
+    [],
+  );
+  const handleModelTagApplied = useCallback(
+    (socketSessionId, data) => modelTagRequestsRef.current?.handleModelTagApplied(socketSessionId, data),
+    [],
+  );
+
   // Write configOptions into the per-session store (per-session, not global).
   // The store no-ops on a reference-equal value, so an active-session `info`
   // touch that leaves `config_options` untouched (the common case) does not
@@ -40,5 +70,5 @@ export function useWSConfigOptions(
     [activeSessionId, sendToSession],
   );
 
-  return { setConfigOption };
+  return { setConfigOption, applyModelTag, handleModelTagApplied };
 }

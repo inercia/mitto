@@ -57,7 +57,7 @@ import {
   fetchCachedParamNames,
   promptResolveAsLoop,
 } from "../utils/prompts.js";
-import { resolveModelShortcut } from "../utils/modelShortcuts.js";
+import { resolveModelShortcut, modelShortcutDigit, modelShortcutToast } from "../utils/modelShortcuts.js";
 
 /**
  * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
@@ -215,6 +215,8 @@ function ChatInputImpl({
   // Global model profiles (config.models) — needed by PromptsMenu to resolve
   // structured preferredModels ({modelName}/{modelTag}) into an override chip.
   modelProfiles = [],
+  modelShortcuts = [],
+  onApplyModelTag,
   // Optional toast callback (from useToast's showToast) used to surface
   // feedback for the Cmd/Ctrl+Shift+digit model-shortcut keybinding.
   onShowToast,
@@ -228,6 +230,20 @@ function ChatInputImpl({
   flushCommand = "",
   onFlushContext,
 }) {
+  // Each session visit is a distinct feedback lifetime, including A -> B -> A.
+  const modelShortcutLifetimeRef = useRef({ sessionId, active: true });
+  if (modelShortcutLifetimeRef.current.sessionId !== sessionId) {
+    modelShortcutLifetimeRef.current.active = false;
+    modelShortcutLifetimeRef.current = { sessionId, active: true };
+  }
+  useEffect(() => {
+    if (!modelShortcutLifetimeRef.current.active) {
+      modelShortcutLifetimeRef.current = { sessionId, active: true };
+    }
+    const lifetime = modelShortcutLifetimeRef.current;
+    return () => { lifetime.active = false; };
+  }, [sessionId]);
+
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled; see docs/devel/frontend-render-domains.md.
   useRenderCounter("ChatInput");
@@ -1059,50 +1075,35 @@ function ChatInputImpl({
       }
     }
 
-    // Handle Cmd/Ctrl+Shift+<digit> model-switch shortcuts. Use e.code (not
-    // e.key) since Shift changes e.key (e.g. "1" -> "!" on US keyboards).
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
-      const digitMatch = /^Digit([1-5])$/.exec(e.code);
-      if (digitMatch) {
-        e.preventDefault();
-        const digit = Number(digitMatch[1]);
-        const result = resolveModelShortcut(digit, modelProfiles, modelOption);
-        switch (result.status) {
-          case "apply":
-            onSetConfigOption?.(modelOption.id, result.value);
-            onShowToast?.({
-              message: `Switched model to ${result.name}`,
-              style: "success",
-            });
-            break;
-          case "already_active":
-            onShowToast?.({
-              message: `Model is already ${result.name}`,
-              style: "info",
-            });
-            break;
-          case "no_match":
-            onShowToast?.({
-              message: `No available model matches shortcut ${digit} (${result.profile?.name || "profile"})`,
-              style: "warning",
-            });
-            break;
-          case "unassigned":
-            onShowToast?.({
-              message: `No model is assigned to shortcut ${digit}`,
-              style: "info",
-            });
-            break;
-          case "no_model_option":
-          default:
-            onShowToast?.({
-              message: "Model selection is not available for this conversation",
-              style: "info",
-            });
-            break;
-        }
-        return;
+    // Physical Digit1–5 preserves shifted-layout and Meta/Ctrl compatibility.
+    const digit = modelShortcutDigit(e);
+    if (digit !== null) {
+      e.preventDefault();
+      const result = resolveModelShortcut(digit, modelShortcuts);
+      const lifetime = modelShortcutLifetimeRef.current;
+      const showFeedback = (outcome) => {
+        if (!lifetime.active || modelShortcutLifetimeRef.current !== lifetime) return;
+        const toast = modelShortcutToast(outcome, result.modelTag, digit);
+        if (toast) onShowToast?.(toast);
+      };
+      if (result.status === "unassigned") {
+        showFeedback(result);
+      } else if (!sessionId) {
+        showFeedback({ status: "invalid_target" });
+      } else if (typeof onApplyModelTag !== "function") {
+        showFeedback({ status: "send_failed" });
+      } else {
+        void (async () => {
+          let outcome;
+          try {
+            outcome = await onApplyModelTag(sessionId, result.modelTag);
+          } catch {
+            outcome = { status: "send_failed" };
+          }
+          showFeedback(outcome);
+        })();
       }
+      return;
     }
 
     // Handle Enter key based on sendKeyMode

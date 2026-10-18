@@ -316,6 +316,7 @@ function App() {
     reconnectAllSessionsStaggered,
     availableCommands,
     setConfigOption,
+    applyModelTag,
     activeUIPrompt,
     sendUIPromptAnswer,
     mcpTools,
@@ -1173,6 +1174,7 @@ function App() {
   // resolve to an "overrides model" chip. Refreshed alongside other UI settings
   // on mount and after SettingsDialog saves.
   const [modelProfiles, setModelProfiles] = useState([]);
+  const [modelShortcuts, setModelShortcuts] = useState([]);
 
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
@@ -1183,6 +1185,8 @@ function App() {
       .then((config) => {
         // Load global model profiles (config.models) for PromptsMenu chips.
         setModelProfiles(Array.isArray(config?.models) ? config.models : []);
+        setModelShortcuts(Array.isArray(config?.model_shortcuts)
+          ? config.model_shortcuts.map((entry) => ({ ...entry })) : []);
         // Track if config is read-only (loaded from --config file or RC file)
         if (config?.config_readonly) {
           setConfigReadonly(true);
@@ -3665,6 +3669,8 @@ function App() {
                 setModelProfiles(
                   Array.isArray(config?.models) ? config.models : [],
                 );
+                setModelShortcuts(Array.isArray(config?.model_shortcuts)
+                  ? config.model_shortcuts.map((entry) => ({ ...entry })) : []);
                 // Reload UI settings
                 setDeleteConfirmMode(
                   config?.ui?.confirmations?.delete_conversation || "always",
@@ -4193,6 +4199,8 @@ function App() {
                       sendKeyMode=${sendKeyMode}
                       onSetConfigOption=${setConfigOption}
                       modelProfiles=${modelProfiles}
+                      modelShortcuts=${modelShortcuts}
+                      onApplyModelTag=${applyModelTag}
                       contextUsage=${sessionInfo?.context_usage ?? null}
                       tokenUsage=${sessionInfo?.usage ?? null}
                       flushCommand=${sessionInfo?.context_flush_command || ""}

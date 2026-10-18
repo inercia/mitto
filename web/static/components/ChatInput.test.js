@@ -1418,295 +1418,145 @@ describe("ChatInput composer draft isolation + autosize consolidation (mitto-sus
   });
 
   // ===========================================================================
-  // Cmd/Ctrl+Shift+<digit> model-switch shortcuts (mitto-qmqq.2)
-  // Duplicated from ChatInput.js's handleKeyDown — keep in sync with the
-  // source block at ChatInput.js:1046-1084.
+  // Tag shortcuts execute actual production handler/lifetime source seams.
   // ===========================================================================
 
-  function dispatchModelShortcut({
-    e,
-    resolveModelShortcut,
-    modelProfiles,
-    modelOption,
-    onSetConfigOption,
-    onShowToast,
-  }) {
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
-      const digitMatch = /^Digit([1-5])$/.exec(e.code);
-      if (digitMatch) {
-        e.preventDefault();
-        const digit = Number(digitMatch[1]);
-        const result = resolveModelShortcut(digit, modelProfiles, modelOption);
-        switch (result.status) {
-          case "apply":
-            onSetConfigOption?.(modelOption.id, result.value);
-            onShowToast?.({
-              message: `Switched model to ${result.name}`,
-              style: "success",
-            });
-            break;
-          case "already_active":
-            onShowToast?.({
-              message: `Model is already ${result.name}`,
-              style: "info",
-            });
-            break;
-          case "no_match":
-            onShowToast?.({
-              message: `No available model matches shortcut ${digit} (${result.profile?.name || "profile"})`,
-              style: "warning",
-            });
-            break;
-          case "unassigned":
-            onShowToast?.({
-              message: `No model is assigned to shortcut ${digit}`,
-              style: "info",
-            });
-            break;
-          case "no_model_option":
-          default:
-            onShowToast?.({
-              message: "Model selection is not available for this conversation",
-              style: "info",
-            });
-            break;
-        }
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function makeKeyEvent({ code, metaKey = false, ctrlKey = false, shiftKey = false }) {
-    return {
-      code,
-      metaKey,
-      ctrlKey,
-      shiftKey,
-      preventDefault: jest.fn(),
-    };
-  }
-
-  describe("ChatInput model shortcuts (mitto-qmqq.2)", () => {
-    const modelOption = { id: "model", current_value: "current-model" };
-    const modelProfiles = [{ name: "Fast", shortcut_number: 2 }];
-
-    test("applies the resolved model and shows a success toast on 'apply'", () => {
-      const resolveModelShortcut = jest.fn(() => ({
-        status: "apply",
-        value: "new-value",
-        name: "New Model",
-      }));
-      const onSetConfigOption = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: true });
-
-      const handled = dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption,
-        onShowToast,
-      });
-
-      expect(handled).toBe(true);
-      expect(e.preventDefault).toHaveBeenCalledTimes(1);
-      expect(resolveModelShortcut).toHaveBeenCalledWith(2, modelProfiles, modelOption);
-      expect(onSetConfigOption).toHaveBeenCalledWith("model", "new-value");
-      expect(onShowToast).toHaveBeenCalledWith({
-        message: "Switched model to New Model",
-        style: "success",
-      });
+  describe("ChatInput model tag shortcuts", () => {
+    let source;
+    let helpers;
+    beforeEach(async () => {
+      const { readFileSync } = await import("node:fs");
+      source = readFileSync(new URL("./ChatInput.js", import.meta.url), "utf8");
+      helpers = await import("../utils/modelShortcuts.js");
     });
 
-    test("works identically with Ctrl+Shift instead of Cmd+Shift", () => {
-      const resolveModelShortcut = jest.fn(() => ({
-        status: "apply",
-        value: "new-value",
-        name: "New Model",
-      }));
-      const onSetConfigOption = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit2", ctrlKey: true, shiftKey: true });
-
-      dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption,
-        onShowToast,
-      });
-
-      expect(onSetConfigOption).toHaveBeenCalledWith("model", "new-value");
-    });
-
-    test("'already_active' shows an info toast and never calls onSetConfigOption", () => {
-      const resolveModelShortcut = jest.fn(() => ({
-        status: "already_active",
-        name: "Current Model",
-      }));
-      const onSetConfigOption = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: true });
-
-      dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption,
-        onShowToast,
-      });
-
-      expect(onSetConfigOption).not.toHaveBeenCalled();
-      expect(onShowToast).toHaveBeenCalledWith({
-        message: "Model is already Current Model",
-        style: "info",
-      });
-    });
-
-    test("'no_match' shows a warning toast naming the profile", () => {
-      const resolveModelShortcut = jest.fn(() => ({
-        status: "no_match",
-        profile: { name: "Fast" },
-      }));
-      const onSetConfigOption = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: true });
-
-      dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption,
-        onShowToast,
-      });
-
-      expect(onSetConfigOption).not.toHaveBeenCalled();
-      expect(onShowToast).toHaveBeenCalledWith({
-        message: "No available model matches shortcut 2 (Fast)",
-        style: "warning",
-      });
-    });
-
-    test("'unassigned' shows an info toast naming the digit", () => {
-      const resolveModelShortcut = jest.fn(() => ({ status: "unassigned" }));
-      const onSetConfigOption = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit3", metaKey: true, shiftKey: true });
-
-      dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption,
-        onShowToast,
-      });
-
-      expect(onSetConfigOption).not.toHaveBeenCalled();
-      expect(onShowToast).toHaveBeenCalledWith({
-        message: "No model is assigned to shortcut 3",
-        style: "info",
-      });
-    });
-
-    test("'no_model_option' shows a generic unavailable-selection toast", () => {
-      const resolveModelShortcut = jest.fn(() => ({ status: "no_model_option" }));
-      const onSetConfigOption = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit1", metaKey: true, shiftKey: true });
-
-      dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption,
-        onShowToast,
-      });
-
-      expect(onSetConfigOption).not.toHaveBeenCalled();
-      expect(onShowToast).toHaveBeenCalledWith({
-        message: "Model selection is not available for this conversation",
-        style: "info",
-      });
-    });
-
-    test("does not intercept when Shift is not held", () => {
-      const resolveModelShortcut = jest.fn();
-      const onShowToast = jest.fn();
-      const e = makeKeyEvent({ code: "Digit2", metaKey: true, shiftKey: false });
-
-      const handled = dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption: jest.fn(),
-        onShowToast,
-      });
-
-      expect(handled).toBe(false);
-      expect(e.preventDefault).not.toHaveBeenCalled();
-      expect(resolveModelShortcut).not.toHaveBeenCalled();
-      expect(onShowToast).not.toHaveBeenCalled();
-    });
-
-    test("does not intercept when neither Cmd nor Ctrl is held", () => {
-      const resolveModelShortcut = jest.fn();
-      const e = makeKeyEvent({ code: "Digit2", shiftKey: true });
-
-      const handled = dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption: jest.fn(),
-        onShowToast: jest.fn(),
-      });
-
-      expect(handled).toBe(false);
-      expect(e.preventDefault).not.toHaveBeenCalled();
-      expect(resolveModelShortcut).not.toHaveBeenCalled();
-    });
-
-    test("does not intercept digits outside 1-5 (e.g. Digit6, Digit0)", () => {
-      const resolveModelShortcut = jest.fn();
-      for (const code of ["Digit6", "Digit0", "Digit9"]) {
-        const e = makeKeyEvent({ code, metaKey: true, shiftKey: true });
-        const handled = dispatchModelShortcut({
-          e,
-          resolveModelShortcut,
-          modelProfiles,
-          modelOption,
-          onSetConfigOption: jest.fn(),
-          onShowToast: jest.fn(),
+    function harness(overrides = {}) {
+      const ref = { current: null };
+      let cleanup;
+      let setupEffect;
+      let lastSession;
+      const toasts = [];
+      const sent = [];
+      const queued = [];
+      const bindings = {
+        ...helpers, sessionId: "A", modelShortcuts: [{ number: 2, model_tag: " Custom  Tag " }],
+        onApplyModelTag: (...args) => { sent.push(args); return Promise.resolve({ status: "applied" }); },
+        onSetConfigOption: () => { throw new Error("shortcut must not set a model ID"); },
+        onShowToast: (toast) => toasts.push(toast),
+        modelShortcutLifetimeRef: ref,
+        showSlashPicker: false, filteredSlashCommands: [], slashSelectedIndex: 0,
+        setSlashSelectedIndex() {}, setShowSlashPicker() {}, handleSlashCommandSelect() {},
+        sendKeyMode: "enter", handleSubmit: () => sent.push("prompt"),
+        handleAddToQueueClick: () => queued.push("queue"),
+        ...overrides,
+      };
+      const lifetimeStart = source.indexOf("  // Each session visit");
+      const lifetimeEnd = source.indexOf("  // Dev-only render-count", lifetimeStart);
+      const setupLifetime = new Function("sessionId", "useRef", "useEffect", source.slice(lifetimeStart, lifetimeEnd));
+      function render(sessionId = bindings.sessionId) {
+        bindings.sessionId = sessionId;
+        setupLifetime(sessionId, (value) => { if (!ref.current) ref.current = value; return ref; }, (setup) => {
+          if (lastSession !== sessionId) { cleanup?.(); setupEffect = setup; cleanup = setup(); lastSession = sessionId; }
         });
-        expect(handled).toBe(false);
-        expect(e.preventDefault).not.toHaveBeenCalled();
+        const start = source.indexOf("const handleKeyDown = (e) => {");
+        const end = source.indexOf("\n  };", start);
+        return new Function(...Object.keys(bindings), `${source.slice(start, end + 5)}; return handleKeyDown;`)(...Object.values(bindings));
       }
-      expect(resolveModelShortcut).not.toHaveBeenCalled();
+      return { render, toasts, sent, queued, unmount: () => cleanup?.(), replay: () => { cleanup?.(); cleanup = setupEffect(); } };
+    }
+    function event(overrides = {}) {
+      return { code: "Digit2", key: "@", metaKey: true, shiftKey: true, preventDefault: jest.fn(), ...overrides };
+    }
+    const flushFeedback = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+    test("configured press sends a tag exactly once and waits for confirmation", async () => {
+      let resolve;
+      const calls = [];
+      const h = harness({ onApplyModelTag: (...args) => { calls.push(args); return new Promise((done) => { resolve = done; }); } });
+      const e = event();
+      h.render()(e);
+      expect(e.preventDefault).toHaveBeenCalledTimes(1);
+      expect(calls).toEqual([["A", "Custom  Tag"]]);
+      expect(h.toasts).toEqual([]);
+      resolve({ status: "applied", model_id: "never-used" });
+      await flushFeedback();
+      expect(h.toasts[0].style).toBe("success");
+      expect(h.toasts[0].title).toBeTruthy();
+      expect(h.toasts[0].message).toContain("accepted");
+      expect(h.toasts[0].message).toContain("may take effect");
     });
 
-    test("does not intercept non-digit keys even with the full modifier combo", () => {
-      const resolveModelShortcut = jest.fn();
-      const e = makeKeyEvent({ code: "KeyA", metaKey: true, shiftKey: true });
+    test("unassigned, missing session and callback are consumed without a send", () => {
+      for (const overrides of [{ modelShortcuts: [] }, { sessionId: null }, { onApplyModelTag: undefined }]) {
+        const h = harness(overrides);
+        const e = event(); h.render()(e);
+        expect(e.preventDefault).toHaveBeenCalledTimes(1);
+        expect(h.sent).toEqual([]);
+        expect(h.toasts.length).toBe(1);
+        expect(h.toasts[0].title).toBeTruthy();
+      }
+      const h = harness({ modelShortcuts: [] }); h.render()(event());
+      expect(h.toasts[0].message).toContain("Settings > Keyboard");
+    });
 
-      const handled = dispatchModelShortcut({
-        e,
-        resolveModelShortcut,
-        modelProfiles,
-        modelOption,
-        onSetConfigOption: jest.fn(),
-        onShowToast: jest.fn(),
+    for (const status of ["already_active", "no_match", "catalog_unavailable", "invalid_tag", "invalid_request",
+      "missing_session", "invalid_target", "internal_error", "protocol_error", "send_failed", "timeout", "cancelled"]) {
+      test(`actual handler uses safe feedback for ${status}`, async () => {
+        const h = harness({ onApplyModelTag: () => Promise.resolve({ status, message: "SECRET" }) });
+        h.render()(event()); await flushFeedback();
+        const expected = helpers.modelShortcutToast({ status }, "Custom  Tag", 2);
+        expect(h.toasts).toEqual(expected ? [expected] : []);
       });
+    }
 
-      expect(handled).toBe(false);
-      expect(e.preventDefault).not.toHaveBeenCalled();
+    test("thrown and rejected callbacks have handled connection feedback", async () => {
+      for (const onApplyModelTag of [() => { throw new Error("SECRET"); }, () => Promise.reject(new Error("SECRET"))]) {
+        const h = harness({ onApplyModelTag }); h.render()(event()); await flushFeedback();
+        expect(h.toasts[0].style).toBe("error");
+        expect(h.toasts[0].message).toContain("sent or confirmed");
+        expect(h.toasts[0].message).not.toContain("SECRET");
+      }
+    });
+
+    for (const transition of ["switch", "unmount", "A-B-A", "effect-replay"]) {
+      test(`${transition} suppresses old feedback without cancelling backend operation`, async () => {
+        let resolve;
+        const h = harness({ onApplyModelTag: () => new Promise((done) => { resolve = done; }) });
+        h.render()(event());
+        if (transition === "unmount") h.unmount();
+        else if (transition === "effect-replay") h.replay();
+        else { h.render("B"); if (transition === "A-B-A") h.render("A"); }
+        resolve({ status: "applied" }); await flushFeedback();
+        expect(h.toasts).toEqual([]);
+      });
+    }
+
+    test("irrelevant keys fall through, while Ctrl/Alt/repeat preserve compatibility", async () => {
+      const h = harness(); const handler = h.render();
+      for (const overrides of [{ shiftKey: false }, { metaKey: false }, { code: "Digit6" }, { code: "Numpad2" }, { code: "KeyA" }]) {
+        const e = event(overrides); handler(e); expect(e.preventDefault).not.toHaveBeenCalled();
+      }
+      handler(event({ metaKey: false, ctrlKey: true, altKey: true, repeat: true }));
+      await flushFeedback();
+      expect(h.sent).toEqual([["A", "Custom  Tag"]]);
+    });
+
+    test("slash navigation precedes model shortcuts; real Enter/send/queue paths are retained", () => {
+      const select = jest.fn();
+      const slash = harness({ showSlashPicker: true, filteredSlashCommands: [{ name: "help" }], handleSlashCommandSelect: select });
+      slash.render()(event({ key: "Enter", code: "Enter", shiftKey: false }));
+      expect(select).toHaveBeenCalledTimes(1);
+      expect(slash.sent).toEqual([]);
+      for (const sendKeyMode of ["enter", "ctrl-enter"]) {
+        const h = harness({ sendKeyMode }); const handler = h.render();
+        handler(event({ key: "Enter", code: "Enter", shiftKey: false, metaKey: sendKeyMode === "ctrl-enter" }));
+        handler(event({ key: "Enter", code: "Enter", metaKey: true, shiftKey: sendKeyMode === "ctrl-enter" }));
+        expect(h.sent).toEqual(["prompt"]);
+        expect(h.queued).toEqual(["queue"]);
+      }
+      expect(source).toContain("onSetConfigOption,");
+      expect(source).toContain("modelProfiles = []");
+      expect(source).toContain("const modelOption = useMemo(");
     });
   });
 });

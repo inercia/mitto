@@ -244,6 +244,7 @@ export function useWebSocket({
   // (rule 21-web-frontend-state). Populated unconditionally after the useCallback
   // declaration below.
   const handleSessionMessageRef = useRef(null);
+  const handleModelTagAppliedRef = useRef(null);
   // handleSessionKeepaliveAck (UI-only bookkeeping for keepalive_ack frames,
   // mitto-7gta.30) is threaded the same way — populated after its own
   // useCallback declaration, below handleSessionMessage's.
@@ -2630,6 +2631,10 @@ export function useWebSocket({
         break;
       }
 
+      case "model_tag_applied":
+        handleModelTagAppliedRef.current?.(sessionId, msg.data);
+        break;
+
       case "config_option_changed": {
         // Config option changed (by user, agent, or a server-side rejection
         // re-broadcast). Two payload shapes are supported:
@@ -2951,11 +2956,12 @@ export function useWebSocket({
   // mitto-90f.5). The data itself lives in stores/configOptionsStore.js
   // (mitto-sus.11); consumers read it via useConfigOptions(sessionId)
   // instead of receiving it prop-drilled through this hook's return value.
-  const { setConfigOption } = useWSConfigOptions(
+  const { setConfigOption, applyModelTag, handleModelTagApplied } = useWSConfigOptions(
     activeSession,
     activeSessionId,
     sendToSessionStable,
   );
+  handleModelTagAppliedRef.current = handleModelTagApplied;
 
   // Send ensure_resumed to the active session's WebSocket.
   // Called when the user focuses on a conversation so the server can resume
@@ -4705,6 +4711,7 @@ export function useWebSocket({
     reconnectAllSessionsStaggered,
     availableCommands,
     setConfigOption,
+    applyModelTag,
     activeUIPrompt,
     sendUIPromptAnswer,
     ensureResumed,

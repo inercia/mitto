@@ -1,47 +1,50 @@
-// Pure helpers for the Cmd/Ctrl+Shift+<digit> composer model-switch shortcut
-// (mitto-qmqq.2). No DOM/window access — testable in plain Node/bun.
-
-import { resolveProfileModel } from "./prompts.js";
-
-/**
- * Resolve what should happen when the user presses Cmd/Ctrl+Shift+<digit>
- * in the composer.
- *
- * @param {number} digit - The pressed digit, 1-5.
- * @param {Array<object>|null|undefined} modelProfiles - Global model profiles
- *   (each may carry `shortcut_number`, 0 or absent = unassigned).
- * @param {object|null|undefined} modelOption - The "model" config option
- *   (`configOptions.find(o => o.category === "model")`), whose `.options`
- *   array holds the catalog `{value, name}` entries in server-reported order
- *   and whose `.current_value` is the active model's value.
- * @returns {{
- *   status: "apply"|"unassigned"|"no_match"|"already_active"|"no_model_option",
- *   profile?: object,
- *   value?: string,
- *   name?: string,
- * }}
- */
-export function resolveModelShortcut(digit, modelProfiles, modelOption) {
-  if (!modelOption || !Array.isArray(modelOption.options)) {
-    return { status: "no_model_option" };
-  }
-
-  const profile = Array.isArray(modelProfiles)
-    ? modelProfiles.find((p) => (p?.shortcut_number || 0) === digit)
-    : null;
-
-  if (!profile) {
+// Pure runtime mapping, physical-key matching and safe confirmation feedback.
+// Model resolution belongs exclusively to the canonical backend tag operation.
+export function resolveModelShortcut(digit, modelShortcuts) {
+  if (!Number.isInteger(digit) || digit < 1 || digit > 5 || !Array.isArray(modelShortcuts)) {
     return { status: "unassigned" };
   }
+  const entry = modelShortcuts.find((row) => row?.number === digit &&
+    typeof row.model_tag === "string" && row.model_tag.trim());
+  return entry ? { status: "apply", modelTag: entry.model_tag.trim() } : { status: "unassigned" };
+}
 
-  const resolved = resolveProfileModel(profile, modelOption);
-  if (!resolved) {
-    return { status: "no_match", profile };
+export function modelShortcutDigit(event) {
+  if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return null;
+  const match = /^Digit([1-5])$/.exec(event.code);
+  return match ? Number(match[1]) : null;
+}
+
+export function modelShortcutToast(outcome, modelTag, digit) {
+  const title = "Model shortcut";
+  switch (outcome?.status) {
+    case "applied":
+      return { style: "success", title, message: `Model selection accepted for tag “${modelTag}”; it may take effect before the next prompt.` };
+    case "already_active":
+      return { style: "info", title, message: `The model for tag “${modelTag}” is already active.` };
+    case "unassigned":
+      return { style: "info", title, message: `No tag is assigned to shortcut ${digit}. Configure Settings > Keyboard.` };
+    case "no_match":
+      return { style: "warning", title, message: `No matching model for tag “${modelTag}”.` };
+    case "catalog_unavailable":
+      return { style: "warning", title, message: "The model catalog is unavailable. Try again when it is available." };
+    case "invalid_tag":
+      return { style: "error", title, message: "Invalid model tag. Check Settings > Keyboard." };
+    case "invalid_request":
+      return { style: "error", title, message: "Invalid model selection request. Refresh and try again." };
+    case "missing_session":
+    case "invalid_target":
+      return { style: "error", title, message: "The conversation is unavailable for model selection." };
+    case "send_failed":
+      return { style: "error", title, message: "The model selection request could not be sent or confirmed. Check the connection and current model before retrying." };
+    case "timeout":
+      return { style: "warning", title, message: "Model selection confirmation was not received; the selection may still apply. Check the current model before retrying." };
+    case "cancelled":
+      return null;
+    case "internal_error":
+      return { style: "error", title, message: "Model selection encountered an application error. Check the current model before retrying." };
+    case "protocol_error":
+    default:
+      return { style: "error", title, message: "Model selection could not be confirmed. Refresh and check the current model before retrying." };
   }
-
-  if (resolved.value === modelOption.current_value) {
-    return { status: "already_active", profile, value: resolved.value, name: resolved.name };
-  }
-
-  return { status: "apply", profile, value: resolved.value, name: resolved.name };
 }

@@ -1,215 +1,73 @@
-/**
- * Unit tests for the Cmd/Ctrl+Shift+<digit> composer model-switch shortcut
- * resolver (mitto-qmqq.2).
- */
-
 import { describe, test, expect } from "./testing/testGlobals.js";
-import { resolveModelShortcut } from "./modelShortcuts.js";
+import { resolveModelShortcut, modelShortcutDigit, modelShortcutToast } from "./modelShortcuts.js";
 
-function modelOption(options, currentValue) {
-  return { options, current_value: currentValue };
-}
-
-describe("resolveModelShortcut", () => {
-  test("returns no_model_option when modelOption is missing", () => {
-    const result = resolveModelShortcut(1, [{ shortcut_number: 1 }], null);
-    expect(result).toEqual({ status: "no_model_option" });
+describe("runtime model tag mappings", () => {
+  test("custom tags need no catalog/profiles; trims only edges, never mutates", () => {
+    const rows = Object.freeze([
+      Object.freeze({ number: 1, model_tag: " My  Custom Tag " }),
+      Object.freeze({ number: 2, model_tag: "My  Custom Tag" }),
+    ]);
+    expect(resolveModelShortcut(1, rows)).toEqual({ status: "apply", modelTag: "My  Custom Tag" });
+    expect(resolveModelShortcut(2, rows)).toEqual(resolveModelShortcut(1, rows));
+    expect(rows[0].model_tag).toBe(" My  Custom Tag ");
   });
 
-  test("returns no_model_option when modelOption.options is not an array", () => {
-    const result = resolveModelShortcut(1, [{ shortcut_number: 1 }], { options: "nope" });
-    expect(result).toEqual({ status: "no_model_option" });
+  test("malformed mappings fail closed; first valid numeric match wins", () => {
+    for (const rows of [undefined, null, {}, "tag", [], [null, {}, { shortcut_number: 1, model_tag: "legacy" }],
+      [{ number: "1", model_tag: "string" }], [{ number: 1, model_tag: null }], [{ number: 1, model_tag: "  " }]]) {
+      expect(resolveModelShortcut(1, rows)).toEqual({ status: "unassigned" });
+    }
+    const rows = [null, { number: 1, model_tag: " " }, { number: 1, model_tag: "First" }, { number: 1, model_tag: "Second" }];
+    expect(resolveModelShortcut(1, rows)).toEqual({ status: "apply", modelTag: "First" });
+    for (const digit of ["1", 1.5, 0, 6, -1, NaN, null, undefined]) {
+      expect(resolveModelShortcut(digit, rows)).toEqual({ status: "unassigned" });
+    }
   });
+});
 
-  test("returns unassigned when no profile carries the requested shortcut_number", () => {
-    const profiles = [
-      { name: "Claude Opus", shortcut_number: 1, criteria: { matchMode: "contains", pattern: "Opus" } },
-    ];
-    const opt = modelOption([{ value: "claude-opus", name: "Claude Opus 5.5" }], "claude-opus");
-    const result = resolveModelShortcut(2, profiles, opt);
-    expect(result).toEqual({ status: "unassigned" });
+describe("model shortcut physical key predicate", () => {
+  test("Meta and Ctrl, shifted symbols, all five digits, Alt/repeat compatibility", () => {
+    for (const modifier of ["metaKey", "ctrlKey"]) {
+      for (let digit = 1; digit <= 5; digit++) {
+        expect(modelShortcutDigit({ [modifier]: true, shiftKey: true, code: `Digit${digit}`, key: "!", altKey: true, repeat: true })).toBe(digit);
+      }
+    }
   });
-
-  test("returns unassigned when modelProfiles is null/undefined", () => {
-    const opt = modelOption([{ value: "x", name: "X" }], "x");
-    expect(resolveModelShortcut(1, null, opt)).toEqual({ status: "unassigned" });
-    expect(resolveModelShortcut(1, undefined, opt)).toEqual({ status: "unassigned" });
+  test("irrelevant keys and missing modifiers fall through", () => {
+    for (const code of ["Digit0", "Digit6", "Digit9", "Numpad1", "KeyA", "Enter", undefined]) {
+      expect(modelShortcutDigit({ metaKey: true, shiftKey: true, code })).toBe(null);
+    }
+    for (const event of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, {}]) {
+      expect(modelShortcutDigit({ ...event, code: "Digit1" })).toBe(null);
+    }
   });
+});
 
-  test("treats absent shortcut_number as 0 (never matches digit 1-5)", () => {
-    const profiles = [{ name: "No Shortcut", criteria: { matchMode: "contains", pattern: "X" } }];
-    const opt = modelOption([{ value: "x", name: "X" }], "x");
-    expect(resolveModelShortcut(1, profiles, opt)).toEqual({ status: "unassigned" });
-  });
-
-  test("returns no_match (with profile) when the profile's criteria match no catalog model", () => {
-    const profiles = [
-      { name: "Gemini", shortcut_number: 3, criteria: { matchMode: "contains", pattern: "Gemini" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "claude-opus", name: "Claude Opus 5.5" },
-        { value: "claude-sonnet", name: "Claude Sonnet 5" },
-      ],
-      "claude-sonnet",
-    );
-    const result = resolveModelShortcut(3, profiles, opt);
-    expect(result.status).toBe("no_match");
-    expect(result.profile).toBe(profiles[0]);
-  });
-
-  test("returns apply when a match is found and it differs from the current model (contains)", () => {
-    const profiles = [
-      { name: "Claude Opus", shortcut_number: 1, criteria: { matchMode: "contains", pattern: "Opus" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "claude-opus", name: "Claude Opus 5.5" },
-        { value: "claude-sonnet", name: "Claude Sonnet 5" },
-      ],
-      "claude-sonnet",
-    );
-    const result = resolveModelShortcut(1, profiles, opt);
-    expect(result).toEqual({
-      status: "apply",
-      profile: profiles[0],
-      value: "claude-opus",
-      name: "Claude Opus 5.5",
+describe("safe model tag feedback", () => {
+  const styles = {
+    applied: "success", already_active: "info", unassigned: "info", no_match: "warning",
+    catalog_unavailable: "warning", invalid_tag: "error", invalid_request: "error",
+    missing_session: "error", invalid_target: "error", internal_error: "error",
+    protocol_error: "error", send_failed: "error", timeout: "warning",
+  };
+  for (const [status, style] of Object.entries(styles)) {
+    test(`${status} supplies style/title/message and ignores raw server text`, () => {
+      const toast = modelShortcutToast({ status, message: "SERVER_SECRET" }, "Custom Tag", 3);
+      expect(toast.style).toBe(style);
+      expect(toast.title).toBeTruthy();
+      expect(toast.message).toBeTruthy();
+      expect(toast.message).not.toContain("SERVER_SECRET");
+      expect(toast.message).not.toMatch(/switched|rollback/i);
     });
-  });
-
-  test("returns already_active when the matched model is the current model", () => {
-    const profiles = [
-      { name: "Claude Sonnet", shortcut_number: 2, criteria: { matchMode: "contains", pattern: "Sonnet" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "claude-opus", name: "Claude Opus 5.5" },
-        { value: "claude-sonnet", name: "Claude Sonnet 5" },
-      ],
-      "claude-sonnet",
-    );
-    const result = resolveModelShortcut(2, profiles, opt);
-    expect(result).toEqual({
-      status: "already_active",
-      profile: profiles[0],
-      value: "claude-sonnet",
-      name: "Claude Sonnet 5",
-    });
-  });
-
-  test("supports exact match mode", () => {
-    const profiles = [
-      { name: "Auto", shortcut_number: 4, criteria: { matchMode: "exact", pattern: "Auto" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "auto", name: "Auto" },
-        { value: "auto-plus", name: "Auto Plus" },
-      ],
-      "auto-plus",
-    );
-    const result = resolveModelShortcut(4, profiles, opt);
-    // exact mode must not match "Auto Plus"; only the literal "Auto" model.
-    expect(result).toEqual({
-      status: "apply",
-      profile: profiles[0],
-      value: "auto",
-      name: "Auto",
-    });
-  });
-
-  test("supports startsWith match mode", () => {
-    const profiles = [
-      { name: "GPT", shortcut_number: 5, criteria: { matchMode: "startsWith", pattern: "GPT-5" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "gpt-5", name: "GPT-5 Turbo" },
-        { value: "gpt-4", name: "GPT-4" },
-      ],
-      "gpt-4",
-    );
-    const result = resolveModelShortcut(5, profiles, opt);
-    expect(result.status).toBe("apply");
-    expect(result.value).toBe("gpt-5");
-  });
-
-  test("supports regex match mode", () => {
-    const profiles = [
-      { name: "Sonnet regex", shortcut_number: 1, criteria: { matchMode: "regex", pattern: "sonnet.*5" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "claude-sonnet-5", name: "Claude Sonnet 5" },
-        { value: "claude-opus", name: "Claude Opus" },
-      ],
-      "claude-opus",
-    );
-    const result = resolveModelShortcut(1, profiles, opt);
-    expect(result.status).toBe("apply");
-    expect(result.value).toBe("claude-sonnet-5");
-  });
-
-  test("regex match mode fails closed (no_match) on invalid pattern", () => {
-    const profiles = [
-      { name: "Bad regex", shortcut_number: 1, criteria: { matchMode: "regex", pattern: "(unterminated" } },
-    ];
-    const opt = modelOption([{ value: "x", name: "X" }], "x");
-    const result = resolveModelShortcut(1, profiles, opt);
-    expect(result.status).toBe("no_match");
-  });
-
-  test("supports lookAlike (word-based) match mode", () => {
-    const profiles = [
-      { name: "Opus lookalike", shortcut_number: 1, criteria: { matchMode: "lookAlike", pattern: "Opus 5" } },
-    ];
-    const opt = modelOption(
-      [{ value: "claude-opus-5-5", name: "Claude Opus 5.5" }],
-      "other",
-    );
-    const result = resolveModelShortcut(1, profiles, opt);
-    expect(result.status).toBe("apply");
-    expect(result.value).toBe("claude-opus-5-5");
-  });
-
-  test("unknown matchMode never matches (default: false)", () => {
-    const profiles = [
-      { name: "Weird", shortcut_number: 1, criteria: { matchMode: "fuzzy", pattern: "Opus" } },
-    ];
-    const opt = modelOption([{ value: "claude-opus", name: "Claude Opus 5.5" }], "claude-opus");
-    const result = resolveModelShortcut(1, profiles, opt);
-    expect(result.status).toBe("no_match");
-  });
-
-  test("last match wins when multiple catalog entries satisfy the same criteria", () => {
-    const profiles = [
-      { name: "Claude", shortcut_number: 1, criteria: { matchMode: "contains", pattern: "Claude" } },
-    ];
-    const opt = modelOption(
-      [
-        { value: "claude-a", name: "Claude A" },
-        { value: "claude-b", name: "Claude B" },
-        { value: "claude-c", name: "Claude C" },
-      ],
-      "other",
-    );
-    const result = resolveModelShortcut(1, profiles, opt);
-    // resolveProfileModel iterates without early-break, so the LAST match wins.
-    expect(result.status).toBe("apply");
-    expect(result.value).toBe("claude-c");
-  });
-
-  test("digits outside 1-5 are still resolved by this function (range enforcement is the caller's job)", () => {
-    // resolveModelShortcut itself does not restrict digit to 1-5 — ChatInput.js's
-    // regex is what enforces that range before calling this function. Passing a
-    // profile with shortcut_number 9 still resolves normally here.
-    const profiles = [
-      { name: "Nine", shortcut_number: 9, criteria: { matchMode: "contains", pattern: "Nine" } },
-    ];
-    const opt = modelOption([{ value: "nine", name: "Model Nine" }], "other");
-    const result = resolveModelShortcut(9, profiles, opt);
-    expect(result.status).toBe("apply");
-    expect(result.value).toBe("nine");
+  }
+  test("acceptance allows deferral; uncertain outcomes do not imply failure", () => {
+    expect(modelShortcutToast({ status: "applied" }, "Tag").message).toMatch(/accepted.*may take effect before the next prompt/);
+    expect(modelShortcutToast({ status: "timeout" }).message).toMatch(/may still apply.*before retrying/);
+    expect(modelShortcutToast({ status: "send_failed" }).message).toContain("sent or confirmed");
+    expect(modelShortcutToast({ status: "unassigned" }, "", 3).message).toContain("Settings > Keyboard");
+    expect(modelShortcutToast({ status: "catalog_unavailable" }).message).toContain("catalog");
+    expect(modelShortcutToast({ status: "no_match" }, "Tag").message).toContain("No matching model");
+    expect(modelShortcutToast({ status: "cancelled" })).toBe(null);
+    expect(modelShortcutToast({ status: "unsupported" }).style).toBe("error");
   });
 });
