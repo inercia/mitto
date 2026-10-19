@@ -40,6 +40,20 @@ export function createMiscResource(config, configResource) {
     /** GET /api/csrf-token. */
     csrfToken: (opts) => call("GET", "/api/csrf-token", opts),
 
+    /** Dev-only performance dump. Keep JSONL opaque and avoid login navigation
+     *  for best-effort instrumentation failures. Disabled servers return 404.
+     *  @param {string} jsonl
+     *  @param {{label: string, scenario: string}} params */
+    dumpPerfBuffer: (jsonl, params, opts) =>
+      call("POST", "/api/perf/dump", {
+        query: params,
+        body: jsonl,
+        headers: { "Content-Type": "application/x-ndjson" },
+        raw: true,
+        suppressUnauthorizedRedirect: true,
+        ...opts,
+      }),
+
     /** GET /api/auth-info — pre-auth: reports which auth method(s) are
      *  configured so the login page can adapt its UI.
      *  @returns {Promise<{simple: boolean, cloudflare: boolean}>} */

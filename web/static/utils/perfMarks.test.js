@@ -10,8 +10,12 @@ import {
   _resetPerfEnabledCacheForTests,
 } from "./perfMarks.js";
 import { mockFn as mock } from "./testing/mockFn.js";
+import { _resetSdkClientForTests } from "./sdkClient.js";
 
 function resetPerfState() {
+  _resetSdkClientForTests();
+  document.cookie =
+    "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
   _resetPerfEnabledCacheForTests();
   delete window.__mittoPerf;
   delete window.__mittoPerfBuffer;
@@ -126,6 +130,10 @@ describe("dumpPerfBufferToFile", () => {
 });
 
 describe("dumpPerfBufferToServer", () => {
+  beforeEach(() => {
+    document.cookie = "mitto_csrf=perf-test-token; path=/";
+  });
+
   test("returns false and does not call fetch when perf is disabled", async () => {
     global.fetch = mock(() => Promise.resolve({ ok: true }));
     window.__mittoPerfBuffer = [
@@ -159,6 +167,8 @@ describe("dumpPerfBufferToServer", () => {
     );
     expect(options.method).toBe("POST");
     expect(options.credentials).toBe("include");
+    expect(options.headers["Content-Type"]).toBe("application/x-ndjson");
+    expect(options.headers["X-CSRF-Token"]).toBe("perf-test-token");
     const lines = options.body
       .trim()
       .split("\n")
@@ -173,9 +183,42 @@ describe("dumpPerfBufferToServer", () => {
 
   test("returns false when the response is non-2xx", async () => {
     window.__mittoPerf = true;
-    global.fetch = mock(() => Promise.resolve({ ok: false }));
+    global.fetch = mock(() =>
+      Promise.resolve(new Response("disabled", { status: 404 })),
+    );
 
     expect(await dumpPerfBufferToServer("scenario", "ios-safari")).toBe(false);
+  });
+
+  test("unauthorized telemetry fails without redirecting the page", async () => {
+    window.__mittoPerf = true;
+    const href = window.location.href;
+    global.fetch = mock(() =>
+      Promise.resolve(new Response("unauthorized", { status: 401 })),
+    );
+
+    expect(await dumpPerfBufferToServer("scenario", "ios-safari")).toBe(false);
+    expect(window.location.href).toBe(href);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("uses the shared CSRF-token fallback before uploading JSONL", async () => {
+    window.__mittoPerf = true;
+    document.cookie =
+      "mitto_csrf=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+    global.fetch = mock((url) =>
+      Promise.resolve(
+        url.endsWith("/api/csrf-token")
+          ? Response.json({ token: "fallback-token" })
+          : new Response(null, { status: 204 }),
+      ),
+    );
+
+    expect(await dumpPerfBufferToServer("scenario", "ios-safari")).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(global.fetch.mock.calls[1][1].headers["X-CSRF-Token"]).toBe(
+      "fallback-token",
+    );
   });
 
   test("never throws — a rejected fetch degrades to false", async () => {

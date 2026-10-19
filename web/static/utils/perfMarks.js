@@ -231,14 +231,12 @@ export function dumpPerfBufferToFile(scenario, path) {
 export async function dumpPerfBufferToServer(scenario, label) {
   if (!isPerfEnabled()) return false;
   try {
-    const prefix = window.mittoApiPrefix || "";
-    const qs = new URLSearchParams({ label, scenario }).toString();
-    const response = await fetch(`${prefix}/api/perf/dump?${qs}`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/x-ndjson" },
-      body: serializePerfBufferToJSONL(scenario),
-    });
+    // Keep SDK initialization off the disabled instrumentation path.
+    const { getSdkClient } = await import("./sdkClient.js");
+    const response = await getSdkClient().misc.dumpPerfBuffer(
+      serializePerfBufferToJSONL(scenario),
+      { label, scenario },
+    );
     return response.ok;
   } catch {
     return false;

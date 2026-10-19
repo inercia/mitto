@@ -422,6 +422,9 @@ since the iOS Simulator shares the host machine's loopback interface.
 the same `exposePerfDumpForConsole()`) is a no-op (resolves `false`) unless
 perf instrumentation is enabled; it degrades to `false` rather than throwing
 if the endpoint is disabled/unreachable.
+The upload uses `client.misc.dumpPerfBuffer` through the shared browser SDK,
+including cookie credentials and CSRF protection. An unauthorized telemetry
+response resolves `false` without navigating away from the current page.
 
 #### Reusable perf-dump endpoint
 

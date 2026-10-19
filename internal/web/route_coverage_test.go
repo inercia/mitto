@@ -150,6 +150,9 @@ func routeCoversPath(routeNorm, sdkNorm string) bool {
 // handler values bind to a nil-fielded *Server without being invoked.
 func liveRoutePatterns(t *testing.T) []string {
 	t.Helper()
+	// Include the opt-in dev route: the SDK can call it even when a normal
+	// server leaves it disabled (404). Validate against the complete table.
+	t.Setenv("MITTO_PERF_DUMP", "1")
 	s := &Server{}
 	authMgr := middleware.NewAuthManager(nil)
 	csrfMgr := middleware.NewCSRFManager()
