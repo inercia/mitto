@@ -21,8 +21,10 @@ func TestCleanupOldImagesProtectsReferencesAndRemovesOrphans(t *testing.T) {
 		{name: "queue reference", history: `{"seq":1,"type":"session_start","data":{}}`, queue: `{"messages":[{"id":"q1","image_ids":["img_event.png"]}]}`, writeQueue: true, wantKeep: true},
 		{name: "empty valid history allows orphan cleanup", history: "", wantKeep: false},
 		{name: "corrupt history fails closed", history: "not-json", wantKeep: true},
+		{name: "null history event fails closed", history: "null", wantKeep: true},
 		{name: "user prompt with malformed data fails closed", history: `{"seq":1,"type":"user_prompt","data":null}`, wantKeep: true},
 		{name: "corrupt queue fails closed", history: `{"seq":1,"type":"session_start","data":{}}`, queue: "not-json", writeQueue: true, wantKeep: true},
+		{name: "null queue fails closed", history: "", queue: "null", writeQueue: true, wantKeep: true},
 	}
 
 	for _, tt := range tests {
@@ -108,6 +110,33 @@ func TestCleanupOldImagesPreservesRecentFileInOldSession(t *testing.T) {
 	}
 	if _, err := os.Stat(imagePath); err != nil {
 		t.Fatalf("recent file in old session was removed: %v", err)
+	}
+}
+
+func TestCleanupOldImagesPreservesUnsupportedEntriesInOldSession(t *testing.T) {
+	store, sessionID, _ := newCleanupFixture(t, "")
+	defer store.Close()
+	unsupported := filepath.Join(store.imagesDir(sessionID), "notes.txt")
+	directory := filepath.Join(store.imagesDir(sessionID), "nested.png")
+	if err := os.WriteFile(unsupported, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	for _, path := range []string{unsupported, directory} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if removed, err := store.CleanupOldImages(time.Hour, 0); err != nil || removed != 1 {
+		t.Fatalf("CleanupOldImages() = (%d, %v), want (1, nil)", removed, err)
+	}
+	for _, path := range []string{unsupported, directory} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected preserved path %s: %v", path, err)
+		}
 	}
 }
 

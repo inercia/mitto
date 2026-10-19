@@ -108,6 +108,33 @@ func TestHandleServeImage_SessionNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleServeImage_ExistingAndMissingAssets(t *testing.T) {
+	const sessionID = "historical-images"
+	store, h := setupImageTestHandlers(t, sessionID)
+	data := []byte("original image bytes")
+	image, err := store.SaveImage(sessionID, data, "image/png", "original.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/images/"+image.ID, nil)
+	w := httptest.NewRecorder()
+	h.handleServeImage(w, req, store, sessionID, image.ID)
+	if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), data) {
+		t.Fatalf("served image = (%d, %q), want (200, %q)", w.Code, w.Body.Bytes(), data)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "private, max-age=86400" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	w = httptest.NewRecorder()
+	h.handleServeImage(w, req, store, sessionID, "img_missing.png")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing image in retained session status = %d, want 404", w.Code)
+	}
+}
+
 func TestHandleDeleteImage_SessionNotFound(t *testing.T) {
 	store, h := setupImageTestHandlers(t, "")
 

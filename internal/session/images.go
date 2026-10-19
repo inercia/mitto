@@ -239,7 +239,8 @@ func (s *Store) DeleteImage(sessionID, imageID string) error {
 
 // CleanupOldImages removes old images from inactive sessions.
 // It preserves images from sessions updated within preserveRecent duration.
-// For older sessions, it removes images older than maxAge.
+// For older sessions, it removes only unreferenced images older than maxAge.
+// Unreadable or malformed history/queue references preserve the session's images.
 func (s *Store) CleanupOldImages(maxAge, preserveRecent time.Duration) (int, error) {
 	log := logging.Session()
 	s.mu.Lock()
@@ -337,6 +338,10 @@ func readProtectedImageIDs(sessionDir string) (map[string]struct{}, error) {
 		if len(bytes.TrimSpace(lineBytes)) == 0 {
 			continue
 		}
+		if bytes.TrimSpace(lineBytes)[0] != '{' {
+			events.Close()
+			return nil, fmt.Errorf("decode history line %d: expected object", line)
+		}
 		var event struct {
 			Type EventType       `json:"type"`
 			Data json.RawMessage `json:"data"`
@@ -385,6 +390,9 @@ func readProtectedImageIDs(sessionDir string) (map[string]struct{}, error) {
 	}
 	if closeErr != nil {
 		return nil, fmt.Errorf("close queue: %w", closeErr)
+	}
+	if trimmed := bytes.TrimSpace(queueBytes); len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, fmt.Errorf("decode queue: expected object")
 	}
 	var queueFile QueueFile
 	if err := json.Unmarshal(queueBytes, &queueFile); err != nil {

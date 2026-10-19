@@ -117,6 +117,25 @@ The lock order is lifecycle gate, keyed-lock registry, then session mutex; locks
 are released in reverse order. Internal helpers called by global operations must
 not reacquire either public lock layer.
 
+### Historical image retention and unavailable attachments
+
+Startup image cleanup preserves files referenced by any retained `user_prompt`
+event or persisted queue entry, including in restored session directories. Only
+unreferenced supported image files older than 30 days are eligible, and sessions
+updated within 7 days are skipped. Missing, unreadable, or malformed history, or
+an unreadable or malformed existing queue, causes cleanup to skip that session
+rather than risk deleting assets. An absent queue is normal and does not block cleanup.
+Explicit session deletion still removes its assets; this does not recover bytes
+that are already missing.
+
+An attachment load error displays **Image unavailable** and a **Retry image**
+button. Failed full URLs are remembered in a bounded, page-local cache (512
+entries), so rerendering or returning to history does not repeatedly request them.
+Retry makes one new attempt; page reload or cache eviction also permits another
+attempt. Failures are not persisted, and the message does not imply a particular
+cause such as deletion. Valid image serving and missing-image HTTP 404 semantics
+are unchanged.
+
 ### Archive / Auto-Unarchive Recovery Lifecycle
 
 Sessions can be archived manually (`ArchiveReasonManual`), for inactivity (`ArchiveReasonInactivity`), or automatically after repeated ACP process start failures (`ArchiveReasonACPFailures`). The last case is the only one considered transient: a loop conversation archived this way is automatically retried by `LoopRunner.checkAutoUnarchiveRecovery()` (see `internal/web/loop_runner.go`), polled once per minute alongside the other loop housekeeping checks.
