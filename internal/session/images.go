@@ -1,10 +1,14 @@
 package session
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -278,8 +282,17 @@ func (s *Store) CleanupOldImages(maxAge, preserveRecent time.Duration) (int, err
 			continue // No images directory or error reading
 		}
 
+		protectedIDs, err := readProtectedImageIDs(s.sessionDir(sessionID))
+		if err != nil {
+			log.Warn("skipping image cleanup because references could not be read", "session_id", sessionID, "error", err)
+			continue
+		}
+
 		for _, entry := range entries {
-			if entry.IsDir() {
+			if entry.IsDir() || GetMimeTypeFromExt(filepath.Ext(entry.Name())) == "" {
+				continue
+			}
+			if _, referenced := protectedIDs[entry.Name()]; referenced {
 				continue
 			}
 
@@ -306,6 +319,85 @@ func (s *Store) CleanupOldImages(maxAge, preserveRecent time.Duration) (int, err
 	}
 
 	return totalRemoved, nil
+}
+
+// readProtectedImageIDs reads retained-history and queued-image references
+// without taking store locks. The caller holds the store lifecycle lock.
+func readProtectedImageIDs(sessionDir string) (map[string]struct{}, error) {
+	ids := make(map[string]struct{})
+	events, err := os.Open(filepath.Join(sessionDir, eventsFileName))
+	if err != nil {
+		return nil, fmt.Errorf("open history: %w", err)
+	}
+	const maxEventLine = 10 * 1024 * 1024
+	scanner := bufio.NewScanner(events)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLine)
+	for line := 1; scanner.Scan(); line++ {
+		lineBytes := scanner.Bytes()
+		if len(bytes.TrimSpace(lineBytes)) == 0 {
+			continue
+		}
+		var event struct {
+			Type EventType       `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(lineBytes, &event); err != nil {
+			events.Close()
+			return nil, fmt.Errorf("decode history line %d: %w", line, err)
+		}
+		if event.Type != EventTypeUserPrompt {
+			continue
+		}
+		if len(bytes.TrimSpace(event.Data)) == 0 || bytes.TrimSpace(event.Data)[0] != '{' {
+			events.Close()
+			return nil, fmt.Errorf("decode image references on history line %d: expected object", line)
+		}
+		var prompt UserPromptData
+		if err := json.Unmarshal(event.Data, &prompt); err != nil {
+			events.Close()
+			return nil, fmt.Errorf("decode image references on history line %d: %w", line, err)
+		}
+		for _, image := range prompt.Images {
+			if image.ID != "" {
+				ids[image.ID] = struct{}{}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		events.Close()
+		return nil, fmt.Errorf("scan history: %w", err)
+	}
+	if err := events.Close(); err != nil {
+		return nil, fmt.Errorf("close history: %w", err)
+	}
+
+	queue, err := os.Open(filepath.Join(sessionDir, queueFileName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ids, nil
+		}
+		return nil, fmt.Errorf("open queue: %w", err)
+	}
+	queueBytes, err := io.ReadAll(queue)
+	closeErr := queue.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read queue: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close queue: %w", closeErr)
+	}
+	var queueFile QueueFile
+	if err := json.Unmarshal(queueBytes, &queueFile); err != nil {
+		return nil, fmt.Errorf("decode queue: %w", err)
+	}
+	for _, message := range queueFile.Messages {
+		for _, id := range message.ImageIDs {
+			if id != "" {
+				ids[id] = struct{}{}
+			}
+		}
+	}
+	return ids, nil
 }
 
 // generateImageID creates a unique image ID.

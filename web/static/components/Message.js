@@ -21,6 +21,7 @@ import {
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
 import { CopyIcon, CheckIcon, getPromptIcon } from "./Icons.js";
 import { Tooltip } from "./Tooltip.js";
+import { AttachmentImage } from "./AttachmentImage.js";
 import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
 import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
 import { preloadBeadsIssues } from "../utils/beadsPreload.js";
@@ -701,16 +702,7 @@ function MessageImpl({
           html`
             <div class="flex flex-wrap gap-2 mb-2">
               ${message.images.map(
-                (img) => html`
-                  <div key=${img.id} class="relative group">
-                    <img
-                      src=${img.url}
-                      alt=${img.name || "Attached image"}
-                      class="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                      onClick=${() => window.open(img.url, "_blank")}
-                    />
-                  </div>
-                `,
+                (img) => html`<${AttachmentImage} key=${img.url} image=${img} />`,
               )}
             </div>
           `}
