@@ -652,9 +652,13 @@ func TestRankCandidatesFragmentRenders(t *testing.T) {
 			t.Errorf("%q: missing shortlist-consumption deferral to the caller", c.name)
 		}
 		// Every consumer must say how it uses the shortlist — otherwise the
-		// deferral above dangles and the agent has no instruction.
+		// deferral above dangles and the agent has no instruction. Start work
+		// uses compact equivalent prose rather than the old heading.
 		if !strings.Contains(out, "consumes the ranking:") {
-			t.Errorf("%q: missing a 'How ... consumes the ranking' note next to the fragment", c.name)
+			compactOut := strings.Join(strings.Fields(out), " ")
+			if c.name != "Start work" || !strings.Contains(compactOut, "recommending the top child") || !strings.Contains(compactOut, "offer together and each individually") {
+				t.Errorf("%q: missing instructions for consuming the ranked shortlist", c.name)
+			}
 		}
 	}
 }

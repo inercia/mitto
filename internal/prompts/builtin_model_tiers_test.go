@@ -284,13 +284,13 @@ func TestBuiltinStartWorkDispatchesLabelGuidedPhases(t *testing.T) {
 	for _, want := range []string{
 		"Bug fix — investigate phase", "Bug fix — reproduce phase", "Bug fix — fix phase",
 		"Feature — plan phase", "Feature — implement phase", "Feature — test phase", "Feature — review phase",
-		"implementation-refined", "Approval gate",
+		"implementation-refined", "first Fix/Implement",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Start work missing %q", want)
 		}
 	}
-	if strings.Contains(body, "bd close {{ $target }}") {
-		t.Errorf("Start work must leave closing to the orchestrator")
+	if !strings.Contains(body, "the orchestrator closes terminal-label beads") {
+		t.Errorf("Start work must leave terminal-label closure to the orchestrator")
 	}
 }
