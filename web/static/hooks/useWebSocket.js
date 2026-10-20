@@ -150,6 +150,14 @@ export function useWebSocket({
   const [sessions, setSessions] = useState({});
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [storedSessions, setStoredSessions] = useState([]); // Sessions from the store
+  const activeSessionIdRef = useRef(activeSessionId);
+  const terminalSessionIdsRef = useRef(new Set());
+  const unavailableNoticeIdsRef = useRef(new Set());
+  const metadataReadRef = useRef({ controller: null, generation: 0, id: null });
+  const missingSessionHandlerRef = useRef(null);
+  const reportMissingSession = useCallback((sessionId) => {
+    missingSessionHandlerRef.current?.(sessionId);
+  }, []);
 
   // Global MCP server bind status from the `connected` message: { available, reason, port } | null
   const [mcpStatus, setMcpStatus] = useState(null);
@@ -177,10 +185,11 @@ export function useWebSocket({
   // (mitto-sus.11); only the callbacks are needed here.
   const {
     fetchQueueMessages,
+    invalidateQueueSession,
     deleteQueueMessage,
     addToQueue,
     moveQueueMessage,
-  } = useWSQueue(activeSessionId);
+  } = useWSQueue(activeSessionId, { onSessionMissing: reportMissingSession });
 
   // Available slash commands for the active session (from ACP agent)
   // Array of { name: string, description: string, input_hint?: string }
@@ -190,7 +199,6 @@ export function useWebSocket({
   // Array of { id: string, name: string, description?: string, category?: string, type: string, current_value: string, options: [] }
   // See https://agentclientprotocol.com/protocol/session-config-options
 
-  const activeSessionIdRef = useRef(activeSessionId);
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
   const sessionUpdateSchedulerRef = useRef(null);
   if (sessionUpdateSchedulerRef.current === null) {
@@ -2977,6 +2985,11 @@ export function useWebSocket({
   // so the conversation opens already positioned at the latest message.
   const switchSession = useCallback(
     async (sessionId) => {
+      if (terminalSessionIdsRef.current.has(sessionId)) return;
+      const previousMetadataRead = metadataReadRef.current;
+      previousMetadataRead.controller?.abort();
+      const metadataGeneration = previousMetadataRead.generation + 1;
+      metadataReadRef.current = { controller: null, generation: metadataGeneration };
       // mitto-sus.1.1: session-switch seam — covers every switch path
       // (sidebar click, keyboard shortcut, swipe, native menu) since they
       // all funnel through this callback. Pairs with the firstPaint mark
@@ -2988,6 +3001,7 @@ export function useWebSocket({
       const hadPendingContent =
         sessionUpdateSchedulerRef.current.flushSession(sessionId);
       setActiveSessionId(sessionId);
+      activeSessionIdRef.current = sessionId;
 
       // Reconnect attempt tracking is now internal to SessionStream
       // (mitto-7gta.30) — no per-session counter to reset here.
@@ -3048,11 +3062,35 @@ export function useWebSocket({
       }
 
       // Load session events from API (with limit for faster initial load)
+      const metadataController = new AbortController();
+      metadataReadRef.current = {
+        controller: metadataController,
+        generation: metadataGeneration,
+        id: sessionId,
+      };
+      const metadataIsCurrent = () =>
+        metadataReadRef.current.controller === metadataController &&
+        metadataReadRef.current.generation === metadataGeneration &&
+        activeSessionIdRef.current === sessionId &&
+        !terminalSessionIdsRef.current.has(sessionId) &&
+        !metadataController.signal.aborted;
       try {
         // Get session metadata first to know total event count and working_dir
-        const meta = await getSdkClient()
-          .sessions.get(sessionId)
-          .catch(() => ({}));
+        let meta;
+        try {
+          meta = await getSdkClient().sessions.get(sessionId, {
+            signal: metadataController.signal,
+          });
+        } catch (err) {
+          if (!metadataIsCurrent()) return;
+          if (errorStatus(err) === 404) {
+            reportMissingSession(sessionId);
+            return;
+          }
+          // Preserve the existing transient-failure fallback.
+          meta = {};
+        }
+        if (!metadataIsCurrent()) return;
 
         // If we already have messages, just update the info with working_dir
         if (hasLoadedMessages) {
@@ -3134,7 +3172,7 @@ export function useWebSocket({
         console.error("Failed to switch session:", err);
       }
     },
-    [expandGroupForSession, ensureResumed],
+    [expandGroupForSession, ensureResumed, reportMissingSession],
   );
 
   // Handle global events (session lifecycle)
@@ -3624,6 +3662,16 @@ export function useWebSocket({
 
       case "session_deleted": {
         const deletedId = msg.data.session_id;
+        terminalSessionIdsRef.current.add(deletedId);
+        invalidateQueueSession(deletedId);
+        if (metadataReadRef.current.id === deletedId) {
+          metadataReadRef.current.controller?.abort();
+          metadataReadRef.current = {
+            controller: null,
+            generation: metadataReadRef.current.generation + 1,
+            id: null,
+          };
+        }
         // Resolve the deleted conversation's folder before removing it from
         // local state, so that if it was the active conversation we can navigate
         // to that folder's Tasks view (mitto-17d).
@@ -3882,7 +3930,30 @@ export function useWebSocket({
         }
         break;
     }
-  }, []);
+  }, [invalidateQueueSession]);
+
+  missingSessionHandlerRef.current = (sessionId) => {
+    const wasSelected = activeSessionIdRef.current === sessionId;
+    const isFirstReport = !terminalSessionIdsRef.current.has(sessionId);
+    terminalSessionIdsRef.current.add(sessionId);
+    invalidateQueueSession(sessionId);
+    handleGlobalEvent({
+      type: "session_deleted",
+      data: { session_id: sessionId },
+    });
+    if (
+      wasSelected &&
+      isFirstReport &&
+      !unavailableNoticeIdsRef.current.has(sessionId)
+    ) {
+      unavailableNoticeIdsRef.current.add(sessionId);
+      showToast({
+        style: "info",
+        title: "Conversation unavailable",
+        message: "This conversation is no longer available.",
+      });
+    }
+  };
 
   // connectToEvents lives in useWSConnection (C1) — mitto-90f.6.2.
   // Composer callbacks use connectToEventsRef.current(...) instead.
@@ -4307,6 +4378,16 @@ export function useWebSocket({
     async (sessionId) => {
       const currentActiveSessionId = activeSessionIdRef.current;
       const wasActiveSession = sessionId === currentActiveSessionId;
+      terminalSessionIdsRef.current.add(sessionId);
+      invalidateQueueSession(sessionId);
+      if (metadataReadRef.current.id === sessionId) {
+        metadataReadRef.current.controller?.abort();
+        metadataReadRef.current = {
+          controller: null,
+          generation: metadataReadRef.current.generation + 1,
+          id: null,
+        };
+      }
 
       // Capture deleted session's group info before removing (for accordion mode fallback)
       const deletedSession = storedSessionsRef.current?.find(
@@ -4346,6 +4427,7 @@ export function useWebSocket({
           deletedWorkingDir,
         );
         if (onActiveSessionRemovedRef?.current) {
+          activeSessionIdRef.current = null;
           setActiveSessionId(null);
           onActiveSessionRemovedRef.current(folderWorkingDir);
           // Refresh the sidebar so it reflects the deletion.
@@ -4380,21 +4462,29 @@ export function useWebSocket({
             switchSession(nextSession.session_id);
           } else {
             // No sessions left — clear active session, don't switch tabs
+            activeSessionIdRef.current = null;
             setActiveSessionId(null);
           }
         } else {
           // No sessions left at all - show empty state, let user create manually
+          activeSessionIdRef.current = null;
           setActiveSessionId(null);
         }
       }
     },
-    [fetchStoredSessions, switchSession],
+    [fetchStoredSessions, switchSession, invalidateQueueSession],
   );
 
   // Initialize on mount
   useEffect(() => {
     connectToEventsRef.current?.();
     return () => {
+      metadataReadRef.current.controller?.abort();
+      metadataReadRef.current = {
+        controller: null,
+        generation: metadataReadRef.current.generation + 1,
+        id: null,
+      };
       if (eventsStreamRef.current) eventsStreamRef.current.close();
       // Session reconnect timers are now owned internally by each
       // SessionStream (mitto-7gta.30) and cancelled by ws.close() below.

@@ -8,24 +8,83 @@
 // reactive to the parent's active-session state.
 // =============================================================================
 
-const { useEffect, useCallback } = window.preact;
+const { useEffect, useCallback, useRef } = window.preact;
 
 import { getSdkClient } from "../utils/sdkClient.js";
 import { errorStatus } from "../utils/sdkErrors.js";
 import { setMessages, setLength } from "../stores/queueStore.js";
 
-export function useWSQueue(activeSessionId) {
+export function useWSQueue(activeSessionId, options = {}) {
+  const { onSessionMissing } = options;
+  const selectionRef = useRef({ id: activeSessionId, generation: 0 });
+  if (selectionRef.current.id !== activeSessionId) {
+    selectionRef.current = {
+      id: activeSessionId,
+      generation: selectionRef.current.generation + 1,
+    };
+  }
+  const terminalIdsRef = useRef(new Set());
+  const activeReadRef = useRef(null);
+
+  const invalidateQueueSession = useCallback((sessionId) => {
+    if (!sessionId) return;
+    terminalIdsRef.current.add(sessionId);
+    const activeRead = activeReadRef.current;
+    if (activeRead?.id === sessionId) {
+      activeReadRef.current = null;
+      activeRead.controller.abort();
+    }
+    setMessages(sessionId, []);
+    setLength(sessionId, 0);
+  }, []);
+
   // Fetch queue messages for the active session
   const fetchQueueMessages = useCallback(async () => {
-    if (!activeSessionId) return;
-    try {
-      const data = await getSdkClient().sessions.queue.list(activeSessionId);
-      setMessages(activeSessionId, data.messages || []);
-      setLength(activeSessionId, data.count || 0);
-    } catch (err) {
-      console.error("Failed to fetch queue messages:", err);
+    const sessionId = activeSessionId;
+    const selection = selectionRef.current;
+    if (
+      !sessionId ||
+      selection.id !== sessionId ||
+      terminalIdsRef.current.has(sessionId)
+    ) return;
+
+    if (activeReadRef.current) {
+      activeReadRef.current.controller.abort();
+      activeReadRef.current = null;
     }
-  }, [activeSessionId]);
+    const controller = new AbortController();
+    const request = {
+      id: sessionId,
+      generation: selection.generation,
+      controller,
+    };
+    activeReadRef.current = request;
+    const isCurrent = () =>
+      activeReadRef.current === request &&
+      selectionRef.current.id === sessionId &&
+      selectionRef.current.generation === request.generation &&
+      !terminalIdsRef.current.has(sessionId) &&
+      !controller.signal.aborted;
+
+    try {
+      const data = await getSdkClient().sessions.queue.list(sessionId, {
+        signal: controller.signal,
+      });
+      if (!isCurrent()) return;
+      setMessages(sessionId, data.messages || []);
+      setLength(sessionId, data.count || 0);
+    } catch (err) {
+      if (!isCurrent()) return;
+      if (errorStatus(err) === 404) {
+        invalidateQueueSession(sessionId);
+        onSessionMissing?.(sessionId);
+        return;
+      }
+      console.error("Failed to fetch queue messages:", err);
+    } finally {
+      if (activeReadRef.current === request) activeReadRef.current = null;
+    }
+  }, [activeSessionId, invalidateQueueSession, onSessionMissing]);
 
   // Fetch queue messages when active session changes. No explicit clear is
   // needed for a switched-away session: hooks/useQueue.js's readers return
@@ -35,6 +94,16 @@ export function useWSQueue(activeSessionId) {
       fetchQueueMessages();
     }
   }, [activeSessionId, fetchQueueMessages]);
+
+  useEffect(() => {
+    const selection = selectionRef.current;
+    return () => {
+      if (activeReadRef.current?.generation === selection.generation) {
+        activeReadRef.current.controller.abort();
+        activeReadRef.current = null;
+      }
+    };
+  }, [activeSessionId]);
 
   // Delete a message from the queue
   const deleteQueueMessage = useCallback(
@@ -105,13 +174,20 @@ export function useWSQueue(activeSessionId) {
       if (direction !== "up" && direction !== "down") return false;
       try {
         // The response contains the updated queue, update local state
+        const selection = selectionRef.current;
         const data = await getSdkClient().sessions.queue.move(
           activeSessionId,
           messageId,
           direction,
         );
-        setMessages(activeSessionId, data.messages || []);
-        setLength(activeSessionId, data.count || 0);
+        if (
+          selectionRef.current.id === activeSessionId &&
+          selectionRef.current.generation === selection.generation &&
+          !terminalIdsRef.current.has(activeSessionId)
+        ) {
+          setMessages(activeSessionId, data.messages || []);
+          setLength(activeSessionId, data.count || 0);
+        }
         return true;
       } catch (err) {
         console.error("Failed to move queue message:", err);
@@ -123,6 +199,7 @@ export function useWSQueue(activeSessionId) {
 
   return {
     fetchQueueMessages,
+    invalidateQueueSession,
     deleteQueueMessage,
     addToQueue,
     moveQueueMessage,

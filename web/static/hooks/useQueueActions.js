@@ -42,6 +42,14 @@ export function useQueueActions({
   // Ref to track queue panel auto-close timer after adding
   const queuePanelAutoCloseTimerRef = useRef(null);
 
+  useEffect(() => {
+    setShowQueueDropdown(false);
+    if (queuePanelAutoCloseTimerRef.current) {
+      clearTimeout(queuePanelAutoCloseTimerRef.current);
+      queuePanelAutoCloseTimerRef.current = null;
+    }
+  }, [activeSessionId]);
+
   // Queue dropdown handlers
   const handleToggleQueueDropdown = useCallback(() => {
     // Cancel any auto-close timer when user manually toggles
