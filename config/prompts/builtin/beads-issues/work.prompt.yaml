@@ -21,10 +21,6 @@ prompt: |
   Existing children: `{{ .Children.AllText }}`
   {{- end }}
 
-  # Beads: Start Work on a Bead
-
-  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
-
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ template "beads-issues/shared/target-bead-header" (dict
@@ -33,239 +29,80 @@ prompt: |
   ) }}
 
   {{ if $target -}}
-  ## Step 1 — Fetch full bead details
-
-  Load everything about the target bead:
-
+  ## Live state and blockers
+  On **every run**, load and analyze the full current issue, dependencies, children, and comments:
   ```bash
-  bd show {{ $target }} --long --json        # full fields, metadata, design, acceptance
-  bd dep tree {{ $target }}                   # dependency tree (blockers and what it blocks)
-  bd show {{ $target }} --children --json     # any child beads
-  bd comments {{ $target }}                   # decisions, prior attempts, and blocker rationale
+  bd show {{ $target }} --long --json
+  bd dep tree {{ $target }}
+  bd show {{ $target }} --children --json
+  bd comments {{ $target }}
   ```
+  Use live fields and comments, not remembered state. If status is blocked/deferred, `defer_until` is
+  in the future, `needs-human` is present, a blocking dependency is unresolved, or an epic has no
+  workable child, stop before linking/claiming/dispatching. Use
+  {{ template "beads-issues/shared/unblock-guidance" (dict "SessionID" .Session.ID) }}
+  and wait for actual resolution; never clear blockers yourself.
 
-  Analyze all gathered context thoroughly: understand the problem statement, scope, constraints,
-  acceptance criteria, design notes, and any dependencies or prior discussion in notes/comments.
+  ## Choose work and link
+  For an epic **or any parent with children**, inspect child details as needed; combine explicit and
+  inferred dependencies, respect topological order, and exclude closed/done, in-progress, blocked,
+  and transitively blocked children. If none are workable, use the blocked handoff above. Rank the
+  workable set with the canonical ranking below; ask via `mitto_ui_options` with free text, recommending
+  the top child. When independent children exist, offer together and each individually. Wait for the
+  choice; work only the selected child(ren), leaving the parent open. A non-epic leaf with no children
+  is worked directly.
   {{- else }}
-  ## Step 1 — Understand the current problem
-
-  Analyze the **current problem** from the conversation history: the goal, scope, constraints, and
-  any acceptance criteria implied by the discussion.
+  ## Current problem
+  Derive goal, scope, constraints, and acceptance from conversation history. Do not run any `bd`
+  command in this no-target mode.
   {{- end }}
 
   {{ if $target -}}
-  ## Step 1a — Stop and explain if the work is blocked
-
-  Before linking, claiming, planning, or dispatching, determine from the **live** bead fields,
-  dependency tree, children, and comments whether the work can start now. Treat it as blocked when
-  the target has `blocked` / `deferred` status, a future `defer_until`, a `needs-human` label, an
-  unresolved blocking dependency, or — for an epic — Step 1b finds no workable child.
-
-  If it is blocked, **do not claim the bead and do not continue to Steps 2–4**. Instead:
-
-  {{ template "beads-issues/shared/unblock-guidance" (dict
-      "SessionID" .Session.ID
-  ) }}
-
-  Stop after this handoff and wait for the user when a response or action is required. Only resume
-  the claim-and-plan flow after the blocker has actually been resolved and live state confirms the
-  bead (or at least one selected child) is workable.
-
-  ## Step 1b — If the bead is an epic, pick the first child to tackle
-
-  Before planning, determine whether the target bead is an **epic** (or otherwise a parent with
-  child beads): check its `type` (`issue_type` is `epic`) and the
-  `bd show {{ $target }} --children --json` output from Step 1.
-
-  - If the bead is **not** an epic and has **no children**: skip this step and continue to Step 2,
-    working `{{ $target }}` directly.
-  - If the bead **is** an epic / has children: an epic is a container, not directly implementable.
-    You must first decide which child to start with:
-
-    1. **Map the children's dependencies** — both explicit edges (`blocks` / `depends-on`, visible
-       via the dependency tree) and implicit ones you infer from the children's descriptions (e.g.,
-       a child that establishes schema, infrastructure, or shared scaffolding that its siblings build
-       on). Inspect children as needed with `bd show <child-id> --long --json`.
-    2. **Determine the execution order** that respects those dependencies (a topological order: a
-       child only comes after everything it depends on), and skip any child already
-       `closed`/`done` or `in_progress`.
-    3. **Find the first workable child(ren)** — every child with **no unresolved blockers** that
-       can be started right now. There may be **more than one** when several have no dependencies
-       between them; in that case they can all be tackled in parallel. If there are **no workable
-       children**, follow Step 1a's blocked-work explanation and unblocking handoff, then stop.
-    4. **Rank the workable children** using the canonical ordering below.
-    5. **Propose to the user** which child(ren) to start with, using
-       `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
-       - Make the first option your top recommendation — the top-ranked workable child from the
-         previous step — labelled with the child bead ID and title.
-       - If multiple children are independently workable, offer an option to **start them together**,
-         plus an option for each individually.
-       - Set `allow_free_text: true` so the user can override and name a different child.
-       - **Do not** offer any child that is blocked (directly or transitively) by an unfinished
-         child — it is not in a workable state yet.
-    6. **Wait for the user's confirmation.** Once they confirm, treat the chosen child (or children)
-       as the bead(s) to work for the rest of this prompt — substitute the chosen child bead ID for
-       `{{ $target }}` in the steps below (claim, plan, dispatch, and log against the chosen child).
-       If the user picked multiple independent children, plan and dispatch each of them. Leave the
-       epic itself open as the parent.
-
-  ### Ranking the workable children
-
   {{ template "beads-issues/shared/rank-candidates" (dict
       "Set"         "the workable children"
       "PreFiltered" true
   ) }}
-
-  **How step 5 consumes the ranking:** shortlist #1 is the top recommendation; the
-  remaining shortlist entries are the per-child options offered next to it, and the
-  "start them together" option covers the shortlist members that have no dependency
-  between them.
-  {{- end }}
-
-  {{ if $target -}}
-  ## Step 1c — Link this conversation to the bead you will work
-
-  Keep this conversation's linked beads issue matching the bead you are actually going to
-  work, so the tracker and UI stay accurate:
-
-  - If you narrowed an epic down to a **single** child in Step 1b, link **that child**.
-  - If `{{ $target }}` was supplied as the `IssueID` argument and this conversation was not
-    already linked to it, link `{{ $target }}`.
-  - If you are tackling **multiple** independent children of an epic in parallel, leave this
-    conversation linked to the **epic** (the parent), since it orchestrates all of them.
-
-  When a change is needed:
-
-  ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<the bead this conversation is really working>")
-  ```
-  {{- end }}
-
-  {{ if $target -}}
-  ## Step 2 — Claim the bead
-
-  Atomically claim the bead so others know it is being worked on:
-
+  Set the effective ID to the selected leaf (or `$target` for a leaf); link using
+  `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<effective-id>")`.
+  For multiple children keep the parent linked. Claim only now, idempotently; if claiming fails, stop:
   ```bash
-  bd update {{ $target }} --claim
+  bd update <effective-id> --claim
   ```
 
-  This sets the assignee to you and the status to `in_progress` (idempotent if already claimed by
-  you).
-  {{- end }}
+  ## Route exactly one phase from the live labels
+  Use Step 1's current `issue_type` and labels; first matching row wins (terminal rows first):
 
-  {{ if $target -}}
-  ## Step 3 — Pick and propose the next phase from the live labels (ONE phase per run)
+  | Flow | Live labels, in precedence order | Next action |
+  |---|---|---|
+  | bug | `fixed`; else `reproduced`; else `researched`; else `implementation-refined`; else | Done; Bug fix — fix phase; Bug fix — reproduce phase; Bug fix — investigate phase (research-only); Bug fix — investigate phase |
+  | feature/task/chore | `verified`; else `tested`; else `implemented`; else `planned`; else `implementation-refined`; else | Done; Feature — review phase; Feature — test phase; Feature — implement phase; Feature — plan phase (label-only); Feature — plan phase |
 
-  The bead's labels encode how far the work has progressed. Do **not** plan or implement
-  ad hoc: dispatch the matching phase prompt (each runs on its own model tier and adds its
-  label), then end this turn. Before dispatching, propose that next phase to the user and
-  wait for approval using the Mitto UI options below. After dispatching, queue another
-  "Start work" run behind the phase so it reads the updated labels and proposes the following
-  phase automatically.
-
-  Re-read the labels and `issue_type` from Step 1 (`bd show {{ $target }} --json`). Evaluate the
-  branch list for the bead's flow **in order and stop at the first match**.
-
-  **Bug (`issue_type` = `bug`) — Bug fix flow:**
-
-  - `fixed` present → **Step 4 (Done)**.
-  - `reproduced` present, `fixed` absent → dispatch **"Bug fix — fix phase"** (Coding tier).
-  - `researched` present, `reproduced` absent → dispatch **"Bug fix — reproduce phase"**.
-  - `implementation-refined` present (by "Investigate more"), `researched` absent → dispatch
-    **"Bug fix — investigate phase"** (it only adds `researched`, no re-investigation), then Reproduce next run.
-  - None of `researched`, `reproduced`, `fixed` → dispatch **"Bug fix — investigate phase"** (Smart tier).
-
-  **Anything else (feature / task / chore) — Feature flow:**
-
-  - `verified` present → **Step 4 (Done)**.
-  - `tested` present, `verified` absent → dispatch **"Feature — review phase"**.
-  - `implemented` present, `tested` absent → dispatch **"Feature — test phase"**.
-  - `planned` present, `implemented` absent → dispatch **"Feature — implement phase"** (Coding tier).
-  - `implementation-refined` present, `planned` absent → dispatch **"Feature — plan phase"**
-    (it only adds `planned`, no re-planning), then Implement next run.
-  - None of `planned`, `implemented`, `tested`, `verified` → dispatch **"Feature — plan phase"** (Smart tier).
-
-  **Propose and confirm the selected next phase.** Once the branch above identifies the phase,
-  tell the user what the phase will do and ask whether to proceed using
-  `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Proceed to <phase>?", options: [{label: "Continue to <phase>"}, {label: "Not now"}], allow_free_text: true, timeout_seconds: 60)`. Make
-  **"Continue to <phase>"** the recommended first option. Dispatch only when the user selects
-  the continue option. If the user chooses not now or gives different instructions, honor that
-  and stop without dispatching or queueing a follow-up.
-
-  **Approval gate.** Right before dispatching the first *implementation* phase
-  (Fix or Implement) for a bead that carries `implementation-refined`, `researched` or `planned`,
-  summarise the latest `Investigation:` / `Plan:` comment (the implementation report: problem
-  decomposition, implementation instructions, code not to touch) and ask whether to proceed with
-  implementation. This is the same confirmation as the next-phase proposal above — do not ask
-  twice. On feedback instead of approval, record it with `bd comment` and revise via the
-  investigate/plan phase instead.
-
+  Dispatch only that phase. Before dispatch, propose it with `mitto_ui_options` (`self_id`, recommended
+  `Continue to <phase>` then `Not now`, free text enabled, 60-second timeout); decline or changed
+  instructions means stop without dispatch or follow-up. For the first Fix/Implement when labels
+  include `implementation-refined`, `researched`, or `planned`, summarize the latest `Investigation:` /
+  `Plan:` report (decomposition, instructions, no-touch constraints) as this same approval; do not ask
+  twice. Record feedback with `bd comment` and return to investigation/planning. A timeout follows the
+  shared routine timeout-default-continue rule (not cancellation or decline):
   {{ template "_shared/timeout-default-continue" . }}
-  Here a timeout means: dispatch the proposed phase (including the first implementation phase
-  after the approval gate) and queue the follow-up as usual.
-
-  Dispatch (self-send, so the phase runs under its own preferred model):
-
-  ```
-  mitto_conversation_send_prompt(
-    self_id: "{{ .Session.ID }}",
-    conversation_id: "self",
-    prompt_name: "<phase prompt name above>",
-    arguments: { "IssueID": "{{ $target }}" }
-  )
-  ```
-
-  After dispatching the phase prompt, queue the next Start work run on this same conversation:
-
-  ```
-  mitto_conversation_send_prompt(
-    self_id: "{{ .Session.ID }}",
-    conversation_id: "self",
-    prompt_name: "Start work",
-    arguments: { "IssueID": "<the effective bead ID being advanced>" }
-  )
-  ```
-
-  Use the selected child ID here if Step 1b narrowed an epic to one child; otherwise use
-  `{{ $target }}`. Queue this only after the user approved (or the question timed out and you
-  continued) and the phase prompt was dispatched, so it runs after that phase finishes and sees
-  its updated labels. Do not queue a follow-up after a declined proposal, blocked work, or the terminal Done branch. When multiple
-  independent epic children are running in separate conversations, do not queue a follow-up on
-  the parent; each child conversation's own Start work run handles its phases.
-
-  If you are tackling **multiple independent children** of an epic (Step 1b), create one child
-  conversation per child with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "<child-id> · <title>", beads_issue: "<child-id>", ...)`
-  whose prompt tells it to run "Start work" for that child, wait with
-  `mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "{{ $target }}", timeout_seconds: 600)`,
-  and then clean up with the shared fragment below.
-
+  On successful approved/timed-out dispatch, send the selected named phase to `self` with the effective
+  leaf `IssueID`, then queue named **Start work** with that same ID so it runs after the phase. Never
+  queue if blocked, declined, dispatch failed, or terminal. For multiple approved independent children,
+  create one child conversation per child, each starting Start work; wait at most 600 seconds and clean
+  up only completed children. Keep the parent as orchestrator; don't queue Start work on it.
   {{ template "_shared/cleanup-child-conversations" . }}
+  Log `Start work: dispatched <phase prompt name>; next phase after it adds its label.` on the effective
+  bead; then end the turn.
 
-  Log the dispatch, queue the follow-up as described above, then end this turn and tell the user
-  which label to expect next:
-
-  ```bash
-  bd comment {{ $target }} "Start work: dispatched <phase prompt name>; next phase after it adds its label."
-  ```
-
-  ## Step 4 — Done (terminal label present)
-
-  `fixed` (bug) or `verified` (feature) means every phase is complete. Do **not** close the bead —
-  the orchestrator closes terminal-label beads once any child work is done. Tell the user the
-  work is complete and what was delivered (from the phase comments).
+  ## Done
+  `fixed`/`verified` is terminal: report delivered work from phase comments. **Do not close the bead**;
+  the orchestrator closes terminal-label beads after child work completes. Never close the parent from
+  a child workflow.
   {{- else }}
-  ## Step 3 — Plan and implement inline
-
-  There is no bead, so labels cannot guide the phases. Investigate the problem (read the code,
-  clarify the approach and acceptance criteria), present a short implementation plan to the user
-  with `mitto_ui_options(self_id: "{{ .Session.ID }}")`, then implement it after approval.
+  Investigate the no-target problem, present a short plan and request UI approval before implementing.
   {{- end }}
 
-  ## Final step — Offer to delete this conversation
-
-  Only offer deletion when Step 4 confirms a terminal label or when the no-bead inline work is
-  complete. After dispatching a nonterminal phase, do not offer deletion: the queued Start work run
-  is expected to continue this workflow.
+  Offer conversation deletion only after terminal completion or completed no-target work; never after
+  dispatching a nonterminal phase.
 
   {{ template "_shared/offer-delete-conversation" . }}
