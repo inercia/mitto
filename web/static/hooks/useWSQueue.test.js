@@ -40,15 +40,45 @@ if (typeof document === "undefined") {
 global.document.cookie = "mitto_csrf=test-token";
 
 let currentEffects = [];
+let hookSlots = [];
+let hookCursor = 0;
+let effectSlots = [];
+let effectCursor = 0;
+let pendingEffects = [];
+const sameDeps = (a, b) =>
+  a &&
+  b &&
+  a.length === b.length &&
+  a.every((value, i) => Object.is(value, b[i]));
 window.preact = {
   useEffect: (cb, deps) => {
-    currentEffects.push({ cb, deps });
+    const index = effectCursor++;
+    const previous = effectSlots[index];
+    const effect = { cb, deps, previous, index };
+    pendingEffects.push(effect);
+    currentEffects.push(effect);
   },
-  useCallback: (fn) => fn,
+  useCallback: (fn, deps) => {
+    const index = hookCursor++;
+    const previous = hookSlots[index];
+    if (previous && sameDeps(previous.deps, deps)) return previous.value;
+    hookSlots[index] = { deps, value: fn };
+    return fn;
+  },
+  useRef: (initial) => {
+    const index = hookCursor++;
+    if (!hookSlots[index]) hookSlots[index] = { value: { current: initial } };
+    return hookSlots[index].value;
+  },
 };
 
 beforeEach(() => {
   _resetQueueStoreForTests();
+  hookSlots = [];
+  hookCursor = 0;
+  effectSlots = [];
+  effectCursor = 0;
+  pendingEffects = [];
 });
 
 function jsonResponse(data, status = 200) {
@@ -67,10 +97,47 @@ function jsonResponse(data, status = 200) {
 async function loadHook() {
   currentEffects = [];
   const mod = await import("./useWSQueue.js");
-  return {
-    useWSQueue: mod.useWSQueue,
-    effects: currentEffects,
+  const render = (...args) => {
+    hookCursor = 0;
+    effectCursor = 0;
+    currentEffects = [];
+    pendingEffects = [];
+    const result = mod.useWSQueue(...args);
+    return result;
   };
+  const flushEffects = () => {
+    for (const effect of pendingEffects) {
+      const prior = effectSlots[effect.index];
+      if (prior && !sameDeps(prior.deps, effect.deps)) prior.cleanup?.();
+      if (!prior || !sameDeps(prior.deps, effect.deps)) {
+        effectSlots[effect.index] = {
+          deps: effect.deps,
+          cleanup: effect.cb(),
+        };
+      }
+    }
+    pendingEffects = [];
+  };
+  const unmount = () => effectSlots.forEach((effect) => effect?.cleanup?.());
+  return {
+    useWSQueue: (...args) => render(...args),
+    render,
+    flushEffects,
+    unmount,
+    get effects() {
+      return currentEffects;
+    },
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("useWSQueue — fetchQueueMessages", () => {
@@ -104,10 +171,114 @@ describe("useWSQueue — fetchQueueMessages", () => {
   });
 
   test("load-on-session-change effect fires fetchQueueMessages", async () => {
-    const { useWSQueue, effects } = await loadHook();
+    const harness = await loadHook();
+    const { useWSQueue } = harness;
     useWSQueue("sess-1");
-    expect(effects).toHaveLength(1);
-    expect(effects[0].deps).toEqual(["sess-1", expect.any(Function)]);
+    expect(harness.effects).toHaveLength(2);
+    expect(harness.effects[0].deps).toEqual(["sess-1", expect.any(Function)]);
+  });
+
+  test("current 404 clears the queue, reports missing once, and makes later refreshes terminal", async () => {
+    global.fetch = jest.fn(() => Promise.resolve(jsonResponse({}, 404)));
+    const onSessionMissing = jest.fn();
+    const { useWSQueue } = await loadHook();
+    const queue = useWSQueue("sess-1", { onSessionMissing });
+    await queue.fetchQueueMessages();
+    await queue.fetchQueueMessages();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(onSessionMissing).toHaveBeenCalledTimes(1);
+    expect(onSessionMissing).toHaveBeenCalledWith("sess-1");
+    expect(getMessages("sess-1")).toEqual([]);
+    expect(getLength("sess-1")).toBe(0);
+  });
+
+  test("404 does not log, while a current server error keeps the existing log path", async () => {
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    global.fetch = jest.fn(() => Promise.resolve(jsonResponse({}, 404)));
+    const { useWSQueue } = await loadHook();
+    await useWSQueue("missing").fetchQueueMessages();
+    expect(error).not.toHaveBeenCalled();
+
+    global.fetch = jest.fn(() => Promise.resolve(jsonResponse({}, 500)));
+    await useWSQueue("healthy").fetchQueueMessages();
+    expect(error).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
+
+  test("superseding a queue read aborts it and ignores its late response", async () => {
+    const oldRead = deferred();
+    const newRead = deferred();
+    const signals = [];
+    global.fetch = jest.fn((_url, options) => {
+      signals.push(options.signal);
+      return signals.length === 1 ? oldRead.promise : newRead.promise;
+    });
+    const { render } = await loadHook();
+    const first = render("sess-1");
+    const pending = first.fetchQueueMessages();
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = render("sess-1");
+    const latest = second.fetchQueueMessages();
+    expect(signals[0].aborted).toBe(true);
+    newRead.resolve(jsonResponse({ messages: [{ id: "new" }], count: 1 }));
+    await latest;
+    oldRead.resolve(jsonResponse({ messages: [{ id: "old" }], count: 1 }));
+    await pending;
+    expect(getMessages("sess-1")).toEqual([{ id: "new" }]);
+  });
+
+  test("selection generations fence A→B→A stale results and deletion aborts its read", async () => {
+    const firstA = deferred();
+    const secondA = deferred();
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => firstA.promise)
+      .mockImplementationOnce(() => secondA.promise);
+    const { render } = await loadHook();
+    const a1 = render("sess-A");
+    const oldRequest = a1.fetchQueueMessages();
+    render("sess-B");
+    const a2 = render("sess-A");
+    const currentRequest = a2.fetchQueueMessages();
+    firstA.resolve(jsonResponse({ messages: [{ id: "stale" }], count: 1 }));
+    await oldRequest;
+    expect(getMessages("sess-A")).toEqual([]);
+    secondA.resolve(jsonResponse({ messages: [{ id: "current" }], count: 1 }));
+    await currentRequest;
+    expect(getMessages("sess-A")).toEqual([{ id: "current" }]);
+
+    const deleting = deferred();
+    global.fetch = jest.fn((_url, options) => {
+      deleting.signal = options.signal;
+      return deleting.promise;
+    });
+    const queue = render("sess-C");
+    const pending = queue.fetchQueueMessages();
+    await Promise.resolve();
+    await Promise.resolve();
+    queue.invalidateQueueSession("sess-C");
+    expect(deleting.signal.aborted).toBe(true);
+    deleting.resolve(jsonResponse({ messages: [{ id: "late" }], count: 1 }));
+    await pending;
+    expect(getMessages("sess-C")).toEqual([]);
+  });
+
+  test("unmount cleanup aborts the active read", async () => {
+    const pendingResponse = deferred();
+    let signal;
+    global.fetch = jest.fn((_url, options) => {
+      signal = options.signal;
+      return pendingResponse.promise;
+    });
+    const { render, flushEffects, unmount } = await loadHook();
+    render("sess-1");
+    flushEffects();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(signal.aborted).toBe(false);
+    unmount();
+    expect(signal.aborted).toBe(true);
   });
 });
 

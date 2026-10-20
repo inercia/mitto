@@ -132,6 +132,35 @@ describe("useWebSocket.js: sidebar session activation (mitto-4hpi)", () => {
   });
 });
 
+describe("useWebSocket.js: REST-discovered missing sessions (mitto-dit.2)", () => {
+  test("connects the queue hook to the stable missing-session bridge", () => {
+    expect(useWebSocketJs).toMatch(
+      /useWSQueue\(activeSessionId, \{ onSessionMissing: reportMissingSession \}\)/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /missingSessionHandlerRef\.current = \(sessionId\) => \{[\s\S]*?handleGlobalEvent\(\{\s*type: "session_deleted",\s*data: \{ session_id: sessionId \},\s*\}\)/,
+    );
+  });
+
+  test("metadata 404 and deletion invalidate pending metadata and queue reads", () => {
+    expect(useWebSocketJs).toMatch(
+      /if \(errorStatus\(err\) === 404\) \{\s*reportMissingSession\(sessionId\);\s*return;/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /case "session_deleted":\s*\{[\s\S]*?terminalSessionIdsRef\.current\.add\(sessionId\);\s*invalidateQueueSession\(sessionId\);/,
+    );
+    expect(useWebSocketJs).toMatch(
+      /removeSession = useCallback\([\s\S]*?terminalSessionIdsRef\.current\.add\(sessionId\);\s*invalidateQueueSession\(sessionId\);/,
+    );
+  });
+
+  test("only first REST discovery of the currently selected session shows a notice", () => {
+    expect(useWebSocketJs).toMatch(
+      /const wasSelected = activeSessionIdRef\.current === sessionId;[\s\S]*?const isFirstReport = !terminalSessionIdsRef\.current\.has\(sessionId\);[\s\S]*?if \(\s*wasSelected &&\s*isFirstReport &&\s*!unavailableNoticeIdsRef\.current\.has\(sessionId\)\s*\) \{[\s\S]*?unavailableNoticeIdsRef\.current\.add\(sessionId\);[\s\S]*?title: "Conversation unavailable"/,
+    );
+  });
+});
+
 describe("useWebSocket.js: background stream update coalescing (mitto-mnie)", () => {
   test("routes only the four high-frequency content events through the scheduler", () => {
     const scheduledUpdates = useWebSocketJs.match(
@@ -266,7 +295,9 @@ describe("useWebSocket.js: mount-time session-restore race guard (mitto-sus.8)",
   test("the early-return branch precedes the persist call textually (mount is skipped, not deferred after)", () => {
     const snippet = useWebSocketJs.slice(idx, idx + 1200);
     const returnPos = snippet.indexOf("return;");
-    const persistPos = snippet.indexOf("setLastActiveSessionId(activeSessionId);");
+    const persistPos = snippet.indexOf(
+      "setLastActiveSessionId(activeSessionId);",
+    );
     expect(returnPos).toBeGreaterThan(-1);
     expect(persistPos).toBeGreaterThan(-1);
     expect(returnPos).toBeLessThan(persistPos);
