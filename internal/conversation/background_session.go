@@ -448,7 +448,8 @@ type BackgroundSession struct {
 	// promptResolver resolves a named workspace prompt to its full text at send time.
 	// Set via SetPromptResolver or BackgroundSessionConfig.PromptResolver.
 	// When nil, PromptMeta.PromptName resolution is skipped.
-	promptResolver PromptResolver
+	promptResolver             PromptResolver
+	queuedPromptFailureHandler func(string, string, error)
 	// promptFragmentsResolver returns the workspace-scoped fragment registry used
 	// by top-level and nested prompt renders.
 	promptFragmentsResolver PromptFragmentsResolver
@@ -664,7 +665,8 @@ type BackgroundSessionConfig struct {
 
 	// PromptResolver resolves a named workspace prompt to its full text at send time.
 	// When set, PromptMeta.PromptName is resolved via this function in PromptWithMeta.
-	PromptResolver PromptResolver
+	PromptResolver             PromptResolver
+	QueuedPromptFailureHandler func(sessionID, promptName string, err error)
 	// PromptFragmentsResolver resolves the workspace-scoped fragment registry.
 	PromptFragmentsResolver PromptFragmentsResolver
 	// BeadsDatabaseModeResolver resolves the effective per-folder Beads mode.
@@ -929,16 +931,17 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		onTitleGenerated:               cfg.OnTitleGenerated,
 		onSelfDestruct:                 cfg.OnSelfDestruct,
 		onTurnIdle:                     cfg.OnTurnIdle,
-		acpCommand:                     cfg.ACPCommand,              // Store for restart
-		acpCwd:                         cfg.ACPCwd,                  // Store for restart
-		serverEnv:                      cfg.Env,                     // Store for restart
-		stderrPatterns:                 cfg.StderrPatterns,          // Per-agent stderr regex patterns (mitto-k6h)
-		agentDefaultEnv:                cfg.AgentDefaultEnv,         // Per-agent default env vars (mitto-6dur)
-		agentInitializeTimeout:         cfg.AgentInitializeTimeout,  // Per-agent Initialize-timeout override (mitto-sbj)
-		globalMcpServer:                cfg.GlobalMCPServer,         // Global MCP server for session registration
-		auxiliaryManager:               cfg.AuxiliaryManager,        // Workspace-scoped auxiliary manager
-		availableACPServers:            cfg.AvailableACPServers,     // Pre-computed workspace server list
-		promptResolver:                 cfg.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
+		acpCommand:                     cfg.ACPCommand,             // Store for restart
+		acpCwd:                         cfg.ACPCwd,                 // Store for restart
+		serverEnv:                      cfg.Env,                    // Store for restart
+		stderrPatterns:                 cfg.StderrPatterns,         // Per-agent stderr regex patterns (mitto-k6h)
+		agentDefaultEnv:                cfg.AgentDefaultEnv,        // Per-agent default env vars (mitto-6dur)
+		agentInitializeTimeout:         cfg.AgentInitializeTimeout, // Per-agent Initialize-timeout override (mitto-sbj)
+		globalMcpServer:                cfg.GlobalMCPServer,        // Global MCP server for session registration
+		auxiliaryManager:               cfg.AuxiliaryManager,       // Workspace-scoped auxiliary manager
+		availableACPServers:            cfg.AvailableACPServers,    // Pre-computed workspace server list
+		promptResolver:                 cfg.PromptResolver,         // Named prompt resolver (resolves name → text at send time)
+		queuedPromptFailureHandler:     cfg.QueuedPromptFailureHandler,
 		promptFragmentsResolver:        cfg.PromptFragmentsResolver, // Workspace-scoped prompt fragments
 		beadsDatabaseModeResolver:      cfg.BeadsDatabaseModeResolver,
 		preferredModelsResolver:        cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
@@ -1204,17 +1207,18 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		onConfigChanged:                config.OnConfigOptionChanged,
 		onTitleGenerated:               config.OnTitleGenerated,
 		onSelfDestruct:                 config.OnSelfDestruct,
-		onTurnIdle:                     config.OnTurnIdle,              // mitto-aqtf: wire end-of-turn hook on resume, matching NewBackgroundSession
-		acpCommand:                     config.ACPCommand,              // Store for restart
-		acpCwd:                         config.ACPCwd,                  // Store for restart
-		serverEnv:                      config.Env,                     // Store for restart
-		stderrPatterns:                 config.StderrPatterns,          // Per-agent stderr regex patterns (mitto-k6h)
-		agentDefaultEnv:                config.AgentDefaultEnv,         // Per-agent default env vars (mitto-6dur)
-		agentInitializeTimeout:         config.AgentInitializeTimeout,  // Per-agent Initialize-timeout override (mitto-sbj)
-		globalMcpServer:                config.GlobalMCPServer,         // Global MCP server for session registration
-		auxiliaryManager:               config.AuxiliaryManager,        // Workspace-scoped auxiliary manager
-		availableACPServers:            config.AvailableACPServers,     // Pre-computed workspace server list
-		promptResolver:                 config.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
+		onTurnIdle:                     config.OnTurnIdle,             // mitto-aqtf: wire end-of-turn hook on resume, matching NewBackgroundSession
+		acpCommand:                     config.ACPCommand,             // Store for restart
+		acpCwd:                         config.ACPCwd,                 // Store for restart
+		serverEnv:                      config.Env,                    // Store for restart
+		stderrPatterns:                 config.StderrPatterns,         // Per-agent stderr regex patterns (mitto-k6h)
+		agentDefaultEnv:                config.AgentDefaultEnv,        // Per-agent default env vars (mitto-6dur)
+		agentInitializeTimeout:         config.AgentInitializeTimeout, // Per-agent Initialize-timeout override (mitto-sbj)
+		globalMcpServer:                config.GlobalMCPServer,        // Global MCP server for session registration
+		auxiliaryManager:               config.AuxiliaryManager,       // Workspace-scoped auxiliary manager
+		availableACPServers:            config.AvailableACPServers,    // Pre-computed workspace server list
+		promptResolver:                 config.PromptResolver,         // Named prompt resolver (resolves name → text at send time)
+		queuedPromptFailureHandler:     config.QueuedPromptFailureHandler,
 		promptFragmentsResolver:        config.PromptFragmentsResolver, // Workspace-scoped prompt fragments
 		beadsDatabaseModeResolver:      config.BeadsDatabaseModeResolver,
 		preferredModelsResolver:        config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)

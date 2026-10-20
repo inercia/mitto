@@ -515,7 +515,13 @@ func (s *Server) buildWorkspacePromptEnabledContext(workingDir string) *config.P
 // Non-existent directories are silently ignored.
 // CEL filtering is handled later by filterPromptsByEnabled.
 func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []config.WebPrompt {
+	prompts, _ := s.loadPromptsFromDirsWithErrors(workspaceRoot, dirs)
+	return prompts
+}
+
+func (s *Server) loadPromptsFromDirsWithErrors(workspaceRoot string, dirs []string) ([]config.WebPrompt, []config.PromptLoadError) {
 	var allPrompts []config.WebPrompt
+	var allLoadErrors []config.PromptLoadError
 	absDirs := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
 		if !filepath.IsAbs(dir) {
@@ -536,7 +542,8 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []conf
 
 	for _, absDir := range absDirs {
 		// Load prompts from this directory (silently ignore errors)
-		prompts, err := config.LoadPromptsFromDirWithFragments(absDir, fragments)
+		prompts, loadErrors, err := config.LoadPromptsFromDirWithErrorsAndFragments(absDir, fragments)
+		allLoadErrors = append(allLoadErrors, loadErrors...)
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Debug("Failed to load prompts from directory",
@@ -551,7 +558,7 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []conf
 		allPrompts = config.MergePrompts(nil, allPrompts, webPrompts)
 	}
 
-	return allPrompts
+	return allPrompts, allLoadErrors
 }
 
 // getWorkspacePromptsAll returns the full merged prompt list for a working

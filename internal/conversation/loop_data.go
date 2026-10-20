@@ -110,7 +110,7 @@ func BuildLoopAutoPauseNotification(sessionName string, loop *session.LoopPrompt
 	switch loop.StoppedReason {
 	case session.StoppedReasonPromptUnresolved:
 		message = fmt.Sprintf(
-			"%q was auto-paused: its scheduled prompt %q could no longer be resolved after repeated attempts.",
+			"%q was auto-paused because its scheduled prompt %q could not be prepared. Check the conversation history or prompt configuration for the underlying error.",
 			name, loop.PromptName,
 		)
 	case session.StoppedReasonDeliveryFailures:

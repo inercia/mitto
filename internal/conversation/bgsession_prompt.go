@@ -1537,6 +1537,24 @@ func (bs *BackgroundSession) pdRecordErrorEvent(seq int64, msg string) error {
 	})
 }
 
+// RecordLoopPromptPreparationFailure durably surfaces the final scheduled-loop
+// preparation failure in the conversation transcript.
+func (bs *BackgroundSession) RecordLoopPromptPreparationFailure(promptName string, cause error) {
+	if bs == nil || bs.recorder == nil || cause == nil {
+		return
+	}
+	message := fmt.Sprintf("Loop prompt %q could not be prepared; the loop was paused: %v", promptName, cause)
+	seq := bs.getNextSeq()
+	if err := bs.pdRecordErrorEvent(seq, message); err != nil {
+		if bs.logger != nil {
+			bs.logger.Error("Failed to persist loop prompt preparation failure", "session_id", bs.persistedID, "error", err)
+		}
+		return
+	}
+	bs.refreshNextSeq()
+	bs.pdNotifyObservers(func(o SessionObserver) { o.OnError(message) })
+}
+
 // pdRestoreBaselineIfOverride restores the session's persisted baseline model
 // if a per-prompt override is currently active. No-op otherwise. Exposed to
 // promptDeps callers (e.g. handlePromptError's error-class-gated branch) that

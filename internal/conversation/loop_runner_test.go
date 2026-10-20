@@ -1580,19 +1580,7 @@ func TestLoopRunner_PromptResolveFailure_AutoPauses(t *testing.T) {
 
 	loop, _ := loopStore.Get()
 
-	// First MaxPromptResolveFailures-1 calls must not disable.
-	for i := 1; i < MaxPromptResolveFailures; i++ {
-		runner.handlePromptResolveFailure("resolve-fail", meta.Name, loop, loopStore, resolveErr)
-		p, _ := loopStore.Get()
-		if !p.Enabled {
-			t.Fatalf("loop disabled after %d failures, want still enabled", i)
-		}
-		if callCount != 0 {
-			t.Fatalf("onLoopAutoStopped called after %d failures, want 0", i)
-		}
-	}
-
-	// The MaxPromptResolveFailures-th call must disable and fire callback exactly once.
+	// A permanent preparation failure disables the loop on its first occurrence.
 	runner.handlePromptResolveFailure("resolve-fail", meta.Name, loop, loopStore, resolveErr)
 	if callCount != 1 {
 		t.Errorf("onLoopAutoStopped called %d times, want 1", callCount)
@@ -1603,8 +1591,43 @@ func TestLoopRunner_PromptResolveFailure_AutoPauses(t *testing.T) {
 	}
 }
 
-// TestLoopRunner_PromptResolveFailure_CounterReset verifies that a successful
-// resolve resets the failure counter so prior failures don't accumulate.
+func TestLoopRunner_QueuedPromptPreparationFailureStopsEnabledLoop(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sessionID = "queued-preparation-failure"
+	if err := store.Create(session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{PromptName: "scheduled prompt", Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewLoopRunner(store, nil, nil)
+	autoStopped := 0
+	runner.SetOnLoopAutoStopped(func(string, *session.LoopPrompt) { autoStopped++ })
+	runner.HandleQueuedPromptPreparationFailure(sessionID, "queued prompt", fmt.Errorf("%w: unknown function", ErrPromptResolveFailed))
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Enabled || final.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Errorf("loop state = enabled:%v reason:%q; want disabled promptUnresolved", final.Enabled, final.StoppedReason)
+	}
+	if autoStopped != 1 {
+		t.Errorf("autoStopped callback count = %d; want one", autoStopped)
+	}
+	// Repeated reports after the stop are ignored, preventing duplicate events.
+	runner.HandleQueuedPromptPreparationFailure(sessionID, "queued prompt", errors.New("second error"))
+	if autoStopped != 1 {
+		t.Errorf("autoStopped callback count after duplicate = %d; want one", autoStopped)
+	}
+}
+
+// TestLoopRunner_PromptResolveFailure_CounterReset verifies permanent failures
+// stop immediately rather than accumulating strikes over multiple ticks.
 func TestLoopRunner_PromptResolveFailure_CounterReset(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -1627,31 +1650,15 @@ func TestLoopRunner_PromptResolveFailure_CounterReset(t *testing.T) {
 
 	resolveErr := errors.New("not found")
 	runner := NewLoopRunner(store, nil, nil)
-	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) {
-		t.Error("onLoopAutoStopped called unexpectedly after counter reset")
-	})
+	stopped := 0
+	runner.SetOnLoopAutoStopped(func(_ string, _ *session.LoopPrompt) { stopped++ })
 
 	loop, _ := loopStore.Get()
 
-	// Accumulate MaxPromptResolveFailures-1 failures.
-	for i := 1; i < MaxPromptResolveFailures; i++ {
-		runner.handlePromptResolveFailure("reset-test", meta.Name, loop, loopStore, resolveErr)
-	}
-
-	// Simulate a successful resolution: reset the counter (mirrors checkSession success path).
-	runner.promptResolveFailuresMu.Lock()
-	delete(runner.promptResolveFailures, "reset-test")
-	runner.promptResolveFailuresMu.Unlock()
-
-	// Now accumulate MaxPromptResolveFailures-1 more failures — should not trigger auto-pause.
-	for i := 1; i < MaxPromptResolveFailures; i++ {
-		runner.handlePromptResolveFailure("reset-test", meta.Name, loop, loopStore, resolveErr)
-	}
-
-	// Verify the loop is still enabled (counter was reset, threshold not reached again).
+	runner.handlePromptResolveFailure("reset-test", meta.Name, loop, loopStore, resolveErr)
 	final, _ := loopStore.Get()
-	if !final.Enabled {
-		t.Error("loop disabled unexpectedly; counter reset did not clear failure count")
+	if final.Enabled || final.StoppedReason != session.StoppedReasonPromptUnresolved || stopped != 1 {
+		t.Errorf("after permanent failure: enabled=%v reason=%q callback_count=%d; want disabled, promptUnresolved, one callback", final.Enabled, final.StoppedReason, stopped)
 	}
 }
 
@@ -2532,10 +2539,9 @@ func TestLoopRunner_AutoStopPromptUnresolved_SkipsTransientCompileRace(t *testin
 
 	loop, _ := loopStore.Get()
 
-	// Call the failure handler MaxPromptResolveFailures times. With the fix
-	// in place, transient compile-race errors are classified and do NOT
-	// increment the strike counter, so the loop stays enabled.
-	for i := 0; i < MaxPromptResolveFailures; i++ {
+	// The transient budget permits fewer than MaxTransientCompileRaceFailures
+	// consecutive failures before stopping the loop.
+	for i := 0; i < MaxTransientCompileRaceFailures-1; i++ {
 		runner.handlePromptResolveFailure("compile-race", meta.Name, loop, loopStore, resolveErr)
 	}
 

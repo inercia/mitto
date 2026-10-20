@@ -1998,6 +1998,12 @@ func NewServer(config Config) (*Server, error) {
 	}
 	s.loopRunner.SetPromptResolver(promptResolverFunc)
 	if s.sessionManager != nil {
+		s.loopRunner.SetOnPromptPreparationFailed(func(sessionID, promptName string, err error) {
+			if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+				bs.RecordLoopPromptPreparationFailure(promptName, err)
+			}
+		})
+		s.sessionManager.SetQueuedPromptFailureHandler(s.loopRunner.HandleQueuedPromptPreparationFailure)
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
 		s.sessionManager.SetPromptFragmentsResolver(promptFragmentsResolverFunc)
 		s.sessionManager.SetPreferredModelsResolver(preferredModelsResolverFunc)
@@ -3878,7 +3884,7 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 	if s.sessionManager != nil {
 		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
 	}
-	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+	dirPrompts, workspaceLoadErrors := s.loadPromptsFromDirsWithErrors(workingDir, workspacePromptsDirs)
 
 	// 5. Workspace inline prompts (.mittorc)
 	var inlinePrompts []configPkg.WebPrompt
@@ -3907,20 +3913,18 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 		}
 	}
 
-	// mitto-8bg: distinguish a transient template fragment compile-race from a
-	// genuinely missing/renamed prompt. When a consumer prompt references a
-	// `_shared/foo` fragment and the fragment registry has not yet been refreshed
-	// by the fs-watcher, PromptsCache drops the consumer from promptsByName and
-	// records the parse error in LoadErrors() with a `template "..." not defined`
-	// signature. Wrap the "not found" with ErrPromptTransientCompileRace so the
-	// loop-runner strike counter can skip it and avoid auto-pausing on the race.
+	// Only a missing shared fragment can be a registry-refresh race. In
+	// particular, Go's undefined-function diagnostic also contains "template"
+	// and "not defined", but is a permanent compile failure.
+	var promptLoadErrors []configPkg.PromptLoadError
 	if s.config.PromptsCache != nil {
-		for _, le := range s.config.PromptsCache.LoadErrors() {
-			if le.Err != nil && strings.Contains(le.Err.Error(), "not defined") &&
-				strings.Contains(le.Err.Error(), "template ") {
-				return "", fmt.Errorf("%w: prompt %q not found (load errors present)",
-					conversation.ErrPromptTransientCompileRace, promptName)
-			}
+		promptLoadErrors = append(promptLoadErrors, s.config.PromptsCache.LoadErrors()...)
+	}
+	promptLoadErrors = append(promptLoadErrors, workspaceLoadErrors...)
+	for _, le := range promptLoadErrors {
+		if le.Err != nil && strings.EqualFold(le.PromptName, promptName) && isMissingSharedFragmentError(le.Err) {
+			return "", fmt.Errorf("%w: prompt %q failed to load from %s: %w",
+				conversation.ErrPromptTransientCompileRace, promptName, le.Path, le.Err)
 		}
 	}
 
@@ -3933,12 +3937,23 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 	// same as the fragment compile-race above so the loop-runner strike
 	// counter (mitto-8bg) does not auto-pause a healthy loop on a resolution
 	// race, and the next tick retries against a warm cache.
-	if promptsCacheErr != nil {
-		return "", fmt.Errorf("%w: prompt %q not found (prompts cache error: %v)",
+	if errors.Is(promptsCacheErr, prompts.ErrDeploymentInProgress) {
+		return "", fmt.Errorf("%w: prompt %q not found (deployment in progress): %w",
 			conversation.ErrPromptTransientCompileRace, promptName, promptsCacheErr)
+	}
+	if promptsCacheErr != nil {
+		return "", fmt.Errorf("prompt %q not found (prompts cache error: %w)", promptName, promptsCacheErr)
 	}
 
 	return "", fmt.Errorf("prompt %q not found", promptName)
+}
+
+func isMissingSharedFragmentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, `template "_shared/`) && strings.Contains(msg, `" not defined`)
 }
 
 // resolvePreferredModelsByPromptName resolves a prompt name to its preferredModels list.

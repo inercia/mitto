@@ -1747,8 +1747,9 @@ func LoadPromptFileWithFragments(promptsDir, relativePath string, fragments *Fra
 
 // PromptLoadError describes a single prompt file that failed to load/parse/precompile.
 type PromptLoadError struct {
-	Path string // path (relative to the scanned dir) of the offending file
-	Err  error  // underlying parse/template error
+	Path       string // path (relative to the scanned dir) of the offending file
+	PromptName string // declared/derived prompt name, empty when YAML could not be decoded
+	Err        error  // underlying parse/template error
 }
 
 // LoadPromptsFromDir loads all .prompt.yaml files from a directory recursively.
@@ -1810,7 +1811,7 @@ func LoadPromptsFromDirWithErrorsAndFragments(dir string, fragments *FragmentReg
 		// Load and parse the file
 		prompt, err := LoadPromptFileWithFragments(dir, relPath, fragments)
 		if err != nil {
-			loadErrors = append(loadErrors, PromptLoadError{Path: relPath, Err: err})
+			loadErrors = append(loadErrors, PromptLoadError{Path: relPath, PromptName: promptNameFromFile(dir, relPath), Err: err})
 			// De-dup WARN per (absPath, err) per process lifetime (mitto-e8r):
 			// a permanently-broken workspace file otherwise emits one WARN per
 			// reload (fs-watcher + cold cache + ForceReload), spamming the log
@@ -1835,6 +1836,32 @@ func LoadPromptsFromDirWithErrorsAndFragments(dir string, fragments *FragmentReg
 	}
 
 	return prompts, loadErrors, nil
+}
+
+// promptNameFromFile extracts the declared name even when later validation or
+// template precompilation fails. If YAML is valid but name is omitted, mirror
+// parsePromptFileData's documented filename-derived name. Invalid YAML remains
+// unattributed: a filename is not proof of the prompt's declared identity.
+func promptNameFromFile(dir, relPath string) string {
+	data, err := os.ReadFile(filepath.Join(dir, relPath))
+	if err != nil {
+		return ""
+	}
+	var header struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal(data, &header); err != nil {
+		return ""
+	}
+	if header.Name != "" {
+		return header.Name
+	}
+	base := filepath.Base(relPath)
+	name := strings.TrimSuffix(base, ".prompt.yaml")
+	if name == base {
+		name = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return name
 }
 
 // PromptsToWebPrompts converts a slice of PromptFile to WebPrompt.

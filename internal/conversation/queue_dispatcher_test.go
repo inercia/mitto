@@ -31,6 +31,7 @@ type fakeQueueDeps struct {
 	promptWithMetaMsgs   []string
 	recordedErrors       []string
 	lastSendErr          string
+	queuedPromptFailures []string
 }
 
 func (f *fakeQueueDeps) queueProcessingEnabled() bool        { return f.enabled }
@@ -45,6 +46,9 @@ func (f *fakeQueueDeps) queueRecordErrorEvent(msg string) {
 	f.recordedErrors = append(f.recordedErrors, msg)
 }
 func (f *fakeQueueDeps) setLastQueueSendError(msg string) { f.lastSendErr = msg }
+func (f *fakeQueueDeps) queueReportPromptPreparationFailure(promptName string, err error) {
+	f.queuedPromptFailures = append(f.queuedPromptFailures, promptName+":"+err.Error())
+}
 
 func (f *fakeQueueDeps) setQueuedDeliveryInProgress(v bool) {
 	f.deliveryInProgress = append(f.deliveryInProgress, v)
@@ -744,12 +748,9 @@ func TestQueueDispatcher_Send_DurableError_NoRetry(t *testing.T) {
 	}
 }
 
-// TestQueueDispatcher_Send_TemplateNotDefined_HeuristicRetries pins the
-// defensive-fallback branch of isTransientPromptCompileRace: an unwrapped Go
-// template error (`template "foo" not defined`) — no ErrPromptTransientCompileRace
-// wrapping — must still be classified transient by the substring heuristic and
-// trigger a retry that then succeeds.
-func TestQueueDispatcher_Send_TemplateNotDefined_HeuristicRetries(t *testing.T) {
+// TestQueueDispatcher_Send_UnclassifiedTemplateErrorDoesNotRetry ensures a
+// raw template diagnostic is not enough to authorize a retry.
+func TestQueueDispatcher_Send_UnclassifiedTemplateErrorDoesNotRetry(t *testing.T) {
 	sleeps := withStubbedRetrySleep(t)
 
 	q := newTestQueue(t)
@@ -760,24 +761,18 @@ func TestQueueDispatcher_Send_TemplateNotDefined_HeuristicRetries(t *testing.T) 
 		enabled: true,
 		promptWithMetaFn: func(string, PromptMeta) error {
 			calls++
-			if calls == 1 {
-				// Raw, unwrapped Go template error — matches the heuristic
-				// (contains BOTH "template " AND "not defined") but does NOT
-				// match errors.Is(err, ErrPromptTransientCompileRace).
-				return errors.New("template \"_shared/foo\" not defined")
-			}
-			return nil
+			return errors.New("template \"_shared/foo\" not defined")
 		},
 	}
 
 	queueDispatcher{}.send(d, q, msg)
 
-	if len(d.promptWithMetaCalls) != 2 {
-		t.Fatalf("expected 2 promptWithMeta attempts under heuristic classification, got %d",
+	if len(d.promptWithMetaCalls) != 1 {
+		t.Fatalf("expected one promptWithMeta attempt for unclassified error, got %d",
 			len(d.promptWithMetaCalls))
 	}
-	if len(*sleeps) != 1 {
-		t.Errorf("expected 1 retry sleep, got %d", len(*sleeps))
+	if len(*sleeps) != 0 {
+		t.Errorf("expected no retry sleep, got %d", len(*sleeps))
 	}
 	sentCount, errCount := 0, 0
 	for _, ev := range d.notifiedObservers {
@@ -788,14 +783,35 @@ func TestQueueDispatcher_Send_TemplateNotDefined_HeuristicRetries(t *testing.T) 
 			errCount++
 		}
 	}
-	if sentCount != 1 {
-		t.Errorf("expected exactly 1 OnQueueMessageSent after successful retry, got %d: %v",
+	if sentCount != 0 {
+		t.Errorf("expected no OnQueueMessageSent after preparation failure, got %d: %v",
 			sentCount, d.notifiedObservers)
 	}
-	if errCount != 0 {
-		t.Errorf("expected 0 OnError on eventual success, got %d: %v", errCount, d.notifiedObservers)
+	if errCount != 1 {
+		t.Errorf("expected one OnError for durable failure, got %d: %v", errCount, d.notifiedObservers)
 	}
-	if len(d.recordedErrors) != 0 {
-		t.Errorf("expected 0 recordedErrors on eventual success, got %v", d.recordedErrors)
+	if len(d.recordedErrors) != 1 {
+		t.Errorf("expected one recorded error, got %v", d.recordedErrors)
+	}
+}
+
+func TestQueueDispatcher_Send_ReportsNamedPreparationFailureOnce(t *testing.T) {
+	q := newTestQueue(t)
+	errCause := errors.New("function \"BeadHasLabelsStrictFromNewerBinary\" not defined")
+	msg := session.QueuedMessage{ID: "m-preparation", Message: "hello", PromptName: "Feature — plan phase"}
+	d := &fakeQueueDeps{
+		enabled: true,
+		promptWithMetaFn: func(string, PromptMeta) error {
+			return fmt.Errorf("%w: %w", ErrPromptResolveFailed, errCause)
+		},
+	}
+
+	queueDispatcher{}.send(d, q, msg)
+
+	if len(d.queuedPromptFailures) != 1 {
+		t.Fatalf("expected one preparation-failure report, got %v", d.queuedPromptFailures)
+	}
+	if !strings.Contains(d.queuedPromptFailures[0], "Feature — plan phase") || !strings.Contains(d.queuedPromptFailures[0], errCause.Error()) {
+		t.Errorf("reported failure = %q, want prompt and underlying cause", d.queuedPromptFailures[0])
 	}
 }

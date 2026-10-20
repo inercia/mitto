@@ -5,6 +5,7 @@ package conversation
 // ready to use) and is unit-testable in isolation via the queueDeps seam.
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -61,6 +62,10 @@ type queueDeps interface {
 	queueRecordErrorEvent(msg string)
 	// setLastQueueSendError records the most recent queued-send failure for the parent's wait loop.
 	setLastQueueSendError(msg string)
+}
+
+type queuedPromptFailureReporter interface {
+	queueReportPromptPreparationFailure(promptName string, err error)
 }
 
 // queueDispatcher is stateless; all dependencies are passed per call.
@@ -268,6 +273,9 @@ func (queueDispatcher) send(d queueDeps, queue *session.Queue, msg session.Queue
 	}
 	d.queueRecordErrorEvent(logMsg)
 	d.setLastQueueSendError(err.Error())
+	if reporter, ok := d.(queuedPromptFailureReporter); ok && msg.PromptName != "" && errors.Is(err, ErrPromptResolveFailed) {
+		reporter.queueReportPromptPreparationFailure(msg.PromptName, err)
+	}
 	d.notifyObservers(func(o SessionObserver) {
 		o.OnError(logMsg)
 	})

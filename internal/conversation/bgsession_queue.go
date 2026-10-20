@@ -102,6 +102,12 @@ func (bs *BackgroundSession) queueLogger() *slog.Logger { return bs.logger }
 // queueSessionID returns the persisted session ID.
 func (bs *BackgroundSession) queueSessionID() string { return bs.persistedID }
 
+func (bs *BackgroundSession) queueReportPromptPreparationFailure(promptName string, err error) {
+	if bs.queuedPromptFailureHandler != nil {
+		bs.queuedPromptFailureHandler(bs.persistedID, promptName, err)
+	}
+}
+
 // queueRecordErrorEvent persists an error event for a failed queued send.
 func (bs *BackgroundSession) queueRecordErrorEvent(msg string) {
 	if bs.recorder == nil {

@@ -267,11 +267,7 @@ func isTransientPromptCompileRace(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrPromptTransientCompileRace) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "template ") && strings.Contains(msg, "not defined")
+	return errors.Is(err, ErrPromptTransientCompileRace)
 }
 
 // LoopStartedCallback is called when a loop prompt is delivered.
@@ -337,7 +333,8 @@ type LoopRunner struct {
 	onAutoArchive AutoArchiveCallback
 
 	// onLoopAutoStopped is called when a loop conversation is disabled after reaching max iterations.
-	onLoopAutoStopped LoopAutoStoppedCallback
+	onLoopAutoStopped         LoopAutoStoppedCallback
+	onPromptPreparationFailed func(sessionID, promptName string, err error)
 
 	// onLoopUpdated is called when a loop conversation's schedule advances after a delivery,
 	// so clients can reset the countdown to the new next-run time.
@@ -694,6 +691,13 @@ func (r *LoopRunner) SetAutoUnarchiveRecovery(enabled bool, retryInterval, stagg
 // SetOnLoopAutoStopped sets the callback for when a loop conversation is auto-stopped after reaching max iterations.
 func (r *LoopRunner) SetOnLoopAutoStopped(callback LoopAutoStoppedCallback) {
 	r.onLoopAutoStopped = callback
+}
+
+// SetOnPromptPreparationFailed configures durable reporting for a final
+// scheduled prompt-preparation failure. Queue failures already persist their
+// own error event and therefore do not use this callback.
+func (r *LoopRunner) SetOnPromptPreparationFailed(callback func(sessionID, promptName string, err error)) {
+	r.onPromptPreparationFailed = callback
 }
 
 // SetSlackAutoRecovery configures the onSlack watcher-loop auto-recovery
@@ -2477,33 +2481,27 @@ func (r *LoopRunner) autoStopIfMaxDurationReached(sessionID string, loop *sessio
 // auto-pauses (disables) the loop config and broadcasts the change, mirroring the
 // MaxLoopResumeFailures auto-archive safety.
 func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error) {
-	// mitto-8bg: a transient template fragment compile-race must not count as a
-	// strike toward the auto-pause tripwire. The resolver wraps such misses with
-	// ErrPromptTransientCompileRace; the failure will clear itself on the next
-	// reload. We do NOT reset the promptResolveFailures counter here — a
-	// subsequent genuine "not found" still trips the tripwire as before.
-	//
-	// mitto-uvsn: the carve-out above was unbounded — every classification
-	// returned unconditionally, with no counter, no time bound, and no
-	// escalation. A persistent prompt-cache hole (e.g. the resolver in
-	// internal/web/server.go wraps ANY prompt-not-found as transient
-	// whenever PromptsCache holds ANY unrelated compile error) made this
-	// carve-out fire forever, silently stalling loops for hours. Bound it:
-	// once a session accumulates MaxTransientCompileRaceFailures consecutive
-	// classifications within transientCompileRaceWindow, treat the carve-out
-	// as exhausted and fall through to the normal strike path below so the
-	// loop eventually auto-pauses and surfaces the amber warning, same as
-	// any other unresolved prompt.
+	r.handlePromptResolveFailureWithReport(sessionID, sessionName, loop, loopStore, err, true)
+}
+
+func (r *LoopRunner) handlePromptResolveFailureWithReport(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, report bool) {
+	if current, getErr := loopStore.Get(); getErr == nil && !current.Enabled {
+		return
+	}
+	// Permanent prompt preparation failures stop immediately. A positively
+	// identified fragment-registry race gets a small retry budget, but elapsed
+	// time never resets a persistent failure episode.
 	if errors.Is(err, ErrPromptTransientCompileRace) {
 		r.transientCompileRaceFailuresMu.Lock()
 		state := r.transientCompileRaceFailures[sessionID]
 		now := time.Now()
-		if state == nil || now.Sub(state.firstSeen) >= transientCompileRaceWindow {
+		if state == nil {
 			state = &transientRaceState{firstSeen: now}
 			r.transientCompileRaceFailures[sessionID] = state
 		}
 		state.count++
-		exhausted := state.count >= MaxTransientCompileRaceFailures
+		exhausted := state.count >= MaxTransientCompileRaceFailures || now.Sub(state.firstSeen) >= transientCompileRaceWindow
+		count := state.count
 		if exhausted {
 			delete(r.transientCompileRaceFailures, sessionID)
 		}
@@ -2511,49 +2509,17 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 
 		if !exhausted {
 			if r.logger != nil {
-				r.logger.Debug("Loop prompt transiently unresolved (template compile race); not counting as strike",
-					"session_id", sessionID,
-					"prompt_name", loop.PromptName,
-					"consecutive_transient_failures", state.count,
-					"error", err)
+				r.logger.Warn("Loop prompt hit transient fragment race; retrying within bounded budget", "session_id", sessionID, "prompt_name", loop.PromptName, "consecutive_transient_failures", count, "error", err)
 			}
 			return
 		}
-
-		if r.logger != nil {
-			r.logger.Warn("Loop prompt transient compile-race carve-out exhausted; escalating to strike path",
-				"session_id", sessionID,
-				"prompt_name", loop.PromptName,
-				"consecutive_transient_failures", state.count,
-				"window", transientCompileRaceWindow,
-				"error", err)
-		}
-		// Fall through to the normal strike-counting path below.
 	}
 
 	r.promptResolveFailuresMu.Lock()
-	r.promptResolveFailures[sessionID]++
-	failures := r.promptResolveFailures[sessionID]
+	r.promptResolveFailures[sessionID] = 1
 	r.promptResolveFailuresMu.Unlock()
-
 	if r.logger != nil {
-		if failures == 1 {
-			r.logger.Warn("Loop prompt could not be resolved; will auto-pause after repeated failures",
-				"session_id", sessionID,
-				"prompt_name", loop.PromptName,
-				"consecutive_failures", failures,
-				"max_failures", MaxPromptResolveFailures,
-				"error", err)
-		} else {
-			r.logger.Debug("Loop prompt still unresolved",
-				"session_id", sessionID,
-				"prompt_name", loop.PromptName,
-				"consecutive_failures", failures)
-		}
-	}
-
-	if failures < MaxPromptResolveFailures {
-		return
+		r.logger.Error("Loop prompt preparation failed; stopping loop", "session_id", sessionID, "prompt_name", loop.PromptName, "error", err)
 	}
 
 	if updErr := loopStore.MarkStopped(session.StoppedReasonPromptUnresolved); updErr != nil {
@@ -2563,12 +2529,15 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 		}
 		return
 	}
+	if report && r.onPromptPreparationFailed != nil {
+		r.onPromptPreparationFailed(sessionID, loop.PromptName, err)
+	}
 	if r.logger != nil {
-		r.logger.Warn("Auto-paused loop conversation after repeated prompt resolve failures",
+		r.logger.Warn("Auto-paused loop conversation after prompt preparation failure",
 			"session_id", sessionID,
 			"session_name", sessionName,
 			"prompt_name", loop.PromptName,
-			"consecutive_failures", failures)
+			"error", err)
 	}
 	if r.onLoopAutoStopped != nil {
 		if final, gErr := loopStore.Get(); gErr == nil {
@@ -2578,6 +2547,27 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 	r.promptResolveFailuresMu.Lock()
 	delete(r.promptResolveFailures, sessionID)
 	r.promptResolveFailuresMu.Unlock()
+}
+
+// HandleQueuedPromptPreparationFailure stops an enabled loop when a queued
+// named prompt fails during fail-closed preparation. Queue dispatch calls this
+// only after its bounded retry sequence has ended.
+func (r *LoopRunner) HandleQueuedPromptPreparationFailure(sessionID, promptName string, err error) {
+	if r.store == nil || sessionID == "" || promptName == "" {
+		return
+	}
+	loopStore := r.store.Loop(sessionID)
+	loop, getErr := loopStore.Get()
+	if getErr != nil || !loop.Enabled {
+		return
+	}
+	loop.PromptName = promptName
+	if isTransientPromptCompileRace(err) {
+		r.transientCompileRaceFailuresMu.Lock()
+		r.transientCompileRaceFailures[sessionID] = &transientRaceState{count: MaxTransientCompileRaceFailures, firstSeen: time.Now().Add(-transientCompileRaceWindow)}
+		r.transientCompileRaceFailuresMu.Unlock()
+	}
+	r.handlePromptResolveFailureWithReport(sessionID, "", loop, loopStore, err, false)
 }
 
 // releaseBeadClaim best-effort releases an automated-driver claim on the bead

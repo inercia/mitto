@@ -395,11 +395,11 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 	if meta.PromptName != "" {
 		resolver := d.pdPromptResolver()
 		if resolver == nil {
-			return "", 0, meta, &promptResolverError{name: meta.PromptName}
+			return "", 0, meta, fmt.Errorf("%w: %w", ErrPromptResolveFailed, &promptResolverError{name: meta.PromptName})
 		}
 		resolved, err := resolver(meta.PromptName, d.pdWorkingDir())
 		if err != nil {
-			return "", 0, meta, &promptResolutionError{name: meta.PromptName, cause: err}
+			return "", 0, meta, fmt.Errorf("%w: %w", ErrPromptResolveFailed, &promptResolutionError{name: meta.PromptName, cause: err})
 		}
 		message = resolved
 	}
@@ -506,7 +506,7 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 			var ferr error
 			fragments, ferr = resolver(d.pdWorkingDir())
 			if ferr != nil {
-				return "", 0, meta, fmt.Errorf("load workspace prompt fragments: %w", ferr)
+				return "", 0, meta, fmt.Errorf("%w: load workspace prompt fragments: %w", ErrPromptResolveFailed, ferr)
 			}
 			if fragments != nil {
 				tctx.TemplateFragments = fragments.All()
@@ -547,7 +547,7 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 				failClosed = false
 			}
 			if failClosed {
-				return "", 0, meta, rerr
+				return "", 0, meta, fmt.Errorf("%w: prompt %q render failed: %w", ErrPromptResolveFailed, name, rerr)
 			}
 			// free-text (direct human input, or user-originated queue dispatch): fail-open — warn and deliver raw message
 			if l := d.pdLogger(); l != nil {

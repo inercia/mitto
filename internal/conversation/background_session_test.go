@@ -43,6 +43,34 @@ func TestResumeBackgroundSession_MissingPersistedID(t *testing.T) {
 	}
 }
 
+func TestRecordLoopPromptPreparationFailurePersistsDiagnostic(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const sessionID = "loop-preparation-error"
+	recorder := session.NewRecorderWithID(store, sessionID)
+	if err := recorder.Start("test", "/tmp", ""); err != nil {
+		t.Fatal(err)
+	}
+	bs := &BackgroundSession{persistedID: sessionID, recorder: recorder, nextSeq: 2}
+	bs.RecordLoopPromptPreparationFailure("Feature — plan phase", fmt.Errorf("template: function BeadHasLabelsStrictFromNewerBinary not defined"))
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics []string
+	for _, event := range events {
+		if event.Type == session.EventTypeError {
+			diagnostics = append(diagnostics, fmt.Sprint(event.Data))
+		}
+	}
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "Feature — plan phase") || !strings.Contains(diagnostics[0], "BeadHasLabelsStrictFromNewerBinary") {
+		t.Fatalf("persisted error diagnostics = %v; want one event with prompt and underlying cause", diagnostics)
+	}
+}
+
 func TestResumeBackgroundSession_SessionNotInStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)

@@ -258,7 +258,8 @@ type SessionManager struct {
 
 	// promptResolver resolves a named workspace prompt to its full text at send time.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
-	promptResolver PromptResolver
+	promptResolver             PromptResolver
+	queuedPromptFailureHandler func(string, string, error)
 
 	// promptFragmentsResolver resolves workspace-scoped fragments for rendering.
 	promptFragmentsResolver PromptFragmentsResolver
@@ -1299,6 +1300,12 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolver) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.promptResolver = resolver
+}
+
+func (sm *SessionManager) SetQueuedPromptFailureHandler(handler func(sessionID, promptName string, err error)) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.queuedPromptFailureHandler = handler
 }
 
 // SetPromptFragmentsResolver sets the resolver passed to every new and resumed
@@ -2507,10 +2514,11 @@ func (sm *SessionManager) CreateSessionWithWorkspaceAndOptions(ctx context.Conte
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
-		SharedProcess:                  sharedProcess,              // Shared ACP process (nil = legacy mode)
-		BackendLease:                   sharedLease,                // Backing BackendLease (nil = legacy mode / no provider injected)
-		PruneConfig:                    pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:                 sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
+		SharedProcess:                  sharedProcess,     // Shared ACP process (nil = legacy mode)
+		BackendLease:                   sharedLease,       // Backing BackendLease (nil = legacy mode / no provider injected)
+		PruneConfig:                    pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:                 sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
+		QueuedPromptFailureHandler:     sm.queuedPromptFailureHandler,
 		PromptFragmentsResolver:        sm.promptFragmentsResolver, // Workspace-scoped prompt fragments
 		BeadsDatabaseModeResolver:      sm.beadsDatabaseModeResolver,
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
@@ -3224,10 +3232,11 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
-		SharedProcess:                  sharedProcess,              // Shared ACP process (nil = legacy mode)
-		BackendLease:                   sharedLease,                // Backing BackendLease (nil = legacy mode / no provider injected)
-		PruneConfig:                    pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:                 sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
+		SharedProcess:                  sharedProcess,     // Shared ACP process (nil = legacy mode)
+		BackendLease:                   sharedLease,       // Backing BackendLease (nil = legacy mode / no provider injected)
+		PruneConfig:                    pruneConfig,       // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:                 sm.promptResolver, // Named prompt resolver (resolves prompt name → text)
+		QueuedPromptFailureHandler:     sm.queuedPromptFailureHandler,
 		PromptFragmentsResolver:        sm.promptFragmentsResolver, // Workspace-scoped prompt fragments
 		BeadsDatabaseModeResolver:      sm.beadsDatabaseModeResolver,
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
