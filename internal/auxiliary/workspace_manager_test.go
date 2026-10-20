@@ -17,9 +17,10 @@ import (
 
 // mockProcessProvider is a mock implementation of ProcessProvider for testing.
 type mockProcessProvider struct {
-	promptFunc      func(ctx context.Context, workspaceUUID, purpose, message string) (string, error)
-	promptAsyncFunc func(ctx context.Context, workspaceUUID, purpose, message string) error
-	closeFunc       func(workspaceUUID string) error
+	promptFunc       func(ctx context.Context, workspaceUUID, purpose, message string) (string, error)
+	promptAsyncFunc  func(ctx context.Context, workspaceUUID, purpose, message string) error
+	closeFunc        func(workspaceUUID string) error
+	instructionsFunc func(ctx context.Context, workspaceUUID, purpose, instructions string) error
 }
 
 func (m *mockProcessProvider) PromptAuxiliary(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
@@ -44,6 +45,9 @@ func (m *mockProcessProvider) CloseWorkspaceAuxiliary(workspaceUUID string) erro
 }
 
 func (m *mockProcessProvider) SendAuxiliaryInstructions(ctx context.Context, workspaceUUID, purpose, instructions string) error {
+	if m.instructionsFunc != nil {
+		return m.instructionsFunc(ctx, workspaceUUID, purpose, instructions)
+	}
 	// Mock implementation: do nothing (or could track calls for testing)
 	return nil
 }
@@ -269,6 +273,49 @@ func TestWorkspaceAuxiliaryManager_AnalyzeFollowUpQuestions_PromptSizeBounded(t 
 	maxVariable := FollowUpMaxAgentChars + FollowUpMaxUserPromptChars
 	if variable > maxVariable {
 		t.Errorf("variable content = %d runes, want <= %d", variable, maxVariable)
+	}
+}
+
+// TestWorkspaceAuxiliaryManager_AnalyzeFollowUpQuestionsIsSelfContained
+// reproduces mitto-9u9.2: an independent follow-up request must carry its own
+// instructions instead of relying on prior state in a reused ACP session.
+func TestWorkspaceAuxiliaryManager_AnalyzeFollowUpQuestionsIsSelfContained(t *testing.T) {
+	var prompts []string
+	instructionCalls := 0
+	mock := &mockProcessProvider{
+		promptFunc: func(_ context.Context, _, _, message string) (string, error) {
+			prompts = append(prompts, message)
+			return `[]`, nil
+		},
+		instructionsFunc: func(context.Context, string, string, string) error {
+			instructionCalls++
+			return nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+	if _, err := mgr.AnalyzeFollowUpQuestions(context.Background(), "ws", "first user turn", "first agent turn"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.AnalyzeFollowUpQuestions(context.Background(), "ws", "second user turn", "second agent turn"); err != nil {
+		t.Fatal(err)
+	}
+	if instructionCalls != 0 {
+		t.Fatalf("SendAuxiliaryInstructions called %d times, want 0 for self-contained follow-up prompts", instructionCalls)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("received %d prompts, want 2", len(prompts))
+	}
+	for i, prompt := range prompts {
+		if !strings.Contains(prompt, AnalyzeFollowUpQuestionsInstructions) {
+			t.Errorf("prompt %d is not self-contained: missing analysis instructions", i+1)
+		}
+	}
+	if !strings.Contains(prompts[0], "first user turn") || !strings.Contains(prompts[0], "first agent turn") || strings.Contains(prompts[0], "second user turn") {
+		t.Errorf("first prompt contains wrong turn data: %q", prompts[0])
+	}
+	if !strings.Contains(prompts[1], "second user turn") || !strings.Contains(prompts[1], "second agent turn") || strings.Contains(prompts[1], "first user turn") {
+		t.Errorf("second prompt contains wrong turn data: %q", prompts[1])
 	}
 }
 

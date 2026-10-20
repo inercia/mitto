@@ -45,17 +45,15 @@ var ImprovePromptTemplate string
 //go:embed prompts/analyze_followup_questions.txt
 var AnalyzeFollowUpQuestionsPromptTemplate string
 
-// AnalyzeFollowUpQuestionsInstructions is the system prompt that contains
-// instructions for analyzing follow-up questions. This is sent once when
-// the auxiliary session is first created, to avoid repeating instructions
-// on each subsequent analysis.
+// AnalyzeFollowUpQuestionsInstructions contains the fixed instructions for
+// one independent follow-up analysis. The workspace manager combines it with
+// the bounded current-turn query before sending a single provider request.
 //
 //go:embed prompts/analyze_followup_questions_instructions.txt
 var AnalyzeFollowUpQuestionsInstructions string
 
-// AnalyzeFollowUpQuestionsQueryTemplate is used for each follow-up analysis.
-// It contains only the data (user prompt and agent response) without the
-// instructions. Use with fmt.Sprintf, passing:
+// AnalyzeFollowUpQuestionsQueryTemplate contains the bounded current-turn data
+// for one follow-up analysis. Use with fmt.Sprintf, passing:
 // 1. The user's prompt (what the user asked)
 // 2. The agent's response message
 //

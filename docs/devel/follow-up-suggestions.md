@@ -125,7 +125,10 @@ type ActionButtonsStore struct { ... }
 
 ### Analysis Details
 
-The auxiliary session uses a specialized prompt to extract follow-up suggestions:
+The follow-up analyzer sends one self-contained provider prompt per independent
+analysis. It combines the fixed instructions in
+`internal/auxiliary/prompts/analyze_followup_questions_instructions.txt` with a
+query containing only the current turn:
 
 1. **Input**: The agent's last response (HTML stripped to plain text)
 2. **Output**: JSON array of `{label, value}` pairs
@@ -155,9 +158,22 @@ rune-safe and idempotent. It runs in
 `WorkspaceAuxiliaryManager.AnalyzeFollowUpQuestions`. Thoughts and tool calls
 are never included (`session.GetLastAgentMessage` only reads agent messages).
 
-Note: the fixed prompt template
-(`internal/auxiliary/prompts/analyze_followup_questions.txt`, ~3k chars) is
-added on top of the capped content, so the total prompt is ~6k chars at the caps.
+The fixed instructions are included in each one-shot request alongside the
+capped content. Their character count is fixed overhead, not a guarantee about
+provider tokenization, retained context, or billing.
+
+### Independent Request Isolation
+
+Follow-up analyses share the workspace's ACP process but **do not reuse a
+provider session**. A context-aware per-workspace gate serializes session
+creation, prompting, cleanup, and the bounded connection retry. Each request
+retires and unregisters its session before releasing the gate, including on
+success. If the connection fails, the single retry uses a fresh session and the
+same complete prompt; other failures are not retried. Cancellation retires the
+session and sends bounded cleanup cancellation. Thus neither prior follow-up
+turns nor a partially-sent instruction request are prerequisites for parsing
+the current result. This guarantee is about Mitto's ACP request/session
+boundaries; provider-side accounting is not inferred from recorded characters.
 
 ### Model Selection
 

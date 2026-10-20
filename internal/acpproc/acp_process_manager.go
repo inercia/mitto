@@ -106,7 +106,9 @@ type ACPProcessManager struct {
 	// Lets different (workspace, purpose) pairs create concurrently while
 	// same-key callers serialize, eliminating the need to hold auxMu across
 	// slow NewSession and SetSessionModel RPCs. (mitto-w19)
-	auxCreateMu map[auxSessionKey]*sync.Mutex
+	auxCreateMu      map[auxSessionKey]*sync.Mutex
+	auxFollowUpMu    sync.Mutex
+	auxFollowUpGates map[string]*auxiliaryOperationGate
 	// auxQuiescenceWaits coalesces deferred title-session admission per workspace.
 	auxQuiescenceMu    sync.Mutex
 	auxQuiescenceWaits map[string]*processQuiescenceWait
@@ -291,6 +293,13 @@ type auxiliarySessionState struct {
 	instructionsSent bool // Tracks if system instructions have been sent to this session
 }
 
+// auxiliaryOperationGate serializes one-shot follow-up session lifecycles per
+// workspace. refs keeps a gate alive while callers are waiting or using it.
+type auxiliaryOperationGate struct {
+	token chan struct{}
+	refs  int
+}
+
 type processQuiescenceWait struct {
 	done     chan struct{}
 	observed bool
@@ -375,6 +384,7 @@ func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessM
 		processes:          make(map[string]*SharedACPProcess),
 		auxSessions:        make(map[auxSessionKey]*auxiliarySessionState),
 		auxCreateMu:        make(map[auxSessionKey]*sync.Mutex),
+		auxFollowUpGates:   make(map[string]*auxiliaryOperationGate),
 		auxQuiescenceWaits: make(map[string]*processQuiescenceWait),
 		pinState:           make(map[string]*pinInfo),
 		ctx:                managerCtx,
@@ -1108,6 +1118,9 @@ func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, 
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("context cancelled before auxiliary prompt: %w", err)
 	}
+	if purpose == auxiliary.PurposeFollowUp {
+		return m.promptFollowUpAuxiliaryOnce(ctx, workspaceUUID, purpose, message, trace)
+	}
 
 	// Get or create the auxiliary session
 	auxState, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose)
@@ -1230,6 +1243,132 @@ func (m *ACPProcessManager) promptAuxiliary(ctx context.Context, workspaceUUID, 
 	trace.recordResponse(auxState.client)
 	auxState.mu.Unlock()
 	return response, nil
+}
+
+// promptFollowUpAuxiliaryOnce gives each independent analysis a fresh ACP
+// session. The workspace gate spans creation, prompt, cleanup, and the single
+// connection retry so concurrent follow-ups cannot claim or retire each
+// other's session.
+func (m *ACPProcessManager) promptFollowUpAuxiliaryOnce(ctx context.Context, workspaceUUID, purpose, message string, trace *auxPromptTrace) (string, error) {
+	releaseGate, err := m.acquireAuxFollowUpGate(ctx, workspaceUUID)
+	if err != nil {
+		return "", err
+	}
+	defer releaseGate()
+
+	state, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose)
+	if err != nil {
+		return "", fmt.Errorf("failed to get auxiliary session: %w", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := acquireAuxLock(ctx, state); err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			if process := m.GetProcess(workspaceUUID); process != nil {
+				m.retireCancelledAuxSession(process, workspaceUUID, purpose, state)
+			} else {
+				m.retireAuxSession(nil, workspaceUUID, purpose, state)
+			}
+			state.mu.Unlock()
+			return "", fmt.Errorf("context cancelled before follow-up prompt: %w", err)
+		}
+
+		process := m.GetProcess(workspaceUUID)
+		if process == nil {
+			m.retireAuxSession(nil, workspaceUUID, purpose, state)
+			state.mu.Unlock()
+			return "", fmt.Errorf("shared process for workspace %s disappeared (process may have exited)", workspaceUUID)
+		}
+		state.lastUsed = time.Now()
+		state.client.reset()
+		if m.logger != nil {
+			modelID, modelReported := state.modelForLog()
+			m.logger.Info("Prompting one-shot follow-up auxiliary session",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"session_id", state.sessionID,
+				"model_id", modelID,
+				"model_reported", modelReported,
+				"retry", attempt > 0)
+		}
+		trace.beginAttempt(state, attempt > 0)
+		_, promptErr := process.Prompt(ctx, state.sessionID, []agentbackend.ContentBlock{{Text: &agentbackend.TextBlock{Text: message}}})
+		trace.recordResponse(state.client)
+		if promptErr == nil {
+			response := state.client.getResponse()
+			m.retireAuxSession(process, workspaceUUID, purpose, state)
+			state.mu.Unlock()
+			return response, nil
+		}
+
+		if ctx.Err() != nil {
+			m.retireCancelledAuxSession(process, workspaceUUID, purpose, state)
+			state.mu.Unlock()
+			return "", fmt.Errorf("auxiliary follow-up prompt cancelled: %w", promptErr)
+		}
+		m.retireAuxSession(process, workspaceUUID, purpose, state)
+		state.mu.Unlock()
+		if !mittoAcp.IsACPConnectionError(promptErr) || attempt > 0 {
+			return "", fmt.Errorf("auxiliary follow-up prompt failed: %w", promptErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("context cancelled while waiting to retry auxiliary follow-up prompt: %w", ctx.Err())
+		case <-time.After(time.Second):
+		}
+		state, err = m.getOrCreateAuxiliarySession(ctx, workspaceUUID, purpose)
+		if err != nil {
+			return "", fmt.Errorf("failed to get auxiliary session on retry: %w", err)
+		}
+	}
+	return "", fmt.Errorf("auxiliary follow-up prompt failed after retry")
+}
+
+func (m *ACPProcessManager) acquireAuxFollowUpGate(ctx context.Context, workspaceUUID string) (func(), error) {
+	m.auxFollowUpMu.Lock()
+	if m.auxFollowUpGates == nil {
+		m.auxFollowUpGates = make(map[string]*auxiliaryOperationGate)
+	}
+	gate := m.auxFollowUpGates[workspaceUUID]
+	if gate == nil {
+		gate = &auxiliaryOperationGate{token: make(chan struct{}, 1)}
+		m.auxFollowUpGates[workspaceUUID] = gate
+	}
+	gate.refs++
+	m.auxFollowUpMu.Unlock()
+
+	select {
+	case gate.token <- struct{}{}:
+		return func() {
+			<-gate.token
+			m.releaseAuxFollowUpGate(workspaceUUID, gate)
+		}, nil
+	case <-ctx.Done():
+		m.releaseAuxFollowUpGate(workspaceUUID, gate)
+		return nil, fmt.Errorf("context cancelled while waiting for follow-up analysis: %w", ctx.Err())
+	}
+}
+
+func (m *ACPProcessManager) releaseAuxFollowUpGate(workspaceUUID string, gate *auxiliaryOperationGate) {
+	m.auxFollowUpMu.Lock()
+	defer m.auxFollowUpMu.Unlock()
+	gate.refs--
+	if gate.refs == 0 && m.auxFollowUpGates[workspaceUUID] == gate {
+		delete(m.auxFollowUpGates, workspaceUUID)
+	}
+}
+
+// retireAuxSession discards a completed or failed one-shot session without
+// sending cancellation for a request that has already returned.
+func (m *ACPProcessManager) retireAuxSession(process *SharedACPProcess, workspaceUUID, purpose string, state *auxiliarySessionState) {
+	state.client.retire()
+	if process != nil {
+		process.UnregisterSession(state.sessionID)
+	}
+	m.invalidateAuxSession(workspaceUUID, purpose, state)
 }
 
 // PromptAuxiliaryAsync sends a prompt to an auxiliary session without waiting for the response.

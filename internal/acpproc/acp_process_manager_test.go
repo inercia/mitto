@@ -426,6 +426,59 @@ func TestRetireCancelledAuxSession_UnregistersAndInvalidates(t *testing.T) {
 	}
 }
 
+func TestAuxFollowUpGate_SerializesAndCancelledWaiterDoesNotStrandGate(t *testing.T) {
+	mgr := NewACPProcessManager(context.Background(), nil)
+	defer mgr.Close()
+
+	releaseFirst, err := mgr.acquireAuxFollowUpGate(context.Background(), "workspace1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := mgr.acquireAuxFollowUpGate(ctx, "workspace1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled waiter error = %v, want context.Canceled", err)
+	}
+
+	// A different workspace must not be serialized behind workspace1.
+	releaseOther, err := mgr.acquireAuxFollowUpGate(context.Background(), "workspace2")
+	if err != nil {
+		t.Fatalf("independent workspace gate: %v", err)
+	}
+	releaseOther()
+	releaseFirst()
+
+	releaseNext, err := mgr.acquireAuxFollowUpGate(context.Background(), "workspace1")
+	if err != nil {
+		t.Fatalf("gate remained stranded after cancelled waiter: %v", err)
+	}
+	releaseNext()
+}
+
+func TestRetireAuxSession_UnregistersAndInvalidates(t *testing.T) {
+	mgr := NewACPProcessManager(context.Background(), nil)
+	defer mgr.Close()
+	key := auxSessionKey{workspaceUUID: "workspace1", purpose: "follow-up"}
+	client := newAuxiliaryClient()
+	state := &auxiliarySessionState{sessionID: "completed", client: client}
+	process := &SharedACPProcess{client: NewMultiplexClient()}
+	process.RegisterSession(state.sessionID, &conversation.SessionCallbacks{OnSessionUpdate: client.OnSessionUpdate})
+	mgr.auxSessions[key] = state
+
+	mgr.retireAuxSession(process, key.workspaceUUID, key.purpose, state)
+
+	if process.client.getSession(acp.SessionId(state.sessionID)) != nil {
+		t.Fatal("completed session callback remains registered")
+	}
+	if _, ok := mgr.auxSessions[key]; ok {
+		t.Fatal("completed auxiliary session remains cached")
+	}
+	if !client.retired {
+		t.Fatal("completed auxiliary client was not retired")
+	}
+}
+
 // ---- mapsEqual tests ----
 
 func TestMapsEqual(t *testing.T) {
