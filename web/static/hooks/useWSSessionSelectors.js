@@ -55,6 +55,10 @@ export function useWSSessionSelectors(activeSession) {
     return activeSession?.isLoadingMore || false;
   }, [activeSession]);
 
+  const historyBatchResult = useMemo(() => {
+    return activeSession?.historyBatchResult || null;
+  }, [activeSession]);
+
   // Check if active session has reached the message limit
   // When true, we've loaded MAX_MESSAGES and can't load more to protect memory
   const hasReachedLimit = useMemo(() => {
@@ -70,6 +74,7 @@ export function useWSSessionSelectors(activeSession) {
     isRunning,
     hasMoreMessages,
     isLoadingMore,
+    historyBatchResult,
     hasReachedLimit,
   };
 }

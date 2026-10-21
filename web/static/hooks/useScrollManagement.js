@@ -353,9 +353,20 @@ export function useScrollManagement({
         const originalBehavior = container.style.scrollBehavior;
         container.style.scrollBehavior = "auto";
 
+        const anchor = savedMetrics.historyKey
+          ? Array.from(container.querySelectorAll("[data-history-key]")).find(
+              (row) => row.dataset.historyKey === savedMetrics.historyKey,
+            )
+          : null;
+        const panelTop = container.getBoundingClientRect().top;
+        const anchorOffset = anchor
+          ? anchor.getBoundingClientRect().top - panelTop
+          : null;
         const newScrollHeight = container.scrollHeight;
         const heightDiff = newScrollHeight - savedMetrics.scrollHeight;
-        const newScrollTop = savedMetrics.scrollTop + heightDiff;
+        const newScrollTop = anchor && savedMetrics.anchorOffset !== null
+          ? container.scrollTop + anchorOffset - savedMetrics.anchorOffset
+          : savedMetrics.scrollTop + heightDiff;
         container.scrollTop = newScrollTop;
         if (window.__debug?.scroll)
           console.log("[Scroll] Restored scroll position after prepend:", {
@@ -368,6 +379,7 @@ export function useScrollManagement({
 
         // Restore original scroll behavior after the instant scroll
         container.style.scrollBehavior = originalBehavior;
+        container.style.overflowAnchor = savedMetrics.overflowAnchor;
         scrollPreservationRef.current = null;
       }
     }

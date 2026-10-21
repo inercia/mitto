@@ -162,4 +162,57 @@ describe("useScrollManagement — mitto-u5r streaming scroll drift", () => {
     // The user should still be considered scrolled up, not snapped to bottom.
     expect(resultBox.current.isUserAtBottom).toBe(false);
   });
+
+  test("restores a historical prepend against the same visible row anchor", async () => {
+    const mock = makeMockContainer({
+      scrollHeight: 2000,
+      clientHeight: 500,
+      scrollTop: 200,
+    });
+    mock.el.getBoundingClientRect = () => ({ top: 20, bottom: 520 });
+    mock.el.style.overflowAnchor = "auto";
+    let rowTop = 120;
+    const row = document.createElement("div");
+    row.dataset.historyKey = "agent:seq-50";
+    row.getBoundingClientRect = () => ({ top: rowTop, bottom: rowTop + 40 });
+    mock.el.appendChild(row);
+
+    const messagesContainerRef = { current: mock.el };
+    const scrollPreservationRef = { current: {
+      scrollHeight: 2000,
+      scrollTop: 200,
+      historyKey: "agent:seq-50",
+      anchorOffset: 100,
+      overflowAnchor: "auto",
+    } };
+    const resultBox = { current: null };
+    const baseProps = {
+      resultBox,
+      activeSessionId: "session-1",
+      mainView: "conversation",
+      messagesContainerRef,
+      scrollPreservationRef,
+    };
+
+    preactRender(
+      h(Harness, { ...baseProps, messages: [{ id: 1 }], isLoadingMore: true, isStreaming: false }),
+      mountPoint,
+    );
+    await flush();
+
+    // The prepended content moves the same visible row down by 50px; unrelated
+    // live content also grows the total scrollHeight by 400px.
+    rowTop = 170;
+    mock.setScrollHeight(2400);
+    mock.setScrollTop(200);
+    preactRender(
+      h(Harness, { ...baseProps, messages: [{ id: 0 }, { id: 1 }], isLoadingMore: false, isStreaming: false }),
+      mountPoint,
+    );
+    await flush();
+
+    expect(mock.el.scrollTop).toBe(250);
+    expect(mock.el.style.overflowAnchor).toBe("auto");
+    expect(scrollPreservationRef.current).toBeNull();
+  });
 });

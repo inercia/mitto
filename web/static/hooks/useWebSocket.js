@@ -11,6 +11,7 @@ import {
   ROLE_ERROR,
   ROLE_SYSTEM,
   INITIAL_EVENTS_LIMIT,
+  MAX_MESSAGES,
   convertEventsToMessages,
   limitMessages,
   mergeMessagesWithSync,
@@ -200,6 +201,8 @@ export function useWebSocket({
   // See https://agentclientprotocol.com/protocol/session-config-options
 
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
+  const historyRequestsRef = useRef(new Set());
+  const historyRequestTimeoutsRef = useRef({});
   const sessionUpdateSchedulerRef = useRef(null);
   if (sessionUpdateSchedulerRef.current === null) {
     sessionUpdateSchedulerRef.current = createSessionUpdateScheduler({
@@ -482,6 +485,7 @@ export function useWebSocket({
     hasMoreMessages,
     isLoadingMore,
     hasReachedLimit,
+    historyBatchResult,
   } = useWSSessionSelectors(activeSession);
 
   // Action buttons for active session (extracted to useWSActionButtons sub-hook, mitto-90f.5)
@@ -1575,6 +1579,18 @@ export function useWebSocket({
         const maxSeq = msg.data.max_seq || lastSeq; // Use max_seq if available, fallback to lastSeq
         const isPrompting = msg.data.is_prompting || false;
         const totalCount = msg.data.total_count || 0;
+        const historyBatchResult = isPrepend ? {
+          rawEventCount: events.length,
+          responseBytes: new TextEncoder().encode(JSON.stringify(msg.data)).length,
+          firstSeq,
+          lastSeq,
+          hasMore,
+        } : null;
+        if (isPrepend) {
+          historyRequestsRef.current.delete(sessionId);
+          clearTimeout(historyRequestTimeoutsRef.current[sessionId]);
+          delete historyRequestTimeoutsRef.current[sessionId];
+        }
 
         // Check if client has stale state: client's max seq > server's max_seq
         // This happens when mobile client reconnects after being in background with
@@ -1711,6 +1727,7 @@ export function useWebSocket({
               !isPrepend && (session.messages.length === 0 || isStaleClient),
             // Clear loading state when prepend (load more) completes
             isLoadingMore: isPrepend ? false : session.isLoadingMore,
+            historyBatchResult: isPrepend ? historyBatchResult : session.historyBatchResult,
           };
 
           const newState = {
@@ -4203,11 +4220,22 @@ export function useWebSocket({
       return;
     }
 
+    // Stop before requesting a page that cannot be retained. Keeping the cursor
+    // unchanged avoids skipping older events when limitMessages applies the cap.
+    if ((session.messages?.length || 0) + INITIAL_EVENTS_LIMIT > MAX_MESSAGES) {
+      setSessions((prev) => ({
+        ...prev,
+        [sessionId]: { ...prev[sessionId], hasMoreMessages: false, historyStopReason: "message_cap" },
+      }));
+      return;
+    }
+
     // Prevent duplicate requests if already loading
     if (session.isLoadingMore) {
       console.log(`Already loading more messages for ${sessionId}, skipping`);
       return;
     }
+    if (historyRequestsRef.current.has(sessionId)) return;
 
     // Get the WebSocket for this session
     const ws = sessionWsRefs.current[sessionId];
@@ -4233,13 +4261,42 @@ export function useWebSocket({
     console.log(
       `Loading more messages for ${sessionId} before seq ${session.firstLoadedSeq}`,
     );
-    ws.send({
-      type: "load_events",
-      data: {
-        limit: INITIAL_EVENTS_LIMIT,
-        before_seq: session.firstLoadedSeq,
-      },
-    });
+    historyRequestsRef.current.add(sessionId);
+    try {
+      ws.send({
+        type: "load_events",
+        data: {
+          limit: INITIAL_EVENTS_LIMIT,
+          before_seq: session.firstLoadedSeq,
+        },
+      });
+      historyRequestTimeoutsRef.current[sessionId] = setTimeout(() => {
+        historyRequestsRef.current.delete(sessionId);
+        delete historyRequestTimeoutsRef.current[sessionId];
+        setSessions((prev) => {
+          const current = prev[sessionId];
+          if (!current) return prev;
+          const next = {
+            ...prev,
+            [sessionId]: {
+              ...current,
+              isLoadingMore: false,
+              hasMoreMessages: false,
+              historyStopReason: "request_timeout",
+            },
+          };
+          sessionsRef.current = next;
+          return next;
+        });
+      }, 10000);
+    } catch (error) {
+      historyRequestsRef.current.delete(sessionId);
+      setSessions((prev) => ({
+        ...prev,
+        [sessionId]: { ...prev[sessionId], isLoadingMore: false, historyStopReason: "send_error" },
+      }));
+      console.error("Failed to request older history:", error);
+    }
     // The events_loaded handler will process the response and prepend messages
   }, []);
 
@@ -4781,6 +4838,7 @@ export function useWebSocket({
     isRunning,
     hasMoreMessages,
     hasReachedLimit,
+    historyBatchResult,
     isLoadingMore,
     actionButtons,
     sessionInfo,
