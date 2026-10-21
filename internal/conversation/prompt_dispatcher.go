@@ -1596,7 +1596,26 @@ func (p promptDispatcher) markPromptCompleteAndFlush(d promptDeps) (closed bool)
 	return false
 }
 
-// handlePromptSuccess handles the success path after a prompt completes without error.
+// promptCompletionError explains unsuccessful protocol completions, which can
+// arrive without a transport/RPC error or any assistant text. Do not infer a
+// provider-specific policy from a refusal: ACP supplies only the stop reason.
+func promptCompletionError(reason acp.StopReason) string {
+	switch reason {
+	case acp.StopReasonEndTurn, acp.StopReasonCancelled:
+		return ""
+	case acp.StopReasonRefusal:
+		return "The AI model refused to answer this request. The provider did not supply an explanation to Mitto. Try rephrasing your request or switching models."
+	case acp.StopReasonMaxTokens:
+		// The neutral backend seam combines token and per-turn request budgets.
+		return "The AI agent reached its token limit or per-turn request budget before completing your request. The response may be incomplete. Ask it to continue or split the task into smaller steps."
+	case acp.StopReasonMaxTurnRequests:
+		return "The AI agent reached its request limit for this turn before completing your request. Ask it to continue or split the task into smaller steps."
+	default:
+		return "The AI agent could not complete your request and did not provide a reason Mitto recognizes. Please try again, or switch models if the problem persists."
+	}
+}
+
+// handlePromptSuccess handles the completion path after a prompt returns without an RPC error.
 // It notifies observers, flushes pending config, dispatches the next queued message,
 // retries title generation, triggers follow-up analysis when appropriate, and applies
 // after-phase processors. Returns true when the session becomes idle (no queued message
@@ -1615,6 +1634,21 @@ func (p promptDispatcher) handlePromptSuccess(
 			"event_count", eventCount,
 			"observer_count", observerCount,
 			"stop_reason", promptResp.StopReason)
+	}
+	if errorMsg := promptCompletionError(promptResp.StopReason); errorMsg != "" {
+		// Persist even with no attached clients so reload/replay explains why
+		// the prompt ended. OnError delivers the same notice to live clients.
+		if d.pdHasRecorder() {
+			seq := d.pdGetNextSeq()
+			if err := d.pdRecordErrorEvent(seq, errorMsg); err != nil {
+				if l := d.pdLogger(); l != nil {
+					l.Error("Failed to persist prompt completion error", "error", err)
+				}
+			}
+			d.pdRefreshNextSeq()
+			eventCount = d.pdGetEventCount()
+		}
+		d.pdNotifyObservers(func(o SessionObserver) { o.OnError(errorMsg) })
 	}
 	d.pdNotifyObservers(func(o SessionObserver) {
 		o.OnPromptComplete(eventCount)
