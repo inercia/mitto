@@ -21,6 +21,21 @@ keywords:
 
 # Prompt System
 
+## Start work closure ownership
+
+`beads-issues/work` has independent `Commit` (default-on) and `ClosePolicy`
+(`Ask` default, `Leave open`, `Verify and close`) parameters. Forward both through
+every continuation/worker call and mirror loop arguments. `Ask` closes only on
+explicit Yes; timeout never closes. `Verify and close` uses the conditional
+`beads-issues/shared/acceptance-close` coordinator and the fresh, internal
+`Acceptance verification phase` (no reuse/singleton/loop). Only a complete current
+PASS tied to the exact child, attempt, ticket and content snapshot permits closure;
+errors, UNKNOWN and wait timeout leave open. Child workers delegate coordination
+to their parent because MCP forbids grandchildren; never bypass that restriction.
+Do not reap workers with pending verification or substitute terminal labels for
+acceptance. Orchestrators owning closure pass `Leave open`; post-task hooks are
+too late to enforce this gate. This is a prompt contract, not runtime enforcement.
+
 ## Architecture Overview
 
 Prompts are predefined text snippets shown in the ChatInput "Insert predefined prompt" menu. They come from multiple sources and are merged server-side into a single list per workspace.

@@ -23,8 +23,7 @@ func newRerunTestManager(procs ...*Processor) (*Manager, *[]ProcessorRun) {
 
 // TestRerunCadence_TokenOnlyProcessor_DoesNotRefireOnTimeOrMessagesAlone
 // pins the mitto-8n5 engine-level contract behind the YAML retune: a
-// match:first processor configured with ONLY afterTokens (the shape every
-// immutable-guidance builtin processor now uses) must NOT refire purely
+// match:first processor configured with ONLY afterTokens must NOT refire purely
 // because wall-clock time elapsed or many messages were sent — only actual
 // token consumption crossing the threshold may trigger a rerun.
 func TestRerunCadence_TokenOnlyProcessor_DoesNotRefireOnTimeOrMessagesAlone(t *testing.T) {

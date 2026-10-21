@@ -125,7 +125,6 @@ processors:
 | Processor              | Mode   | Purpose                             |
 | ---------------------- | ------ | ----------------------------------- |
 | `session-context`      | text   | Prepend session metadata            |
-| `check-mcp-tools`      | text   | Suggest MCP install if missing      |
 | `delegate-to-coder`    | text   | Delegate work to coder session      |
 | `beads-track-tasks`    | text   | Remind agent to track tasks in `bd` |
 | `auggie-manage-rules`  | prompt | Generate/update `.augment/rules/`   |

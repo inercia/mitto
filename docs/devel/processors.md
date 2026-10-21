@@ -800,8 +800,8 @@ loop, wrapped in an explicit XML delimiter:
 ```
 
 **Rationale:** Without labeling, the trailing wall of reminder/instruction text appended by
-processors such as `beads-track-tasks`, `delegate-to-coder`, and
-`check-mcp-tools` can be misread as a new task request rather than standing guidance. The
+processors such as `beads-track-tasks` and `delegate-to-coder` can be misread as a new task
+request rather than standing guidance. The
 `<mitto_system_notes>` tag makes the boundary unambiguous.
 
 **What is wrapped and what is not:**

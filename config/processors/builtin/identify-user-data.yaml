@@ -35,31 +35,45 @@ onError: skip
 enabledWhen: 'Workspace.HasUserDataSchema && !Session.IsLoop && Workspace.MissingUserDataFieldCount > 0'
 
 prompt: |
-  You are a metadata extractor. Your job is to analyze the conversation messages below
+  You are a metadata extractor for this project.
+  Your job is to analyze the conversation messages below
   and identify values for the workspace's user data fields.
 
   ## Session Info
 
+  [[ if .Session.ID ]]
   Session ID: {{ .Session.ID }}
+  {{ end }}
+  [[ if .Workspace.Folder ]]
   Working Directory: {{ .Workspace.Folder }}
+  {{ end }}
 
   ## User Data Schema
 
+  {{ if   .Workspace.UserDataSchemaJSON }}
   The workspace defines these user data fields. Each field has a name, description,
   and type. Use the **description** to understand what kind of value to look for:
 
   ```json
   {{ .Workspace.UserDataSchemaJSON }}
   ```
+  {{ else }}
+  The workspace does not define any user data fields.
+  {{ end }}
+
 
   ## Current User Data
 
+  {{ if .Session.UserDataJSON }}
   These values are already set for this conversation (may be empty if nothing has been
   identified yet):
 
   ```json
   {{ .Session.UserDataJSON }}
   ```
+  {{ else }}
+  No user data has been set for this conversation yet.
+  {{ end }}
 
   ## Your Task
 

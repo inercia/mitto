@@ -5,14 +5,12 @@
 # the agent to use mitto_ui_options, mitto_ui_textbox, mitto_ui_form, and
 # mitto_ui_notify instead of asking the user to type responses manually.
 #
-# Throttling (retuned mitto-8n5):
-#   - Fires on the first message, then re-runs only after enough token budget
-#     (afterTokens) has been consumed. This guidance is immutable static
-#     text — a fixed 30-minute/20-message cadence was reinjecting it while
-#     still retained in context. Token consumption correlates with actual
-#     context turnover, unlike wall-clock time or message count; a genuine
-#     fresh-context event (session resume/compaction) already refires
-#     match:first processors naturally via IsFirstMessage.
+# Cadence: once per fresh context (mitto-1oa).
+# Supersedes the token-based rerun policy from mitto-8n5.
+# Token usage does not prove context loss: repeated processing of retained
+# history can exhaust a token budget on every turn. Rely on IsFirstMessage
+# for initial injection and verified upstream context loss; retained resumes
+# must not reinject this static guidance.
 #
 # Uses text-mode (no external command).
 ##########################################################################################
@@ -23,8 +21,6 @@ enabledWhen: 'Tools.HasPattern("mitto_ui_*")'
 when:
   on: userPrompt
   match: first
-  rerun:
-    afterTokens: 15000
 mutate: append
 priority: 92
 
