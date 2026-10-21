@@ -279,8 +279,11 @@ func (f *fakeHandshakeDeps) hsGetACPClient() *WebClient  { return f.acpClient }
 
 func (f *fakeHandshakeDeps) hsSetAgentSupportsImages(v bool) { f.agentImages = v }
 
-func (f *fakeHandshakeDeps) hsGetACPID() string   { return f.acpID }
-func (f *fakeHandshakeDeps) hsSetACPID(id string) { f.acpID = id }
+func (f *fakeHandshakeDeps) hsGetACPID() string          { return f.acpID }
+func (f *fakeHandshakeDeps) hsSetACPID(id string) uint64 { f.acpID = id; return 0 }
+func (f *fakeHandshakeDeps) hsChildSessionUpdateCallback(_ *WebClient, _ string, _ uint64) func(context.Context, ChildSessionUpdate) error {
+	return nil
+}
 
 func (f *fakeHandshakeDeps) hsMarkContextFresh()   { f.markFreshCalls++ }
 func (f *fakeHandshakeDeps) hsMarkContextUnknown() { f.markUnknownCalls++ }

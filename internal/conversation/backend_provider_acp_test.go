@@ -1302,3 +1302,27 @@ func TestMCPCallerSessionCapability_mitto4hd(t *testing.T) {
 		t.Fatalf("existing nil-caps behavior changed: %v", got)
 	}
 }
+
+func TestMCPChildSessionUpdatesCapability(t *testing.T) {
+	key := agentbackend.OpenCodeChildSessionUpdatesMetaKey
+	cases := []struct {
+		name, agent, version string
+		meta                 map[string]any
+		want                 agentbackend.CapabilityState
+	}{
+		{"advertised OpenCode 2", "OpenCode", "2.0.23", map[string]any{key: true}, agentbackend.CapabilitySupported},
+		{"not advertised", "OpenCode", "2.0.23", nil, agentbackend.CapabilityUnsupported},
+		{"explicitly disabled", "OpenCode", "2.0.23", map[string]any{key: false}, agentbackend.CapabilityUnsupported},
+		{"OpenCode 1", "OpenCode", "1.9.0", map[string]any{key: true}, agentbackend.CapabilityUnsupported},
+		{"other agent", "Other", "2.0.0", map[string]any{key: true}, agentbackend.CapabilityUnsupported},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := &acp.AgentCapabilities{Meta: tc.meta}
+			got := NewProcessCapabilitiesWithAgentInfo(caps, tc.agent, tc.version).Query(agentbackend.FeatureMCPChildSessionUpdates)
+			if got != tc.want {
+				t.Fatalf("Query(FeatureMCPChildSessionUpdates) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

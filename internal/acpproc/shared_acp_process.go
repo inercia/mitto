@@ -1099,13 +1099,8 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 	initStart := time.Now()
 	initResp, err := p.conn.Initialize(initCtx, acp.InitializeRequest{
-		ProtocolVersion: acp.ProtocolVersionNumber,
-		ClientCapabilities: acp.ClientCapabilities{
-			Fs: acp.FileSystemCapabilities{
-				ReadTextFile:  true,
-				WriteTextFile: true,
-			},
-		},
+		ProtocolVersion:    acp.ProtocolVersionNumber,
+		ClientCapabilities: sharedACPClientCapabilities(p.config.ACPServer),
 		ClientInfo: &acp.Implementation{
 			Name:    "mitto",
 			Title:   strPtr("Mitto"),
@@ -1213,6 +1208,23 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	}
 
 	return "", nil
+}
+
+func sharedACPClientCapabilities(acpServer string) acp.ClientCapabilities {
+	caps := acp.ClientCapabilities{
+		Fs: acp.FileSystemCapabilities{
+			ReadTextFile:  true,
+			WriteTextFile: true,
+		},
+	}
+	// Initialize is the only opportunity to opt into OpenCode's child update
+	// extension. The configured ACP id is known before the agent handshake;
+	// runtime handling is additionally gated on OpenCode's AgentInfo and its
+	// advertised capability response.
+	if acpServer == "opencode" {
+		caps.Meta = map[string]any{agentbackend.OpenCodeChildSessionUpdatesMetaKey: true}
+	}
+	return caps
 }
 
 // saturationCooldownForLevel returns the escalating cooldown duration for the given

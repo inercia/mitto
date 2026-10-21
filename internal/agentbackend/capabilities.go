@@ -55,7 +55,14 @@ const (
 	// FeatureMCPCallerSession reports whether the agent attaches the calling
 	// ACP session ID to every MCP tool call (OpenCode >= 2, mitto-4hd).
 	FeatureMCPCallerSession Feature = "mcp_caller_session"
+	// FeatureMCPChildSessionUpdates reports whether shared OpenCode exposes the
+	// authenticated child-session lifecycle extension used by mitto-cz6.
+	FeatureMCPChildSessionUpdates Feature = "mcp_child_session_updates"
 )
+
+// OpenCodeChildSessionUpdatesMetaKey is the ACP _meta capability negotiated
+// by OpenCode for background-capable child session notifications.
+const OpenCodeChildSessionUpdatesMetaKey = "opencode/child-session-updates"
 
 // Capabilities reports the current capability state for each known feature
 // of a session or host. Implementations must return CapabilityUnknown rather

@@ -116,7 +116,8 @@ type handshakeDeps interface {
 
 	// ACP session ID
 	hsGetACPID() string
-	hsSetACPID(id string)
+	hsSetACPID(id string) uint64
+	hsChildSessionUpdateCallback(client *WebClient, rootID string, generation uint64) func(context.Context, ChildSessionUpdate) error
 
 	// ACP context virginity tracking (mitto-s9g2). hsMarkContextFresh is called
 	// only when the ACP session was created fresh (session/new) in this process;
@@ -336,9 +337,11 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 		Provider:        agentbackend.ProviderID(d.hsACPServer()),
 		ProviderSession: agentbackend.ProviderSessionID(handle.SessionID),
 	}
-	d.hsGetSharedProcess().RegisterSession(handle.SessionID, buildNeutralSessionCallbacks(client, ref))
-
-	d.hsSetACPID(handle.SessionID)
+	generation := d.hsSetACPID(handle.SessionID)
+	callbacks := buildNeutralSessionCallbacks(
+		client, ref, d.hsChildSessionUpdateCallback(client, handle.SessionID, generation),
+	)
+	d.hsGetSharedProcess().RegisterSession(handle.SessionID, callbacks)
 	// Deferred session/new: this session was created fresh in this process,
 	// so it is provably empty (mitto-s9g2).
 	d.hsMarkContextFresh()
@@ -694,9 +697,11 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		Provider:        agentbackend.ProviderID(d.hsACPServer()),
 		ProviderSession: agentbackend.ProviderSessionID(handle.SessionID),
 	}
-	sharedProcess.RegisterSession(handle.SessionID, buildNeutralSessionCallbacks(client, ref))
-
-	d.hsSetACPID(handle.SessionID)
+	generation := d.hsSetACPID(handle.SessionID)
+	callbacks := buildNeutralSessionCallbacks(
+		client, ref, d.hsChildSessionUpdateCallback(client, handle.SessionID, generation),
+	)
+	sharedProcess.RegisterSession(handle.SessionID, callbacks)
 	d.hsSetAgentSupportsImages(supportsImages)
 	d.hsApplySessionModes(handle.Modes)
 	d.hsApplyAgentModels(handle.Models)

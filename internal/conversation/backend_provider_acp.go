@@ -578,9 +578,15 @@ func NewProcessCapabilities(caps *acp.AgentCapabilities) agentbackend.Capabiliti
 }
 
 func (c *acpProcessCapabilities) Query(feature agentbackend.Feature) agentbackend.CapabilityState {
-	if feature == agentbackend.FeatureMCPCallerSession {
-		if major, ok := parseMajorVersion(c.agentVersion); ok && c.agentName == "OpenCode" && major >= 2 {
+	if feature == agentbackend.FeatureMCPCallerSession || feature == agentbackend.FeatureMCPChildSessionUpdates {
+		major, ok := parseMajorVersion(c.agentVersion)
+		if ok && c.agentName == "OpenCode" && major >= 2 && feature == agentbackend.FeatureMCPCallerSession {
 			return agentbackend.CapabilitySupported
+		}
+		if ok && c.agentName == "OpenCode" && major >= 2 && feature == agentbackend.FeatureMCPChildSessionUpdates && c.caps != nil {
+			if supported, ok := c.caps.Meta[agentbackend.OpenCodeChildSessionUpdatesMetaKey].(bool); ok && supported {
+				return agentbackend.CapabilitySupported
+			}
 		}
 		return agentbackend.CapabilityUnsupported
 	}

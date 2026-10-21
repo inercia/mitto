@@ -18,9 +18,10 @@ import (
 func TestBuildNeutralSessionCallbacks_AllHooksPopulated(t *testing.T) {
 	client := NewWebClient(WebClientConfig{})
 	defer client.Close()
-	cb := buildNeutralSessionCallbacks(client, agentbackend.SessionRef{})
+	childUpdate := func(context.Context, ChildSessionUpdate) error { return nil }
+	cb := buildNeutralSessionCallbacks(client, agentbackend.SessionRef{}, childUpdate)
 
-	if cb.OnSessionUpdate == nil || cb.OnReadTextFile == nil || cb.OnWriteTextFile == nil ||
+	if cb.OnSessionUpdate == nil || cb.OnChildSessionUpdate == nil || cb.OnReadTextFile == nil || cb.OnWriteTextFile == nil ||
 		cb.OnRequestPermission == nil || cb.OnCreateTerminal == nil || cb.OnTerminalOutput == nil ||
 		cb.OnReleaseTerminal == nil || cb.OnWaitForTerminalExit == nil || cb.OnKillTerminal == nil {
 		t.Fatalf("expected every SessionCallbacks hook populated, got %+v", cb)

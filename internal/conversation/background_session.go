@@ -2290,17 +2290,59 @@ func (bs *BackgroundSession) sharedCallerSessionSupported() bool {
 
 // setACPSessionID assigns the ACP session id and binds it to this
 // conversation on the global MCP server for shared-transport identity.
-func (bs *BackgroundSession) setACPSessionID(id string) {
+func (bs *BackgroundSession) setACPSessionID(id string) uint64 {
 	bs.acpID = id
 	if bs.globalMcpServer == nil || bs.persistedID == "" {
-		return
+		return 0
 	}
 	if id == "" {
 		bs.globalMcpServer.UnbindACPSession(bs.persistedID)
-		return
+		return 0
+	}
+	if bs.sharedChildSessionUpdatesSupported() {
+		generation, ok := bs.globalMcpServer.BindACPRootGeneration(bs.persistedID, id)
+		if !ok && bs.logger != nil {
+			bs.logger.Warn("Failed to bind ACP root generation for child MCP identity", "session_id", bs.persistedID)
+		}
+		if ok {
+			return generation
+		}
+		return 0
 	}
 	if !bs.globalMcpServer.BindACPSession(bs.persistedID, id) && bs.logger != nil {
 		bs.logger.Warn("Failed to bind ACP session id for MCP identity", "session_id", bs.persistedID)
+	}
+	return 0
+}
+
+func (bs *BackgroundSession) sharedChildSessionUpdatesSupported() bool {
+	if bs.sharedProcess == nil {
+		return false
+	}
+	caps := bs.sharedProcess.Capabilities()
+	return caps != nil && caps.Query(agentbackend.FeatureMCPChildSessionUpdates) == agentbackend.CapabilitySupported
+}
+
+func (bs *BackgroundSession) childSessionUpdateCallback(client *WebClient, rootID string, generation uint64) func(context.Context, ChildSessionUpdate) error {
+	if client == nil || bs.globalMcpServer == nil || bs.persistedID == "" || rootID == "" || generation == 0 {
+		return nil
+	}
+	return func(ctx context.Context, update ChildSessionUpdate) error {
+		admitted := bs.globalMcpServer.ApplyACPChildStatus(bs.persistedID, generation, mcpserver.ACPChildStatus{
+			RootSessionID:   string(update.RootSessionID),
+			ChildSessionID:  string(update.ChildSessionID),
+			ParentSessionID: string(update.ParentSessionID),
+			Depth:           update.Depth,
+			Type:            update.Type,
+			Status:          update.Status,
+		})
+		if !admitted || update.Type != "update" || update.Update == nil {
+			return nil
+		}
+		return client.SessionUpdate(ctx, acp.SessionNotification{
+			SessionId: update.RootSessionID,
+			Update:    *update.Update,
+		})
 	}
 }
 

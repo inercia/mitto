@@ -22,10 +22,11 @@ import (
 // buildNeutralSessionCallbacks returns the SessionCallbacks for ref, routing
 // fs/permission/terminal requests through the neutral ClientServices/
 // TerminalServices contracts implemented by webClientNeutralServices.
-func buildNeutralSessionCallbacks(client *WebClient, ref agentbackend.SessionRef) *SessionCallbacks {
+func buildNeutralSessionCallbacks(client *WebClient, ref agentbackend.SessionRef, onChildSessionUpdate func(context.Context, ChildSessionUpdate) error) *SessionCallbacks {
 	svc := &webClientNeutralServices{client: client}
 	return &SessionCallbacks{
 		OnSessionUpdate:       client.SessionUpdate,
+		OnChildSessionUpdate:  onChildSessionUpdate,
 		OnReadTextFile:        onReadTextFileNeutral(client, svc, ref),
 		OnWriteTextFile:       onWriteTextFileNeutral(client, svc, ref),
 		OnRequestPermission:   onRequestPermissionNeutral(client, svc, ref),

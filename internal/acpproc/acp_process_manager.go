@@ -1536,7 +1536,7 @@ func (m *ACPProcessManager) runProcessQuiescenceWait(workspaceUUID string, wait 
 
 // isProactiveBailPurpose reports whether an auxiliary purpose is subject to the
 // proactive ActiveRPCs()-based load-shed (mitto-9gt). Background pre-warming and
-// analysis purposes (title-gen, follow-up, keepalive, mcp-check, mcp-tools,
+// analysis purposes (title-gen, follow-up, keepalive, mcp-tools,
 // queue-title) return true: no user is actively waiting on their result, so
 // bailing costs nothing except a deferred retry. User-triggered purposes where a
 // human clicked "improve prompt" and is watching (improve-prompt) return false —
@@ -1721,7 +1721,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// work; issuing a session/new here would pile another cold-init request
 	// onto an agent that is already struggling to initialise its MCP servers,
 	// amplifying the wedge and starving the user's foreground session.
-	// Fail fast with a clear sentinel so callers (title-gen, mcp-check, etc.)
+	// Fail fast with a clear sentinel so callers (title-gen, mcp-tools, etc.)
 	// can back off and retry once the process has recovered.
 	if process.IsSaturated() {
 		if m.logger != nil {
@@ -2295,7 +2295,7 @@ func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.L
 //
 // mitto-cgc: creation is single-worker + priority-ordered + time-staggered.
 // The scheduler comes from config.PrewarmConfig.AuxPrewarmSchedule() which
-// returns entries in nondecreasing Delay order (tier-0 mcp-check/mcp-tools
+// returns entries in nondecreasing Delay order (tier-0 mcp-tools
 // first, then tier-1 title-gen, then tier-2 follow-up by default). Only ONE
 // session/new is ever in flight — this replaces the earlier parallel
 // sync.WaitGroup burst that aggravated the auggie cold-init fork-burst wedge
@@ -2310,9 +2310,8 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 	schedule := pc.AuxPrewarmSchedule(forking)
 
 	// Reference the auxiliary.Purpose* constants so a rename of any of the
-	// four hardcoded purpose strings in internal/config/settings.go is caught
+	// three hardcoded purpose strings in internal/config/settings.go is caught
 	// at compile time here. Not otherwise used at runtime.
-	_ = auxiliary.PurposeMCPCheck
 	_ = auxiliary.PurposeMCPTools
 	_ = auxiliary.PurposeTitleGen
 	_ = auxiliary.PurposeFollowUp
