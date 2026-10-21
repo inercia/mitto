@@ -8,6 +8,55 @@ const projectRoot = path.resolve(
 );
 
 test.describe("Conversation composer focus", () => {
+  test("clicking conversation whitespace returns focus to the composer", async ({
+    page,
+    helpers,
+  }) => {
+    await helpers.navigateAndEnsureSession(page);
+    const composer = page.locator(".chat-input-textarea");
+    const conversation = page.locator(".messages-container-reverse");
+    await expect(composer).toBeFocused();
+
+    await conversation.click({ position: { x: 5, y: 5 } });
+    await expect(composer).toBeFocused();
+
+    await conversation.evaluate((el) => {
+      const text = document.createElement("p");
+      text.textContent = "Conversation text";
+      text.dataset.testid = "focus-test-text";
+      el.append(text);
+    });
+    await page.getByTestId("focus-test-text").click();
+    await expect(composer).toBeFocused();
+
+    // A message link owns its focus; the container click handler must not steal it.
+    await conversation.evaluate((el) => {
+      const link = document.createElement("a");
+      link.href = "#";
+      link.textContent = "Message link";
+      link.dataset.testid = "focus-test-link";
+      link.addEventListener("click", (event) => event.preventDefault());
+      el.append(link);
+    });
+    const link = page.getByTestId("focus-test-link");
+    await link.click();
+    await expect(link).toBeFocused();
+
+    await page.getByTestId("focus-test-text").evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      (el as HTMLElement).click();
+    });
+    await expect(link).toBeFocused();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await composer.evaluate((el) => (el as HTMLElement).blur());
+    await conversation.click({ position: { x: 5, y: 5 } });
+    await expect(composer).not.toBeFocused();
+  });
+
   test("expanding another project focuses its remembered conversation on desktop", async ({
     page,
     request,
@@ -195,5 +244,42 @@ test.describe("Conversation composer focus", () => {
       .toBe(first);
     await expect(page.locator(".chat-input-textarea")).not.toBeFocused();
     await expect(dialog).toBeVisible();
+
+    await page.getByTestId("settings-close").click();
+    await expect(dialog).toBeHidden();
+    await expect(page.locator(".chat-input-textarea")).toBeFocused();
+
+    await page.locator('button[data-testid="settings-btn"]').first().click();
+    await expect(dialog).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTestId("settings-close").click();
+    await expect(dialog).toBeHidden();
+    await expect(page.locator(".chat-input-textarea")).not.toBeFocused();
+  });
+
+  test("side panel and workspaces dialog block composer focus", async ({
+    page,
+    helpers,
+  }) => {
+    await helpers.navigateAndEnsureSession(page);
+    const composer = page.locator(".chat-input-textarea");
+    const clickConversation = () =>
+      page
+        .locator(".messages-container-reverse")
+        .evaluate((el) => (el as HTMLElement).click());
+
+    await page.getByTestId("header-session-details").click();
+    await expect(page.getByTestId("session-panel")).toBeVisible();
+    await composer.evaluate((el) => (el as HTMLElement).blur());
+    await clickConversation();
+    await expect(composer).not.toBeFocused();
+
+    await page.getByTestId("session-panel-close").click();
+    await expect(page.getByTestId("session-panel")).toBeHidden();
+    await page.locator('button[data-testid="workspaces-btn"]').first().click();
+    await expect(page.getByTestId("workspaces-dialog")).toBeVisible();
+    await composer.evaluate((el) => (el as HTMLElement).blur());
+    await clickConversation();
+    await expect(composer).not.toBeFocused();
   });
 });

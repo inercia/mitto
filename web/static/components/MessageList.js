@@ -29,6 +29,7 @@ import { useWorkspaces } from "../hooks/useWorkspacesStore.js";
  *                                       ({ idleMs, toolTitle, receivedAt }) or null
  * @param {Function} onLoadMore
  * @param {Function} onScrollToBottom
+ * @param {Function} onConversationClick - return focus to the composer after non-interactive clicks
  * @param {boolean}  isUserAtBottom
  * @param {boolean}  hasNewMessages
  * @param {object}   sentinelRef       - ref forwarded to the IntersectionObserver sentinel
@@ -56,6 +57,7 @@ function MessageListImpl({
   agentWorking,
   onLoadMore,
   onScrollToBottom,
+  onConversationClick,
   isUserAtBottom,
   hasNewMessages,
   sentinelRef,
@@ -100,11 +102,13 @@ function MessageListImpl({
   const [workingNow, setWorkingNow] = useState(Date.now());
   const contentRef = useRef(null);
   useLayoutEffect(() => {
-    const container = messagesContainerRef?.current;
-    const content = contentRef.current;
-    if (container && content) {
+    const frame = requestAnimationFrame(() => {
+      const container = messagesContainerRef?.current;
+      const content = contentRef.current;
+      if (!container || !content || container.clientHeight <= 0) return;
       // Measure actual message rows instead of the flex wrapper's scrollHeight:
       // its min-height: 100% makes an empty/sparse panel look artificially full.
+      // Defer one frame so Preact's keyed inner wrapper and child rows are committed.
       const contentHeight = Array.from(content.querySelectorAll(".mitto-msg-row")).reduce(
         (total, row) => {
           const style = window.getComputedStyle(row);
@@ -120,7 +124,8 @@ function MessageListImpl({
         contentHeight,
         viewportHeight: container.clientHeight,
       });
-    }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [messages, activeSessionId, hasMoreMessages, isLoadingMore, onContentMeasured]);
   useVisibleInterval(() => setWorkingNow(Date.now()), 2000, {
     enabled: isStreaming && !!agentWorking,
@@ -252,6 +257,7 @@ function MessageListImpl({
       const msgEl = html`
         <${Message}
           key=${key}
+          historyKey=${key}
           message=${msg}
           isLast=${i === 0}
           isStreaming=${isStreaming}
@@ -275,6 +281,7 @@ function MessageListImpl({
       <!-- Messages (scrollable container with normal scroll) -->
       <div
         ref=${messagesContainerRef}
+        onClick=${onConversationClick}
         class="absolute inset-0 overflow-y-auto scroll-smooth p-4 messages-container-reverse"
       >
         ${

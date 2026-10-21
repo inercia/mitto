@@ -148,7 +148,7 @@ function MessageEnter(props) {
   const finalClass = className
     ? `message-enter mitto-msg-row ${className}`
     : "message-enter mitto-msg-row";
-  return html`<div ref=${ref} class=${finalClass}>${props.children}</div>`;
+  return html`<div ref=${ref} class=${finalClass} data-history-key=${props.historyKey}>${props.children}</div>`;
 }
 
 /**
@@ -184,7 +184,7 @@ function ProvenanceFooter({ provenanceInfo, testId }) {
  * When the prompt was sent with arguments (argumentCount > 0), a small numeric
  * badge is shown indicating how many arguments were substituted.
  */
-function NamedPromptPill({ message }) {
+function NamedPromptPill({ message, historyKey }) {
   const timeStr = formatMessageTime(message.timestamp);
   // Tooltip fallback chain: name=value pairs (when backend provided values) →
   // names only → numeric count. Values are already truncated/redacted upstream.
@@ -215,7 +215,7 @@ function NamedPromptPill({ message }) {
     .filter(Boolean)
     .join(" · ");
   return html`
-    <${MessageEnter} class="flex flex-col items-end gap-1 mb-3">
+    <${MessageEnter} historyKey=${historyKey} class="flex flex-col items-end gap-1 mb-3">
       <div class="flex items-center gap-2">
         ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
         <${Tooltip} tip=${pillTip}>
@@ -324,7 +324,7 @@ function AgentMessageBlock({ htmlContent }) {
  * ThoughtBubble component - renders a thought message with collapsible support.
  * Extracted into its own component so hooks are always called unconditionally.
  */
-function ThoughtBubble({ message, isLast, isStreaming }) {
+function ThoughtBubble({ message, isLast, isStreaming, historyKey }) {
   const [isCollapsed, setIsCollapsed] = useState(true);
   const showCursor = isLast && isStreaming && !message.complete;
   const linkedText = useMemo(() => linkifyUrls(message.text), [message.text]);
@@ -361,7 +361,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
     : "max-w-[85%] md:max-w-[75%] px-4 py-2 rounded-2xl rounded-bl-sm bg-mitto-surface-2 text-mitto-text-muted";
 
   return html`
-    <${MessageEnter} class="flex justify-start mb-3">
+    <${MessageEnter} historyKey=${historyKey} class="flex justify-start mb-3">
       <div
         class="${bubbleClass} ${isCollapsible
           ? "thought-bubble-collapsible"
@@ -414,6 +414,7 @@ function MessageImpl({
   onRetry,
   workspaceUUID,
   workspacePath,
+  historyKey,
 }) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
@@ -425,7 +426,7 @@ function MessageImpl({
   // System messages
   if (isSystem) {
     return html`
-      <${MessageEnter} class="flex justify-center mb-3">
+      <${MessageEnter} historyKey=${historyKey} class="flex justify-center mb-3">
         <div
           class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
@@ -547,7 +548,7 @@ function MessageImpl({
     };
 
     return html`
-      <${MessageEnter} class="flex justify-center mb-1">
+      <${MessageEnter} historyKey=${historyKey} class="flex justify-center mb-1">
         <div
           class="text-sm text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg"
         >
@@ -565,6 +566,7 @@ function MessageImpl({
       message=${message}
       isLast=${isLast}
       isStreaming=${isStreaming}
+      historyKey=${historyKey}
     />`;
   }
 
@@ -576,7 +578,7 @@ function MessageImpl({
       [message.text],
     );
     return html`
-      <${MessageEnter} class="flex justify-start mb-3">
+      <${MessageEnter} historyKey=${historyKey} class="flex justify-start mb-3">
         <div role="alert" class="alert alert-error max-w-[85%] md:max-w-[75%]">
           <span>❌</span>
           <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
@@ -613,7 +615,7 @@ function MessageImpl({
 
   // Named prompt pill — rendered before regular user message logic
   if (isUser && message.promptName) {
-    return html`<${NamedPromptPill} message=${message} />`;
+    return html`<${NamedPromptPill} message=${message} historyKey=${historyKey} />`;
   }
 
   // User message (Markdown or plain text with optional images)
@@ -694,7 +696,7 @@ function MessageImpl({
     // startup pulse). Absent for ordinary human-typed messages.
     const provenanceInfo = describeProvenance(message.provenance);
     return html`
-      <${MessageEnter} class="chat chat-end group mb-2">
+      <${MessageEnter} historyKey=${historyKey} class="chat chat-end group mb-2">
         <div
           class="chat-bubble bg-mitto-user text-mitto-user-text rounded-2xl before:hidden max-w-[95%] md:max-w-[75%]"
         >
@@ -778,7 +780,7 @@ function MessageImpl({
       ? formatMessageTime(message.timestamp)
       : null;
     return html`
-      <${MessageEnter} class="chat chat-start group mb-2">
+      <${MessageEnter} historyKey=${historyKey} class="chat chat-start group mb-2">
         <div
           class="chat-bubble bg-mitto-agent text-mitto-text rounded-2xl before:hidden max-w-[95%] md:max-w-[75%]"
         >
@@ -858,7 +860,8 @@ export function messagePropsAreEqual(prev, next) {
     prev.isStreaming === next.isStreaming &&
     prev.onRetry === next.onRetry &&
     prev.workspaceUUID === next.workspaceUUID &&
-    prev.workspacePath === next.workspacePath
+    prev.workspacePath === next.workspacePath &&
+    prev.historyKey === next.historyKey
   );
 }
 

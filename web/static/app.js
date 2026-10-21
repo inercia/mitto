@@ -297,6 +297,7 @@ function App() {
     agentWorking,
     isRunning,
     hasMoreMessages,
+    historyBatchResult,
     hasReachedLimit,
     isLoadingMore,
     actionButtons,
@@ -928,10 +929,19 @@ function App() {
     // When new messages are prepended, we'll restore the position relative to existing content
     const container = messagesContainerRef.current;
     if (container) {
+      const panelRect = container.getBoundingClientRect();
+      const anchor = Array.from(container.querySelectorAll(".mitto-msg-row")).find((row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > panelRect.top && rect.top < panelRect.bottom;
+      });
       scrollPreservationRef.current = {
         scrollHeight: container.scrollHeight,
         scrollTop: container.scrollTop,
+        historyKey: anchor?.dataset.historyKey,
+        anchorOffset: anchor ? anchor.getBoundingClientRect().top - panelRect.top : null,
+        overflowAnchor: container.style.overflowAnchor,
       };
+      container.style.overflowAnchor = "none";
       console.log(
         "[Scroll] Saved scroll metrics before load more:",
         scrollPreservationRef.current,
@@ -955,6 +965,9 @@ function App() {
       targetHeight: contentHeight + viewportHeight * 2,
       startedAt: Date.now(),
       requests: 0,
+      rawEvents: 0,
+      responseBytes: 0,
+      lastBatchResult: null,
       pending: true,
     };
     requestHistoryBatch(activeSessionId);
@@ -978,6 +991,9 @@ function App() {
         targetHeight: metrics.viewportHeight * 2,
         startedAt: Date.now(),
         requests: 0,
+        rawEvents: 0,
+        responseBytes: 0,
+        lastBatchResult: null,
         pending: false,
       };
       historyFillRef.current = operation;
@@ -988,9 +1004,16 @@ function App() {
     }
     if (operation.pending) operation.pending = false;
     else if (operation.requests > 0) return;
+    if (historyBatchResult?.prepend && operation.lastBatchResult !== historyBatchResult) {
+      operation.lastBatchResult = historyBatchResult;
+      operation.rawEvents += historyBatchResult.rawEventCount || 0;
+      operation.responseBytes += historyBatchResult.responseBytes || 0;
+    }
     if (
       metrics.contentHeight >= operation.targetHeight ||
       operation.requests >= 20 ||
+      operation.rawEvents >= 5000 ||
+      operation.responseBytes >= 4 * 1024 * 1024 ||
       Date.now() - operation.startedAt >= 10000
     ) {
       historyFillRef.current = null;
@@ -999,7 +1022,7 @@ function App() {
     operation.requests += 1;
     operation.pending = true;
     requestHistoryBatch(metrics.sessionId);
-  }, [hasMoreMessages, isLoadingMore, requestHistoryBatch]);
+  }, [hasMoreMessages, isLoadingMore, historyBatchResult, requestHistoryBatch]);
 
   // Infinite scroll for loading earlier messages
   // Uses IntersectionObserver to detect when user scrolls near the top
@@ -1406,6 +1429,43 @@ function App() {
     pending: false,
   });
 
+  const canFocusComposer = () =>
+    mainView === "conversation" &&
+    !!activeSessionId &&
+    !sessionInfo?.archived &&
+    !showSidePanel &&
+    !showPlanPanel &&
+    !beadsIssueOpen &&
+    !window.matchMedia?.("(max-width: 767.98px)").matches &&
+    !isModalDialogOpen() &&
+    !quickCreate.open &&
+    !settingsDialog.isOpen &&
+    !workspaceDialog.isOpen &&
+    !workspacesDialog.isOpen;
+
+  const handleScrollToBottomClick = () => {
+    scrollToBottom(true);
+    // The button takes focus on pointer click and disappears once scrolled.
+    // Return focus only when no other view or panel owns it.
+    if (canFocusComposer()) {
+      chatInputRef.current?.focus({ preventScroll: true });
+    }
+  };
+
+  const handleConversationClick = (event) => {
+    if (
+      !canFocusComposer() ||
+      event.defaultPrevented ||
+      window.getSelection()?.toString() ||
+      event.target.closest(
+        "a, button, input, textarea, select, summary, [contenteditable], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])",
+      )
+    ) {
+      return;
+    }
+    chatInputRef.current?.focus({ preventScroll: true });
+  };
+
   // All conversation navigation (sidebar, native swipes, shortcuts, notifications,
   // and new sessions) converges here. Wait until ChatInput has restored the new
   // session's draft before moving the caret. Never summon the mobile keyboard.
@@ -1422,13 +1482,7 @@ function App() {
     }
 
     const frame = requestAnimationFrame(() => {
-      if (
-        window.matchMedia?.("(max-width: 767.98px)").matches ||
-        isModalDialogOpen() ||
-        quickCreate.open ||
-        settingsDialog.isOpen ||
-        workspaceDialog.isOpen
-      ) {
+      if (!canFocusComposer()) {
         focusState.pending = false;
         return;
       }
@@ -1461,6 +1515,10 @@ function App() {
     quickCreate.open,
     settingsDialog.isOpen,
     workspaceDialog.isOpen,
+    workspacesDialog.isOpen,
+    showSidePanel,
+    showPlanPanel,
+    beadsIssueOpen,
   ]);
 
   // Expose global functions for native macOS menu integration
@@ -3650,12 +3708,15 @@ function App() {
           isOpen=${settingsDialog.isOpen}
           forceOpen=${settingsDialog.forceOpen}
           initialTab=${settingsDialog.initialTab}
-          onClose=${() =>
+          onClose=${() => {
+            // Modal restores its trigger; return to the composer after it unmounts.
+            composerFocusRef.current.pending = true;
             setSettingsDialog({
               isOpen: false,
               forceOpen: false,
               initialTab: null,
-            })}
+            });
+          }}
           showToast=${showToast}
           onSave=${async () => {
             // Refresh workspaces after saving
@@ -4074,7 +4135,8 @@ function App() {
                       agentWorking=${agentWorking}
                       onLoadMore=${handleLoadMore}
                       onContentMeasured=${handleHistoryContentMeasured}
-                      onScrollToBottom=${scrollToBottom}
+                      onScrollToBottom=${handleScrollToBottomClick}
+                      onConversationClick=${handleConversationClick}
                       isUserAtBottom=${isUserAtBottom}
                       hasNewMessages=${hasNewMessages}
                       sentinelRef=${sentinelRef}

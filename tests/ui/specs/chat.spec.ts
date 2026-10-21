@@ -713,7 +713,7 @@ test.describe("Scroll to Bottom Button", () => {
     const sendButton = page.locator(selectors.sendButton);
 
     // First, set a smaller viewport to ensure scrolling is needed
-    await page.setViewportSize({ width: 1280, height: 300 });
+    await page.setViewportSize({ width: 1280, height: 600 });
     await page.waitForTimeout(100);
 
     // Send messages to create scrollable content
@@ -728,33 +728,18 @@ test.describe("Scroll to Bottom Button", () => {
     // Wait for content to stabilize
     await page.waitForTimeout(500);
 
-    // Scroll to top and verify we have scrollable content
+    // Scroll to top and verify we have scrollable content.
     const scrollInfo = await page.evaluate(() => {
-      const containers = document.querySelectorAll(".overflow-y-auto");
-      for (const c of containers) {
-        if (c.querySelector(".message-enter")) {
-          const container = c as HTMLElement;
-          const maxScroll = container.scrollHeight - container.clientHeight;
-
-          // Scroll to top (visual top = older messages)
-          container.style.scrollBehavior = "auto";
-          container.scrollTop = 0;
-          container.dispatchEvent(new Event("scroll"));
-
-          return {
-            maxScroll,
-            isScrollable: maxScroll > 0,
-          };
-        }
-      }
-      return null;
+      const container = document.querySelector(
+        ".messages-container-reverse",
+      ) as HTMLElement;
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      container.style.scrollBehavior = "auto";
+      container.scrollTop = 0;
+      container.dispatchEvent(new Event("scroll"));
+      return maxScroll;
     });
-
-    // Skip test if content doesn't overflow (layout issue)
-    if (!scrollInfo?.isScrollable) {
-      console.log("Content does not overflow - skipping test");
-      return;
-    }
+    expect(scrollInfo).toBeGreaterThan(0);
 
     await page.waitForTimeout(500);
 
@@ -762,13 +747,10 @@ test.describe("Scroll to Bottom Button", () => {
     const scrollButton = page.locator(selectors.scrollToBottomButton);
     await expect(scrollButton).toBeVisible({ timeout: timeouts.shortAction });
 
-    // Click the button using JavaScript to ensure it fires the scroll action
-    await page.evaluate(() => {
-      const btn = document.querySelector(
-        ".scroll-to-bottom-btn",
-      ) as HTMLElement;
-      if (btn) btn.click();
-    });
+    // A real pointer click moves focus onto the button; the composer should
+    // regain focus without interrupting the scroll animation.
+    await scrollButton.click();
+    await expect(textarea).toBeFocused();
 
     // Wait for the smooth-scroll animation to complete.
     // scroll-smooth duration is variable under load, so poll until at bottom
@@ -777,19 +759,26 @@ test.describe("Scroll to Bottom Button", () => {
       .poll(
         async () => {
           return await page.evaluate(() => {
-            const containers = document.querySelectorAll(".overflow-y-auto");
-            for (const c of containers) {
-              if (c.querySelector(".message-enter")) {
-                const el = c as HTMLElement;
-                const maxScroll = el.scrollHeight - el.clientHeight;
-                return el.scrollTop >= maxScroll - 100;
-              }
-            }
-            return false;
+            const el = document.querySelector(
+              ".messages-container-reverse",
+            ) as HTMLElement;
+            const maxScroll = el.scrollHeight - el.clientHeight;
+            return el.scrollTop >= maxScroll - 100;
           });
         },
         { timeout: 10_000, intervals: [200, 300, 500, 500, 1000] },
       )
       .toBe(true);
+
+    // On mobile the same button scrolls without summoning the keyboard.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await textarea.evaluate((el) => (el as HTMLTextAreaElement).blur());
+    await page.locator(".messages-container-reverse").evaluate((el) => {
+      (el as HTMLElement).scrollTop = 0;
+      el.dispatchEvent(new Event("scroll"));
+    });
+    await expect(scrollButton).toBeVisible();
+    await scrollButton.click();
+    await expect(textarea).not.toBeFocused();
   });
 });
