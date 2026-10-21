@@ -264,21 +264,76 @@ describe("useWSQueue — fetchQueueMessages", () => {
     expect(getMessages("sess-C")).toEqual([]);
   });
 
-  test("unmount cleanup aborts the active read", async () => {
+  test("stale 404 responses across A→B and A→B→A do not invalidate the current selection", async () => {
+    const staleA = deferred();
+    const currentB = deferred();
+    const staleFirstA = deferred();
+    const currentSecondA = deferred();
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => staleA.promise)
+      .mockImplementationOnce(() => currentB.promise)
+      .mockImplementationOnce(() => staleFirstA.promise)
+      .mockImplementationOnce(() => currentSecondA.promise);
+    const onSessionMissing = jest.fn();
+    const { render } = await loadHook();
+
+    const firstA = render("sess-A", { onSessionMissing });
+    const staleAB = firstA.fetchQueueMessages();
+    const selectedB = render("sess-B", { onSessionMissing });
+    const currentBRead = selectedB.fetchQueueMessages();
+    staleA.resolve(jsonResponse({}, 404));
+    await staleAB;
+    expect(onSessionMissing).not.toHaveBeenCalled();
+
+    currentB.resolve(jsonResponse({ messages: [{ id: "B" }], count: 1 }));
+    await currentBRead;
+    expect(getMessages("sess-B")).toEqual([{ id: "B" }]);
+
+    const oldA = render("sess-A", { onSessionMissing });
+    const staleABA = oldA.fetchQueueMessages();
+    render("sess-B", { onSessionMissing });
+    const selectedAgainA = render("sess-A", { onSessionMissing });
+    const currentABARead = selectedAgainA.fetchQueueMessages();
+    staleFirstA.resolve(jsonResponse({}, 404));
+    await staleABA;
+    expect(onSessionMissing).not.toHaveBeenCalled();
+
+    currentSecondA.resolve(
+      jsonResponse({ messages: [{ id: "current-A" }], count: 1 }),
+    );
+    await currentABARead;
+    expect(getMessages("sess-A")).toEqual([{ id: "current-A" }]);
+    expect(onSessionMissing).not.toHaveBeenCalled();
+  });
+
+  test("unmount aborts the active read and ignores a late 404 without logging or store writes", async () => {
     const pendingResponse = deferred();
     let signal;
+    const onSessionMissing = jest.fn();
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
     global.fetch = jest.fn((_url, options) => {
       signal = options.signal;
       return pendingResponse.promise;
     });
     const { render, flushEffects, unmount } = await loadHook();
-    render("sess-1");
+    render(null, { onSessionMissing });
+    flushEffects();
+    render("sess-1", { onSessionMissing });
     flushEffects();
     await Promise.resolve();
     await Promise.resolve();
     expect(signal.aborted).toBe(false);
     unmount();
     expect(signal.aborted).toBe(true);
+    pendingResponse.resolve(jsonResponse({}, 404));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onSessionMissing).not.toHaveBeenCalled();
+    expect(getMessages("sess-1")).toEqual([]);
+    expect(getLength("sess-1")).toBe(0);
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
   });
 });
 

@@ -118,7 +118,7 @@ describe("useWebSocket.js: composer wiring onto eventsStreamRef (mitto-7gta.18 S
 
   test("the unmount cleanup effect closes the stream explicitly instead of clearing a reconnect timer + closing a raw socket", () => {
     expect(useWebSocketJs).toMatch(
-      /connectToEventsRef\.current\?\.\(\);\s*\n\s*return \(\) => \{\s*\n\s*if \(eventsStreamRef\.current\) eventsStreamRef\.current\.close\(\);/,
+      /connectToEventsRef\.current\?\.\(\);\s*\n\s*return \(\) => \{[\s\S]{0,700}?if \(eventsStreamRef\.current\) eventsStreamRef\.current\.close\(\);/,
     );
   });
 });
@@ -332,7 +332,7 @@ describe("useWebSocket.js: close() vs forceReconnect() semantics (mitto-7gta.30)
     const end = useWebSocketJs.indexOf("// Handle global events", start);
     const snippet = useWebSocketJs.slice(start, end);
     const activation = snippet.indexOf("setActiveSessionId(sessionId);");
-    const firstAwait = snippet.indexOf("const meta = await ");
+    const firstAwait = snippet.indexOf("await getSdkClient().sessions.get(");
 
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
