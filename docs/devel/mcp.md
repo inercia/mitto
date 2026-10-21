@@ -120,8 +120,27 @@ live Mitto conversation (`BindACPSession` at every ACP-ID assignment after
 authority: a different registered `self_id` is rejected, while placeholders
 (`init`, `self`) are replaced by the attested identity. Missing or unmapped
 metadata fails closed, with no protocol-session cache or legacy fallback.
-OpenCode child/subagent sessions are therefore not yet supported; mapping is
-tracked separately in mitto-cz6.
+OpenCode child/subagent sessions are supported when the shared process is
+configured with ACP server ID `opencode`, reports exact agent name `OpenCode`
+and version 2+, and advertises
+`_meta["opencode/child-session-updates"]`. During `initialize`, Mitto opts in
+only for that configured ACP ID. OpenCode then sends the ordered
+`opencode/session/child_update` lifecycle notification. Mitto admits caller
+identity only from a `created` event delivered on the authenticated root's ACP
+connection; nested children must link to an admitted parent. Child `update`
+payloads are already projected by OpenCode and are forwarded once through the
+root conversation's existing update/UI path. Children inherit the root's
+Mitto identity and permissions.
+
+Child identities are generation-bound and removed when their root is rebound,
+unbound, or unregistered; terminal children cannot call tools, while live
+nested descendants remain mapped. Unknown, stale, conflicting, malformed, or
+over-limit child IDs fail closed; there is no `self_id` or protocol-session
+cache fallback. The registry limits a root generation to 1024 child records,
+depth 32, and 256-byte IDs. A valid caller ID that arrives before its lifecycle
+admission may wait up to 250 ms, with at most 128 concurrent waiters. Agents
+that do not advertise this capability retain the existing fail-closed child
+behavior.
 
 ACP-ID map rules: rebinding a conversation drops its previous ID; an ID claimed
 by two conversations is quarantined and resolves to neither until all claimants
@@ -1352,103 +1371,13 @@ func (s *Server) handleMyNewTool(
 
 ## MCP Availability Checking
 
-Mitto can verify that its MCP tools are available in the user's ACP server (e.g.,
-Claude Desktop). This helps users discover and install the Mitto MCP server.
+The LLM-based Mitto MCP availability probe has been removed. Focusing or
+reloading a conversation no longer sends a separate availability-check prompt,
+and auxiliary prewarming no longer creates an `mcp-check` session.
 
-### How It Works
-
-- **Purpose constant**: `PurposeMCPCheck = "mcp-check"`
-- **Scope**: One auxiliary session per workspace, results cached
-- **Trigger**: User focuses or switches to a conversation (once per workspace per server session)
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Frontend
-    participant SessionManager
-    participant AuxiliaryManager
-    participant AuxiliarySession
-
-    User->>Frontend: Focus/switch to conversation
-    Frontend->>SessionManager: Check if MCP verified for workspace
-    alt Not checked yet
-        SessionManager->>AuxiliaryManager: CheckMCPAvailability(workspaceUUID, mcpServerURL)
-        AuxiliaryManager->>AuxiliarySession: Send check prompt
-        AuxiliarySession-->>AuxiliaryManager: JSON response
-        AuxiliaryManager->>SessionManager: Mark workspace as checked
-        alt Tools NOT available
-            SessionManager->>Frontend: WebSocket: mcp_tools_unavailable
-            Frontend->>User: Show installation modal
-        end
-    end
-```
-
-The auxiliary session asks the agent to check for `mitto_conversation_get_current`
-and respond with JSON indicating availability, an optional install command
-(`suggested_run`), and optional instructions (`suggested_instructions`, max 500 chars).
-
-### WebSocket Messages
-
-**`mcp_tools_unavailable`** (Server → Frontend) — sent when tools are not available:
-
-```json
-{
-  "type": "mcp_tools_unavailable",
-  "workspace_uuid": "...",
-  "suggested_run": "command",
-  "suggested_instructions": "instructions"
-}
-```
-
-**`run_mcp_install_command`** (Frontend → Server) — sent when user confirms install:
-
-```json
-{
-  "type": "run_mcp_install_command",
-  "command": "..."
-}
-```
-
-### UI Behavior
-
-| Scenario                      | UI                                                                            |
-| ----------------------------- | ----------------------------------------------------------------------------- |
-| `suggested_run` provided      | Modal with command in code block + "Yes, run command" / "No, dismiss" buttons |
-| Only `suggested_instructions` | Modal with instructions + "Dismiss" button                                    |
-| Neither provided              | Warning: "Mitto MCP tools are not available. Some features may not work."     |
-
-### Caching
-
-**Session-level** (`SessionManager.mcpCheckedWorkspaces`): Tracks which workspaces
-have been checked. Prevents repeated prompts during the same session. Cleared when
-user runs install command or session restarts.
-
-**Result-level** (`WorkspaceAuxiliaryManager.mcpCheckCache`): Stores actual check
-results. Prevents repeated auxiliary prompts. Cleared via
-`ClearMCPCheckCache(workspaceUUID)` or after running install command.
-
-### API
-
-```go
-// Check MCP availability (with caching)
-result, err := mgr.CheckMCPAvailability(ctx, workspaceUUID, mcpServerURL)
-mgr.ClearMCPCheckCache(workspaceUUID) // Force re-check
-
-// Session-level tracking
-sm.IsMCPChecked(workspaceUUID)    // Has workspace been checked?
-sm.MarkMCPChecked(workspaceUUID)  // Mark as checked
-sm.ClearMCPChecked(workspaceUUID) // Clear (after installation)
-```
-
-### Implementation Status
-
-| Status | Item                                                                   |
-| ------ | ---------------------------------------------------------------------- |
-| ✅     | Purpose constant, prompt template, `MCPAvailabilityResult` struct      |
-| ✅     | `CheckMCPAvailability()` with caching and JSON parsing                 |
-| ✅     | WebSocket message type definitions, SessionManager tracking            |
-| ⏳     | WebSocket integration (trigger on conversation focus)                  |
-| ⏳     | Command execution handler, frontend UI, cache clearing after execution |
+The legacy `prewarm.aux_schedule.mcp_check` setting is accepted for compatibility
+but ignored. MCP tool discovery, caching, and tool-list updates remain separate
+and unchanged; see [MCP Tool Discovery](mcp-tool-discovery.md).
 
 ---
 

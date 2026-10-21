@@ -36,7 +36,6 @@ const (
 	PurposeFollowUp      = "follow-up"
 	PurposeImprovePrompt = "improve-prompt"
 	PurposeQueueTitle    = "queue-title"
-	PurposeMCPCheck      = "mcp-check"
 	PurposeMCPTools      = "mcp-tools"
 
 	// PurposeKeepAlive is a warm keepalive auxiliary session held by the
@@ -57,24 +56,12 @@ type MCPToolInfo struct {
 	Description string `json:"description"`
 }
 
-// MCPAvailabilityResult represents the result of checking MCP tool availability.
-type MCPAvailabilityResult struct {
-	Available             bool   `json:"available"`
-	Message               string `json:"message,omitempty"`
-	SuggestedRun          string `json:"suggested_run,omitempty"`
-	SuggestedInstructions string `json:"suggested_instructions,omitempty"`
-}
-
 // WorkspaceAuxiliaryManager manages workspace-scoped auxiliary sessions.
 // It provides high-level operations (title generation, prompt improvement, etc.)
 // that delegate to the ProcessProvider for actual ACP session management.
 type WorkspaceAuxiliaryManager struct {
 	provider ProcessProvider
 	logger   *slog.Logger
-
-	// Cache for MCP availability checks per workspace
-	mcpCheckCache   map[string]*MCPAvailabilityResult
-	mcpCheckCacheMu sync.RWMutex
 
 	// Cache for MCP tools list per workspace
 	mcpToolsCache   map[string][]MCPToolInfo
@@ -168,7 +155,6 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 	return &WorkspaceAuxiliaryManager{
 		provider:           provider,
 		logger:             logger,
-		mcpCheckCache:      make(map[string]*MCPAvailabilityResult),
 		mcpToolsCache:      make(map[string][]MCPToolInfo),
 		mcpToolsNegatives:  make(map[string]map[string]int),
 		mcpBackoffActive:   make(map[string]bool),
@@ -343,76 +329,6 @@ func (m *WorkspaceAuxiliaryManager) AnalyzeFollowUpQuestions(ctx context.Context
 	}
 
 	return suggestions, nil
-}
-
-// CheckMCPAvailability checks if Mitto MCP tools are available in the workspace's ACP server.
-// Results are cached per workspace to avoid repeated checks.
-// The mcpServerURL parameter should be the URL where the MCP server is expected to be running.
-func (m *WorkspaceAuxiliaryManager) CheckMCPAvailability(ctx context.Context, workspaceUUID, mcpServerURL string) (*MCPAvailabilityResult, error) {
-	// Check cache first
-	m.mcpCheckCacheMu.RLock()
-	if cached, ok := m.mcpCheckCache[workspaceUUID]; ok {
-		m.mcpCheckCacheMu.RUnlock()
-		if m.logger != nil {
-			m.logger.Debug("mcp availability check: using cached result",
-				"workspace_uuid", workspaceUUID,
-				"available", cached.Available)
-		}
-		return cached, nil
-	}
-	m.mcpCheckCacheMu.RUnlock()
-
-	// Perform the check
-	if m.logger != nil {
-		m.logger.Debug("mcp availability check: starting",
-			"workspace_uuid", workspaceUUID,
-			"mcp_server_url", mcpServerURL)
-	}
-
-	prompt := fmt.Sprintf(CheckMCPAvailabilityPromptTemplate, mcpServerURL, mcpServerURL)
-
-	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPCheck, prompt)
-	if err != nil {
-		if m.logger != nil {
-			m.logger.Debug("mcp availability check: request failed",
-				"workspace_uuid", workspaceUUID,
-				"error", err.Error())
-		}
-		return nil, fmt.Errorf("failed to check MCP availability: %w", err)
-	}
-
-	if m.logger != nil {
-		m.logger.Debug("mcp availability check: received response",
-			"workspace_uuid", workspaceUUID,
-			"response_length", len(response),
-			"response", truncateForLog(response, 500))
-	}
-
-	// Parse JSON response
-	result, err := parseMCPAvailabilityResult(response)
-	if err != nil {
-		if m.logger != nil {
-			m.logger.Warn("mcp availability check: failed to parse response",
-				"workspace_uuid", workspaceUUID,
-				"error", err.Error(),
-				"response", truncateForLog(response, 200))
-		}
-		return nil, fmt.Errorf("failed to parse MCP availability response: %w", err)
-	}
-
-	// Cache the result
-	m.mcpCheckCacheMu.Lock()
-	m.mcpCheckCache[workspaceUUID] = result
-	m.mcpCheckCacheMu.Unlock()
-
-	if m.logger != nil {
-		m.logger.Info("MCP availability check completed",
-			"workspace_uuid", workspaceUUID,
-			"available", result.Available,
-			"message", result.Message)
-	}
-
-	return result, nil
 }
 
 // FetchMCPTools queries the agent for its list of available tools.
@@ -1348,19 +1264,6 @@ func (m *WorkspaceAuxiliaryManager) deletePersistedMCPTools(workspaceUUID string
 				"workspace_uuid", workspaceUUID,
 				"error", err.Error())
 		}
-	}
-}
-
-// ClearMCPCheckCache clears the cached MCP availability result for a workspace.
-// This can be used to force a re-check, for example after installing the MCP server.
-func (m *WorkspaceAuxiliaryManager) ClearMCPCheckCache(workspaceUUID string) {
-	m.mcpCheckCacheMu.Lock()
-	delete(m.mcpCheckCache, workspaceUUID)
-	m.mcpCheckCacheMu.Unlock()
-
-	if m.logger != nil {
-		m.logger.Debug("cleared MCP check cache",
-			"workspace_uuid", workspaceUUID)
 	}
 }
 

@@ -199,7 +199,7 @@ func TestParseMCPToolsList(t *testing.T) {
 // TestIsUpstreamQuotaExceeded_mitto_rqi1 reproduces mitto-rqi1: when the
 // upstream provider returns a successful (end_turn) assistant response whose
 // text is actually a usage-quota-exhaustion notice, the auxiliary parsers
-// (parseMCPToolsList, parseMCPAvailabilityResult, parseToolPatternsCheck) and
+// (parseMCPToolsList, parseToolPatternsCheck) and
 // workspace_manager.go's response handling have no way to distinguish this
 // from generic malformed JSON — they all emit a misleading
 // "invalid JSON response" WARN instead of an actionable quota diagnostic.

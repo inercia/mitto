@@ -65,7 +65,7 @@ Examples:
   mitto prompt --with-mcp-server "say hello"
 
   # Reproduce the auxiliary-session prewarm storm that a real cold start also
-  # incurs (title-gen, follow-up, mcp-check, mcp-tools sessions multiplexed
+  # incurs (title-gen, follow-up, mcp-tools sessions multiplexed
   # onto the same ACP process, single-worker + staggered per the production
   # AuxPrewarmSchedule). Runs concurrently with the main prompt:
   mitto prompt --with-aux "say hello"`,
@@ -86,7 +86,7 @@ func init() {
 		"Keep N concurrent MCP client sessions polling the in-process /mcp server during the prompt "+
 			"(load to reproduce the SSE-stall wedge; requires --with-mcp-server)")
 	promptCmd.Flags().BoolVar(&promptWithAux, "with-aux", false,
-		"Also create Mitto's auxiliary sessions (title-gen, follow-up, mcp-check, mcp-tools) on the "+
+		"Also create Mitto's auxiliary sessions (title-gen, follow-up, mcp-tools) on the "+
 			"same ACP process, single-worker + staggered per the production schedule, concurrently with "+
 			"the main prompt (reproduces the cold-start aux-session prewarm storm)")
 	promptCmd.Flags().BoolVar(&promptAuxFork, "aux-fork", false,
@@ -390,9 +390,6 @@ func auxPromptFor(purpose string) string {
 	case auxiliary.PurposeFollowUp:
 		return fmt.Sprintf(auxiliary.AnalyzeFollowUpQuestionsQueryTemplate,
 			"simulated user prompt", "simulated agent response")
-	case auxiliary.PurposeMCPCheck:
-		url := fmt.Sprintf("http://127.0.0.1:%d/mcp", promptMCPPort)
-		return fmt.Sprintf(auxiliary.CheckMCPAvailabilityPromptTemplate, url, url)
 	case auxiliary.PurposeMCPTools:
 		return auxiliary.FetchMCPToolsPromptTemplate
 	default:

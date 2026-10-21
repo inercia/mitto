@@ -474,6 +474,7 @@ type PrewarmConfig struct {
 // values fall back to the per-purpose defaults. Serialized creation guarantees
 // <=1 concurrent session/new regardless of these values.
 type AuxScheduleConfig struct {
+	// Deprecated: retained for settings compatibility; MCP availability probing was removed.
 	McpCheck string `json:"mcp_check,omitempty"`
 	McpTools string `json:"mcp_tools,omitempty"`
 	TitleGen string `json:"title_gen,omitempty"`
@@ -481,8 +482,8 @@ type AuxScheduleConfig struct {
 }
 
 // AuxPrewarmEntry is one scheduled auxiliary prewarm creation (mitto-cgc).
-// Purpose mirrors the string constants in internal/auxiliary (PurposeMCPCheck,
-// PurposeMCPTools, PurposeTitleGen, PurposeFollowUp); Delay is measured from
+// Purpose mirrors the string constants in internal/auxiliary (PurposeMCPTools,
+// PurposeTitleGen, PurposeFollowUp); Delay is measured from
 // the prewarm anchor (moment prewarmAuxiliarySessions starts).
 type AuxPrewarmEntry struct {
 	Purpose string
@@ -499,16 +500,14 @@ const (
 )
 
 // Auxiliary prewarm per-purpose delay defaults (mitto-cgc, widened in
-// mitto-7yj). Priority order is mcp-check/mcp-tools (tier 0) → title-gen
+// mitto-7yj). Priority order is mcp-tools (tier 0) → title-gen
 // (tier 1) → follow-up (tier 2).
 //
 // Two default sets exist:
 //
 //   - Multiplex agents (e.g. auggie): a single node process handles all ACP
 //     sessions, so aux session/new is cheap. The defaults are aggressive but
-//     no two aux purposes share the 0s slot — mcp-tools is nudged to 2s so
-//     the tier-0 pair does not start simultaneously (mitto-7yj rush-friendly
-//     stagger).
+//     mcp-tools starts at 2s (mitto-7yj rush-friendly stagger).
 //
 //   - Fork-per-session agents (e.g. Claude Code via @zed-industries/
 //     claude-agent-acp): each ACP session/new forks a fresh `claude` OS
@@ -517,7 +516,6 @@ const (
 //     spread so real user demand can preempt (mitto-7yj rush-on-demand).
 const (
 	// Multiplex (auggie) defaults.
-	DefaultAuxDelayMcpCheck = 0 * time.Second
 	DefaultAuxDelayMcpTools = 2 * time.Second
 	DefaultAuxDelayTitleGen = 8 * time.Second
 	DefaultAuxDelayFollowUp = 12 * time.Second
@@ -526,7 +524,6 @@ const (
 	// each cold `claude` fork does not pile onto the previous one, and so
 	// getOrCreateAuxiliarySession callers can rush the schedule for any
 	// purpose actually needed by user activity.
-	DefaultAuxDelayForkMcpCheck = 0 * time.Second
 	DefaultAuxDelayForkMcpTools = 8 * time.Second
 	DefaultAuxDelayForkTitleGen = 20 * time.Second
 	DefaultAuxDelayForkFollowUp = 35 * time.Second
@@ -537,7 +534,6 @@ const (
 // The acpproc consumer references the auxiliary.Purpose* constants directly
 // so any rename there is caught at compile time.
 const (
-	auxPurposeMcpCheck = "mcp-check"
 	auxPurposeMcpTools = "mcp-tools"
 	auxPurposeTitleGen = "title-gen"
 	auxPurposeFollowUp = "follow-up"
@@ -672,7 +668,7 @@ func parseAuxDelay(s string, def time.Duration) time.Duration {
 // AuxPrewarmSchedule returns the priority-ordered, staggered auxiliary prewarm
 // schedule with defaults applied (mitto-cgc). Nil-safe on the receiver. Entries
 // are returned in nondecreasing Delay order so a single worker can sleep-until
-// each offset. The ordering (mcp-check, mcp-tools, title-gen, follow-up) also
+// each offset. The ordering (mcp-tools, title-gen, follow-up) also
 // encodes tier priority: tier-0 purposes ship first so tool-gating is ready
 // before higher-tier auxiliaries compete for the shared ACP process.
 //
@@ -685,33 +681,28 @@ func (c *PrewarmConfig) AuxPrewarmSchedule(forkPerSession bool) []AuxPrewarmEntr
 	if c != nil {
 		sched = c.AuxSchedule
 	}
-	var mcpCheck, mcpTools, titleGen, followUp string
+	var mcpTools, titleGen, followUp string
 	if sched != nil {
-		mcpCheck = sched.McpCheck
 		mcpTools = sched.McpTools
 		titleGen = sched.TitleGen
 		followUp = sched.FollowUp
 	}
-	defMcpCheck := DefaultAuxDelayMcpCheck
 	defMcpTools := DefaultAuxDelayMcpTools
 	defTitleGen := DefaultAuxDelayTitleGen
 	defFollowUp := DefaultAuxDelayFollowUp
 	if forkPerSession {
-		defMcpCheck = DefaultAuxDelayForkMcpCheck
 		defMcpTools = DefaultAuxDelayForkMcpTools
 		defTitleGen = DefaultAuxDelayForkTitleGen
 		defFollowUp = DefaultAuxDelayForkFollowUp
 	}
 	entries := []AuxPrewarmEntry{
-		{Purpose: auxPurposeMcpCheck, Delay: parseAuxDelay(mcpCheck, defMcpCheck)},
 		{Purpose: auxPurposeMcpTools, Delay: parseAuxDelay(mcpTools, defMcpTools)},
 		{Purpose: auxPurposeTitleGen, Delay: parseAuxDelay(titleGen, defTitleGen)},
 		{Purpose: auxPurposeFollowUp, Delay: parseAuxDelay(followUp, defFollowUp)},
 	}
 	// Stable sort by Delay so the single-worker consumer can sleep-until each
 	// offset. sortAuxPrewarmByDelay (a stable insertion sort) preserves the tier
-	// ordering above when two purposes share the same delay (e.g. mcp-check and
-	// mcp-tools at 0s).
+	// ordering above when two purposes share the same delay.
 	sortAuxPrewarmByDelay(entries)
 	return entries
 }
@@ -720,7 +711,7 @@ func (c *PrewarmConfig) AuxPrewarmSchedule(forkPerSession bool) []AuxPrewarmEntr
 // Extracted so it can be unit-tested independently and to keep AuxPrewarmSchedule
 // small.
 func sortAuxPrewarmByDelay(entries []AuxPrewarmEntry) {
-	// Insertion sort is fine for the tiny fixed length (4). Keeps the file
+	// Insertion sort is fine for the tiny fixed length (3). Keeps the file
 	// free of a sort import that already exists elsewhere.
 	for i := 1; i < len(entries); i++ {
 		j := i

@@ -220,7 +220,7 @@ const upstreamQuotaExceededMarker = "exceeded your usage quota"
 // IsUpstreamQuotaExceeded reports whether response text is an upstream
 // usage-quota-exhaustion notice rather than a normal (JSON) agent response.
 // See mitto-rqi1: this predicate is the fix seam that lets
-// parseMCPToolsList, parseMCPAvailabilityResult, and parseToolPatternsCheck
+// parseMCPToolsList and parseToolPatternsCheck
 // (and, transitively, workspace_manager.go's callers) report an actionable
 // "upstream quota exceeded" outcome instead of a misleading
 // "invalid JSON response" one.
@@ -270,36 +270,6 @@ func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
 		return nil, "", fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
 	}
 	return obj.Tools, obj.Error, nil
-}
-
-// parseMCPAvailabilityResult parses the JSON response from the MCP availability check.
-// It handles cases where the response might have extra text around the JSON.
-func parseMCPAvailabilityResult(response string) (*MCPAvailabilityResult, error) {
-	response = strings.TrimSpace(response)
-	response = stripMarkdownFences(response)
-
-	if IsUpstreamQuotaExceeded(response) {
-		return nil, ErrUpstreamQuotaExceeded
-	}
-
-	// Try direct parsing first
-	var result MCPAvailabilityResult
-	if err := json.Unmarshal([]byte(response), &result); err == nil {
-		return &result, nil
-	}
-
-	// Try to find JSON object in the response
-	start := strings.Index(response, "{")
-	end := strings.LastIndex(response, "}")
-	if start >= 0 && end > start {
-		jsonStr := response[start : end+1]
-		if err := json.Unmarshal([]byte(jsonStr), &result); err == nil {
-			return &result, nil
-		}
-	}
-
-	// Parsing failed
-	return nil, fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
 }
 
 // requiredToolsCheckResponse represents the JSON response from the required tools check.

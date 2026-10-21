@@ -1693,16 +1693,9 @@ func (c *SessionWSClient) postLoadProcessing(result loadEventsResult) {
 			c.syncMissedEventsDuringRegistration(lastSeq)
 		}
 
-		// Trigger MCP availability check (once per workspace per server lifetime).
-		// This runs when a client focuses/switches to a conversation (load_events).
-		// The check is skipped if already done for this workspace (IsMCPChecked).
+		// Fetch MCP tools when a client focuses/switches to a conversation.
 		if bgSession != nil && c.server != nil && c.server.sessionManager != nil {
 			if workspaceUUID := bgSession.GetWorkspaceUUID(); workspaceUUID != "" {
-				if !c.server.sessionManager.IsMCPChecked(workspaceUUID) {
-					// Mark immediately to prevent concurrent checks for the same workspace.
-					c.server.sessionManager.MarkMCPChecked(workspaceUUID)
-					go c.triggerMCPAvailabilityCheck(workspaceUUID)
-				}
 				// Check if MCP tools have been fetched for this workspace
 				if !c.server.sessionManager.IsMCPToolsFetched(workspaceUUID) {
 					c.server.sessionManager.MarkMCPToolsFetched(workspaceUUID)
@@ -2050,76 +2043,6 @@ func (c *SessionWSClient) generateAndSetTitle(initialMessage, workspaceUUID stri
 			})
 		},
 	})
-}
-
-// triggerMCPAvailabilityCheck asynchronously checks if Mitto MCP tools are available
-// in the ACP server for the given workspace. Should be called in a goroutine.
-// Called at most once per workspace per server lifetime (enforced by IsMCPChecked/MarkMCPChecked).
-// If tools are not available, sends mcp_tools_unavailable to this client.
-func (c *SessionWSClient) triggerMCPAvailabilityCheck(workspaceUUID string) {
-	// Get MCP server URL from the running MCP server instance.
-	var mcpServerURL string
-	if c.server != nil && c.server.mcpServer != nil {
-		mcpServerURL = fmt.Sprintf("http://%s:%d/mcp",
-			c.server.mcpServer.Host(), c.server.mcpServer.Port())
-	}
-
-	// Get auxiliary manager for performing the check.
-	if c.server == nil || c.server.auxiliaryManager == nil {
-		if c.logger != nil {
-			c.logger.Debug("mcp availability check: no auxiliary manager available",
-				"workspace_uuid", workspaceUUID)
-		}
-		return
-	}
-	auxMgr := c.server.auxiliaryManager
-
-	// Use a long timeout — auxiliary session creation and the availability-check prompt
-	// can take several minutes depending on agent load. 30 minutes covers worst-case scenarios.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
-	if c.logger != nil {
-		c.logger.Debug("mcp availability check: starting",
-			"workspace_uuid", workspaceUUID,
-			"mcp_server_url", mcpServerURL)
-	}
-
-	result, err := auxMgr.CheckMCPAvailability(ctx, workspaceUUID, mcpServerURL)
-	if err != nil {
-		if c.logger != nil {
-			c.logger.Debug("mcp availability check: failed",
-				"workspace_uuid", workspaceUUID,
-				"error", err)
-		}
-		// Clear the checked flag so the next client connection will retry.
-		if c.server != nil && c.server.sessionManager != nil {
-			c.server.sessionManager.ClearMCPChecked(workspaceUUID)
-		}
-		return
-	}
-
-	if c.logger != nil {
-		c.logger.Debug("mcp availability check: completed",
-			"workspace_uuid", workspaceUUID,
-			"available", result.Available)
-	}
-
-	if !result.Available {
-		data := map[string]interface{}{
-			"workspace_uuid": workspaceUUID,
-		}
-		if result.SuggestedRun != "" {
-			data["suggested_run"] = result.SuggestedRun
-		}
-		if result.SuggestedInstructions != "" {
-			data["suggested_instructions"] = result.SuggestedInstructions
-		}
-		// Broadcast via global events WebSocket (where the frontend handler lives).
-		if c.server != nil && c.server.eventsManager != nil {
-			c.server.eventsManager.Broadcast(WSMsgTypeMCPToolsUnavailable, data)
-		}
-	}
 }
 
 // triggerMCPToolsFetch asynchronously fetches the list of available MCP tools

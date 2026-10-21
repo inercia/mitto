@@ -760,6 +760,25 @@ func TestPrewarmConfig_Defaults(t *testing.T) {
 	}
 }
 
+// Legacy settings must not resurrect the removed availability probe.
+func TestPrewarmConfig_AuxPrewarmScheduleOmitsRemovedMCPCheck(t *testing.T) {
+	configs := []*PrewarmConfig{
+		nil,
+		{},
+		{AuxSchedule: &AuxScheduleConfig{McpCheck: "0s"}},
+		{AuxSchedule: &AuxScheduleConfig{McpCheck: "30s"}},
+	}
+	for _, cfg := range configs {
+		for _, fork := range []bool{false, true} {
+			for _, entry := range cfg.AuxPrewarmSchedule(fork) {
+				if entry.Purpose == "mcp-check" {
+					t.Fatalf("removed MCP availability check is still scheduled (config=%+v, fork=%v)", cfg, fork)
+				}
+			}
+		}
+	}
+}
+
 // TestPrewarmConfig_AuxPrewarmSchedule guards the mitto-cgc per-purpose
 // staggered auxiliary-prewarm schedule and the mitto-7yj fork/multiplex
 // split. Verifies nil-safety, per-purpose overrides, empty/invalid fallback,
@@ -771,7 +790,6 @@ func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
 	var nilCfg *PrewarmConfig
 	got := nilCfg.AuxPrewarmSchedule(false)
 	want := []AuxPrewarmEntry{
-		{Purpose: "mcp-check", Delay: 0},
 		{Purpose: "mcp-tools", Delay: 2 * time.Second},
 		{Purpose: "title-gen", Delay: 8 * time.Second},
 		{Purpose: "follow-up", Delay: 12 * time.Second},
@@ -795,7 +813,6 @@ func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
 
 	// Fork-per-session (true) → widely spread defaults (mitto-7yj).
 	wantFork := []AuxPrewarmEntry{
-		{Purpose: "mcp-check", Delay: 0},
 		{Purpose: "mcp-tools", Delay: 8 * time.Second},
 		{Purpose: "title-gen", Delay: 20 * time.Second},
 		{Purpose: "follow-up", Delay: 35 * time.Second},
@@ -821,7 +838,6 @@ func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
 	cfg := &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
 	got = cfg.AuxPrewarmSchedule(false)
 	wantOverride := []AuxPrewarmEntry{
-		{Purpose: "mcp-check", Delay: 0},
 		{Purpose: "mcp-tools", Delay: 2 * time.Second},
 		{Purpose: "title-gen", Delay: 3 * time.Second},
 		{Purpose: "follow-up", Delay: 12 * time.Second},
@@ -839,7 +855,6 @@ func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
 	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
 	got = cfg.AuxPrewarmSchedule(true)
 	wantOverrideFork := []AuxPrewarmEntry{
-		{Purpose: "mcp-check", Delay: 0},
 		{Purpose: "title-gen", Delay: 3 * time.Second},
 		{Purpose: "mcp-tools", Delay: 8 * time.Second},
 		{Purpose: "follow-up", Delay: 35 * time.Second},
@@ -867,7 +882,7 @@ func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
 
 	// Any override still yields nondecreasing Delay order (multiplex).
 	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
-		McpCheck: "30s", // pushes tier-0 past tier-1/tier-2 defaults
+		McpCheck: "30s", // legacy field must not schedule the removed check
 		TitleGen: "1s",
 		FollowUp: "2s",
 	}}

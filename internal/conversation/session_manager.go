@@ -248,10 +248,6 @@ type SessionManager struct {
 	// follow-up analysis, conversation summaries, etc.).
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
 
-	// mcpCheckedWorkspaces tracks which workspaces have had MCP availability checked.
-	mcpCheckedWorkspaces   map[string]bool
-	mcpCheckedWorkspacesMu sync.RWMutex
-
 	// mcpToolsFetchedWorkspaces tracks which workspaces have had MCP tools fetched.
 	mcpToolsFetchedWorkspaces   map[string]bool
 	mcpToolsFetchedWorkspacesMu sync.RWMutex
@@ -373,7 +369,6 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		streaming:                 make(map[string]bool),
 		waitingForUserInput:       make(map[string]bool),
 		ackedUIPromptRequestIDs:   make(map[string]string),
-		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
@@ -436,7 +431,6 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		streaming:                 make(map[string]bool),
 		waitingForUserInput:       make(map[string]bool),
 		ackedUIPromptRequestIDs:   make(map[string]string),
-		mcpCheckedWorkspaces:      make(map[string]bool),
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
@@ -4117,28 +4111,6 @@ func (sm *SessionManager) CloseIdleSession(sessionID string) {
 
 	// Clear cached plan state when session is closed
 	sm.ClearCachedPlanState(sessionID)
-}
-
-// IsMCPChecked returns whether MCP availability has been checked for a workspace.
-func (sm *SessionManager) IsMCPChecked(workspaceUUID string) bool {
-	sm.mcpCheckedWorkspacesMu.RLock()
-	defer sm.mcpCheckedWorkspacesMu.RUnlock()
-	return sm.mcpCheckedWorkspaces[workspaceUUID]
-}
-
-// MarkMCPChecked marks a workspace as having had MCP availability checked.
-func (sm *SessionManager) MarkMCPChecked(workspaceUUID string) {
-	sm.mcpCheckedWorkspacesMu.Lock()
-	sm.mcpCheckedWorkspaces[workspaceUUID] = true
-	sm.mcpCheckedWorkspacesMu.Unlock()
-}
-
-// ClearMCPChecked clears the MCP checked flag for a workspace.
-// This should be called after running the MCP installation command.
-func (sm *SessionManager) ClearMCPChecked(workspaceUUID string) {
-	sm.mcpCheckedWorkspacesMu.Lock()
-	delete(sm.mcpCheckedWorkspaces, workspaceUUID)
-	sm.mcpCheckedWorkspacesMu.Unlock()
 }
 
 // IsMCPToolsFetched returns whether MCP tools have been fetched for the given workspace.

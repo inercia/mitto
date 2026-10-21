@@ -78,9 +78,3 @@ const mcpToolsRetryReminder = `IMPORTANT: Your previous reply was not accepted. 
 //
 //go:embed prompts/check_tool_patterns.txt
 var CheckToolPatternsPromptTemplate string
-
-// CheckMCPAvailabilityPromptTemplate is used to verify if Mitto MCP tools are available.
-// Use with fmt.Sprintf, passing the MCP server URL.
-//
-//go:embed prompts/check_mcp_availability.txt
-var CheckMCPAvailabilityPromptTemplate string

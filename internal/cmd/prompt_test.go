@@ -137,21 +137,13 @@ func TestResolvePromptWorkDir(t *testing.T) {
 }
 
 // TestAuxPromptFor verifies each auxiliary purpose maps to its representative
-// prompt, that mcp-check embeds the configured port, and that an unknown purpose
-// falls back to a trivial prompt.
+// prompt and that an unknown purpose falls back to a trivial prompt.
 func TestAuxPromptFor(t *testing.T) {
-	savedPort := promptMCPPort
-	t.Cleanup(func() { promptMCPPort = savedPort })
-	promptMCPPort = 5757
-
 	if got := auxPromptFor(auxiliary.PurposeTitleGen); !strings.Contains(got, "simulated cold-start prompt") {
 		t.Errorf("title-gen prompt missing injected text: %q", got)
 	}
 	if got := auxPromptFor(auxiliary.PurposeFollowUp); !strings.Contains(got, "simulated agent response") {
 		t.Errorf("follow-up prompt missing injected text: %q", got)
-	}
-	if got := auxPromptFor(auxiliary.PurposeMCPCheck); !strings.Contains(got, "http://127.0.0.1:5757/mcp") {
-		t.Errorf("mcp-check prompt missing endpoint URL: %q", got)
 	}
 	if got := auxPromptFor(auxiliary.PurposeMCPTools); got != auxiliary.FetchMCPToolsPromptTemplate {
 		t.Errorf("mcp-tools prompt = %q, want the FetchMCPTools template", got)

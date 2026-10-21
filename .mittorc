@@ -8,13 +8,15 @@ processors:
       name: claude-manage-memory
     - arguments:
         PreferencesFile: .augment/rules/99-local.md
-      enabled: true
+      enabled: false
       name: memorize-preferences
-    - enabled: true
+    - enabled: false
       name: identify-user-data
     - enabled: false
       name: auggie-update-rules
     - enabled: false
       name: claude-update-memory
+    - enabled: false
+      name: knowledge-router
 prompts_dirs:
     - .mitto/prompts

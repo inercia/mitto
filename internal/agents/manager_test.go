@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1113,4 +1114,140 @@ func TestOpenCode_MCPList_JSONCConfig_mitto_34y(t *testing.T) {
 		}
 	}
 	t.Fatalf("mitto-34y: JSONC-configured server was not surfaced; got servers=%+v (mcp-list.sh silently returns an empty list when strict JSON parsing rejects the trailing comma)", out.Servers)
+}
+
+func TestOpenCode_MCPJSONCDiscoveryAndEdits_mitto_34y(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node runtime unavailable")
+	}
+
+	builtinDir := builtinAgentsDirForTest(t)
+	m := NewManager(filepath.Dir(builtinDir), nil)
+	home, workspace := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	globalDir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	globalJSONC := `{
+  // global note must survive edits
+  "mcp": {"shared":{"type":"local","command":["global"]},"global-only":{"type":"local","command":["g"]}},
+  "unrelated": {"keep": true,},
+}`
+	if err := os.WriteFile(filepath.Join(globalDir, "opencode.jsonc"), []byte(globalJSONC), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Same-scope JSONC is preferred over JSON; workspace values override global.
+	if err := os.WriteFile(filepath.Join(globalDir, "opencode.json"), []byte(`{"mcp":{"wrong":{"command":"wrong"}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	workspaceJSONC := `{
+  // workspace note must survive edits
+  "mcp": {"shared":{"type":"local","command":["workspace"],"environment":{"TOKEN":"test"}},
+    // workspace server docs must survive removing a sibling
+    "workspace-only":{"type":"remote","url":"https://example.test/mcp","headers":{"X-Test":"ok"}}},
+  "unrelated": {"keep": true,},
+}`
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.jsonc"), []byte(workspaceJSONC), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"), []byte(`{"mcp":{"wrong-workspace":{"command":"wrong"}}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := m.ListMCPServers(context.Background(), "opencode", &MCPListInput{Path: workspace})
+	if err != nil {
+		t.Fatalf("ListMCPServers: %v", err)
+	}
+	got := make(map[string]MCPServer)
+	for _, server := range listed.Servers {
+		got[server.Name] = server
+	}
+	if got["shared"].Command != "workspace" || got["shared"].Env["TOKEN"] != "test" || got["global-only"].Command != "g" || got["workspace-only"].URL != "https://example.test/mcp" || got["workspace-only"].Headers["X-Test"] != "ok" {
+		t.Fatalf("unexpected merged config: %+v", got)
+	}
+	if _, ok := got["wrong"]; ok {
+		t.Fatalf("opencode.json won over same-scope JSONC: %+v", got)
+	}
+
+	installed, err := m.InstallMCPServer(context.Background(), "opencode", &MCPInstallInput{
+		Name: "added", Command: "node", Args: []string{"server.js"}, Scope: "project", Path: workspace,
+	})
+	if err != nil || !installed.Success {
+		t.Fatalf("InstallMCPServer = %+v, %v", installed, err)
+	}
+	removedAdded, err := m.RemoveMCPServer(context.Background(), "opencode", &MCPRemoveInput{Name: "added", Scope: "project", Path: workspace})
+	if err != nil || !removedAdded.Success {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	updated, err := os.ReadFile(filepath.Join(workspace, "opencode.jsonc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, preserved := range []string{"// workspace note must survive edits", "// workspace server docs must survive removing a sibling", "workspace-only", "https://example.test/mcp", `"unrelated"`} {
+		if !strings.Contains(string(updated), preserved) {
+			t.Errorf("edited JSONC lost %q:\n%s", preserved, updated)
+		}
+	}
+	if strings.Contains(string(updated), `"added"`) {
+		t.Fatalf("removed server still present:\n%s", updated)
+	}
+
+	singleWorkspace := t.TempDir()
+	singleJSONC := `{"mcp": {
+  // keep even the removed entry's explanatory note
+  "alone": {"command":"alone"},
+}}`
+	if err := os.WriteFile(filepath.Join(singleWorkspace, "opencode.jsonc"), []byte(singleJSONC), 0644); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := m.RemoveMCPServer(context.Background(), "opencode", &MCPRemoveInput{Name: "alone", Scope: "project", Path: singleWorkspace})
+	if err != nil || !removed.Success {
+		t.Fatalf("RemoveMCPServer(single JSONC entry) = %+v, %v", removed, err)
+	}
+	singleUpdated, err := os.ReadFile(filepath.Join(singleWorkspace, "opencode.jsonc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(singleUpdated), "// keep even the removed entry's explanatory note") {
+		t.Fatalf("single-entry removal lost comment:\n%s", singleUpdated)
+	}
+	if _, err := m.ListMCPServers(context.Background(), "opencode", &MCPListInput{Path: singleWorkspace}); err != nil {
+		t.Fatalf("single-entry removal left invalid JSONC: %v", err)
+	}
+
+	status, err := m.GetStatus(context.Background(), "opencode")
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if !status.MCPConfigFound || status.MCPConfigPath != filepath.Join(globalDir, "opencode.jsonc") {
+		t.Errorf("status did not report JSONC config: %+v", status)
+	}
+}
+
+func TestOpenCode_MCPList_InvalidJSONCReportsError_mitto_34y(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash-script test not supported on Windows")
+	}
+	builtinDir := builtinAgentsDirForTest(t)
+	m := NewManager(filepath.Dir(builtinDir), nil)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"mcp": {`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := m.RunCommand(context.Background(), "opencode", CommandMCPList, &MCPListInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == 0 || !strings.Contains(result.Stderr, configPath) || !strings.Contains(result.Stderr, "invalid JSONC") {
+		t.Fatalf("expected path-specific JSONC diagnostic and nonzero status, got exit=%d stderr=%q stdout=%q", result.ExitCode, result.Stderr, result.Stdout)
+	}
 }
