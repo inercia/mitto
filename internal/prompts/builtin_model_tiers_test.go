@@ -290,7 +290,7 @@ func TestBuiltinStartWorkDispatchesLabelGuidedPhases(t *testing.T) {
 			t.Errorf("Start work missing %q", want)
 		}
 	}
-	if !strings.Contains(body, "the orchestrator closes terminal-label beads") {
-		t.Errorf("Start work must leave terminal-label closure to the orchestrator")
+	if !strings.Contains(body, "Only an explicit **Yes, close it**") {
+		t.Errorf("Start work must require explicit approval when it owns closure")
 	}
 }

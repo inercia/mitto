@@ -2236,6 +2236,47 @@ Builtin prompts that ask "continue to the next phase?" via `mitto_ui_options` in
 
 Calls using this rule pass `timeout_seconds: 60`, giving the user one minute to answer or cancel before the routine continuation proceeds. An explicit cancel/abort stops the action; only `timed_out: true` triggers the default continuation. Do not rely on the tool's longer default timeout.
 
+**Start work ticket closure defaults to explicit approval:** with `ClosePolicy: Ask`,
+when the ticket reaches its terminal label, the prompt asks whether to close it and waits up
+to 60 seconds. It closes only after an explicit yes; timeout, cancellation, decline, or
+free-text feedback leaves the ticket open.
+
+Start work supports standalone and orchestrated use through two independent parameters:
+`Commit` (boolean, default `true`) controls phase commits and maps to the phases'
+`SubmitStrategy` (`Commit` or `None`); `ClosePolicy` (`Ask` by default, `Leave open`, or `Verify and close`)
+controls closure ownership. An orchestrator that owns both passes
+`{ "Commit": "false", "ClosePolicy": "Leave open" }`. It may keep commits enabled while
+reserving closure. Both values are forwarded to queued Start work continuations and child
+Start work calls (also mirrored into `loop_arguments` for looped children); ownership is
+never inferred from parent/child status. Commits include only attributable task changes
+and never trigger an automatic push. `Commit=false` does not block explicitly approved
+closure. No-target inline work honors `Commit` but has no ticket to close.
+
+`Verify and close` adds an independent **acceptance verification phase** after normal
+completion and any requested commits. A fresh Reasoning-tier child checks every explicit
+acceptance criterion against the actual deliverables and safe checks, records a durable
+PASS/FAIL/UNKNOWN checklist, and reports to the closure coordinator. The coordinator closes
+only after a complete PASS tied to this ticket, unique attempt, and unchanged requirements,
+hierarchy and working tree. A `fixed`/`verified` label alone is insufficient. The verifier
+does not fix, commit, close, push, or replace human sign-off. `Commit=false` may verify
+uncommitted work unless acceptance itself requires a commit/merge/deployment.
+
+The verifier wait is bounded to 600 seconds. Timeout, missing criteria/evidence, failed checks,
+stale state, required human action, or tool/permission errors leaves the ticket open with
+findings, without an automatic repair/retry loop or fallback to `Ask`. A running verifier
+and its coordinator are not deleted on timeout. Retry explicitly after resolving the findings.
+No-target inline work never launches a verifier.
+
+Start work forwards this policy through self-continuations and parallel child calls. A child
+cannot spawn grandchildren, so it queues the complete verification-and-close procedure to its
+parent, naming the effective leaf ticket explicitly. The parent spawns a fresh sibling verifier
+and owns closure; a missing/unavailable parent leaves the ticket open. Callers must not reap
+that worker or close from terminal labels before the gate finishes. Orchestrators that already
+own closure should continue passing `Leave open`; independent loop drivers retain their own
+closure rules. Post-task hooks run **after** closure and cannot enforce this pre-close gate.
+These are prompt instructions, not a runtime-enforced transactional lock; if concurrent edits
+or evidence cannot be checked reliably, the required outcome is UNKNOWN and no closure.
+
 ## Variable Substitution in Prompts
 
 > **Deprecated in prompt bodies.** Use [Go template syntax](#go-template-syntax-in-prompts) instead — it is more expressive, type-safe, and validated at load time. `@mitto:` substitution **still works** during the deprecation window and the `@mitto:` pass still runs after template rendering. A non-fatal warning is logged at prompt load/save when a migratable `@mitto:` token appears in a body.

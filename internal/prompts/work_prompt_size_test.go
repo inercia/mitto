@@ -138,7 +138,7 @@ func TestBuiltinStartWorkFeatureSampleProgressionAndMultiPhasePayload(t *testing
 	for _, contract := range []string{
 		"Log `Start work: dispatched <phase prompt name>; next phase after it adds its label.` on the effective bead",
 		"Start work: dispatched <phase prompt name>; next phase after it adds its label.",
-		"the orchestrator closes terminal-label beads",
+		"Only an explicit **Yes, close it**",
 		"Never queue if blocked, declined, dispatch failed, or terminal",
 	} {
 		if !strings.Contains(normalizedDriver, strings.Join(strings.Fields(contract), " ")) {

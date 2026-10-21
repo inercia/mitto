@@ -89,27 +89,112 @@ func TestRoutineGatesUseTimeoutDefaultContinueFragment(t *testing.T) {
 	}
 }
 
-func TestBuiltinStartWorkLeavesTerminalClosureToOrchestrator(t *testing.T) {
-	b, err := os.ReadFile("../../config/prompts/builtin/beads-issues/work.prompt.yaml")
+func TestBuiltinStartWorkOwnershipPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name, commit, close, submit string
+		ask                         bool
+	}{
+		{"omitted", "", "", "Commit", true},
+		{"standalone", "true", "Ask", "Commit", true},
+		{"caller-owned", "false", "Leave open", "None", false},
+		{"phase-commits", "true", "Leave open", "Commit", false},
+		{"uncommitted-close", "false", "Ask", "None", true},
+		{"verified-commits", "true", "Verify and close", "Commit", false},
+		{"verified-uncommitted", "false", "Verify and close", "None", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := linkedWorkRegressionContext()
+			ctx.Args["Commit"], ctx.Args["ClosePolicy"] = tc.commit, tc.close
+			_, body := renderBuiltinPromptForWorkRegression(t, "beads-issues/work.prompt.yaml", ctx)
+			closePolicy := tc.close
+			if closePolicy == "" {
+				closePolicy = "Ask"
+			}
+			commit := "true"
+			if tc.commit == "false" {
+				commit = "false"
+			}
+			for _, contract := range []string{
+				`"SubmitStrategy": "` + tc.submit + `"`,
+				`{ "IssueID": "<effective-id>", "Commit": "` + commit + `", "ClosePolicy": "` + closePolicy + `" }`,
+				`{ "IssueID": "<child-id>", "Commit": "` + commit + `", "ClosePolicy": "` + closePolicy + `" }`,
+				"mirror these arguments into `loop_arguments`",
+				"Never close the parent from",
+				"unverified hierarchy",
+				"Never push automatically",
+			} {
+				if !strings.Contains(body, contract) {
+					t.Errorf("missing ownership contract %q", contract)
+				}
+			}
+			question := `question: "Close completed <effective-id>?"`
+			if strings.Contains(body, question) != tc.ask {
+				t.Errorf("close question present = %v, want %v", strings.Contains(body, question), tc.ask)
+			}
+			if tc.ask {
+				for _, contract := range []string{"timeout_seconds: 60", "Only an explicit **Yes, close it**", "Timeout (`timed_out: true`), cancellation, decline, free text, or tool errors leave it open"} {
+					if !strings.Contains(body, contract) {
+						t.Errorf("missing close approval contract %q", contract)
+					}
+				}
+			} else if tc.close == "Leave open" && !strings.Contains(body, "Do not ask about closure or run `bd close`") {
+				t.Error("caller-owned closure must explicitly leave the ticket open")
+			}
+			if tc.commit == "false" && strings.Contains(body, "commit attributable leftovers") {
+				t.Error("Commit=false must not instruct finalization to commit leftovers")
+			}
+			if tc.commit != "false" && !strings.Contains(body, "commit attributable leftovers") {
+				t.Error("Commit=true must finalize uncommitted task work")
+			}
+			ctx.Session.BeadsIssue = ""
+			ctx.Session.HasBeadsIssue = false
+			delete(ctx.Args, "IssueID")
+			_, inline := renderBuiltinPromptForWorkRegression(t, "beads-issues/work.prompt.yaml", ctx)
+			if strings.Contains(inline, question) || strings.Contains(inline, "bd close") {
+				t.Error("inline work must not attempt ticket closure")
+			}
+			if strings.Contains(inline, "After checks pass, commit task changes.") != (tc.commit != "false") {
+				t.Error("inline work must honor Commit")
+			}
+		})
+	}
+	ctx := linkedWorkRegressionContext()
+	ctx.Args["ClosePolicy"] = "invalid"
+	_, invalid := renderBuiltinPromptForWorkRegression(t, "beads-issues/work.prompt.yaml", ctx)
+	if !strings.Contains(invalid, "Invalid ClosePolicy: report and stop.") || strings.Contains(invalid, `question: "Close completed`) {
+		t.Error("invalid closure policy must stop, not request closure")
+	}
+}
+
+func TestBuiltinStartWorkOwnershipParameterSchema(t *testing.T) {
+	installBuiltinFragmentsForTest(t)
+	list, err := LoadPromptsFromDir("../../config/prompts/builtin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := string(b)
-	start := strings.Index(body, "  ## Done\n")
-	if start < 0 {
-		t.Fatal("cannot locate the completed-ticket branch")
-	}
-	end := strings.Index(body[start:], "  {{- else }}")
-	if end <= 0 {
-		t.Fatal("cannot locate the completed-ticket branch")
-	}
-	done := body[start : start+end]
-	for _, hallmark := range []string{"`fixed`/`verified` is terminal", "report delivered work from phase comments", "**Do not close the bead**", "the orchestrator closes terminal-label beads", "Never close the parent from"} {
-		if !strings.Contains(done, hallmark) {
-			t.Errorf("terminal branch missing orchestrator-closure contract %q", hallmark)
+	for _, p := range list {
+		if p.Name != "Start work" {
+			continue
 		}
+		found := 0
+		for _, param := range p.Parameters {
+			switch param.Name {
+			case "Commit":
+				found++
+				if param.Type != "boolean" || param.Default != "true" {
+					t.Errorf("unexpected Commit schema: %+v", param)
+				}
+			case "ClosePolicy":
+				found++
+				if param.Type != "text" || param.Default != "Ask" || strings.Join(param.Options, ",") != "Ask,Leave open,Verify and close" {
+					t.Errorf("unexpected ClosePolicy schema: %+v", param)
+				}
+			}
+		}
+		if found != 2 {
+			t.Fatalf("ownership parameter count = %d, want 2", found)
+		}
+		return
 	}
-	if strings.Contains(done, "mitto_ui_options") || strings.Contains(done, "bd close") {
-		t.Error("terminal branch must leave closure to the orchestrator, without asking or closing directly")
-	}
+	t.Fatal("Start work not found")
 }

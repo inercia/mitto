@@ -1,0 +1,84 @@
+## Independent acceptance closure
+
+`Verify and close` authorizes closure only after a fresh evidence-backed PASS; it is not a
+timeout-based approval. `fixed`/`verified` alone never authorizes closure.
+`Commit=false` permits checking the uncommitted deliverable, not assuming it is committed.
+
+{{ if .Session.IsChild -}}
+This session cannot spawn children. Delegate to parent `{{ .Session.ParentID }}` with
+`mitto_conversation_send_prompt(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ParentID }}",
+prompt: "<the complete Acceptance closure coordinator section below, with the effective ticket ID substituted>")`.
+Send the whole procedure, not a request to run Start work (the parent may be linked to another ticket).
+Tell the parent that terminal labels do NOT permit closing/reaping this work before this gate finishes.
+Record the handoff on the effective ticket. If the parent supplied wait/report instructions,
+call `mitto_children_tasks_report` with its task_id, status `verification_pending`, and the handoff
+summary so its worker wait can finish; this is not acceptance PASS. Then end the turn without
+closing or deleting yourself.
+If the handoff fails or the parent cannot coordinate, report it and leave the ticket open.
+The following section is for that parent to execute, not for this child to self-verify.
+{{- else -}}
+Execute the coordinator section below in this conversation. Do not queue Start work again.
+{{- end }}
+
+### Acceptance closure coordinator
+
+You own verification and closure of **<effective-id> only**, not your own linked ticket or its parent.
+Use `{{ if .Session.IsChild }}{{ .Session.ParentID }}{{ else }}{{ .Session.ID }}{{ end }}` as your `self_id`.
+The caller's Commit={{ ne .Args.Commit "false" }} policy remains in force; this handoff grants no
+new commit permission. Requested commits/checks must already be finished by the worker.
+This is one bounded verification attempt, not a repair loop. Do not run implementation or Start work
+inline. Do not close from terminal labels, prior comments, a stopped child, or the wait tool's
+`success`/`completed` wrapper.
+
+1. Reload the effective ticket, children and blockers. If closed, report and stop. If blocked,
+   deferred, future `defer_until`, `needs-human`, children remain open, or human/external sign-off is required, leave open.
+   Confirm the terminal label is `fixed` (bug) or `verified` (feature/task/chore); otherwise leave open.
+   If implementation workers are still editing this tree, leave open rather than racing or polling.
+   Do not bypass those requirements. If requested commits/checks are unfinished, leave open;
+   make no commits after the snapshot.
+2. Generate a unique `<attempt-id>` (UUID). Capture `<state>` as a compact JSON string with keys
+   `workspace`, `head`, `ticket_sha256`, `tree_sha256`. The ticket hash covers ID, title, description,
+   design, acceptance criteria, non-report comments, type, status, `defer_until`, labels,
+   child/blocker IDs and statuses: canonical
+   JSON (sorted keys, sorted label/relationship lists). The tree hash covers staged and unstaged
+   binary diffs plus sorted untracked paths AND file contents (length-prefix the components).
+   `git status` alone is insufficient. Exclude bookkeeping timestamps and ONLY this attempt's
+   own pending/report comments, not other comments that can change requirements/evidence.
+   Forward the exact hashing recipe with the snapshot so
+   the verifier can reproduce it; inability to reproduce it is UNKNOWN, never an assumed match.
+   Record `Acceptance pending: <attempt-id>` on the ticket. Never reuse an earlier PASS.
+3. Spawn a fresh, non-looping child, in this same workspace:
+   ```
+   mitto_conversation_new(
+     self_id: "<coordinator-id>", title: "Acceptance: <effective-id> <attempt-id>",
+     beads_issue: "<effective-id>", prompt_name: "Acceptance verification phase",
+     model_tag: "Reasoning",
+     arguments: { "IssueID": "<effective-id>", "AttemptID": "<attempt-id>", "ExpectedState": "<state>", "SnapshotRecipe": "<exact commands/normalization used>" }
+   )
+   ```
+   The phase declares no reuse/singleton target. Require a NEW conversation ID: a reused/coalesced
+   response or permission/model/spawn error means leave open, notify, stop. Never verify inline.
+4. Wait using `mitto_children_tasks_wait(self_id: "<coordinator-id>", children_list: ["<verifier-id>"],
+   task_id: "<attempt-id>", timeout_seconds: 600)`. Omit `prompt`: the phase already carries its
+   report instructions; do not queue duplicate verifier turns. Timeout, missing/malformed report, tool error, synthetic `stuck`,
+   `not_running`, failed or UNKNOWN result: leave open, record the reason and notify. End this
+   attempt without retrying, repairing, or requeueing Start work. Keep a still-running verifier
+   and its coordinator conversation alive; never delete them on timeout.
+5. Accept only the actual designated child's report with matching issue ID, attempt ID and state,
+   verdict PASS, a non-empty criterion checklist, EVERY criterion PASS with concrete evidence,
+   and no blockers. Reload the durable `Acceptance verification:` report on the ticket and require
+   it to agree. FAIL, UNKNOWN, skipped criteria, inferred/ambiguous requirements, or absent evidence
+   leaves the ticket open; record findings, notify, and stop. Do not turn mandatory remaining work
+   into follow-up tickets merely to obtain PASS.
+6. Immediately recapture the state from step 2 (same narrowly defined exclusions) and compare it;
+   recheck children/blockers, deferral/human gates and completion labels. Any change/unknown invalidates this attempt:
+   leave open and report stale verification; do not silently start another attempt.
+   Only an unchanged PASS permits:
+   `bd close <effective-id> --reason "Acceptance PASS <attempt-id>: <evidence summary>"`.
+   Check command success and reload status before announcing closure. Record/notify errors explicitly.
+   Never push or close another ticket. Clean up only this attempt's finished verifier AFTER its
+   report is durable. Report the outcome to the requesting child if this was a delegated handoff;
+   do not reap that worker until the outcome is recorded.
+
+This is a prompt-level contract, not a transactional lock against concurrent writers. If concurrent
+edits cannot be excluded or the snapshot cannot be captured reliably, return UNKNOWN and leave open.
