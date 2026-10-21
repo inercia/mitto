@@ -14,6 +14,20 @@ export function availableModelShortcutNumbers(rows, ownIndex) {
   return MODEL_SHORTCUT_NUMBERS.filter((number) => !occupied.has(number));
 }
 
+export function availableModelShortcutTags(tags, rows, ownIndex) {
+  const selected = new Set(
+    rows
+      .filter((_, index) => index !== ownIndex)
+      .map((row) => row.model_tag?.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const ownTag = rows[ownIndex]?.model_tag?.trim().toLowerCase();
+  return tags.filter((tag) => {
+    const normalized = tag.trim().toLowerCase();
+    return !selected.has(normalized) || normalized === ownTag;
+  });
+}
+
 export function addModelShortcut(rows) {
   const number = availableModelShortcutNumbers(rows)[0];
   if (rows.length >= MODEL_SHORTCUT_NUMBERS.length || number === undefined) {

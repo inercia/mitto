@@ -67,6 +67,53 @@ if (process.env.MITTO_WORKSPACE_EDITOR_TEST_CHILD === "1") {
   }
 
   describe("WorkspaceEditor Models tab", () => {
+    test("uses compact joined rows with a left-aligned add action below them", () => {
+      const props = defaultProps();
+      const container = mount(props);
+      try {
+        const tag = container.querySelector('[data-testid="ws-model-override-tag-0"]');
+        const model = container.querySelector('[data-testid="ws-model-override-model-0"]');
+        const remove = container.querySelector('[data-testid="ws-model-override-remove-0"]');
+        const add = container.querySelector('[data-testid="ws-model-override-add"]');
+        const refresh = container.querySelector('[data-testid="ws-model-catalog-refresh"]');
+        const row = tag.parentElement;
+        expect(row.className).toBe("join w-full");
+        for (const control of [tag, model, remove]) {
+          expect(control.classList.contains("join-item")).toBe(true);
+          expect(control.parentElement).toBe(row);
+        }
+        expect(remove.classList.contains("text-mitto-danger")).toBe(true);
+        expect(add.textContent.trim()).toBe("+ Add override");
+        expect(add.className).toBe("btn btn-sm btn-ghost");
+        const action = add.parentElement;
+        expect(action.className).toBe("mt-3 flex items-center gap-2");
+        expect(action.previousElementSibling.contains(row)).toBe(true);
+        expect(refresh.parentElement.contains(add)).toBe(false);
+        add.click();
+        expect(props.setEditModelOverrides).toHaveBeenCalledTimes(1);
+        const update = props.setEditModelOverrides.mock.calls[0][0];
+        expect(update(props.editModelOverrides)).toEqual([
+          ...props.editModelOverrides,
+          { acp_server: "opencode", tag: "", model_id: "" },
+        ]);
+        refresh.click();
+        expect(props.loadModels).toHaveBeenCalledWith("workspace-1");
+      } finally {
+        unmount(container);
+      }
+    });
+
+    test("keeps the bottom add action available when empty and disabled without an agent", () => {
+      const container = mount(defaultProps({ editModelOverrides: [], editAcpServer: "" }));
+      try {
+        const add = container.querySelector('[data-testid="ws-model-override-add"]');
+        expect(add.disabled).toBe(true);
+        expect(container.textContent).toContain("No model overrides configured");
+      } finally {
+        unmount(container);
+      }
+    });
+
     test("shows empty-catalog guidance and keeps saved selections available", () => {
       const container = mount(defaultProps());
       try {

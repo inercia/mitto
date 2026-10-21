@@ -3,6 +3,7 @@ import {
   MODEL_SHORTCUT_NUMBERS,
   loadModelShortcuts,
   availableModelShortcutNumbers,
+  availableModelShortcutTags,
   addModelShortcut,
   updateModelShortcut,
   removeModelShortcut,
@@ -38,6 +39,20 @@ describe("Settings model shortcut drafts (production helpers)", () => {
     expect(availableModelShortcutNumbers(rows, 2)).toEqual([3]);
     rows = removeModelShortcut(rows, 1);
     expect(addModelShortcut(rows).at(-1).number).toBe(2);
+  });
+
+  test("tag choices exclude selections in other rows and preserve the row's own legacy tag", () => {
+    const tags = ["Coding", "Fast", "Smart"];
+    const rows = [
+      { number: 1, model_tag: " coding " },
+      { number: 2, model_tag: "Fast" },
+      { number: 3, model_tag: "" },
+    ];
+    expect(availableModelShortcutTags(tags, rows, 0)).toEqual(["Coding", "Smart"]);
+    expect(availableModelShortcutTags(tags, rows, 2)).toEqual(["Smart"]);
+    expect(availableModelShortcutTags(tags, rows)).toEqual(["Smart"]);
+    expect(availableModelShortcutTags(tags, removeModelShortcut(rows, 1), 1)).toEqual(["Fast", "Smart"]);
+    expect(availableModelShortcutTags(["Coding"], [rows[0], { number: 2, model_tag: "CODING" }], 0)).toEqual(["Coding"]);
   });
 
   test("immutable edits accept own/free numbers, preserve raw tags and never steal", () => {

@@ -87,6 +87,7 @@ import { buildAuxiliaryModelTagOptions } from "../utils/auxiliaryModelTagOptions
 import {
   loadModelShortcuts,
   availableModelShortcutNumbers,
+  availableModelShortcutTags,
   addModelShortcut,
   updateModelShortcut,
   removeModelShortcut,
@@ -6296,98 +6297,113 @@ export function SettingsDialog({
                 <!-- Keyboard Tab: independent model-tag mappings, not toolbar buttons -->
                 ${activeTab === "keyboard" &&
                 html`
-                  <div class="space-y-4">
-                    <h3 class="font-medium">Model Shortcuts</h3>
-                    <p class="text-mitto-text-muted text-sm">
-                      Assign a keyboard shortcut to a model tag. Custom tags are
-                      allowed. Delete a row to unassign its shortcut, then Save.
+                  <fieldset class="fieldset pt-2">
+                    <legend class="fieldset-legend">Model Shortcuts</legend>
+                    <p class="text-mitto-text-muted text-sm mb-3">
+                      Assign a keyboard shortcut to an existing model tag. Delete
+                      a row to unassign its shortcut, then Save.
                     </p>
-                    <datalist id="keyboard-model-tag-suggestions">
-                      ${collectModelTags([
-                        ...modelProfiles,
-                        { tags: modelTags },
-                        { tags: modelShortcuts.map((row) => row.model_tag) },
-                      ]).map(
-                        (tag) => html`<option key=${tag} value=${tag}></option>`,
-                      )}
-                    </datalist>
                     ${modelShortcuts.length === 0 &&
                     html`<p class="text-mitto-text-muted text-sm">
                       No model shortcuts assigned. Add a shortcut to get started.
                     </p>`}
-                    ${modelShortcuts.map((row, i) => html`
-                      <fieldset
-                        key=${i}
-                        class="fieldset border border-mitto-border-1 rounded-lg p-3"
-                        data-testid=${`model-shortcut-row-${i}`}
-                      >
-                        <legend class="fieldset-legend">Shortcut ${i + 1}</legend>
-                        <div class="flex flex-col sm:flex-row gap-2 sm:items-center">
+                    <div class="space-y-2">
+                      ${modelShortcuts.map((row, i) => html`
+                        <div key=${i} class="join w-full" data-testid=${`model-shortcut-row-${i}`}>
                           <select
-                            class="select select-sm w-full sm:w-auto"
-                            aria-label=${`Shortcut number for row ${i + 1}`}
-                            data-testid=${`model-shortcut-number-${i}`}
-                            value=${row.number}
-                            onChange=${(e) => {
-                              const number = Number(e.target.value);
-                              setModelShortcuts((prev) =>
-                                updateModelShortcut(prev, i, { number }),
-                              );
-                            }}
-                          >
-                            ${availableModelShortcutNumbers(modelShortcuts, i).map((number) => html`
-                              <option value=${number}>
-                                ${modelShortcutLabel(number, navigator.platform)}
-                              </option>
-                            `)}
+                                    class="select select-sm join-item w-44"
+                                    aria-label=${`Shortcut number for row ${i + 1}`}
+                                    data-testid=${`model-shortcut-number-${i}`}
+                                    value=${row.number}
+                                    onChange=${(e) => {
+                                      const number = Number(e.target.value);
+                                      setModelShortcuts((prev) =>
+                                        updateModelShortcut(prev, i, { number }),
+                                      );
+                                    }}
+                                  >
+                                    ${availableModelShortcutNumbers(modelShortcuts, i).map((number) => html`
+                                      <option value=${number}>
+                                        ${modelShortcutLabel(number, navigator.platform)}
+                                      </option>
+                                    `)}
                           </select>
-                          <input
-                            type="text"
-                            class="input input-sm w-full flex-1"
-                            aria-label=${`Model tag for shortcut row ${i + 1}`}
-                            data-testid=${`model-shortcut-tag-${i}`}
-                            list="keyboard-model-tag-suggestions"
-                            placeholder="e.g., Coding"
-                            value=${row.model_tag}
-                            onInput=${(e) => {
-                              const model_tag = e.target.value;
-                              setModelShortcuts((prev) =>
-                                updateModelShortcut(prev, i, { model_tag }),
-                              );
-                            }}
-                          />
+                          <select
+                                    class="select select-sm join-item flex-1 min-w-0"
+                                    aria-label=${`Model tag for shortcut row ${i + 1}`}
+                                    data-testid=${`model-shortcut-tag-${i}`}
+                                    value=${row.model_tag}
+                                    onChange=${(e) => {
+                                      const model_tag = e.target.value;
+                                      setModelShortcuts((prev) =>
+                                        updateModelShortcut(prev, i, { model_tag }),
+                                      );
+                                    }}
+                                  >
+                                    <option value="">Select a tag</option>
+                                    ${availableModelShortcutTags(
+                                      collectModelTags([
+                                        ...modelProfiles,
+                                        { tags: modelTags },
+                                        { tags: modelShortcuts.map((shortcut) => shortcut.model_tag) },
+                                      ]),
+                                      modelShortcuts,
+                                      i,
+                                    ).map((tag) => html`
+                                      <option key=${tag} value=${tag.toLowerCase() === row.model_tag?.trim().toLowerCase() ? row.model_tag : tag}>
+                                        ${tag}
+                                      </option>
+                                    `)}
+                          </select>
                           <button
-                            type="button"
-                            class="btn btn-sm btn-ghost text-error"
-                            aria-label=${`Delete model shortcut row ${i + 1}`}
-                            data-testid=${`delete-model-shortcut-${i}`}
-                            onClick=${() =>
-                              setModelShortcuts((prev) => removeModelShortcut(prev, i))}
-                          >
-                            <${TrashIcon} className="w-4 h-4" />
-                            Delete
+                                    type="button"
+                                    class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
+                                    aria-label=${`Delete model shortcut row ${i + 1}`}
+                                    data-testid=${`delete-model-shortcut-${i}`}
+                                    onClick=${() =>
+                                      setModelShortcuts((prev) => removeModelShortcut(prev, i))}
+                                  >
+                                    <${TrashIcon} className="w-4 h-4" />
                           </button>
                         </div>
-                      </fieldset>
-                    `)}
-                    <button
-                      type="button"
-                      class="btn btn-sm"
-                      data-testid="add-model-shortcut"
-                      disabled=${availableModelShortcutNumbers(modelShortcuts).length === 0}
-                      aria-describedby="model-shortcuts-capacity"
-                      onClick=${() =>
-                        setModelShortcuts((prev) => addModelShortcut(prev))}
-                    >
-                      <${PlusIcon} className="w-4 h-4" />
-                      Add Shortcut
-                    </button>
-                    <p id="model-shortcuts-capacity" class="text-mitto-text-muted text-sm">
+                      `)}
+                    </div>
+                    <div class="mt-3 flex items-center gap-2">
+                      <button
+                          type="button"
+                          class="btn btn-sm btn-ghost"
+                          data-testid="add-model-shortcut"
+                          disabled=${availableModelShortcutNumbers(modelShortcuts).length === 0 ||
+                            availableModelShortcutTags(
+                              collectModelTags([
+                                ...modelProfiles,
+                                { tags: modelTags },
+                                { tags: modelShortcuts.map((shortcut) => shortcut.model_tag) },
+                              ]),
+                              modelShortcuts,
+                            ).length === 0}
+                          aria-describedby="model-shortcuts-capacity"
+                          onClick=${() =>
+                            setModelShortcuts((prev) => addModelShortcut(prev))}
+                        >
+                          + Add shortcut
+                      </button>
+                    </div>
+                    <p id="model-shortcuts-capacity" class="text-mitto-text-muted text-xs mt-2">
                       ${availableModelShortcutNumbers(modelShortcuts).length === 0
                         ? "All five shortcut numbers are assigned. Delete a row to add another."
-                        : "Shortcut numbers 1–5 are available; each number can be assigned once."}
+                        : availableModelShortcutTags(
+                            collectModelTags([
+                              ...modelProfiles,
+                              { tags: modelTags },
+                              { tags: modelShortcuts.map((shortcut) => shortcut.model_tag) },
+                            ]),
+                            modelShortcuts,
+                          ).length === 0
+                          ? "No unassigned model tags available. Add a tag to a model profile or delete a row."
+                          : "Shortcut numbers 1–5 are available; each number and tag can be assigned once."}
                     </p>
-                  </div>
+                  </fieldset>
                 `}
 
                 <!-- Models Tab -->

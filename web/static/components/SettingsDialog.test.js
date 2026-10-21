@@ -310,19 +310,33 @@ describe("Keyboard settings production wiring and config fixtures (mitto-28t.2)"
     expect(keyboardPanel).toContain("updateModelShortcut(prev, i, { model_tag })");
     expect(keyboardPanel).toContain("removeModelShortcut(prev, i)");
     expect(keyboardPanel).toContain("addModelShortcut(prev)");
-    expect(keyboardPanel).toContain("disabled=${availableModelShortcutNumbers(modelShortcuts).length === 0}");
+    expect(keyboardPanel).toContain("disabled=${availableModelShortcutNumbers(modelShortcuts).length === 0 ||");
+    expect(keyboardPanel).toContain("availableModelShortcutTags(");
     expect(keyboardPanel).toContain("All five shortcut numbers are assigned");
     expect(keyboardPanel).toContain("No model shortcuts assigned");
     expect(keyboardPanel.match(/aria-label=/g)).toHaveLength(3);
     expect(keyboardPanel.match(/type="button"/g)).toHaveLength(2);
-    expect(keyboardPanel).toContain('list="keyboard-model-tag-suggestions"');
+    expect(keyboardPanel).toContain('<option value="">Select a tag</option>');
     expect(keyboardPanel).toMatch(/collectModelTags\(\[\s*\.\.\.modelProfiles,\s*\{ tags: modelTags \},\s*\{ tags: modelShortcuts\.map/);
-    expect(keyboardPanel).not.toContain(".trim()");
+    expect(keyboardPanel).not.toContain('list="keyboard-model-tag-suggestions"');
     expect(keyboardPanel).not.toContain("isMacApp");
     expect(keyboardPanel).not.toMatch(/getSdkClient|fetch\(|save\(|apply_model_tag/);
   });
 
-  test("actual suggestion expression unions all sources without coercing custom drafts", async () => {
+  test("shortcut mappings match Shortcuts' compact joined rows and left add action", () => {
+    expect(keyboardPanel).toContain('<fieldset class="fieldset pt-2">');
+    expect(keyboardPanel).toContain('<legend class="fieldset-legend">Model Shortcuts</legend>');
+    expect(keyboardPanel).toContain('<div key=${i} class="join w-full" data-testid=${`model-shortcut-row-${i}`}>');
+    expect(keyboardPanel).toContain('class="select select-sm join-item w-44"');
+    expect(keyboardPanel).toContain('class="select select-sm join-item flex-1 min-w-0"');
+    expect(keyboardPanel).toContain('class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"');
+    expect(keyboardPanel).toContain('class="mt-3 flex items-center gap-2"');
+    expect(keyboardPanel).toContain('class="btn btn-sm btn-ghost"');
+    expect(keyboardPanel).toContain('+ Add shortcut');
+    expect(keyboardPanel).not.toContain('<table');
+  });
+
+  test("tag dropdown offers canonical, profile, and previously saved tags without coercing drafts", async () => {
     window.preact = window.preact || {};
     const { collectModelTags } = await import("./ModelTagSelect.js");
     const expression = keyboardPanel.match(/collectModelTags\(\[[\s\S]*?\]\)/)?.[0];

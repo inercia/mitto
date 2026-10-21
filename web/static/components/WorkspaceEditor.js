@@ -336,16 +336,6 @@ export function WorkspaceEditor({
                     className=${`w-4 h-4 ${modelsLoading ? "animate-spin" : ""}`}
                   />
                 </button>`}
-                <button
-                  type="button"
-                  class="btn btn-outline btn-sm"
-                  data-testid="ws-model-override-add"
-                  disabled=${!editAcpServer}
-                  onClick=${() =>
-                    updateRows([...agentOverrides, { tag: "", model_id: "" }])}
-                >
-                  <${PlusIcon} className="w-4 h-4" /> Add override
-                </button>
               </div>
             </div>
 
@@ -400,10 +390,10 @@ export function WorkspaceEditor({
                           );
                     return html`<div
                       key=${`${editAcpServer}-${index}`}
-                      class="flex items-center gap-2"
+                      class="join w-full"
                     >
                       <select
-                        class="select select-sm flex-1 min-w-0"
+                        class="select select-sm join-item flex-1 min-w-0"
                         aria-label=${`Capability tag for override ${index + 1}`}
                         data-testid=${`ws-model-override-tag-${index}`}
                         value=${override.tag || ""}
@@ -431,7 +421,7 @@ export function WorkspaceEditor({
                         )}
                       </select>
                       <select
-                        class="select select-sm flex-1 min-w-0"
+                        class="select select-sm join-item flex-1 min-w-0"
                         aria-label=${`Model for override ${index + 1}`}
                         data-testid=${`ws-model-override-model-${index}`}
                         value=${override.model_id || ""}
@@ -462,7 +452,7 @@ export function WorkspaceEditor({
                       </select>
                       <button
                         type="button"
-                        class="btn btn-ghost btn-square btn-sm shrink-0"
+                        class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
                         aria-label=${`Remove model override ${index + 1}`}
                         data-testid=${`ws-model-override-remove-${index}`}
                         onClick=${() =>
@@ -472,13 +462,23 @@ export function WorkspaceEditor({
                             ),
                           )}
                       >
-                        <${TrashIcon}
-                          className="w-4 h-4 text-mitto-text-muted"
-                        />
+                        <${TrashIcon} className="w-4 h-4" />
                       </button>
                     </div>`;
                   })}
                 </div>`}
+            <div class="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost"
+                data-testid="ws-model-override-add"
+                disabled=${!editAcpServer}
+                onClick=${() =>
+                  updateRows([...agentOverrides, { tag: "", model_id: "" }])}
+              >
+                + Add override
+              </button>
+            </div>
           </div>
         `;
       })()}
