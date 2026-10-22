@@ -4,6 +4,7 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -999,6 +1000,10 @@ retryAfterRestart:
 		if !meta.modelPreferenceResolved {
 			bs.promptDisp.applyModelPreference(d, meta)
 		}
+		if err := activeModelPreflight(d); err != nil {
+			recordPreparationFailure(err)
+			return
+		}
 		if err := turn.ctx.Err(); err != nil {
 			completionErr = err
 			return
@@ -1157,6 +1162,11 @@ retryAfterRestart:
 					return false
 				}
 				bs.promptDisp.applyModelPreference(d, meta)
+				if gateErr := activeModelPreflight(d); gateErr != nil {
+					completionErr = gateErr
+					bs.notifyObservers(func(o SessionObserver) { o.OnError(gateErr.Error()) })
+					return false
+				}
 				return turn.ctx.Err() == nil
 			}
 			if bs.promptDisp.markPromptCompleteAndFlush(d) {
@@ -2009,4 +2019,25 @@ func (bs *BackgroundSession) ResetLoopContinuation() {
 func (bs *BackgroundSession) pdResetContextUsage() {
 	bs.cbSetContextUsage(0, 0)
 	bs.notifyObservers(func(o SessionObserver) { o.OnContextUsageUpdate(0, 0) })
+}
+
+// activeModelPreflight refuses a turn whose active model is hidden by the
+// server's hidden-model policy, or whose eligibility cannot be established
+// because the policy failed to compile. It is a no-op without rules, without a
+// model catalog, for synthesized catalogs, and when no current model is known.
+func activeModelPreflight(d promptDeps) error {
+	models := d.pdGetAgentModels()
+	if models == nil || models.Synthesized || models.CurrentModelId == "" {
+		return nil
+	}
+	policy, err := d.pdHiddenModelPolicy()
+	if err != nil {
+		return fmt.Errorf("hidden-model policy unavailable for active model %q: %w",
+			models.CurrentModelId, errors.Join(errModelHiddenByPolicy, err))
+	}
+	cur := models.CurrentModelId
+	if !modelEligible(policy, cur, ModelDisplayName(models, cur)) {
+		return fmt.Errorf("active model %q: %w", cur, errModelHiddenByPolicy)
+	}
+	return nil
 }

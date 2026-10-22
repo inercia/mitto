@@ -1410,3 +1410,87 @@ func TestConfigManager_HiddenModelRefusal_NoRuleAndNonHiddenUnchanged(t *testing
 		}
 	}
 }
+
+func TestConfigManager_U4_FlushPending_DropsHiddenModelKeepsOthers(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 2")
+	d.pendingConfig[ConfigOptionCategoryModel] = "m-2"
+	c.flushPendingConfig(d)
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("hidden pending model must not be sent, got %v", d.modelRPCCalls)
+	}
+	if _, ok := d.pendingConfig[ConfigOptionCategoryModel]; ok {
+		t.Fatalf("hidden pending model must be dropped")
+	}
+}
+
+func TestConfigManager_U4_FlushPending_PolicyErrorFailsClosed(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.hiddenPolicyErr = errors.New("bad policy")
+	d.pendingConfig[ConfigOptionCategoryModel] = "m-2"
+	c.flushPendingConfig(d)
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("policy error must fail closed, got %v", d.modelRPCCalls)
+	}
+}
+
+func TestConfigManager_U4_RestoreBaseline_HiddenBaselineNotRestored(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
+	d.overrideActive = true
+	d.baselineModel = "m-1"
+	d.currentModelID = "m-2"
+	c.restoreBaselineIfOverride(d)
+	if len(d.modelRPCCalls) != 0 {
+		t.Fatalf("hidden baseline must not be restored, got %v", d.modelRPCCalls)
+	}
+	if d.overrideActive {
+		t.Fatalf("override must not be put back for a hidden baseline")
+	}
+}
+
+func TestConfigManager_U4_Fallback_SkipsHiddenOptions(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 2")
+	d.baselineModel = "gone"
+	d.currentModelID = "m-2"
+	opt, _ := d.cmFindByCategory(ConfigOptionCategoryModel)
+	_ = c.fallbackToAvailableModel(d, context.Background(), opt, nil)
+	for _, id := range d.modelRPCCalls {
+		if id == "m-2" {
+			t.Fatalf("hidden model chosen as fallback: %v", d.modelRPCCalls)
+		}
+	}
+	if d.baselineModel == "m-2" {
+		t.Fatalf("hidden model became baseline")
+	}
+}
+
+func TestConfigManager_U4_Fallback_PolicyErrorChoosesNothing(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.hiddenPolicyErr = errors.New("bad policy")
+	d.baselineModel = "gone"
+	opt, _ := d.cmFindByCategory(ConfigOptionCategoryModel)
+	_ = c.fallbackToAvailableModel(d, context.Background(), opt, nil)
+	if len(d.modelRPCCalls) != 0 || d.baselineModel != "gone" {
+		t.Fatalf("policy error must fail closed: rpc=%v baseline=%q", d.modelRPCCalls, d.baselineModel)
+	}
+}
+
+func TestConfigManager_U4_RuntimeFallback_SkipsHiddenOptions(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.configOptions[0].Options = append(d.configOptions[0].Options, SessionConfigOptionValue{Value: "m-3", Name: "Model 3"})
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 2")
+	d.baselineModel = "m-1"
+	d.currentModelID = "m-1"
+	_ = c.tryRuntimeFallbackToAvailableModel(d, context.Background())
+	if d.baselineModel == "m-2" {
+		t.Fatalf("hidden model chosen as runtime fallback")
+	}
+}

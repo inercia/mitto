@@ -670,6 +670,7 @@ func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Contex
 		return errModelCatalogSynthesized
 	}
 	unavailable := d.cmGetBaselineModel()
+	opt.Options = c.eligibleModelOptions(d, opt.Options)
 
 	optionExists := func(value string) bool {
 		for _, o := range opt.Options {
@@ -709,6 +710,9 @@ func (c configManager) fallbackToAvailableModel(d configDeps, ctx context.Contex
 // refused model) + "model" (naming the swap target) session_change events
 // that drive the timeline pill and stats token-attribution retagging.
 func (c configManager) applyModelFallbackTarget(d configDeps, ctx context.Context, unavailable, target string) error {
+	if err := c.refuseHiddenModel(d, target); err != nil {
+		return err
+	}
 	// Apply the fallback to the agent only when it differs from the currently
 	// active model. When we are simply adopting the agent's own default
 	// (target == current) no RPC is needed, but the UI config-option value and
@@ -797,7 +801,7 @@ func (c configManager) tryRuntimeFallbackToAvailableModel(d configDeps, parentCt
 		failed = baseline
 	}
 
-	if remapped, ok := findOptionValueByName(opt.Options, failed); ok {
+	if remapped, ok := findOptionValueByName(c.eligibleModelOptions(d, opt.Options), failed); ok {
 		if err := c.remapCorruptedBaselineName(d, ctx, failed, remapped); err == nil {
 			return nil
 		} else if l := d.cmLogger(); l != nil {
@@ -807,6 +811,7 @@ func (c configManager) tryRuntimeFallbackToAvailableModel(d configDeps, parentCt
 	}
 
 	constraint := d.cmGetACPServerConstraint(ConfigOptionCategoryModel)
+	opt.Options = c.eligibleModelOptions(d, opt.Options)
 	var target string
 	if constraint != nil && constraint.Pattern != "" {
 		if m := MatchConstraintOption(constraint, opt.Options); m != "" && m != failed {
@@ -849,6 +854,16 @@ func (c configManager) flushPendingConfig(d configDeps) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if modelID, isModel := c.pendingModelEntry(d, pending); isModel {
+		// Revalidate the queued model against the current policy; a hidden or
+		// unprovable value is dropped, never retried or applied.
+		if err := c.refuseHiddenModel(d, pending[modelID]); err != nil {
+			delete(pending, modelID)
+			if len(pending) == 0 {
+				return
+			}
+		}
+	}
 	order := orderPendingConfigIDs(pending, d.cmGetConfigOptions())
 
 	// A pending model change goes first and carries the other pending entries
@@ -1042,6 +1057,23 @@ func (c configManager) refuseHiddenModel(d configDeps, modelID string) error {
 			"session_id", d.cmSessionID(), "model_id", modelID)
 	}
 	return fmt.Errorf("model %q: %w", modelID, errModelHiddenByPolicy)
+}
+
+// eligibleModelOptions filters catalog options through the hidden-model
+// policy so fallback selection never picks a hidden model. A policy compile
+// failure fails closed (no candidates).
+func (c configManager) eligibleModelOptions(d configDeps, opts []SessionConfigOptionValue) []SessionConfigOptionValue {
+	policy, err := d.cmHiddenModelPolicy()
+	if err != nil {
+		return nil
+	}
+	out := make([]SessionConfigOptionValue, 0, len(opts))
+	for _, o := range opts {
+		if modelEligible(policy, o.Value, o.Name) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // remapCorruptedBaselineName self-heals a persisted baseline that holds a
@@ -1273,6 +1305,10 @@ func (c configManager) restoreBaselineIfOverride(d configDeps) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := c.setActiveModelOnly(d, ctx, baseline); err != nil {
+		if errors.Is(err, errModelHiddenByPolicy) {
+			// A hidden baseline is never restored and never retried.
+			return
+		}
 		// mitto-1yo: the restore RPC failed (agent cold/saturated/dead) — put
 		// the override flag back so a LATER drain/turn-completion attempt
 		// retries instead of silently abandoning the temporary-override

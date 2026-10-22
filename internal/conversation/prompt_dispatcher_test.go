@@ -4746,3 +4746,51 @@ func TestPromptDispatcher_IntendedModelID_HiddenAndFailClosed(t *testing.T) {
 		t.Fatalf("policy error: got %q want empty", got)
 	}
 }
+
+func TestActiveModelPreflight_U4(t *testing.T) {
+	mk := func() *fakePromptDeps {
+		d := &fakePromptDeps{}
+		d.agentModels = &SessionModelState{
+			CurrentModelId:  "m-1",
+			AvailableModels: []ModelInfo{{ModelId: "m-1", Name: "Model 1"}},
+		}
+		return d
+	}
+	d := mk()
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("no policy: %v", err)
+	}
+	d = mk()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
+	if err := activeModelPreflight(d); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("hidden current must be refused, got %v", err)
+	}
+	d = mk()
+	d.hiddenPolicyErr = errors.New("bad")
+	if err := activeModelPreflight(d); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("policy error must fail closed, got %v", err)
+	}
+	d = mk()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 2")
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("eligible: %v", err)
+	}
+	d = mk()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
+	d.agentModels.Synthesized = true
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("synthesized no-op: %v", err)
+	}
+	d = mk()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
+	d.agentModels.CurrentModelId = ""
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("empty current no-op: %v", err)
+	}
+	d = mk()
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
+	d.agentModels = nil
+	if err := activeModelPreflight(d); err != nil {
+		t.Fatalf("nil models no-op: %v", err)
+	}
+}
