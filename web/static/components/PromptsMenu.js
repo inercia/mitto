@@ -5,6 +5,7 @@
 const { html, Fragment, useState } = window.preact;
 
 import { getPromptIcon, LoopIcon } from "./Icons.js";
+import { SearchableMenu } from "./SearchableMenu.js";
 import {
   getContrastColor,
   flattenPrompts,
@@ -257,53 +258,28 @@ export function PromptsMenu({
   };
 
   return html`
-    <${Fragment}>
-      <div class="px-2 pt-2 pb-1 shrink-0">
-        <input
-          ref=${filterInputRef}
-          type="text"
-          value=${filterText}
-          onInput=${(e) => onFilterChange && onFilterChange(e.target.value)}
-          onKeyDown=${onFilterKeyDown}
-          placeholder=${placeholder}
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck=${false}
-          data-testid=${filterTestId}
-          class="input input-sm w-full"
-        />
-      </div>
-      <div
-        class="px-2 py-1 overflow-y-auto flex-1 min-h-0"
-        style="scrollbar-gutter: stable;"
-        data-testid=${listTestId}
-      >
-        <ul class="flex flex-col w-full p-0 m-0 list-none">
-          ${groups.map(
-            (g) => html`
-              <${Fragment} key=${keyPrefix + "-group-" + g.name}>
-                <li class="menu-title px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
-                  ${g.name}
-                </li>
-                ${g.prompts.map(renderItem)}
-              </${Fragment}>
-            `,
-          )}
-        </ul>
-        ${
-          flat.length === 0 &&
-          html`<div class="px-4 py-3 text-xs text-mitto-text-muted text-center">
-            ${emptyText}
-          </div>`
-        }
-      </div>
-      ${
-        footer &&
-        html`<div class="px-3 py-1.5 border-t border-mitto-border-1 shrink-0">
-          ${footer}
-        </div>`
-      }
-    </${Fragment}>
+    <${SearchableMenu}
+      items=${flat}
+      filterText=${filterText}
+      onFilterChange=${onFilterChange}
+      onFilterKeyDown=${onFilterKeyDown}
+      filterInputRef=${filterInputRef}
+      placeholder=${placeholder}
+      emptyText=${emptyText}
+      filterTestId=${filterTestId}
+      listTestId=${listTestId}
+      footer=${footer}
+    >
+      ${groups.map(
+        (g) => html`
+          <${Fragment} key=${keyPrefix + "-group-" + g.name}>
+            <li class="menu-title px-4 py-2 text-xs font-semibold text-mitto-text-muted uppercase tracking-wider bg-mitto-surface-3/30">
+              ${g.name}
+            </li>
+            ${g.prompts.map(renderItem)}
+          </${Fragment}>
+        `,
+      )}
+    </${SearchableMenu}>
   `;
 }

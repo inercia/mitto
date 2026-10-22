@@ -42,7 +42,44 @@ import {
   groupDialogParameters,
   unmetRequiredByGroup,
   unmetRequiredParams,
+  flattenPrompts,
 } from "./prompts.js";
+
+describe("flattenPrompts menu ordering and filtering", () => {
+  const prompts = [
+    { name: "Zulu", group: "Beta", description: "Useful description", backgroundColor: "#ff0000" },
+    { name: "Alpha", group: "Beta", prompt: "body-only needle", backgroundColor: "#0000ff" },
+    { name: "First", group: "Alpha" },
+    { name: "Ungrouped Z" },
+    { name: "Ungrouped A" },
+  ];
+  test("groups sort first, Other last; name order and original identities match flat render order", () => {
+    const result = flattenPrompts(prompts);
+    expect(result.groups.map((group) => group.name)).toEqual(["Alpha", "Beta", "Other"]);
+    expect(result.flat.map((prompt) => prompt.name)).toEqual(["First", "Alpha", "Zulu", "Ungrouped A", "Ungrouped Z"]);
+    expect(result.groups.flatMap((group) => group.prompts)).toEqual(result.flat);
+    expect(result.groups[2].isOther).toBe(true);
+    expect(result.flat[1]).toBe(prompts[1]);
+    expect(prompts[0].name).toBe("Zulu");
+  });
+  test("trimmed case-insensitive name OR description only, not group/body", () => {
+    expect(flattenPrompts(prompts, { filterText: "  uSeFuL  " }).flat).toEqual([prompts[0]]);
+    expect(flattenPrompts(prompts, { filterText: "zULu" }).flat).toEqual([prompts[0]]);
+    expect(flattenPrompts(prompts, { filterText: "Beta" }).flat).toEqual([]);
+    expect(flattenPrompts(prompts, { filterText: "body-only needle" }).flat).toEqual([]);
+    expect(flattenPrompts([], { filterText: "anything" })).toEqual({ groups: [], flat: [] });
+    expect(flattenPrompts(prompts, { filterText: "   " }).flat).toHaveLength(5);
+  });
+  test("color sort stays within alphabetic groups, uncolored last and ties by name", () => {
+    const uncolored = { name: "Aardvark", group: "Beta" };
+    const red = { name: "Red A", group: "Beta", backgroundColor: "#ff0000" };
+    const result = flattenPrompts([...prompts, uncolored, red], { sortMode: "color" });
+    expect(result.groups.map((group) => group.name)).toEqual(["Alpha", "Beta", "Other"]);
+    expect(result.groups[1].prompts).toEqual([red, prompts[0], prompts[1], uncolored]);
+    expect(result.flat[1]).toBe(red);
+    expect(result.flat[2]).toBe(prompts[0]);
+  });
+});
 
 // =============================================================================
 // promptMenus Tests

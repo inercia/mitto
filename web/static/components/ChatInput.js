@@ -44,6 +44,7 @@ import {
   setTextareaMinHeight as setStoredTextareaMinHeight,
 } from "../utils/storage.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
+import { useSearchableMenu } from "../hooks/useSearchableMenu.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { LoopControlBar } from "./LoopControlBar.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
@@ -291,10 +292,8 @@ function ChatInputImpl({
 
   const [showDropup, setShowDropup] = useState(false);
   const [promptFilterText, setPromptFilterText] = useState("");
-  const [promptSelectedIndex, setPromptSelectedIndex] = useState(-1);
   const [shiftHeld, setShiftHeld] = useState(false);
   const promptFilterInputRef = useRef(null);
-  const selectedPromptItemRef = useRef(null);
   // Tracks whether resume was already triggered to avoid firing onResume multiple times
   const resumeTriggeredRef = useRef(false);
 
@@ -361,6 +360,17 @@ function ChatInputImpl({
     }).flat;
   }, [predefinedPrompts, promptFilterText, promptSortMode]);
 
+  const {
+    selectedIndex: promptSelectedIndex,
+    selectedItemRef: selectedPromptItemRef,
+    handleKeyDown: handlePromptFilterKeyDown,
+    resetSelection: resetPromptSelection,
+  } = useSearchableMenu({
+    items: flatFilteredPrompts,
+    onAccept: (prompt, event) => handlePredefinedPrompt(prompt, event),
+    onClose: () => setShowDropup(false),
+  });
+
   // Handler for toggling the prompts dropdown
   // Calls onPromptsOpen callback when opening to trigger prompt refresh
   const handleTogglePrompts = useCallback(() => {
@@ -368,7 +378,7 @@ function ChatInputImpl({
     setShowDropup(willOpen);
     if (willOpen) {
       setPromptFilterText("");
-      setPromptSelectedIndex(-1);
+      resetPromptSelection();
       if (onPromptsOpen) {
         onPromptsOpen();
       }
@@ -504,13 +514,6 @@ function ChatInputImpl({
       setStoredTextareaMinHeight(finalHeight);
     },
   });
-
-  // Scroll selected prompt into view when keyboard selection changes
-  useEffect(() => {
-    if (promptSelectedIndex >= 0) {
-      selectedPromptItemRef.current?.scrollIntoView({ block: "nearest" });
-    }
-  }, [promptSelectedIndex]);
 
   // Listen for prompt sort mode changes from settings
   useEffect(() => {
@@ -3179,51 +3182,9 @@ function ChatInputImpl({
                           filterText=${promptFilterText}
                           onFilterChange=${(value) => {
                             setPromptFilterText(value);
-                            setPromptSelectedIndex(-1);
+                            resetPromptSelection();
                           }}
-                          onFilterKeyDown=${(e) => {
-                            // Prevent the event from bubbling to the textarea
-                            e.stopPropagation();
-                            if (e.key === "Escape") {
-                              e.preventDefault();
-                              setShowDropup(false);
-                              return;
-                            }
-                            if (e.key === "ArrowDown") {
-                              e.preventDefault();
-                              setPromptSelectedIndex((prev) =>
-                                Math.min(
-                                  prev + 1,
-                                  flatFilteredPrompts.length - 1,
-                                ),
-                              );
-                              return;
-                            }
-                            if (e.key === "ArrowUp") {
-                              e.preventDefault();
-                              setPromptSelectedIndex((prev) =>
-                                Math.max(-1, prev - 1),
-                              );
-                              return;
-                            }
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              if (
-                                promptSelectedIndex >= 0 &&
-                                flatFilteredPrompts.length > 0
-                              ) {
-                                const clampedIndex = Math.min(
-                                  Math.max(promptSelectedIndex, 0),
-                                  flatFilteredPrompts.length - 1,
-                                );
-                                handlePredefinedPrompt(
-                                  flatFilteredPrompts[clampedIndex],
-                                  e,
-                                );
-                              }
-                              return;
-                            }
-                          }}
+                          onFilterKeyDown=${handlePromptFilterKeyDown}
                           filterInputRef=${promptFilterInputRef}
                           sortMode=${promptSortMode}
                           selectedIndex=${promptSelectedIndex}

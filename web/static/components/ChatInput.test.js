@@ -20,6 +20,79 @@ import {
   beforeEach,
   afterEach,
 } from "../utils/testing/testGlobals.js";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+test("actual ChatInput prompt navigation preserves keyboard versus mouse loop paths", async () => {
+  if (process.env.MITTO_CHAT_PROMPT_TEST_CHILD !== "1") {
+    const result = spawnSync(process.execPath, ["test", fileURLToPath(import.meta.url)], {
+      encoding: "utf8",
+      env: { ...process.env, MITTO_CHAT_PROMPT_TEST_CHILD: "1" },
+      timeout: 30_000,
+    });
+    if (result.status !== 0) throw new Error(`Isolated ChatInput tests failed:\n${result.stdout}\n${result.stderr}`);
+    return;
+  }
+  const preact = await import("../vendor/preact.js");
+  const hooks = await import("../vendor/preact-hooks.js");
+  const { default: htm } = await import("../vendor/htm.js");
+  const previous = window.preact;
+  window.preact = { ...preact, ...hooks, html: htm.bind(preact.h), memo: (component) => component };
+  const { ChatInput } = await import("./ChatInput.js");
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
+  const loopCalls = [];
+  const sendCalls = [];
+  const prompt = { name: "Optional", prompt: "Inserted text", loop: { mode: "optional", default: false } };
+  const open = async () => {
+    container.querySelector('[aria-label="Insert predefined prompt"]').click();
+    await settle();
+    return container.querySelector(".chat-input-prompts-dropup input[type=text]");
+  };
+  const key = async (input, value, shiftKey = false) => {
+    const event = new KeyboardEvent("keydown", { key: value, shiftKey, bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+    await settle();
+    return event;
+  };
+  try {
+    preact.render(preact.h(ChatInput, { sessionId: "mounted-prompt-test", predefinedPrompts: [prompt], onSend: (...args) => sendCalls.push(args), onLoopPrompt: (...args) => loopCalls.push(args) }), container);
+    let input = await open();
+    expect(document.activeElement).toBe(input);
+    await key(input, "Enter");
+    expect(sendCalls).toHaveLength(0);
+    expect(loopCalls).toHaveLength(0);
+    await key(input, "ArrowDown");
+    const checkbox = container.querySelector(".prompt-loop-checkbox");
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    await key(input, "Enter");
+    expect(loopCalls).toHaveLength(0);
+    expect(sendCalls).toHaveLength(1);
+    expect(container.querySelector(".chat-input-prompts-dropup")).toBeNull();
+    input = await open();
+    expect(container.querySelector(".prompt-item").style.boxShadow).toBe("");
+    const mouseCheckbox = container.querySelector(".prompt-loop-checkbox");
+    mouseCheckbox.checked = true;
+    mouseCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    container.querySelector(".prompt-item").click();
+    await settle();
+    expect(loopCalls).toEqual([[prompt, { asLoop: true }]]);
+    input = await open();
+    await key(input, "ArrowDown");
+    await key(input, "Enter", true);
+    expect(container.querySelector("textarea").value).toBe("Inserted text");
+    expect(sendCalls).toHaveLength(1);
+    expect(loopCalls).toHaveLength(1);
+  } finally {
+    preact.render(null, container);
+    container.remove();
+    window.preact = previous;
+  }
+});
 
 // =============================================================================
 // Render-branch logic (visibility of the Flush button)
