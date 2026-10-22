@@ -842,17 +842,22 @@ func TestBlockedDeferHandoffFragmentRenders(t *testing.T) {
 		if c.style == "short" {
 			for _, want := range []string{
 				"bd comment mitto-abc \"[deferred: <now-RFC3339>]",
-				"Blocked summary: We are trying to <goal>, but cannot continue until",
-				"Blocked at " + c.blockedAt + ".",
+				"Blocked summary: <confirmed causal blocker, missing evidence, or scope ambiguity",
+				"cannot be verified or closed",
+				"What I tried: <summary>",
 			} {
 				if !strings.Contains(out, want) {
 					t.Errorf("%q (short): missing short-form handoff %q", c.name, want)
 				}
 			}
 		} else {
-			want := "Why: Blocked at " + c.blockedAt + " — <root cause and evidence; include what was tried>."
-			if !strings.Contains(out, want) {
-				t.Errorf("%q (long): missing [deferred:] handoff line %q", c.name, want)
+			for _, want := range []string{
+				"Blocked summary: <confirmed causal blocker, missing evidence, or scope ambiguity",
+				"Why: At " + c.blockedAt + " — <confirmed cause or unknown fact, evidence and what was tried>.",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%q (long): missing epistemically-scoped handoff line %q", c.name, want)
+				}
 			}
 		}
 		// Loop word: driver vs router. Normalise all whitespace runs to a

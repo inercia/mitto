@@ -21,8 +21,9 @@
 {{- if eq .Role "consumer" }}
 **Refined beads.** If the bead carries the **`implementation-refined`** label, a prior investigation
 already produced an Investigation Report (a `bd comment` plus the enriched description / acceptance /
-design fields). Treat it as the authoritative spec: do **not** re-investigate or re-plan. Implement
-exactly the **Implementation instructions** for each work unit in the report's **Problem
+design fields). Treat it as the implementation plan, subject to later authoritative user
+clarifications; a report cannot turn proposals into binding gates or override user requirements.
+Do **not** re-investigate or re-plan otherwise. Implement exactly the **Implementation instructions** for each work unit in the report's **Problem
 decomposition** order, change only the files and symbols the report names, and **never touch anything
 listed under "Code not to touch"**. If the live code contradicts the report, or following it would
 require touching excluded code, stop and defer (Step 4) instead of improvising.

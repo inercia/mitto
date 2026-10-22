@@ -80,6 +80,14 @@ rebase first, then stop — do not open or update a PR against a stale base.
 
 #### Push and create-or-update the PR
 
+This driver's explicit PR-submission step authorizes only the push required for
+this PR: `<branch-name>` to the resolved `<push-remote>`. Do not push tags,
+releases, other branches, protected/base branches, `--all`, or `--mirror`. This
+does not authorize publishing dependencies, deploying, or adopting downstream
+work. Obey narrower caller/user restrictions and repository safety rules; if
+push is forbidden, skip PR submission and report it unperformed. Do not use
+force push here; the branch must pass the preflight above.
+
 {{ template "git/shared/pr-description-no-beads" $ctx }}
 
 This bead is being submitted by an automated driver, so there is no user to

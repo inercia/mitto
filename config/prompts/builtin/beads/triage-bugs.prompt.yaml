@@ -266,7 +266,7 @@ prompt: |
   2. Write a **structured handoff** comment on that bug:
 
      ```bash
-     bd comment <id> "Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
+     bd comment <id> "Blocked summary: <confirmed blocker with owner/evidence/causal reason OR unknown evidence/scope and what would resolve it>.
      Blocked at triage. What I tried: <summary>. What I need from you: <the ONE concrete question/decision>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
      ```
 

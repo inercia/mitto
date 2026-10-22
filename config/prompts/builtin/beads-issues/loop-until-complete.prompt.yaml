@@ -50,6 +50,12 @@ prompt: |
   {{- end }}
   This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own loop flag and stop.
 
+  **Role and submission boundary:** an assigned verifier/reviewer must retain its narrower
+  target, permissions and stop condition; this loop does not authorize taking over that task.
+  Report the mismatch and stop. Otherwise this orchestrator and its workers must not push.
+  Even `SubmitStrategy: "Pull Request"` means local commits only here, as documented above;
+  actual PR submission requires a separate explicitly authorized submission workflow.
+
   {{- if .Iteration.IsUninterrupted }}
   ## Continuation — uninterrupted scheduled run
 
@@ -172,13 +178,16 @@ prompt: |
   for an epic — its subtree of children). If nothing in scope is ready, go to
   **Step 5 (stop)**.
 
-  ## Step 3 — Evaluate and advance one increment
+  ## Step 3 — One bounded work phase, then an evidence handoff
 
   For `<target>`:
 
   1. Understand what "complete" means — read its **acceptance criteria**, design
      notes, and any prior `bd comment` history. Assess current status and what is
-     still missing.
+     still missing. Separate sourced requirements and later user clarifications from
+     agent proposals. Do not introduce release, publication or downstream-adoption gates
+     merely because they would be useful; unresolved material scope is a question, not
+     a confirmed external prerequisite.
   2. Claim it so others know it is being worked on:
 
      ```bash
@@ -260,16 +269,23 @@ prompt: |
      mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: ["<child-id>"])
      ```
 
+     This is the **evidence handoff**, not permission to start another work phase.
      Read the report to decide whether the increment **succeeded**, only
      **partially advanced**, or **got stuck** — this drives what you log below and
-     whether you close.
+     whether you close. Preserve missing evidence or ambiguous scope as unknown; do not
+     recast it as a proven external blocker or attribute it to the user.
   6. Log progress on the bead so the tracker reflects what happened:
 
      ```bash
      bd comment <target> "Iterate run: <what the child advanced this increment / what remains>."
      ```
 
-  7. If this increment **completes** the acceptance criteria, close it:
+  7. **Closure decision (no repair or publication):** close only if concrete evidence
+     establishes **every** authoritative acceptance criterion. A worker's completion
+     claim or phase label is not itself acceptance evidence. If evidence is missing or
+     scope is ambiguous, leave open and record exactly what cannot be verified;
+     if an explicit publication criterion is unmet, do not waive it or push to satisfy it.
+     If this increment **completes** the acceptance criteria, close it:
 
      ```bash
      bd comment <target> "Completed: <what was delivered, verification performed>."
@@ -307,7 +323,7 @@ prompt: |
   Then notify the user (works in both modes):
 
   ```
-  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate until issue complete — done", message: "<what was completed across runs, what was deferred/blocked, and why iteration stopped>", style: "success")
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate until issue complete — stopped", message: "<what was completed across runs, what remains unverified/deferred/blocked, and why iteration stopped>", style: "<success only if all in-scope work completed; warning otherwise>")
   ```
 
   After stopping, do nothing further this run.

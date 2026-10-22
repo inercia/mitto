@@ -68,7 +68,9 @@ inline. Do not close from terminal labels, prior comments, a stopped child, or t
    verdict PASS, a non-empty criterion checklist, EVERY criterion PASS with concrete evidence,
    and no blockers. Reload the durable `Acceptance verification:` report on the ticket and require
    it to agree. FAIL, UNKNOWN, skipped criteria, inferred/ambiguous requirements, or absent evidence
-   leaves the ticket open; record findings, notify, and stop. Do not turn mandatory remaining work
+    leaves the ticket open; preserve whether UNKNOWN is due to evidence, scope, stale state, or
+    another cause; do not label uncertainty a confirmed external blocker. Record findings, notify,
+    and stop. Do not turn mandatory remaining work
    into follow-up tickets merely to obtain PASS.
 6. Immediately recapture the state from step 2 (same narrowly defined exclusions) and compare it;
    recheck children/blockers, deferral/human gates and completion labels. Any change/unknown invalidates this attempt:

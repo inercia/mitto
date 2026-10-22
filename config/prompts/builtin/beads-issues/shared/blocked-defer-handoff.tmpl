@@ -95,8 +95,8 @@ Use this whenever this phase cannot make progress autonomously{{ with .Intro }} 
 
    ```bash
    bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
-   Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
-   Why: Blocked at {{ .BlockedAt }} — <root cause and evidence; include what was tried>.
+    Blocked summary: <confirmed causal blocker, missing evidence, or scope ambiguity; state specifically what cannot be verified or closed>.
+    Why: At {{ .BlockedAt }} — <confirmed cause or unknown fact, evidence and what was tried>.
    What human intervention is required: <the ONE concrete question/decision/info/action>.
    How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."
    ```
@@ -124,8 +124,8 @@ the `{{ .Label }}` label. Instead:
 
    ```bash
    bd comment {{ if .Target }}{{ .Target }}{{ else }}{{ .Placeholder }}{{ end }} "[deferred: <now-RFC3339>]
-   Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
-   Blocked at {{ .BlockedAt }}. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+    Blocked summary: <confirmed causal blocker, missing evidence, or scope ambiguity; state specifically what cannot be verified or closed>.
+    Blocked at {{ .BlockedAt }}. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action, if any>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
    ```
 
 3. End with a concise handoff message naming the blocker and the single thing

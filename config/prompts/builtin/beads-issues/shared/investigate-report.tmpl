@@ -37,7 +37,13 @@
 - **Code not to touch**: specific files, symbols, or components that must stay unchanged (or an
   explicit "none identified" after checking), why each is out of scope or risky to alter, and how
   the implementation avoids changing it. No vague exclusions like "leave unrelated code alone".
-- **Refined acceptance criteria**: specific, testable conditions for "done".
+- **Refined acceptance criteria**: preserve authoritative user requirements and
+  operationalize them into specific, testable conditions without adding
+  material gates. Requirements inferred or proposed by an agent are not binding.
+  New release, tag, publication, deployment, or downstream-adoption gates must
+  be marked as proposals pending authorization, not acceptance criteria. Apply
+  later authoritative user clarifications over stale agent plans without
+  weakening other explicit requirements.
 - **Design notes**: trade-offs and constraints behind the approach (if applicable).
 - **Edge cases & risks**: what could break or is easy to miss — callers, tests, migrations, config.
 - **Resolved questions**: the answers settled while investigating.

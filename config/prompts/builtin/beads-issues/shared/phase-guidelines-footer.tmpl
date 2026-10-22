@@ -47,6 +47,10 @@
 - **Live state only.** Always re-read labels via `bd show --json` at the start of
   the phase; never assume labels from a prior run{{ if .IncludeItemNote }} or from `Item.*`{{ end }}.
 - **Always log to the tracker** with `bd comment` so progress is auditable.
+- **Phase workers never push.** A local commit or `SubmitStrategy=Pull Request`
+   does not authorize a push; the strategy selects the task branch only. Leave
+   pushing to the driver's separate submission step, and do not infer permission
+   to publish dependencies, deploy, or adopt downstream work.
 {{ template "beads-issues/shared/comment-formatting" . }}
 - **Tier tag every comment.** Prefix the {{ .TagNoun }} with `{{ .TagPrefix }} [tier: {{ .Tier }}]:` so
   the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).

@@ -79,10 +79,9 @@ prompt: |
 
   {{ template "beads-issues/shared/investigation-handoff" (dict "Role" "consumer") }}
 
-  **Important — this phase runs in its own loop iteration.** Unlike a single
-  long-lived session, each phase of this driver is a separate scheduled run, so any
-  uncommitted work here would be lost between iterations unless committed now (see
-  Step 3).
+  **Durable handoff:** later phases reload the bead and working tree. Record changed
+  paths and remaining work; a new turn does not itself discard uncommitted files.
+  Honor `SubmitStrategy` rather than committing merely because another phase follows.
 
   ## Step 2 — Implement the feature
 
@@ -118,9 +117,9 @@ prompt: |
 
   - **One stage only.** This phase advances at most one label (`implemented`). Do not
     write tests or self-review — those are separate phases.
-  - **Commit to persist across iterations.** Each phase runs in a separate loop
-    iteration; with `SubmitStrategy: "None"`, work here is only as durable as the
-    conversation's working tree.
+  - **Handoff, not scope expansion.** Record implementation evidence and stop. Test,
+    review, acceptance closure and any authorized PR publication belong to their own steps;
+    do not add release/tag/publication requirements to make this increment look complete.
   {{ template "beads-issues/shared/phase-guidelines-footer" (dict
       "IncludeItemNote" false
       "TagNoun"         "summary"

@@ -366,7 +366,7 @@ prompt: |
 
      ```bash
      bd comment {{ if $target }}{{ $target }}{{ else }}<target-bead>{{ end }} "[deferred: <now-RFC3339>]
-     Blocked summary: We are trying to <goal>, but cannot continue until <A/B/C prerequisites with owners and causal reasons>.
+     Blocked summary: <confirmed blocker with owner/evidence/causal reason OR unknown evidence/scope and what would resolve it>.
      Why: Blocked at mention-router — <root cause>.
      What human intervention is required: <the ONE concrete action>.
      How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."

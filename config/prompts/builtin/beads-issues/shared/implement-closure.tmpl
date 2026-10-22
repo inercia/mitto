@@ -10,7 +10,8 @@
     Label  — phase label to add on success (e.g. "fixed", "implemented")
     Tag    — comment prefix (e.g. "Fix", "Implementation")
     Commit — bool, commit at the end
-    PR     — bool, Pull Request submit strategy (commit on the bead branch)
+    PR     — bool, Pull Request submit strategy (commit on the bead branch;
+             branch selection only, not push authorization)
 */}}
 ### Closure 1 — Record the work on the bead
 
@@ -58,6 +59,9 @@ git status --porcelain
     "Summary"  "<one-line summary>"
     "BodyHint" (printf "<body: what changed and why. Refs: %s>" .Target)
 ) }}
+This is a phase-worker commit only. `SubmitStrategy=Pull Request` selects the
+task branch; it does **not** authorize this phase worker to push. The driver
+performs any authorized PR submission in its separate submit step.
 {{- else -}}
 ### Closure 3 — Do NOT commit
 

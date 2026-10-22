@@ -49,6 +49,9 @@ func TestBlockedExplanationFragmentRendersAcrossBlockedIssuePaths(t *testing.T) 
 			out := renderBuiltinPromptWithFragments(t, name, ctx)
 			for _, hallmark := range []string{
 				"**Required blocked explanation — make the cause understandable.**",
+				"Confirmed blocker only:",
+				"For missing evidence or scope ambiguity",
+				"not a presumed external prerequisite",
 				"We are trying to **<goal or outcome>**, **but** cannot continue until:",
 				"**A — <concrete prerequisite>**",
 				"Never report only “blocked”",
@@ -74,7 +77,7 @@ func TestBlockedExplanationExamplesDoNotUseOpaqueBlockerIDs(t *testing.T) {
 	for _, hallmark := range []string{
 		"`blocked-by <id>` alone is forbidden",
 		"blocked-by <id> (<title>): need <prerequisite> before <goal can continue>",
-		"Blocked summary: We are trying to <goal>, but cannot continue until",
+		"Blocked summary: <confirmed blocker with owner/evidence/causal reason OR unknown evidence/scope",
 	} {
 		if !strings.Contains(out, hallmark) {
 			t.Errorf("Loop processing tasks missing clear-blocker hallmark %q", hallmark)

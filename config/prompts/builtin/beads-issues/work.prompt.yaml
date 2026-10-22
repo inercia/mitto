@@ -35,6 +35,8 @@ prompt: |
   {{ $close := Default "Ask" .Args.ClosePolicy -}}
   Explicit policy: Commit={{ $commit }}; ClosePolicy={{ $close }}.
   Never push automatically. Commit task paths/hunks only; preserve unrelated staging/conventions.
+  Restricted verifier/reviewer: retain role, target, permissions and stop condition.
+  Do not take over implementation, dispatch or closure. Report the mismatch and stop.
   {{ if not $commit }}Do not commit; report uncommitted files.{{ end }}
   {{ if and (ne $close "Ask") (ne $close "Leave open") (ne $close "Verify and close") }}Invalid ClosePolicy: report and stop.{{ end }}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
@@ -92,11 +94,13 @@ prompt: |
   `Continue to <phase>` then `Not now`, free text enabled, 60-second timeout); decline or changed
   instructions stops dispatch/follow-up. At first Fix/Implement with `implementation-refined`,
   `researched`, or `planned`, include latest `Investigation:`/`Plan:` decomposition, instructions,
-  and no-touch constraints; never ask twice. Record feedback with `bd comment`;
+  and no-touch constraints. Never ask twice. Record feedback with `bd comment`;
   return to investigation/planning. Timeout:
   {{ template "_shared/timeout-default-continue" . }}
   On successful approved/timed-out dispatch, send the selected named phase to `self`:
-  `{ "IssueID": "<effective-id>", "SubmitStrategy": "{{ if $commit }}Commit{{ else }}None{{ end }}" }`,
+  `{ "IssueID": "<effective-id>", "SubmitStrategy": "{{ if $commit }}Commit{{ else }}None{{ end }}", "AdditionalInstructions": "<handoff>" }`.
+  Handoff: user clarifications verbatim with source; agent inferences/proposals separately,
+  never as user decisions. Carry these forward on every phase dispatch,
   then queue named **Start work** with that same ID and arguments
   `{ "IssueID": "<effective-id>", "Commit": "{{ $commit }}", "ClosePolicy": "{{ $close }}" }`.
   Never queue if blocked, declined, dispatch failed, or terminal. Parallel independent children:
