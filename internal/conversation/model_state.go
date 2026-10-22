@@ -7,6 +7,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/modelcache"
 )
 
 // LogSessionConfigOptions logs a per-response summary of the ConfigOptions
@@ -301,6 +302,73 @@ func DeriveAgentModels(
 		return models, "", ModelCatalogSourceLocalProfileFallback
 	}
 	return nil, "", ""
+}
+
+// DeriveAgentModelsFiltered is DeriveAgentModels with the per-agent
+// hidden-model policy applied. Real catalog sources (config options, ACP
+// models) are filtered but never replaced by profile synthesis: an all-hidden
+// real catalog yields a non-nil state with empty AvailableModels and
+// modelcache.CatalogPolicyEmpty. Profiles are synthesized only when no real
+// catalog exists, and the synthesized choices are filtered too. CurrentModelId
+// is never rewritten. A nil policy hides nothing.
+func DeriveAgentModelsFiltered(
+	policy *config.HiddenModelPolicy,
+	opts []acp.SessionConfigOption,
+	respModels *acp.SessionModelState,
+	profiles []config.ModelProfile,
+) (*SessionModelState, acp.SessionConfigId, string, modelcache.CatalogState) {
+	models, cfgId, source := DeriveAgentModels(opts, respModels, profiles)
+	if models == nil {
+		if source == ModelCatalogSourceACPModelsEmpty {
+			return nil, cfgId, source, modelcache.CatalogEmpty
+		}
+		return nil, cfgId, source, modelcache.CatalogAbsent
+	}
+	out := *models
+	out.AvailableModels = config.FilterHiddenModels(policy, models.AvailableModels, func(m ModelInfo) (string, string) {
+		return m.ModelId, m.Name
+	})
+	if out.AvailableModels == nil {
+		out.AvailableModels = []ModelInfo{}
+	}
+	state := modelcache.CatalogAvailable
+	switch {
+	case len(models.AvailableModels) == 0:
+		state = modelcache.CatalogEmpty
+	case len(out.AvailableModels) == 0:
+		state = modelcache.CatalogPolicyEmpty
+	}
+	return &out, cfgId, source, state
+}
+
+// FilterConfigOptions removes policy-hidden choices from model select options
+// in a Mitto config-option snapshot. An option is a model option when its
+// Category is "model" or its ID equals modelConfigID (default ModelConfigId).
+// Order, option metadata and each remaining value's Group/GroupName/Description
+// are preserved; groups whose values are all hidden disappear with them. The
+// input is never mutated, CurrentValue is left truthful, and other options are
+// returned untouched.
+func FilterConfigOptions(policy *config.HiddenModelPolicy, opts []SessionConfigOption, modelConfigID string) []SessionConfigOption {
+	if opts == nil {
+		return nil
+	}
+	if modelConfigID == "" {
+		modelConfigID = string(ModelConfigId)
+	}
+	out := make([]SessionConfigOption, len(opts))
+	for i, o := range opts {
+		out[i] = o
+		if o.Type != ConfigOptionTypeSelect || (o.Category != "model" && o.ID != modelConfigID) {
+			continue
+		}
+		out[i].Options = config.FilterHiddenModels(policy, o.Options, func(v SessionConfigOptionValue) (string, string) {
+			return v.Value, v.Name
+		})
+		if out[i].Options == nil {
+			out[i].Options = []SessionConfigOptionValue{}
+		}
+	}
+	return out
 }
 
 // ConfigOptionsFromACP converts the agent-advertised ACP config options into
