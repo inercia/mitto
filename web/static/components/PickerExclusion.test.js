@@ -105,6 +105,21 @@ if (process.env.MITTO_PICKER_EXCLUSION_TEST_CHILD === "1") {
           document.activeElement === modelFilter(),
         "the model menu to reopen and close prompts",
       );
+
+      // A real pointer press on the prompts trigger must not close Model on
+      // mousedown (that reflows the toolbar and retargets the click).
+      promptButton().dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      if (modelDetails()?.open !== true) {
+        throw new Error("model menu closed on prompts trigger mousedown");
+      }
+      promptButton().click();
+      await waitFor(
+        () => modelDetails()?.open === false && promptPanel() !== null,
+        "prompts to open from a model-open press+click",
+      );
     } finally {
       preact.render(null, container);
       container.remove();

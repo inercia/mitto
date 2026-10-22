@@ -3238,6 +3238,7 @@ function ChatInputImpl({
                     `}
                     <button
                       type="button"
+                      data-exclusive-picker-trigger
                       onClick=${handleTogglePrompts}
                       onMouseDown=${(e) => e.preventDefault()}
                       disabled=${isFullyDisabled || isReadOnly}

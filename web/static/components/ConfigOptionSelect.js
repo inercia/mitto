@@ -116,6 +116,9 @@ export function ConfigOptionSelect({
   useEffect(() => {
     if (!open) return undefined;
     const onDocPointer = (e) => {
+      // Exclusive-picker triggers close this menu via the registry on click;
+      // closing on mousedown shifts the toolbar and retargets that click.
+      if (e.target?.closest?.("[data-exclusive-picker-trigger]")) return;
       if (detailsRef.current && !detailsRef.current.contains(e.target)) {
         setOpen(false);
       }
