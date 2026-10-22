@@ -353,6 +353,28 @@ func BackoffDelay(attempt int, baseDelay, maxDelay time.Duration, jitterRatio fl
 // It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
 var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
 
+// providerQuotaMarker matches OpenCode's structured quota error name.
+var providerQuotaMarker = regexp.MustCompile(`"errorname"\s*:\s*"provider\.quota-exceeded"`)
+
+// providerQuotaErrorKind recognizes explicit provider quota signals without
+// treating generic HTTP 429s or incidental mentions of a budget as quota errors.
+func providerQuotaErrorKind(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "copilot budget") &&
+		(strings.Contains(msg, "exceeded") || strings.Contains(msg, "exhausted")) {
+		return "copilot-budget"
+	}
+	if providerQuotaMarker.MatchString(msg) ||
+		strings.Contains(msg, "quota exceeded") || strings.Contains(msg, "quota-exceeded") ||
+		strings.Contains(msg, "the usage limit has been reached") {
+		return "provider-quota"
+	}
+	return ""
+}
+
 // status413Regex matches a 413 status code anchored to a recognizable status
 // keyword or HTTP-response prefix (mitto-3rs). Unlike a bare `strings.Contains(s,
 // "413")`, this does not false-positive on the digits "413" appearing incidentally
@@ -741,6 +763,17 @@ func FormatACPErrorWithContext(err error, hints FormatErrorHints) string {
 		return "The AI agent's upstream API is temporarily unavailable (provider " +
 			"outage). This is transient and Mitto will retry automatically — " +
 			"please try again in a moment."
+	}
+
+	// Explicit provider quota and exhausted Copilot budgets are actionable
+	// account/usage limits, not ordinary transient rate limits. Never surface
+	// the provider's raw message, which may contain sensitive response data.
+	switch providerQuotaErrorKind(err) {
+	case "copilot-budget":
+		return "Your Copilot organization or enterprise budget has been exceeded. " +
+			"Contact your Copilot administrator to review or increase the budget before retrying."
+	case "provider-quota":
+		return "The provider's usage quota has been exceeded. Check your provider plan or usage limits, then try again."
 	}
 
 	// Pinned model refused upstream (Augment /chat-stream returned

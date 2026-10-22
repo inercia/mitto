@@ -471,6 +471,62 @@ func TestFormatACPErrorWithContext_QueryClosedHandshake_ProcessHistory(t *testin
 	}
 }
 
+func TestFormatACPError_ProviderQuotaErrors(t *testing.T) {
+	secret := "sensitive-provider-detail"
+	tests := []struct {
+		name, payload, want string
+	}{
+		{"Copilot organization budget", `{"code":-32603,"message":"Internal error: Your organization or enterprise has exceeded its Copilot budget. Contact your admin to resume usage. ` + secret + `","data":{"errorName":"provider.quota-exceeded","service":"session"}}`, "Copilot organization"},
+		{"provider HTTP 429 quota", `{"code":-32603,"message":"Internal error: Provider request failed with HTTP 429: quota exceeded ` + secret + `","data":{"errorName":"provider.quota-exceeded","service":"session"}}`, "usage quota"},
+		{"wrapped mixed-case budget", `session failed: {"code":-32603,"message":"INTERNAL ERROR: YOUR ORGANIZATION HAS EXCEEDED ITS COPILOT BUDGET"}`, "Copilot organization"},
+		{"marker alone", `{"code":-32603,"message":"Internal error","data":{"errorName":"provider.quota-exceeded"}}`, "usage quota"},
+		{"usage limit reached", `{"code":-32603,"message":"Internal error: The usage limit has been reached"}`, "usage quota"},
+		{"quota takes precedence over rate limit", `{"code":-32603,"message":"Internal error: rate limit: QUOTA EXCEEDED"}`, "usage quota"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatACPError(errors.New(tt.payload))
+			if !containsIgnoreCase(got, tt.want) || containsIgnoreCase(got, "internal error") || strings.Contains(got, secret) || strings.Contains(got, tt.payload) {
+				t.Errorf("unsafe or unhelpful quota message: %q", got)
+			}
+			guidance := "Check your provider plan or usage limits"
+			if tt.want == "Copilot organization" {
+				guidance = "Contact your Copilot administrator"
+			}
+			if !strings.Contains(got, guidance) || strings.Contains(got, "simplify your request") {
+				t.Errorf("quota message lacks appropriate guidance: %q", got)
+			}
+			if wrapped := FormatACPError(fmt.Errorf("prompt failed: %w", errors.New(tt.payload))); wrapped != got {
+				t.Errorf("wrapping changes quota guidance: %q, want %q", wrapped, got)
+			}
+		})
+	}
+	if got := FormatACPError(nil); got != "" {
+		t.Errorf("nil error = %q, want empty", got)
+	}
+
+	for _, tc := range []struct {
+		err          error
+		want         string
+		wantInternal bool
+	}{
+		{errors.New(`{"code":-32603,"message":"Internal error: HTTP 429"}`), "encountered an internal error", true},
+		{errors.New(`{"code":-32603,"message":"Internal error: rate limit exceeded"}`), "Rate limit reached", false},
+		{errors.New(`{"code":-32603,"message":"Internal error: too many requests"}`), "Rate limit reached", false},
+		{errors.New(`{"code":-32603,"message":"Internal error: request budget timed out; quota unknown"}`), "encountered an internal error", true},
+	} {
+		got := FormatACPError(tc.err)
+		if !containsIgnoreCase(got, tc.want) || containsIgnoreCase(got, "usage quota") || containsIgnoreCase(got, "encountered an internal error") != tc.wantInternal {
+			t.Errorf("ordinary rate limit/429 should retain existing wording, got %q", got)
+		}
+	}
+	unknown := errors.New(`{"code":-32603,"message":"Internal error","data":{"details":"` + secret + `"}}`)
+	got := FormatACPError(unknown)
+	if !containsIgnoreCase(got, "encountered an internal error") || !strings.Contains(got, "simplify your request") {
+		t.Errorf("unknown internal error fallback changed: %q", got)
+	}
+}
+
 // TestFormatACPError_IsZeroHintWrapperAroundFormatACPErrorWithContext locks in
 // that FormatACPError(err) stays byte-identical to
 // FormatACPErrorWithContext(err, FormatErrorHints{}) for every existing
