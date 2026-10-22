@@ -1103,16 +1103,18 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				// "match: first" processor reinjection (mitto-cq4).
 				bs.clearFirstPromptIfContextRetained()
 				bs.setSessionModes(resumeResp.Modes)
-				models, cfgId, modelSource := DeriveAgentModels(
+				models, cfgId, modelSource := bs.deriveSelectableModels(
 					resumeResp.ConfigOptions,
 					resumeResp.Models,
-					bs.mittoConfig.EffectiveModelProfiles(),
 				)
 				fallbackTag := ""
 				if modelSource != "" && modelSource != ModelCatalogSourceConfigOptions {
 					fallbackTag = modelSource
 				}
 				bs.logSessionConfigOptions("resume", resumeResp.ConfigOptions, fallbackTag)
+				if cfgId != "" {
+					bs.modelConfigId = cfgId
+				}
 				bs.setAgentModels(models)
 				bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(resumeResp.ConfigOptions))
 				if cfgId != "" {
@@ -1169,16 +1171,18 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.clearFirstPromptIfContextRetained()
 				// Store available modes from session load
 				bs.setSessionModes(loadResp.Modes)
-				models, cfgId, modelSource := DeriveAgentModels(
+				models, cfgId, modelSource := bs.deriveSelectableModels(
 					loadResp.ConfigOptions,
 					loadResp.Models,
-					bs.mittoConfig.EffectiveModelProfiles(),
 				)
 				fallbackTag := ""
 				if modelSource != "" && modelSource != ModelCatalogSourceConfigOptions {
 					fallbackTag = modelSource
 				}
 				bs.logSessionConfigOptions("load", loadResp.ConfigOptions, fallbackTag)
+				if cfgId != "" {
+					bs.modelConfigId = cfgId
+				}
 				bs.setAgentModels(models)
 				bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(loadResp.ConfigOptions))
 				if cfgId != "" {
@@ -1250,16 +1254,18 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Store available modes from session setup
 	bs.setSessionModes(sessResp.Modes)
-	models, cfgId, modelSource := DeriveAgentModels(
+	models, cfgId, modelSource := bs.deriveSelectableModels(
 		sessResp.ConfigOptions,
 		sessResp.Models,
-		bs.mittoConfig.EffectiveModelProfiles(),
 	)
 	fallbackTag := ""
 	if modelSource != "" && modelSource != ModelCatalogSourceConfigOptions {
 		fallbackTag = modelSource
 	}
 	bs.logSessionConfigOptions("new", sessResp.ConfigOptions, fallbackTag)
+	if cfgId != "" {
+		bs.modelConfigId = cfgId
+	}
 	bs.setAgentModels(models)
 	bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(sessResp.ConfigOptions))
 	if cfgId != "" {

@@ -99,12 +99,12 @@ func (bs *BackgroundSession) setSessionModes(modes *acp.SessionModeState) {
 
 // setConfigOptionsSnapshot installs the agent-advertised generic config options.
 func (bs *BackgroundSession) setConfigOptionsSnapshot(options []SessionConfigOption) {
-	bs.callbackSink.setConfigOptionsSnapshot(bs, options)
+	bs.callbackSink.setConfigOptionsSnapshot(bs, bs.selectableConfigOptions(options, string(bs.modelConfigId)))
 }
 
 // onConfigOptionsUpdate handles an agent config_option_update (replacement snapshot).
 func (bs *BackgroundSession) onConfigOptionsUpdate(options []SessionConfigOption) {
-	bs.callbackSink.onConfigOptionsUpdate(bs, options)
+	bs.callbackSink.onConfigOptionsUpdate(bs, bs.selectableConfigOptions(options, string(bs.modelConfigId)))
 }
 
 // setAgentModels converts agent model state to a "model" config option.
@@ -381,18 +381,91 @@ func (bs *BackgroundSession) cbStoreAgentModels(models *SessionModelState) {
 	bs.agentModels = snapshot
 	bs.agentModelsMu.Unlock()
 
-	// Persist only a real, non-empty catalog. A synthesized list is derived from
-	// local profiles rather than confirmed by the agent, and an empty update
-	// must not erase the last catalog advertised by this ACP server.
-	if bs.onAgentModels == nil || snapshot == nil || snapshot.Synthesized || len(snapshot.AvailableModels) == 0 {
+}
+
+// recordRawAgentCatalog persists the RAW (unfiltered) catalog to the cache.
+// It must run before any hidden-model policy is applied so hide/unhide never
+// loses data. Only a real, non-empty catalog is persisted: a synthesized list
+// is derived from local profiles and an empty update must not erase the last
+// catalog advertised by this ACP server.
+func (bs *BackgroundSession) recordRawAgentCatalog(raw *SessionModelState) {
+	if bs.onAgentModels == nil || raw == nil || raw.Synthesized || len(raw.AvailableModels) == 0 {
 		return
 	}
-	stateForRecorder := cloneSessionModelState(snapshot)
+	stateForRecorder := cloneSessionModelState(raw)
 	if err := bs.onAgentModels(bs.acpServer, stateForRecorder.AvailableModels); err != nil && bs.logger != nil {
 		bs.logger.Warn("Failed to persist agent model catalog",
 			"acp_server", bs.acpServer,
 			"error", err)
 	}
+}
+
+// hiddenModelPolicy compiles the hidden-model policy of this session's
+// configured ACP server. A missing config or unknown server yields a nil
+// (allow-all) policy; a compile failure is returned so callers fail closed.
+func (bs *BackgroundSession) hiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	if bs.mittoConfig == nil {
+		return nil, nil
+	}
+	srv, err := bs.mittoConfig.GetServer(bs.acpServer)
+	if err != nil || srv == nil {
+		return nil, nil
+	}
+	policy, err := config.CompileHiddenModels(bs.acpServer, srv.HiddenModels)
+	if err != nil && bs.logger != nil {
+		bs.logger.Error("Hidden-model policy failed to compile; hiding all model choices",
+			"acp_server", bs.acpServer, "error", err)
+	}
+	return policy, err
+}
+
+// deriveSelectableModels records the raw catalog, then derives the
+// policy-filtered selectable model state. On a policy error it fails closed
+// with a non-nil empty state and never synthesizes.
+func (bs *BackgroundSession) deriveSelectableModels(opts []acp.SessionConfigOption, respModels *acp.SessionModelState) (*SessionModelState, acp.SessionConfigId, string) {
+	profiles := bs.mittoConfig.EffectiveModelProfiles()
+	raw, rawCfgID, rawSource := DeriveAgentModels(opts, respModels, profiles)
+	bs.recordRawAgentCatalog(raw)
+	policy, err := bs.hiddenModelPolicy()
+	if err != nil {
+		failed := &SessionModelState{AvailableModels: []ModelInfo{}}
+		if raw != nil {
+			failed.CurrentModelId = raw.CurrentModelId
+		}
+		return failed, rawCfgID, rawSource
+	}
+	models, cfgID, source, _ := DeriveAgentModelsFiltered(policy, opts, respModels, profiles)
+	return models, cfgID, source
+}
+
+// hideAllModelsPolicy is the fail-closed policy used when the configured
+// policy cannot be compiled.
+func hideAllModelsPolicy() *config.HiddenModelPolicy {
+	p, _ := config.CompileHiddenModels("", []string{".*"})
+	return p
+}
+
+// selectableConfigOptions filters model choices out of an ACP option list
+// according to the hidden-model policy (fail closed on policy errors).
+func (bs *BackgroundSession) selectableConfigOptions(opts []SessionConfigOption, modelConfigID string) []SessionConfigOption {
+	policy, err := bs.hiddenModelPolicy()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	return FilterConfigOptions(policy, opts, modelConfigID)
+}
+
+// cbClearModelConfigOption removes any model config option.
+func (bs *BackgroundSession) cbClearModelConfigOption() {
+	bs.configMu.Lock()
+	kept := make([]SessionConfigOption, 0, len(bs.configOptions))
+	for _, opt := range bs.configOptions {
+		if opt.Category != ConfigOptionCategoryModel {
+			kept = append(kept, opt)
+		}
+	}
+	bs.configOptions = kept
+	bs.configMu.Unlock()
 }
 
 // cbACPServerConstraint returns the constraint for a category (may be nil).

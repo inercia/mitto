@@ -193,14 +193,16 @@ func TestAgentModelsSnapshot_RecordsOnlyRealCatalogsOutsideLock(t *testing.T) {
 		return errors.New("disk unavailable")
 	}
 
-	bs.cbStoreAgentModels(&SessionModelState{
+	real := &SessionModelState{
 		CurrentModelId: "must-not-be-persisted",
 		AvailableModels: []ModelInfo{{
 			ModelId:     "model-a",
 			Name:        "Model A",
 			Description: &description,
 		}},
-	})
+	}
+	bs.recordRawAgentCatalog(real)
+	bs.cbStoreAgentModels(real)
 	if calls != 1 {
 		t.Fatalf("recorder calls after real catalog = %d, want 1", calls)
 	}
@@ -232,7 +234,7 @@ func TestResumeBackgroundSession_WiresOnAgentModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResumeBackgroundSession failed: %v", err)
 	}
-	bs.cbStoreAgentModels(&SessionModelState{AvailableModels: []ModelInfo{{ModelId: "m1"}}})
+	bs.recordRawAgentCatalog(&SessionModelState{AvailableModels: []ModelInfo{{ModelId: "m1"}}})
 	if gotServer != "test-server" {
 		t.Fatalf("recorder not wired on resume; got server %q", gotServer)
 	}

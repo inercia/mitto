@@ -1657,7 +1657,7 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	bs.markACPContextUnknown() // Only mark fresh after initialization succeeds.
 	bs.hsPersistACPSessionID()
 	bs.setSessionModes(freshSess.Modes)
-	models, configID, _ := DeriveAgentModels(freshSess.ConfigOptions, freshSess.Models, bs.mittoConfig.EffectiveModelProfiles())
+	models, configID, _ := bs.deriveSelectableModels(freshSess.ConfigOptions, freshSess.Models)
 	bs.modelConfigId = configID // Clear an old ID when the new catalog uses the fallback.
 	bs.callbackSink.setAgentModels(freshSessionModelDeps{bs}, models)
 	bs.setConfigOptionsSnapshot(ConfigOptionsFromACP(freshSess.ConfigOptions))

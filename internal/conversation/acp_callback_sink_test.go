@@ -55,6 +55,7 @@ type fakeCallbackDeps struct {
 	configChanged       [][2]string
 	genericReplaced     [][]SessionConfigOption
 	legacyModesSet      []SessionConfigOption
+	modelClears         int
 	storedAgentModels   []*SessionModelState
 	modelReplacements   []SessionConfigOption
 	asyncConstraintCats []string
@@ -163,6 +164,11 @@ func (f *fakeCallbackDeps) cbStoreAgentModels(m *SessionModelState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.storedAgentModels = append(f.storedAgentModels, m)
+}
+func (f *fakeCallbackDeps) cbClearModelConfigOption() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modelClears++
 }
 func (f *fakeCallbackDeps) cbReplaceModelConfigOption(opt SessionConfigOption) {
 	f.mu.Lock()

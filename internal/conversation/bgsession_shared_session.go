@@ -12,6 +12,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/agentbackend"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversion"
 	"github.com/inercia/mitto/internal/eventprojection"
 	"github.com/inercia/mitto/internal/session"
@@ -260,7 +261,22 @@ func (bs *BackgroundSession) hsApplySessionModes(modes *agentbackend.ModeState) 
 	bs.setSessionModes(modeStateToACP(modes))
 }
 func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
-	bs.setAgentModels(models)
+	bs.recordRawAgentCatalog(models)
+	policy, err := bs.hiddenModelPolicy()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	if models == nil {
+		bs.setAgentModels(nil)
+		return
+	}
+	filtered := filterModelInfos(policy, models.AvailableModels)
+	view := *models
+	view.AvailableModels = filtered
+	if view.AvailableModels == nil {
+		view.AvailableModels = []ModelInfo{}
+	}
+	bs.setAgentModels(&view)
 }
 func (bs *BackgroundSession) hsApplySynthesizedModelsIfEmpty() {
 	bs.applySynthesizedModelsIfEmpty()
@@ -372,6 +388,15 @@ func (bs *BackgroundSession) applySynthesizedModelsIfEmpty() {
 	if synthesized == nil {
 		return
 	}
+	policy, err := bs.hiddenModelPolicy()
+	if err != nil {
+		policy = hideAllModelsPolicy()
+	}
+	kept := filterModelInfos(policy, synthesized.AvailableModels)
+	if len(kept) == 0 {
+		return
+	}
+	synthesized.AvailableModels = kept
 	bs.setAgentModels(synthesized)
 	if bs.logger != nil {
 		bs.logger.Info("ACP session model fallback",
@@ -428,4 +453,15 @@ func (bs *BackgroundSession) logAgentInfo(resp acp.InitializeResponse) {
 			"count", len(resp.AuthMethods),
 			"methods", authMethods)
 	}
+}
+
+// filterModelInfos drops models hidden by policy, preserving order and metadata.
+func filterModelInfos(policy *config.HiddenModelPolicy, in []ModelInfo) []ModelInfo {
+	out := config.FilterHiddenModels(policy, in, func(m ModelInfo) (string, string) {
+		return m.ModelId, m.Name
+	})
+	if out == nil {
+		out = []ModelInfo{}
+	}
+	return out
 }

@@ -103,6 +103,9 @@ type acpCallbackDeps interface {
 
 	// cbStoreAgentModels stores an owned snapshot of the agent model state.
 	cbStoreAgentModels(models *SessionModelState)
+	// cbClearModelConfigOption removes any model config option so a
+	// filtered-empty catalog never leaves stale choices published.
+	cbClearModelConfigOption()
 	// cbReplaceModelConfigOption removes any existing model config option
 	// and appends the new one, under the proper mutex.
 	cbReplaceModelConfigOption(modelOption SessionConfigOption)
@@ -656,6 +659,7 @@ func (acpCallbackSink) onConfigOptionsUpdate(d acpCallbackDeps, options []Sessio
 func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelState) {
 	d.cbStoreAgentModels(models)
 	if models == nil || len(models.AvailableModels) == 0 {
+		d.cbClearModelConfigOption()
 		return
 	}
 
