@@ -1785,3 +1785,90 @@ describe("hidden models form-state wiring (mitto-69t.5 U3)", () => {
     expect(clear(after, "k1")).toBe(after);
   });
 });
+
+describe("U4: hidden models save payload and error mapping", () => {
+  const {
+    serializeHiddenModels,
+    mapHiddenModelError,
+    isHiddenModelErrorCurrent,
+  } = require("../utils/hiddenModels.js");
+
+  // Mirrors the acpServersToSave / catch logic in handleSave.
+  const build = (servers) => {
+    const submittedHidden = [];
+    const payload = servers.map((srv, i) => {
+      const saved = { name: srv.name, source: srv.source || "settings" };
+      if (srv.source !== "rcfile") {
+        const { rules, rowIndexes } = serializeHiddenModels(srv.hidden_models);
+        saved.hidden_models = rules;
+        submittedHidden[i] = { key: srv._key, rules, rowIndexes };
+      }
+      return saved;
+    });
+    return { payload, submittedHidden };
+  };
+  const outcome = (servers, err, seq, curSeq, current) => {
+    const { submittedHidden } = build(servers);
+    const m = /^acp_servers\[(\d+)\]\.hidden_models\[\d+\]$/.exec(
+      err?.details?.field || "",
+    );
+    const snap = m ? submittedHidden[Number(m[1])] : null;
+    if (!snap || seq !== curSeq) return null;
+    const mapped = mapHiddenModelError(err, Number(m[1]), snap.rowIndexes, snap.rules);
+    const cur = current.find((x) => x._key === snap.key);
+    return mapped && cur && isHiddenModelErrorCurrent(mapped, cur.hidden_models)
+      ? { key: snap.key, ...mapped }
+      : null;
+  };
+
+  test("source wires the helpers and guards", () => {
+    const src = require("fs").readFileSync(
+      require("path").join(__dirname, "SettingsDialog.js"),
+      "utf8",
+    );
+    expect(src).toContain("serializeHiddenModels(srv.hidden_models)");
+    expect(src).toContain("saved.hidden_models = rules;");
+    expect(src).toContain("saveSeqRef.current === mySaveSeq");
+    expect(src).toContain("isHiddenModelErrorCurrent(mapped, current.hidden_models)");
+    expect(src).toContain("setHiddenModelsErrors({});");
+  });
+
+  test("explicit [] clears; per-server payloads are isolated", () => {
+    const { payload } = build([
+      { _key: "a", name: "a", hidden_models: ["", "  "] },
+      { _key: "b", name: "b", hidden_models: [" .*Terra.* "] },
+      { _key: "c", name: "c" },
+    ]);
+    expect(payload[0].hidden_models).toEqual([]);
+    expect(payload[1].hidden_models).toEqual([" .*Terra.* "]);
+    expect(payload[2].hidden_models).toEqual([]);
+  });
+
+  test("RC servers carry no hidden_models but still occupy indices", () => {
+    const servers = [
+      { _key: "rc", name: "rc", source: "rcfile", hidden_models: ["x"] },
+      { _key: "s", name: "s", hidden_models: ["", "(bad"] },
+    ];
+    const { payload } = build(servers);
+    expect("hidden_models" in payload[0]).toBe(false);
+    const err = { details: { field: "acp_servers[1].hidden_models[0]", message: "bad re" } };
+    const r = outcome(servers, err, 1, 1, servers);
+    expect(r).toMatchObject({ key: "s", rowIndex: 1, message: "bad re" });
+  });
+
+  test("rename then edit: error keyed by _key; edited row drops stale error", () => {
+    const servers = [{ _key: "k", name: "old", hidden_models: ["(bad"] }];
+    const err = { details: { field: "acp_servers[0].hidden_models[0]", message: "m" } };
+    const renamed = [{ _key: "k", name: "new", hidden_models: ["(bad"] }];
+    expect(outcome(servers, err, 1, 1, renamed)?.key).toBe("k");
+    const edited = [{ _key: "k", name: "new", hidden_models: ["(bad)"] }];
+    expect(outcome(servers, err, 1, 1, edited)).toBeNull();
+  });
+
+  test("stale save response never sets an error; drafts untouched", () => {
+    const servers = [{ _key: "k", name: "a", hidden_models: ["(bad"] }];
+    const err = { details: { field: "acp_servers[0].hidden_models[0]", message: "m" } };
+    expect(outcome(servers, err, 1, 2, servers)).toBeNull();
+    expect(servers[0].hidden_models).toEqual(["(bad"]);
+  });
+});

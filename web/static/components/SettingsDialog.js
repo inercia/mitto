@@ -2,7 +2,12 @@
 const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
-import { hiddenModelsToRows } from "../utils/hiddenModels.js";
+import {
+  hiddenModelsToRows,
+  serializeHiddenModels,
+  mapHiddenModelError,
+  isHiddenModelErrorCurrent,
+} from "../utils/hiddenModels.js";
 import {
   apiUrl,
   hasNativeFolderPicker,
@@ -2171,6 +2176,11 @@ export function SettingsDialog({
   // Per-server hidden-model row error, keyed by stable server _key:
   // { rowIndex, message }. Set by save handling (U4); cleared on next edit.
   const [hiddenModelsErrors, setHiddenModelsErrors] = useState({});
+  // Save-outcome guards: a newer save or a newer edit must never be
+  // overwritten by a stale validation response.
+  const saveSeqRef = useRef(0);
+  const latestAcpServersRef = useRef([]);
+  latestAcpServersRef.current = acpServers;
   const clearHiddenModelsError = (key) =>
     setHiddenModelsErrors((prev) => {
       if (!prev[key]) return prev;
@@ -2874,6 +2884,9 @@ export function SettingsDialog({
   const handleSave = async () => {
     setError("");
     setWarning("");
+    const mySaveSeq = ++saveSeqRef.current;
+    // Per submitted server index: { key, rules, rowIndexes } (settings servers only)
+    const submittedHidden = [];
 
     // Validation
     if (workspaces.length === 0) {
@@ -3122,7 +3135,7 @@ export function SettingsDialog({
 
       // ACP servers are saved with source field so backend can filter out RC file servers
       // (RC file servers are managed in .mittorc, not settings.json)
-      const acpServersToSave = acpServers.map((srv) => {
+      const acpServersToSave = acpServers.map((srv, submittedIndex) => {
         const saved = {
           name: srv.name,
           command: srv.command,
@@ -3138,6 +3151,17 @@ export function SettingsDialog({
         // Only include type if specified (otherwise name is used as type)
         if (srv.type) {
           saved.type = srv.type;
+        }
+        // Settings servers always send an explicit array ([] clears rules);
+        // RC servers are read-only and must not carry hidden_models.
+        if (srv.source !== "rcfile") {
+          const { rules, rowIndexes } = serializeHiddenModels(srv.hidden_models);
+          saved.hidden_models = rules;
+          submittedHidden[submittedIndex] = {
+            key: srv._key,
+            rules,
+            rowIndexes,
+          };
         }
         return saved;
       });
@@ -3306,10 +3330,33 @@ export function SettingsDialog({
 
       // Clear server renames after successful save
       setServerRenames({});
+      setHiddenModelsErrors({});
 
       onSave?.();
     } catch (err) {
       setError(errorMessage(err, "Failed to save configuration"));
+      const fieldMatch = /^acp_servers\[(\d+)\]\.hidden_models\[\d+\]$/.exec(
+        err?.details?.field || "",
+      );
+      const snap = fieldMatch ? submittedHidden[Number(fieldMatch[1])] : null;
+      if (snap && saveSeqRef.current === mySaveSeq) {
+        const mapped = mapHiddenModelError(
+          err,
+          Number(fieldMatch[1]),
+          snap.rowIndexes,
+          snap.rules,
+        );
+        const current = latestAcpServersRef.current.find(
+          (x) => x._key === snap.key,
+        );
+        if (
+          mapped &&
+          current &&
+          isHiddenModelErrorCurrent(mapped, current.hidden_models)
+        ) {
+          setHiddenModelsErrors((prev) => ({ ...prev, [snap.key]: mapped }));
+        }
+      }
     } finally {
       const elapsed = Date.now() - saveStartTime;
       const remaining = Math.max(0, 1000 - elapsed);
