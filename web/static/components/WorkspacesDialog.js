@@ -90,6 +90,7 @@ export function WorkspacesDialog({
   onOpenPromptParamDialog,
 }) {
   const [saving, setSaving] = useState(false);
+  const [modelOverridesValid, setModelOverridesValid] = useState(true);
 
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState(null);
   const [activeTab, setActiveTab] = useState("general");
@@ -942,6 +943,7 @@ export function WorkspacesDialog({
                   setEditInitialModelTag=${setEditInitialModelTag}
                   editModelOverrides=${editModelOverrides}
                   setEditModelOverrides=${setEditModelOverrides}
+                  onModelOverridesValidityChange=${setModelOverridesValid}
                   modelsData=${modelsData}
                   modelsLoading=${modelsLoading}
                   modelsError=${modelsError}
@@ -1027,7 +1029,10 @@ export function WorkspacesDialog({
           <button
             onClick=${handleSave}
             data-testid="ws-save"
-            disabled=${saving || loading}
+            disabled=${saving || loading || (selectedWorkspace && activeTab === "models" && !modelOverridesValid)}
+            title=${selectedWorkspace && activeTab === "models" && !modelOverridesValid
+              ? "Complete or resolve model override groups before saving"
+              : ""}
             class="btn btn-primary btn-sm gap-2"
           >
             ${saving
