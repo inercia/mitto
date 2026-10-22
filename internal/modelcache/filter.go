@@ -43,8 +43,9 @@ func FilterModelCatalog(policy *config.HiddenModelPolicy, raw []Model) FilteredC
 	return res
 }
 
-// HiddenSavedIDs returns the subset of ids that the raw catalog contains and
-// the policy hides, preserving input order. IDs absent from raw are genuinely
+// HiddenSavedIDs returns the subset of ids the policy hides, preserving input
+// order. IDs present in raw match by ID or display name; IDs absent from raw
+// (or a nil raw catalog) match by ID only. Non-hidden unknown IDs are genuinely
 // unavailable and are not reported. Duplicates are reported once.
 func HiddenSavedIDs(policy *config.HiddenModelPolicy, raw []Model, ids []string) []string {
 	byID := make(map[string]Model, len(raw))
@@ -54,8 +55,14 @@ func HiddenSavedIDs(policy *config.HiddenModelPolicy, raw []Model, ids []string)
 	out := []string{}
 	seen := map[string]bool{}
 	for _, id := range ids {
-		m, ok := byID[id]
-		if !ok || seen[id] || !policy.Hides(m.ID, m.Name) {
+		if seen[id] {
+			continue
+		}
+		name := ""
+		if m, ok := byID[id]; ok {
+			name = m.Name
+		}
+		if !policy.Hides(id, name) {
 			continue
 		}
 		seen[id] = true

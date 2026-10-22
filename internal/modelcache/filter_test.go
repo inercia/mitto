@@ -72,3 +72,18 @@ func TestHiddenSavedIDs(t *testing.T) {
 		t.Errorf("nil policy: %v", got)
 	}
 }
+
+func TestHiddenSavedIDsWithoutCatalogMetadata(t *testing.T) {
+	p := pol(t, "s", "^x$")
+	ids := []string{"x", "x", "y"}
+	if got := HiddenSavedIDs(p, nil, ids); !reflect.DeepEqual(got, []string{"x"}) {
+		t.Errorf("absent raw: got %v", got)
+	}
+	raw := []Model{{ID: "a", Name: "A"}}
+	if got := HiddenSavedIDs(p, raw, ids); !reflect.DeepEqual(got, []string{"x"}) {
+		t.Errorf("missing from raw: got %v", got)
+	}
+	if got := HiddenSavedIDs(p, raw, []string{"y"}); len(got) != 0 {
+		t.Errorf("unavailable non-hidden reported hidden: %v", got)
+	}
+}
