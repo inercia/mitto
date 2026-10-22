@@ -1909,3 +1909,28 @@ describe("U4 correction: stale save success", () => {
     expect(src).toContain("if (saveSeqRef.current === mySaveSeq) setSaving(false);");
   });
 });
+
+describe("U5: duplicateServer does not copy hidden_models (mitto-69t.5)", () => {
+  const src = readFileSync(
+    new URL("./SettingsDialog.js", import.meta.url),
+    "utf8",
+  );
+  const start = src.indexOf("const duplicateServer = ");
+  const end = src.indexOf("setAcpServers([...acpServers, duplicatedServer])", start);
+  const body = src.slice(start, end);
+
+  test("duplicateServer body is located", () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+  });
+
+  test("does not reference or spread hidden_models", () => {
+    expect(body).not.toContain("hidden_models");
+    expect(body).not.toContain("...server");
+  });
+
+  test("keeps omitting Initial Model fields and constraints", () => {
+    expect(body).not.toContain("constraints");
+    expect(body).not.toContain("initial_model");
+  });
+});
