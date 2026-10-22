@@ -50,7 +50,17 @@ import (
 // Returns "" when nothing matches at any level, signalling the caller to
 // leave the agent default in place without treating it as an error.
 func resolveClosestModel(pendingFrom string, models *SessionModelState) string {
-	if pendingFrom == "" || models == nil || len(models.AvailableModels) == 0 {
+	return resolveClosestModelWithPolicy(pendingFrom, models, nil)
+}
+
+// resolveClosestModelWithPolicy is resolveClosestModel restricted to models
+// the hidden-model policy permits; a nil policy permits everything.
+func resolveClosestModelWithPolicy(pendingFrom string, models *SessionModelState, policy *config.HiddenModelPolicy) string {
+	if models == nil {
+		return ""
+	}
+	models = eligibleModelState(models, policy)
+	if pendingFrom == "" || len(models.AvailableModels) == 0 {
 		return ""
 	}
 	options := ModelsToConfigOptions(models)
@@ -147,7 +157,12 @@ func (bs *BackgroundSession) cbApplyPendingModelMapping(models *SessionModelStat
 		return
 	}
 
-	resolved := resolveClosestModel(pendingFrom, models)
+	policy, policyErr := bs.hiddenModelPolicy()
+	if policyErr != nil {
+		// Fail closed: eligibility cannot be proven, so do not remap.
+		return
+	}
+	resolved := resolveClosestModelWithPolicy(pendingFrom, models, policy)
 	if resolved == "" {
 		if bs.logger != nil {
 			bs.logger.Info("model-mapping: no matching model found on target agent after move; keeping agent default",
@@ -156,7 +171,7 @@ func (bs *BackgroundSession) cbApplyPendingModelMapping(models *SessionModelStat
 		return
 	}
 
-	if resolved == models.CurrentModelId {
+	if resolved == models.CurrentModelId && modelEligible(policy, resolved, ModelDisplayName(models, resolved)) {
 		// Already the active model: still promote it to the persisted
 		// baseline (mirrors ApplyModelTag's mitto-1yo already-matches
 		// short-circuit) so a later resume doesn't drift back to an empty/

@@ -400,6 +400,11 @@ func (bs *BackgroundSession) recordRawAgentCatalog(raw *SessionModelState) {
 	}
 }
 
+// pdHiddenModelPolicy satisfies promptDeps.
+func (bs *BackgroundSession) pdHiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	return bs.hiddenModelPolicy()
+}
+
 // hiddenModelPolicy compiles the hidden-model policy of this session's
 // configured ACP server. A missing config or unknown server yields a nil
 // (allow-all) policy; a compile failure is returned so callers fail closed.
@@ -633,7 +638,15 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 			fromPersisted = true
 		}
 	}
-	if models := bs.AgentModels(); !fromPersisted && models != nil {
+	policy, policyErr := bs.hiddenModelPolicy()
+	models := bs.AgentModels()
+	if fromPersisted && (policyErr != nil || !modelEligible(policy, baseline, ModelDisplayName(models, baseline))) {
+		// mitto-69t.3: never apply or persist a hidden (or unprovable) saved
+		// baseline; replacement selection belongs to the policy-save path.
+		baseline = ""
+	}
+	// A policy error fails closed: no selection can be proven eligible.
+	if policyErr == nil && !fromPersisted && models != nil {
 		if models.Synthesized {
 			// mitto-a7wm: a synthesized catalog (see
 			// SynthesizeModelStateFromProfiles) is a Mitto-local UI aid built
@@ -647,13 +660,13 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 				l.Warn("mitto-a7wm: skipping model-preference seeding from a synthesized model catalog",
 					"session_id", bs.persistedID, "default_model", defaultModel)
 			}
-		} else if selected := SelectHighestPriorityModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models, bs.modelOverrideForTag); selected != "" {
+		} else if selected := selectPreferredModel(bs.initialModelPreference, bs.mittoConfig.EffectiveModelProfiles(), models, false, bs.modelOverrideForTag, policy); selected != "" {
 			// Resolve the initial choice BEFORE persisting anything. A default written
 			// first would make a fresh conversation look resumed and mask its preference.
 			// ACP model settings are defaults, not constraints on later manual choices.
 			baseline = selected
 		} else if constraint := bs.cbACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
-			if selected := MatchConstraintOption(constraint, ModelsToConfigOptions(models)); selected != "" {
+			if selected := MatchConstraintOption(constraint, ModelsToConfigOptions(eligibleModelState(models, policy))); selected != "" {
 				baseline = selected
 			}
 		} else if len(bs.initialModelPreference) > 0 {

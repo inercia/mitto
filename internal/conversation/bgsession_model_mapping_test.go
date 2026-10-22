@@ -344,3 +344,23 @@ func TestCallbackSink_SetAgentModels_InvokesPendingModelMapping(t *testing.T) {
 		t.Fatalf("expected cbApplyPendingModelMapping called once with models, got %v", d.pendingMappingCalls)
 	}
 }
+
+func TestResolveClosestModelWithPolicy_ExcludesHidden(t *testing.T) {
+	cat := modelMappingCatalog()
+	pol := hiddenPolicyFor(t, "^m-2$")
+	if got := resolveClosestModelWithPolicy("m-2", cat, pol); got != "" {
+		t.Fatalf("hidden exact match remapped: %q", got)
+	}
+	if got := resolveClosestModelWithPolicy("claude-sonnet-4.5", cat, hiddenPolicyFor(t, "claude-sonnet")); got != "" {
+		t.Fatalf("hidden lookAlike remapped: %q", got)
+	}
+	if got := resolveClosestModelWithPolicy("m-1", cat, pol); got != "m-1" {
+		t.Fatalf("eligible exact match lost: %q", got)
+	}
+	if got := resolveClosestModelWithPolicy("m-2", cat, nil); got != "m-2" {
+		t.Fatalf("nil policy changed behavior: %q", got)
+	}
+	if got := resolveClosestModelWithPolicy("m-2", nil, pol); got != "" {
+		t.Fatalf("nil models: %q", got)
+	}
+}

@@ -133,6 +133,7 @@ type promptDeps interface {
 	pdResolveModelTags(modelName string) []string // config.ResolveModelTags; nil when no config/match
 	pdResolvePreferredModels(promptName string) []config.PromptPreferredModel
 	pdModelProfiles() []config.ModelProfile // global model profiles (Settings → Models)
+	pdHiddenModelPolicy() (*config.HiddenModelPolicy, error)
 	pdModelOverrideForTag(tag string) (string, bool)
 	pdReadBaselineModel() string       // modelMu.Lock + read + Unlock
 	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
@@ -1369,7 +1370,11 @@ func (p promptDispatcher) intendedModelID(d promptDeps, meta PromptMeta, models 
 	if len(preferredModels) == 0 {
 		return ""
 	}
-	return SelectPreferredModel(preferredModels, d.pdModelProfiles(), models, d.pdModelOverrideForTag)
+	policy, err := d.pdHiddenModelPolicy()
+	if err != nil {
+		return "" // fail closed: eligibility cannot be proven
+	}
+	return selectPreferredModel(preferredModels, d.pdModelProfiles(), models, true, d.pdModelOverrideForTag, policy)
 }
 
 // applyModelPreference ensures the correct model is active before sending the prompt.
@@ -1393,8 +1398,9 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 		// display-only signal of which tier the prompt intended.
 		if len(preferredModels) > 0 {
 			synth := SynthesizeModelStateFromProfiles(d.pdModelProfiles())
-			if synth != nil {
-				if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), synth); resolved != "" {
+			policy, policyErr := d.pdHiddenModelPolicy()
+			if synth != nil && policyErr == nil {
+				if resolved := selectPreferredModel(preferredModels, d.pdModelProfiles(), synth, true, nil, policy); resolved != "" {
 					baseline := d.pdReadBaselineModel()
 					d.pdRecordSessionChange(
 						ConfigOptionCategoryModelOverride,
@@ -1434,12 +1440,27 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 		return
 	}
 
+	policy, policyErr := d.pdHiddenModelPolicy()
+	if policyErr != nil {
+		if l := d.pdLogger(); l != nil {
+			l.Warn("apply_model_preference",
+				"session_id", d.pdSessionID(),
+				"prompt_name", meta.PromptName,
+				"decision", "skip_hidden_policy_unavailable",
+				"error", policyErr)
+		}
+		return
+	}
 	baseline := d.pdReadBaselineModel()
 	currentModel := string(models.CurrentModelId)
 	desired := baseline
+	// Never switch to or retain a hidden baseline.
+	if desired != "" && !modelEligible(policy, desired, ModelDisplayName(models, desired)) {
+		desired = ""
+	}
 	matched := false
 	if len(preferredModels) > 0 {
-		if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), models, d.pdModelOverrideForTag); resolved != "" {
+		if resolved := selectPreferredModel(preferredModels, d.pdModelProfiles(), models, true, d.pdModelOverrideForTag, policy); resolved != "" {
 			desired = resolved
 			matched = true
 		}

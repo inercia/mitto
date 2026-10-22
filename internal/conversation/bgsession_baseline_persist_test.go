@@ -270,3 +270,69 @@ func TestSetAgentModels_ResumeWithoutConstraint_DoesNotReapplyPersistedBaseline(
 		t.Errorf("in-memory baselineModel = %q, want %q", got, persistedBaseline)
 	}
 }
+
+func newHiddenBaselineSession(t *testing.T, persisted string, hidden []string) (*BackgroundSession, *session.Store, string) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	const sid = "hidden-baseline-session"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "srv", WorkingDir: "/tmp", Name: "T", BaselineModel: persisted}); err != nil {
+		t.Fatal(err)
+	}
+	bs := &BackgroundSession{
+		persistedID: sid, store: store, acpServer: "srv",
+		mittoConfig: &config.Config{ACPServers: []config.ACPServer{{Name: "srv", Command: "x", HiddenModels: hidden}}},
+		agentModels: &SessionModelState{CurrentModelId: "m-1", AvailableModels: []ModelInfo{
+			{ModelId: "m-1", Name: "m-1"}, {ModelId: "m-2", Name: "m-2"},
+		}},
+	}
+	return bs, store, sid
+}
+
+func TestCbInitBaseline_HiddenPersistedBaseline_NotAppliedOrReplaced(t *testing.T) {
+	bs, store, sid := newHiddenBaselineSession(t, "m-2", []string{"^m-2$"})
+	bs.cbInitBaselineModelIfEmpty("m-1")
+	if got := bs.GetBaselineModel(); got != "" {
+		t.Fatalf("hidden persisted baseline applied/replaced: %q", got)
+	}
+	meta, _ := store.GetMetadata(sid)
+	if meta.BaselineModel != "m-2" {
+		t.Fatalf("persisted baseline should be untouched, got %q", meta.BaselineModel)
+	}
+}
+
+func TestCbInitBaseline_EligiblePersistedBaseline_Applied(t *testing.T) {
+	bs, _, _ := newHiddenBaselineSession(t, "m-2", []string{"^m-1$"})
+	bs.cbInitBaselineModelIfEmpty("m-1")
+	if got := bs.GetBaselineModel(); got != "m-2" {
+		t.Fatalf("got %q want m-2", got)
+	}
+}
+
+func TestCbInitBaseline_InitialPreference_SkipsHidden(t *testing.T) {
+	bs, store, sid := newHiddenBaselineSession(t, "", []string{"^m-2$"})
+	bs.mittoConfig.Models = []config.ModelProfile{
+		{Name: "Pref", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "m-"}},
+	}
+	bs.initialModelPreference = []config.PromptPreferredModel{{ModelName: "Pref"}}
+	bs.cbInitBaselineModelIfEmpty("m-1")
+	got := bs.GetBaselineModel()
+	if got == "m-2" {
+		t.Fatalf("hidden model seeded as baseline")
+	}
+	meta, _ := store.GetMetadata(sid)
+	if meta.BaselineModel == "m-2" {
+		t.Fatalf("hidden model persisted")
+	}
+}
+
+func TestCbInitBaseline_PolicyError_FailsClosed(t *testing.T) {
+	bs, _, _ := newHiddenBaselineSession(t, "m-2", []string{"("})
+	bs.cbInitBaselineModelIfEmpty("m-1")
+	if got := bs.GetBaselineModel(); got != "" {
+		t.Fatalf("policy error must not apply baseline: %q", got)
+	}
+}

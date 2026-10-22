@@ -26,6 +26,9 @@ var _ promptDeps = (*fakePromptDeps)(nil)
 type fakePromptDeps struct {
 	resetContextUsageCalls int
 
+	hiddenPolicy    *config.HiddenModelPolicy
+	hiddenPolicyErr error
+
 	mu sync.Mutex
 
 	resolver          PromptResolver
@@ -372,6 +375,9 @@ func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPrefe
 	return f.resolvedPreferred
 }
 func (f *fakePromptDeps) pdModelProfiles() []config.ModelProfile { return f.modelProfiles }
+func (f *fakePromptDeps) pdHiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	return f.hiddenPolicy, f.hiddenPolicyErr
+}
 func (f *fakePromptDeps) pdModelOverrideForTag(tag string) (string, bool) {
 	modelID, ok := f.modelOverrides[tag]
 	return modelID, ok
@@ -4676,3 +4682,67 @@ func TestPromptDispatcher_HandlePromptError_UnrelatedError_DoesNotInvokeRuntimeF
 }
 
 func (f *fakePromptDeps) pdResetContextUsage() { f.resetContextUsageCalls++ }
+
+func hiddenPrefDeps() *fakePromptDeps {
+	d := newFakePromptDeps()
+	d.agentModels = &SessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []ModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Model 2"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
+	return d
+}
+
+func TestPromptDispatcher_ApplyModelPreference_HiddenPreferred_NotSwitched(t *testing.T) {
+	p := promptDispatcher{}
+	d := hiddenPrefDeps()
+	d.hiddenPolicy = hiddenPolicyFor(t, "^m-2$")
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+	if len(d.setActiveModelCalls) != 0 || d.overrideActive {
+		t.Fatalf("hidden preferred model must not be selected: %v", d.setActiveModelCalls)
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_PolicyError_FailsClosed(t *testing.T) {
+	p := promptDispatcher{}
+	d := hiddenPrefDeps()
+	d.hiddenPolicyErr = errors.New("compile failed")
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+	if len(d.setActiveModelCalls) != 0 {
+		t.Fatalf("policy error must not switch: %v", d.setActiveModelCalls)
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_NoRule_Unchanged(t *testing.T) {
+	p := promptDispatcher{}
+	d := hiddenPrefDeps()
+	d.hiddenPolicy = hiddenPolicyFor(t, "^unrelated$")
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+	if len(d.setActiveModelCalls) != 1 || d.setActiveModelCalls[0] != "m-2" {
+		t.Fatalf("expected switch to m-2, got %v", d.setActiveModelCalls)
+	}
+}
+
+func TestPromptDispatcher_IntendedModelID_HiddenAndFailClosed(t *testing.T) {
+	p := promptDispatcher{}
+	meta := PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}}
+	d := hiddenPrefDeps()
+	if got := p.intendedModelID(d, meta, d.agentModels); got != "m-2" {
+		t.Fatalf("no policy: got %q want m-2", got)
+	}
+	d.hiddenPolicy = hiddenPolicyFor(t, "^m-2$")
+	if got := p.intendedModelID(d, meta, d.agentModels); got == "m-2" {
+		t.Fatalf("hidden candidate must be skipped, got %q", got)
+	}
+	d.hiddenPolicy = nil
+	d.hiddenPolicyErr = errors.New("boom")
+	if got := p.intendedModelID(d, meta, d.agentModels); got != "" {
+		t.Fatalf("policy error: got %q want empty", got)
+	}
+}
