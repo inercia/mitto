@@ -277,7 +277,7 @@ function WorkspaceModelOverridesEditor({
                       }
                     }}
                   >
-                    <span class="truncate" title=${selectedTags.join(", ")}>{summary}</span>
+                    <span class="truncate" title=${selectedTags.join(", ")}>${summary}</span>
                     <span aria-hidden="true">▾</span>
                   </button>
                   ${open && html`<div id=${`ws-model-override-tags-${index}`} class="dropdown-content z-20 mt-1 w-full max-h-60 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow" role="group" aria-label="Capability tags">

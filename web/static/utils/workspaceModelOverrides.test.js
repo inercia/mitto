@@ -1,11 +1,62 @@
 import { describe, test, expect } from "./testing/testGlobals.js";
 import {
+  groupModelOverrides,
+  expandModelOverrideGroups,
+  modelOverrideTagConflicts,
   modelCatalogOptions,
   modelOverridesForAgent,
   replaceAgentModelOverrides,
 } from "./workspaceModelOverrides.js";
 
 describe("workspace model override helpers", () => {
+  test("groups five mappings into two exact-model groups and round trips source order", () => {
+    const rows = [
+      { tag: "Cheap", model_id: "luna" },
+      { tag: "Smart", model_id: "sonnet" },
+      { tag: "Coding", model_id: "luna" },
+      { tag: "Fast", model_id: "luna" },
+      { tag: "Smartest", model_id: "sonnet" },
+    ];
+    const groups = groupModelOverrides(rows);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].tagCounts.map(({ tag }) => tag)).toEqual([
+      "Cheap",
+      "Coding",
+      "Fast",
+    ]);
+    expect(expandModelOverrideGroups(groups)).toEqual(rows);
+    expect(modelOverrideTagConflicts(groups)).toEqual([]);
+  });
+
+  test("preserves exact tag/model identity, duplicate evidence and conflicting precedence", () => {
+    const rows = [
+      { tag: "Fast", model_id: "Model" },
+      { tag: "fast", model_id: "model" },
+      { tag: "Fast", model_id: "model" },
+      { tag: "Fast", model_id: "Model" },
+    ];
+    const groups = groupModelOverrides(rows);
+    expect(groups).toHaveLength(2);
+    expect(expandModelOverrideGroups(groups)).toEqual(rows);
+    expect(modelOverrideTagConflicts(groups)).toEqual([
+      { tag: "Fast", modelIDs: ["Model", "model"] },
+    ]);
+  });
+
+  test("keeps incomplete drafts independent and preserves empty input", () => {
+    const rows = [
+      { tag: "", model_id: "saved" },
+      { tag: "", model_id: "saved" },
+      { tag: "Legacy", model_id: "" },
+      { tag: "", model_id: "" },
+    ];
+    expect(groupModelOverrides(rows)).toHaveLength(4);
+    expect(expandModelOverrideGroups(groupModelOverrides(rows))).toEqual(rows);
+    expect(groupModelOverrides(null)).toEqual([]);
+    expect(expandModelOverrideGroups(null)).toEqual([]);
+    expect(modelOverrideTagConflicts(null)).toEqual([]);
+  });
+
   test("filters rows by exact ACP server", () => {
     const rows = [
       { acp_server: "agent-a", tag: "Fast", model_id: "a1" },
