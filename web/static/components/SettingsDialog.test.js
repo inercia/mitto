@@ -1725,3 +1725,63 @@ describe("Models group and Hide Models rows (mitto-69t.5 U2)", () => {
     expect(body).not.toContain(".trim(");
   });
 });
+
+describe("hidden models form-state wiring (mitto-69t.5 U3)", () => {
+  const src = readFileSync(
+    new URL("./SettingsDialog.js", import.meta.url),
+    "utf8",
+  );
+
+  // Mirrors updateServer's hidden_models handling.
+  const apply = (s, hiddenModels) => ({
+    ...s,
+    hidden_models: hiddenModels !== undefined ? hiddenModels : s.hidden_models,
+  });
+
+  test("source threads hiddenModels through emitChange and updateServer", () => {
+    expect(src).toContain("currentState.hiddenModels,");
+    expect(src).toContain("emitChange({ hiddenModels: list })");
+    expect(src).toContain("hidden_models:");
+    expect(src).toContain("hiddenModelsErrors[");
+    expect(src).toContain("clearHiddenModelsError(srv._key)");
+  });
+
+  test("no-rule servers stay without hidden_models", () => {
+    expect(apply({ name: "a" }, undefined).hidden_models).toBeUndefined();
+  });
+
+  test("blank draft rows are kept raw while editing", () => {
+    expect(apply({ name: "a" }, ["", "  ", " x "]).hidden_models).toEqual([
+      "",
+      "  ",
+      " x ",
+    ]);
+  });
+
+  test("multiple servers are isolated and rename keeps rows", () => {
+    const list = [
+      { _key: "k1", name: "a" },
+      { _key: "k2", name: "b", hidden_models: ["y"] },
+    ];
+    const next = list.map((s) =>
+      s._key === "k1" ? { ...apply(s, ["x"]), name: "renamed" } : s,
+    );
+    expect(next[0].hidden_models).toEqual(["x"]);
+    expect(next[0]._key).toBe("k1");
+    expect(next[1].hidden_models).toEqual(["y"]);
+  });
+
+  test("errors keyed by _key are cleared on next edit only for that server", () => {
+    const clear = (prev, key) => {
+      if (!prev[key]) return prev;
+      const n = { ...prev };
+      delete n[key];
+      return n;
+    };
+    const errs = { k1: { rowIndex: 0, message: "bad" }, k2: { rowIndex: 1, message: "bad" } };
+    const after = clear(errs, "k1");
+    expect(after.k1).toBeUndefined();
+    expect(after.k2).toBeDefined();
+    expect(clear(after, "k1")).toBe(after);
+  });
+});

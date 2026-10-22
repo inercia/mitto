@@ -899,6 +899,12 @@ function ServerEditForm({
         overrides.contextFlushCommand !== undefined
           ? overrides.contextFlushCommand
           : contextFlushCommand,
+      // Raw draft rows (blanks kept, never trimmed); the parent owns this value
+      // so it survives collapse/remount of this form.
+      hiddenModels:
+        overrides.hiddenModels !== undefined
+          ? overrides.hiddenModels
+          : server.hidden_models,
     };
 
     // Convert envVars array to object, filtering out empty keys
@@ -931,6 +937,7 @@ function ServerEditForm({
       currentState.contextFlushCommand,
       currentState.initialModelProfile,
       currentState.initialModelTag,
+      currentState.hiddenModels,
     );
   };
 
@@ -1054,7 +1061,10 @@ function ServerEditForm({
           serverName=${server.name}
           hiddenModels=${server.hidden_models}
           error=${hiddenModelsError}
-          onChange=${onHiddenModelsChange}
+          onChange=${(list) => {
+            onHiddenModelsChange(list);
+            emitChange({ hiddenModels: list });
+          }}
         />
       </fieldset>
       <div>
@@ -2158,6 +2168,16 @@ export function SettingsDialog({
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
+  // Per-server hidden-model row error, keyed by stable server _key:
+  // { rowIndex, message }. Set by save handling (U4); cleared on next edit.
+  const [hiddenModelsErrors, setHiddenModelsErrors] = useState({});
+  const clearHiddenModelsError = (key) =>
+    setHiddenModelsErrors((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
   // Independent local drafts, persisted only by the normal Settings Save.
@@ -2591,6 +2611,7 @@ export function SettingsDialog({
       const servers = config.acp_servers || [];
       servers.forEach(assignStableKey);
       setAcpServers(servers);
+      setHiddenModelsErrors({});
       setModelProfiles(
         Array.isArray(config.models)
           ? config.models.map((profile) => ({
@@ -3361,6 +3382,7 @@ export function SettingsDialog({
     contextFlushCommand,
     initialModelProfile,
     initialModelTag,
+    hiddenModels,
   ) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
@@ -3378,6 +3400,9 @@ export function SettingsDialog({
           constraints: constraints || undefined, // undefined to omit if empty
           initial_model_profile: initialModelProfile || undefined, // undefined to omit if none
           initial_model_tag: initialModelTag || undefined, // undefined to omit if none
+          // Raw draft array (blank rows kept); absent stays absent (no rules)
+          hidden_models:
+            hiddenModels !== undefined ? hiddenModels : s.hidden_models,
           context_flush_command:
             contextFlushCommand && contextFlushCommand.trim()
               ? contextFlushCommand.trim()
@@ -4089,6 +4114,7 @@ export function SettingsDialog({
                                               contextFlushCommand,
                                               initialModelProfile,
                                               initialModelTag,
+                                              hiddenModels,
                                             ) =>
                                               updateServer(
                                                 srv.name,
@@ -4102,7 +4128,13 @@ export function SettingsDialog({
                                                 contextFlushCommand,
                                                 initialModelProfile,
                                                 initialModelTag,
+                                                hiddenModels,
                                               )}
+                                            hiddenModelsError=${hiddenModelsErrors[
+                                              srv._key
+                                            ] || null}
+                                            onHiddenModelsChange=${() =>
+                                              clearHiddenModelsError(srv._key)}
                                           />
                                         `}
                                       </div>
