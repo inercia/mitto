@@ -1934,3 +1934,39 @@ describe("U5: duplicateServer does not copy hidden_models (mitto-69t.5)", () => 
     expect(body).not.toContain("initial_model");
   });
 });
+
+describe("U6: Hide Models acceptance audit (mitto-69t.5)", () => {
+  const src = readFileSync(
+    new URL("./SettingsDialog.js", import.meta.url),
+    "utf8",
+  );
+
+  test("row controls expose accessible Add/input/Remove/error attributes", () => {
+    expect(src).toContain("Add hide models rule for ${serverName}");
+    expect(src).toContain("Remove hide models rule ${i + 1}");
+    expect(src).toContain("Hide models rule ${i + 1} for ${serverName}");
+    expect(src).toContain('role="alert"');
+    expect(src).toContain("aria-invalid");
+    expect(src).toContain("aria-describedby");
+  });
+
+  test("emitChange preserves hidden models draft and passes per-server error", () => {
+    expect(src).toContain("overrides.hiddenModels");
+    expect(src).toContain("hiddenModelsErrors[");
+  });
+
+  test("save payload sends explicit serialized rules for non-RC servers only", () => {
+    expect(src).toContain('if (srv.source !== "rcfile")');
+    expect(src).toContain("serializeHiddenModels(srv.hidden_models)");
+    expect(src).toContain("saved.hidden_models = rules;");
+    expect(src).not.toContain("rules || undefined");
+  });
+
+  test("stale save guards cover success, error and loading state", () => {
+    expect(src).toContain("const mySaveSeq = ++saveSeqRef.current");
+    expect(src).toContain("saveSeqRef.current !== mySaveSeq");
+    expect(src).toContain("saveSeqRef.current === mySaveSeq");
+    expect(src).toContain("isHiddenModelErrorCurrent");
+    expect(src).toContain("mapHiddenModelError");
+  });
+});

@@ -101,3 +101,71 @@ describe("isHiddenModelErrorCurrent", () => {
     expect(isHiddenModelErrorCurrent(null, ["x("])).toBe(false);
   });
 });
+
+describe("U6 acceptance edge cases (mitto-69t.5)", () => {
+  test("serialize preserves whitespace and literal commas/regex bytes", () => {
+    const rows = ["  a b ", "a,b", ".*Terra.*", "(?i)x|y", "   ", "", "\t"];
+    const out = serializeHiddenModels(rows);
+    expect(out.rules).toEqual(["  a b ", "a,b", ".*Terra.*", "(?i)x|y"]);
+    expect(out.rowIndexes).toEqual([0, 1, 2, 3]);
+  });
+
+  test("serialize skips non-strings, returns fresh array, no mutation", () => {
+    const rows = [null, 5, "x", undefined];
+    const copy = [...rows];
+    const out = serializeHiddenModels(rows);
+    expect(out.rules).toEqual(["x"]);
+    expect(out.rowIndexes).toEqual([2]);
+    expect(rows).toEqual(copy);
+    expect(out.rules).not.toBe(rows);
+  });
+
+  test("hiddenModelsToRows tolerates non-array input", () => {
+    expect(hiddenModelsToRows(null)).toEqual([]);
+    expect(hiddenModelsToRows("x")).toEqual([]);
+    const src = ["a"];
+    const rows = hiddenModelsToRows(src);
+    expect(rows).toEqual(["a"]);
+    expect(rows).not.toBe(src);
+  });
+
+  test("malformed field strings map to null", () => {
+    for (const field of [
+      "acp_servers[a].hidden_models[0]",
+      "acp_servers[0].hidden_models[-1]",
+      "acp_servers[0].hidden_models[0]x",
+      "acp_servers[0].hidden_models[]",
+      "acp_servers[0].hidden_models[0].extra",
+    ]) {
+      const err = { message: "m", details: { field, message: "bad" } };
+      expect(mapHiddenModelError(err, 0, [0], ["x"])).toBeNull();
+    }
+  });
+
+  test("message falls back and general message is untouched", () => {
+    const field = "acp_servers[0].hidden_models[0]";
+    const err = { message: "general", details: { field, message: "" } };
+    const m = mapHiddenModelError(err, 0, [0], ["x"]);
+    expect(m.message).toBe("general");
+    expect(err.message).toBe("general");
+    const e2 = { details: { field } };
+    expect(mapHiddenModelError(e2, 0, [0], ["x"]).message).toBe(
+      "Invalid regular expression",
+    );
+  });
+
+  test("multi-server isolation and stale detection without rules", () => {
+    const err = {
+      message: "m",
+      details: { field: "acp_servers[1].hidden_models[0]", message: "bad" },
+    };
+    expect(mapHiddenModelError(err, 0, [0], ["x"])).toBeNull();
+    const hit = mapHiddenModelError(err, 1, [2], ["(x"]);
+    expect(hit.rowIndex).toBe(2);
+    expect(hit.rowValue).toBe("(x");
+    const noRules = mapHiddenModelError(err, 1, [2]);
+    expect(isHiddenModelErrorCurrent(noRules, ["a", "b", "(x"])).toBe(false);
+    expect(isHiddenModelErrorCurrent(hit, ["a", "b", "(x"])).toBe(true);
+    expect(isHiddenModelErrorCurrent(hit, ["a", "b", "(y"])).toBe(false);
+  });
+});
