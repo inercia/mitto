@@ -117,7 +117,9 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       expect(container.querySelector("summary").classList).toContain(
         "max-w-[200px]",
       );
-      expect(container.querySelector("ul").classList).toContain("w-[250px]");
+      expect(container.querySelector(".dropdown-content").classList).toContain(
+        "w-[250px]",
+      );
       expect(
         container
           .querySelector("summary span.truncate-left bdi")
@@ -266,6 +268,642 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       container.remove();
     }
   });
+  const keydown = (element, key) => {
+    element.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+    );
+  };
+
+  const typeFilter = (input, value) => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  const rowButtons = (container) => [
+    ...container.querySelectorAll("ul button"),
+  ];
+  const rowNames = (container) =>
+    rowButtons(container).map((button) => button.textContent.trim());
+  const highlightedButton = (container) =>
+    container.querySelector("ul button.ring-1");
+  const activeButton = (container) =>
+    container.querySelector("ul button.menu-active");
+
+  const openMenu = async (container) => {
+    container.querySelector("summary").click();
+    await waitFor(() => container.querySelector("details").open === true);
+  };
+
+  const openModelMenu = async (container) => {
+    await openMenu(container);
+    const input = container.querySelector('input[type="text"]');
+    await waitFor(() => input && document.activeElement === input);
+    return input;
+  };
+
+  test("filters model options by name or value and keeps name order and selection state", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const options = [
+      { value: "anthropic/claude-opus", name: "Claude Opus" },
+      { value: "openai/gpt-5", name: "GPT-5" },
+      { value: "openai/gpt-4o-mini", name: "gpt-4o mini" },
+      { value: "auto", name: "Auto" },
+    ];
+    const selections = [];
+    const mount = (currentValue) =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: currentValue,
+            options,
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+        }),
+        container,
+      );
+
+    try {
+      mount("openai/gpt-5");
+      const input = await openModelMenu(container);
+
+      expect(input.getAttribute("data-testid")).toBe(
+        "config-option-model-filter",
+      );
+      expect(input.getAttribute("aria-label")).toBe("Filter models...");
+      expect(
+        container.querySelector('[data-testid="config-option-model-list"]'),
+      ).not.toBeNull();
+      expect(rowNames(container)).toEqual([
+        "Auto",
+        "Claude Opus",
+        "gpt-4o mini",
+        "GPT-5",
+      ]);
+      expect(highlightedButton(container).textContent.trim()).toBe("GPT-5");
+      expect(activeButton(container).textContent.trim()).toBe("GPT-5");
+
+      typeFilter(input, "GpT");
+      await waitFor(() => rowButtons(container).length === 2);
+      expect(rowNames(container)).toEqual(["gpt-4o mini", "GPT-5"]);
+      expect(highlightedButton(container).textContent.trim()).toBe(
+        "gpt-4o mini",
+      );
+      expect(activeButton(container).textContent.trim()).toBe("GPT-5");
+
+      typeFilter(input, "anthropic");
+      await waitFor(() => rowButtons(container).length === 1);
+      expect(rowNames(container)).toEqual(["Claude Opus"]);
+      expect(highlightedButton(container).textContent.trim()).toBe(
+        "Claude Opus",
+      );
+
+      typeFilter(input, "  gpt  ");
+      await waitFor(() => rowButtons(container).length === 2);
+      expect(rowNames(container)).toEqual(["gpt-4o mini", "GPT-5"]);
+
+      typeFilter(input, "");
+      await waitFor(() => rowButtons(container).length === 4);
+      expect(highlightedButton(container).textContent.trim()).toBe("GPT-5");
+      expect(options.map((option) => option.value)).toEqual([
+        "anthropic/claude-opus",
+        "openai/gpt-5",
+        "openai/gpt-4o-mini",
+        "auto",
+      ]);
+      expect(selections).toEqual([]);
+      expect(container.querySelector('[role="listbox"]')).toBeNull();
+      expect(container.querySelector('[role="option"]')).toBeNull();
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("highlights the first model when the current value is not advertised", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const options = [
+      { value: "b", name: "B" },
+      { value: "a", name: "A" },
+    ];
+    const mount = () =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "not-advertised",
+            options,
+          },
+        }),
+        container,
+      );
+
+    try {
+      mount();
+      await openModelMenu(container);
+      expect(highlightedButton(container).textContent.trim()).toBe("A");
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("navigates models without wrapping and selects with Enter", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const options = [
+      { value: "c", name: "C" },
+      { value: "a", name: "A" },
+      { value: "b", name: "B" },
+    ];
+    const selections = [];
+    const toasts = [];
+    const mount = (currentValue) =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: currentValue,
+            options,
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+          onShowToast: (toast) => toasts.push(toast),
+        }),
+        container,
+      );
+
+    try {
+      mount("b");
+      const input = await openModelMenu(container);
+      const highlightedName = () =>
+        highlightedButton(container)?.textContent.trim();
+
+      expect(highlightedName()).toBe("B");
+
+      keydown(input, "ArrowDown");
+      await Promise.resolve();
+      expect(highlightedName()).toBe("C");
+
+      keydown(input, "ArrowDown");
+      await Promise.resolve();
+      expect(highlightedName()).toBe("C");
+
+      keydown(input, "ArrowUp");
+      await Promise.resolve();
+      expect(highlightedName()).toBe("B");
+
+      keydown(input, "ArrowUp");
+      await Promise.resolve();
+      expect(highlightedName()).toBe("A");
+
+      keydown(input, "ArrowUp");
+      await Promise.resolve();
+      expect(highlightedName()).toBeUndefined();
+
+      keydown(input, "Enter");
+      await Promise.resolve();
+      expect(selections).toEqual([]);
+      expect(container.querySelector("details").open).toBe(true);
+
+      keydown(input, "ArrowDown");
+      await Promise.resolve();
+      expect(highlightedName()).toBe("A");
+
+      keydown(input, "Enter");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(selections).toEqual([["model", "a"]]);
+      expect(activeButton(container).textContent.trim()).toBe("A");
+      expect(document.activeElement).toBe(container.querySelector("summary"));
+
+      mount("a");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(toasts).toEqual([]);
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("closes with Escape and restores trigger focus, while outside click does not", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const options = [
+      { value: "a", name: "A" },
+      { value: "b", name: "B" },
+    ];
+    const mount = () =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "b",
+            options,
+          },
+        }),
+        container,
+      );
+
+    try {
+      mount();
+      const input = await openModelMenu(container);
+      keydown(input, "Escape");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(document.activeElement).toBe(container.querySelector("summary"));
+
+      const reopenedInput = await openModelMenu(container);
+      await waitFor(() => reopenedInput.value === "");
+      document.body.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true }),
+      );
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(document.activeElement).not.toBe(
+        container.querySelector("summary"),
+      );
+
+      const clickInput = await openModelMenu(container);
+      expect(clickInput.value).toBe("");
+      rowButtons(container)[0].click();
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(document.activeElement).not.toBe(
+        container.querySelector("summary"),
+      );
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("shows the empty state and makes Enter a no-op when no model matches", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const selections = [];
+    const mount = () =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "a",
+            options: [
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+            ],
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+        }),
+        container,
+      );
+
+    try {
+      mount();
+      const input = await openModelMenu(container);
+      typeFilter(input, "zzz");
+      await waitFor(() => rowButtons(container).length === 0);
+      expect(container.textContent).toContain("No matching models");
+
+      keydown(input, "Enter");
+      await Promise.resolve();
+      expect(selections).toEqual([]);
+      expect(container.querySelector("details").open).toBe(true);
+
+      keydown(input, "Escape");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(document.activeElement).toBe(container.querySelector("summary"));
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("scrolls the highlighted model into view", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const calls = [];
+    Element.prototype.scrollIntoView = function (options) {
+      calls.push({ element: this, options });
+    };
+
+    try {
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "c",
+            options: [
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+              { value: "c", name: "C" },
+            ],
+          },
+        }),
+        container,
+      );
+      await openModelMenu(container);
+      await waitFor(() => calls.length > 0);
+      const highlightedCall = calls.find(
+        (call) => call.element.textContent.trim() === "C",
+      );
+      expect(highlightedCall).toBeDefined();
+      expect(highlightedCall.options).toEqual({ block: "nearest" });
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("clamps rendering and Enter when the model list shrinks while open", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const selections = [];
+    const options = [
+      { value: "a", name: "A" },
+      { value: "b", name: "B" },
+      { value: "c", name: "C" },
+      { value: "d", name: "D" },
+    ];
+    const mount = (nextOptions) =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "d",
+            options: nextOptions,
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+        }),
+        container,
+      );
+
+    try {
+      mount(options);
+      await openModelMenu(container);
+      expect(highlightedButton(container).textContent.trim()).toBe("D");
+
+      // Simulate a server snapshot shrinking the list while the menu stays
+      // open: the raw selected index is now out of range.
+      mount(options.slice(0, 2));
+      await waitFor(() => rowButtons(container).length === 2);
+      expect(highlightedButton(container).textContent.trim()).toBe("B");
+
+      keydown(container.querySelector('input[type="text"]'), "Enter");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(selections).toEqual([["model", "b"]]);
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("supports filtering and keyboard selection in the block variant", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const selections = [];
+    const mount = () =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "b",
+            options: [
+              {
+                value: "a",
+                name: "A",
+                description: "Description A",
+              },
+              {
+                value: "b",
+                name: "B",
+                description: "Description B",
+              },
+              {
+                value: "c",
+                name: "C",
+                description: "Description C",
+              },
+            ],
+          },
+          showDescription: true,
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+        }),
+        container,
+      );
+
+    try {
+      mount();
+      const input = await openModelMenu(container);
+      expect(container.querySelector(".dropdown-content").classList).toContain(
+        "w-full",
+      );
+      expect(container.textContent).toContain("Description B");
+
+      typeFilter(input, "c");
+      await waitFor(() => rowButtons(container).length === 1);
+      keydown(input, "Enter");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(selections).toEqual([["model", "c"]]);
+      expect(container.querySelector("summary").textContent).toContain("C");
+      expect(container.textContent).toContain("Description C");
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("keeps mode selectors unchanged and without search", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const selections = [];
+    const mount = () =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "mode",
+            name: "Mode",
+            category: "mode",
+            current_value: "a",
+            options: [
+              { value: "c", name: "C" },
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+            ],
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+        }),
+        container,
+      );
+
+    try {
+      mount();
+      await openMenu(container);
+      expect(container.querySelector('input[type="text"]')).toBeNull();
+      expect(container.querySelector('[data-testid$="-filter"]')).toBeNull();
+      const list = container.querySelector("ul");
+      expect(list.classList).toContain("overflow-y-auto");
+      expect(list.classList).toContain("flex-nowrap");
+      expect(rowNames(container)).toEqual(["C", "A", "B"]);
+
+      keydown(container.querySelector("summary"), "ArrowDown");
+      await Promise.resolve();
+      expect(highlightedButton(container)).toBeNull();
+
+      rowButtons(container)[1].click();
+      expect(selections).toEqual([["mode", "a"]]);
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("confirms a model selected with Enter without a toast", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const selections = [];
+    const toasts = [];
+    const mount = (currentValue) =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: currentValue,
+            options: [
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+            ],
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+          onShowToast: (toast) => toasts.push(toast),
+        }),
+        container,
+      );
+
+    try {
+      mount("a");
+      const input = await openModelMenu(container);
+      keydown(input, "ArrowDown");
+      await Promise.resolve();
+      keydown(input, "Enter");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(selections).toEqual([["model", "b"]]);
+      expect(activeButton(container).textContent.trim()).toBe("B");
+
+      mount("b");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(toasts).toEqual([]);
+      expect(activeButton(container).textContent.trim()).toBe("B");
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("rolls back a model selected with Enter when the server rejects it", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const selections = [];
+    const toasts = [];
+    const mount = (currentValue) =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: currentValue,
+            options: [
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+            ],
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+          onShowToast: (toast) => toasts.push(toast),
+        }),
+        container,
+      );
+
+    try {
+      mount("a");
+      const input = await openModelMenu(container);
+      keydown(input, "ArrowDown");
+      await Promise.resolve();
+      keydown(input, "Enter");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(selections).toEqual([["model", "b"]]);
+      expect(activeButton(container).textContent.trim()).toBe("B");
+
+      mount("a");
+      await waitFor(
+        () => activeButton(container)?.textContent.trim() === "A",
+      );
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].style).toBe("error");
+      expect(toasts[0].message).toContain("Model");
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("renders no search or rows while streaming-disabled", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    try {
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "a",
+            options: [
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+            ],
+          },
+          disableWhileStreaming: true,
+          isStreaming: true,
+        }),
+        container,
+      );
+      const details = container.querySelector("details");
+      details.open = true;
+      details.dispatchEvent(new Event("toggle", { bubbles: true }));
+      await waitFor(
+        () =>
+          details.open === true &&
+          container
+            .querySelector("summary")
+            .classList.contains("pointer-events-none"),
+      );
+      expect(container.querySelector('input[type="text"]')).toBeNull();
+      expect(rowButtons(container)).toEqual([]);
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
 } else {
   test("ConfigOptionSelect menu ordering in isolated happy-dom process", () => {
     const result = spawnSync(

@@ -7,6 +7,26 @@ const { html, Fragment, useState, useEffect, useRef, useCallback } =
   window.preact;
 
 import { ChevronDownIcon, CheckIcon } from "./Icons.js";
+import { SearchableMenu } from "./SearchableMenu.js";
+import { useSearchableMenu } from "../hooks/useSearchableMenu.js";
+
+function modelOptionMatches(option, query) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return (
+    String(option.name ?? "").toLowerCase().includes(needle) ||
+    String(option.value ?? "").toLowerCase().includes(needle)
+  );
+}
+
+function defaultModelHighlight(options, query, currentValue) {
+  if (!options.length) return -1;
+  if (!query.trim()) {
+    const current = options.findIndex((opt) => opt.value === currentValue);
+    return current >= 0 ? current : 0;
+  }
+  return 0;
+}
 
 /**
  * ConfigOptionSelect - daisyUI dropdown for a config option with optimistic
@@ -43,6 +63,10 @@ export function ConfigOptionSelect({
   // Skips the sync effect's body on the component's very first (mount)
   // firing — see comment below.
   const isFirstEffectRunRef = useRef(true);
+  const [filterText, setFilterText] = useState("");
+  const filterInputRef = useRef(null);
+  const triggerRef = useRef(null);
+  const isModel = configOption.category === "model";
 
   // Sync local value with the server's view of this option. Depends on the
   // WHOLE `configOption` object (not just `current_value`) because a
@@ -96,7 +120,9 @@ export function ConfigOptionSelect({
       }
     };
     const onKey = (e) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      if (isModel) triggerRef.current?.focus();
     };
     document.addEventListener("mousedown", onDocPointer);
     document.addEventListener("keydown", onKey);
@@ -104,10 +130,10 @@ export function ConfigOptionSelect({
       document.removeEventListener("mousedown", onDocPointer);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, isModel]);
 
   const handleSelect = useCallback(
-    (newValue) => {
+    (newValue, restoreFocus = false) => {
       pendingRef.current = {
         sentValue: newValue,
         previousValue: configOption.current_value,
@@ -115,9 +141,15 @@ export function ConfigOptionSelect({
       setLocalValue(newValue); // optimistic
       onSetConfigOption?.(configOption.id, newValue);
       setOpen(false);
+      if (restoreFocus) triggerRef.current?.focus();
     },
     [configOption.id, configOption.current_value, onSetConfigOption],
   );
+
+  const closeSearchableMenu = useCallback(() => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }, []);
 
   const disabled = disableWhileStreaming && isStreaming;
   const isToolbar = variant === "toolbar";
@@ -128,12 +160,55 @@ export function ConfigOptionSelect({
   const currentLabel = currentOption
     ? currentOption.name
     : localValue || configOption.name;
-  const menuOptions =
-    configOption.category === "model"
-      ? [...(configOption.options || [])].sort((a, b) =>
-          a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-        )
-      : configOption.options;
+  const sortedOptions = isModel
+    ? [...(configOption.options || [])].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+      )
+    : configOption.options;
+  const menuOptions = isModel
+    ? (sortedOptions || []).filter((opt) => modelOptionMatches(opt, filterText))
+    : sortedOptions;
+
+  const {
+    selectedIndex,
+    selectedItemRef,
+    handleKeyDown,
+    resetSelection,
+    highlightIndex,
+  } = useSearchableMenu({
+    items: isModel ? menuOptions || [] : [],
+    onAccept: (option) => handleSelect(option.value, true),
+    onClose: closeSearchableMenu,
+  });
+
+  const highlightedIndex = isModel
+    ? menuOptions?.length
+      ? Math.min(selectedIndex, menuOptions.length - 1)
+      : -1
+    : -1;
+
+  const handleFilterChange = (value) => {
+    setFilterText(value);
+    if (!isModel) return;
+    const next = (sortedOptions || []).filter((opt) =>
+      modelOptionMatches(opt, value),
+    );
+    highlightIndex(
+      next.length ? defaultModelHighlight(next, value, localValue) : -1,
+    );
+  };
+
+  useEffect(() => {
+    if (!open) {
+      setFilterText("");
+      resetSelection();
+      return;
+    }
+    if (!isModel) return;
+    setFilterText("");
+    highlightIndex(defaultModelHighlight(sortedOptions || [], "", localValue));
+    filterInputRef.current?.focus();
+  }, [open]);
 
   const tip = disabled
     ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
@@ -154,15 +229,55 @@ export function ConfigOptionSelect({
     .filter(Boolean)
     .join(" ");
 
-  const menuClass = [
-    "dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box p-2 shadow",
-    "border border-mitto-border-1 max-h-64 overflow-y-auto flex-nowrap",
+  const menuBaseClass =
+    "dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box p-2 shadow border border-mitto-border-1";
+  const plainMenuClass = [
+    menuBaseClass,
+    "max-h-64 overflow-y-auto flex-nowrap",
     isToolbar ? "w-[250px]" : "w-full",
   ].join(" ");
+  const searchableMenuClass = [
+    menuBaseClass,
+    "max-h-64 overflow-hidden flex flex-col",
+    isToolbar ? "w-[250px]" : "w-full",
+  ].join(" ");
+
+  const renderOption = (opt, index) => {
+    const isSelected = opt.value === localValue;
+    const isHighlighted = index === highlightedIndex;
+    return html`
+      <li key=${opt.value}>
+        <button
+          type="button"
+          class=${[
+            "w-full",
+            isSelected ? "menu-active" : "",
+            isHighlighted ? "ring-1 ring-inset ring-mitto-accent-500" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          ref=${isModel
+            ? (element) => {
+                if (element && isHighlighted) selectedItemRef.current = element;
+              }
+            : undefined}
+          onClick=${() => handleSelect(opt.value)}
+        >
+          ${isSelected
+            ? html`<${CheckIcon} className="w-4 h-4" />`
+            : html`<span class="inline-block w-4 h-4"></span>`}
+          <span class="truncate-left min-w-0 flex-1"
+            ><bdi dir="ltr">${opt.name}</bdi></span
+          >
+        </button>
+      </li>
+    `;
+  };
 
   const trigger = isToolbar
     ? html`
         <summary
+          ref=${triggerRef}
           class="btn btn-ghost btn-xs font-normal list-none flex-nowrap ${configOption.category ===
           "mode"
             ? "max-w-[264px]"
@@ -178,6 +293,7 @@ export function ConfigOptionSelect({
       `
     : html`
         <summary
+          ref=${triggerRef}
           class="flex w-full items-center justify-between gap-2 rounded-lg border border-mitto-border-2 bg-mitto-surface-3 px-3 py-2 text-sm list-none transition-colors ${disabled
             ? "opacity-50 cursor-not-allowed pointer-events-none"
             : "cursor-pointer hover:bg-mitto-surface-hover"}"
@@ -204,28 +320,29 @@ export function ConfigOptionSelect({
         ${trigger}
         ${!disabled &&
         html`
-          <ul class=${menuClass}>
-            ${menuOptions?.map(
-              (opt) => html`
-                <li key=${opt.value}>
-                  <button
-                    type="button"
-                    class=${opt.value === localValue
-                      ? "w-full menu-active"
-                      : "w-full"}
-                    onClick=${() => handleSelect(opt.value)}
+          ${isModel
+            ? html`
+                <div class=${searchableMenuClass}>
+                  <${SearchableMenu}
+                    items=${menuOptions || []}
+                    filterText=${filterText}
+                    onFilterChange=${handleFilterChange}
+                    onFilterKeyDown=${handleKeyDown}
+                    filterInputRef=${filterInputRef}
+                    placeholder="Filter models..."
+                    emptyText="No matching models"
+                    filterTestId=${`config-option-${configOption.id}-filter`}
+                    listTestId=${`config-option-${configOption.id}-list`}
                   >
-                    ${opt.value === localValue
-                      ? html`<${CheckIcon} className="w-4 h-4" />`
-                      : html`<span class="inline-block w-4 h-4"></span>`}
-                    <span class="truncate-left min-w-0 flex-1"
-                      ><bdi dir="ltr">${opt.name}</bdi></span
-                    >
-                  </button>
-                </li>
-              `,
-            )}
-          </ul>
+                    ${(menuOptions || []).map(renderOption)}
+                  </${SearchableMenu}>
+                </div>
+              `
+            : html`
+                <ul class=${plainMenuClass}>
+                  ${configOption.options?.map(renderOption)}
+                </ul>
+              `}
         `}
       </details>
       ${showDescription &&
