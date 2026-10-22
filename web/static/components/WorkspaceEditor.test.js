@@ -295,10 +295,22 @@ if (process.env.MITTO_WORKSPACE_EDITOR_TEST_CHILD === "1") {
         await settle();
         const input = checkbox(draft.container, "Coding");
         input.focus();
-        input.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-        );
-        await settle();
+        // A surrounding Modal listens for Escape on window and would close the
+        // whole dialog (discarding drafts) if the dropdown let the event through.
+        const windowEscapes = [];
+        const onWindowKeyDown = (event) => {
+          if (event.key === "Escape") windowEscapes.push(event.target);
+        };
+        window.addEventListener("keydown", onWindowKeyDown);
+        try {
+          input.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+          );
+          await settle();
+          expect(windowEscapes).toHaveLength(0);
+        } finally {
+          window.removeEventListener("keydown", onWindowKeyDown);
+        }
         expect(trigger.getAttribute("aria-expanded")).toBe("false");
         expect(document.activeElement).toBe(trigger);
         trigger.click();

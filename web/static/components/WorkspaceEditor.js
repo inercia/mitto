@@ -252,7 +252,9 @@ function WorkspaceModelOverridesEditor({
                   ref=${open ? dropdownRef : null}
                   onKeyDown=${(event) => {
                     if (event.key === "Escape" && open) {
+                      // Keep the surrounding Modal's window-level Escape handler from closing the dialog.
                       event.preventDefault();
+                      event.stopPropagation();
                       setOpenGroupKey(null);
                       triggerRef.current?.focus();
                     }
@@ -271,7 +273,9 @@ function WorkspaceModelOverridesEditor({
                     }}
                     onKeyDown=${(event) => {
                       if (event.key === "Escape" && open) {
+                        // Keep the surrounding Modal's window-level Escape handler from closing the dialog.
                         event.preventDefault();
+                        event.stopPropagation();
                         setOpenGroupKey(null);
                         triggerRef.current?.focus();
                       }
