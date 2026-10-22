@@ -357,7 +357,7 @@ if (process.env.MITTO_WORKSPACE_EDITOR_TEST_CHILD === "1") {
       }
     });
 
-    test("uses responsive grouped rows with a left-aligned add action below them", () => {
+    test("keeps tags, model and remove controls on one row with a left-aligned add action below", () => {
       const props = defaultProps();
       const container = mount(props);
       try {
@@ -377,7 +377,8 @@ if (process.env.MITTO_WORKSPACE_EDITOR_TEST_CHILD === "1") {
           '[data-testid="ws-model-catalog-refresh"]',
         );
         const row = tag.parentElement.parentElement;
-        expect(row.classList.contains("sm:flex-row")).toBe(true);
+        expect(row.classList.contains("flex-row")).toBe(true);
+        expect(row.classList.contains("flex-col")).toBe(false);
         expect(model.parentElement).toBe(row);
         expect(remove.parentElement).toBe(row);
         expect(remove.classList.contains("text-mitto-danger")).toBe(true);

@@ -61,6 +61,7 @@ function WorkspaceModelOverridesEditor({
   }));
   const [openGroupKey, setOpenGroupKey] = useState(null);
   const dropdownRef = useRef(null);
+  const panelRef = useRef(null);
   const triggerRef = useRef(null);
   const expectedRowsKeyRef = useRef(null);
   const groups =
@@ -92,6 +93,12 @@ function WorkspaceModelOverridesEditor({
   useEffect(() => {
     onValidityChange?.(valid);
   }, [valid, onValidityChange]);
+
+  useEffect(() => {
+    if (!openGroupKey) return;
+    // Keep the popover fully visible inside the dialog's scroll area.
+    panelRef.current?.scrollIntoView({ block: "nearest" });
+  }, [openGroupKey]);
 
   useEffect(() => {
     if (!openGroupKey) return;
@@ -246,9 +253,9 @@ function WorkspaceModelOverridesEditor({
                 : selectedTags.length <= 2
                   ? selectedTags.join(", ")
                   : `${selectedTags.slice(0, 2).join(", ")} and ${selectedTags.length - 2} more`;
-              return html`<div class="flex flex-col sm:flex-row gap-2 items-stretch" key=${group.key}>
+              return html`<div class="flex flex-row items-center gap-2" key=${group.key}>
                 <div
-                  class="dropdown dropdown-bottom flex-1 min-w-0"
+                  class="relative flex-1 min-w-0"
                   ref=${open ? dropdownRef : null}
                   onKeyDown=${(event) => {
                     if (event.key === "Escape" && open) {
@@ -263,12 +270,12 @@ function WorkspaceModelOverridesEditor({
                   <button
                     type="button"
                     class="btn btn-outline btn-sm w-full justify-between min-w-0"
+                    ref=${open ? triggerRef : null}
                     aria-expanded=${open}
                     aria-controls=${`ws-model-override-tags-${index}`}
                     aria-label=${`Capability tags: ${selectedTags.join(", ") || "none selected"}`}
                     data-testid=${`ws-model-override-tag-${index}`}
-                    onClick=${(event) => {
-                      triggerRef.current = event.currentTarget;
+                    onClick=${() => {
                       setOpenGroupKey(open ? null : group.key);
                     }}
                     onKeyDown=${(event) => {
@@ -284,7 +291,7 @@ function WorkspaceModelOverridesEditor({
                     <span class="truncate" title=${selectedTags.join(", ")}>${summary}</span>
                     <span aria-hidden="true">▾</span>
                   </button>
-                  ${open && html`<div id=${`ws-model-override-tags-${index}`} class="dropdown-content z-20 mt-1 w-full max-h-60 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow" role="group" aria-label="Capability tags">
+                  ${open && html`<div id=${`ws-model-override-tags-${index}`} ref=${panelRef} style="max-height: 15rem" class="absolute left-0 right-0 top-full z-20 mt-1 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow" role="group" aria-label="Capability tags">
                     ${allTags.length === 0
                       ? html`<p class="p-2 text-xs text-mitto-text-muted">No tags defined in model profiles.</p>`
                       : allTags.map((tag) => {
