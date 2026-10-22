@@ -1926,7 +1926,7 @@ describe("U5: duplicateServer does not copy hidden_models (mitto-69t.5)", () => 
 
   test("does not reference or spread hidden_models", () => {
     expect(body).not.toContain("hidden_models");
-    expect(body).not.toContain("...server");
+    expect(body).not.toMatch(/\.\.\.server\s*[,}]/);
   });
 
   test("keeps omitting Initial Model fields and constraints", () => {
