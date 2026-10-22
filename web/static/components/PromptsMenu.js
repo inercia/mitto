@@ -141,7 +141,7 @@ export function PromptsMenu({
             onSelect && onSelect(prompt, e, { asLoop });
           }}
           title=${prompt.description || prompt.name}
-          class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2 rounded-none"
+          class="prompt-item picker-row w-full text-left text-mitto-text"
           style=${style}
           aria-selected=${isChosen ? "true" : "false"}
           ref=${isKbSelected ? selectedItemRef : null}

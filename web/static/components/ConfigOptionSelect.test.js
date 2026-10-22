@@ -117,9 +117,9 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       expect(container.querySelector("summary").classList).toContain(
         "max-w-[200px]",
       );
-      expect(container.querySelector(".dropdown-content").classList).toContain(
-        "w-[250px]",
-      );
+      const modelMenu = container.querySelector(".dropdown-content").classList;
+      expect(modelMenu).toContain("picker-popover");
+      expect(modelMenu).toContain("picker-popover--toolbar");
       expect(
         container
           .querySelector("summary span.truncate-left bdi")
@@ -285,7 +285,7 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
   const rowNames = (container) =>
     rowButtons(container).map((button) => button.textContent.trim());
   const highlightedButton = (container) =>
-    container.querySelector("ul button.ring-1");
+    container.querySelector("ul button.picker-row--highlighted");
   const activeButton = (container) =>
     container.querySelector("ul button.menu-active");
 

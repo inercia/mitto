@@ -9,6 +9,7 @@ const { html, Fragment, useState, useEffect, useRef, useCallback } =
 import { ChevronDownIcon, CheckIcon } from "./Icons.js";
 import { SearchableMenu } from "./SearchableMenu.js";
 import { useSearchableMenu } from "../hooks/useSearchableMenu.js";
+import { registerExclusivePicker } from "../utils/pickerExclusion.js";
 
 function modelOptionMatches(option, query) {
   const needle = query.trim().toLowerCase();
@@ -210,6 +211,11 @@ export function ConfigOptionSelect({
     filterInputRef.current?.focus();
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    return registerExclusivePicker(() => setOpen(false));
+  }, [open]);
+
   const tip = disabled
     ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
     : isStreaming
@@ -225,21 +231,22 @@ export function ConfigOptionSelect({
       ? "chat-input-config-dropdown"
       : "config-dropdown-block",
     isToolbar ? "" : "w-full",
+    isModel && isToolbar ? "picker-model-toolbar" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
-  const menuBaseClass =
-    "dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box p-2 shadow border border-mitto-border-1";
+  const menuBaseClass = "dropdown-content menu menu-sm";
   const plainMenuClass = [
     menuBaseClass,
+    "bg-mitto-surface-2 rounded-box p-2 shadow border border-mitto-border-1",
     "max-h-64 overflow-y-auto flex-nowrap",
     isToolbar ? "w-[250px]" : "w-full",
   ].join(" ");
   const searchableMenuClass = [
     menuBaseClass,
-    "max-h-64 overflow-hidden flex flex-col",
-    isToolbar ? "w-[250px]" : "w-full",
+    "picker-popover",
+    isToolbar ? "picker-popover--toolbar" : "w-full",
   ].join(" ");
 
   const renderOption = (opt, index) => {
@@ -250,9 +257,9 @@ export function ConfigOptionSelect({
         <button
           type="button"
           class=${[
-            "w-full",
+            "picker-row w-full",
             isSelected ? "menu-active" : "",
-            isHighlighted ? "ring-1 ring-inset ring-mitto-accent-500" : "",
+            isHighlighted ? "picker-row--highlighted" : "",
           ]
             .filter(Boolean)
             .join(" ")}

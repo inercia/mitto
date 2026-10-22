@@ -23,6 +23,7 @@ import { useSessionInfo } from "../hooks/useSessionsStore.js";
 import { useQueueLength, useQueueConfig } from "../hooks/useQueue.js";
 import { useConfigOptions } from "../hooks/useWorkspacesStore.js";
 import { placeThoughtLevelNearModel } from "../utils/configOptions.js";
+import { registerExclusivePicker } from "../utils/pickerExclusion.js";
 import {
   getDraft as getStoredDraft,
   setDraft as setStoredDraft,
@@ -794,6 +795,14 @@ function ChatInputImpl({
       return () =>
         document.removeEventListener("mousedown", handleClickOutside);
     }
+  }, [showDropup]);
+
+  // Opening any other composer picker closes the prompts dropup. The dropup
+  // remains the sole owner of `showDropup`; the registry only coordinates
+  // open transitions and deliberately does not restore focus.
+  useEffect(() => {
+    if (!showDropup) return undefined;
+    return registerExclusivePicker(() => setShowDropup(false));
   }, [showDropup]);
 
   // Track Shift key state while prompt dropdown is open
@@ -3172,8 +3181,7 @@ function ChatInputImpl({
                     ${showDropup &&
                     html`
                       <div
-                        class="chat-input-prompts-dropup absolute bottom-full right-0 mb-2 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
-                        style="width: 20rem; min-width: 20rem; max-width: 20rem; max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+                        class="chat-input-prompts-dropup picker-popover picker-popover--toolbar absolute bottom-full right-0 mb-2 z-50"
                       >
                         <${PromptsMenu}
                           prompts=${predefinedPrompts}

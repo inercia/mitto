@@ -2256,6 +2256,85 @@ mitto-action {
   margin-bottom: 0;
 }
 
+/* Shared popover shell for the composer's searchable pickers (prompts and
+   config/model selectors). Unlayered so it wins over daisyUI's .menu/.dropdown
+   component defaults and Tailwind utilities; each picker keeps its own
+   positioning mechanism (absolute dropup vs <details> dropdown). */
+.picker-popover {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  max-height: 400px;
+  max-height: min(400px, 50dvh);
+  padding: 0;
+  overflow: hidden;
+  background: var(--mitto-surface-2);
+  border: 1px solid var(--mitto-border-2);
+  border-radius: 0.5rem;
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.5),
+    0 8px 16px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.picker-popover--toolbar {
+  width: 20rem;
+  max-width: calc(100vw - 1rem);
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.625rem 1rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-align: left;
+  transition: filter 0.15s ease;
+}
+
+.picker-row:hover {
+  filter: brightness(1.1);
+}
+
+.picker-row--highlighted {
+  background-color: rgba(220, 38, 38, 0.15);
+  box-shadow: inset 3px 0 0 0 var(--mitto-accent);
+}
+
+/* At narrow widths the toolbar selectors share a full-width centered row.
+   Anchor the model menu to that row and center it so a 20rem panel cannot
+   overflow the viewport's left edge; still explicit absolute positioning,
+   not daisyUI anchor positioning. */
+@media (max-width: 640px) {
+  .chat-input-model-selector {
+    position: relative;
+  }
+
+  /* The prompt button is not the rightmost action (send follows it), so
+     right-0 would leave a 20rem panel hanging past the viewport's left edge
+     at 320px. Offset it by the send button's footprint to align with the
+     composer's right edge. */
+  .chat-input-prompts-dropup {
+    right: -2.5rem;
+  }
+
+  .picker-model-toolbar {
+    position: static;
+  }
+
+  .picker-model-toolbar .dropdown-content {
+    right: auto;
+    left: 50%;
+    width: 20rem;
+    max-width: calc(100vw - 1rem);
+    transform: translateX(-50%);
+    translate: none;
+  }
+}
+
 /* Task-label color-preset picker (TaskLabelColorsEditor) opens UPWARD: the
    editor's rows sit near the bottom of the scrollable Workspaces/Settings
    dialog, so a default downward popover is clipped by the dialog edge. Same
