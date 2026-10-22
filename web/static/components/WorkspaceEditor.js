@@ -291,7 +291,7 @@ function WorkspaceModelOverridesEditor({
                     <span class="truncate" title=${selectedTags.join(", ")}>${summary}</span>
                     <span aria-hidden="true">▾</span>
                   </button>
-                  ${open && html`<div id=${`ws-model-override-tags-${index}`} ref=${panelRef} style="max-height: 15rem" class="absolute left-0 right-0 top-full z-20 mt-1 overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow" role="group" aria-label="Capability tags">
+                  ${open && html`<div id=${`ws-model-override-tags-${index}`} ref=${panelRef} style="max-height: 15rem" class="absolute left-0 right-0 top-full z-20 mt-1 overflow-y-auto rounded-box border border-base-300 bg-mitto-bg p-2 shadow-lg" role="group" aria-label="Capability tags">
                     ${allTags.length === 0
                       ? html`<p class="p-2 text-xs text-mitto-text-muted">No tags defined in model profiles.</p>`
                       : allTags.map((tag) => {
