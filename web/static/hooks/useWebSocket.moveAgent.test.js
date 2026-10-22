@@ -3,8 +3,8 @@
  * stubbed, to test the new "session_agent_moved" case (mitto-f7yo.6) without
  * importing the full 4582-line browser hook. Mirrors the extraction
  * technique in useWebSocket.configOptions.test.js (mitto-6w3): grab the
- * arrow-function source between `const handleGlobalEvent = useCallback(`
- * and its first `}, []);` boundary, then `new Function(...)` it with stubbed
+ * arrow-function body after `const handleGlobalEvent = useCallback(` (its
+ * dependency array excluded), then `new Function(...)` it with stubbed
  * bindings. `new Function` only resolves free identifiers lazily, at
  * execution time, so unrelated branches/case blocks referencing bindings we
  * don't supply here (e.g. handleSessionMessageRef, used by other cases) are
@@ -12,6 +12,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, test, expect } from "../utils/testing/testGlobals.js";
+import { useCallbackSource } from "../utils/testing/useCallbackSource.js";
 
 const source = readFileSync(
   new URL("./useWebSocket.js", import.meta.url),
@@ -19,14 +20,11 @@ const source = readFileSync(
 );
 
 function extractHandleGlobalEvent(bindings) {
-  const marker = "const handleGlobalEvent = useCallback(";
-  const start = source.indexOf(marker);
-  expect(start).toBeGreaterThan(-1);
-  const end = source.indexOf("}, []);", start);
-  expect(end).toBeGreaterThan(start);
+  const body = useCallbackSource(source, "handleGlobalEvent");
+  expect(body.length).toBeGreaterThan(0);
   return new Function(
     ...Object.keys(bindings),
-    `return ${source.slice(start + marker.length, end + 1)};`,
+    `return ${body};`,
   )(...Object.values(bindings));
 }
 

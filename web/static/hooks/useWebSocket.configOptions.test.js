@@ -5,6 +5,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, test, expect } from "../utils/testing/testGlobals.js";
+import { useCallbackSource } from "../utils/testing/useCallbackSource.js";
 import {
   describeConfigAdjustment,
   configAdjustmentDedupKey,
@@ -16,14 +17,11 @@ const source = readFileSync(
 );
 
 function callback(name, bindings, text = source) {
-  const marker = `const ${name} = useCallback(`;
-  const start = text.indexOf(marker);
-  expect(start).toBeGreaterThan(-1);
-  const end = text.indexOf("}, []);", start);
-  expect(end).toBeGreaterThan(start);
+  const body = useCallbackSource(text, name);
+  expect(body.length).toBeGreaterThan(0);
   return new Function(
     ...Object.keys(bindings),
-    `return ${text.slice(start + marker.length, end + 1)};`,
+    `return ${body};`,
   )(...Object.values(bindings));
 }
 
