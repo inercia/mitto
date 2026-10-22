@@ -192,6 +192,19 @@ ui:
 - [macOS App Configuration](mac/README.md) - Hotkeys, notifications, desktop app settings
 - [Architecture](../devel/README.md) - System design and internals
 
+### Hiding models per agent
+
+Each ACP server may set `hidden_models`, a list of case-insensitive Go (RE2) regular expressions matched against model IDs and display names. Models matching any rule are hidden for that server (scoped by server name). Invalid patterns are rejected on load and save; blank entries are dropped.
+
+```yaml
+acp:
+  - name: copilot
+    command: copilot --acp
+    hidden_models:
+      - "^gpt-3"
+      - "preview"
+```
+
 ## JSON Format
 
 When using `settings.json`, the format is slightly different:

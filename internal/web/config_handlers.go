@@ -107,6 +107,10 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 	// This allows users to:
 	// 1. Have a base set of servers in .mittorc (read-only, version controlled)
 	// 2. Add custom servers via UI that are saved to settings.json
+	oldNames := make(map[string]string, len(req.ServerRenames))
+	for oldName, newName := range req.ServerRenames {
+		oldNames[newName] = oldName
+	}
 	var newACPServers []configPkg.ACPServerSettings
 	for _, srv := range req.ACPServers {
 		// Skip RC file servers - they are managed in .mittorc, not settings.json
@@ -129,6 +133,15 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			ContextFlushCommand: srv.ContextFlushCommand,
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
+		}
+
+		// HiddenModels: nil preserves existing rules (rename-aware); non-nil replaces.
+		if srv.HiddenModels != nil {
+			newServer.HiddenModels = configPkg.NormalizeHiddenModels(*srv.HiddenModels)
+		} else if ex, ok := existingServers[srv.Name]; ok {
+			newServer.HiddenModels = ex.HiddenModels
+		} else if ex, ok := existingServers[oldNames[srv.Name]]; ok {
+			newServer.HiddenModels = ex.HiddenModels
 		}
 
 		// Preserve Cwd and RestrictedRunners from existing server if present.

@@ -170,6 +170,9 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Include context-flush command if specified
+			if len(srv.HiddenModels) > 0 {
+				acpServers[i]["hidden_models"] = srv.HiddenModels
+			}
 			if srv.ContextFlushCommand != "" {
 				acpServers[i]["context_flush_command"] = srv.ContextFlushCommand
 			}

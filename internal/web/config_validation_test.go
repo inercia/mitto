@@ -86,6 +86,7 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
+			HiddenModels        *[]string                              `json:"hidden_models,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
 
@@ -117,6 +118,7 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
+			HiddenModels        *[]string                              `json:"hidden_models,omitempty"`
 		}{},
 	}
 
@@ -144,6 +146,7 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
+			HiddenModels        *[]string                              `json:"hidden_models,omitempty"`
 		}{{Name: "", Command: "cmd"}},
 	}
 
@@ -171,6 +174,7 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
+			HiddenModels        *[]string                              `json:"hidden_models,omitempty"`
 		}{{Name: "test", Command: ""}},
 	}
 
@@ -198,6 +202,7 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
+			HiddenModels        *[]string                              `json:"hidden_models,omitempty"`
 		}{
 			{Name: "test", Command: "cmd1"},
 			{Name: "test", Command: "cmd2"},
@@ -228,6 +233,7 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
+			HiddenModels        *[]string                              `json:"hidden_models,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
 	}
 

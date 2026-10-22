@@ -34,6 +34,8 @@ type ConfigSaveRequest struct {
 		// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
 		// to flush conversation context without restarting the agent.
 		ContextFlushCommand string `json:"context_flush_command,omitempty"`
+		// HiddenModels: nil preserves existing rules; non-nil (even empty) replaces them.
+		HiddenModels *[]string `json:"hidden_models,omitempty"`
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`

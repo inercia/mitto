@@ -797,6 +797,8 @@ type ACPServerSettings struct {
 	// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
 	// that flushes/clears the conversation context without restarting the agent.
 	ContextFlushCommand string `json:"context_flush_command,omitempty"`
+	// HiddenModels lists case-insensitive RE2 patterns hiding matching models.
+	HiddenModels []string `json:"hidden_models,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.

@@ -207,6 +207,9 @@ type ACPServer struct {
 	// that flushes/clears the conversation context without restarting the agent.
 	// Empty means the feature is disabled for this server.
 	ContextFlushCommand string
+	// HiddenModels lists case-insensitive RE2 patterns matched against a model
+	// ID or display name; matching models are hidden for this server (by Name).
+	HiddenModels []string
 }
 
 // EffectivePermissionMode resolves the ACP server permission mode against its
@@ -1481,6 +1484,7 @@ type rawACPServerConfig struct {
 	} `yaml:"prompts"`
 	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
+	HiddenModels        []string                          `yaml:"hidden_models"`
 }
 
 // rawConfig is used for YAML unmarshaling to handle the map-based format.
@@ -1709,6 +1713,11 @@ func ParseJSON(data []byte) (*Config, error) {
 	}
 
 	cfg := settings.ToConfig()
+	for _, srv := range cfg.ACPServers {
+		if err := ValidateHiddenModels(srv.Name, srv.HiddenModels); err != nil {
+			return nil, fmt.Errorf("invalid acp server config: %w", err)
+		}
+	}
 
 	return cfg, nil
 }
@@ -1742,6 +1751,10 @@ func Parse(data []byte) (*Config, error) {
 				RestrictedRunners:   server.RestrictedRunners,
 				Tags:                server.Tags, // Optional categorization tags
 				ContextFlushCommand: server.ContextFlushCommand,
+				HiddenModels:        server.HiddenModels,
+			}
+			if err := ValidateHiddenModels(name, acpServer.HiddenModels); err != nil {
+				return nil, fmt.Errorf("invalid acp server config: %w", err)
 			}
 			// Copy server-specific prompts
 			for _, p := range server.Prompts {

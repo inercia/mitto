@@ -179,6 +179,25 @@ func (s *Server) validateConfigRequest(req *ConfigSaveRequest) *configValidation
 		}
 	}
 
+	for i, srv := range req.ACPServers {
+		if srv.HiddenModels == nil {
+			continue
+		}
+		if err := configPkg.ValidateHiddenModels(srv.Name, *srv.HiddenModels); err != nil {
+			details := map[string]interface{}{"server": srv.Name}
+			var hmErr *configPkg.HiddenModelValidationError
+			if errors.As(err, &hmErr) {
+				details["field"] = fmt.Sprintf("acp_servers[%d].hidden_models[%d]", i, hmErr.Index)
+				details["rule"] = hmErr.Rule
+			}
+			return &configValidationError{
+				StatusCode: http.StatusBadRequest,
+				Message:    err.Error(),
+				Details:    details,
+			}
+		}
+	}
+
 	if req.ModelShortcuts != nil {
 		if err := configPkg.ValidateModelShortcuts(*req.ModelShortcuts); err != nil {
 			validationErr := &configValidationError{
