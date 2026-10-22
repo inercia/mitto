@@ -406,14 +406,18 @@ func (bs *BackgroundSession) pdHiddenModelPolicy() (*config.HiddenModelPolicy, e
 }
 
 // hiddenModelPolicy compiles the hidden-model policy of this session's
-// configured ACP server. A missing config or unknown server yields a nil
-// (allow-all) policy; a compile failure is returned so callers fail closed.
+// configured ACP server. A missing config, unknown server or a server with no
+// rules yields a nil (allow-all, no-rule) policy, so a non-nil policy always
+// means rules are active; a compile failure is returned so callers fail closed.
 func (bs *BackgroundSession) hiddenModelPolicy() (*config.HiddenModelPolicy, error) {
 	if bs.mittoConfig == nil {
 		return nil, nil
 	}
 	srv, err := bs.mittoConfig.GetServer(bs.acpServer)
 	if err != nil || srv == nil {
+		return nil, nil
+	}
+	if len(config.NormalizeHiddenModels(srv.HiddenModels)) == 0 {
 		return nil, nil
 	}
 	policy, err := config.CompileHiddenModels(bs.acpServer, srv.HiddenModels)

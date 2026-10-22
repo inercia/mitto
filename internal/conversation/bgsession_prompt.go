@@ -2022,18 +2022,28 @@ func (bs *BackgroundSession) pdResetContextUsage() {
 }
 
 // activeModelPreflight refuses a turn whose active model is hidden by the
-// server's hidden-model policy, or whose eligibility cannot be established
-// because the policy failed to compile. It is a no-op without rules, without a
-// model catalog, for synthesized catalogs, and when no current model is known.
+// server's hidden-model policy, or whose eligibility cannot be established:
+// the policy failed to compile, or rules are active but the catalog or current
+// model is unknown. It is a no-op without rules and for synthesized catalogs.
 func activeModelPreflight(d promptDeps) error {
 	models := d.pdGetAgentModels()
-	if models == nil || models.Synthesized || models.CurrentModelId == "" {
-		return nil
-	}
 	policy, err := d.pdHiddenModelPolicy()
 	if err != nil {
+		cur := ""
+		if models != nil {
+			cur = models.CurrentModelId
+		}
 		return fmt.Errorf("hidden-model policy unavailable for active model %q: %w",
-			models.CurrentModelId, errors.Join(errModelHiddenByPolicy, err))
+			cur, errors.Join(errModelHiddenByPolicy, err))
+	}
+	if policy == nil {
+		return nil
+	}
+	if models != nil && models.Synthesized {
+		return nil
+	}
+	if models == nil || models.CurrentModelId == "" {
+		return fmt.Errorf("active model unknown under hidden-model policy: %w", errModelHiddenByPolicy)
 	}
 	cur := models.CurrentModelId
 	if !modelEligible(policy, cur, ModelDisplayName(models, cur)) {

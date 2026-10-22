@@ -4784,13 +4784,23 @@ func TestActiveModelPreflight_U4(t *testing.T) {
 	d = mk()
 	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
 	d.agentModels.CurrentModelId = ""
+	if err := activeModelPreflight(d); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("empty current under policy must fail closed, got %v", err)
+	}
+	d = mk()
+	d.agentModels.CurrentModelId = ""
 	if err := activeModelPreflight(d); err != nil {
-		t.Fatalf("empty current no-op: %v", err)
+		t.Fatalf("empty current without policy no-op: %v", err)
 	}
 	d = mk()
 	d.hiddenPolicy = hiddenPolicyFor(t, "Model 1")
 	d.agentModels = nil
+	if err := activeModelPreflight(d); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("nil models under policy must fail closed, got %v", err)
+	}
+	d = mk()
+	d.agentModels = nil
 	if err := activeModelPreflight(d); err != nil {
-		t.Fatalf("nil models no-op: %v", err)
+		t.Fatalf("nil models without policy no-op: %v", err)
 	}
 }

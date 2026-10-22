@@ -348,3 +348,17 @@ func TestCbInitBaseline_FreshSession_PolicyError_FailsClosed(t *testing.T) {
 		t.Fatalf("policy error must not persist baseline, got %q", meta.BaselineModel)
 	}
 }
+
+func TestHiddenModelPolicy_NilWhenNoRules(t *testing.T) {
+	for _, rules := range [][]string{nil, {}, {"  "}} {
+		bs, _, _ := newHiddenBaselineSession(t, "", rules)
+		p, err := bs.hiddenModelPolicy()
+		if p != nil || err != nil {
+			t.Fatalf("rules %q: got %v, %v; want nil, nil", rules, p, err)
+		}
+	}
+	bs, _, _ := newHiddenBaselineSession(t, "", []string{"^m-2$"})
+	if p, err := bs.hiddenModelPolicy(); p == nil || err != nil {
+		t.Fatalf("with rules: got %v, %v", p, err)
+	}
+}
