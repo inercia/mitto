@@ -175,6 +175,20 @@ func (bs *BackgroundSession) ApplyModelTagWithResult(ctx context.Context, tag st
 	if resolved == "" {
 		return ModelTagApplyResult{}, fmt.Errorf("model_tag %q did not resolve to any available model: %w", tag, ErrModelTagNoMatch)
 	}
+	policy, perr := bs.hiddenModelPolicy()
+	if perr != nil {
+		return ModelTagApplyResult{}, fmt.Errorf("hidden-model policy unavailable for model_tag %q: %w", tag, errors.Join(errModelHiddenByPolicy, perr))
+	}
+	resolvedName := ""
+	for _, m := range models.AvailableModels {
+		if m.ModelId == resolved {
+			resolvedName = m.Name
+			break
+		}
+	}
+	if !modelEligible(policy, resolved, resolvedName) {
+		return ModelTagApplyResult{}, fmt.Errorf("model_tag %q resolved to model %q: %w", tag, resolved, errModelHiddenByPolicy)
+	}
 	if resolved == models.CurrentModelId && !bs.IsPrompting() {
 		// mitto-1yo: the resolved tag already matches the active model, so no
 		// RPC is needed — but an explicit model_tag request is a
@@ -500,6 +514,10 @@ func (bs *BackgroundSession) cmModelCatalogSynthesized() bool {
 	bs.agentModelsMu.RLock()
 	defer bs.agentModelsMu.RUnlock()
 	return bs.agentModels != nil && bs.agentModels.Synthesized
+}
+
+func (bs *BackgroundSession) cmHiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	return bs.hiddenModelPolicy()
 }
 
 func (bs *BackgroundSession) cmGetCurrentModelID() string {

@@ -38,6 +38,9 @@ type fakeConfigDeps struct {
 	// (see SynthesizeModelStateFromProfiles), not agent-confirmed ids.
 	synthesizedCatalog bool
 
+	hiddenPolicy    *config.HiddenModelPolicy
+	hiddenPolicyErr error
+
 	configOptions []SessionConfigOption
 	constraint    map[string]*config.ACPServerConstraint
 
@@ -233,6 +236,9 @@ func (f *fakeConfigDeps) cmGetBaselineModel() string {
 func (f *fakeConfigDeps) cmHasAgentModels() bool          { return f.hasAgentModels }
 func (f *fakeConfigDeps) cmGetCurrentModelID() string     { return f.currentModelID }
 func (f *fakeConfigDeps) cmModelCatalogSynthesized() bool { return f.synthesizedCatalog }
+func (f *fakeConfigDeps) cmHiddenModelPolicy() (*config.HiddenModelPolicy, error) {
+	return f.hiddenPolicy, f.hiddenPolicyErr
+}
 func (f *fakeConfigDeps) cmSetCurrentModelID(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1309,4 +1315,98 @@ func (f *fakeConfigDeps) cmDeleteConfigOverrides(ids []string) {
 		delete(f.overrides, id)
 	}
 	f.deletedOverride = append(f.deletedOverride, ids...)
+}
+
+func hiddenPolicyFor(t *testing.T, rules ...string) *config.HiddenModelPolicy {
+	t.Helper()
+	p, err := config.CompileHiddenModels("srv", rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func assertNoHiddenSideEffects(t *testing.T, d *fakeConfigDeps) {
+	t.Helper()
+	if len(d.modelRPCCalls) != 0 || len(d.sessionChanges) != 0 || len(d.baselineUpdates) != 0 || len(d.notifiedConfig) != 0 {
+		t.Fatalf("unexpected side effects: rpc=%v changes=%v baselines=%v notified=%v", d.modelRPCCalls, d.sessionChanges, d.baselineUpdates, d.notifiedConfig)
+	}
+	if len(d.persistedBaseline) != 0 || d.baselineModel != "m-1" {
+		t.Fatalf("baseline touched: persisted=%v baseline=%q", d.persistedBaseline, d.baselineModel)
+	}
+}
+
+func TestConfigManager_HiddenModelRefusal_SetConfigOption(t *testing.T) {
+	for _, prompting := range []bool{false, true} {
+		c := configManager{}
+		d := newFakeConfigDeps()
+		d.baselineModel = "m-1"
+		d.isPrompting = prompting
+		d.hiddenPolicy = hiddenPolicyFor(t, "^m-2$")
+		err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+		if !errors.Is(err, errModelHiddenByPolicy) {
+			t.Fatalf("prompting=%v: got %v", prompting, err)
+		}
+		if isRetryableModelPreferenceError(err) {
+			t.Fatal("hidden refusal must not be retryable")
+		}
+		assertNoHiddenSideEffects(t, d)
+		if len(d.pendingConfig) != 0 {
+			t.Fatalf("pending config recorded: %v", d.pendingConfig)
+		}
+	}
+}
+
+func TestConfigManager_HiddenModelRefusal_StaleIDNotInCatalog(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-1"
+	d.hiddenPolicy = hiddenPolicyFor(t, "^stale-id$")
+	err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "stale-id")
+	// An ID absent from the catalog is refused by the existing value
+	// validation before the hidden gate; either way nothing is applied.
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	assertNoHiddenSideEffects(t, d)
+}
+
+func TestConfigManager_HiddenModelRefusal_SetActiveModelOnly(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-1"
+	d.hiddenPolicy = hiddenPolicyFor(t, "Model 2")
+	err := c.setActiveModelOnly(d, context.Background(), "m-2")
+	if !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("got %v", err)
+	}
+	assertNoHiddenSideEffects(t, d)
+}
+
+func TestConfigManager_HiddenModelRefusal_PolicyErrorFailsClosed(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.baselineModel = "m-1"
+	d.hiddenPolicyErr = errors.New("boom")
+	if err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2"); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("setConfigOption got %v", err)
+	}
+	if err := c.setActiveModelOnly(d, context.Background(), "m-2"); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("setActiveModelOnly got %v", err)
+	}
+	assertNoHiddenSideEffects(t, d)
+}
+
+func TestConfigManager_HiddenModelRefusal_NoRuleAndNonHiddenUnchanged(t *testing.T) {
+	for _, pol := range []*config.HiddenModelPolicy{nil, hiddenPolicyFor(t, "^other$")} {
+		c := configManager{}
+		d := newFakeConfigDeps()
+		d.hiddenPolicy = pol
+		if err := c.setActiveModelOnly(d, context.Background(), "m-2"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(d.modelRPCCalls) == 0 {
+			t.Fatal("expected model RPC")
+		}
+	}
 }

@@ -48,6 +48,12 @@ func isModelPermanentlyUnavailableError(err error) bool {
 // prompt behind a 404 "selected model is not available" that never self-heals.
 var errModelCatalogSynthesized = errors.New("refusing model fallback: catalog is synthesized")
 
+// errModelHiddenByPolicy marks a model request refused because the model is
+// hidden by the ACP server's hidden-model policy (mitto-69t.3). It is
+// deliberately not matched by isRetryableModelPreferenceError, so it never
+// becomes a pending selection or retry.
+var errModelHiddenByPolicy = errors.New("model is hidden by policy")
+
 // findOptionValueByName looks up options for an entry whose display Name
 // matches needle case-insensitively (after trimming surrounding whitespace),
 // returning its Value. Used to self-heal a persisted baseline that holds a
@@ -166,6 +172,10 @@ type configDeps interface {
 	// agentModelsMu; false when there is no catalog at all). See
 	// SessionModelState.Synthesized and errModelCatalogSynthesized (mitto-a7wm).
 	cmModelCatalogSynthesized() bool
+	// cmHiddenModelPolicy returns the compiled hidden-model policy of the
+	// configured ACP server (nil = allow all; error = compile failure, callers
+	// fail closed).
+	cmHiddenModelPolicy() (*config.HiddenModelPolicy, error)
 
 	// ACP server constraint lookup
 	cmGetACPServerConstraint(category string) *config.ACPServerConstraint
@@ -274,6 +284,9 @@ func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context
 		// prompting branch below persists immediately at admission, ahead of
 		// any RPC, so this must run before either branch does any work.
 		if err := c.refuseSynthesizedModelID(d, value); err != nil {
+			return err
+		}
+		if err := c.refuseHiddenModel(d, value); err != nil {
 			return err
 		}
 	}
@@ -1000,6 +1013,37 @@ func (c configManager) refuseSynthesizedModelID(d configDeps, modelID string) er
 	return nil
 }
 
+// refuseHiddenModel refuses modelID when the server's hidden-model policy hides
+// it, before any queueing, baseline persistence, RPC or broadcast. A policy
+// compile failure fails closed. Ids absent from the catalog are matched by id
+// only.
+func (c configManager) refuseHiddenModel(d configDeps, modelID string) error {
+	if modelID == "" {
+		return nil
+	}
+	policy, err := d.cmHiddenModelPolicy()
+	if err != nil {
+		return fmt.Errorf("hidden-model policy unavailable for model %q: %w", modelID, errors.Join(errModelHiddenByPolicy, err))
+	}
+	name := ""
+	if opt, ok := d.cmFindByCategory(ConfigOptionCategoryModel); ok {
+		for _, o := range opt.Options {
+			if o.Value == modelID {
+				name = o.Name
+				break
+			}
+		}
+	}
+	if modelEligible(policy, modelID, name) {
+		return nil
+	}
+	if l := d.cmLogger(); l != nil {
+		l.Warn("refusing model hidden by policy",
+			"session_id", d.cmSessionID(), "model_id", modelID)
+	}
+	return fmt.Errorf("model %q: %w", modelID, errModelHiddenByPolicy)
+}
+
 // remapCorruptedBaselineName self-heals a persisted baseline that holds a
 // display Name instead of a real model id — the mitto-a7wm corruption
 // pattern, but this helper also covers any other way a Name could have ended
@@ -1034,6 +1078,9 @@ func (c configManager) setActiveModelOnly(d configDeps, ctx context.Context, mod
 // baseline restore can reinstate them.
 func (c configManager) setActiveModelOnlyOpts(d configDeps, ctx context.Context, modelID string, durable bool) error {
 	if err := c.refuseSynthesizedModelID(d, modelID); err != nil {
+		return err
+	}
+	if err := c.refuseHiddenModel(d, modelID); err != nil {
 		return err
 	}
 	d.cmLockConfigRPC()

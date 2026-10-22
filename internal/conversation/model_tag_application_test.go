@@ -98,3 +98,37 @@ func TestModelTagApplicationErrorsAndCompatibility(t *testing.T) {
 		}
 	}
 }
+
+func TestModelTagApplication_HiddenResolvedModelRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		hidden string
+		policy bool
+	}{{"hidden", "initial", true}, {"policy hides current", "default", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			bs, proc := newPendingModelSession(t)
+			bs.acpServer = "agent"
+			bs.mittoConfig.Models = []config.ModelProfile{modelTagProfile("target", "Initial")}
+			if tc.hidden == "default" {
+				bs.mittoConfig.Models = []config.ModelProfile{modelTagProfile("target", "Default")}
+			}
+			bs.mittoConfig.ACPServers = []config.ACPServer{{Name: "agent", Command: "x", HiddenModels: []string{tc.hidden}}}
+			r, err := bs.ApplyModelTagWithResult(context.Background(), "Coding")
+			if !errors.Is(err, errModelHiddenByPolicy) || r != (ModelTagApplyResult{}) {
+				t.Fatalf("result = %+v, %v", r, err)
+			}
+			modelTurnNoRPC(t, proc.models)
+		})
+	}
+}
+
+func TestModelTagApplication_InvalidPolicyFailsClosed(t *testing.T) {
+	bs, proc := newPendingModelSession(t)
+	bs.acpServer = "agent"
+	bs.mittoConfig.Models = []config.ModelProfile{modelTagProfile("target", "Initial")}
+	bs.mittoConfig.ACPServers = []config.ACPServer{{Name: "agent", Command: "x", HiddenModels: []string{"("}}}
+	if _, err := bs.ApplyModelTagWithResult(context.Background(), "Coding"); !errors.Is(err, errModelHiddenByPolicy) {
+		t.Fatalf("got %v", err)
+	}
+	modelTurnNoRPC(t, proc.models)
+}
