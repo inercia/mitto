@@ -336,3 +336,15 @@ func TestCbInitBaseline_PolicyError_FailsClosed(t *testing.T) {
 		t.Fatalf("policy error must not apply baseline: %q", got)
 	}
 }
+
+func TestCbInitBaseline_FreshSession_PolicyError_FailsClosed(t *testing.T) {
+	bs, store, sid := newHiddenBaselineSession(t, "", []string{"("})
+	bs.cbInitBaselineModelIfEmpty("m-1")
+	if got := bs.GetBaselineModel(); got != "" {
+		t.Fatalf("policy error must not apply default baseline: %q", got)
+	}
+	meta, _ := store.GetMetadata(sid)
+	if meta.BaselineModel != "" {
+		t.Fatalf("policy error must not persist baseline, got %q", meta.BaselineModel)
+	}
+}

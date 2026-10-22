@@ -645,6 +645,10 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 		// baseline; replacement selection belongs to the policy-save path.
 		baseline = ""
 	}
+	if policyErr != nil && !fromPersisted {
+		// Fresh session: the agent default cannot be proven eligible either.
+		baseline = ""
+	}
 	// A policy error fails closed: no selection can be proven eligible.
 	if policyErr == nil && !fromPersisted && models != nil {
 		if models.Synthesized {
