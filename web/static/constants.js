@@ -146,6 +146,12 @@ export const KEYBOARD_SHORTCUTS = [
     section: "Conversations",
   },
   {
+    keys: "⌘⌥N",
+    description: "New conversation here",
+    hint: "Use Cmd+Alt+N on macOS or Ctrl+Alt+N on Windows/Linux; creates a conversation in the active conversation's folder",
+    section: "Conversations",
+  },
+  {
     keys: "⌘W",
     description: "Close conversation",
     macOnly: true,

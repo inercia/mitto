@@ -277,5 +277,7 @@ export function isOverHorizontallyScrollable() {
  * Used to suppress swipe-navigation when the user is interacting with a dialog.
  */
 export function isModalDialogOpen() {
-  return !!document.querySelector(".fixed.inset-0.z-50");
+  return !!document.querySelector(
+    ':is(.fixed.inset-0.z-50, .modal.modal-open, [role="dialog"][aria-modal="true"]):not([hidden]):not([aria-hidden="true"])',
+  );
 }

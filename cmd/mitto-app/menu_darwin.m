@@ -13,6 +13,7 @@ extern void goAppDidBecomeActiveCallback(void);
 @interface MittoMenuHandler : NSObject
 + (instancetype)sharedHandler;
 - (void)newConversation:(id)sender;
+- (void)newConversationHere:(id)sender;
 - (void)closeConversation:(id)sender;
 - (void)archiveConversation:(id)sender;
 - (void)prevConversation:(id)sender;
@@ -36,6 +37,10 @@ extern void goAppDidBecomeActiveCallback(void);
 
 - (void)newConversation:(id)sender {
     goMenuActionCallback((char*)"new_conversation");
+}
+
+- (void)newConversationHere:(id)sender {
+    goMenuActionCallback((char*)"new_conversation_here");
 }
 
 - (void)closeConversation:(id)sender {
@@ -298,6 +303,14 @@ void setupMacOSMenu(const char* appName) {
                                                        keyEquivalent:@"n"];
         [newConvoItem setTarget:handler];
         [fileMenu addItem:newConvoItem];
+
+        // Add "New Conversation Here" menu item with Cmd+Option+N shortcut
+        NSMenuItem *newConvoHereItem = [[NSMenuItem alloc] initWithTitle:@"New Conversation Here"
+                                                                  action:@selector(newConversationHere:)
+                                                           keyEquivalent:@"n"];
+        [newConvoHereItem setKeyEquivalentModifierMask:NSEventModifierFlagCommand | NSEventModifierFlagOption];
+        [newConvoHereItem setTarget:handler];
+        [fileMenu addItem:newConvoHereItem];
 
         // Add "Close Conversation" menu item with Cmd+W shortcut
         NSMenuItem *closeConvoItem = [[NSMenuItem alloc] initWithTitle:@"Close Conversation"

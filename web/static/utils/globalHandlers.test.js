@@ -25,7 +25,36 @@ import {
   afterEach,
   jest,
 } from "./testing/testGlobals.js";
-import { isOverHorizontallyScrollable } from "./globalHandlers.js";
+import { isModalDialogOpen, isOverHorizontallyScrollable } from "./globalHandlers.js";
+
+describe("isModalDialogOpen", () => {
+  beforeEach(() => { document.body.replaceChildren(); });
+  afterEach(() => { document.body.replaceChildren(); });
+
+  test.each(["modal modal-open", "fixed inset-0 z-50"])(
+    "recognizes %s without trapping a hidden overlay",
+    (className) => {
+      const modal = document.createElement("div");
+      modal.className = className;
+      document.body.append(modal);
+      expect(isModalDialogOpen()).toBe(true);
+      modal.hidden = true;
+      expect(isModalDialogOpen()).toBe(false);
+    },
+  );
+
+  test("recognizes accessible modal dialogs but not docked/closed panels", () => {
+    const panel = document.createElement("div");
+    panel.className = "modal drawer-side";
+    panel.setAttribute("role", "dialog");
+    document.body.append(panel);
+    expect(isModalDialogOpen()).toBe(false);
+    panel.setAttribute("aria-modal", "true");
+    expect(isModalDialogOpen()).toBe(true);
+    panel.setAttribute("aria-hidden", "true");
+    expect(isModalDialogOpen()).toBe(false);
+  });
+});
 
 describe("globalHandlers viewer.html click handler — missing ws_path fallback (mitto-tac5)", () => {
   let openSpy;

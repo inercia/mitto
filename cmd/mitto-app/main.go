@@ -362,6 +362,9 @@ func goMenuActionCallback(action *C.char) {
 	case "new_conversation":
 		// Call the global function exposed by the frontend
 		js = "if (window.mittoNewConversation) window.mittoNewConversation();"
+	case "new_conversation_here":
+		// Create a conversation in the active conversation's folder
+		js = "if (window.mittoNewConversationHere) window.mittoNewConversationHere();"
 	case "close_conversation":
 		// Close the current conversation
 		js = "if (window.mittoCloseConversation) window.mittoCloseConversation();"

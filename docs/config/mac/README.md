@@ -143,6 +143,7 @@ The following keyboard shortcuts are available from the app menu:
 | Shortcut | Action              | Description                                    |
 | -------- | ------------------- | ---------------------------------------------- |
 | `⌘N`     | New Conversation    | Create a new conversation                      |
+| `⌘⌥N`    | New Conversation Here | Create a conversation in the active conversation's folder using that folder's default workspace (or first exact-folder workspace) |
 | `⌘W`     | Close Conversation  | Close the current conversation                 |
 | `⌘1-9`   | Switch Conversation | Switch to conversation 1-9 in the sidebar list |
 
@@ -164,6 +165,7 @@ Here's a complete reference of all keyboard shortcuts:
 | -------- | -------------------------- | -------------------------------------------------- |
 | `⌘⇧M`    | Show/Hide Window           | Global hotkey (works even when app is not focused) |
 | `⌘N`     | New Conversation           |                                                    |
+| `⌘⌥N`    | New Conversation Here      | Active conversation's folder; Cmd+Alt+N in macOS browsers, Ctrl+Alt+N on Windows/Linux |
 | `⌘W`     | Close Conversation         |                                                    |
 | `⌘,`     | Settings                   | Standard macOS preference shortcut                 |
 | `⌘1-9`   | Switch to Conversation 1-9 | Based on sidebar order                             |
@@ -171,6 +173,8 @@ Here's a complete reference of all keyboard shortcuts:
 | `⌘⇧S`    | Toggle Sidebar             |                                                    |
 
 You can also view these shortcuts in the app by clicking the keyboard icon in the sidebar footer.
+
+**New Conversation Here** uses the active conversation's folder, not its agent or model overrides. Without an active conversation folder, it uses the visible Tasks folder, then the sole configured workspace, then the regular New Conversation chooser. The existing backend selects the folder's marked default workspace, or the first exact-folder workspace if none is marked. For a folder without an exact workspace, the backend retains its existing owning-workspace/global-default fallback.
 
 ## Window Behavior
 

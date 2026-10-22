@@ -45,6 +45,7 @@ if (!isNativeApp()) return []; // hide native-only UI in browser context
 | `window.mittoOpenExternalURL(url)`  | Open URL in default browser    |
 | `window.mittoOpenFileURL(url)`      | Open file URL in default app   |
 | `window.mittoNewConversation()`     | Create new conversation        |
+| `window.mittoNewConversationHere()` | Create conversation in active folder |
 | `window.mittoFocusInput()`          | Focus the chat input           |
 | `window.mittoToggleSidebar()`       | Toggle sidebar visibility      |
 | `window.mittoCloseConversation()`   | Close current conversation     |
@@ -83,6 +84,7 @@ Handled at two levels:
 | ------------- | -------------------------- | ----------- |
 | `Cmd+Shift+M` | Show/hide window (global)  | Native only |
 | `Cmd+N`       | New conversation           | Native only |
+| `Cmd+Alt+N`   | New conversation here      | Both        |
 | `Cmd+W`       | Close conversation         | Native only |
 | `Cmd+Shift+A` | Archive conversation       | Both        |
 | `Cmd+1-9`     | Switch to conversation     | Web         |
@@ -91,11 +93,15 @@ Handled at two levels:
 
 ### KEYBOARD_SHORTCUTS Array
 
-Define in `app.js`. Fields: `{ keys, description, section, macOnly? }`. Filter `macOnly` when `!isMacApp`.
+Defined in `web/static/constants.js`. Fields: `{ keys, description, section, hint?, macOnly? }`. Filter `macOnly` when `!isMacApp`.
 
 **Adding web shortcuts**: Add entry (no `macOnly`), add handler in `handleGlobalKeyDown`.
 
 **Adding native shortcuts**: Add entry with `macOnly:true`, add menu item in `menu_darwin.m`, add Go callback in `main.go`, expose as `window.mittoActionName`.
+
+**Shortcuts shared by native and web**: Omit `macOnly` in the registry, include an explicit Windows/Linux hint, and route the native menu through the same frontend action as the web key handler. New Conversation Here uses `Cmd+Alt+N` (`Ctrl+Alt+N` on Windows/Linux): `newConversationHere:` → `new_conversation_here` → the existing Go `w.Dispatch` → `window.mittoNewConversationHere()`. Keep `Cmd+N`, task shortcuts, viewer handling, and global hotkeys unchanged.
+
+**New Conversation Here semantics**: Resolve the active conversation folder first, then the visible Tasks folder, then the sole configured workspace; otherwise use the regular New Conversation chooser. Let the existing create-session backend choose the marked default workspace, or the first exact-folder workspace when no default is marked. Preserve its owning-workspace/global-default fallback when no exact workspace exists. Do not inherit the active conversation's agent/model overrides or change backend selection policy. The frontend global binding and web shortcut must share the same guarded action.
 
 ## Native Notifications
 

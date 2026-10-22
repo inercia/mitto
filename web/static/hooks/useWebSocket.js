@@ -3976,7 +3976,8 @@ export function useWebSocket({
   // Composer callbacks use connectToEventsRef.current(...) instead.
 
   // Create a new session via REST API
-  // Options: { name?: string, workingDir?: string, acpServer?: string }
+  // Options: { name?, workingDir?, acpServer?, shouldActivate?, onCreated? }
+  // UI callbacks are retained across retries, never sent to the server.
   // Returns on first call:
   //   { sessionId } on immediate success
   //   { error, errorCode: "session_creation_timeout", retrying: true } when agent is busy
@@ -3993,6 +3994,18 @@ export function useWebSocket({
 
     // Support both old (name string) and new (options object) signatures
     const opts = typeof options === "string" ? { name: options } : options;
+    const activateCreatedSession = (sessionId) => {
+      // A caller may have navigated elsewhere while creation/retry was pending.
+      // Callback errors must never retry an already successful server creation.
+      try {
+        if (!opts.shouldActivate || opts.shouldActivate()) {
+          setActiveSessionId(sessionId);
+        }
+        opts.onCreated?.(sessionId);
+      } catch (error) {
+        console.error("Session created, but UI completion failed:", error);
+      }
+    };
     // Capture the working dir early so all clear sites use the same value.
     const wd = opts.workingDir || "";
 
@@ -4038,7 +4051,7 @@ export function useWebSocket({
         const acpForGroup = existing?.info?.acp_server || opts.acpServer || "";
         expandGroupForSession(sessionId, wdForGroup, acpForGroup);
         connectToSessionRef.current?.(sessionId);
-        setActiveSessionId(sessionId);
+        activateCreatedSession(sessionId);
         return { sessionId, reused: true };
       }
 
@@ -4077,7 +4090,7 @@ export function useWebSocket({
 
       // Connect to the session WebSocket
       connectToSessionRef.current?.(sessionId);
-      setActiveSessionId(sessionId);
+      activateCreatedSession(sessionId);
 
       return { sessionId, reused: data.reused === true };
     } catch (err) {

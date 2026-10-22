@@ -258,6 +258,11 @@ import { Tooltip } from "./components/Tooltip.js";
 // Main App Component
 // =============================================================================
 
+function isNewConversationHereChord(event) {
+  return event.code === "KeyN" && event.altKey &&
+    (event.metaKey !== event.ctrlKey) && !event.shiftKey;
+}
+
 function App() {
   // Dev-only render-count instrumentation (mitto-sus.7). No-op unless perf
   // instrumentation is enabled (`?perf=1` / `window.__mittoPerf`); see
@@ -1064,6 +1069,15 @@ function App() {
   // Global keyboard shortcuts for Command+1-9 to switch sessions and Command+, for settings
   useEffect(() => {
     const handleGlobalKeyDown = (e) => {
+      // Option may change e.key (e.g. ñ); match the physical N key instead.
+      if (
+        isNewConversationHereChord(e) &&
+        !e.repeat && !e.isComposing && !e.defaultPrevented
+      ) {
+        e.preventDefault();
+        window.mittoNewConversationHere?.();
+        return;
+      }
       // Command+Control+Up/Down to navigate between conversations (macOS)
       if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey) {
         if (e.key === "ArrowUp") {
@@ -1428,6 +1442,55 @@ function App() {
     key: null,
     pending: false,
   });
+  const newConversationHereRef = useRef(null);
+  const newConversationHereBusyRef = useRef(false);
+  const conversationLocationRef = useRef(null);
+  conversationLocationRef.current = JSON.stringify([
+    mainView, activeSessionId, mainView === "beads" ? beadsWorkingDir : null,
+  ]);
+
+  useEffect(() => {
+    if (!isCreatingSession) {
+      newConversationHereBusyRef.current = false;
+      // Includes terminal errors from a later automatic retry.
+      if (newConversationHereRef.current && !newConversationHereRef.current.sessionId) {
+        newConversationHereRef.current = null;
+      }
+    }
+  }, [isCreatingSession]);
+
+  useEffect(() => {
+    const request = newConversationHereRef.current;
+    if (request && !request.sessionId &&
+        conversationLocationRef.current !== request.originKey) {
+      request.canceled = true;
+    }
+  }, [mainView, activeSessionId, beadsWorkingDir]);
+
+  useEffect(() => {
+    // Explicit creation may release its originating sidebar editor, but must
+    // not steal focus after subsequent typing, clicks, or focus changes.
+    const cancelFocus = (event) => {
+      const request = newConversationHereRef.current;
+      if (!request) return;
+      if (event.type === "keydown" &&
+          (isNewConversationHereChord(event) ||
+           ["Control", "Meta", "Alt", "Shift"].includes(event.key))) return;
+      if (event.type === "focusin" &&
+          (event.target === request.originElement ||
+           event.target?.matches?.(".chat-input-textarea"))) return;
+      request.focusCanceled = true;
+    };
+    document.addEventListener("pointerdown", cancelFocus);
+    document.addEventListener("keydown", cancelFocus);
+    document.addEventListener("focusin", cancelFocus);
+    return () => {
+      document.removeEventListener("pointerdown", cancelFocus);
+      document.removeEventListener("keydown", cancelFocus);
+      document.removeEventListener("focusin", cancelFocus);
+      newConversationHereRef.current = null;
+    };
+  }, []);
 
   const canFocusComposer = () =>
     mainView === "conversation" &&
@@ -1482,8 +1545,16 @@ function App() {
     }
 
     const frame = requestAnimationFrame(() => {
+      const request = newConversationHereRef.current;
+      const explicit = request?.sessionId === activeSessionId;
+      if (explicit && request.focusCanceled) {
+        focusState.pending = false;
+        newConversationHereRef.current = null;
+        return;
+      }
       if (!canFocusComposer()) {
         focusState.pending = false;
+        if (explicit) newConversationHereRef.current = null;
         return;
       }
       const active = document.activeElement;
@@ -1491,10 +1562,12 @@ function App() {
         active?.matches?.(
           "input, textarea, select, [contenteditable='true']",
         ) &&
-        !active.matches(".chat-input-textarea")
+        !active.matches(".chat-input-textarea") &&
+        !(explicit && active === request.originElement)
       ) {
         // A rename, filter, or other inline editor owns focus.
         focusState.pending = false;
+        if (explicit) newConversationHereRef.current = null;
         return;
       }
       // A disabled/unmounted composer may become editable after session resume.
@@ -1503,6 +1576,7 @@ function App() {
         chatInputRef.current?.focus({ preventScroll: true, caretAtEnd: true })
       ) {
         focusState.pending = false;
+        if (explicit) newConversationHereRef.current = null;
       }
     });
     return () => cancelAnimationFrame(frame);
@@ -1512,6 +1586,7 @@ function App() {
     sessionInfo?.archived,
     sessionInfo?.gc_suspended,
     isRunning,
+    connected,
     quickCreate.open,
     settingsDialog.isOpen,
     workspaceDialog.isOpen,
@@ -1864,6 +1939,77 @@ function App() {
     },
     [configReadonly, newSession, showToast, workspaces],
   );
+
+  const handleNewConversationHere = useCallback(async () => {
+    if (
+      configReadonly || isCreatingSession || newConversationHereBusyRef.current ||
+      isModalDialogOpen() || quickCreate.open || settingsDialog.isOpen ||
+      workspaceDialog.isOpen || workspacesDialog.isOpen
+    ) return;
+
+    const workingDir = sessionInfo?.working_dir ||
+      (mainView === "beads" ? beadsWorkingDir : null) ||
+      (workspaces.length === 1 ? workspaces[0].working_dir : null);
+    if (!workingDir) {
+      await handleNewSession();
+      return;
+    }
+
+    newConversationHereBusyRef.current = true;
+    const request = {
+      originKey: conversationLocationRef.current,
+      originElement: document.activeElement,
+      sessionId: null,
+      canceled: false,
+      focusCanceled: false,
+    };
+    newConversationHereRef.current = request;
+    const result = await newSession({
+      workingDir,
+      shouldActivate: () => !request.canceled &&
+        conversationLocationRef.current === request.originKey,
+      onCreated: (sessionId) => {
+        request.sessionId = sessionId;
+        if (request.canceled ||
+            conversationLocationRef.current !== request.originKey) {
+          if (newConversationHereRef.current === request) newConversationHereRef.current = null;
+          return;
+        }
+        setMainView("conversation");
+        if (!request.focusCanceled) {
+          setShowSidebar(false);
+          setShowSidePanel(false);
+          setShowPlanPanel(false);
+        }
+      },
+    });
+    if (!result?.retrying) {
+      newConversationHereBusyRef.current = false;
+      if (!result?.sessionId && newConversationHereRef.current === request) {
+        newConversationHereRef.current = null;
+      }
+    }
+    if (result?.errorCode === "session_creation_timeout") {
+      showToast({
+        style: "warning",
+        title: result.retrying
+          ? "Agent is busy — retrying automatically…"
+          : result.error || "Agent is busy",
+        duration: result.retrying ? 30000 : 5000,
+      });
+    } else if (result?.errorCode === "no_workspace_configured") {
+      setSettingsDialog({ isOpen: true, forceOpen: true });
+    }
+  }, [
+    configReadonly, isCreatingSession, quickCreate.open, settingsDialog.isOpen,
+    workspaceDialog.isOpen, workspacesDialog.isOpen, sessionInfo?.working_dir,
+    mainView, beadsWorkingDir, workspaces, handleNewSession, newSession, showToast,
+  ]);
+
+  useEffect(() => {
+    window.mittoNewConversationHere = handleNewConversationHere;
+    return () => { delete window.mittoNewConversationHere; };
+  }, [handleNewConversationHere]);
 
   const handleWorkspaceSelect = async (workspace) => {
     setWorkspaceDialog({ isOpen: false });
