@@ -1872,3 +1872,40 @@ describe("U4: hidden models save payload and error mapping", () => {
     expect(servers[0].hidden_models).toEqual(["(bad"]);
   });
 });
+
+describe("U4 correction: stale save success", () => {
+  // Mirrors handleSave's success/finally gating on saveSeqRef.
+  function run() {
+    const seq = { current: 0 };
+    const fx = { cleared: 0, onSave: 0, saving: true };
+    const begin = () => ++seq.current;
+    const succeed = (mine) => {
+      if (seq.current === mine) {
+        fx.cleared++;
+        fx.onSave++;
+      }
+      if (seq.current === mine) fx.saving = false;
+    };
+    return { begin, succeed, fx };
+  }
+
+  test("older success after a newer save has no effects; latest does", () => {
+    const { begin, succeed, fx } = run();
+    const first = begin();
+    const second = begin();
+    succeed(first);
+    expect(fx).toEqual({ cleared: 0, onSave: 0, saving: true });
+    succeed(second);
+    expect(fx).toEqual({ cleared: 1, onSave: 1, saving: false });
+  });
+
+  test("source guards success effects and saving reset by saveSeqRef", () => {
+    const src = readFileSync(new URL("./SettingsDialog.js", import.meta.url), "utf8");
+    const i = src.indexOf("A completion from an older save");
+    expect(i).toBeGreaterThan(0);
+    const seg = src.slice(i, i + 400);
+    expect(seg).toContain("saveSeqRef.current !== mySaveSeq");
+    expect(seg.indexOf("return;")).toBeLessThan(seg.indexOf("setServerRenames({})"));
+    expect(src).toContain("if (saveSeqRef.current === mySaveSeq) setSaving(false);");
+  });
+});

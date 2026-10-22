@@ -3328,6 +3328,9 @@ export function SettingsDialog({
         duration: 2000,
       });
 
+      // A completion from an older save must not clear state or fire onSave.
+      if (saveSeqRef.current !== mySaveSeq) return;
+
       // Clear server renames after successful save
       setServerRenames({});
       setHiddenModelsErrors({});
@@ -3360,7 +3363,9 @@ export function SettingsDialog({
     } finally {
       const elapsed = Date.now() - saveStartTime;
       const remaining = Math.max(0, 1000 - elapsed);
-      setTimeout(() => setSaving(false), remaining);
+      setTimeout(() => {
+        if (saveSeqRef.current === mySaveSeq) setSaving(false);
+      }, remaining);
     }
   };
 
