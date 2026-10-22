@@ -307,6 +307,7 @@ function WorkspaceModelOverridesEditor({
                 </div>
                 <select
                   class="select select-sm flex-1 min-w-0"
+                  style="border-color: var(--color-mitto-border)"
                   aria-label=${`Model for override group ${index + 1}`}
                   data-testid=${`ws-model-override-model-${index}`}
                   value=${group.model_id || ""}
