@@ -2,6 +2,7 @@
 const { useState, useEffect, useMemo, useRef, html } = window.preact;
 
 // Import utilities
+import { hiddenModelsToRows } from "../utils/hiddenModels.js";
 import {
   apiUrl,
   hasNativeFolderPicker,
@@ -756,6 +757,86 @@ export function RunnerRestrictionsEditor({
 }
 
 /**
+ * Hide Models rule rows: one regex per row. Draft rows only; serialization
+ * and validation are authoritative on the backend (no JS regex engine).
+ */
+function HideModelsRows({ serverName, hiddenModels, error, onChange }) {
+  const nextId = useRef(0);
+  const addRef = useRef(null);
+  const makeRows = (list) =>
+    hiddenModelsToRows(list).map((value) => ({ id: nextId.current++, value }));
+  const [rows, setRows] = useState(() => makeRows(hiddenModels));
+  const update = (next) => {
+    setRows(next);
+    onChange(next.map((r) => r.value));
+  };
+  const errId = (id) => `hide-models-error-${serverName}-${id}`;
+  return html`
+    <div class="mt-3" data-testid="hide-models">
+      <label class="label">Hide Models (optional)</label>
+      <p class="text-xs text-mitto-text-muted mb-2">
+        Each row is one regular expression (Go/RE2). A model is hidden when any
+        rule matches its model ID or display name, case-insensitively. Commas
+        and regex syntax are literal parts of the rule, not separators. For
+        example, <code>.*Terra.*</code> matches Terra in the model ID or display
+        name.
+      </p>
+      ${rows.map((row, i) => {
+        const hasErr = error && error.rowIndex === i;
+        return html`
+          <div key=${row.id} class="mb-2">
+            <div class="flex items-center gap-2">
+              <input
+                type="text"
+                class="input input-bordered input-sm flex-1"
+                value=${row.value}
+                aria-label=${`Hide models rule ${i + 1} for ${serverName}`}
+                aria-invalid=${hasErr ? "true" : "false"}
+                aria-describedby=${hasErr ? errId(row.id) : undefined}
+                onInput=${(e) =>
+                  update(
+                    rows.map((r) =>
+                      r.id === row.id ? { ...r, value: e.target.value } : r,
+                    ),
+                  )}
+              />
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                aria-label=${`Remove hide models rule ${i + 1}`}
+                onClick=${() => {
+                  update(rows.filter((r) => r.id !== row.id));
+                  if (addRef.current) addRef.current.focus();
+                }}
+              >
+                Remove
+              </button>
+            </div>
+            ${hasErr &&
+            html`<p
+              id=${errId(row.id)}
+              role="alert"
+              class="text-xs text-error mt-1"
+            >
+              ${error.message}
+            </p>`}
+          </div>
+        `;
+      })}
+      <button
+        type="button"
+        ref=${addRef}
+        class="btn btn-outline btn-sm"
+        aria-label=${`Add hide models rule for ${serverName}`}
+        onClick=${() => update([...rows, { id: nextId.current++, value: "" }])}
+      >
+        Add rule
+      </button>
+    </div>
+  `;
+}
+
+/**
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
@@ -765,6 +846,8 @@ function ServerEditForm({
   modelProfiles = [],
   workspaces = [],
   onChange,
+  hiddenModelsError = null,
+  onHiddenModelsChange = () => {},
 }) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
@@ -896,72 +979,84 @@ function ServerEditForm({
           class="input input-sm w-full"
         />
       </div>
-      <!-- Initial Model (optional) — ACP-server-tier baseline for new
-           conversations. Overridden by any workspace-tier value. -->
-      <div>
-        <label class="label">Initial Model (optional)</label>
-        <p class="text-xs text-mitto-text-muted mb-2">
-          Apply this model as the baseline for every new conversation created
-          with this agent
-        </p>
-        <div class="flex items-center gap-2">
-          <div class="flex-1 min-w-0">
-            <${ModelProfileSelect}
-              value=${initialModelProfile}
-              profiles=${modelProfiles}
-              className="w-full"
-              onChange=${(name) => {
-                setInitialModelProfile(name);
-                const overrides = { initialModelProfile: name };
-                if (name) {
-                  setInitialModelTag("");
-                  overrides.initialModelTag = "";
-                }
-                emitChange(overrides);
-              }}
-            />
+      <!-- Models group — Initial Model (ACP-server-tier baseline for new
+           conversations, overridden by any workspace-tier value) plus
+           Hide Models rules. -->
+      <fieldset class="space-y-3">
+        <legend class="label font-semibold">Models</legend>
+        <div>
+          <label class="label">Initial Model (optional)</label>
+          <p class="text-xs text-mitto-text-muted mb-2">
+            Apply this model as the baseline for every new conversation created
+            with this agent
+          </p>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              <${ModelProfileSelect}
+                value=${initialModelProfile}
+                profiles=${modelProfiles}
+                className="w-full"
+                onChange=${(name) => {
+                  setInitialModelProfile(name);
+                  const overrides = { initialModelProfile: name };
+                  if (name) {
+                    setInitialModelTag("");
+                    overrides.initialModelTag = "";
+                  }
+                  emitChange(overrides);
+                }}
+              />
+            </div>
+            <span class="text-xs text-mitto-text-muted shrink-0"
+              >or by tag</span
+            >
+            <div class="flex-1 min-w-0">
+              <${ModelTagSelect}
+                value=${initialModelTag}
+                profiles=${modelProfiles}
+                className="w-full"
+                onChange=${(tag) => {
+                  setInitialModelTag(tag);
+                  const overrides = { initialModelTag: tag };
+                  if (tag) {
+                    setInitialModelProfile("");
+                    overrides.initialModelProfile = "";
+                  }
+                  emitChange(overrides);
+                }}
+              />
+            </div>
           </div>
-          <span class="text-xs text-mitto-text-muted shrink-0">or by tag</span>
-          <div class="flex-1 min-w-0">
-            <${ModelTagSelect}
-              value=${initialModelTag}
-              profiles=${modelProfiles}
-              className="w-full"
-              onChange=${(tag) => {
-                setInitialModelTag(tag);
-                const overrides = { initialModelTag: tag };
-                if (tag) {
-                  setInitialModelProfile("");
-                  overrides.initialModelProfile = "";
-                }
-                emitChange(overrides);
-              }}
-            />
-          </div>
+          ${(() => {
+            // Precedence hint: list workspaces that already pin an initial
+            // model for this ACP server (their setting wins over this one).
+            const overriders = (workspaces || []).filter(
+              (w) =>
+                w &&
+                w.acp_server === server.name &&
+                (w.initial_model_profile || w.initial_model_tag),
+            );
+            if (overriders.length === 0) return null;
+            const names = overriders
+              .map((w) => w.name || w.working_dir || w.uuid)
+              .filter(Boolean);
+            const shown = names.slice(0, 3).join(", ");
+            const suffix = names.length > 3 ? ", …" : "";
+            const label = names.length === 1 ? "workspace" : "workspaces";
+            return html`
+              <p class="text-xs text-mitto-text-muted mt-1">
+                Overridden by ${label}: ${shown}${suffix}
+              </p>
+            `;
+          })()}
         </div>
-        ${(() => {
-          // Precedence hint: list workspaces that already pin an initial
-          // model for this ACP server (their setting wins over this one).
-          const overriders = (workspaces || []).filter(
-            (w) =>
-              w &&
-              w.acp_server === server.name &&
-              (w.initial_model_profile || w.initial_model_tag),
-          );
-          if (overriders.length === 0) return null;
-          const names = overriders
-            .map((w) => w.name || w.working_dir || w.uuid)
-            .filter(Boolean);
-          const shown = names.slice(0, 3).join(", ");
-          const suffix = names.length > 3 ? ", …" : "";
-          const label = names.length === 1 ? "workspace" : "workspaces";
-          return html`
-            <p class="text-xs text-mitto-text-muted mt-1">
-              Overridden by ${label}: ${shown}${suffix}
-            </p>
-          `;
-        })()}
-      </div>
+        <${HideModelsRows}
+          serverName=${server.name}
+          hiddenModels=${server.hidden_models}
+          error=${hiddenModelsError}
+          onChange=${onHiddenModelsChange}
+        />
+      </fieldset>
       <div>
         <label class="label" for="acp-server-type"
           >Type <span class="text-xs text-mitto-danger ml-1">*</span></label

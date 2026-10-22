@@ -1692,3 +1692,36 @@ describe("mitto-hyup: buildAutoChildAgentOptions", () => {
     ]);
   });
 });
+
+describe("Models group and Hide Models rows (mitto-69t.5 U2)", () => {
+  const src = readFileSync(
+    new URL("./SettingsDialog.js", import.meta.url),
+    "utf8",
+  );
+
+  test("groups Initial Model and hide rows in a Models fieldset", () => {
+    expect(src).toContain(
+      '<legend class="label font-semibold">Models</legend>',
+    );
+    expect(src).toContain("Initial Model (optional)");
+    expect(src).toContain("<${HideModelsRows}");
+  });
+
+  test("rows have accessible labels, alert errors and Add/Remove", () => {
+    expect(src).toContain("Hide models rule ${i + 1} for ${serverName}");
+    expect(src).toContain("Remove hide models rule ${i + 1}");
+    expect(src).toContain('role="alert"');
+    expect(src).toContain("aria-describedby");
+    expect(src).toContain("aria-invalid");
+    expect(src).toContain(".*Terra.*");
+  });
+
+  test("uses U1 helper, no JS regex validation, no trimming", () => {
+    expect(src).toContain("hiddenModelsToRows");
+    const start = src.indexOf("function HideModelsRows");
+    const end = src.indexOf("function ServerEditForm");
+    const body = src.slice(start, end);
+    expect(body).not.toContain("new RegExp");
+    expect(body).not.toContain(".trim(");
+  });
+});
