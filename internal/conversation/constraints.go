@@ -103,7 +103,7 @@ func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *Sessi
 // preference.
 // Returns "" when nothing matches, signalling the caller to fall back to the baseline.
 func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, overrideLookups ...ModelOverrideLookup) string {
-	return selectPreferredModel(prefs, profiles, models, true, firstModelOverrideLookup(overrideLookups))
+	return selectPreferredModel(prefs, profiles, models, true, firstModelOverrideLookup(overrideLookups), nil)
 }
 
 // SelectHighestPriorityModel resolves prefs like SelectPreferredModel but never keeps
@@ -113,7 +113,26 @@ func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config
 // shadow a higher-priority profile carrying the requested tag. For ModelTag
 // preferences, a valid workspace override takes priority over profile matching.
 func SelectHighestPriorityModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, overrideLookups ...ModelOverrideLookup) string {
-	return selectPreferredModel(prefs, profiles, models, false, firstModelOverrideLookup(overrideLookups))
+	return selectPreferredModel(prefs, profiles, models, false, firstModelOverrideLookup(overrideLookups), nil)
+}
+
+// modelEligible reports whether a model may be selected under policy.
+// A nil policy permits every model.
+func modelEligible(policy *config.HiddenModelPolicy, id, name string) bool {
+	return !policy.Hides(id, name)
+}
+
+// eligibleModelState returns a copy of models whose catalog excludes models
+// hidden by policy. With a nil policy the input is copied unchanged.
+func eligibleModelState(models *SessionModelState, policy *config.HiddenModelPolicy) *SessionModelState {
+	out := *models
+	out.AvailableModels = make([]ModelInfo, 0, len(models.AvailableModels))
+	for _, m := range models.AvailableModels {
+		if modelEligible(policy, m.ModelId, m.Name) {
+			out.AvailableModels = append(out.AvailableModels, m)
+		}
+	}
+	return &out
 }
 
 func firstModelOverrideLookup(lookups []ModelOverrideLookup) ModelOverrideLookup {
@@ -123,9 +142,15 @@ func firstModelOverrideLookup(lookups []ModelOverrideLookup) ModelOverrideLookup
 	return lookups[0]
 }
 
-func selectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, keepCurrent bool, overrideForTag ModelOverrideLookup) string {
+func selectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState, keepCurrent bool, overrideForTag ModelOverrideLookup, policy *config.HiddenModelPolicy) string {
 	if len(prefs) == 0 || models == nil {
 		return ""
+	}
+	hiddenCurrent := models.CurrentModelId != "" && !modelEligible(policy, models.CurrentModelId, ModelDisplayName(models, models.CurrentModelId))
+	models = eligibleModelState(models, policy)
+	if hiddenCurrent {
+		// A hidden current model is never retained.
+		models.CurrentModelId = ""
 	}
 	current := ""
 	if keepCurrent {

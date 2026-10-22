@@ -500,3 +500,87 @@ func TestChildStartupJitter(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectPreferredModel_HiddenPolicy(t *testing.T) {
+	profiles := selectPreferredModelTestProfiles()
+	newModels := func(current string) *SessionModelState {
+		return &SessionModelState{
+			CurrentModelId: current,
+			AvailableModels: []ModelInfo{
+				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
+				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+				{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
+				{ModelId: "gpt-4o", Name: "GPT-4o"},
+			},
+		}
+	}
+	mk := func(rules ...string) *config.HiddenModelPolicy {
+		p, err := config.CompileHiddenModels("srv", rules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	name := func(n string) []config.PromptPreferredModel { return []config.PromptPreferredModel{{ModelName: n}} }
+	tag := func(n string) []config.PromptPreferredModel { return []config.PromptPreferredModel{{ModelTag: n}} }
+
+	t.Run("nil policy unchanged", func(t *testing.T) {
+		if got := selectPreferredModel(name("Opus"), profiles, newModels("gpt-4o"), true, nil, nil); got != "claude-opus-4-6" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("hidden name candidate falls through", func(t *testing.T) {
+		prefs := []config.PromptPreferredModel{{ModelName: "Opus"}, {ModelName: "Haiku"}}
+		if got := selectPreferredModel(prefs, profiles, newModels("gpt-4o"), true, nil, mk("opus")); got != "claude-haiku-4-5" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("Coding tag skips hidden Sonnet", func(t *testing.T) {
+		if got := selectPreferredModel(tag("Coding"), profiles, newModels("gpt-4o"), true, nil, mk("sonnet")); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("tag falls to next eligible profile", func(t *testing.T) {
+		if got := selectPreferredModel(tag("Backup"), profiles, newModels("gpt-4o"), true, nil, mk("sonnet")); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("hidden current by id not retained", func(t *testing.T) {
+		prefs := []config.PromptPreferredModel{{ModelName: "Sonnet"}}
+		if got := selectPreferredModel(prefs, profiles, newModels("claude-sonnet-4-6"), true, nil, mk("^claude-sonnet")); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("hidden current by display name not retained", func(t *testing.T) {
+		prefs := []config.PromptPreferredModel{{ModelName: "Sonnet"}, {ModelName: "Haiku"}}
+		if got := selectPreferredModel(prefs, profiles, newModels("claude-sonnet-4-6"), true, nil, mk("Sonnet 4\\.6")); got != "claude-haiku-4-5" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("hidden override ignored", func(t *testing.T) {
+		lookup := func(string) (string, bool) { return "claude-opus-4-6", true }
+		got := selectPreferredModel(tag("Reasoning"), profiles, newModels("gpt-4o"), true, lookup, mk("opus"))
+		if got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("eligible override still honoured", func(t *testing.T) {
+		lookup := func(string) (string, bool) { return "claude-haiku-4-5", true }
+		got := selectPreferredModel(tag("Reasoning"), profiles, newModels("gpt-4o"), true, lookup, mk("sonnet"))
+		if got != "claude-haiku-4-5" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("strict all hidden returns empty", func(t *testing.T) {
+		if got := selectPreferredModel(name("Opus"), profiles, newModels("gpt-4o"), false, nil, mk(".*")); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("input catalog not mutated", func(t *testing.T) {
+		m := newModels("claude-sonnet-4-6")
+		selectPreferredModel(name("Opus"), profiles, m, true, nil, mk("sonnet"))
+		if len(m.AvailableModels) != 4 || m.CurrentModelId != "claude-sonnet-4-6" {
+			t.Fatalf("mutated: %+v", m)
+		}
+	})
+}
