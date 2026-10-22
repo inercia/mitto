@@ -17,13 +17,21 @@ prompt: |
   Before taking any action, review the current state of the work by reading relevant files,
   checking git status, and understanding what has already been completed.
 
+  {{ template "_shared/session-id-line" . }}
+
+  ## Delegated role boundary
+
+  If this conversation has a delegated assignment, first recover its exact role, allowed actions,
+  target and stop condition from the delegation message. That assignment controls even when broader
+  linked-bead instructions follow; it never authorizes mutation, commits, coordination or closure
+  outside its scope. For a child with no clear assignment, stop and ask the parent. Apply this
+  boundary before any task or linked-bead workflow.
+
   Continue with the current task from where we left off.
   {{- if .Session.BeadsIssue }}
-  This conversation is linked to beads issue `{{ .Session.BeadsIssue }}`, so **that bead and its
-  follow-ups are the current task** — see the "Beads issue" section below to resolve what to work on.
+  This conversation is linked to beads issue `{{ .Session.BeadsIssue }}`. It is the current task only
+  to the extent the delegated role boundary permits; do not assume follow-ups are assigned.
   {{- end }}
-
-  {{ template "_shared/session-id-line" . }}
 
   ## Interaction Mode
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}

@@ -2,17 +2,29 @@
   create-or-update-pr — push the branch and either update the existing PR or
   create a new one. Consumed by git/submit-changes and git/commit-and-submit.
 
-  Preconditions: the working tree is clean (everything committed), and the
-  caller has resolved `<push-remote>`, `<target-branch>` and `<branch-name>`
-  (usually via git/shared/identify-remote-branch).
+Preconditions: the working tree is clean (everything committed), and the
+caller has resolved `<push-remote>`, `<target-branch>` and `<branch-name>`
+(usually via git/shared/identify-remote-branch).
 
   Emits `####` sub-headings so it slots under the caller's own numbered step.
 */}}
+This explicit PR-submission workflow authorizes pushing **only** `<branch-name>`
+to the resolved `<push-remote>` as required to create or update this PR. It does
+not authorize pushing tags, releases, other branches, protected/base branches,
+`--all`, or `--mirror`; nor publishing dependencies, deploying, or adopting
+downstream work. Preserve `--force-with-lease` only for this authorized PR
+branch when a rebase requires rewriting it. Obey any narrower caller/user or
+repository restriction; if pushing is forbidden, leave submission unperformed
+and report that accurately.
+
 #### PR exists
 
 ```bash
-git push --force-with-lease <push-remote> <branch-name>
+git push <push-remote> <branch-name>
 ```
+Use `git push --force-with-lease <push-remote> <branch-name>` **instead** only
+if an authorized rebase rewrote this PR branch. Never force-push for any other
+reason.
 Provide PR/MR URL.
 
 #### PR description constraints

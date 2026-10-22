@@ -23,6 +23,10 @@
 {{- $body := .BodyHint -}}{{- if eq $body "" }}{{ $body = "<body: what changed and why>" }}{{ end -}}
 {{ template "git/shared/safe-stage" . }}
 
+Creating this local commit does **not** authorize pushing it. Push only when an
+explicit submission instruction separately authorizes the intended branch and
+remote.
+
 ```bash
 git add <file> ...
 git commit -m "{{ $type }}({{ $scope }}): {{ $summary }}{{ if .Target }} (refs {{ .Target }}){{ end }}" -m "{{ $body }}"
