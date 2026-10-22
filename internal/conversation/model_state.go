@@ -318,10 +318,15 @@ func DeriveAgentModelsFiltered(
 	profiles []config.ModelProfile,
 ) (*SessionModelState, acp.SessionConfigId, string, modelcache.CatalogState) {
 	models, cfgId, source := DeriveAgentModels(opts, respModels, profiles)
+	if source == ModelCatalogSourceACPModelsEmpty {
+		// A present-but-empty real catalog is trustworthy: never expose
+		// synthesized profile choices in its place.
+		return &SessionModelState{
+			CurrentModelId:  string(respModels.CurrentModelId),
+			AvailableModels: []ModelInfo{},
+		}, cfgId, source, modelcache.CatalogEmpty
+	}
 	if models == nil {
-		if source == ModelCatalogSourceACPModelsEmpty {
-			return nil, cfgId, source, modelcache.CatalogEmpty
-		}
 		return nil, cfgId, source, modelcache.CatalogAbsent
 	}
 	out := *models

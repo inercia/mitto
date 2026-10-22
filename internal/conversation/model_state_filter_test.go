@@ -87,8 +87,19 @@ func TestDeriveAgentModelsFiltered_States(t *testing.T) {
 
 	t.Run("trustworthy empty acp models without profiles", func(t *testing.T) {
 		m, _, _, st := DeriveAgentModelsFiltered(nil, nil, &acp.SessionModelState{}, nil)
-		if m != nil || st != modelcache.CatalogEmpty {
+		if m == nil || m.AvailableModels == nil || len(m.AvailableModels) != 0 || st != modelcache.CatalogEmpty {
 			t.Fatalf("state=%q m=%+v", st, m)
+		}
+	})
+
+	t.Run("trustworthy empty acp models with profiles does not synthesize", func(t *testing.T) {
+		resp := &acp.SessionModelState{CurrentModelId: "cur"}
+		m, cfgId, src, st := DeriveAgentModelsFiltered(hidePolicy(t, "Prof*"), nil, resp, profiles)
+		if st != modelcache.CatalogEmpty || src != ModelCatalogSourceACPModelsEmpty || cfgId != "" {
+			t.Fatalf("state=%q src=%q cfg=%q", st, src, cfgId)
+		}
+		if m == nil || m.AvailableModels == nil || len(m.AvailableModels) != 0 || m.Synthesized || m.CurrentModelId != "cur" {
+			t.Fatalf("unexpected state %+v", m)
 		}
 	})
 
