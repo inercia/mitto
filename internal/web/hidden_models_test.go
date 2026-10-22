@@ -3,6 +3,9 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -60,5 +63,36 @@ func TestBuildNewSettings_HiddenModels(t *testing.T) {
 				t.Errorf("got %v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateAndPrepareSaveConfig_InvalidHiddenModelRule_NoMutation(t *testing.T) {
+	t.Setenv("MITTO_DIR", t.TempDir())
+	s := hiddenServer("x")
+	req := hiddenReq(t, `{"workspaces":[{"working_dir":"/tmp","acp_server":"old"}],"acp_servers":[{"name":"old","command":"c","hidden_models":["("]}]}`)
+	rec := httptest.NewRecorder()
+	if s.validateAndPrepareSaveConfig(rec, req) {
+		t.Fatal("expected rejection")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var body struct {
+		Error struct {
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	d := body.Error.Details
+	if d["server"] != "old" || d["rule"] != "(" || d["field"] != "acp_servers[0].hidden_models[0]" {
+		t.Errorf("details = %v (body %s)", d, rec.Body.String())
+	}
+	if got := s.config.MittoConfig.ACPServers[0].HiddenModels; !reflect.DeepEqual(got, []string{"x"}) {
+		t.Errorf("runtime mutated: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("MITTO_DIR"), "settings.json")); err == nil {
+		t.Error("settings.json written")
 	}
 }

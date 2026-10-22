@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -78,5 +81,89 @@ func TestHiddenModels_ParseRoundTrip(t *testing.T) {
 	}
 	if _, err := Parse([]byte("acp:\n  - s1:\n      command: x\n      hidden_models: [\"(\"]\n")); err == nil {
 		t.Error("expected invalid rule error")
+	}
+}
+
+func TestHiddenModels_ConversionAndMerge(t *testing.T) {
+	rc := []ACPServer{{Name: "rc", Command: "c", HiddenModels: []string{"r.*"}}}
+	st := []ACPServer{{Name: "st", Command: "c", HiddenModels: []string{"s.*"}}}
+	res := MergeACPServers(rc, st)
+	got := map[string][]string{}
+	for _, s := range res.Items {
+		got[s.Name] = s.HiddenModels
+	}
+	if !reflect.DeepEqual(got["rc"], []string{"r.*"}) || !reflect.DeepEqual(got["st"], []string{"s.*"}) {
+		t.Errorf("merge lost hidden models: %v", got)
+	}
+
+	cfg := &Config{ACPServers: st}
+	settings := ConfigToSettings(cfg)
+	if !reflect.DeepEqual(settings.ACPServers[0].HiddenModels, []string{"s.*"}) {
+		t.Errorf("ConfigToSettings: %v", settings.ACPServers[0].HiddenModels)
+	}
+	back := settings.ToConfig()
+	if !reflect.DeepEqual(back.ACPServers[0].HiddenModels, []string{"s.*"}) {
+		t.Errorf("ToConfig: %v", back.ACPServers[0].HiddenModels)
+	}
+}
+
+func TestHiddenModels_SettingsJSONRoundTrip(t *testing.T) {
+	cfg := &Config{ACPServers: []ACPServer{
+		{Name: "a", Command: "c", HiddenModels: []string{"x", "y "}},
+		{Name: "b", Command: "c"},
+	}}
+	data, err := json.Marshal(ConfigToSettings(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s Settings
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatal(err)
+	}
+	out := s.ToConfig()
+	if !reflect.DeepEqual(out.ACPServers[0].HiddenModels, []string{"x", "y "}) {
+		t.Errorf("a: %q", out.ACPServers[0].HiddenModels)
+	}
+	if len(out.ACPServers[1].HiddenModels) != 0 {
+		t.Errorf("b: %q", out.ACPServers[1].HiddenModels)
+	}
+	parsed, err := ParseJSON(data)
+	if err != nil || !reflect.DeepEqual(parsed.ACPServers[0].HiddenModels, []string{"x", "y "}) {
+		t.Errorf("ParseJSON: %v %v", parsed, err)
+	}
+}
+
+func TestHiddenModels_SameTypeDifferentNameIsolation(t *testing.T) {
+	pa, err := CompileHiddenModels("a", []string{".*Terra.*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, err := CompileHiddenModels("b", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pa.Hides("m", "GPT Terra") {
+		t.Error("a should hide")
+	}
+	if pb.Hides("m", "GPT Terra") {
+		t.Error("b must be unaffected")
+	}
+}
+
+func TestHiddenModels_InvalidFileConfigErrors(t *testing.T) {
+	dir := t.TempDir()
+	yml := filepath.Join(dir, "c.yaml")
+	if err := os.WriteFile(yml, []byte("acp:\n  - s1:\n      command: x\n      hidden_models: [\"(\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(yml); err == nil {
+		t.Error("yaml: expected error")
+	}
+	js := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(js, []byte(`{"acp_servers":[{"name":"s1","command":"x","hidden_models":["("]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(js); err == nil {
+		t.Error("json: expected error")
 	}
 }
