@@ -8,6 +8,7 @@ import {
   useState,
 } from "../vendor/preact-hooks.js";
 import htm from "../vendor/htm.js";
+import { registerExclusivePicker } from "../utils/pickerExclusion.js";
 
 if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
   let ConfigOptionSelect;
@@ -898,6 +899,144 @@ if (process.env.MITTO_CONFIG_OPTION_SELECT_TEST_CHILD === "1") {
       );
       expect(container.querySelector('input[type="text"]')).toBeNull();
       expect(rowButtons(container)).toEqual([]);
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("controlled open prop drives the menu and every close path notifies onOpenChange(false)", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const options = [
+      { value: "a", name: "A" },
+      { value: "b", name: "B" },
+    ];
+    const selections = [];
+    const changes = [];
+    let parentOpen = false;
+    // Simulates a controlling parent (ChatInput): onOpenChange notifications
+    // flow back into the open prop on the next render.
+    const handleOpenChange = (next) => {
+      changes.push(next);
+      parentOpen = next;
+      mount();
+    };
+    const mount = () =>
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "a",
+            options,
+          },
+          onSetConfigOption: (id, value) => selections.push([id, value]),
+          open: parentOpen,
+          onOpenChange: handleOpenChange,
+        }),
+        container,
+      );
+
+    try {
+      mount();
+      expect(container.querySelector("details").open).toBe(false);
+
+      // Reopening helper: waits for the filter to be focused AND the default
+      // highlight to commit — both happen inside/after the open effect —
+      // guaranteeing all of the commit's effects (including the doc-level
+      // mousedown/Escape listeners, the exclusive-picker registration and
+      // the searchable-menu selection state) have flushed before we proceed.
+      const reopen = async () => {
+        parentOpen = true;
+        mount();
+        const el = container.querySelector('input[type="text"]');
+        await waitFor(() => container.querySelector("details").open === true);
+        await waitFor(() => el && document.activeElement === el);
+        await waitFor(
+          () => container.querySelector("ul button.picker-row--highlighted"),
+        );
+        return el;
+      };
+
+      // Parent flipping open to true opens the menu: the open effect resets
+      // the filter and focuses it.
+      const input = await reopen();
+      expect(input.value).toBe("");
+
+      // Escape inside the filter (useSearchableMenu onClose path) notifies
+      // the parent, which re-renders closed; the trigger regains focus.
+      keydown(input, "Escape");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(document.activeElement).toBe(container.querySelector("summary"));
+      expect(changes).toEqual([false]);
+
+      // Outside mousedown notifies the parent too.
+      await reopen();
+      document.body.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true }),
+      );
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(changes).toEqual([false, false]);
+
+      // Selecting an option notifies the parent and reports the selection.
+      const reopenInput = await reopen();
+      keydown(reopenInput, "Enter");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(selections).toEqual([["model", "a"]]);
+      expect(changes).toEqual([false, false, false]);
+
+      // The exclusive-picker registry close also notifies the parent.
+      await reopen();
+      const unregister = registerExclusivePicker(() => {});
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(changes).toEqual([false, false, false, false]);
+      unregister();
+
+      // Only internal closes notified — programmatic parent-driven open
+      // transitions never call onOpenChange with true.
+      expect(changes.every((value) => value === false)).toBe(true);
+    } finally {
+      render(null, container);
+      container.remove();
+    }
+  });
+
+  test("uncontrolled callers without open/onOpenChange props keep the existing behaviour", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    try {
+      render(
+        h(ConfigOptionSelect, {
+          configOption: {
+            id: "model",
+            name: "Model",
+            category: "model",
+            current_value: "b",
+            options: [
+              { value: "a", name: "A" },
+              { value: "b", name: "B" },
+            ],
+          },
+        }),
+        container,
+      );
+
+      // Summary click opens and focuses the filter.
+      const input = await openModelMenu(container);
+      expect(container.querySelector("details").open).toBe(true);
+
+      // Typing then reopening resets the filter, as before.
+      typeFilter(input, "A");
+      keydown(input, "Escape");
+      await waitFor(() => container.querySelector("details").open === false);
+      expect(document.activeElement).toBe(container.querySelector("summary"));
+
+      const reopenedInput = await openModelMenu(container);
+      expect(reopenedInput.value).toBe("");
+      expect(container.querySelector("details").open).toBe(true);
     } finally {
       render(null, container);
       container.remove();

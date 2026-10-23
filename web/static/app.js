@@ -1143,6 +1143,18 @@ function App() {
             chatInputRef.current.togglePrompts();
           }
         }
+        // Ctrl+M to toggle the model picker. Literal Ctrl (never Cmd):
+        // Cmd+M is the native Window > Minimize shortcut on macOS and must
+        // keep its OS behaviour, so the metaKey combination is not bound.
+        if (e.ctrlKey && !e.metaKey && (key === "m" || key === "M")) {
+          // Skip while a modal dialog owns the screen (settings, keyboard
+          // shortcuts, confirm dialogs, ...). toggleModels itself no-ops
+          // (returns false) when there is no rendered model selector, e.g.
+          // no model config option or the selector is disabled.
+          if (!isModalDialogOpen() && chatInputRef.current?.toggleModels?.()) {
+            e.preventDefault();
+          }
+        }
       }
     };
 

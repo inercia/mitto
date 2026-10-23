@@ -235,6 +235,12 @@ export const KEYBOARD_SHORTCUTS = [
     hint: "Use Ctrl+/ on Windows/Linux",
   },
   {
+    keys: "⌃M",
+    description: "Toggle model picker",
+    section: "Input",
+    hint: "Use Ctrl+M on all platforms",
+  },
+  {
     keys: "⌘⇧1-5",
     description: "Apply model tag shortcut 1-5",
     section: "Input",

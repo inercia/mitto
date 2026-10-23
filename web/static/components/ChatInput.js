@@ -292,6 +292,10 @@ function ChatInputImpl({
   );
 
   const [showDropup, setShowDropup] = useState(false);
+  // Controlled open state for the model picker (Ctrl+M). Only ever passed to
+  // the ConfigOptionSelect whose category is "model" — never a hardcoded id.
+  // Every other select keeps its own uncontrolled open state.
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [promptFilterText, setPromptFilterText] = useState("");
   const [shiftHeld, setShiftHeld] = useState(false);
   const promptFilterInputRef = useRef(null);
@@ -398,6 +402,31 @@ function ChatInputImpl({
   const [improveError, setImproveError] = useState(null);
   const textareaRef = useRef(null);
   const dropupRef = useRef(null);
+
+  // Handler for toggling the model picker (Ctrl+M shortcut). Mirrors
+  // handleTogglePrompts: opening relies on the select's own open effect to
+  // focus the model filter; closing returns focus to the textarea. Opening
+  // closes the prompts dropup (and vice versa) through the existing
+  // exclusive-picker registry — no ad-hoc listeners.
+  const handleToggleModels = useCallback(() => {
+    const modelSelector = selectConfigOptions.find(
+      (o) => o.category === "model",
+    );
+    // No rendered model selector to toggle (none advertised or no options).
+    if (!modelSelector) return false;
+    const willOpen = !modelMenuOpen;
+    setModelMenuOpen(willOpen);
+    if (!willOpen) {
+      textareaRef.current?.focus();
+    }
+    return true;
+  }, [modelMenuOpen, selectConfigOptions]);
+
+  // ChatInput is not remounted per session; reset the controlled model-menu
+  // state on session switches so a stale open cannot leak to the next session.
+  useEffect(() => {
+    setModelMenuOpen(false);
+  }, [sessionId]);
 
   // Save prompt dialog state
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -779,9 +808,12 @@ function ChatInputImpl({
         togglePrompts: () => {
           handleTogglePrompts();
         },
+        toggleModels: () => {
+          return handleToggleModels();
+        },
       };
     }
-  }, [inputRef, handleTogglePrompts]);
+  }, [inputRef, handleTogglePrompts, handleToggleModels]);
 
   // Close dropup when clicking outside
   useEffect(() => {
@@ -3100,6 +3132,12 @@ function ChatInputImpl({
                         isStreaming=${isStreaming}
                         variant="toolbar"
                         placement="top"
+                        open=${configOpt.category === "model"
+                          ? modelMenuOpen
+                          : undefined}
+                        onOpenChange=${configOpt.category === "model"
+                          ? setModelMenuOpen
+                          : undefined}
                       />
                     `,
                   )}
@@ -3192,7 +3230,17 @@ function ChatInputImpl({
                             setPromptFilterText(value);
                             resetPromptSelection();
                           }}
-                          onFilterKeyDown=${handlePromptFilterKeyDown}
+                          onFilterKeyDown=${(e) => {
+                            // Let the global Ctrl+M model-picker toggle bubble
+                            // through to the app-level handler (same rationale
+                            // as the model filter in ConfigOptionSelect.js):
+                            // Ctrl+M switches from the prompts filter straight
+                            // to the model picker. Cmd+M stays native.
+                            if (e.ctrlKey && !e.metaKey && (e.key === "m" || e.key === "M")) {
+                              return;
+                            }
+                            handlePromptFilterKeyDown(e);
+                          }}
                           filterInputRef=${promptFilterInputRef}
                           sortMode=${promptSortMode}
                           selectedIndex=${promptSelectedIndex}

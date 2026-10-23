@@ -94,6 +94,141 @@ test("actual ChatInput prompt navigation preserves keyboard versus mouse loop pa
   }
 });
 
+test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native", async () => {
+  if (process.env.MITTO_CHAT_PROMPT_TEST_CHILD !== "1") {
+    const result = spawnSync(process.execPath, ["test", fileURLToPath(import.meta.url)], {
+      encoding: "utf8",
+      env: { ...process.env, MITTO_CHAT_PROMPT_TEST_CHILD: "1" },
+      timeout: 30_000,
+    });
+    if (result.status !== 0) throw new Error(`Isolated ChatInput tests failed:\n${result.stdout}\n${result.stderr}`);
+    return;
+  }
+  const preact = await import("../vendor/preact.js");
+  const hooks = await import("../vendor/preact-hooks.js");
+  const { default: htm } = await import("../vendor/htm.js");
+  const previous = window.preact;
+  window.preact = { ...preact, ...hooks, html: htm.bind(preact.h), memo: (component) => component };
+  const { ChatInput } = await import("./ChatInput.js");
+  const {
+    setConfigOptions,
+    _resetConfigOptionsStoreForTests,
+  } = await import("../stores/configOptionsStore.js");
+  const { isModalDialogOpen } = await import("../utils/globalHandlers.js");
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
+  const prompt = { name: "Optional", prompt: "Inserted text", loop: { mode: "optional", default: false } };
+  const chatInputRef = { current: null };
+
+  // The app.js global keydown handler needs the full app wiring, so its
+  // Ctrl+M branch is duplicated here — keep in sync with web/static/app.js
+  // (modal gating via isModalDialogOpen, literal Ctrl only, preventDefault
+  // only when a toggle actually happened).
+  const handleGlobalKeyDown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+      const key = e.key;
+      if (key === "/") {
+        e.preventDefault();
+        if (chatInputRef.current?.togglePrompts) chatInputRef.current.togglePrompts();
+      }
+      if (e.ctrlKey && !e.metaKey && (key === "m" || key === "M")) {
+        if (!isModalDialogOpen() && chatInputRef.current?.toggleModels?.()) {
+          e.preventDefault();
+        }
+      }
+    }
+  };
+  window.addEventListener("keydown", handleGlobalKeyDown);
+
+  // Dispatches a real, cancelable keydown on the focused element so the
+  // event must bubble all the way to the window handler, exactly like a
+  // user pressing the chord.
+  const press = async (init) => {
+    const target = document.activeElement || document.body;
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    await settle();
+    return event;
+  };
+
+  try {
+    setConfigOptions("ctrl-m-test", [
+      { id: "mode", name: "Mode", category: "mode", type: "select", current_value: "default", options: [{ value: "default", name: "Default" }] },
+      { id: "model", name: "Model", category: "model", type: "select", current_value: "a", options: [{ value: "a", name: "Model A" }, { value: "b", name: "Model B" }] },
+    ]);
+    preact.render(preact.h(ChatInput, {
+      sessionId: "ctrl-m-test",
+      predefinedPrompts: [prompt],
+      onSend: () => {},
+      onLoopPrompt: () => {},
+      inputRef: chatInputRef,
+    }), container);
+
+    const modelDetails = () => container.querySelector('[data-testid="config-option-model-filter"]')?.closest("details");
+    const modelFilter = () => container.querySelector('[data-testid="config-option-model-filter"]');
+    const promptsPanel = () => container.querySelector(".chat-input-prompts-dropup");
+    const textarea = () => container.querySelector("textarea");
+
+    textarea().focus();
+    await settle();
+
+    // 1. Ctrl+M opens the model picker and the filter is focused.
+    const openEvent = await press({ key: "m", ctrlKey: true });
+    expect(openEvent.defaultPrevented).toBe(true);
+    expect(modelDetails().open).toBe(true);
+    expect(document.activeElement).toBe(modelFilter());
+
+    // 2. A second Ctrl+M — now with focus in the model filter — closes the
+    //    picker and returns focus to the textarea.
+    const closeEvent = await press({ key: "m", ctrlKey: true });
+    expect(closeEvent.defaultPrevented).toBe(true);
+    expect(modelDetails().open).toBe(false);
+    expect(document.activeElement).toBe(textarea());
+
+    // 3. Cmd+M is never intercepted (native Window > Minimize on macOS).
+    const cmdEvent = await press({ key: "m", metaKey: true });
+    expect(cmdEvent.defaultPrevented).toBe(false);
+    expect(modelDetails().open).toBe(false);
+
+    // 4. Ctrl+M with the prompts filter focused switches to the model
+    //    picker: the dropup closes via the exclusive-picker registry.
+    chatInputRef.current.togglePrompts();
+    await settle();
+    expect(promptsPanel()).not.toBeNull();
+    expect(document.activeElement).toBe(promptsPanel().querySelector('input[type="text"]'));
+
+    const switchEvent = await press({ key: "m", ctrlKey: true });
+    expect(switchEvent.defaultPrevented).toBe(true);
+    expect(promptsPanel()).toBeNull();
+    expect(modelDetails().open).toBe(true);
+    expect(document.activeElement).toBe(modelFilter());
+
+    // 5. Opening the prompts menu (the ⌘/ path, via togglePrompts) while the
+    //    model picker is open closes it — mutual exclusion both ways.
+    chatInputRef.current.togglePrompts();
+    await settle();
+    expect(promptsPanel()).not.toBeNull();
+    expect(modelDetails().open).toBe(false);
+
+    // 6. Ctrl+M does nothing while a modal dialog owns the screen.
+    const modal = document.createElement("div");
+    modal.className = "modal modal-open";
+    document.body.appendChild(modal);
+    const modalEvent = await press({ key: "m", ctrlKey: true });
+    expect(modalEvent.defaultPrevented).toBe(false);
+    expect(modelDetails().open).toBe(false);
+    modal.remove();
+  } finally {
+    window.removeEventListener("keydown", handleGlobalKeyDown);
+    preact.render(null, container);
+    container.remove();
+    _resetConfigOptionsStoreForTests();
+    window.preact = previous;
+  }
+});
+
 // =============================================================================
 // Render-branch logic (visibility of the Flush button)
 // The button is ALWAYS rendered (mitto-cmk) so the capability stays

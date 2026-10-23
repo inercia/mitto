@@ -44,6 +44,14 @@ function defaultModelHighlight(options, query, currentValue) {
  * @param {boolean}  [props.disableWhileStreaming] - disable the control while streaming. Default false.
  * @param {Function} [props.onShowToast]           - ({message, style}) => void, used to surface an optimistic-
  *                                                    update rollback (the server rejected the change).
+ * @param {boolean}  [props.open]                  - controlled open state. When undefined (default) the
+ *                                                    component manages its own open state; when provided it
+ *                                                    drives <details open> and every internal close path
+ *                                                    (Escape, outside click, selection, exclusive-picker
+ *                                                    close) calls onOpenChange(false) instead.
+ * @param {Function} [props.onOpenChange]          - (isOpen: boolean) => void, notified on every open-state
+ *                                                    transition (summary toggles and internal closes) when
+ *                                                    controlling via props.open.
  */
 export function ConfigOptionSelect({
   configOption,
@@ -54,9 +62,20 @@ export function ConfigOptionSelect({
   showDescription = false,
   disableWhileStreaming = false,
   onShowToast,
+  open: controlledOpen,
+  onOpenChange,
 }) {
   const [localValue, setLocalValue] = useState(configOption.current_value);
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen !== undefined ? controlledOpen : uncontrolledOpen;
+  // Latest open state for the <details> onToggle handler below. Assigning the
+  // open property fires the toggle event synchronously in some engines
+  // (happy-dom), before Preact installs the new handler closure — reading
+  // `open` from the stale closure would misreport prop-driven transitions as
+  // user toggles (and re-enter the parent's render mid-diff). The ref always
+  // holds the value from the current render.
+  const openRef = useRef(open);
+  openRef.current = open;
   const detailsRef = useRef(null);
   // Tracks an in-flight optimistic selection: { sentValue, previousValue }.
   // Cleared once the corresponding server update (accept or reject) lands.
@@ -112,6 +131,14 @@ export function ConfigOptionSelect({
     });
   }, [configOption]);
 
+  // Single close path for every internal close (Escape, outside click,
+  // selection, exclusive-picker close). Keeps the uncontrolled state and the
+  // controlled onOpenChange notification in sync.
+  const closeMenu = useCallback(() => {
+    setUncontrolledOpen(false);
+    onOpenChange?.(false);
+  }, [onOpenChange]);
+
   // Close on outside click / Escape while open (native <details> does not)
   useEffect(() => {
     if (!open) return undefined;
@@ -120,12 +147,12 @@ export function ConfigOptionSelect({
       // closing on mousedown shifts the toolbar and retargets that click.
       if (e.target?.closest?.("[data-exclusive-picker-trigger]")) return;
       if (detailsRef.current && !detailsRef.current.contains(e.target)) {
-        setOpen(false);
+        closeMenu();
       }
     };
     const onKey = (e) => {
       if (e.key !== "Escape") return;
-      setOpen(false);
+      closeMenu();
       if (isModel) triggerRef.current?.focus();
     };
     document.addEventListener("mousedown", onDocPointer);
@@ -134,7 +161,7 @@ export function ConfigOptionSelect({
       document.removeEventListener("mousedown", onDocPointer);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, isModel]);
+  }, [open, isModel, closeMenu]);
 
   const handleSelect = useCallback(
     (newValue, restoreFocus = false) => {
@@ -144,16 +171,16 @@ export function ConfigOptionSelect({
       };
       setLocalValue(newValue); // optimistic
       onSetConfigOption?.(configOption.id, newValue);
-      setOpen(false);
+      closeMenu();
       if (restoreFocus) triggerRef.current?.focus();
     },
-    [configOption.id, configOption.current_value, onSetConfigOption],
+    [configOption.id, configOption.current_value, onSetConfigOption, closeMenu],
   );
 
   const closeSearchableMenu = useCallback(() => {
-    setOpen(false);
+    closeMenu();
     triggerRef.current?.focus();
-  }, []);
+  }, [closeMenu]);
 
   const disabled = disableWhileStreaming && isStreaming;
   const isToolbar = variant === "toolbar";
@@ -216,8 +243,8 @@ export function ConfigOptionSelect({
 
   useEffect(() => {
     if (!open) return undefined;
-    return registerExclusivePicker(() => setOpen(false));
-  }, [open]);
+    return registerExclusivePicker(closeMenu);
+  }, [open, closeMenu]);
 
   const tip = disabled
     ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
@@ -324,7 +351,9 @@ export function ConfigOptionSelect({
         open=${open}
         onToggle=${(e) => {
           const isOpen = e.currentTarget.open;
-          if (isOpen !== open) setOpen(isOpen);
+          if (isOpen === openRef.current) return;
+          setUncontrolledOpen(isOpen);
+          onOpenChange?.(isOpen);
         }}
       >
         ${trigger}
@@ -337,7 +366,18 @@ export function ConfigOptionSelect({
                     items=${menuOptions || []}
                     filterText=${filterText}
                     onFilterChange=${handleFilterChange}
-                    onFilterKeyDown=${handleKeyDown}
+                    onFilterKeyDown=${(e) => {
+                      // Ctrl+M is the global model-picker toggle (app.js).
+                      // Let it bubble up to the app-level keydown handler
+                      // instead of being swallowed by the menu's
+                      // stopPropagation, so the picker can be closed with
+                      // the same shortcut that opened it. Cmd+M (metaKey)
+                      // stays native (Window > Minimize on macOS).
+                      if (e.ctrlKey && !e.metaKey && (e.key === "m" || e.key === "M")) {
+                        return;
+                      }
+                      handleKeyDown(e);
+                    }}
                     filterInputRef=${filterInputRef}
                     placeholder="Filter models..."
                     emptyText="No matching models"
