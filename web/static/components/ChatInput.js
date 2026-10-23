@@ -295,7 +295,23 @@ function ChatInputImpl({
   // Controlled open state for the model picker (Ctrl+M). Only ever passed to
   // the ConfigOptionSelect whose category is "model" — never a hardcoded id.
   // Every other select keeps its own uncontrolled open state.
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpenState] = useState(false);
+  // modelMenuOpenRef mirrors modelMenuOpen, but synchronously. A model
+  // selection (Enter) closes the menu via onOpenChange(false) inside the
+  // keydown; Preact re-renders synchronously but only flushes passive
+  // effects — including the one that republishes toggleModels on inputRef
+  // with fresh state — on the next animation frame. A Ctrl+M keydown
+  // delivered in that window runs the previous render's handleToggleModels
+  // closure, whose `modelMenuOpen` is still the pre-close value, so the
+  // reopen was computed as a close and swallowed (mitto-gj9.6). useRef
+  // returns the same object on every render, so any closure reading the ref
+  // sees the latest value written by setModelMenuOpen below — the single
+  // write path that keeps the mirror and the state in lockstep.
+  const modelMenuOpenRef = useRef(false);
+  const setModelMenuOpen = useCallback((open) => {
+    modelMenuOpenRef.current = open;
+    setModelMenuOpenState(open);
+  }, []);
   const [promptFilterText, setPromptFilterText] = useState("");
   const [shiftHeld, setShiftHeld] = useState(false);
   const promptFilterInputRef = useRef(null);
@@ -404,23 +420,40 @@ function ChatInputImpl({
   const dropupRef = useRef(null);
 
   // Handler for toggling the model picker (Ctrl+M shortcut). Mirrors
-  // handleTogglePrompts: opening relies on the select's own open effect to
-  // focus the model filter; closing returns focus to the textarea. Opening
-  // closes the prompts dropup (and vice versa) through the existing
-  // exclusive-picker registry — no ad-hoc listeners.
+  // handleTogglePrompts: opening focuses the model filter directly (the
+  // select's own open effect normally does it, but its flush can be
+  // discarded in the same-tick race below) and closing returns focus to
+  // the textarea. Opening closes the prompts dropup (and vice versa)
+  // through the existing exclusive-picker registry — no ad-hoc listeners.
+  const modelSelectorContainerRef = useRef(null);
   const handleToggleModels = useCallback(() => {
     const modelSelector = selectConfigOptions.find(
       (o) => o.category === "model",
     );
     // No rendered model selector to toggle (none advertised or no options).
     if (!modelSelector) return false;
-    const willOpen = !modelMenuOpen;
+    // Read the ref, not the render-scoped modelMenuOpen, so a same-tick
+    // selection-close followed by Ctrl+M reopens the menu — see the
+    // modelMenuOpenRef comment above (mitto-gj9.6).
+    const willOpen = !modelMenuOpenRef.current;
     setModelMenuOpen(willOpen);
-    if (!willOpen) {
+    if (willOpen) {
+      // The reopen render commits synchronously, so focus the filter here
+      // instead of relying on the select's [open] effect: in the same-tick
+      // race that effect is flushed mid-render (its resetSelection marks
+      // the select dirty) and the re-render clears the pending effect
+      // queue, discarding the focus call. In the normal path the effect
+      // still runs and focusing twice is a harmless no-op.
+      modelSelectorContainerRef.current
+        ?.querySelector(
+          `[data-testid="config-option-${modelSelector.id}-filter"]`,
+        )
+        ?.focus();
+    } else {
       textareaRef.current?.focus();
     }
     return true;
-  }, [modelMenuOpen, selectConfigOptions]);
+  }, [selectConfigOptions, setModelMenuOpen]);
 
   // ChatInput is not remounted per session; reset the controlled model-menu
   // state on session switches so a stale open cannot leak to the next session.
@@ -3121,7 +3154,10 @@ function ChatInputImpl({
               <!-- Center: Config selectors and context usage (shown when either is available) -->
               ${(selectConfigOptions.length > 0 || contextPct !== null) &&
               html`
-                <div class="chat-input-model-selector">
+                <div
+                  class="chat-input-model-selector"
+                  ref=${modelSelectorContainerRef}
+                >
                   ${selectConfigOptions.map(
                     (configOpt) => html`
                       <${ConfigOptionSelect}

@@ -220,6 +220,39 @@ test("actual ChatInput Ctrl+M toggles the model picker and leaves Cmd+M native",
     expect(modalEvent.defaultPrevented).toBe(false);
     expect(modelDetails().open).toBe(false);
     modal.remove();
+
+    // 7. Regression (mitto-gj9.6): a selection-close and a Ctrl+M keydown in
+    //    the SAME tick — no await or timer between them — must reopen the
+    //    picker with the filter focused. Enter notifies onOpenChange(false)
+    //    synchronously, but Preact only republishes toggleModels (with fresh
+    //    open state) when passive effects flush on the next animation frame,
+    //    so the toggle must not read the stale pre-selection open state from
+    //    the previous render's closure.
+    const raceOpen = await press({ key: "m", ctrlKey: true });
+    expect(raceOpen.defaultPrevented).toBe(true);
+    expect(modelDetails().open).toBe(true);
+    expect(document.activeElement).toBe(modelFilter());
+    await press({ key: "ArrowDown" }); // highlight the model after the current one
+    // Enter selects and closes (restoring focus to the trigger); the Ctrl+M
+    // is dispatched before Preact flushes the passive effects of that close.
+    modelFilter().dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    const raceEvent = new KeyboardEvent("keydown", {
+      key: "m",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    (document.activeElement || document.body).dispatchEvent(raceEvent);
+    await settle();
+    expect(raceEvent.defaultPrevented).toBe(true);
+    expect(modelDetails().open).toBe(true);
+    expect(document.activeElement).toBe(modelFilter());
+    // The same-tick Enter really selected the highlighted model.
+    expect(
+      container.querySelector('summary[aria-label="Model"]').textContent,
+    ).toContain("Model B");
   } finally {
     window.removeEventListener("keydown", handleGlobalKeyDown);
     preact.render(null, container);
