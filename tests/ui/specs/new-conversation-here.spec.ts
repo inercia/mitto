@@ -329,3 +329,214 @@ test("without a session visible Tasks supplies the folder", async ({ page, reque
   expect(session.acp_server).toBe("cn9-global");
   await expect(page.locator(".chat-input-textarea")).toBeFocused();
 });
+
+test("disconnected creation waits for an editable composer and focuses only once", async ({
+  page, context,
+}) => {
+  // Chromium's offline toggle does not close an already-open WebSocket.
+  // Capture the native events socket so we can close that real transport;
+  // offline mode then prevents reconnection until the test explicitly restores it.
+  await page.addInitScript(() => {
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        if (new URL(String(url)).pathname.endsWith("/api/events")) {
+          (window as any).cn9EventsSocket = this;
+        }
+      }
+    };
+  });
+  await openOrigin(page);
+  const composer = page.locator(".chat-input-textarea");
+  // route.fetch runs in Playwright's request context, so the real mock-server
+  // create can complete while browser WebSockets are deliberately offline.
+  await page.route("**/api/sessions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    await route.fulfill({ response });
+  });
+  try {
+    await context.setOffline(true);
+    await page.evaluate(() => (window as any).cn9EventsSocket.close());
+    await expect(composer).toBeDisabled();
+    await invokeNative(page);
+    await changedSession(page);
+    await settleUI(page); // Let the initial disabled-composer focus attempt run.
+    await expect(composer).toBeDisabled();
+    await expect(composer).not.toBeFocused();
+    await page.evaluate(() => {
+      (window as any).cn9ComposerFocusCount = 0;
+      document.addEventListener("focusin", (event) => {
+        if ((event.target as Element).matches(".chat-input-textarea")) {
+          (window as any).cn9ComposerFocusCount++;
+        }
+      });
+    });
+    await context.setOffline(false);
+    await expect(composer).toBeEditable();
+    await expect(composer).toBeFocused();
+    expect(await page.evaluate(() => (window as any).cn9ComposerFocusCount)).toBe(1);
+
+    // A subsequent connectivity-driven render must not replay consumed intent.
+    const settings = page.getByTestId("settings-btn").first();
+    await settings.focus();
+    await context.setOffline(true);
+    await page.evaluate(() => (window as any).cn9EventsSocket.close());
+    await expect(composer).toBeDisabled();
+    await context.setOffline(false);
+    await expect(composer).toBeEditable();
+    await settleUI(page);
+    await expect(settings).toBeFocused();
+    expect(await page.evaluate(() => (window as any).cn9ComposerFocusCount)).toBe(1);
+  } finally {
+    await context.setOffline(false);
+  }
+});
+
+test("terminal busy retry exhaustion releases the latch for a fresh invocation", async ({ page }) => {
+  await openOrigin(page);
+  await page.clock.install();
+  let posts = 0;
+  let scheduledRetries = 0;
+  page.on("console", (message) => {
+    if (message.text().includes("[createNewSession] Agent busy — scheduling retry")) {
+      scheduledRetries++;
+    }
+  });
+  await page.route("**/api/sessions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    posts++;
+    // The existing policy is one initial attempt plus four automatic retries.
+    if (posts <= 5) return route.fulfill({
+      status: 503, contentType: "application/json",
+      body: JSON.stringify({ error: {
+        code: "session_creation_timeout", message: "mock agent stays busy",
+      } }),
+    });
+    await route.continue();
+  });
+  const folderButton = page.locator("li.folder-group")
+    .filter({ has: page.locator(`summary [title="${alpha}"]`) })
+    .getByTestId("new-conversation-btn");
+  await invokeNative(page);
+  await expect(folderButton).toBeDisabled();
+  await expect.poll(() => posts).toBe(1);
+  await expect.poll(() => scheduledRetries).toBe(1);
+  for (let retry = 1; retry <= 4; retry++) {
+    await page.clock.fastForward(30000);
+    await expect.poll(() => posts).toBe(retry + 1);
+    if (retry < 4) {
+      await expect.poll(() => scheduledRetries).toBe(retry + 1);
+      await expect(folderButton).toBeDisabled();
+      await invokeNative(page);
+      expect(posts).toBe(retry + 1);
+    }
+  }
+  await expect(folderButton).toBeEnabled();
+  expect(await selectedSession(page)).toBe(originId);
+  await page.clock.fastForward(30000);
+  expect(posts).toBe(5); // Exhaustion must not leave another scheduled retry.
+  await invokeNative(page);
+  await changedSession(page);
+  await expect(page.locator(".chat-input-textarea")).toBeFocused();
+  expect(posts).toBe(6);
+});
+
+test("same-view Tasks folder navigation cancels activation of a pending create", async ({
+  page, request, apiUrl,
+}) => {
+  const betaResponse = await request.post(apiUrl("/api/sessions"), {
+    data: { working_dir: beta, acp_server: "cn9-global" },
+  });
+  expect(betaResponse.ok()).toBeTruthy();
+  await openOrigin(page);
+  const tasks = (folder: string) => page.locator(`[title="Beads issues: ${folder}"]`);
+  // Expand both folders before entering Tasks, so auto-selection on folder
+  // expansion cannot masquerade as the navigation cancellation under test.
+  for (const folder of [beta, alpha]) {
+    await tasks(folder).locator("xpath=ancestor::details[1]")
+      .evaluate((el: HTMLDetailsElement) => { el.open = true; });
+  }
+  await tasks(alpha).click();
+  await expect(tasks(alpha)).toHaveAttribute("aria-current", "page");
+  const retainedSession = await selectedSession(page);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const posted = page.waitForRequest((r) =>
+    r.method() === "POST" && r.url().endsWith("/api/sessions"));
+  await page.route("**/api/sessions", async (route) => {
+    if (route.request().method() === "POST") await gate;
+    await route.continue();
+  });
+  try {
+    await invokeNative(page);
+    await posted;
+    await tasks(beta).click();
+    await expect(tasks(beta)).toHaveAttribute("aria-current", "page");
+    expect(await selectedSession(page)).toBe(retainedSession);
+    const response = page.waitForResponse((r) =>
+      r.request().method() === "POST" && r.url().endsWith("/api/sessions"));
+    release();
+    const created = await response;
+    expect(created.ok()).toBeTruthy();
+    const id = (await created.json()).session_id;
+    expect(id).not.toBe(retainedSession);
+    await created.finished();
+    await settleUI(page);
+    await expect(tasks(beta)).toHaveAttribute("aria-current", "page");
+    await expect(tasks(alpha)).not.toHaveAttribute("aria-current", "page");
+    expect(await selectedSession(page)).toBe(retainedSession);
+    await expect(page.locator(".chat-input-textarea")).toBeHidden();
+  } finally {
+    release();
+  }
+});
+
+for (const interveningTyping of [false, true]) {
+  test(`originating sidebar inline editor ${interveningTyping ? "keeps focus after later typing" : "releases focus for explicit creation"}`, async ({ page }) => {
+    await openOrigin(page);
+    // The current sidebar has no inline text editor (rename uses a modal).
+    // Supply only a DOM focus owner, as the existing focus spec does for links;
+    // exercise the real App action/effects without any production-only seam.
+    await page.locator(".session-item-container").first().evaluate((el) => {
+      const input = document.createElement("input");
+      input.dataset.testid = "cn9-inline-editor";
+      input.setAttribute("aria-label", "Test inline sidebar editor");
+      el.append(input);
+    });
+    const editor = page.getByTestId("cn9-inline-editor");
+    await editor.fill("draft");
+    await expect(editor).toBeFocused();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const posted = page.waitForRequest((r) =>
+      r.method() === "POST" && r.url().endsWith("/api/sessions"));
+    await page.route("**/api/sessions", async (route) => {
+      if (route.request().method() === "POST") await gate;
+      await route.continue();
+    });
+    try {
+      // Use the real keyboard path while the editor is the origin focus owner.
+      await page.keyboard.press("Control+Alt+n");
+      await posted;
+      await expect(editor).toBeFocused();
+      if (interveningTyping) await page.keyboard.type(" later");
+      release();
+      await changedSession(page);
+      const composer = page.locator(".chat-input-textarea");
+      await expect(composer).toBeEditable();
+      await settleUI(page);
+      if (interveningTyping) {
+        await expect(editor).toHaveValue("draft later");
+        await expect(editor).toBeFocused();
+        await expect(composer).not.toBeFocused();
+      } else {
+        await expect(composer).toBeFocused();
+        await expect(editor).not.toBeFocused();
+      }
+    } finally {
+      release();
+    }
+  });
+}
