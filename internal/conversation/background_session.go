@@ -798,7 +798,15 @@ type BackgroundSessionTestOpts struct {
 	// AgentModels() and ConfigOptions() without a live ACP process.
 	AgentSupportsImages bool
 	AgentModels         *SessionModelState
-	ConfigOptions       []SessionConfigOption
+	// RawAgentModels supplies the unfiltered catalog retained for policy-only
+	// refreshes, without requiring a live ACP callback.
+	RawAgentModels *SessionModelState
+	ConfigOptions  []SessionConfigOption
+	// ACPServer and MittoConfig expose hidden-model policy configuration to
+	// external caller tests without a live ACP session.
+	ACPServer           string
+	MittoConfig         *config.Config
+	HiddenModelPolicies *config.HiddenModelPolicies
 	// ProviderDiscoverer exposes NeutralProviderDiscoverer() to external
 	// packages (e.g. internal/web/handlers' neutral descriptor projection,
 	// mitto-mx9.5) without depending on a real BackendLease/BackendProvider.
@@ -827,6 +835,12 @@ func NewTestBackgroundSession(opts BackgroundSessionTestOpts) *BackgroundSession
 		agentSupportsImages:     opts.AgentSupportsImages,
 		agentModels:             opts.AgentModels,
 		configOptions:           opts.ConfigOptions,
+		acpServer:               opts.ACPServer,
+		mittoConfig:             opts.MittoConfig,
+		hiddenModelPolicies:     opts.HiddenModelPolicies,
+	}
+	if opts.RawAgentModels != nil {
+		bs.retainRawModelState(opts.RawAgentModels)
 	}
 	if opts.ProviderDiscoverer != nil {
 		bs.lease = &testLeaseWithDiscoverer{discoverer: opts.ProviderDiscoverer}

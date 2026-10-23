@@ -10,7 +10,24 @@ import (
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
+
+type hiddenPolicyBroadcast struct {
+	messageType string
+	payload     map[string]interface{}
+}
+
+type hiddenPolicyEvents struct {
+	broadcasts []hiddenPolicyBroadcast
+}
+
+func (e *hiddenPolicyEvents) Broadcast(messageType string, data interface{}) {
+	payload, _ := data.(map[string]interface{})
+	e.broadcasts = append(e.broadcasts, hiddenPolicyBroadcast{messageType: messageType, payload: payload})
+}
+
+func (*hiddenPolicyEvents) ClientCount() int { return 1 }
 
 func hiddenReq(t *testing.T, body string) *ConfigSaveRequest {
 	t.Helper()
@@ -94,5 +111,65 @@ func TestValidateAndPrepareSaveConfig_InvalidHiddenModelRule_NoMutation(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(os.Getenv("MITTO_DIR"), "settings.json")); err == nil {
 		t.Error("settings.json written")
+	}
+}
+
+func TestHandleSaveConfig_HiddenModelsRefreshesAttachedViewAndInvalidSavePreservesIt(t *testing.T) {
+	s, _ := modelShortcutServer(t)
+	s.sessionManager.SetMittoConfig(s.config.MittoConfig)
+	policies := s.sessionManager.HiddenModelPolicies()
+	initial := policies.Snapshot()
+	attached := conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{
+		SessionID: "attached", ACPServer: "test-server", MittoConfig: s.config.MittoConfig, HiddenModelPolicies: policies,
+		AgentModels:    &conversation.SessionModelState{CurrentModelId: "alpha", AvailableModels: []conversation.ModelInfo{{ModelId: "alpha", Name: "Alpha"}, {ModelId: "beta", Name: "Beta"}}},
+		RawAgentModels: &conversation.SessionModelState{CurrentModelId: "alpha", AvailableModels: []conversation.ModelInfo{{ModelId: "alpha", Name: "Alpha"}, {ModelId: "beta", Name: "Beta"}}},
+		ConfigOptions:  []conversation.SessionConfigOption{{ID: "model", Category: conversation.ConfigOptionCategoryModel, Type: conversation.ConfigOptionTypeSelect, CurrentValue: "alpha", Options: []conversation.SessionConfigOptionValue{{Value: "alpha", Name: "Alpha"}, {Value: "beta", Name: "Beta"}}}},
+	})
+	s.sessionManager.AddSessionForTest(attached)
+	events := &hiddenPolicyEvents{}
+	s.sessionManager.SetEventsManager(events)
+	w := httptest.NewRecorder()
+	s.handleSaveConfig(w, modelShortcutRequest(`,"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["^beta$"]}]`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("validated save status = %d, body = %s", w.Code, w.Body.String())
+	}
+	accepted := policies.Snapshot()
+	if accepted == initial || !accepted.Policy("test-server").Hides("beta", "Beta") {
+		t.Fatal("validated save did not publish the attached session policy")
+	}
+	assertAttachedPolicyPayload(t, attached, events, 1)
+	events.broadcasts = nil
+	w = httptest.NewRecorder()
+	s.handleSaveConfig(w, modelShortcutRequest(`,"acp_servers":[{"name":"test-server","command":"test-cmd","hidden_models":["("]}]`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid save status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	if policies.Snapshot() != accepted || !accepted.Policy("test-server").Hides("beta", "Beta") {
+		t.Fatal("invalid save replaced published policy")
+	}
+	if len(events.broadcasts) != 0 {
+		t.Fatalf("invalid save published %d attached-view updates", len(events.broadcasts))
+	}
+	assertAttachedPolicyPayload(t, attached, nil, 1)
+}
+
+func assertAttachedPolicyPayload(t *testing.T, attached *conversation.BackgroundSession, events *hiddenPolicyEvents, wantModels int) {
+	t.Helper()
+	if models := attached.AgentModels(); models == nil || len(models.AvailableModels) != wantModels || models.AvailableModels[0].ModelId != "alpha" {
+		t.Fatalf("attached selectable models = %+v, want only alpha", models)
+	}
+	options := attached.ConfigOptions()
+	if len(options) != 1 || len(options[0].Options) != wantModels || options[0].Options[0].Value != "alpha" {
+		t.Fatalf("attached reconnect options = %+v, want only alpha", options)
+	}
+	if events == nil {
+		return
+	}
+	if len(events.broadcasts) != 1 || events.broadcasts[0].messageType != conversation.WSMsgTypeConfigOptionChanged {
+		t.Fatalf("attached updates = %+v", events.broadcasts)
+	}
+	payloadOptions, ok := events.broadcasts[0].payload["config_options"].([]conversation.SessionConfigOption)
+	if !ok || len(payloadOptions) != 1 || len(payloadOptions[0].Options) != wantModels || payloadOptions[0].Options[0].Value != "alpha" {
+		t.Fatalf("attached update payload = %+v", events.broadcasts[0].payload)
 	}
 }
