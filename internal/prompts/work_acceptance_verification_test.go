@@ -129,6 +129,26 @@ func TestBuiltinStartWorkIndependentAcceptanceClosure(t *testing.T) {
 	}
 }
 
+func TestBuiltinStartWorkAllowsFeatureReviewContinuation(t *testing.T) {
+	ctx := linkedWorkRegressionContext()
+	ctx.Args["ClosePolicy"] = "Verify and close"
+	_, body := renderBuiltinPromptForWorkRegression(t, "beads-issues/work.prompt.yaml", ctx)
+	normalized := strings.Join(strings.Fields(body), " ")
+
+	for _, contract := range []string{
+		"Start work is never its continuation",
+		"A normal feature review phase continues with Start work in this conversation",
+		"coordinate acceptance closure",
+	} {
+		if !strings.Contains(normalized, contract) {
+			t.Errorf("Start work must preserve feature-review continuation: missing %q", contract)
+		}
+	}
+	if strings.Contains(body, "if this conversation was assigned a verifier/reviewer role") {
+		t.Error("Start work must not stop its own normal feature-review continuation")
+	}
+}
+
 func TestBuiltinAcceptanceVerifierRequiresExactInputsAndEvidence(t *testing.T) {
 	ctx := linkedWorkRegressionContext()
 	ctx.Session.IsChild, ctx.Session.ParentID = true, "coordinator"

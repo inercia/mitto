@@ -35,8 +35,11 @@ prompt: |
   {{ $close := Default "Ask" .Args.ClosePolicy -}}
   Explicit policy: Commit={{ $commit }}; ClosePolicy={{ $close }}.
   Never push automatically. Commit task paths/hunks only; preserve unrelated staging/conventions.
-  Restricted verifier/reviewer: retain role, target, permissions and stop condition.
-  Do not take over implementation, dispatch or closure. Report the mismatch and stop.
+  A dedicated independent verifier keeps its phase's narrower target, permissions, and stop
+  condition; **Start work is never its continuation**. A normal feature review phase continues
+  with Start work in this conversation so it can process the resulting label and, when configured,
+  coordinate acceptance closure. This prompt authorizes that workflow,
+  including phase dispatch and the acceptance coordinator it defines.
   {{ if not $commit }}Do not commit; report uncommitted files.{{ end }}
   {{ if and (ne $close "Ask") (ne $close "Leave open") (ne $close "Verify and close") }}Invalid ClosePolicy: report and stop.{{ end }}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
