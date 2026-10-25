@@ -387,34 +387,12 @@ func routerSnapshotFn(enabled bool) func() *config.PromptsSnapshot {
 	}
 }
 
-func TestKnowledgeRouter_LegacySuppression_AllFourBuiltins(t *testing.T) {
+func TestKnowledgeRouter_LegacySuppression_RemainingBuiltin(t *testing.T) {
 	cases := map[string]gatedLegacyEnabledWhenCase{
 		"memorize-preferences": {
 			yamlPath: "../../config/processors/builtin/memorize-preferences.yaml",
 			buildInput: func(workingDir string, routerEnabled bool) *ProcessorInput {
 				return &ProcessorInput{WorkingDir: workingDir, IsLoop: false, PromptsSnapshotFn: routerSnapshotFn(routerEnabled)}
-			},
-		},
-		"auggie-update-rules": {
-			yamlPath: "../../config/processors/builtin/auggie-update-rules.yaml",
-			setupDir: func(t *testing.T, workingDir string) {
-				if err := os.MkdirAll(filepath.Join(workingDir, ".augment", "rules"), 0o755); err != nil {
-					t.Fatalf("MkdirAll .augment/rules: %v", err)
-				}
-			},
-			buildInput: func(workingDir string, routerEnabled bool) *ProcessorInput {
-				return &ProcessorInput{WorkingDir: workingDir, IsLoop: false, ACPServer: "augment", PromptsSnapshotFn: routerSnapshotFn(routerEnabled)}
-			},
-		},
-		"claude-update-memory": {
-			yamlPath: "../../config/processors/builtin/claude-update-memory.yaml",
-			setupDir: func(t *testing.T, workingDir string) {
-				if err := os.WriteFile(filepath.Join(workingDir, "CLAUDE.md"), []byte("# notes\n"), 0o644); err != nil {
-					t.Fatalf("WriteFile CLAUDE.md: %v", err)
-				}
-			},
-			buildInput: func(workingDir string, routerEnabled bool) *ProcessorInput {
-				return &ProcessorInput{WorkingDir: workingDir, IsLoop: false, ACPServer: "claude-code", PromptsSnapshotFn: routerSnapshotFn(routerEnabled)}
 			},
 		},
 	}
@@ -442,15 +420,15 @@ func TestKnowledgeRouter_LegacySuppression_AllFourBuiltins(t *testing.T) {
 	}
 }
 
-// TestKnowledgeRouter_LegacySuppression_ApplyOnCloseRecordsAllSkipped wires
-// the four real legacy YAMLs into one Manager (mirroring production
+// TestKnowledgeRouter_LegacySuppression_ApplyOnCloseRecordsSkipped wires
+// the remaining real legacy YAML into one Manager (mirroring production
 // composition) and confirms ApplyOnClose's own recorded ProcessorRun
-// Outcome/SkipReason for each — the AC's literal
+// Outcome/SkipReason for it — the AC's literal
 // "ProcessorRunData.Outcome==skipped" assertion — when the router is
 // enabled via PromptsSnapshotFn.
-func TestKnowledgeRouter_LegacySuppression_ApplyOnCloseRecordsAllSkipped(t *testing.T) {
+func TestKnowledgeRouter_LegacySuppression_ApplyOnCloseRecordsSkipped(t *testing.T) {
 	loader := NewLoader("../../config/processors/builtin", nil)
-	names := []string{"memorize-preferences", "auggie-update-rules", "claude-update-memory"}
+	names := []string{"memorize-preferences"}
 	var procs []*Processor
 	for _, name := range names {
 		proc, err := loader.LoadFile("../../config/processors/builtin/" + name + ".yaml")

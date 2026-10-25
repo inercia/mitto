@@ -269,6 +269,11 @@ func validateProcessor(proc *Processor, path string, docIndex int) error {
 	if proc.Prompt != "" && (proc.Command != "" || proc.Text != "") {
 		return errorf("processor with 'prompt' must not specify 'command' or 'text'")
 	}
+	if proc.Prompt != "" {
+		if err := config.ValidatePromptTemplateSyntax(proc.Name, proc.Prompt); err != nil {
+			return errorf("processor prompt template is invalid: %w", err)
+		}
+	}
 
 	// Validate outputFormat
 	if proc.OutputFormat != "" && proc.OutputFormat != OutputFormatRaw && proc.OutputFormat != OutputFormatJSON {

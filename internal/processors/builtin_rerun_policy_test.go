@@ -84,8 +84,6 @@ func TestBuiltinProcessors_OneShot_NoRerunConfigured(t *testing.T) {
 	loader := NewLoader(dir, nil)
 
 	oneShot := []string{
-		"auggie-manage-rules.yaml",
-		"claude-manage-memory.yaml",
 		"identify-workspace-metadata.yaml",
 	}
 	for _, name := range oneShot {

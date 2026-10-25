@@ -41,10 +41,10 @@ prompt: |
 
   ## Session Info
 
-  [[ if .Session.ID ]]
+  {{ if .Session.ID }}
   Session ID: {{ .Session.ID }}
   {{ end }}
-  [[ if .Workspace.Folder ]]
+  {{ if .Workspace.Folder }}
   Working Directory: {{ .Workspace.Folder }}
   {{ end }}
 

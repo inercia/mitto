@@ -1323,7 +1323,9 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			ctx.Args = resolvedArgs
 			funcs := config.BuildTemplateFuncMap(ctx)
 			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, ctx, funcs); rerr != nil {
-				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
+				m.logger.Warn("prompt-mode processor template render failed; skipping dispatch", "name", proc.Name, "error", rerr)
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "before", Outcome: "error", Error: rerr.Error(), RunKind: runKind, RerunReason: runRerunReason})
+				continue
 			} else {
 				assembledPrompt = rendered
 			}
@@ -1748,7 +1750,10 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			// PromptText resolver is not wired here; template fails-closed if used from processor-rendered prompts (mitto-85y.3).
 			funcs := config.BuildTemplateFuncMap(tctx)
 			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
-				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
+				m.logger.Warn("prompt-mode processor template render failed; skipping dispatch", "name", proc.Name, "error", rerr)
+				result.Errors = append(result.Errors, ProcessorError{ProcessorName: proc.Name, Error: rerr.Error()})
+				m.recordRun(ProcessorRun{Name: proc.Name, Phase: "after", Outcome: "error", Error: rerr.Error()})
+				continue
 			} else {
 				assembledPrompt = rendered
 			}
@@ -2073,8 +2078,10 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 				tctx.Args = resolvedArgs
 				funcs := config.BuildTemplateFuncMap(tctx)
 				if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
-					m.logger.Warn("close-phase memory curation: template render failed; using unrendered body",
+					m.logger.Warn("close-phase memory curation: template render failed; skipping dispatch",
 						"name", proc.Name, "error", rerr)
+					record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Error: rerr.Error()})
+					continue
 				} else {
 					assembledPrompt = rendered
 				}
@@ -2208,8 +2215,10 @@ func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
 			tctx.Args = resolvedArgs
 			funcs := config.BuildTemplateFuncMap(tctx)
 			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
-				m.logger.Warn("close-phase prompt-mode processor template render failed; using unrendered body",
+				m.logger.Warn("close-phase prompt-mode processor template render failed; skipping dispatch",
 					"name", proc.Name, "error", rerr)
+				record(ProcessorRun{Name: proc.Name, Phase: "close", Outcome: "error", Error: rerr.Error()})
+				continue
 			} else {
 				assembledPrompt = rendered
 			}

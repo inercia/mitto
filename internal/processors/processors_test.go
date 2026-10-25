@@ -3291,6 +3291,57 @@ text: "some text"
 			t.Errorf("expected 0 processors (bad file skipped), got %d", len(procs))
 		}
 	})
+
+	t.Run("invalid prompt template → validation error (file skipped)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeYAML(t, dir, "bad-template.yaml", `
+name: bad-template
+when:
+  on: userPrompt
+  match: all
+prompt: |
+  [[ if .Session.ID ]]
+  Session ID: {{ .Session.ID }}
+  {{ end }}
+`)
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Fatalf("Load() should not error: %v", err)
+		}
+		if len(procs) != 0 {
+			t.Errorf("expected 0 processors (invalid template skipped), got %d", len(procs))
+		}
+		if len(loader.Errors()) != 1 || !strings.Contains(loader.Errors()[0].Error, "processor prompt template is invalid") {
+			t.Errorf("loader errors = %+v, want invalid-template validation error", loader.Errors())
+		}
+	})
+}
+
+func TestPromptModeRenderFailureDoesNotDispatchRawTemplate(t *testing.T) {
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{{
+		Name:   "malformed-prompt",
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Prompt: "[[ if .Session.ID ]]\nSession ID: {{ .Session.ID }}\n{{ end }}",
+	}}
+
+	dispatched := make(chan string, 1)
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		dispatched <- prompt
+		return nil
+	})
+
+	_, err := mgr.Apply(context.Background(), &ProcessorInput{Message: "hello", WorkspaceUUID: "ws", SessionID: "session"})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	select {
+	case prompt := <-dispatched:
+		t.Fatalf("raw template was dispatched: %q", prompt)
+	case <-time.After(100 * time.Millisecond):
+		// Expected: a render failure prevents dispatch.
+	}
 }
 
 func TestManagerRoutesPromptModeToApplyWithRerun(t *testing.T) {
@@ -5654,6 +5705,41 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 	})
 }
 
+func TestIdentifyUserDataTemplateRenders(t *testing.T) {
+	srcPath := rootconfig.BuiltinProcessorsDir + "/identify-user-data.yaml"
+	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+	}
+	dir := t.TempDir()
+	dstPath := filepath.Join(dir, "identify-user-data.yaml")
+	if err := os.WriteFile(dstPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	proc, err := NewLoader(dir, nil).LoadFile(dstPath)
+	if err != nil {
+		t.Fatalf("LoadFile(%s) error = %v", dstPath, err)
+	}
+	if proc == nil || proc.Prompt == "" {
+		t.Fatal("expected a non-empty identify-user-data prompt")
+	}
+
+	ctx := &config.PromptEnabledContext{}
+	ctx.Session.ID = "session-123"
+	ctx.Workspace.Folder = "/workspace"
+	ctx.Workspace.UserDataSchemaJSON = `{"ticket":{"type":"string"}}`
+	ctx.Session.UserDataJSON = `{"ticket":"MITTO-123"}`
+	rendered, err := config.RenderPromptTemplate(proc.Name, proc.Prompt, ctx, config.BuildTemplateFuncMap(ctx))
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate() error = %v", err)
+	}
+	for _, want := range []string{"Session ID: session-123", "Working Directory: /workspace", `{"ticket":{"type":"string"}}`, `{"ticket":"MITTO-123"}`} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered prompt does not contain %q:\n%s", want, rendered)
+		}
+	}
+}
+
 // extractHasModelTagArgs walks a compiled CEL AST and returns the string-literal
 // second argument of every __mitto_hasModelTag(Session.ModelTags, "<tag>") call.
 // The parse-time macro sessionHasModelTagMacro rewrites Session.HasModelTag(t)
@@ -6903,18 +6989,15 @@ func TestApplyOnClose_TemplateExposesWorkspaceUUID(t *testing.T) {
 }
 
 // TestBuiltinCloseProcessors_WorkspaceUINotify verifies mitto-nhr's acceptance
-// criteria against the real embedded builtin processors: the five close-phase
-// (conversationClosed) processors that write files — auggie-update-rules,
-// claude-update-memory, memorize-preferences, extract-memories-on-close,
-// curate-memories-on-close — must render a mitto_workspace_ui_notify
+// criteria against the real embedded builtin processors: the remaining
+// close-phase (conversationClosed) processor that writes files —
+// memorize-preferences — must render a mitto_workspace_ui_notify
 // instruction carrying the live workspace UUID when one is available, and must
 // omit it (falling back to a silent-exit instruction) when the UUID is empty,
 // so a background aux session never calls the tool with a blank
 // workspace_uuid (which the tool hard-rejects).
 func TestBuiltinCloseProcessors_WorkspaceUINotify(t *testing.T) {
 	names := []string{
-		"auggie-update-rules",
-		"claude-update-memory",
 		"memorize-preferences",
 	}
 

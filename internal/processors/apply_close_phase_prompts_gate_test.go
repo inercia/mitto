@@ -118,14 +118,11 @@ func TestApplyOnClose_PromptsIsEnabledGate_NilSnapshotFnFailsClosedToRunning(t *
 	}
 }
 
-// gatedLegacyCloseProcessorFiles lists the four builtin close-phase
-// processors mitto-3od.3 gated behind the knowledge-router. Kept in sync
-// with the Implementation comment on mitto-3od.3; deliberately excludes
-// curate-memories-on-close (out of scope per mitto-3od's bead description).
+// gatedLegacyCloseProcessorFiles lists the builtin close-phase processors
+// gated behind the knowledge-router that still ship. The auggie/claude
+// memory/rule processors were retired; only memorize-preferences remains.
 var gatedLegacyCloseProcessorFiles = []string{
 	"../../config/processors/builtin/memorize-preferences.yaml",
-	"../../config/processors/builtin/auggie-update-rules.yaml",
-	"../../config/processors/builtin/claude-update-memory.yaml",
 }
 
 // TestGatedLegacyCloseProcessorYAML_ParsesAndCarriesRouterGate is the "yaml
